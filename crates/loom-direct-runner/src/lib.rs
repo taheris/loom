@@ -33,6 +33,9 @@ use loom_llm::client::{
 };
 use loom_llm::conversation::{ContextBudget, Conversation};
 use loom_llm::model_id::{AnthropicModel, ModelId, SchemaKind};
+use loom_llm::observer::{
+    DoomLoopConfig as LlmDoomLoopConfig, DuplicateResultConfig as LlmDuplicateResultConfig,
+};
 use loom_llm::request::{CompletionRequest, Message, Role};
 use loom_llm::tool::Tool;
 use serde_json::Value;
@@ -72,18 +75,40 @@ pub fn six_tools(ctx: ToolContext) -> Vec<Box<dyn Tool>> {
 /// Construct the Conversation `loom-direct-runner` drives. The model is
 /// resolved from [`SpawnConfig::model_id`] via [`ModelId::from_str`]; when
 /// absent the runner falls back to [`DEFAULT_MODEL`]. The six sandbox-aware
-/// tools are registered in the canonical order, and both default observers
-/// stay enabled.
+/// tools are registered in the canonical order, and observer settings come
+/// from [`SpawnConfig::observers`].
 pub fn build_conversation(config: &SpawnConfig) -> Conversation {
     build_conversation_with_context(config, tool_context(config))
 }
 
 fn build_conversation_with_context(config: &SpawnConfig, ctx: ToolContext) -> Conversation {
-    let mut conv = Conversation::new(configured_model(config));
+    let mut conv = Conversation::with_observer_configs(
+        configured_model(config),
+        llm_doom_loop_config(&config.observers.doom_loop),
+        llm_duplicate_result_config(&config.observers.duplicate_result),
+    );
     for tool in six_tools(ctx) {
         conv = conv.register_boxed(tool);
     }
     conv
+}
+
+fn llm_doom_loop_config(config: &loom_driver::config::DoomLoopConfig) -> LlmDoomLoopConfig {
+    LlmDoomLoopConfig {
+        enabled: config.enabled,
+        window: config.window,
+        threshold: config.threshold,
+        stage_2_after_stage_1: config.stage_2_after_stage_1,
+    }
+}
+
+fn llm_duplicate_result_config(
+    config: &loom_driver::config::DuplicateResultConfig,
+) -> LlmDuplicateResultConfig {
+    LlmDuplicateResultConfig {
+        enabled: config.enabled,
+        min_bytes: config.min_bytes,
+    }
 }
 
 fn tool_context(config: &SpawnConfig) -> ToolContext {
@@ -486,7 +511,9 @@ mod tests {
     use super::*;
     use loom_driver::agent::{OutputLimits, RePinContent};
     use loom_driver::clock::{Clock, SystemClock};
-    use loom_driver::config::{LoomConfig, Phase};
+    use loom_driver::config::{
+        AgentObserversConfig, DoomLoopConfig, DuplicateResultConfig, LoomConfig, Phase,
+    };
     use loom_events::identifier::{BeadId, SessionId};
     use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, SessionScope, Source};
     use loom_llm::client::{
@@ -527,6 +554,7 @@ mod tests {
             model_id: model_id.map(str::to_string),
             model: None,
             thinking_level: None,
+            observers: Default::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),
@@ -612,9 +640,7 @@ mod tests {
     }
 
     /// Both default observers ship enabled when the runner builds its
-    /// Conversation — matches `Conversation::new`'s defaults so the
-    /// CLI-side `[agent.doom_loop]` / `[agent.duplicate_result]` config
-    /// surface is the only opt-out path.
+    /// Conversation, matching `Conversation::new`'s defaults.
     #[test]
     fn direct_runner_composes_default_observers() {
         let conv = build_conversation(&sample_config(None));
@@ -626,6 +652,27 @@ mod tests {
             conv.duplicate_result_enabled(),
             "DuplicateResultObserver enabled by default in runner Conversation",
         );
+    }
+
+    /// Direct consumes Loom's `[agent.*]` observer settings from the serialized
+    /// spawn config so CLI opt-outs affect the in-container Conversation.
+    #[test]
+    fn direct_runner_honours_spawn_config_observer_opt_outs() {
+        let mut cfg = sample_config(None);
+        cfg.observers = AgentObserversConfig {
+            doom_loop: DoomLoopConfig {
+                enabled: false,
+                ..DoomLoopConfig::default()
+            },
+            duplicate_result: DuplicateResultConfig {
+                enabled: false,
+                ..DuplicateResultConfig::default()
+            },
+        };
+
+        let conv = build_conversation(&cfg);
+        assert!(!conv.doom_loop_enabled());
+        assert!(!conv.duplicate_result_enabled());
     }
 
     /// Per-phase direct config is installed on `SpawnConfig::model_id` before

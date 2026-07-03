@@ -798,6 +798,7 @@ mod tests {
             model_id: None,
             model,
             thinking_level: None,
+            observers: Default::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),

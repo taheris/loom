@@ -308,6 +308,7 @@ impl DirectEvent {
 mod tests {
     use super::*;
     use loom_driver::agent::RePinContent;
+    use loom_driver::config::{AgentObserversConfig, DoomLoopConfig, DuplicateResultConfig};
     use std::path::PathBuf;
 
     fn sample_repin() -> RePinContent {
@@ -338,6 +339,7 @@ mod tests {
             model_id: None,
             model: None,
             thinking_level: None,
+            observers: Default::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),
@@ -372,6 +374,28 @@ mod tests {
         assert_eq!(decoded.image_source, cfg.image_source);
         assert_eq!(decoded.initial_prompt, cfg.initial_prompt);
         assert_eq!(decoded.agent_args, cfg.agent_args);
+    }
+
+    #[test]
+    fn prepare_runtime_serializes_observer_config_for_runner() {
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let mut cfg = sample_config(scratch.path().to_path_buf());
+        cfg.observers = AgentObserversConfig {
+            doom_loop: DoomLoopConfig {
+                enabled: false,
+                ..DoomLoopConfig::default()
+            },
+            duplicate_result: DuplicateResultConfig {
+                enabled: false,
+                min_bytes: 1024,
+            },
+        };
+
+        let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");
+
+        let bytes = std::fs::read(&spawn_config_path).expect("read");
+        let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
+        assert_eq!(decoded.observers, cfg.observers);
     }
 
     #[test]

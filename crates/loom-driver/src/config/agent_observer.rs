@@ -7,21 +7,29 @@
 //! `loom-driver` cannot import `llm` (the dep graph in
 //! `specs/harness.md` § Dependency Graph forbids it), so the
 //! configs are defined here as plain serde shapes; the workflow layer
-//! consumes them when composing the observer chain.
+//! consumes them when composing the observer chain and serializing Direct
+//! runner spawn config.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// `[agent]` table aggregating the per-observer sub-blocks.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentObserversConfig {
     pub doom_loop: DoomLoopConfig,
     pub duplicate_result: DuplicateResultConfig,
 }
 
+impl AgentObserversConfig {
+    /// True when every observer knob is at the spec default.
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 /// `[agent.doom_loop]` — sliding-window detection knobs for the
 /// doom-loop observer. Mirrors `loom_llm::observer::DoomLoopConfig`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DoomLoopConfig {
     pub enabled: bool,
@@ -44,7 +52,7 @@ impl Default for DoomLoopConfig {
 /// `[agent.duplicate_result]` — duplicate-detection knobs for the
 /// duplicate-result observer. Mirrors
 /// `loom_llm::observer::DuplicateResultConfig`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DuplicateResultConfig {
     pub enabled: bool,

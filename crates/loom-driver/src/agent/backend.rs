@@ -4,6 +4,8 @@ use std::time::Duration;
 use loom_skills::registry::RegisteredSkills;
 use serde::{Deserialize, Serialize};
 
+use crate::config::AgentObserversConfig;
+
 use super::error::ProtocolError;
 use super::repin::RePinContent;
 use super::session::{Active, AgentSession, Idle};
@@ -113,6 +115,13 @@ pub struct SpawnConfig {
     /// `None` so existing wrapper fixtures round-trip identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
+    /// Agent-loop observer knobs resolved from Loom's `[agent.*]` config.
+    /// Direct serializes this into the runner's spawn config so the
+    /// in-container loom-llm `Conversation` uses the same opt-out and
+    /// threshold settings as the host-side observer chain. Defaults stay
+    /// omitted from JSON for backward-compatible wrapper fixtures.
+    #[serde(default, skip_serializing_if = "AgentObserversConfig::is_default")]
+    pub observers: AgentObserversConfig,
     /// Inline-output cap for the Direct backend, resolved from `[direct]` in
     /// `loom.toml` at dispatch time. Carries `max_inline_bytes`, the byte
     /// budget above which content-returning Direct tools offload to the
@@ -410,6 +419,7 @@ mod tests {
             model_id: None,
             model,
             thinking_level: None,
+            observers: Default::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),
@@ -586,6 +596,49 @@ mod tests {
         }
     }
 
+    /// Default observer knobs are omitted from the spawn-config JSON while
+    /// remaining enabled after deserialization, so older wrapper fixtures
+    /// preserve the spec's observer-on default.
+    #[test]
+    fn spawn_config_with_default_observers_omits_field() {
+        let cfg = sample_config(None);
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        let obj = v.as_object().expect("object");
+        assert!(
+            !obj.contains_key("observers"),
+            "default observers must be omitted, got JSON: {json}",
+        );
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.observers, AgentObserversConfig::default());
+    }
+
+    /// Non-default observer knobs serialize into the Direct runner's config,
+    /// including opt-outs and thresholds from Loom's `[agent.*]` block.
+    #[test]
+    fn spawn_config_with_custom_observers_round_trips() {
+        let mut cfg = sample_config(None);
+        cfg.observers = AgentObserversConfig {
+            doom_loop: crate::config::DoomLoopConfig {
+                enabled: false,
+                window: 7,
+                threshold: 4,
+                stage_2_after_stage_1: 2,
+            },
+            duplicate_result: crate::config::DuplicateResultConfig {
+                enabled: false,
+                min_bytes: 1024,
+            },
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["observers"]["doom_loop"]["enabled"], false);
+        assert_eq!(v["observers"]["doom_loop"]["window"], 7);
+        assert_eq!(v["observers"]["duplicate_result"]["min_bytes"], 1024);
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.observers, cfg.observers);
+    }
+
     /// JSON without a `model` key still parses (treated as `None`) — this is
     /// the contract with wrappers built before lm-pkht8.* landed.
     #[test]
@@ -602,6 +655,7 @@ mod tests {
         let cfg: SpawnConfig = serde_json::from_str(legacy).expect("legacy fixture parses");
         assert!(cfg.model_id.is_none());
         assert!(cfg.model.is_none());
+        assert_eq!(cfg.observers, AgentObserversConfig::default());
         assert_eq!(cfg.image_ref, "localhost/img:tag");
         assert_eq!(cfg.image_source, PathBuf::from("/nix/store/zzz-img.tar"));
         assert_eq!(cfg.image_source_kind, None);
@@ -678,6 +732,7 @@ mod tests {
             "\"model_id\":",
             "\"model\":",
             "\"thinking_level\":",
+            "\"observers\":",
             "\"output_limits\":",
             "\"shutdown_grace\":",
             "\"handshake_timeout\":",

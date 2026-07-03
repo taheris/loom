@@ -2116,6 +2116,7 @@ fn run_gate_mint(
             let kind = selection.kind;
             let shutdown_grace = resolve_shutdown_grace(&selection);
             let direct_output_limits = config.direct_output_limits();
+            let observer_config = config.agent.clone();
             let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
             let style_rules = config.style_rules.clone();
             let workspace_buf = workspace.to_path_buf();
@@ -2181,6 +2182,7 @@ fn run_gate_mint(
                     let state_for_walker = Arc::clone(&state);
                     let manifest_for_walker = Arc::clone(&manifest);
                     let phase_default_for_walker = phase_default.clone();
+                    let observer_config_for_walker = observer_config.clone();
                     let selection_for_walker = selection.clone();
                     let style_rules_for_walker = style_rules.clone();
                     let renderer_id_for_walker = renderer_id.clone();
@@ -2195,6 +2197,7 @@ fn run_gate_mint(
                             let logs_root = logs_root_for_spawn.clone();
                             let label = label_for_sink.clone();
                             let selection = selection_for_walker.clone();
+                            let observer_config = observer_config_for_walker.clone();
                             let renderer_id = renderer_id_for_walker.clone();
                             let workspace = workspace_for_renderer.clone();
                             async move {
@@ -2218,6 +2221,7 @@ fn run_gate_mint(
                                 let mut spawn_cfg = spawn_cfg;
                                 selection
                                     .apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
+                                spawn_cfg.observers = observer_config;
                                 let outcome = dispatch(
                                     kind,
                                     spawn_cfg,
@@ -3856,13 +3860,12 @@ fn session_result_to_legacy_result(result: SessionResult) -> Result<SessionOutco
 /// can route preflight failures to `infra-preflight` immediately and grant
 /// mid-session failures one driver-memory retry per `loom loop`.
 ///
-/// `observer_config` is the resolved `LoomConfig::agent` block. When at
-/// least one sub-observer is `enabled = true`, a
-/// [`loom_workflow::DefaultObserverChain`] is composed from the two
-/// `llm` observers and passed to `run_agent_classified` as the
-/// session's `observer` arg — wiring the spec's safety nets
-/// (`specs/llm.md` § Agent-Loop Observers) into every Pi/Claude
-/// session by default.
+/// `observer_config` is the resolved `LoomConfig::agent` block. It is
+/// serialized into [`SpawnConfig::observers`] for Direct's in-container
+/// `Conversation`. When at least one sub-observer is `enabled = true`, a
+/// [`loom_workflow::DefaultObserverChain`] is also composed from the two
+/// `llm` observers and passed to `run_agent_classified` as the session's
+/// `observer` arg for the host event loop.
 async fn dispatch_classified(
     kind: AgentKind,
     mut spawn: SpawnConfig,
@@ -3885,6 +3888,7 @@ async fn dispatch_classified(
     {
         spawn.stall_warn_interval = Some(d);
     }
+    spawn.observers = observer_config.clone();
     let mut observer_chain = DefaultObserverChain::from_config(&observer_config);
     let observer = observer_chain.as_mut();
     match kind {
@@ -4500,6 +4504,7 @@ fn run_review(
     let kind = selection.kind;
     let shutdown_grace = resolve_shutdown_grace(&selection);
     let direct_output_limits = config.direct_output_limits();
+    let observer_config = config.agent.clone();
 
     let loom_bin = current_loom_bin()?;
     let state = std::sync::Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
@@ -4543,6 +4548,7 @@ fn run_review(
                 let label = label_for_sink.clone();
                 let stdout_capture = Arc::clone(&stdout_capture_for_spawn);
                 let selection = selection.clone();
+                let observer_config = observer_config.clone();
                 async move {
                     let sink =
                         LogSink::open_phase_at(&logs_root, &label, "review", None, phase_when)
@@ -4550,6 +4556,7 @@ fn run_review(
                     let mut output = String::new();
                     let mut spawn_cfg = spawn_cfg;
                     selection.apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
+                    spawn_cfg.observers = observer_config;
                     let outcome = dispatch(
                         kind,
                         spawn_cfg,
@@ -4996,6 +5003,7 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
     let kind = selection.kind;
     let shutdown_grace = resolve_shutdown_grace(&selection);
     let direct_output_limits = config.direct_output_limits();
+    let observer_config = config.agent.clone();
 
     let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
     let git = Arc::new(GitClient::open_with_integration_branch(
@@ -5029,10 +5037,12 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
         .with_skills_config(skills_cfg_for_todo);
         run_todo_workflow(&mut controller, |spawn_cfg: SpawnConfig| {
             let selection = selection.clone();
+            let observer_config = observer_config.clone();
             async move {
                 let mut output = String::new();
                 let mut spawn_cfg = spawn_cfg;
                 selection.apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
+                spawn_cfg.observers = observer_config;
                 let renderer_id = todo_renderer_id(&spawn_cfg)?;
                 let sink = open_todo_sink_with_renderer(
                     &logs_root,

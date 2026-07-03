@@ -352,10 +352,12 @@ Required fields:
   backends use it during spawn/setup; prompt-disclosure backends rely on the
   paths already rendered into `initial_prompt`.
 
-Additionally, `output_limits` (optional, Direct-only) carries
-`max_inline_bytes` — the inline-output cap above which content-returning
-Direct tools offload to the scratch offload directory. See [Direct Output
-Bounding](#direct-output-bounding).
+Additionally, `observers` carries the resolved `[agent.doom_loop]` /
+`[agent.duplicate_result]` config for the Direct runner; default values may
+be omitted from JSON and interpreted as enabled. `output_limits` (optional,
+Direct-only) carries `max_inline_bytes` — the inline-output cap above which
+content-returning Direct tools offload to the scratch offload directory. See
+[Direct Output Bounding](#direct-output-bounding).
 
 `image_ref`, `image_source`, `image_source_kind`, `wrix_launcher`, and
 `profile_config` come from the profile-image manifest at dispatch time — see
@@ -824,9 +826,11 @@ through the standard `DriverKind::TokenUsage` event.
 **Observability and safety nets.** Because Direct composes
 `Conversation`, both `DoomLoopObserver` and
 `DuplicateResultObserver` are active in Direct sessions by
-default — without the driver doing anything special. Loom's
-binary-level event chain (LogSink + driver-emitting events) sits
-on top, composed via `EventSink::tee`.
+default. The Direct runner consumes the resolved `[agent.*]` observer
+config from `SpawnConfig`, so the same CLI opt-out blocks that disable the
+host observer chain also disable the in-container `Conversation` observers.
+Loom's binary-level event chain (LogSink + driver-emitting events) sits on
+top, composed via `EventSink::tee`.
 
 **Library use vs CLI use of `loom-llm`.** The above describes
 Loom's CLI use of Direct backend. External Rust consumers that
@@ -1009,6 +1013,10 @@ the entrypoint run the wrong runtime.
   [check](cargo test -p loom-events --lib every_spec_variant_present)
 - `SpawnConfig` struct captures image_ref, image_source, image_source_kind, workspace, env, initial_prompt, agent_args, scratch_dir, and omits launcher/ProfileConfig-only host fields from JSON
   [check](cargo test -p loom-workflow --lib spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
+- `SpawnConfig` defaults absent Direct observer config to enabled
+  [test](spawn_config_with_default_observers_omits_field)
+- `SpawnConfig` serializes non-default Direct observer config
+  [test](spawn_config_with_custom_observers_round_trips)
 - `SpawnConfig.launcher_env` exists as host-only state and is skipped from spawn-config JSON serialization
   [test](launcher_env_is_never_serialized)
 - Typestate `AgentSession<Idle>` / `AgentSession<Active>` exists as an internal host-side lifecycle mechanic for JSONL subprocess sessions. It does not leak through the `Session` interoperability trait; Direct's in-container conversation loop carries no Pi / Claude handshake typestate.
@@ -1095,6 +1103,8 @@ the entrypoint run the wrong runtime.
   [test](direct_tools_read_against_container_workspace_mount)
 - `DoomLoopObserver` and `DuplicateResultObserver` are composed into the Conversation's sink by default in `loom-direct-runner`
   [test](direct_runner_composes_default_observers)
+- `loom-direct-runner` builds its `Conversation` from `SpawnConfig.observers` so `[agent.doom_loop] enabled = false` and `[agent.duplicate_result] enabled = false` disable the in-container observers
+  [test](direct_runner_honours_spawn_config_observer_opt_outs)
 - Direct backend respects per-phase `agent.model_id` config; resolves through `ModelId::from_str` (with `Other` fallback for unknown models)
   [test](direct_model_id_respects_phase_config)
 - Per-call `CacheControl::Ephemeral(CacheTtl)` markers in the runner's prompt construction flow through to provider requests (Anthropic confirmed via mock; OpenAI/Gemini no-op)
