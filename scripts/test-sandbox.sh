@@ -44,8 +44,8 @@ fi
 cleanup_tmpdir() {
     local status=$?
     if [[ -n "${tmpdir:-}" && -d "$tmpdir" ]]; then
-        chmod -R u+rwX "$tmpdir" 2>/dev/null || true
-        rm -rf "$tmpdir" 2>/dev/null || true
+        chmod -R u+rwX "$tmpdir" 2>/dev/null || true # best-effort: cleanup must not mask the test result.
+        rm -rf "$tmpdir" 2>/dev/null || true # best-effort: cleanup must not mask the test result.
     fi
     exit "$status"
 }
