@@ -98,9 +98,10 @@ Pi session directory plus a CLI extension that re-injects the scratch-dir
 non-TTY execution (including integration tests), Pi chat falls back to a
 controlled RPC bridge over `wrix spawn --stdio`, where Loom can observe
 `compaction_start` and send the same scratch-dir re-pin before accepting
-post-compaction output. Pi is still not a valid `loom plan` interactive
-backend until an equivalent planning bridge exists. Direct has no
-interactive REPL command; selecting
+post-compaction output. Pi-backed `loom plan` uses the same native Pi TUI
+launch contract as the TTY chat path: `wrix run ... pi` with a scratch-local
+session directory and re-pin extension installed before the prompt is
+accepted. Direct has no interactive REPL command; selecting
 `agent.backend = "direct"` for `plan` or `inbox chat` is a configuration
 error before any Wrix child process is spawned.
 
@@ -1373,11 +1374,11 @@ the entrypoint run the wrong runtime.
 - **General Pi-mono extension integration** — Loom does not adopt arbitrary
   or user-supplied Pi extensions, custom extension tools or commands,
   provider registration, UI widgets, or broad extension lifecycle ownership.
-  The sole in-scope exception is the Loom-generated native-TUI
-  `loom inbox chat` re-pin extension loaded with `pi -e`, limited to reading
-  the session scratch `prompt.txt`/`scratch.md` and injecting pinned context
-  through Pi's `context` hook after compaction. Non-interactive workflow
-  control remains RPC/bridge-owned.
+  The sole in-scope exception is the Loom-generated native-TUI re-pin
+  extension loaded with `pi -e` for `loom plan` and TTY `loom inbox chat`,
+  limited to reading the session scratch `prompt.txt`/`scratch.md` and
+  injecting pinned context through Pi's `context` hook after compaction.
+  Non-interactive workflow control remains RPC/bridge-owned.
 - **Pi-mono web-ui** — terminal-only integration.
 - **Pi-mono forking or vendoring** — consumed as an npm package bundled by
   Nix. No source-level fork.
