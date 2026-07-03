@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -54,6 +55,7 @@ const INDEX_LOCK_BACKOFF: Duration = Duration::from_millis(20);
 /// to hit wrix's push-verified stamp and skip already-passed checks for
 /// the same commit.
 const PUSH_TRANSPORT_RETRIES: u32 = 1;
+const SIGPIPE_SIGNAL: i32 = 13;
 /// Fallback integration branch when the caller opens a `GitClient` via
 /// [`GitClient::open`] / [`GitClient::open_with_clock`] without naming
 /// one. Production paths thread `[loom] integration_branch` from
@@ -1091,32 +1093,43 @@ impl GitClient {
         &self,
         args: [&str; N],
     ) -> Result<(), GitError> {
-        let mut result = self.run_push_command(args).await;
+        let mut output = self.run_push_command_output(args).await?;
         for attempt in 0..PUSH_TRANSPORT_RETRIES {
-            if !is_retryable_push_transport_failure(&result) {
-                return result;
+            if output.status.success() {
+                return Ok(());
+            }
+            if !is_retryable_push_transport_failure(&output) {
+                return Err(cli_error(&output));
             }
             warn!(
                 attempt = attempt + 1,
                 args = %args.join(" "),
                 "git push transport dropped after pre-push; retrying"
             );
-            result = self.run_push_command(args).await;
+            output = self.run_push_command_output(args).await?;
         }
-        result
-    }
-
-    async fn run_push_command<const N: usize>(&self, args: [&str; N]) -> Result<(), GitError> {
-        self.validate_loom_hooks_path_configured().await?;
-        self.refresh_loom_signing_config()?;
-        let workdir = self.loom_workspace();
-        let output =
-            run_git_raw_with_timeout(&workdir, self.clock.as_ref(), self.hook_timeout, args, None)
-                .await?;
         if output.status.success() {
             return Ok(());
         }
         Err(cli_error(&output))
+    }
+
+    async fn run_push_command<const N: usize>(&self, args: [&str; N]) -> Result<(), GitError> {
+        let output = self.run_push_command_output(args).await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(cli_error(&output))
+    }
+
+    async fn run_push_command_output<const N: usize>(
+        &self,
+        args: [&str; N],
+    ) -> Result<std::process::Output, GitError> {
+        self.validate_loom_hooks_path_configured().await?;
+        self.refresh_loom_signing_config()?;
+        let workdir = self.loom_workspace();
+        run_git_raw_with_timeout(&workdir, self.clock.as_ref(), self.hook_timeout, args, None).await
     }
 
     async fn rev_parse_in_loom(&self, rev: &str) -> Result<GitOid, GitError> {
@@ -2464,18 +2477,40 @@ where
     })
 }
 
-fn is_retryable_push_transport_failure(result: &Result<(), GitError>) -> bool {
-    let Err(GitError::GitCli { status, stderr }) = result else {
+fn is_retryable_push_transport_failure(output: &std::process::Output) -> bool {
+    if output.status.success() {
         return false;
-    };
-    *status == 141 || push_transport_disconnect(stderr)
+    }
+    exit_status_is_sigpipe(&output.status) || push_transport_disconnect(output)
 }
 
-fn push_transport_disconnect(detail: &str) -> bool {
-    let detail = detail.to_ascii_lowercase();
+fn exit_status_is_sigpipe(status: &ExitStatus) -> bool {
+    exit_status_signal(status) == Some(SIGPIPE_SIGNAL)
+}
+
+#[cfg(unix)]
+fn exit_status_signal(status: &ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn exit_status_signal(_status: &ExitStatus) -> Option<i32> {
+    None
+}
+
+fn push_transport_disconnect(output: &std::process::Output) -> bool {
+    let detail = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+    )
+    .to_ascii_lowercase();
     detail.contains("closed by remote host")
         || detail.contains("remote end hung up unexpectedly")
         || detail.contains("unexpected disconnect")
+        || detail.contains("broken pipe")
 }
 
 fn cli_error(output: &std::process::Output) -> GitError {

@@ -89,6 +89,27 @@ fn retrying_disconnect_prek_hooks(repo: &Path) -> Result<(PathBuf, PathBuf)> {
     Ok((hooks, attempts))
 }
 
+fn failing_hook_prek_hooks(repo: &Path) -> Result<(PathBuf, PathBuf)> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let hooks = repo.join("failing-prek-hooks");
+    let attempts = repo.join("failing-prek-attempts");
+    std::fs::create_dir_all(&hooks)?;
+    let pre_commit = hooks.join("pre-commit");
+    std::fs::write(&pre_commit, "#!/bin/sh\nexit 0\n")?;
+    std::fs::set_permissions(&pre_commit, std::fs::Permissions::from_mode(0o755))?;
+    let pre_push = hooks.join("pre-push");
+    std::fs::write(
+        &pre_push,
+        format!(
+            "#!/bin/sh\nprintf 'attempt\\n' >> {}\nprintf 'hook failed without transport disconnect\\n' >&2\nexit 141\n",
+            shell_quote(&attempts),
+        ),
+    )?;
+    std::fs::set_permissions(&pre_push, std::fs::Permissions::from_mode(0o755))?;
+    Ok((hooks, attempts))
+}
+
 fn shell_quote(path: &Path) -> String {
     let path = path.to_string_lossy().replace('\'', "'\\''");
     format!("'{path}'")
@@ -1966,6 +1987,39 @@ async fn origin_push_retries_remote_disconnect_after_pre_push() -> Result<()> {
     assert!(
         origin_tree.contains("retry-push.txt"),
         "retry must advance origin after the transient disconnect: {origin_tree}",
+    );
+
+    Ok(())
+}
+
+/// A hook failure without a transport-disconnect signature is not retried,
+/// even when the hook itself exits with the shell SIGPIPE convention.
+#[tokio::test]
+async fn origin_push_does_not_retry_plain_hook_failure() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let loom = loom_path(path);
+    let (hooks, attempts) = failing_hook_prek_hooks(path)?;
+    let mut client = GitClient::open(path)?;
+    client.set_prek_hooks_path_override(hooks);
+
+    std::fs::write(loom.join("plain-hook-fail.txt"), "fail\n")?;
+    git(&loom, &["add", "plain-hook-fail.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "plain hook fail"])?;
+
+    let err = client
+        .push()
+        .await
+        .expect_err("plain hook failure must surface without retry");
+    assert!(
+        err.to_string()
+            .contains("hook failed without transport disconnect"),
+        "error must preserve hook failure detail: {err:#}",
+    );
+    assert_eq!(
+        std::fs::read_to_string(attempts)?.lines().count(),
+        1,
+        "plain hook failure must not retry",
     );
 
     Ok(())
