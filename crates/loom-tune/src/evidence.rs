@@ -155,42 +155,89 @@ pub struct SplitMetadata {
     pub selection_fraction: SelectionFraction,
 }
 
+/// Opaque stable split salt owned by evidence mining.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitSalt {
+    id: String,
+    material: [u8; 32],
+}
+
+impl SplitSalt {
+    /// Derive an opaque salt from stable repository identity components.
+    pub fn repository<I, S>(origin_url: Option<&str>, root_commits: I) -> Result<Self, SplitError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let roots = root_commits
+            .into_iter()
+            .map(|root| root.as_ref().to_owned())
+            .collect::<BTreeSet<_>>();
+        if roots.is_empty() {
+            return Err(SplitError::EmptyRepositoryIdentity);
+        }
+
+        let mut identity = Vec::new();
+        push_salt_field(
+            &mut identity,
+            "version",
+            "loom-tune-repository-split-salt-v1",
+        );
+        match origin_component(origin_url) {
+            OriginComponent::Remote(url) => {
+                push_salt_field(&mut identity, "origin-kind", "remote");
+                push_salt_field(&mut identity, "origin-url", url);
+            }
+            OriginComponent::Local => push_salt_field(&mut identity, "origin-kind", "local"),
+            OriginComponent::Absent => push_salt_field(&mut identity, "origin-kind", "absent"),
+        }
+        for root in roots {
+            push_salt_field(&mut identity, "root", &root);
+        }
+
+        let digest = Sha256::digest(identity);
+        let mut material = [0_u8; 32];
+        material.copy_from_slice(&digest);
+        let id = format!("repo-sha256-v1:{}", hex_lower(&material));
+        Ok(Self { id, material })
+    }
+
+    /// Opaque salt identifier safe for reports and manifests.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn material(&self) -> &[u8] {
+        &self.material
+    }
+}
+
 /// Stable train/selection splitter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Splitter {
-    salt_id: String,
-    salt_material: Vec<u8>,
+    salt: SplitSalt,
     selection_fraction: SelectionFraction,
 }
 
 impl Splitter {
-    pub fn new(
-        salt_id: impl Into<String>,
-        salt_material: impl AsRef<[u8]>,
-        selection_fraction: SelectionFraction,
-    ) -> Result<Self, SplitError> {
-        let salt_id = salt_id.into();
-        if salt_id.is_empty() {
-            return Err(SplitError::EmptySaltId);
-        }
-        Ok(Self {
-            salt_id,
-            salt_material: salt_material.as_ref().to_vec(),
+    pub fn new(salt: SplitSalt, selection_fraction: SelectionFraction) -> Self {
+        Self {
+            salt,
             selection_fraction,
-        })
+        }
     }
 
     pub fn metadata(&self) -> SplitMetadata {
         SplitMetadata {
             algorithm: "sha256-salt-v1".to_owned(),
-            salt_id: self.salt_id.clone(),
+            salt_id: self.salt.id().to_owned(),
             selection_fraction: self.selection_fraction,
         }
     }
 
     pub fn assign(&self, item_id: &ItemId) -> Split {
         let mut hasher = Sha256::new();
-        hasher.update(&self.salt_material);
+        hasher.update(self.salt.material());
         hasher.update(item_id.as_str().as_bytes());
         let digest = hasher.finalize();
         let mut bytes = [0_u8; 8];
@@ -223,11 +270,66 @@ impl Splitter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OriginComponent<'a> {
+    Remote(&'a str),
+    Local,
+    Absent,
+}
+
+fn origin_component(origin_url: Option<&str>) -> OriginComponent<'_> {
+    let Some(url) = origin_url.filter(|url| !url.is_empty()) else {
+        return OriginComponent::Absent;
+    };
+    if is_remote_origin(url) {
+        OriginComponent::Remote(url)
+    } else {
+        OriginComponent::Local
+    }
+}
+
+fn is_remote_origin(url: &str) -> bool {
+    has_remote_scheme(url) || looks_like_scp_origin(url)
+}
+
+fn has_remote_scheme(url: &str) -> bool {
+    let Some((scheme, _rest)) = url.split_once("://") else {
+        return false;
+    };
+    !scheme.eq_ignore_ascii_case("file")
+}
+
+fn looks_like_scp_origin(url: &str) -> bool {
+    let Some((user_host, _repo_path)) = url.split_once(':') else {
+        return false;
+    };
+    user_host.contains('@') && !user_host.contains('/')
+}
+
+fn push_salt_field(material: &mut Vec<u8>, name: &str, value: &str) {
+    material.extend_from_slice(name.as_bytes());
+    material.push(0);
+    material.extend_from_slice(value.len().to_string().as_bytes());
+    material.push(0);
+    material.extend_from_slice(value.as_bytes());
+    material.push(0);
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 /// Evidence split construction failures.
 #[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
 pub enum SplitError {
-    /// evidence split salt id is empty
-    EmptySaltId,
+    /// evidence split repository identity has no root commits
+    EmptyRepositoryIdentity,
 }
 
 /// Mined evidence partition used by checker planning.
@@ -272,14 +374,51 @@ mod tests {
     }
 
     #[test]
+    fn repository_split_salt_is_stable_and_opaque() {
+        let root = "0123456789abcdef0123456789abcdef01234567";
+        let origin = "git@example.invalid:wrix/loom.git";
+        let first = SplitSalt::repository(Some(origin), [root]).expect("salt");
+        let second = SplitSalt::repository(Some(origin), [root]).expect("salt");
+        let changed_root =
+            SplitSalt::repository(Some(origin), ["89abcdef012345670123456789abcdef01234567"])
+                .expect("salt");
+
+        assert_eq!(first, second);
+        assert_ne!(first, changed_root);
+        assert!(first.id().starts_with("repo-sha256-v1:"));
+        assert!(!first.id().contains(origin));
+        assert!(!first.id().contains(root));
+    }
+
+    #[test]
+    fn repository_split_salt_ignores_local_origin_paths() {
+        let root = "0123456789abcdef0123456789abcdef01234567";
+        let first = SplitSalt::repository(Some("checkout-a/origin.git"), [root]).expect("salt");
+        let second = SplitSalt::repository(Some("checkout-b/origin.git"), [root]).expect("salt");
+        let file_url =
+            SplitSalt::repository(Some("file:///checkout-c/origin.git"), [root]).expect("salt");
+        let remote =
+            SplitSalt::repository(Some("git@example.invalid:wrix/loom.git"), [root]).expect("salt");
+
+        assert_eq!(first, second);
+        assert_eq!(first, file_url);
+        assert_ne!(first, remote);
+    }
+
+    #[test]
     fn evidence_split_is_stable_and_seed_independent() {
         let fraction = SelectionFraction::new(0.34).expect("fraction");
-        let splitter = Splitter::new("repo", b"stable workspace", fraction).expect("splitter");
+        let salt = SplitSalt::repository(
+            Some("git@example.invalid:wrix/loom.git"),
+            ["0123456789abcdef0123456789abcdef01234567"],
+        )
+        .expect("salt");
+        let splitter = Splitter::new(salt, fraction);
         let id = ItemId::new("logs/review.jsonl#7").expect("item id");
         let first = splitter.assign(&id);
         let second = splitter.assign(&id);
         assert_eq!(first, second);
         assert_eq!(splitter.metadata().algorithm, "sha256-salt-v1");
-        assert_eq!(splitter.metadata().salt_id, "repo");
+        assert!(splitter.metadata().salt_id.starts_with("repo-sha256-v1:"));
     }
 }

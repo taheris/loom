@@ -324,6 +324,9 @@ contains = ["missing test"]
         "{dry_out}"
     );
     assert!(!dry_out.contains(".claude"), "{dry_out}");
+    assert!(dry_out.contains("evidence split:"), "{dry_out}");
+    assert!(dry_out.contains("salt id: repo-sha256-v1:"), "{dry_out}");
+    assert!(!dry_out.contains("salt material"), "{dry_out}");
     assert!(dry_out.contains("declared:review-recall-case"), "{dry_out}");
 
     let args = [
@@ -349,6 +352,19 @@ contains = ["missing test"]
     )
     .expect("manifest json");
     assert_eq!(manifest["state"], "pending");
+    assert_eq!(manifest["evidence_split"]["algorithm"], "sha256-salt-v1");
+    assert!(
+        manifest["evidence_split"]["salt_id"]
+            .as_str()
+            .expect("salt id")
+            .starts_with("repo-sha256-v1:"),
+        "evidence_split={}",
+        manifest["evidence_split"],
+    );
+    assert_eq!(
+        manifest["evidence_split"]["selection_fraction"],
+        serde_json::json!(0.34),
+    );
     assert!(
         manifest["validation"]
             .as_array()

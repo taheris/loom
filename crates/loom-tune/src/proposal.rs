@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::checker::{CheckerId, Level};
 use crate::config::ChecksConfig;
+use crate::evidence::SplitMetadata;
 use crate::plan::{
     Diagnostic, FrozenPlan, Hash as PlanHash, OutcomeSkeleton, SelectedCase, SkippedCase,
 };
@@ -127,6 +128,7 @@ pub struct ProposalManifest {
     pub skipped_cases: Vec<SkippedCase>,
     pub outcome_skeletons: Vec<OutcomeSkeleton>,
     pub diagnostics: Vec<Diagnostic>,
+    pub evidence_split: SplitMetadata,
     pub case_counts: CaseCounts,
     pub outcome_counts: OutcomeCounts,
     pub validation: Vec<ValidationRow>,
@@ -154,6 +156,7 @@ impl ProposalManifest {
             skipped_cases: input.plan.skipped_cases.clone(),
             outcome_skeletons: input.plan.outcome_skeletons.clone(),
             diagnostics: input.plan.diagnostics.clone(),
+            evidence_split: input.plan.evidence_split.clone(),
             outcome_counts: input.outcome_counts,
             case_counts: input.case_counts,
             validation: input.validation,
@@ -273,6 +276,7 @@ mod tests {
         assert_eq!(manifest.targets, plan.targets);
         assert_eq!(manifest.checker_plan, plan.checker_plan);
         assert_eq!(manifest.plan_hash, plan.plan_hash);
+        assert_eq!(manifest.evidence_split, plan.evidence_split);
         assert_eq!(manifest.case_counts, case_counts);
         assert_eq!(
             manifest.outcome_counts,

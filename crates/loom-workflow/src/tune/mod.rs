@@ -8,7 +8,7 @@ use displaydoc::Display;
 use loom_driver::bd::{BdClient, CreateOpts, UpdateOpts};
 use loom_driver::clock::SystemClock;
 use loom_driver::config::{LoomConfig, LoomConfigError};
-use loom_driver::git::{GitClient, GitError};
+use loom_driver::git::{GitClient, GitError, GitOid, read_origin_url};
 use loom_driver::identifier::BeadId;
 use loom_driver::lock::{LockError, LockManager, PhaseLock};
 use loom_skills::builtin::{self, CatalogError};
@@ -22,7 +22,8 @@ use loom_tune::checker::{
 };
 use loom_tune::config::{FileConfig as TuneFileConfig, TuneConfig};
 use loom_tune::evidence::{
-    Item, ItemId, RootReport, Snapshot as EvidenceSnapshot, SplitError, Splitter,
+    Item, ItemId, RootReport, Snapshot as EvidenceSnapshot, SplitError, SplitMetadata, SplitSalt,
+    Splitter,
 };
 use loom_tune::executor::{self as tune_executor, Artifact as TuneArtifact};
 use loom_tune::gate::{self as tune_gate, Outcome as GateOutcome, State as GateState};
@@ -181,7 +182,14 @@ impl Context {
         let target_catalog = target_catalog(&skills, &phases, &partials);
         let disabled_checkers = tune_config.disabled_checkers(&checker_registry)?;
         let root_report = RootReport::from_config(&workspace, &tune_config.evidence);
-        let evidence = build_evidence(&workspace, &tune_config, target_catalog.targets().cloned())?;
+        let origin_url = read_origin_url(&workspace)?;
+        let root_commits = git.root_commit_shas().await?;
+        let split_salt = SplitSalt::repository(
+            origin_url.as_deref(),
+            root_commits.iter().map(GitOid::as_str),
+        )?;
+        let evidence =
+            build_evidence(&split_salt, &tune_config, target_catalog.targets().cloned())?;
         Ok(Self {
             workspace,
             tracked_files,
@@ -782,15 +790,11 @@ fn tuning_guidance_lines(markdown: &str) -> Vec<String> {
 }
 
 fn build_evidence(
-    workspace: &Path,
+    split_salt: &SplitSalt,
     config: &TuneConfig,
     targets: impl IntoIterator<Item = Target>,
 ) -> Result<EvidenceSnapshot, TuneError> {
-    let splitter = Splitter::new(
-        "workspace",
-        workspace.display().to_string(),
-        config.evidence.selection_fraction,
-    )?;
+    let splitter = Splitter::new(split_salt.clone(), config.evidence.selection_fraction);
     let checker = loom_tune::CheckerId::new("behavior.review.finding-recall")?;
     let mut items = Vec::new();
     for target in targets {
@@ -874,6 +878,15 @@ fn render_all_listing(context: &Context) -> String {
     )
 }
 
+fn push_split_summary(out: &mut String, metadata: &SplitMetadata) {
+    out.push_str(&format!("- algorithm: {}\n", metadata.algorithm));
+    out.push_str(&format!("- salt id: {}\n", metadata.salt_id));
+    out.push_str(&format!(
+        "- selection fraction: {}\n",
+        metadata.selection_fraction
+    ));
+}
+
 fn render_dry_run(context: &Context, plan: &PreparedPlan) -> String {
     let mut out = String::new();
     out.push_str("loom tune dry-run\n");
@@ -896,6 +909,8 @@ fn render_dry_run(context: &Context, plan: &PreparedPlan) -> String {
         out.push_str(&line);
         out.push('\n');
     }
+    out.push_str("evidence split:\n");
+    push_split_summary(&mut out, &plan.frozen.evidence_split);
     out.push_str(&format!("seed: {}\n", plan.frozen.seed));
     out.push_str("case pool:\n");
     out.push_str(&format!("- declared: {}\n", plan.case_counts.declared));
@@ -1409,6 +1424,8 @@ fn write_evidence(path: &Path, context: &Context, plan: &PreparedPlan) -> Result
         body.push_str(&line);
         body.push('\n');
     }
+    body.push_str("\n## Evidence split\n\n");
+    push_split_summary(&mut body, &plan.frozen.evidence_split);
     body.push_str("\n## Loaded tuning docs\n\n");
     if plan.loaded_cases.documents().is_empty() {
         body.push_str("- (none)\n");
@@ -1483,6 +1500,8 @@ fn bead_body(update: &BeadUpdate<'_>) -> String {
         "- Checker plan hash: `{}`\n",
         update.plan.frozen.plan_hash
     ));
+    body.push_str("\n## Evidence split\n\n");
+    push_split_summary(&mut body, &update.plan.frozen.evidence_split);
     body.push_str("\n## Case counts\n\n");
     body.push_str(&format!(
         "- Declared: {}\n",
@@ -1590,6 +1609,10 @@ fn tune_metadata(update: &BeadUpdate<'_>) -> Result<Vec<(String, String)>, TuneE
         (
             "loom.tune.outcome_counts".to_owned(),
             serde_json::to_string(update.outcome_counts)?,
+        ),
+        (
+            "loom.tune.evidence_split".to_owned(),
+            serde_json::to_string(&update.plan.frozen.evidence_split)?,
         ),
         (
             "loom.tune.summary".to_owned(),

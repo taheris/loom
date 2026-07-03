@@ -1415,6 +1415,29 @@ impl GitClient {
         Ok(GitOid::new(raw.trim())?)
     }
 
+    /// `git rev-list --max-parents=0 HEAD` — root commit ids for the current
+    /// history.
+    pub async fn root_commit_shas(&self) -> Result<Vec<GitOid>, GitError> {
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["rev-list", "--max-parents=0", "HEAD"],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        let raw = String::from_utf8(output.stdout)?;
+        let mut roots = raw
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(GitOid::new)
+            .collect::<Result<Vec<_>, _>>()?;
+        roots.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Ok(roots)
+    }
+
     /// Merge `branch` into the configured integration branch inside the
     /// loom workspace ([`Self::loom_workspace`]). Rebases `branch` onto
     /// the current integration-branch `HEAD` first so the merge is
