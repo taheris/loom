@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use displaydoc::Display;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::{info, warn};
 
 use crate::agent::{AgentKind, ModelSelection, OutputLimits, SpawnConfig, ThinkingLevel};
 use crate::identifier::ProfileName;
@@ -153,6 +154,119 @@ impl AgentSelection {
                 spawn.output_limits = Some(direct_output_limits);
             }
         }
+
+        self.apply_api_key_allowlist(spawn, lookup_env_var);
+    }
+
+    fn apply_api_key_allowlist<F>(&self, spawn: &mut SpawnConfig, mut lookup: F)
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        for var in self.required_api_key_vars() {
+            if let Some(value) = lookup(&var) {
+                upsert_env(&mut spawn.env, &var, value);
+                info!(env_var = %var, "agent spawn env allowlist includes provider API key");
+            }
+        }
+    }
+
+    fn required_api_key_vars(&self) -> Vec<String> {
+        let mut vars = Vec::new();
+        match self.kind {
+            AgentKind::Pi => {
+                if let Some(provider) = &self.provider {
+                    push_provider_api_key_var(&mut vars, provider);
+                }
+                if let Some(model_id) = &self.model_id {
+                    push_model_api_key_var(&mut vars, model_id);
+                }
+            }
+            AgentKind::Direct => match self.model_id.as_deref() {
+                Some(model_id) => push_model_api_key_var(&mut vars, model_id),
+                None => push_unique(&mut vars, ANTHROPIC_API_KEY_ENV),
+            },
+            AgentKind::Claude => {}
+        }
+        vars
+    }
+}
+
+const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
+const GEMINI_API_KEY_ENV: &str = "GEMINI_API_KEY";
+const GOOGLE_API_KEY_ENV: &str = "GOOGLE_API_KEY";
+
+fn push_model_api_key_var(vars: &mut Vec<String>, model_id: &str) {
+    let lower = model_id.to_ascii_lowercase();
+    if lower.starts_with("claude") {
+        push_unique(vars, ANTHROPIC_API_KEY_ENV);
+    } else if lower.starts_with("gpt") || lower.starts_with("o1") || lower.starts_with("o3") {
+        push_unique(vars, OPENAI_API_KEY_ENV);
+    } else if lower.starts_with("gemini") {
+        push_unique(vars, GEMINI_API_KEY_ENV);
+    }
+}
+
+fn push_provider_api_key_var(vars: &mut Vec<String>, provider: &str) {
+    match provider.to_ascii_lowercase().as_str() {
+        "anthropic" | "claude" => push_unique(vars, ANTHROPIC_API_KEY_ENV),
+        "openai" => push_unique(vars, OPENAI_API_KEY_ENV),
+        "google" => {
+            push_unique(vars, GOOGLE_API_KEY_ENV);
+            push_unique(vars, GEMINI_API_KEY_ENV);
+        }
+        "gemini" => push_unique(vars, GEMINI_API_KEY_ENV),
+        other => {
+            if let Some(var) = provider_api_key_env(other) {
+                push_unique_owned(vars, var);
+            }
+        }
+    }
+}
+
+fn provider_api_key_env(provider: &str) -> Option<String> {
+    let mut name = String::new();
+    for ch in provider.chars() {
+        if ch.is_ascii_alphanumeric() {
+            name.push(ch.to_ascii_uppercase());
+        } else if !name.ends_with('_') {
+            name.push('_');
+        }
+    }
+    let name = name.trim_matches('_');
+    if name.is_empty() {
+        None
+    } else {
+        Some(format!("{name}_API_KEY"))
+    }
+}
+
+fn push_unique(vars: &mut Vec<String>, var: &str) {
+    push_unique_owned(vars, var.to_string());
+}
+
+fn push_unique_owned(vars: &mut Vec<String>, var: String) {
+    if !vars.iter().any(|existing| existing == &var) {
+        vars.push(var);
+    }
+}
+
+fn lookup_env_var(var: &str) -> Option<String> {
+    match std::env::var(var) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            warn!(env_var = %var, "agent spawn env skipped non-unicode provider API key");
+            None
+        }
+    }
+}
+
+fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: String) {
+    if let Some((_, existing)) = env.iter_mut().find(|(existing, _)| existing == key) {
+        *existing = value;
+    } else {
+        env.push((key.to_string(), value));
     }
 }
 
@@ -212,6 +326,53 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{ImageSourceKind, RePinContent};
+    use std::path::PathBuf;
+
+    fn selection(
+        kind: AgentKind,
+        provider: Option<&str>,
+        model_id: Option<&str>,
+    ) -> AgentSelection {
+        AgentSelection {
+            profile: ProfileName::new("base"),
+            kind,
+            provider: provider.map(str::to_string),
+            model_id: model_id.map(str::to_string),
+            thinking_level: None,
+            claude_settings: None,
+        }
+    }
+
+    fn spawn_config() -> SpawnConfig {
+        SpawnConfig {
+            image_ref: "localhost/wrix:tag".into(),
+            image_source: PathBuf::from("/nix/store/wrix-image"),
+            image_source_kind: Some(ImageSourceKind::NixDescriptor),
+            profile_config: None,
+            workspace: PathBuf::from("/workspace"),
+            env: vec![("WRIX_AGENT".into(), "direct".into())],
+            mounts: Vec::new(),
+            initial_prompt: "prompt".into(),
+            agent_args: Vec::new(),
+            repin: RePinContent {
+                orientation: String::new(),
+                pinned_context: String::new(),
+                partial_bodies: Vec::new(),
+            },
+            skills: None,
+            scratch_dir: PathBuf::from("/workspace/.loom/scratch/k"),
+            model_id: None,
+            model: None,
+            thinking_level: None,
+            output_limits: None,
+            shutdown_grace: None,
+            denied_tools: Vec::new(),
+            handshake_timeout: None,
+            stall_warn_interval: None,
+            launcher_env: Vec::new(),
+        }
+    }
 
     #[test]
     fn phase_round_trips_through_serde() {
@@ -309,5 +470,75 @@ mod tests {
     fn lookup_phase_field_returns_none_when_neither_set() {
         let phase: BTreeMap<String, PhaseConfig> = BTreeMap::new();
         assert!(lookup_phase_field(&phase, "todo", |p| &p.profile).is_none());
+    }
+
+    #[test]
+    fn direct_anthropic_model_allows_anthropic_api_key() {
+        let mut spawn = spawn_config();
+        selection(AgentKind::Direct, None, Some("claude-sonnet-4-6"))
+            .apply_api_key_allowlist(&mut spawn, |var| {
+                (var == "ANTHROPIC_API_KEY").then(|| "anthropic-value".to_string())
+            });
+        assert!(
+            spawn
+                .env
+                .iter()
+                .any(|(key, value)| key == "ANTHROPIC_API_KEY" && value == "anthropic-value"),
+            "ANTHROPIC_API_KEY must reach direct Anthropic sessions: {:?}",
+            spawn.env,
+        );
+    }
+
+    #[test]
+    fn direct_default_model_allows_anthropic_api_key() {
+        let mut spawn = spawn_config();
+        selection(AgentKind::Direct, None, None).apply_api_key_allowlist(&mut spawn, |var| {
+            (var == "ANTHROPIC_API_KEY").then(|| "default-anthropic-value".to_string())
+        });
+        assert!(
+            spawn.env.iter().any(
+                |(key, value)| key == "ANTHROPIC_API_KEY" && value == "default-anthropic-value"
+            ),
+            "Direct's default Anthropic model needs ANTHROPIC_API_KEY: {:?}",
+            spawn.env,
+        );
+    }
+
+    #[test]
+    fn pi_provider_specific_key_is_allowlisted_when_present() {
+        let mut spawn = spawn_config();
+        selection(AgentKind::Pi, Some("deepseek"), Some("deepseek-v3"))
+            .apply_api_key_allowlist(&mut spawn, |var| {
+                (var == "DEEPSEEK_API_KEY").then(|| "deepseek-value".to_string())
+            });
+        assert!(
+            spawn
+                .env
+                .iter()
+                .any(|(key, value)| key == "DEEPSEEK_API_KEY" && value == "deepseek-value"),
+            "provider-derived API key env var missing: {:?}",
+            spawn.env,
+        );
+    }
+
+    #[test]
+    fn api_key_allowlist_updates_existing_env_entry_without_duplicate() {
+        let mut spawn = spawn_config();
+        spawn
+            .env
+            .push(("OPENAI_API_KEY".to_string(), "old".to_string()));
+        selection(AgentKind::Direct, None, Some("gpt-5.5"))
+            .apply_api_key_allowlist(&mut spawn, |var| {
+                (var == "OPENAI_API_KEY").then(|| "new".to_string())
+            });
+        let entries = spawn
+            .env
+            .iter()
+            .filter(|(key, _)| key == "OPENAI_API_KEY")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            vec![&("OPENAI_API_KEY".to_string(), "new".to_string())]
+        );
     }
 }

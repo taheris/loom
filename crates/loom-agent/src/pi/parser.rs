@@ -505,8 +505,8 @@ impl LineParse for PiParser {
         let env: PiEnvelope = match serde_json::from_str(line) {
             Ok(env) => env,
             Err(err) => {
-                warn!(error = %err, preview = %line.escape_debug(), "pi line failed JSON envelope parse");
-                return Err(ProtocolError::invalid_protocol_line(line, err));
+                warn!(error = ?err, preview = %line.escape_debug(), "pi line failed JSON envelope parse; skipping malformed line");
+                return Ok(empty());
             }
         };
         match env.msg_type.as_deref() {
@@ -1194,14 +1194,12 @@ mod tests {
     // -- test_pi_malformed_jsonl -----------------------------------------
 
     #[test]
-    fn malformed_json_returns_invalid_json_error() {
-        let err = parse_err("not-json");
-        match err {
-            ProtocolError::InvalidProtocolLine { preview, .. } => {
-                assert_eq!(preview, "not-json");
-            }
-            other => panic!("expected InvalidProtocolLine, got {other:?}"),
-        }
+    fn malformed_json_line_is_skipped_without_events() {
+        let parsed = PiParser::new()
+            .parse_line("not-json")
+            .expect("malformed JSON line is skipped");
+        assert!(parsed.events.is_empty());
+        assert!(parsed.response.is_none());
     }
 
     // -- test_pi_extension_ui_passthrough ---------------------------------

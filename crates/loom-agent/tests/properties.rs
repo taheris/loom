@@ -35,10 +35,10 @@ fn max_line_bytes_is_ten_megabytes() {
 // ----------------------------------------------------------------------------
 // JSONL line parser invariants
 //
-// `parse_line` must never panic on arbitrary input, and a malformed line
-// must surface as `Err(ProtocolError::*)` rather than silently emitting an
-// `AgentEvent`. Both parsers share the same contract — exercising both with
-// the same generator catches divergence between them.
+// `parse_line` must never panic on arbitrary input. Pi defensively skips
+// malformed stdout lines with no events, while Claude reports malformed
+// stream-json as `Err(ProtocolError::*)`. Exercising both with the same
+// generator catches divergence between the backend contracts.
 // ----------------------------------------------------------------------------
 
 proptest! {
@@ -55,9 +55,13 @@ proptest! {
     #[test]
     fn jsonl_malformed_line_emits_no_events(input in "[^{].{0,256}") {
         // A line that does not start with `{` is never valid JSONL for these
-        // parsers; both must return Err rather than smuggling events out.
+        // parsers. Pi skips defensively; Claude errors. Neither may smuggle
+        // events out from malformed bytes.
         let pi_res = pi_parser().parse_line(&input);
-        prop_assert!(pi_res.is_err(), "pi parser accepted non-JSON line");
+        if let Ok(parsed) = pi_res {
+            prop_assert!(parsed.events.is_empty(), "pi parser emitted events for non-JSON line");
+            prop_assert!(parsed.response.is_none(), "pi parser emitted a response for non-JSON line");
+        }
 
         let cl_res = claude_parser().parse_line(&input);
         prop_assert!(cl_res.is_err(), "claude parser accepted non-JSON line");

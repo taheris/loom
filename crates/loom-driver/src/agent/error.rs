@@ -14,13 +14,6 @@ pub enum ProtocolError {
     /// invalid JSON on protocol line
     InvalidJson(#[from] serde_json::Error),
 
-    /// invalid JSON on protocol line: {preview} ({source})
-    InvalidProtocolLine {
-        preview: String,
-        #[source]
-        source: serde_json::Error,
-    },
-
     /// unknown message type: {0}
     UnknownMessageType(String),
 
@@ -50,24 +43,63 @@ pub enum ProtocolError {
 }
 
 impl ProtocolError {
-    pub fn invalid_protocol_line(line: &str, source: serde_json::Error) -> Self {
-        Self::InvalidProtocolLine {
-            preview: preview_protocol_line(line),
-            source,
-        }
+    pub fn invalid_protocol_line(_line: &str, source: serde_json::Error) -> Self {
+        Self::InvalidJson(source)
     }
 }
 
-fn preview_protocol_line(line: &str) -> String {
-    const MAX_PREVIEW_BYTES: usize = 240;
-    let mut preview = String::new();
-    for ch in line.chars() {
-        let escaped = ch.escape_debug().to_string();
-        if preview.len() + escaped.len() > MAX_PREVIEW_BYTES {
-            preview.push('…');
-            break;
-        }
-        preview.push_str(&escaped);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json_error() -> serde_json::Error {
+        serde_json::from_str::<serde_json::Value>("{").expect_err("invalid JSON fixture")
     }
-    preview
+
+    fn variant_name(err: ProtocolError) -> &'static str {
+        match err {
+            ProtocolError::InvalidJson(_) => "InvalidJson",
+            ProtocolError::UnknownMessageType(_) => "UnknownMessageType",
+            ProtocolError::Io(_) => "Io",
+            ProtocolError::ProcessExit(_) => "ProcessExit",
+            ProtocolError::UnexpectedEof => "UnexpectedEof",
+            ProtocolError::LineTooLong { .. } => "LineTooLong",
+            ProtocolError::Unsupported => "Unsupported",
+            ProtocolError::HandshakeTimeout { .. } => "HandshakeTimeout",
+            ProtocolError::LockPoisoned => "LockPoisoned",
+        }
+    }
+
+    #[test]
+    fn protocol_error_variant_set_matches_agent_spec() {
+        let variants = vec![
+            ProtocolError::InvalidJson(json_error()),
+            ProtocolError::UnknownMessageType("mystery".to_string()),
+            ProtocolError::Io(io::Error::other("io")),
+            ProtocolError::ProcessExit(7),
+            ProtocolError::UnexpectedEof,
+            ProtocolError::LineTooLong { len: 11, max: 10 },
+            ProtocolError::Unsupported,
+            ProtocolError::HandshakeTimeout {
+                stage: "probe",
+                after: Duration::from_secs(1),
+            },
+            ProtocolError::LockPoisoned,
+        ];
+        let names = variants.into_iter().map(variant_name).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "InvalidJson",
+                "UnknownMessageType",
+                "Io",
+                "ProcessExit",
+                "UnexpectedEof",
+                "LineTooLong",
+                "Unsupported",
+                "HandshakeTimeout",
+                "LockPoisoned",
+            ],
+        );
+    }
 }

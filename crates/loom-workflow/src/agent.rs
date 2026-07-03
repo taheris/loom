@@ -858,9 +858,9 @@ fn infra_failure_summary(phase: InfraPhase, cause: InfraCause, error: &str) -> S
 
 fn protocol_infra_cause(err: &ProtocolError) -> InfraCause {
     match err {
-        ProtocolError::InvalidJson(_)
-        | ProtocolError::InvalidProtocolLine { .. }
-        | ProtocolError::LineTooLong { .. } => InfraCause::MalformedFraming,
+        ProtocolError::InvalidJson(_) | ProtocolError::LineTooLong { .. } => {
+            InfraCause::MalformedFraming
+        }
         ProtocolError::UnknownMessageType(_) => InfraCause::UnknownMessageType,
         ProtocolError::Io(_) if is_oom_error(&err.to_string()) => InfraCause::ContainerOom,
         ProtocolError::Io(_) => InfraCause::Io,

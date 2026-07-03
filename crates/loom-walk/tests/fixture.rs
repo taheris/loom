@@ -2065,6 +2065,54 @@ fn loom_templates_snapshots_no_crate_root_allow_fail() {
 }
 
 // ---------------------------------------------------------------------------
+// agent_backend_trait_contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn agent_backend_trait_contract_pass() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-driver/src/agent/backend.rs",
+        "pub trait AgentBackend: Send + Sync {\n\
+         fn spawn(config: &SpawnConfig) -> impl std::future::Future<Output = Result<AgentSession<Idle>, ProtocolError>> + Send;\n\
+         fn compaction_repin(_config: &SpawnConfig) -> Result<Option<String>, ProtocolError> { Ok(None) }\n\
+         }\n",
+    );
+    let out = invoke(&["agent_backend_trait_contract"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn agent_backend_trait_contract_fail_when_spawn_missing() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-driver/src/agent/backend.rs",
+        "pub trait AgentBackend: Send + Sync {\n\
+         fn compaction_repin(_config: &SpawnConfig) -> Result<Option<String>, ProtocolError> { Ok(None) }\n\
+         }\n",
+    );
+    let out = invoke(&["agent_backend_trait_contract"], Some(ws.path()), None);
+    assert_fail(&out, "associated `spawn`");
+}
+
+#[test]
+fn agent_backend_trait_contract_fail_on_supports_steering_constant() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-driver/src/agent/backend.rs",
+        "pub trait AgentBackend: Send + Sync {\n\
+         const SUPPORTS_STEERING: bool = true;\n\
+         fn spawn(config: &SpawnConfig) -> impl std::future::Future<Output = Result<AgentSession<Idle>, ProtocolError>> + Send;\n\
+         }\n",
+    );
+    let out = invoke(&["agent_backend_trait_contract"], Some(ws.path()), None);
+    assert_fail(&out, "SUPPORTS_STEERING");
+}
+
+// ---------------------------------------------------------------------------
 // session_trait_in_loom_events
 // ---------------------------------------------------------------------------
 

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 pub use inputs::render_print_inputs;
 
+mod agent_backend_trait_contract;
 mod audit_makes_no_bd_writes_outside_mint_module;
 mod cli_surface;
 mod crate_structure;
@@ -137,6 +138,10 @@ pub struct Walk {
 /// Static registry of every walk this binary dispatches. Alphabetical
 /// so the error-message enumeration reads stably.
 pub static REGISTRY: &[Walk] = &[
+    Walk {
+        name: "agent_backend_trait_contract",
+        run: agent_backend_trait_contract::run,
+    },
     Walk {
         name: "audit_makes_no_bd_writes_outside_mint_module",
         run: audit_makes_no_bd_writes_outside_mint_module::run,
@@ -416,6 +421,7 @@ mod tests {
     #[test]
     fn registry_lookup_finds_known_walks() {
         for name in [
+            "agent_backend_trait_contract",
             "audit_makes_no_bd_writes_outside_mint_module",
             "crate_structure_includes_loom_tune",
             "direct_tools_net_new",

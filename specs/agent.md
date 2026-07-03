@@ -1000,9 +1000,9 @@ the entrypoint run the wrong runtime.
 ### Agent trait
 
 - `Session` interoperability trait defined in `loom-events` with `prompt`, `steer`, `cancel`, `set_mode` methods
-  [check](grep -q 'pub trait Session' crates/loom-events/src/lib.rs)
+  [test](session_trait_exposes_prompt_steer_cancel_set_mode)
 - `AgentBackend` trait defined in loom-driver with associated `spawn`; no `SUPPORTS_STEERING` constant (all three backends steer)
-  [check](grep -q 'pub trait AgentBackend' crates/loom-driver/src/agent/backend.rs)
+  [check](cargo run -p loom-walk -- agent_backend_trait_contract)
 - `run_agent` compiles with `PiBackend`, `ClaudeBackend`, and `DirectBackend` as concrete types
   [test](all_backends_dispatch_through_run_agent)
 - Agent backends emit only canonical `AgentEvent` variants owned by [events.md](events.md)
@@ -1016,7 +1016,7 @@ the entrypoint run the wrong runtime.
 - `Session` trait surface does not reference `AgentSession`, `Idle`, or `Active` types (typestate is private to subprocess backends)
   [check](cargo run -p loom-walk -- session_trait_does_not_expose_typestate)
 - `ProtocolError` variants cover InvalidJson, UnknownMessageType, Io, ProcessExit, UnexpectedEof, LineTooLong, Unsupported, HandshakeTimeout, LockPoisoned
-  [check](grep -q 'pub enum ProtocolError' crates/loom-driver/src/agent/error.rs)
+  [test](protocol_error_variant_set_matches_agent_spec)
 
 ### Pi backend
 
@@ -1048,7 +1048,7 @@ the entrypoint run the wrong runtime.
   progress until the full re-pin is effective or the session is restarted/failed
   [test](pi_overflow_retry_waits_for_effective_repin)
 - Pi backend handles malformed JSONL gracefully (logs warning, continues)
-  [test](malformed_json_returns_invalid_json_error)
+  [test](malformed_json_line_is_skipped_and_stream_continues)
 - Pi backend replies with a cancelled extension_ui_response for extension UI methods that require a host response
   [test](extension_ui_select_yields_auto_cancel_response)
 

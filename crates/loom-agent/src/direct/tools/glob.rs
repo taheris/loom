@@ -58,7 +58,11 @@ impl Tool for Glob {
 
 fn expand(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError> {
     let pattern = match args.path {
-        Some(base) => base.join(&args.pattern).to_string_lossy().into_owned(),
+        Some(base) => ctx
+            .resolve_workspace_path(&base)
+            .join(&args.pattern)
+            .to_string_lossy()
+            .into_owned(),
         None => args.pattern.clone(),
     };
     let iter = match ::glob::glob(&pattern) {

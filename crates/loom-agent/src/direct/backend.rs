@@ -32,6 +32,7 @@ use tracing::info;
 /// [`SpawnConfig::scratch_dir`]; the wrapper reads it back to materialize
 /// the container.
 const SPAWN_CONFIG_FILE: &str = "spawn-config.json";
+const CONTAINER_WORKSPACE: &str = "/workspace";
 
 /// Zero-sized marker for the Direct backend.
 ///
@@ -109,9 +110,18 @@ pub(crate) fn prepare_runtime(config: &SpawnConfig) -> Result<PathBuf, ProtocolE
 fn write_spawn_config(runtime_dir: &Path, config: &SpawnConfig) -> Result<PathBuf, ProtocolError> {
     std::fs::create_dir_all(runtime_dir).map_err(ProtocolError::Io)?;
     let path = runtime_dir.join(SPAWN_CONFIG_FILE);
-    let json = serde_json::to_vec(config)?;
+    let mut runner_config = config.clone();
+    runner_config.scratch_dir = container_workspace_path(&config.workspace, &config.scratch_dir);
+    let json = serde_json::to_vec(&runner_config)?;
     std::fs::write(&path, json).map_err(ProtocolError::Io)?;
     Ok(path)
+}
+
+fn container_workspace_path(host_workspace: &Path, host_path: &Path) -> PathBuf {
+    match host_path.strip_prefix(host_workspace) {
+        Ok(rel) => Path::new(CONTAINER_WORKSPACE).join(rel),
+        Err(_) => host_path.to_path_buf(),
+    }
 }
 
 /// Build an [`AgentSession`] from a launcher [`Command`].
@@ -146,9 +156,9 @@ pub(crate) async fn spawn_session(mut cmd: Command) -> Result<AgentSession<Idle>
 ///
 /// Inbound lines are a `type`-tagged twin of [`ParsedAgentEvent`] in
 /// snake_case; outbound commands are
-/// `{"type": "prompt"|"steer"|"abort", "message": "..."}`. The runner
-/// owns the canonical wire shape; this host-side half deserializes the
-/// matching set of variants and rejects unknown `type` values as
+/// `{"type": "prompt"|"steer"|"complete"|"abort", "message": "..."}`.
+/// The runner owns the canonical wire shape; this host-side half
+/// deserializes the matching set of variants and rejects unknown `type` values as
 /// `InvalidJson`.
 pub struct DirectParser;
 
@@ -162,9 +172,11 @@ impl LineParse for DirectParser {
     }
 
     fn encode_prompt(&self, msg: &str) -> Result<String, ProtocolError> {
-        encode_command(&DirectCommand::Prompt {
+        let mut encoded = encode_command(&DirectCommand::Prompt {
             message: msg.to_string(),
-        })
+        })?;
+        encoded.push_str(&encode_command(&DirectCommand::Complete)?);
+        Ok(encoded)
     }
 
     fn encode_steer(&self, msg: &str) -> Result<String, ProtocolError> {
@@ -195,6 +207,9 @@ pub enum DirectCommand {
     /// Inject `message` as a steering user turn the runner queues for
     /// the next iteration.
     Steer { message: String },
+    /// Mark the one-shot workflow prompt complete so the runner emits
+    /// `session_complete` without waiting for stdin EOF.
+    Complete,
     /// Cancel the in-flight `Conversation::run` and return to idle.
     Abort,
 }
@@ -357,6 +372,25 @@ mod tests {
         assert_eq!(decoded.image_source, cfg.image_source);
         assert_eq!(decoded.initial_prompt, cfg.initial_prompt);
         assert_eq!(decoded.agent_args, cfg.agent_args);
+    }
+
+    #[test]
+    fn prepare_runtime_serializes_container_visible_scratch_dir_for_runner() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let scratch_dir = workspace.path().join(".loom/scratch/lm-direct");
+        let mut cfg = sample_config(scratch_dir.clone());
+        cfg.workspace = workspace.path().to_path_buf();
+
+        let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");
+
+        assert_eq!(spawn_config_path, scratch_dir.join(SPAWN_CONFIG_FILE));
+        let bytes = std::fs::read(&spawn_config_path).expect("read");
+        let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
+        assert_eq!(
+            decoded.scratch_dir,
+            PathBuf::from("/workspace/.loom/scratch/lm-direct"),
+            "runner-visible offload root must be inside the container workspace",
+        );
     }
 
     /// Spec contract (`specs/agent.md` § Direct backend):
@@ -534,16 +568,24 @@ mod tests {
     }
 
     #[test]
-    fn parser_encodes_prompt_as_jsonl_with_trailing_newline() {
+    fn parser_encodes_prompt_and_complete_as_jsonl() {
         let encoded = DirectParser.encode_prompt("hello").expect("encode");
         assert!(
             encoded.ends_with('\n'),
             "missing trailing newline: {encoded}"
         );
-        let decoded: serde_json::Value =
-            serde_json::from_str(encoded.trim_end()).expect("valid json");
-        assert_eq!(decoded["type"], "prompt");
-        assert_eq!(decoded["message"], "hello");
+        let lines = encoded.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines.len(),
+            2,
+            "prompt should emit prompt + complete frames"
+        );
+        let prompt: serde_json::Value = serde_json::from_str(lines[0]).expect("valid prompt json");
+        let complete: serde_json::Value =
+            serde_json::from_str(lines[1]).expect("valid complete json");
+        assert_eq!(prompt["type"], "prompt");
+        assert_eq!(prompt["message"], "hello");
+        assert_eq!(complete["type"], "complete");
     }
 
     #[test]

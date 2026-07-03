@@ -187,6 +187,48 @@ mod tests {
         }
     }
 
+    struct EmptyEvents;
+
+    impl Stream for EmptyEvents {
+        type Item = AgentEvent;
+
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Ready(None)
+        }
+    }
+
+    #[derive(Default)]
+    struct ContractSession {
+        prompt: Option<String>,
+        steer: Option<String>,
+        cancelled: bool,
+        mode_set: bool,
+    }
+
+    impl Session for ContractSession {
+        type Events = EventStream;
+
+        fn prompt(&mut self, msg: String) -> Self::Events {
+            self.prompt = Some(msg);
+            Box::pin(EmptyEvents)
+        }
+
+        fn steer(&mut self, msg: String) {
+            self.steer = Some(msg);
+        }
+
+        fn cancel(&mut self) {
+            self.cancelled = true;
+        }
+
+        fn set_mode(&mut self, _mode: SessionMode) {
+            self.mode_set = true;
+        }
+    }
+
     fn sample_event() -> AgentEvent {
         AgentEvent::TextDelta {
             envelope: EventEnvelope {
@@ -200,6 +242,20 @@ mod tests {
             },
             text: "hi".into(),
         }
+    }
+
+    #[test]
+    fn session_trait_exposes_prompt_steer_cancel_set_mode() {
+        let mut session = ContractSession::default();
+        let _events = Session::prompt(&mut session, "hello".to_string());
+        Session::steer(&mut session, "left".to_string());
+        Session::cancel(&mut session);
+        Session::set_mode(&mut session, SessionMode::Default);
+
+        assert_eq!(session.prompt.as_deref(), Some("hello"));
+        assert_eq!(session.steer.as_deref(), Some("left"));
+        assert!(session.cancelled);
+        assert!(session.mode_set);
     }
 
     /// Registration order = react invocation order. The first sink in

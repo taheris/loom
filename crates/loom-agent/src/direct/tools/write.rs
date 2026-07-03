@@ -46,27 +46,28 @@ impl Tool for Write {
 
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
-            let _ctx = &self.ctx;
             let parsed: Args = parse_args(args)?;
-            Ok(write_file(parsed).await)
+            Ok(write_file(parsed, self.ctx.clone()).await)
         })
     }
 }
 
-async fn write_file(args: Args) -> ToolOutput {
-    if let Some(parent) = args.file_path.parent()
+async fn write_file(args: Args, ctx: ToolContext) -> ToolOutput {
+    let display_path = args.file_path.display().to_string();
+    let path = ctx.resolve_workspace_path(&args.file_path);
+    if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
         && let Err(err) = fs::create_dir_all(parent).await
     {
         return error(format!("mkdir {}: {err}", parent.display()));
     }
 
-    match fs::write(&args.file_path, args.content).await {
+    match fs::write(&path, args.content).await {
         Ok(()) => ToolOutput {
-            content: Value::String(format!("wrote {}", args.file_path.display())),
+            content: Value::String(format!("wrote {display_path}")),
             is_error: false,
         },
-        Err(err) => error(format!("write {}: {err}", args.file_path.display())),
+        Err(err) => error(format!("write {display_path}: {err}")),
     }
 }
 

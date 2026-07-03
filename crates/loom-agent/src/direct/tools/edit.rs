@@ -53,17 +53,18 @@ impl Tool for Edit {
 
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
-            let _ctx = &self.ctx;
             let parsed: Args = parse_args(args)?;
-            Ok(edit_file(parsed).await)
+            Ok(edit_file(parsed, self.ctx.clone()).await)
         })
     }
 }
 
-async fn edit_file(args: Args) -> ToolOutput {
-    let original = match fs::read_to_string(&args.file_path).await {
+async fn edit_file(args: Args, ctx: ToolContext) -> ToolOutput {
+    let display_path = args.file_path.display().to_string();
+    let path = ctx.resolve_workspace_path(&args.file_path);
+    let original = match fs::read_to_string(&path).await {
         Ok(text) => text,
-        Err(err) => return error(format!("read {}: {err}", args.file_path.display())),
+        Err(err) => return error(format!("read {display_path}: {err}")),
     };
 
     let count = original.matches(args.old_string.as_str()).count();
@@ -82,16 +83,15 @@ async fn edit_file(args: Args) -> ToolOutput {
         original.replacen(&args.old_string, &args.new_string, 1)
     };
 
-    match fs::write(&args.file_path, updated).await {
+    match fs::write(&path, updated).await {
         Ok(()) => ToolOutput {
             content: Value::String(format!(
-                "edited {} ({count} replacement{})",
-                args.file_path.display(),
+                "edited {display_path} ({count} replacement{})",
                 if count == 1 { "" } else { "s" },
             )),
             is_error: false,
         },
-        Err(err) => error(format!("write {}: {err}", args.file_path.display())),
+        Err(err) => error(format!("write {display_path}: {err}")),
     }
 }
 

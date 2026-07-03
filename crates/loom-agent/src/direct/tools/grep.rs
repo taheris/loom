@@ -83,6 +83,7 @@ fn search(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError
     };
     let max = args.max_matches.unwrap_or(DEFAULT_MAX_MATCHES);
     let root = args.path.unwrap_or_else(|| PathBuf::from("."));
+    let root = ctx.resolve_workspace_path(&root);
 
     let mut hits = Vec::new();
     let mut truncated = false;

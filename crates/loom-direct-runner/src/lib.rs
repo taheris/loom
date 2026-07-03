@@ -13,8 +13,8 @@
 //!    stdout — `tool_call` / `tool_result` for each assistant + tool
 //!    pair, `text_delta` + `text_end` for the final assistant text,
 //!    then `turn_end`.
-//! 4. On EOF or [`DirectCommand::Abort`], emit `session_complete` and
-//!    return.
+//! 4. On [`DirectCommand::Complete`], EOF, or [`DirectCommand::Abort`],
+//!    emit `session_complete` and return.
 
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -143,7 +143,7 @@ fn read_api_key(var: &str) -> Result<ApiKey, RunnerError> {
 
 /// Drive one Direct session against `client`. Reads JSONL commands from
 /// `stdin`, emits JSONL events to `stdout`, returns when stdin closes or
-/// the runner receives [`DirectCommand::Abort`].
+/// the runner receives [`DirectCommand::Complete`] or [`DirectCommand::Abort`].
 pub async fn run_session<C, R, W>(
     client: C,
     config: SpawnConfig,
@@ -223,6 +223,10 @@ where
             Ok(DirectCommand::Steer { message }) => {
                 debug!(bytes = message.len(), "received steer");
                 conv.user_cached(message, CacheControl::Ephemeral(PROMPT_CACHE_TTL));
+            }
+            Ok(DirectCommand::Complete) => {
+                info!("received complete, terminating session");
+                break;
             }
             Ok(DirectCommand::Abort) => {
                 info!("received abort, terminating session");
@@ -481,6 +485,7 @@ pub enum RunnerError {
 mod tests {
     use super::*;
     use loom_driver::agent::{OutputLimits, RePinContent};
+    use loom_driver::clock::{Clock, SystemClock};
     use loom_driver::config::{LoomConfig, Phase};
     use loom_events::identifier::{BeadId, SessionId};
     use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, SessionScope, Source};
@@ -492,6 +497,8 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::Mutex;
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
     const PLANNING_PROMPT_INTERVIEW_MODES: &str =
         include_str!("../../../tests/fixtures/planning_prompt_interview_modes.md");
@@ -672,22 +679,56 @@ mod tests {
     /// `DirectEvent` tag/variant set.
     #[test]
     fn direct_runner_emits_agent_event_jsonl_compatible_with_common_agent_events() {
-        let client = ScriptedClient::new(vec![final_text("hello back")]);
-        let stdin = b"{\"type\":\"prompt\",\"message\":\"hi\"}\n".to_vec();
-        let mut stdout: Vec<u8> = Vec::new();
+        let lines = tokio_test::block_on(async {
+            let client = ScriptedClient::new(vec![final_text("hello back")]);
+            let (mut stdin_host, stdin_runner) = tokio::io::duplex(1024);
+            let (stdout_runner, stdout_host) = tokio::io::duplex(4096);
+            let handle = tokio::spawn(run_session(
+                client,
+                sample_config(Some("claude-sonnet-4-6")),
+                tokio::io::BufReader::new(stdin_runner),
+                stdout_runner,
+            ));
+            let mut command = command_frame(&DirectCommand::Prompt {
+                message: "hi".to_string(),
+            });
+            command.push_str(&command_frame(&DirectCommand::Complete));
+            stdin_host
+                .write_all(command.as_bytes())
+                .await
+                .expect("write prompt + complete");
+            stdin_host.flush().await.expect("flush prompt + complete");
 
-        tokio_test::block_on(run_session(
-            client,
-            sample_config(Some("claude-sonnet-4-6")),
-            tokio::io::BufReader::new(&stdin[..]),
-            &mut stdout,
-        ))
-        .expect("run_session completes");
-
-        let lines: Vec<&str> = std::str::from_utf8(&stdout)
-            .expect("utf-8 stdout")
-            .lines()
-            .collect();
+            let mut stdout = tokio::io::BufReader::new(stdout_host);
+            let mut lines = Vec::new();
+            loop {
+                let mut line = String::new();
+                let read = SystemClock::new()
+                    .timeout(Duration::from_secs(5), stdout.read_line(&mut line))
+                    .await
+                    .expect("session_complete without closing stdin")
+                    .expect("read stdout line");
+                assert_ne!(read, 0, "stdout closed before session_complete");
+                let line = line
+                    .trim_end_matches('\n')
+                    .trim_end_matches('\r')
+                    .to_string();
+                let is_complete = serde_json::from_str::<Value>(&line)
+                    .expect("json")
+                    .get("type")
+                    .and_then(Value::as_str)
+                    == Some("session_complete");
+                lines.push(line);
+                if is_complete {
+                    break;
+                }
+            }
+            handle
+                .await
+                .expect("runner task joins")
+                .expect("run_session completes");
+            lines
+        });
 
         let parsed: Vec<DirectEvent> = lines
             .iter()

@@ -46,11 +46,17 @@ pub struct ToolContext {
 struct Capabilities {
     offload: OffloadSink,
     records: Mutex<Vec<OffloadRecord>>,
+    workspace: WorkspaceMount,
 }
 
 struct OffloadSink {
     dir: PathBuf,
     max_inline_bytes: usize,
+}
+
+struct WorkspaceMount {
+    container_root: PathBuf,
+    host_root: PathBuf,
 }
 
 struct Head {
@@ -65,6 +71,8 @@ struct CapOutcome {
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+const CONTAINER_WORKSPACE: &str = "/workspace";
+
 /// Successful Direct tool output offload recorded at the cap point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OffloadRecord {
@@ -75,6 +83,19 @@ pub struct OffloadRecord {
 impl ToolContext {
     /// Create a Direct tool context rooted at the session's offload directory.
     pub fn new(offload_dir: PathBuf, max_inline_bytes: usize) -> Self {
+        Self::with_workspace_root(
+            offload_dir,
+            max_inline_bytes,
+            PathBuf::from(CONTAINER_WORKSPACE),
+        )
+    }
+
+    /// Create a context whose `/workspace` paths resolve under `workspace_root`.
+    pub fn with_workspace_root(
+        offload_dir: PathBuf,
+        max_inline_bytes: usize,
+        workspace_root: PathBuf,
+    ) -> Self {
         Self {
             capabilities: Arc::new(Capabilities {
                 offload: OffloadSink {
@@ -82,8 +103,17 @@ impl ToolContext {
                     max_inline_bytes,
                 },
                 records: Mutex::new(Vec::new()),
+                workspace: WorkspaceMount {
+                    container_root: PathBuf::from(CONTAINER_WORKSPACE),
+                    host_root: workspace_root,
+                },
             }),
         }
+    }
+
+    /// Resolve an agent-visible path through the container workspace mount.
+    pub fn resolve_workspace_path(&self, path: &Path) -> PathBuf {
+        self.capabilities.workspace.resolve(path)
     }
 
     /// Return `content` inline when it fits, otherwise offload the full payload.
@@ -124,6 +154,15 @@ impl From<ToolContextError> for LlmError {
     fn from(err: ToolContextError) -> Self {
         Self::Provider {
             message: err.to_string(),
+        }
+    }
+}
+
+impl WorkspaceMount {
+    fn resolve(&self, path: &Path) -> PathBuf {
+        match path.strip_prefix(&self.container_root) {
+            Ok(rel) => self.host_root.join(rel),
+            Err(_) => path.to_path_buf(),
         }
     }
 }

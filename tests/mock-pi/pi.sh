@@ -43,6 +43,9 @@
 #                               agent_end. Used by the container smoke
 #                               and any test that wants the full
 #                               single-turn lifecycle.
+#   malformed-then-happy      — probe ok, prompt emits a malformed stdout
+#                               line before valid events. The driver must
+#                               skip the bad line and continue.
 #   interactive-compaction-canary
 #                             — verify an interactive Pi launch path delivered
 #                               full re-pin context before output.
@@ -228,6 +231,15 @@ run_happy_path() {
     emit_agent_end
 }
 
+run_malformed_then_happy() {
+    handle_probe 0
+    local _prompt
+    IFS= read -r _prompt
+    emit 'not-json'
+    emit_message_delta 'after malformed line'
+    emit_agent_end
+}
+
 run_echo_prompt() {
     handle_probe 0
     local prompt_line message
@@ -389,6 +401,9 @@ case "$MODE" in
         ;;
     happy-path)
         run_happy_path
+        ;;
+    malformed-then-happy)
+        run_malformed_then_happy
         ;;
     interactive-compaction-canary)
         run_interactive_compaction_canary "$@"

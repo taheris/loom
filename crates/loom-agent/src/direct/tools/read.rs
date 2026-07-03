@@ -67,25 +67,21 @@ impl Tool for Read {
 }
 
 async fn read_file(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError> {
-    let bytes = match fs::read(&args.file_path).await {
+    let display_path = args.file_path.display().to_string();
+    let path = ctx.resolve_workspace_path(&args.file_path);
+    let bytes = match fs::read(&path).await {
         Ok(bytes) => bytes,
-        Err(err) => return Ok(error(format!("read {}: {err}", args.file_path.display()))),
+        Err(err) => return Ok(error(format!("read {display_path}: {err}"))),
     };
 
     if is_binary(&bytes) {
-        return Ok(error(format!(
-            "binary file rejected: {}",
-            args.file_path.display()
-        )));
+        return Ok(error(format!("binary file rejected: {}", display_path)));
     }
 
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
         Err(_) => {
-            return Ok(error(format!(
-                "invalid utf-8: {}",
-                args.file_path.display()
-            )));
+            return Ok(error(format!("invalid utf-8: {}", display_path)));
         }
     };
 
@@ -325,15 +321,20 @@ mod tests {
         let target = nested.join("lib.rs");
         let body = "//! workspace-mount probe\npub fn hello() {}\n";
         fs::write(&target, body).await.expect("write fixture");
+        let container_path = PathBuf::from("/workspace/crates/loom-agent/src/lib.rs");
+        let tool = Read::new(ToolContext::with_workspace_root(
+            workspace_mount.path().join("offload"),
+            usize::MAX,
+            workspace_mount.path().to_path_buf(),
+        ));
 
         assert!(
-            target.is_absolute(),
-            "test must exercise the absolute-path contract; got={}",
-            target.display(),
+            container_path.starts_with("/workspace"),
+            "test must exercise the agent-visible workspace mount path",
         );
 
-        let out = read_with(&workspace_mount, usize::MAX)
-            .invoke(json!({ "file_path": target }))
+        let out = tool
+            .invoke(json!({ "file_path": container_path }))
             .await
             .expect("invoke");
         assert!(
@@ -343,7 +344,7 @@ mod tests {
         assert_eq!(
             out.content,
             Value::String(body.to_string()),
-            "Read must return the bytes the kernel resolved at the absolute path",
+            "Read must return the bytes resolved through the /workspace mount",
         );
     }
 }
