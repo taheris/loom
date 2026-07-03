@@ -111,7 +111,7 @@ in
 
   # Wrap the raw loom binary with the matching sandbox launcher defaults, so a
   # consumer only needs the wrapped binary on PATH to run loom end-to-end.
-  # Consumers can still override either env var.
+  # Consumers can still override the env defaults.
   mkLoomBin =
     {
       pkgs,
@@ -119,6 +119,20 @@ in
       wrixLauncher,
       profileManifest,
     }:
+    let
+      inherit (pkgs) stdenv;
+      inherit (pkgs.lib) makeBinPath optionals;
+
+      spawnLauncher = wrixLauncher.launcher or wrixLauncher;
+      launcherRuntimePath = makeBinPath (
+        [ pkgs.nix ]
+        ++ optionals stdenv.hostPlatform.isLinux [
+          pkgs.podman
+          pkgs.skopeo
+        ]
+        ++ optionals stdenv.hostPlatform.isDarwin [ pkgs.skopeo ]
+      );
+    in
     pkgs.runCommand "loom"
       {
         nativeBuildInputs = [ pkgs.makeWrapper ];
@@ -127,8 +141,9 @@ in
       ''
         mkdir -p $out/bin
         makeWrapper ${loomBuild.bin}/bin/loom $out/bin/loom \
-          --prefix PATH : ${wrixLauncher}/bin \
+          --prefix PATH : ${wrixLauncher}/bin:${spawnLauncher}/bin:${launcherRuntimePath} \
           --set-default LOOM_WRIX_BIN ${wrixLauncher}/bin/wrix \
+          --set-default LOOM_WRIX_SPAWN_BIN ${spawnLauncher}/bin/wrix \
           --set-default LOOM_PROFILES_MANIFEST ${profileManifest}
       '';
 }

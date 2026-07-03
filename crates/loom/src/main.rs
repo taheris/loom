@@ -4797,7 +4797,7 @@ fn run_inbox_chat(
         cli_profile: None,
         agent_override,
         manifest,
-        wrix_bin: std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from),
+        wrix_bin: None,
     };
     let report = loom_workflow::inbox::chat::run(workspace, opts)?;
     if report.items_surfaced == 0 {

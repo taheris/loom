@@ -109,6 +109,25 @@ fn install_wrix_shim(
     shim
 }
 
+fn install_failing_wrix_shim(dir: &Path, marker: &Path) -> PathBuf {
+    let shim = dir.join("profiled-wrix");
+    let bash = find_bash();
+    let body = format!(
+        "#!{bash}\n\
+         set -euo pipefail\n\
+         printf 'invoked\\n' > '{marker}'\n\
+         printf 'profiled wrix wrapper should not handle spawn\\n' >&2\n\
+         exit 64\n",
+        bash = bash.display(),
+        marker = marker.display(),
+    );
+    std::fs::write(&shim, body).unwrap();
+    let mut perm = std::fs::metadata(&shim).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&shim, perm).unwrap();
+    shim
+}
+
 /// Install a wrix shim that commits one file in the bead workspace named by
 /// `SpawnConfig.workspace`, then delegates to mock-pi `happy-path` so the
 /// run-phase marker is `LOOM_COMPLETE`. The test review shim is deliberately
@@ -196,6 +215,15 @@ fn mock_claude_path() -> PathBuf {
 /// per `specs/harness.md` *Removed surface*). Shared by both tests so the
 /// assertions stay focused on what they verify.
 fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::process::Output {
+    drive_loom_todo_pi_with_spawn_bin(workspace, shim, None, loom_bin)
+}
+
+fn drive_loom_todo_pi_with_spawn_bin(
+    workspace: &Path,
+    wrix_bin: &Path,
+    wrix_spawn_bin: Option<&Path>,
+    loom_bin: &str,
+) -> std::process::Output {
     // Spawn-bound subcommands (`todo` is one) read LOOM_PROFILES_MANIFEST at
     // startup. The production todo controller resolves the configured `rust`
     // profile through this manifest, so it must contain a real entry — an
@@ -233,22 +261,27 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
     init_workspace_repo(workspace);
     seed_active_spec(workspace, loom_bin, "agent");
     let new_path = bd_stub_path(workspace, "[]");
-    Command::new(loom_bin)
+    let mut command = Command::new(loom_bin);
+    command
         .arg("--workspace")
         .arg(workspace)
         .arg("--agent")
         .arg("pi")
         .arg("todo")
         .env("PATH", new_path)
-        .env("LOOM_WRIX_BIN", shim)
+        .env("LOOM_WRIX_BIN", wrix_bin)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the todo dispatch path under test.
-        .env_remove("LOOM_INSIDE")
-        .output()
-        .expect("spawn loom")
+        .env_remove("LOOM_INSIDE");
+    if let Some(spawn_bin) = wrix_spawn_bin {
+        command.env("LOOM_WRIX_SPAWN_BIN", spawn_bin);
+    } else {
+        command.env_remove("LOOM_WRIX_SPAWN_BIN");
+    }
+    command.output().expect("spawn loom")
 }
 
 fn enable_workspace_sccache(workspace: &Path) -> PathBuf {
@@ -491,6 +524,48 @@ fn wrix_spawn_invocation_records_correct_argv() {
 }
 
 #[test]
+fn wrix_spawn_prefers_unprofiled_spawn_launcher_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+
+    let shim_dir = dir.path().join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let argv_file = shim_dir.join("argv.txt");
+    let stdin_info = shim_dir.join("stdin-info.txt");
+    let spawn_copy = shim_dir.join("spawn-config.json");
+    let spawn_shim = install_wrix_shim(
+        &shim_dir,
+        &argv_file,
+        &stdin_info,
+        &spawn_copy,
+        &mock_pi_path(),
+        "happy-path",
+    );
+    let profiled_marker = shim_dir.join("profiled-invoked.txt");
+    let profiled_shim = install_failing_wrix_shim(&shim_dir, &profiled_marker);
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output =
+        drive_loom_todo_pi_with_spawn_bin(workspace, &profiled_shim, Some(&spawn_shim), loom_bin);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "loom todo must use LOOM_WRIX_SPAWN_BIN for spawn. stdout={stdout} stderr={stderr}",
+    );
+    assert!(
+        !profiled_marker.exists(),
+        "spawn path invoked LOOM_WRIX_BIN instead of LOOM_WRIX_SPAWN_BIN",
+    );
+    let argv = std::fs::read_to_string(&argv_file).expect("spawn shim should record argv");
+    assert!(
+        argv.lines().any(|arg| arg == "--profile-config"),
+        "spawn shim must still receive Loom's selected profile config. argv={argv}",
+    );
+}
+
+#[test]
 fn wrix_spawn_config_includes_configured_sccache_mount_and_env() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
@@ -693,6 +768,7 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
         .arg("lm-runtest")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         // Point `LOOM_BIN` at a no-op shim so the per-bead gate's
         // `loom gate verify --diff` + `loom gate review --diff --bead` calls
         // exit 0 silently — this test asserts run-phase JSONL log
@@ -817,6 +893,7 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
         .arg("lm-active")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
@@ -911,6 +988,7 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
         .arg("lm-multib")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
@@ -1066,6 +1144,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         .arg("HEAD..HEAD")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
@@ -1443,6 +1522,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
         .arg("todo")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("RUST_LOG", "loom_agent=warn")
@@ -1526,6 +1606,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         .arg("todo")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("LOOM_HANDSHAKE_TIMEOUT_MS", "500")
@@ -1611,6 +1692,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         .arg("todo")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("LOOM_STALL_WARN_MS", "300")

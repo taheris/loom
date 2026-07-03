@@ -95,6 +95,7 @@ fn run_loom_loop_bead(
         .arg(bead_id)
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", manifest)

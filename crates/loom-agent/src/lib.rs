@@ -8,6 +8,8 @@
 //! driving (prompt, steer, abort, event streaming) lives on
 //! [`AgentSession`](loom_driver::agent::AgentSession).
 
+use std::ffi::OsString;
+
 pub mod claude;
 pub mod direct;
 pub mod pi;
@@ -16,6 +18,15 @@ mod skill;
 pub use claude::ClaudeBackend;
 pub use direct::DirectBackend;
 pub use pi::PiBackend;
+
+const ENV_WRIX_SPAWN_BIN: &str = "LOOM_WRIX_SPAWN_BIN";
+const ENV_WRIX_BIN: &str = "LOOM_WRIX_BIN";
+
+pub(crate) fn resolve_wrix_spawn_bin() -> OsString {
+    std::env::var_os(ENV_WRIX_SPAWN_BIN)
+        .or_else(|| std::env::var_os(ENV_WRIX_BIN))
+        .unwrap_or_else(|| OsString::from("wrix"))
+}
 
 /// Apply [`SpawnConfig::launcher_env`] to the `wrix spawn` child process
 /// before it is spawned. These pairs (`WRIX_DEPLOY_KEY` /

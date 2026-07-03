@@ -106,6 +106,7 @@ fn run_loom_with_flags(
         .args(flags)
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("LOOM_TEST_AGENT_MODE", "complete-marker")
         .env("LOOM_BIN", loom_gate_stub)
         .env("LOOM_PROFILES_MANIFEST", manifest)

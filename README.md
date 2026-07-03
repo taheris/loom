@@ -64,9 +64,11 @@ is suitable for Home Manager and system profiles:
 
 For image-backed workflows, Loom also exposes `loom-wrix`: a wrapped binary
 with `wrix` on its internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a
-base/rust/python × claude/pi/direct manifest. Add that explicit package to a
-wrix devshell when
-you want `loom plan` to work end-to-end without setting the env vars yourself:
+base/rust/python × claude/pi/direct manifest. It keeps `LOOM_WRIX_BIN` on the
+profiled interactive wrapper and sets `LOOM_WRIX_SPAWN_BIN` to the unprofiled
+launcher that accepts Loom's selected `--profile-config`. Add that explicit
+package to a wrix devshell when you want `loom plan` to work end-to-end without
+setting the env vars yourself:
 
 ```nix
 {

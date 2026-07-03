@@ -14,17 +14,30 @@ _:
       ...
     }:
     let
+      inherit (pkgs.lib) optionals;
+
+      wrixSpawnRuntimePackages = [
+        pkgs.nix
+      ]
+      ++ optionals pkgs.stdenv.hostPlatform.isLinux [
+        pkgs.podman
+        pkgs.skopeo
+      ]
+      ++ optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.skopeo ];
+
       commonPackages = [
         config.treefmt.build.wrapper
         loom.bin
         pkgs.cargo-nextest
         rustToolchain
         sandbox.package
-      ];
+      ]
+      ++ wrixSpawnRuntimePackages;
 
       commonEnv = {
         LOOM_PROFILES_MANIFEST = profileManifest;
         LOOM_WRIX_BIN = "${sandbox.package}/bin/wrix";
+        LOOM_WRIX_SPAWN_BIN = "${sandbox.launcher}/bin/wrix";
       };
     in
     {

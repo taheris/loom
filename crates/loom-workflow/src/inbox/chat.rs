@@ -48,6 +48,9 @@ const INBOX_NON_CLOSED_STATUSES: &str = "open,in_progress,blocked,deferred";
 /// Default name of the wrix launcher binary on PATH.
 pub const WRIX_BIN: &str = "wrix";
 
+const LOOM_WRIX_BIN: &str = "LOOM_WRIX_BIN";
+const LOOM_WRIX_SPAWN_BIN: &str = "LOOM_WRIX_SPAWN_BIN";
+
 /// Env vars `wrix run` reads to pick the per-profile image when no
 /// `--spawn-config` is supplied.
 pub const WRIX_DEFAULT_IMAGE_REF: &str = "WRIX_DEFAULT_IMAGE_REF";
@@ -190,9 +193,14 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
 
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, "loom inbox chat")?;
     let restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
-    let bin: PathBuf = opts
-        .wrix_bin
-        .or_else(|| std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from))
+    let explicit_wrix_bin = opts.wrix_bin;
+    let bin: PathBuf = explicit_wrix_bin
+        .clone()
+        .or_else(|| std::env::var_os(LOOM_WRIX_BIN).map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(WRIX_BIN));
+    let spawn_bin: PathBuf = explicit_wrix_bin
+        .or_else(|| std::env::var_os(LOOM_WRIX_SPAWN_BIN).map(PathBuf::from))
+        .or_else(|| std::env::var_os(LOOM_WRIX_BIN).map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(WRIX_BIN));
 
     let stdout = match selection.kind {
@@ -260,7 +268,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                 )?;
                 spawn_config.skills = Some(restored_skills.registered);
                 info!(
-                    wrix_bin = %bin.display(),
+                    wrix_bin = %spawn_bin.display(),
                     items_surfaced,
                     profile = %selection.profile,
                     agent = ?selection.kind,
@@ -268,7 +276,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                     scratch_dir = %scratch.path().display(),
                     "loom inbox chat: starting controlled pi RPC bridge",
                 );
-                runtime.block_on(run_pi_bridge(spawn_config, &bin))?
+                runtime.block_on(run_pi_bridge(spawn_config, &spawn_bin))?
             }
         }
         AgentKind::Direct => {

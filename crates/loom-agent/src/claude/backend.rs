@@ -8,7 +8,7 @@
 //! post-`result` cleanup: drop the writer, wait `grace`, escalate
 //! SIGTERM → SIGKILL.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -26,8 +26,8 @@ use tokio::process::{Child, Command};
 use tracing::{debug, info, warn};
 
 use super::parser::ClaudeParser;
-use crate::apply_launcher_env;
 use crate::skill::{NoNativeRegistrar, register_native_skills};
+use crate::{apply_launcher_env, resolve_wrix_spawn_bin};
 
 /// File name for the JSON-serialized [`SpawnConfig`] handed to
 /// `wrix spawn --spawn-config`. Written into the per-session
@@ -44,10 +44,6 @@ const SPAWN_CONFIG_FILE: &str = "spawn-config.json";
 /// dispatcher uses when no override is wired up yet.
 pub const DEFAULT_POST_RESULT_GRACE_SECS: u64 = 5;
 
-/// Env var that overrides the launcher binary. Production resolves
-/// `wrix` from `PATH`.
-const ENV_WRIX_BIN: &str = "LOOM_WRIX_BIN";
-
 /// Zero-sized marker for the Claude Code stream-json backend.
 ///
 /// Per the spec's static-dispatch design, all runtime state lives in the
@@ -63,7 +59,7 @@ impl AgentBackend for ClaudeBackend {
         register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config_path = prepare_runtime(config)?;
 
-        let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
+        let wrix_bin = resolve_wrix_spawn_bin();
         info!(
             wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config_path.display(),

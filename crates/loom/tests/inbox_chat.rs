@@ -450,6 +450,7 @@ fn chat_command(env: &ChatRun, mode: &str, args: &[&str], extra_env: &[(&str, &s
         .args(args)
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &env.wrix_stub)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("WRIX_STUB_MODE", mode)
         .env("LOOM_PROFILES_MANIFEST", &env.manifest)
         .env("BD_STATE_DIR", &env.state_dir)

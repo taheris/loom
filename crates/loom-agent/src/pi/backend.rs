@@ -18,7 +18,7 @@
 //! from `AgentEvent::CompactionStart`; [`PiParser`] owns Pi-private
 //! overflow auto-retry fail-fast policy.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -37,12 +37,8 @@ use tracing::{debug, error, info, warn};
 
 use super::messages::{PiEnvelope, PiResponse, SetThinkingLevelCommand};
 use super::parser::{AgentEndMode, PiParser};
-use crate::apply_launcher_env;
 use crate::skill::{NoNativeRegistrar, register_native_skills};
-
-/// Env var that overrides the launcher binary. Production resolves
-/// `wrix` from `PATH`; tests substitute the mock pi script via this.
-const ENV_WRIX_BIN: &str = "LOOM_WRIX_BIN";
+use crate::{apply_launcher_env, resolve_wrix_spawn_bin};
 
 /// Probe id used for the startup `get_state` request. The id appears in
 /// pi's response so the backend can correlate request/response without
@@ -154,7 +150,7 @@ impl PiBackend {
 
 impl AgentBackend for PiBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
-        let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
+        let wrix_bin = resolve_wrix_spawn_bin();
         Self::spawn_with_wrix_bin(config, &wrix_bin).await
     }
 
@@ -236,7 +232,7 @@ pub(crate) fn build_wrix_command(
 ///
 /// Public so integration tests under `loom-agent/tests/` can substitute a
 /// mock pi binary in place of the real `wrix spawn` exec without going
-/// through the `LOOM_WRIX_BIN` env-var override (Rust 2024 makes
+/// through the process-env launcher override (Rust 2024 makes
 /// `env::set_var` unsafe, and the workspace forbids `unsafe_code`).
 /// Production callers go through [`PiBackend::spawn`].
 pub async fn spawn_with_handshake(

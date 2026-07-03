@@ -8,7 +8,7 @@
 //! `{"type": "...", ...}` JSONL frames — see [`DirectParser`] for the
 //! wire shape.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -20,8 +20,8 @@ use loom_driver::agent::{
 use loom_events::identifier::ToolCallId;
 use loom_events::{DriverEventPayload, DriverKind, ParsedAgentEvent};
 
-use crate::apply_launcher_env;
 use crate::skill::{NoNativeRegistrar, register_native_skills};
+use crate::{apply_launcher_env, resolve_wrix_spawn_bin};
 use serde::{Deserialize, Serialize};
 use tokio::io::BufWriter;
 use tokio::process::Command;
@@ -32,10 +32,6 @@ use tracing::info;
 /// [`SpawnConfig::scratch_dir`]; the wrapper reads it back to materialize
 /// the container.
 const SPAWN_CONFIG_FILE: &str = "spawn-config.json";
-
-/// Env var that overrides the launcher binary. Production resolves
-/// `wrix` from `PATH`; tests substitute a mock script via this.
-const ENV_WRIX_BIN: &str = "LOOM_WRIX_BIN";
 
 /// Zero-sized marker for the Direct backend.
 ///
@@ -58,7 +54,7 @@ impl AgentBackend for DirectBackend {
         register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config_path = prepare_runtime(config)?;
 
-        let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
+        let wrix_bin = resolve_wrix_spawn_bin();
         info!(
             wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config_path.display(),

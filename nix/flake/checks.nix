@@ -24,6 +24,7 @@ _:
         craneLib
         stagedSrc
         ;
+      loomLib = import ../lib.nix;
 
       loom-gate-check = craneLib.mkCargoDerivation {
         pname = "loom-gate-check";
@@ -276,11 +277,65 @@ _:
         pkgs.runCommand "profile-manifest-keeps-runtime-path-context" { } ''
           touch "$out"
         '';
+
+      fakeLoomBin = pkgs.writeShellApplication {
+        name = "loom";
+        text = ''
+          printf 'loom 0.0.0\n'
+        '';
+      };
+      fakeUnprofiledWrix = pkgs.writeShellApplication {
+        name = "wrix";
+        text = ''
+          printf 'unprofiled wrix %s\n' "$*"
+        '';
+      };
+      fakeProfiledWrix =
+        (pkgs.writeShellApplication {
+          name = "wrix";
+          text = ''
+            exec ${fakeUnprofiledWrix}/bin/wrix --profile-config /nix/store/fake-profile.json "$@"
+          '';
+        }).overrideAttrs
+          (old: {
+            passthru = (old.passthru or { }) // {
+              launcher = fakeUnprofiledWrix;
+            };
+          });
+      fakeProfileManifest = pkgs.writeText "profile-images.json" "{}";
+      fakeLoomWrix = loomLib.mkLoomBin {
+        inherit pkgs;
+        loomBuild = {
+          bin = fakeLoomBin;
+        };
+        wrixLauncher = fakeProfiledWrix;
+        profileManifest = fakeProfileManifest;
+      };
+      loom-wrix-uses-unprofiled-spawn-launcher =
+        pkgs.runCommand "loom-wrix-uses-unprofiled-spawn-launcher" { }
+          ''
+            set -euo pipefail
+            grep=${pkgs.gnugrep}/bin/grep
+            wrapper=${fakeLoomWrix}/bin/loom
+            profiled=${fakeProfiledWrix}/bin/wrix
+            unprofiled=${fakeUnprofiledWrix}/bin/wrix
+            "$grep" -qF "LOOM_WRIX_BIN" "$wrapper"
+            "$grep" -qF "LOOM_WRIX_SPAWN_BIN" "$wrapper"
+            "$grep" -qF "$profiled" "$wrapper"
+            "$grep" -qF "$unprofiled" "$wrapper"
+            "$grep" -q -- '--profile-config' "$profiled"
+            if "$grep" -q -- '--profile-config' "$unprofiled"; then
+              printf 'LOOM_WRIX_SPAWN_BIN must point at the unprofiled wrix launcher, not %s\n' "$unprofiled" >&2
+              exit 1
+            fi
+            touch "$out"
+          '';
     in
     {
       checks = {
         inherit
           loom-gate-check
+          loom-wrix-uses-unprofiled-spawn-launcher
           profile-manifest-keeps-runtime-path-context
           sandbox-profile-env-has-loom
           sandbox-profile-env-has-wrix
