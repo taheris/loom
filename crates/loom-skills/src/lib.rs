@@ -199,6 +199,40 @@ mod tests {
     }
 
     #[test]
+    fn configured_directory_overlap_skips_package_contents() {
+        let repo = workspace();
+        write(
+            &repo.path().join("skills/review/skill.md"),
+            &skill_markdown(
+                "repo-review",
+                "Use when testing configured overlap with package discovery.",
+                "",
+            ),
+        );
+        write(&repo.path().join("skills/review/tuning.md"), "# Tuning\n");
+        write(&repo.path().join("skills/review/notes.md"), "# Notes\n");
+
+        let report = load_workspace(
+            repo.path(),
+            &[
+                PathBuf::from("skills/review/skill.md"),
+                PathBuf::from("skills/review/tuning.md"),
+                PathBuf::from("skills/review/notes.md"),
+            ],
+            &[PathBuf::from("skills")],
+        )
+        .expect("overlapping configured directory skips package contents");
+
+        let skills = report.set().skills();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name().as_str(), "repo-review");
+        assert_eq!(
+            skills[0].provenance().tuning_path,
+            Some(repo.path().join("skills/review/tuning.md"))
+        );
+    }
+
+    #[test]
     fn workspace_discovery_skips_loom_builtin_source_packages() {
         let repo = workspace();
         let source_path = repo

@@ -154,7 +154,7 @@ pub fn load_workspace(
 ) -> Result<DiscoveryReport, DiscoveryError> {
     let workspace = workspace.as_ref();
     let mut report = discover_workspace(workspace, tracked_files)?;
-    let skip = canonical_package_paths(report.set().skills());
+    let skip = canonical_package_dirs(report.set().skills());
     let configured = load_configured_paths_inner(workspace, configured_paths, &skip)?;
     let overrides = load_overrides(workspace)?;
     report.extend_set(configured);
@@ -211,7 +211,7 @@ fn load_configured_paths_inner(
         } else if path.is_dir() {
             for file in markdown_files_under(&path)? {
                 let full = path.join(file);
-                if canonical_in(&full, skip_canonical) {
+                if is_under_canonical_package(&full, skip_canonical) {
                     continue;
                 }
                 match load_loose_file(&full, SkillSource::Configured) {
@@ -353,16 +353,18 @@ fn invalid_skill(diagnostic: SkillDiagnostic) -> DiscoveryError {
     }
 }
 
-fn canonical_package_paths(skills: &[NamedSkill]) -> BTreeSet<PathBuf> {
+fn canonical_package_dirs(skills: &[NamedSkill]) -> BTreeSet<PathBuf> {
     skills
         .iter()
         .filter(|skill| skill.source() == SkillSource::Workspace)
-        .map(|skill| comparable_path(&skill.provenance().document_path))
+        .map(|skill| comparable_path(&skill.provenance().base_dir))
         .collect()
 }
 
-fn canonical_in(path: &Path, skip: &BTreeSet<PathBuf>) -> bool {
-    skip.contains(&comparable_path(path))
+fn is_under_canonical_package(path: &Path, skip: &BTreeSet<PathBuf>) -> bool {
+    let comparable = comparable_path(path);
+    skip.iter()
+        .any(|package_dir| comparable.starts_with(package_dir))
 }
 
 fn comparable_path(path: &Path) -> PathBuf {

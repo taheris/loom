@@ -24,6 +24,7 @@ use loom_tune::config::{FileConfig as TuneFileConfig, TuneConfig};
 use loom_tune::evidence::{
     Item, ItemId, RootReport, Snapshot as EvidenceSnapshot, SplitError, Splitter,
 };
+use loom_tune::executor::{self as tune_executor, Artifact as TuneArtifact};
 use loom_tune::gate::{self as tune_gate, Outcome as GateOutcome, State as GateState};
 use loom_tune::plan::{self, FrozenPlan, PlanError};
 use loom_tune::proposal::{
@@ -143,12 +144,14 @@ pub async fn run(workspace: &Path, request: Request) -> Result<Response, TuneErr
 #[derive(Debug)]
 struct Context {
     workspace: PathBuf,
+    tracked_files: BTreeSet<PathBuf>,
     tune_config: TuneConfig,
     skills: Vec<SkillEntry>,
     phases: Vec<TemplateEntry>,
     partials: Vec<TemplateEntry>,
     checker_registry: CheckerRegistry,
-    loaded_cases: LoadedCases,
+    disabled_checkers: BTreeSet<loom_tune::CheckerId>,
+    target_catalog: TargetCatalog,
     root_report: RootReport,
     evidence: EvidenceSnapshot,
     base_commit: String,
@@ -176,25 +179,19 @@ impl Context {
         let partials = load_partial_entries(&tracked_files);
         let checker_registry = CheckerRegistry::builtin()?;
         let target_catalog = target_catalog(&skills, &phases, &partials);
-        let disabled = tune_config.disabled_checkers(&checker_registry)?;
-        let loaded_cases = load_tuning_cases(
-            &workspace,
-            &tracked_files,
-            &skills,
-            &target_catalog,
-            &checker_registry,
-            &disabled,
-        )?;
+        let disabled_checkers = tune_config.disabled_checkers(&checker_registry)?;
         let root_report = RootReport::from_config(&workspace, &tune_config.evidence);
         let evidence = build_evidence(&workspace, &tune_config, target_catalog.targets().cloned())?;
         Ok(Self {
             workspace,
+            tracked_files,
             tune_config,
             skills,
             phases,
             partials,
             checker_registry,
-            loaded_cases,
+            disabled_checkers,
+            target_catalog,
             root_report,
             evidence,
             base_commit,
@@ -216,17 +213,26 @@ impl Context {
         let seed = proposal
             .seed
             .unwrap_or_else(|| generated_seed(&targets, proposal.level, &self.base_commit));
+        let loaded_tuning = load_tuning_cases(
+            &self.workspace,
+            &self.tracked_files,
+            &self.skills,
+            &self.target_catalog,
+            &targets,
+            &self.checker_registry,
+            &self.disabled_checkers,
+        )?;
         let frozen = plan::build(plan::Request {
             targets: targets.clone(),
             level: proposal.level,
-            cases: &self.loaded_cases,
+            cases: &loaded_tuning.cases,
             evidence: &self.evidence,
             config: &self.tune_config,
             registry: &self.checker_registry,
             seed,
         })?;
         let case_counts = CaseCounts {
-            declared: self.loaded_cases.cases().len(),
+            declared: loaded_tuning.cases.cases().len(),
             mined_train: self.evidence.train.len(),
             mined_selection: self.evidence.selection.len(),
             selected: frozen.selected_cases.len(),
@@ -236,6 +242,8 @@ impl Context {
             targets,
             frozen,
             case_counts,
+            loaded_cases: loaded_tuning.cases,
+            tuning_guidance: loaded_tuning.guidance,
         })
     }
 
@@ -417,6 +425,19 @@ struct PreparedPlan {
     targets: Vec<Target>,
     frozen: FrozenPlan,
     case_counts: CaseCounts,
+    loaded_cases: LoadedCases,
+    tuning_guidance: Vec<TuningDocumentGuidance>,
+}
+
+#[derive(Debug, Clone)]
+struct TuningDocumentGuidance {
+    path: PathBuf,
+    lines: Vec<String>,
+}
+
+struct LoadedTuning {
+    cases: LoadedCases,
+    guidance: Vec<TuningDocumentGuidance>,
 }
 
 async fn create_proposal(
@@ -452,13 +473,16 @@ async fn create_proposal(
     create_envelope_dirs(&local_paths)?;
     let branch = format!("loom/tune/{bead_id}");
     clone_repo(&context.workspace, &repo, &context.base_commit, &branch).await?;
-    let touched = write_candidate_files(&context, proposal, &prepared.targets, &repo)?;
+    let touched = write_candidate_files(&context, proposal, &prepared, &repo)?;
+    let artifacts = target_artifacts(&context, &prepared.targets, &repo)?;
     let candidate_validation = validate_candidate(
         &repo,
         &prepared.frozen,
+        &prepared.loaded_cases,
         &context.checker_registry,
         &prepared.targets,
         &touched,
+        &artifacts,
     )?;
     commit_candidate(&repo, proposal.surface, proposal.level, &bead_id).await?;
     let proposal_head = GitClient::open(&repo)?.head_commit_sha().await?.to_string();
@@ -657,36 +681,56 @@ fn load_tuning_cases(
     workspace: &Path,
     tracked_files: &BTreeSet<PathBuf>,
     skills: &[SkillEntry],
-    targets: &TargetCatalog,
+    known_targets: &TargetCatalog,
+    tune_targets: &[Target],
     registry: &CheckerRegistry,
     disabled: &BTreeSet<loom_tune::CheckerId>,
-) -> Result<LoadedCases, TuneError> {
-    let documents = tuning_documents(workspace, tracked_files, skills)?;
-    load_documents(
-        &documents,
+) -> Result<LoadedTuning, TuneError> {
+    let tuning = tuning_documents(workspace, tracked_files, skills, tune_targets)?;
+    let cases = load_documents(
+        &tuning.documents,
         &LoadContext {
             repo_root: workspace,
             tracked_files,
-            targets,
+            targets: known_targets,
             registry,
             disabled_checkers: disabled,
         },
     )
-    .map_err(TuneError::CaseLoad)
+    .map_err(TuneError::CaseLoad)?;
+    Ok(LoadedTuning {
+        cases,
+        guidance: tuning.guidance,
+    })
+}
+
+struct TuningDocuments {
+    documents: Vec<Document>,
+    guidance: Vec<TuningDocumentGuidance>,
 }
 
 fn tuning_documents(
     workspace: &Path,
     tracked_files: &BTreeSet<PathBuf>,
     skills: &[SkillEntry],
-) -> Result<Vec<Document>, TuneError> {
+    tune_targets: &[Target],
+) -> Result<TuningDocuments, TuneError> {
     let mut documents = Vec::new();
+    let mut guidance = Vec::new();
     let repo_tuning = PathBuf::from("docs/tuning.md");
     if tracked_files.contains(&repo_tuning) {
         let path = workspace.join(&repo_tuning);
-        documents.push(Document::repo(path.clone(), read_to_string(&path)?));
+        let markdown = read_to_string(&path)?;
+        guidance.push(TuningDocumentGuidance {
+            path: path.clone(),
+            lines: tuning_guidance_lines(&markdown),
+        });
+        documents.push(Document::repo(path, markdown));
     }
     for skill in skills {
+        if !tune_targets.contains(&skill.target) {
+            continue;
+        }
         let Some(path) = &skill.tuning_path else {
             continue;
         };
@@ -697,14 +741,44 @@ fn tuning_documents(
             continue;
         }
         if let Target::Skill { name } = &skill.target {
-            documents.push(Document::package(
-                path.clone(),
-                name.clone(),
-                read_to_string(path)?,
-            ));
+            let markdown = read_to_string(path)?;
+            guidance.push(TuningDocumentGuidance {
+                path: path.clone(),
+                lines: tuning_guidance_lines(&markdown),
+            });
+            documents.push(Document::package(path.clone(), name.clone(), markdown));
         }
     }
-    Ok(documents)
+    Ok(TuningDocuments {
+        documents,
+        guidance,
+    })
+}
+
+fn tuning_guidance_lines(markdown: &str) -> Vec<String> {
+    let mut in_case = false;
+    let mut lines = Vec::new();
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```loom-case") {
+            in_case = true;
+            continue;
+        }
+        if in_case {
+            if trimmed.starts_with("```") {
+                in_case = false;
+            }
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        lines.push(trimmed.chars().take(160).collect::<String>());
+        if lines.len() == 3 {
+            break;
+        }
+    }
+    lines
 }
 
 fn build_evidence(
@@ -805,10 +879,10 @@ fn render_dry_run(context: &Context, plan: &PreparedPlan) -> String {
     out.push_str("loom tune dry-run\n");
     out.push_str(&format!("workspace: {}\n", context.workspace.display()));
     out.push_str("loaded tuning docs:\n");
-    if context.loaded_cases.documents().is_empty() {
+    if plan.loaded_cases.documents().is_empty() {
         out.push_str("- (none)\n");
     } else {
-        for document in context.loaded_cases.documents() {
+        for document in plan.loaded_cases.documents() {
             out.push_str(&format!(
                 "- {} ({} case(s))\n",
                 document.path.display(),
@@ -932,11 +1006,11 @@ async fn clone_repo(
 fn write_candidate_files(
     context: &Context,
     proposal: &ProposeRequest,
-    targets: &[Target],
+    plan: &PreparedPlan,
     repo: &Path,
 ) -> Result<Vec<PathBuf>, TuneError> {
     let mut touched = Vec::new();
-    for target in targets {
+    for target in &plan.targets {
         let path = context.candidate_path(target, repo)?;
         if let Target::Skill { .. } = target
             && let Some(entry) = context.skills.iter().find(|entry| &entry.target == target)
@@ -945,7 +1019,7 @@ fn write_candidate_files(
         {
             write_parented(&path, &entry.markdown)?;
         }
-        append_candidate_note(&path, proposal.level, target)?;
+        append_candidate_note(&path, proposal.level, target, context, plan)?;
         touched.push(path);
     }
     touched.sort();
@@ -953,7 +1027,13 @@ fn write_candidate_files(
     Ok(touched)
 }
 
-fn append_candidate_note(path: &Path, level: Level, target: &Target) -> Result<(), TuneError> {
+fn append_candidate_note(
+    path: &Path,
+    level: Level,
+    target: &Target,
+    context: &Context,
+    plan: &PreparedPlan,
+) -> Result<(), TuneError> {
     let mut body = fs::read_to_string(path).map_err(|source| TuneError::ReadFile {
         path: path.to_path_buf(),
         source,
@@ -962,12 +1042,85 @@ fn append_candidate_note(path: &Path, level: Level, target: &Target) -> Result<(
         body.push('\n');
     }
     body.push_str("\n## Tuning Candidate Notes\n\n");
-    body.push_str(&format!(
-        "- Candidate generated at `{}` level for `{}`.\n",
+    body.push_str(&candidate_note(level, target, context, plan));
+    write_parented(path, &body)
+}
+
+fn candidate_note(level: Level, target: &Target, context: &Context, plan: &PreparedPlan) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "- Candidate level: `{}` for `{}`.\n",
         level_name(level),
         target
     ));
-    write_parented(path, &body)
+    out.push_str(
+        "- Edit budget: one bounded guidance section derived from loaded tuning context.\n",
+    );
+    out.push_str("- Evidence roots considered:\n");
+    for line in context.root_report.lines() {
+        out.push_str(&format!("  - {line}\n"));
+    }
+    out.push_str("- Tuning guidance considered:\n");
+    if plan.tuning_guidance.is_empty() {
+        out.push_str("  - (none)\n");
+    } else {
+        for guidance in &plan.tuning_guidance {
+            let path = relative_or_original(&guidance.path, &context.workspace);
+            let summary = if guidance.lines.is_empty() {
+                "case declarations only".to_owned()
+            } else {
+                guidance.lines.join(" / ")
+            };
+            out.push_str(&format!("  - {}: {summary}\n", path.display()));
+        }
+    }
+    out.push_str("- Selected behavioral cases for this target:\n");
+    let case_lines = selected_case_guidance(plan, target);
+    if case_lines.is_empty() {
+        out.push_str("  - (none)\n");
+    } else {
+        for line in case_lines {
+            out.push_str(&format!("  - {line}\n"));
+        }
+    }
+    out
+}
+
+fn selected_case_guidance(plan: &PreparedPlan, target: &Target) -> Vec<String> {
+    let mut lines = Vec::new();
+    for selected in &plan.frozen.selected_cases {
+        match &selected.case_id {
+            loom_tune::plan::PlannedCaseId::Declared(id) => {
+                let Some(case) = plan.loaded_cases.cases().iter().find(|case| &case.id == id)
+                else {
+                    continue;
+                };
+                if !target.intersects_any(&case.targets) {
+                    continue;
+                }
+                let terms = tune_executor::expected_terms(&case.expected);
+                lines.push(format!(
+                    "{} via {}: {}",
+                    selected.case_id,
+                    selected.checker,
+                    format_terms(&terms)
+                ));
+            }
+            loom_tune::plan::PlannedCaseId::Mined(_) => lines.push(format!(
+                "{} via {}: mined selection evidence",
+                selected.case_id, selected.checker
+            )),
+        }
+    }
+    lines
+}
+
+fn format_terms(terms: &[String]) -> String {
+    if terms.is_empty() {
+        "no explicit terms".to_owned()
+    } else {
+        terms.join("; ")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -976,12 +1129,63 @@ struct CandidateValidation {
     outcome_counts: OutcomeCounts,
 }
 
+fn target_artifacts(
+    context: &Context,
+    targets: &[Target],
+    repo: &Path,
+) -> Result<Vec<TuneArtifact>, TuneError> {
+    targets
+        .iter()
+        .map(|target| {
+            let candidate_path = context.candidate_path(target, repo)?;
+            Ok(TuneArtifact::new(
+                target.clone(),
+                current_artifact_text(context, target)?,
+                read_to_string(&candidate_path)?,
+            ))
+        })
+        .collect()
+}
+
+fn current_artifact_text(context: &Context, target: &Target) -> Result<String, TuneError> {
+    match target {
+        Target::Skill { .. } => {
+            let entry = context
+                .skills
+                .iter()
+                .find(|entry| &entry.target == target)
+                .ok_or_else(|| TuneError::UnknownTarget {
+                    target: target.clone(),
+                })?;
+            Ok(entry.markdown.clone())
+        }
+        Target::Phase { .. } => current_template_text(context, target, &context.phases),
+        Target::Partial { .. } => current_template_text(context, target, &context.partials),
+    }
+}
+
+fn current_template_text(
+    context: &Context,
+    target: &Target,
+    entries: &[TemplateEntry],
+) -> Result<String, TuneError> {
+    let entry = entries
+        .iter()
+        .find(|entry| &entry.target == target)
+        .ok_or_else(|| TuneError::UnknownTarget {
+            target: target.clone(),
+        })?;
+    read_to_string(&context.workspace.join(&entry.relative_path))
+}
+
 fn validate_candidate(
     repo: &Path,
     plan: &FrozenPlan,
+    loaded_cases: &LoadedCases,
     registry: &CheckerRegistry,
     targets: &[Target],
     touched: &[PathBuf],
+    artifacts: &[TuneArtifact],
 ) -> Result<CandidateValidation, TuneError> {
     let mut rows = vec![ValidationRow {
         check: "candidate-files".to_owned(),
@@ -994,7 +1198,7 @@ fn validate_candidate(
     {
         rows.extend(validate_templates(repo));
     }
-    let behavior = validate_behavioral_cases(plan, registry);
+    let behavior = validate_behavioral_cases(plan, loaded_cases, registry, artifacts);
     rows.extend(behavior.rows);
     Ok(CandidateValidation {
         rows,
@@ -1002,14 +1206,37 @@ fn validate_candidate(
     })
 }
 
-fn validate_behavioral_cases(plan: &FrozenPlan, registry: &CheckerRegistry) -> CandidateValidation {
+fn validate_behavioral_cases(
+    plan: &FrozenPlan,
+    loaded_cases: &LoadedCases,
+    registry: &CheckerRegistry,
+    artifacts: &[TuneArtifact],
+) -> CandidateValidation {
     if plan.selected_cases.is_empty() {
         return CandidateValidation {
             rows: Vec::new(),
             outcome_counts: OutcomeCounts::pending(0),
         };
     }
-    match tune_gate::evaluate(plan, Vec::<tune_gate::CaseResult>::new(), registry) {
+    let results = match tune_executor::run(plan, loaded_cases, artifacts) {
+        Ok(results) => results,
+        Err(source) => {
+            return CandidateValidation {
+                rows: vec![ValidationRow {
+                    check: "behavioral-cases".to_owned(),
+                    status: ValidationStatus::Failed,
+                    detail: format!("checker execution failed: {source}"),
+                }],
+                outcome_counts: OutcomeCounts {
+                    pending: 0,
+                    passed: 0,
+                    failed: 0,
+                    blocked: plan.selected_cases.len(),
+                },
+            };
+        }
+    };
+    match tune_gate::evaluate(plan, results, registry) {
         Ok(report) => CandidateValidation {
             rows: vec![ValidationRow {
                 check: "behavioral-cases".to_owned(),
@@ -1183,10 +1410,10 @@ fn write_evidence(path: &Path, context: &Context, plan: &PreparedPlan) -> Result
         body.push('\n');
     }
     body.push_str("\n## Loaded tuning docs\n\n");
-    if context.loaded_cases.documents().is_empty() {
+    if plan.loaded_cases.documents().is_empty() {
         body.push_str("- (none)\n");
     } else {
-        for document in context.loaded_cases.documents() {
+        for document in plan.loaded_cases.documents() {
             body.push_str(&format!(
                 "- {} ({} case(s))\n",
                 document.path.display(),

@@ -1774,55 +1774,13 @@ separate rendered framing:
 
 ### Tune Modes
 
-`loom tune` with no subcommand prints clap/default command help and exits 0.
-Listing commands are read-only; they do not create tune beads, harvest external
-evidence, or run candidate generation.
-
-| Command | Meaning |
-|---------|---------|
-| `loom tune skill` | List tuneable skills with name, description, source, applicability, and paths according to disclosure policy. |
-| `loom tune phase` | List tuneable phase templates. |
-| `loom tune partial` | List tuneable partials. |
-| `loom tune checker` | List registered tuning checkers with id, status, target kinds, levels, cost, mandatory/disableable policy, and summaries. |
-| `loom tune all` | List all tuneable surfaces and summary counts. |
-
-Proposal creation requires an explicit level:
-
-| Command | Meaning |
-|---------|---------|
-| `loom tune skill fast|run|full [<skill-name>...]` | Tune all applicable skills when no names are supplied, or the named skills when supplied. |
-| `loom tune phase fast|run|full [<phase-name>...]` | Tune all phase templates when no names are supplied, or named templates such as `plan`, `todo`, `loop`, `review`, `inbox`. |
-| `loom tune partial fast|run|full [<partial-name>...]` | Tune all partials when no names are supplied, or the named partials. |
-| `loom tune all fast|run|full` | Tune skills, phase templates, and partials in one proposal; target names are not accepted after `all`. |
-
-There are no plural aliases and no `template` umbrella command in v1. `loom tune
-checker` is list-only; `loom tune checker run` is invalid. The first positional
-after `skill`/`phase`/`partial` is interpreted as a level only if it is exactly
-`fast`, `run`, or `full`; remaining positionals are target names. To tune a skill
-named `run`, use `loom tune skill run run`.
-
-Common flags for proposal-creating commands:
-
-| Flag | Meaning |
-|------|---------|
-| `--dry-run` | Print loaded tuning docs, evidence roots, seed, case pool, selected/skipped cases, and frozen checker plan; create no candidate. Invalid on list commands. |
-| `--seed <n>` | Use a deterministic checker-plan seed; generated and recorded when absent. |
-
-Each tuning invocation creates one tune bead and one local
-`.loom/tune/<bead-id>/` envelope with `repo/`, `manifest.json`, `evidence.md`,
-`logs/`, and `evidence/`. The invoking checkout is not modified. Evidence
-defaults to the workspace; external evidence roots require explicit
-`[tune.evidence].external_roots` config and are printed before harvesting.
-Loaded tuning docs are `docs/tuning.md` plus applicable package `tuning.md` files;
-`loom-case` blocks are parsed and validated at every level, including `fast` and
-`--dry-run`.
-
-The checker plan is selected/frozen before candidate generation and recorded in
-the bead/manifest. `fast` runs preflight and case validation only; `run` executes
-a bounded behavioral checker plan; `full` runs all applicable declared regression
-cases before sampling mined selection evidence under hard caps. Template
-candidates must compile/render/pass conformance validation in the proposal
-worktree before they enter `loom inbox` as pending.
+The `loom tune` command surface, levels, target names, and common proposal flags
+are owned by [skills.md § Tune Command Surface](skills.md#tune-command-surface).
+This harness spec owns only platform effects around that surface: proposal
+allocation is serialized by `tune.lock`, proposal work happens in an isolated
+`.loom/tune/<bead-id>/` checkout, the invoking checkout is not modified, and
+resulting tune proposals route through `loom inbox` for human review and apply
+handoff.
 
 ### Crate Layout
 
@@ -3360,25 +3318,22 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       queue; without filters, the session sees every outstanding human decision
       item regardless of active work epic and normally works them one at a time
   [test](loom_inbox_chat_scope_filters_queue)
-- Bare `loom tune` prints command help; `loom tune skill`, `phase`, `partial`,
-      `checker`, and `all` are read-only listing commands that create no tune
-      bead or `.loom/tune/<bead-id>/`
+- The tune CLI surface owned by [skills.md](skills.md#tune-command-surface) is
+      wired into the binary, and read-only tune invocations do not allocate tune
+      proposal envelopes
   [test](loom_tune_bare_prints_help_without_proposal)
-- `loom tune skill fast|run|full`, `loom tune phase fast|run|full`,
-      `loom tune partial fast|run|full`, and `loom tune all fast|run|full` each
-      create one tune bead plus one isolated `.loom/tune/<bead-id>/` envelope
-      with `repo/`, `manifest.json`, `evidence.md`, logs/evidence caches, and no
-      changes to the invoking checkout
+- Proposal-creating tune invocations allocate one tune bead plus one isolated
+      `.loom/tune/<bead-id>/` envelope with `repo/`, `manifest.json`,
+      `evidence.md`, logs/evidence caches, and no changes to the invoking
+      checkout
   [test](loom_tune_subcommands_create_isolated_proposals)
-- `loom tune ... --dry-run` on a proposal-creating command prints loaded tuning
-      docs, evidence roots, seed, case pool, selected/skipped cases, and the
-      frozen checker plan without candidate generation; `--seed` pins the
-      deterministic sampling seed. `--dry-run` is invalid on list commands.
+- Tune dry-runs exercise the same planning path as proposal creation and stop
+      before candidate generation, preserving deterministic checker-plan output
   [test](loom_tune_level_seed_dry_run_shape_plan)
-- `loom tune` prints workspace and explicitly configured external evidence
-      roots before harvesting; no home-directory transcript root is implicit;
-      `[tune.evidence].selection_fraction` drives stable train/selection splits
-  [test?](loom_tune_evidence_roots_printed_and_explicit)
+- Tune evidence harvesting stays workspace-first and reports only explicitly
+      configured external evidence roots; home-directory transcript roots are
+      not implicit
+  [test](skill_tune_evidence_roots_and_gate)
 - `loom spec` queries spec annotations (`[check]` / `[test]` /
       `[system]` / `[judge]`) parsed via `loom-gate`'s annotation parser
   [test](list_for_label_reads_all_four_tiers)
@@ -3961,11 +3916,10 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
      `loom inbox view` renders a numbered, bead-addressed, or proposal-addressed
      item; and `loom inbox chat` launches the interactive resolution agent.
      There is no host-side pick/reply/resolve/apply path in v1.
-   - `loom tune` — manual SkillOpt-style tuning surface. Bare `loom tune`
-     prints command help. `loom tune skill` / `phase` / `partial` / `checker` /
-     `all` are read-only listing commands. `loom tune skill fast|run|full`,
-     `phase fast|run|full`, `partial fast|run|full`, and `all fast|run|full`
-     create one tune bead plus a local `.loom/tune/<bead-id>/` proposal envelope
+   - `loom tune` — manual SkillOpt-style tuning surface. The detailed command
+     table is owned by [skills.md § Tune Command Surface](skills.md#tune-command-surface);
+     this harness spec owns the platform contract that proposal-creating tune
+     invocations allocate one local `.loom/tune/<bead-id>/` proposal envelope
      for later review through `loom inbox`.
 
    **Inspection** — read-only views over cache, bd state, and logs:

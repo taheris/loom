@@ -4,6 +4,7 @@ pub mod case;
 pub mod checker;
 pub mod config;
 pub mod evidence;
+pub mod executor;
 pub mod gate;
 pub mod plan;
 pub mod proposal;
@@ -26,9 +27,9 @@ mod tests {
     use crate::checker::{CheckerId, Level, Registry};
     use crate::config::{ChecksConfig, EvidenceConfig, SelectionFraction, TuneConfig};
     use crate::evidence::{Item, ItemId, RootReport, Snapshot, SplitMetadata};
-    use crate::gate::{self, CaseResult, Outcome, Scores, State};
+    use crate::executor::Artifact;
+    use crate::gate::{self, Outcome, State};
     use crate::plan::{PlannedCaseId, Pool, Request, build};
-    use crate::score::Score;
     use crate::target::{Catalog as TargetCatalog, Target};
 
     fn write(path: &Path, body: &str) {
@@ -152,7 +153,7 @@ contains = ["missing test"]
     }
 
     #[test]
-    fn skill_tune_evidence_roots_and_gate() {
+    fn tune_gate_requires_executor_results_for_selected_cases() {
         let repo = TempDir::new().expect("tempdir");
         write(
             &repo.path().join("docs/tuning.md"),
@@ -189,7 +190,7 @@ contains = ["missing test"]
             checks: ChecksConfig::default(),
         };
         let plan = build(Request {
-            targets: vec![target],
+            targets: vec![target.clone()],
             level: Level::Run,
             cases: &cases,
             evidence: &evidence,
@@ -216,26 +217,22 @@ contains = ["missing test"]
             .find(|case| matches!(case.case_id, PlannedCaseId::Declared(_)))
             .expect("declared case selected");
         assert_eq!(selected.pool, Pool::DeclaredRegression);
-        let report = gate::evaluate(
+        let result = crate::executor::run(
             &plan,
-            [CaseResult::new(
-                selected,
-                Scores::new(
-                    Score::new(1.0).expect("score"),
-                    Score::new(1.0).expect("score"),
-                ),
-                Scores::new(
-                    Score::new(0.0).expect("score"),
-                    Score::new(0.0).expect("score"),
-                ),
+            &cases,
+            &[Artifact::new(
+                target,
+                "generic review guidance",
+                "guidance that catches missing test findings",
             )],
-            &registry,
         )
-        .expect("gate evaluates selected behavior");
-        assert_eq!(report.state, State::Blocked);
-        assert_eq!(report.cases[0].outcome, Outcome::Regressed);
+        .expect("checker implementations run");
+        let report =
+            gate::evaluate(&plan, result, &registry).expect("gate evaluates selected behavior");
+        assert_eq!(report.state, State::Passed);
+        assert_eq!(report.cases[0].outcome, Outcome::Improved);
 
-        let missing = gate::evaluate(&plan, Vec::<CaseResult>::new(), &registry)
+        let missing = gate::evaluate(&plan, Vec::<gate::CaseResult>::new(), &registry)
             .expect_err("selected behavior must run before staging");
         assert!(matches!(missing, gate::Error::MissingResult { .. }));
     }

@@ -43,6 +43,13 @@ fn init_workspace(root: &Path) {
     git(root, &["commit", "-q", "-m", "seed workspace"]);
 }
 
+fn write_file(path: &Path, body: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create parent");
+    }
+    std::fs::write(path, body).expect("write file");
+}
+
 fn git(root: &Path, args: &[&str]) {
     let output = git_command()
         .args(args)
@@ -225,6 +232,143 @@ fn loom_tune_level_seed_dry_run_shape_plan() {
         assert!(out.contains(needle), "missing {needle}: {out}");
     }
     assert!(!tmp.path().join(".loom/tune").exists());
+}
+
+#[test]
+fn package_tuning_docs_load_only_for_tuned_skill_target() {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    init_workspace(tmp.path());
+    let bin_dir = install_bd_shim(tmp.path());
+    let state_dir = tmp.path().join("bd-state");
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    write_file(
+        &tmp.path().join("skills/target/skill.md"),
+        "---\nname: repo-target\ndescription: Use when tuning the selected package skill.\n---\nBody\n",
+    );
+    write_file(
+        &tmp.path().join("skills/other/skill.md"),
+        "---\nname: repo-other\ndescription: Use when testing non-target package tuning isolation.\n---\nBody\n",
+    );
+    write_file(
+        &tmp.path().join("skills/other/tuning.md"),
+        r#"```loom-case
+id = "other-package-case"
+checker = "behavior.review.finding-recall"
+targets = ["skill:repo-target"]
+```
+"#,
+    );
+    git(tmp.path(), &["add", "."]);
+    git(tmp.path(), &["commit", "-q", "-m", "add package skills"]);
+
+    let args = ["tune", "skill", "fast", "--dry-run", "repo-target"];
+    let output = run_loom(tmp.path(), &bin_dir, &state_dir, &args);
+
+    assert_success(&output, &args);
+    let out = stdout(&output);
+    assert!(!out.contains("skills/other/tuning.md"), "{out}");
+}
+
+#[test]
+fn skill_tune_evidence_roots_and_gate() {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    init_workspace(tmp.path());
+    let bin_dir = install_bd_shim(tmp.path());
+    let state_dir = tmp.path().join("bd-state");
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    write_file(
+        &tmp.path().join("loom.toml"),
+        "[tune.evidence]\nexternal_roots = [\"/tmp/explicit-transcripts\"]\n",
+    );
+    write_file(
+        &tmp.path().join("docs/tuning.md"),
+        r#"# Fixture tuning guidance
+
+Tune guidance: Always report missing test coverage when review evidence asks for it.
+
+```loom-case
+id = "review-recall-case"
+checker = "behavior.review.finding-recall"
+targets = ["skill:loom-context-before-edit"]
+
+[input]
+patch = "cases/review.diff"
+
+[expected]
+max_extra_findings = 1
+
+[[expected.findings]]
+contains = ["missing test"]
+```
+"#,
+    );
+    write_file(&tmp.path().join("docs/cases/review.diff"), "diff --git\n");
+    git(tmp.path(), &["add", "."]);
+    git(tmp.path(), &["commit", "-q", "-m", "add tuning case"]);
+
+    let dry_args = [
+        "tune",
+        "skill",
+        "run",
+        "--dry-run",
+        "--seed",
+        "7",
+        "loom-context-before-edit",
+    ];
+    let dry = run_loom(tmp.path(), &bin_dir, &state_dir, &dry_args);
+    assert_success(&dry, &dry_args);
+    let dry_out = stdout(&dry);
+    assert!(dry_out.contains("workspace:"), "{dry_out}");
+    assert!(
+        dry_out.contains("external: /tmp/explicit-transcripts"),
+        "{dry_out}"
+    );
+    assert!(!dry_out.contains(".claude"), "{dry_out}");
+    assert!(dry_out.contains("declared:review-recall-case"), "{dry_out}");
+
+    let args = [
+        "tune",
+        "skill",
+        "run",
+        "--seed",
+        "7",
+        "loom-context-before-edit",
+    ];
+    let output = run_loom_with_env(
+        tmp.path(),
+        &bin_dir,
+        &state_dir,
+        &args,
+        &[("BD_CREATE_ID", "lm-tune.2")],
+    );
+
+    assert_success(&output, &args);
+    let envelope = tmp.path().join(".loom/tune/lm-tune.2");
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(envelope.join("manifest.json")).expect("read manifest"),
+    )
+    .expect("manifest json");
+    assert_eq!(manifest["state"], "pending");
+    assert!(
+        manifest["validation"]
+            .as_array()
+            .expect("validation rows")
+            .iter()
+            .any(|row| row["check"] == "behavioral-cases"
+                && row["status"] == "passed"
+                && row["detail"]
+                    .as_str()
+                    .expect("detail")
+                    .contains("selected behavioral case(s) evaluated")),
+        "validation={}",
+        manifest["validation"],
+    );
+    let candidate = std::fs::read_to_string(
+        envelope.join("repo/.loom-override/skills/loom-context-before-edit/skill.md"),
+    )
+    .expect("candidate skill");
+    assert!(candidate.contains("missing test"), "{candidate}");
+    assert!(candidate.contains("Tune guidance"), "{candidate}");
 }
 
 #[test]
