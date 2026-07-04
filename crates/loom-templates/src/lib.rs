@@ -35,7 +35,7 @@ pub mod workspace_recovery;
 
 pub use criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
-    CriterionStatus, EvidenceState,
+    CriterionStatus, EvidenceState, ParseCriterionIdError,
 };
 pub use finding::{
     ConcernToken, Finding, FindingParseError, FindingRoute, FindingTarget, FindingValidator,

@@ -195,7 +195,7 @@ from each streamed finding's `route`, not from the terminal marker.
 | 0 | `LOOM_COMPLETE` | clean — phase done |
 | ≥1 | `LOOM_CONCERN: {"summary":"..."}` | recovery — findings minted, summary threaded into `previous_failure` |
 | 0 | `LOOM_CONCERN: {...}` | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration |
-| ≥1 | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count }` — findings streamed but terminator claims clean |
+| ≥1 | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count, findings }` — findings streamed but terminator claims clean, and the parsed findings ride through to the recovery prompt |
 | any well-formed stream | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings }` — payload parse failure preserves the literal payload and any well-formed findings |
 | any | missing or duplicate marker | `SwallowedMarker` (existing) |
 

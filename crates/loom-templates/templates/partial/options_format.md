@@ -18,7 +18,8 @@
     en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
     tolerate any of these; emit em-dash by default.
   - Each option is `### Option N — <title>` where `N` is 1-based
-    sequential. Numbering is required for `-a <int>` lookup to work.
+    sequential. Numbering is required so `loom inbox` can parse and
+    render each option consistently.
   - Each option body extends from its `### Option N` heading until
     the next `### Option` or the next `##` heading; name the cost
     (churn, debt, coupling, risk).
@@ -28,5 +29,5 @@
   `loom inbox` parses this format to render the SUMMARY column,
   enumerate options for view mode, and provide structured chat context.
   A malformed block — or one that lives only in your prose, never
-  persisted to bead state — breaks fast-reply with `-a <int>` and
-  leaves the options invisible to `loom inbox`'s queue.
+  persisted to bead state — leaves the options invisible to
+  `loom inbox`'s queue and chat context.

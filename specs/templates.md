@@ -837,10 +837,8 @@ Mint applies this default to every fix-up it creates; the operator
 overrides via `bd update <id> --labels` post-mint when a specific
 fix-up's toolchain needs diverge from the spec's default.
 
-This was previously a `review.md` template concern (`bd create
---labels=…` examples were rendered with `profile:{{ default_profile }}`).
-After unification, `review.md` no longer emits `bd create` calls;
-the driver applies the default profile when minting from
+`review.md` remains inspection-only and does not emit `bd create`
+calls; the driver applies the default profile when minting from
 `LOOM_FINDING:` records.
 
 ### Planning-Rubric Pending Discipline

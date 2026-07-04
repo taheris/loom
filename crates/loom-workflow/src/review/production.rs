@@ -1905,7 +1905,7 @@ mod tests {
             ),
             (
                 "T_concern_legacy",
-                "LOOM_CONCERN (malformed payload)",
+                "LOOM_CONCERN: <malformed>",
                 TerminalSurface::Malformed {
                     payload: T_CONCERN_LEGACY_PAYLOAD.to_string(),
                 },
@@ -1913,7 +1913,7 @@ mod tests {
             ),
             (
                 "T_concern_malformed",
-                "LOOM_CONCERN (malformed payload)",
+                "LOOM_CONCERN: <malformed>",
                 TerminalSurface::Malformed {
                     payload: T_CONCERN_MALFORMED_PAYLOAD.to_string(),
                 },
@@ -1921,7 +1921,7 @@ mod tests {
             ),
             (
                 "T_missing",
-                "no terminal marker",
+                "no terminal on the final non-empty line",
                 TerminalSurface::Missing,
                 vec![],
             ),

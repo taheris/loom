@@ -98,10 +98,7 @@ pub async fn build_criterion_status(
 }
 
 pub fn criterion_id_for(spec_label: &SpecLabel, criterion_text: &str) -> CriterionId {
-    CriterionId::new(loom_gate::annotation::criterion_id_for(
-        spec_label,
-        criterion_text,
-    ))
+    CriterionId::for_spec_text(spec_label, criterion_text)
 }
 
 pub fn criterion_text_for_line(content: &str, line: u32, next_line: Option<u32>) -> String {
@@ -213,5 +210,15 @@ mod tests {
         let a = criterion_id_for(&label, "A criterion");
         let b = criterion_id_for(&label, "A   criterion");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn criterion_id_matches_gate_cache_key_algorithm() {
+        let label = SpecLabel::new("templates");
+        let id = criterion_id_for(&label, "A criterion");
+        assert_eq!(
+            id.as_str(),
+            loom_gate::annotation::criterion_id_for(&label, "A criterion"),
+        );
     }
 }

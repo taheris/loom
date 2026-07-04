@@ -1,6 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-expression: todo_ctx().render().unwrap()
+expression: todo_ctx()?.render()?
 ---
 # Todo Decomposition
 
@@ -112,10 +112,10 @@ Carry the unified todo protocol into snapshots.
 
 The status cache below shows the latest cached verifier verdict for each Success-Criteria bullet in scope. Use these typed rows to distinguish criteria already covered by fresh positive evidence from stale, missing, failed, or skipped evidence.
 
-- **templates / engine-001** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `0123456789abcdef0123456789abcdef01234567` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`
-- **templates / engine-002** · Rendered output is stable across runs. · annotation `[test](template_renders_are_byte_stable_across_runs)` · evidence `Current` · result Fail · last commit `1111111111111111111111111111111111111111` · commits since 7 · last timestamp 1716200000000 · cached annotation `—`
-- **templates / criterion-status-001** · Todo prompts render typed criterion status rows. · annotation `[test](todo_template_renders_typed_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`
-- **templates / engine-003** · Every non-pending pinning cell matches the include graph. · annotation `[check](cargo run -p loom-walk -- template_pinning_matrix)` · evidence `Current` · result Skipped · last commit `2222222222222222222222222222222222222222` · commits since 3 · last timestamp 1716250000000 · cached annotation `—`
+- **templates / criterion-0000000000000001** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `0123456789abcdef0123456789abcdef01234567` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`
+- **templates / criterion-0000000000000002** · Rendered output is stable across runs. · annotation `[test](template_renders_are_byte_stable_across_runs)` · evidence `Current` · result Fail · last commit `1111111111111111111111111111111111111111` · commits since 7 · last timestamp 1716200000000 · cached annotation `—`
+- **templates / criterion-0000000000000003** · Todo prompts render typed criterion status rows. · annotation `[test](todo_template_renders_typed_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`
+- **templates / criterion-0000000000000004** · Every non-pending pinning cell matches the include graph. · annotation `[check](cargo run -p loom-walk -- template_pinning_matrix)` · evidence `Current` · result Skipped · last commit `2222222222222222222222222222222222222222` · commits since 3 · last timestamp 1716250000000 · cached annotation `—`
 
 ## Decomposition Discipline
 
@@ -204,7 +204,8 @@ A fixed decomposition axis applied across the board irrespective of evidence —
     en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
     tolerate any of these; emit em-dash by default.
   - Each option is `### Option N — <title>` where `N` is 1-based
-    sequential. Numbering is required for `-a <int>` lookup to work.
+    sequential. Numbering is required so `loom inbox` can parse and
+    render each option consistently.
   - Each option body extends from its `### Option N` heading until
     the next `### Option` or the next `##` heading; name the cost
     (churn, debt, coupling, risk).
@@ -214,8 +215,8 @@ A fixed decomposition axis applied across the board irrespective of evidence —
   `loom inbox` parses this format to render the SUMMARY column,
   enumerate options for view mode, and provide structured chat context.
   A malformed block — or one that lives only in your prose, never
-  persisted to bead state — breaks fast-reply with `-a <int>` and
-  leaves the options invisible to `loom inbox`'s queue.
+  persisted to bead state — leaves the options invisible to
+  `loom inbox`'s queue and chat context.
 
 ## Self-Report Markers
 
@@ -283,7 +284,8 @@ exactly one, on its own line, as the final output of the session.
     en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
     tolerate any of these; emit em-dash by default.
   - Each option is `### Option N — <title>` where `N` is 1-based
-    sequential. Numbering is required for `-a <int>` lookup to work.
+    sequential. Numbering is required so `loom inbox` can parse and
+    render each option consistently.
   - Each option body extends from its `### Option N` heading until
     the next `### Option` or the next `##` heading; name the cost
     (churn, debt, coupling, risk).
@@ -293,8 +295,8 @@ exactly one, on its own line, as the final output of the session.
   `loom inbox` parses this format to render the SUMMARY column,
   enumerate options for view mode, and provide structured chat context.
   A malformed block — or one that lives only in your prose, never
-  persisted to bead state — breaks fast-reply with `-a <int>` and
-  leaves the options invisible to `loom inbox`'s queue.
+  persisted to bead state — leaves the options invisible to
+  `loom inbox`'s queue and chat context.
 
   After persisting, the gate applies `loom:clarify` to the target
   bead/work epic and exits without entering recovery; other beads in the

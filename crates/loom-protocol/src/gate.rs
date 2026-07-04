@@ -1047,20 +1047,20 @@ pub enum TerminalSurface {
 }
 
 impl TerminalSurface {
-    /// Stable label used in `BadWalk::MalformedFinding` recovery
-    /// rendering so the agent sees what the terminal looked like
-    /// alongside the per-finding errors.
+    /// Stable rendering used in `BadWalk::MalformedFinding` recovery
+    /// prompts so the agent sees what the terminal looked like alongside
+    /// the per-finding errors.
     #[must_use]
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            Self::Complete => "LOOM_COMPLETE",
-            Self::Noop => "LOOM_NOOP",
-            Self::Blocked { .. } => "LOOM_BLOCKED",
-            Self::Clarify { .. } => "LOOM_CLARIFY",
-            Self::Retry { .. } => "LOOM_RETRY",
-            Self::Concern { .. } => "LOOM_CONCERN (well-formed)",
-            Self::Malformed { .. } => "LOOM_CONCERN (malformed payload)",
-            Self::Missing => "no terminal marker on the final non-empty line",
+            Self::Complete => "LOOM_COMPLETE".to_owned(),
+            Self::Noop => "LOOM_NOOP".to_owned(),
+            Self::Blocked { .. } => "LOOM_BLOCKED".to_owned(),
+            Self::Clarify { .. } => "LOOM_CLARIFY".to_owned(),
+            Self::Retry { .. } => "LOOM_RETRY".to_owned(),
+            Self::Concern { summary } => format!("LOOM_CONCERN: {summary}"),
+            Self::Malformed { payload } => format!("LOOM_CONCERN: <malformed: {payload}>"),
+            Self::Missing => "(no terminal on the final non-empty line)".to_owned(),
         }
     }
 }
@@ -2261,13 +2261,15 @@ mod tests {
         let malformed = TerminalSurface::Malformed {
             payload: "{not json}".to_owned(),
         };
-        assert_eq!(malformed.label(), "LOOM_CONCERN (malformed payload)");
+        assert_eq!(malformed.label(), "LOOM_CONCERN: <malformed: {not json}>");
+
+        let concern = TerminalSurface::Concern {
+            summary: "two findings".to_owned(),
+        };
+        assert_eq!(concern.label(), "LOOM_CONCERN: two findings");
 
         let missing = TerminalSurface::Missing;
-        assert_eq!(
-            missing.label(),
-            "no terminal marker on the final non-empty line",
-        );
+        assert_eq!(missing.label(), "(no terminal on the final non-empty line)");
     }
 
     #[test]

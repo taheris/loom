@@ -7,9 +7,12 @@
 //! [`EvidenceState::Missing`] values.
 
 use std::fmt;
+use std::str::FromStr;
 
+use displaydoc::Display;
 use loom_events::identifier::SpecLabel;
 use loom_protocol::todo::GitSha;
+use thiserror::Error;
 
 /// Per-criterion evidence record threaded into todo contexts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,8 +29,22 @@ pub struct CriterionStatus {
 pub struct CriterionId(String);
 
 impl CriterionId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn new(value: impl Into<String>) -> Result<Self, ParseCriterionIdError> {
+        let value = value.into();
+        if !is_criterion_id(&value) {
+            return Err(ParseCriterionIdError { value });
+        }
+        Ok(Self(value))
+    }
+
+    pub fn for_spec_text(spec_label: &SpecLabel, criterion_text: &str) -> Self {
+        let canonical = format!(
+            "{}\0{}",
+            spec_label.as_str(),
+            normalize_criterion_whitespace(criterion_text),
+        );
+        let digest = blake3::hash(canonical.as_bytes()).to_hex().to_string();
+        Self(format!("criterion-{}", &digest[..16]))
     }
 
     pub fn as_str(&self) -> &str {
@@ -35,10 +52,38 @@ impl CriterionId {
     }
 }
 
+impl FromStr for CriterionId {
+    type Err = ParseCriterionIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
 impl fmt::Display for CriterionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// invalid criterion id `{value}`: expected `criterion-` followed by 16 lowercase hex characters
+#[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
+pub struct ParseCriterionIdError {
+    pub value: String,
+}
+
+fn is_criterion_id(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("criterion-") else {
+        return false;
+    };
+    hex.len() == 16
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn normalize_criterion_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Parsed verifier annotation attached to a criterion.
@@ -186,5 +231,47 @@ impl CriterionResult {
             Self::Fail => "Fail",
             Self::Skipped => "Skipped",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CriterionId, ParseCriterionIdError};
+    use loom_events::identifier::SpecLabel;
+
+    #[test]
+    fn criterion_id_new_accepts_generated_shape() {
+        let id = CriterionId::new("criterion-0123456789abcdef").expect("valid criterion id");
+        assert_eq!(id.as_str(), "criterion-0123456789abcdef");
+    }
+
+    #[test]
+    fn criterion_id_new_rejects_malformed_input() {
+        for value in [
+            "",
+            "criterion-status-surface",
+            "criterion-0123456789abcde",
+            "criterion-0123456789abcdef0",
+            "criterion-0123456789abcdeg",
+            "CRITERION-0123456789abcdef",
+            "with space",
+        ] {
+            let err = CriterionId::new(value).expect_err("malformed criterion id");
+            assert_eq!(
+                err,
+                ParseCriterionIdError {
+                    value: value.to_owned()
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn criterion_id_for_spec_text_normalizes_whitespace() {
+        let label = SpecLabel::new("templates");
+        let a = CriterionId::for_spec_text(&label, "A criterion");
+        let b = CriterionId::for_spec_text(&label, "A   criterion");
+        assert_eq!(a, b);
+        assert!(a.as_str().starts_with("criterion-"));
     }
 }

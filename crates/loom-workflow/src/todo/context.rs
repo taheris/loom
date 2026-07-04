@@ -208,7 +208,7 @@ mod tests {
         };
         let cs = vec![CriterionStatus {
             spec_label: SpecLabel::new("harness"),
-            criterion_id: CriterionId::new("criterion-5"),
+            criterion_id: CriterionId::for_spec_text(&SpecLabel::new("harness"), "Build succeeds"),
             criterion_text: "Build succeeds".into(),
             annotation: CriterionAnnotation {
                 tier: AnnotationTier::Check,

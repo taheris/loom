@@ -72,6 +72,10 @@ fn git_sha(raw: &str) -> GitSha {
     GitSha::new(raw).expect("valid git sha")
 }
 
+fn criterion_id(raw: &str) -> Result<CriterionId> {
+    Ok(CriterionId::new(raw)?)
+}
+
 fn workspace_recovery(alignment: WorkspaceAlignment) -> WorkspaceRecovery {
     WorkspaceRecovery {
         pre_stash_status: "## loom/lm-demo.1\n M crates/demo/src/lib.rs\n?? notes.txt".into(),
@@ -1743,11 +1747,11 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
 }
 
 /// Representative `criterion_status` rows used by both todo fixtures.
-fn representative_criterion_status() -> Vec<CriterionStatus> {
-    vec![
+fn representative_criterion_status() -> Result<Vec<CriterionStatus>> {
+    Ok(vec![
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("engine-fresh-pass"),
+            criterion_id: criterion_id("criterion-0000000000000001")?,
             criterion_text: "All workflow templates compile under Askama.".into(),
             annotation: ann(AnnotationTier::Check, "cargo build -p loom-templates"),
             evidence: EvidenceState::Current {
@@ -1759,7 +1763,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
         },
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("engine-stale-pass"),
+            criterion_id: criterion_id("criterion-0000000000000002")?,
             criterion_text: "Every non-pending pinning cell matches the include graph.".into(),
             annotation: ann(
                 AnnotationTier::Check,
@@ -1774,7 +1778,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
         },
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("engine-fail"),
+            criterion_id: criterion_id("criterion-0000000000000003")?,
             criterion_text: "Rendered output is stable across runs.".into(),
             annotation: ann(
                 AnnotationTier::Test,
@@ -1789,7 +1793,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
         },
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("engine-skipped"),
+            criterion_id: criterion_id("criterion-0000000000000004")?,
             criterion_text: "Snapshot tests run under clippy test exemptions.".into(),
             annotation: ann(
                 AnnotationTier::Check,
@@ -1804,7 +1808,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
         },
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("criterion-status-never-run"),
+            criterion_id: criterion_id("criterion-0000000000000005")?,
             criterion_text: "Todo prompts render typed criterion status rows.".into(),
             annotation: ann(
                 AnnotationTier::Test,
@@ -1814,7 +1818,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
         },
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("criterion-status-stale-annotation"),
+            criterion_id: criterion_id("criterion-0000000000000006")?,
             criterion_text: "Stale annotations are explicit evidence states.".into(),
             annotation: ann(AnnotationTier::Test, "new_target"),
             evidence: EvidenceState::StaleAnnotation {
@@ -1824,7 +1828,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
                 commits_since: 5,
             },
         },
-    ]
+    ])
 }
 
 fn ann(tier: AnnotationTier, target: &str) -> CriterionAnnotation {
@@ -1838,7 +1842,7 @@ fn ann(tier: AnnotationTier, target: &str) -> CriterionAnnotation {
 /// `todo` surfaces typed evidence states for every row.
 #[test]
 fn todo_template_renders_typed_criterion_status_rows() -> Result<()> {
-    let rows = representative_criterion_status();
+    let rows = representative_criterion_status()?;
     let out = todo_context(vec![], rows.clone()).render()?;
 
     for row in &rows {
@@ -1855,11 +1859,11 @@ fn todo_template_renders_typed_criterion_status_rows() -> Result<()> {
     }
 
     let fresh_line = format!(
-        "**templates / engine-fresh-pass** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `{TEST_SHA}` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`"
+        "**templates / criterion-0000000000000001** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `{TEST_SHA}` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`"
     );
-    let missing_line = "**templates / criterion-status-never-run** · Todo prompts render typed criterion status rows. · annotation `[test](todo_template_renders_typed_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`";
+    let missing_line = "**templates / criterion-0000000000000005** · Todo prompts render typed criterion status rows. · annotation `[test](todo_template_renders_typed_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`";
     let stale_line = format!(
-        "**templates / criterion-status-stale-annotation** · Stale annotations are explicit evidence states. · annotation `[test](new_target)` · evidence `StaleAnnotation` · result — · last commit `{TEST_SHA_5}` · commits since 5 · last timestamp 1716260000000 · cached annotation `[check](old_target)`"
+        "**templates / criterion-0000000000000006** · Stale annotations are explicit evidence states. · annotation `[test](new_target)` · evidence `StaleAnnotation` · result — · last commit `{TEST_SHA_5}` · commits since 5 · last timestamp 1716260000000 · cached annotation `[check](old_target)`"
     );
     assert!(
         out.contains(&fresh_line),

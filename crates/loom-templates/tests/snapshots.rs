@@ -8,6 +8,7 @@
 //! One snapshot per typed context struct, named after the test function via
 //! `insta::assert_snapshot!`'s default file naming.
 
+use anyhow::Result;
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_protocol::todo::{GitSha, TodoFingerprint};
@@ -61,6 +62,10 @@ fn git_sha(raw: &str) -> GitSha {
     GitSha::new(raw).unwrap()
 }
 
+fn criterion_id(raw: &str) -> Result<CriterionId> {
+    Ok(CriterionId::new(raw)?)
+}
+
 fn workspace_recovery(alignment: WorkspaceAlignment) -> WorkspaceRecovery {
     WorkspaceRecovery {
         pre_stash_status:
@@ -79,8 +84,8 @@ fn workspace_recovery(alignment: WorkspaceAlignment) -> WorkspaceRecovery {
     clippy::unwrap_used,
     reason = "fixture identifiers are parsed once so snapshots exercise production newtypes"
 )]
-fn todo_ctx() -> TodoContext {
-    TodoContext {
+fn todo_ctx() -> Result<TodoContext> {
+    Ok(TodoContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
             .to_string(),
@@ -102,17 +107,17 @@ fn todo_ctx() -> TodoContext {
             label: SpecLabel::new("harness"),
             notes: vec!["Carry the unified todo protocol into snapshots.".into()],
         }],
-        criterion_status: snapshot_criterion_status(),
+        criterion_status: snapshot_criterion_status()?,
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         skill_index: SkillIndexMarkdown::empty(),
-    }
+    })
 }
 
-fn snapshot_criterion_status() -> Vec<CriterionStatus> {
-    vec![
+fn snapshot_criterion_status() -> Result<Vec<CriterionStatus>> {
+    Ok(vec![
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("engine-001"),
+            criterion_id: criterion_id("criterion-0000000000000001")?,
             criterion_text: "All workflow templates compile under Askama.".into(),
             annotation: ann(AnnotationTier::Check, "cargo build -p loom-templates"),
             evidence: EvidenceState::Current {
@@ -124,7 +129,7 @@ fn snapshot_criterion_status() -> Vec<CriterionStatus> {
         },
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("engine-002"),
+            criterion_id: criterion_id("criterion-0000000000000002")?,
             criterion_text: "Rendered output is stable across runs.".into(),
             annotation: ann(
                 AnnotationTier::Test,
@@ -139,7 +144,7 @@ fn snapshot_criterion_status() -> Vec<CriterionStatus> {
         },
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("criterion-status-001"),
+            criterion_id: criterion_id("criterion-0000000000000003")?,
             criterion_text: "Todo prompts render typed criterion status rows.".into(),
             annotation: ann(
                 AnnotationTier::Test,
@@ -149,7 +154,7 @@ fn snapshot_criterion_status() -> Vec<CriterionStatus> {
         },
         CriterionStatus {
             spec_label: SpecLabel::new("templates"),
-            criterion_id: CriterionId::new("engine-003"),
+            criterion_id: criterion_id("criterion-0000000000000004")?,
             criterion_text: "Every non-pending pinning cell matches the include graph.".into(),
             annotation: ann(
                 AnnotationTier::Check,
@@ -162,7 +167,7 @@ fn snapshot_criterion_status() -> Vec<CriterionStatus> {
                 commits_since: 3,
             },
         },
-    ]
+    ])
 }
 
 fn ann(tier: AnnotationTier, target: &str) -> CriterionAnnotation {
@@ -192,8 +197,9 @@ fn plan_snapshot() {
 }
 
 #[test]
-fn todo_snapshot() {
-    insta::assert_snapshot!(todo_ctx().render().unwrap());
+fn todo_snapshot() -> Result<()> {
+    insta::assert_snapshot!(todo_ctx()?.render()?);
+    Ok(())
 }
 
 #[test]

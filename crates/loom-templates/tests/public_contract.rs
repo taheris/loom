@@ -4,6 +4,7 @@
 //! composes its own template prompt from Loom's exposed building blocks
 //! without touching any workflow-template internals.
 
+use anyhow::Result;
 use loom_templates::{
     AnnotationTarget, AnnotationTier, BadWalk, ConcernToken, CriterionAnnotation, CriterionId,
     CriterionResult, CriterionStatus, DriverNoticeCause, EvidenceState, Finding, FindingTarget,
@@ -122,9 +123,9 @@ fn workspace_recovery_context_is_publicly_constructible_from_crate_root() {
 }
 
 #[test]
-fn criterion_status_public_shape_carries_annotation_and_evidence_states() {
+fn criterion_status_public_shape_carries_annotation_and_evidence_states() -> Result<()> {
     let spec_label = loom_events::identifier::SpecLabel::new("templates");
-    let criterion_id = CriterionId::new("criterion-status-surface");
+    let criterion_id = CriterionId::new("criterion-0123456789abcdef")?;
     let annotation = CriterionAnnotation {
         tier: AnnotationTier::Check,
         target: AnnotationTarget::new("cargo run -p loom-walk -- template_pinning_matrix"),
@@ -140,8 +141,7 @@ fn criterion_status_public_shape_carries_annotation_and_evidence_states() {
             last_timestamp_ms: 1_716_300_000_000,
             last_commit: loom_protocol::todo::GitSha::new(
                 "0123456789abcdef0123456789abcdef01234567",
-            )
-            .expect("valid git sha"),
+            )?,
             commits_since: 0,
         },
     };
@@ -162,13 +162,13 @@ fn criterion_status_public_shape_carries_annotation_and_evidence_states() {
     let stale = EvidenceState::StaleAnnotation {
         cached_annotation: annotation,
         last_timestamp_ms: 1_716_000_000_000,
-        last_commit: loom_protocol::todo::GitSha::new("1111111111111111111111111111111111111111")
-            .expect("valid git sha"),
+        last_commit: loom_protocol::todo::GitSha::new("1111111111111111111111111111111111111111")?,
         commits_since: 2,
     };
     assert_eq!(stale.as_str(), "StaleAnnotation");
     assert_eq!(stale.commits_since_label(), "2");
     assert!(stale.cached_annotation_label().contains("[check]"));
+    Ok(())
 }
 
 #[test]

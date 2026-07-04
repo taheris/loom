@@ -143,7 +143,7 @@ impl VerifierFailure {
     /// [`STDERR_TAIL_PER_BLOCK`] chars at a char boundary.
     pub fn new(target: impl Into<String>, exit_code: i32, stderr_tail: impl Into<String>) -> Self {
         let mut stderr_tail: String = stderr_tail.into();
-        truncate_at_char_boundary(&mut stderr_tail, STDERR_TAIL_PER_BLOCK);
+        truncate_to_tail_at_char_boundary(&mut stderr_tail, STDERR_TAIL_PER_BLOCK);
         Self {
             target: target.into(),
             exit_code,
@@ -371,9 +371,6 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
                 out.push_str(&err.to_string());
             }
             out.push_str(&format!("\n\nYour terminal was: {}", terminal.label()));
-            if let TerminalSurface::Malformed { payload } = terminal {
-                out.push_str(&format!(" — literal payload: {payload}"));
-            }
             out
         }
     }
@@ -443,11 +440,16 @@ fn format_verifier_block(failure: &VerifierFailure) -> String {
     )
 }
 
-fn truncate_at_char_boundary(s: &mut String, max: usize) {
-    if s.len() > max {
-        let cut = floor_char_boundary(s, max);
-        s.truncate(cut);
+fn truncate_to_tail_at_char_boundary(s: &mut String, max: usize) {
+    if s.len() <= max {
+        return;
     }
+    let min_start = ceil_char_boundary(s, s.len() - max);
+    let start = match s[min_start..].find('\n') {
+        Some(offset) if min_start + offset + 1 < s.len() => min_start + offset + 1,
+        Some(_) | None => min_start,
+    };
+    s.drain(..start);
 }
 
 fn truncate_at_char_boundary_with_marker(s: &mut String, max: usize) {
@@ -472,6 +474,16 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
     }
     while idx > 0 && !s.is_char_boundary(idx) {
         idx -= 1;
+    }
+    idx
+}
+
+fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    while idx < s.len() && !s.is_char_boundary(idx) {
+        idx += 1;
     }
     idx
 }
@@ -936,10 +948,10 @@ mod tests {
         );
         assert!(
             rendered.contains(
-                TerminalSurface::Concern {
-                    summary: String::new()
+                &TerminalSurface::Concern {
+                    summary: "two findings".into()
                 }
-                .label()
+                .label(),
             ),
             "rendered terminal label missing: {rendered}",
         );
@@ -1082,7 +1094,7 @@ mod tests {
         let pf = PreviousFailure::BadWalk(BadWalk::MalformedFinding { errors, terminal });
         let rendered = pf.to_string();
         assert!(
-            rendered.contains("LOOM_CONCERN (malformed payload)"),
+            rendered.contains("LOOM_CONCERN: <malformed: {\"summery\": \"typo\"}>"),
             "malformed terminal label missing: {rendered}",
         );
         assert!(
@@ -1206,12 +1218,25 @@ mod tests {
 
     #[test]
     fn verifier_failure_stderr_tail_capped_per_block() {
-        let big = "x".repeat(STDERR_TAIL_PER_BLOCK * 3);
+        let big = format!(
+            "head-only\n{}\ntail-line\n",
+            "x".repeat(STDERR_TAIL_PER_BLOCK * 3),
+        );
         let vf = VerifierFailure::new("tests/big.sh", 1, big);
         assert!(
             vf.stderr_tail.len() <= STDERR_TAIL_PER_BLOCK,
             "stderr_tail {} exceeds STDERR_TAIL_PER_BLOCK={STDERR_TAIL_PER_BLOCK}",
             vf.stderr_tail.len(),
+        );
+        assert!(
+            vf.stderr_tail.ends_with("tail-line\n"),
+            "stderr_tail must keep the verifier tail: {:?}",
+            vf.stderr_tail,
+        );
+        assert!(
+            !vf.stderr_tail.contains("head-only"),
+            "stderr_tail must drop the verifier head: {:?}",
+            vf.stderr_tail,
         );
     }
 
