@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -121,22 +122,213 @@ pub enum ParseItemIdError {
     Empty,
 }
 
+/// Text harvested from an evidence root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextEvidence {
+    pub root_kind: RootKind,
+    pub relative_path: PathBuf,
+    pub body: String,
+}
+
 /// Mined evidence item available to checker planning.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub id: ItemId,
     pub checker: CheckerId,
     pub targets: Vec<Target>,
+    text: TextEvidence,
 }
 
 impl Item {
-    pub fn new(id: ItemId, checker: CheckerId, targets: Vec<Target>) -> Self {
+    /// Construct an item backed by text read from an evidence root.
+    pub fn harvested(
+        id: ItemId,
+        checker: CheckerId,
+        targets: Vec<Target>,
+        text: TextEvidence,
+    ) -> Self {
         Self {
             id,
             checker,
             targets,
+            text,
         }
     }
+
+    pub fn text(&self) -> &TextEvidence {
+        &self.text
+    }
+
+    #[cfg(test)]
+    pub fn for_test(id: ItemId, checker: CheckerId, targets: Vec<Target>) -> Self {
+        Self::harvested(
+            id,
+            checker,
+            targets,
+            TextEvidence {
+                root_kind: RootKind::Workspace,
+                relative_path: PathBuf::from("test-evidence.txt"),
+                body: "test evidence".to_owned(),
+            },
+        )
+    }
+}
+
+/// Read workspace-first and explicitly configured evidence roots.
+pub fn harvest(
+    report: &RootReport,
+    checker: CheckerId,
+    targets: &[Target],
+) -> Result<Vec<Item>, HarvestError> {
+    let targets = targets
+        .iter()
+        .filter(|target| !matches!(target, Target::Partial { .. }))
+        .cloned()
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut items = Vec::new();
+    for root in report.roots() {
+        let files = evidence_files(root)?;
+        for path in files {
+            let body = fs::read_to_string(&path).map_err(|source| HarvestError::Read {
+                path: path.clone(),
+                source,
+            })?;
+            if body.trim().is_empty() {
+                continue;
+            }
+            let relative_path = evidence_relative_path(root, &path);
+            let id = harvested_item_id(root, &relative_path, &body)?;
+            items.push(Item::harvested(
+                id,
+                checker.clone(),
+                targets.clone(),
+                TextEvidence {
+                    root_kind: root.kind,
+                    relative_path,
+                    body,
+                },
+            ));
+        }
+    }
+    items.sort_by(|left, right| left.id.cmp(&right.id));
+    items.dedup_by(|left, right| left.id == right.id);
+    Ok(items)
+}
+
+fn evidence_files(root: &Root) -> Result<Vec<PathBuf>, HarvestError> {
+    let mut files = Vec::new();
+    match root.kind {
+        RootKind::Workspace => {
+            for relative in [".loom/logs", ".loom/evidence", "docs/tuning.md"] {
+                let path = root.path.join(relative);
+                if path.exists() {
+                    collect_evidence_files(&path, &mut files)?;
+                }
+            }
+        }
+        RootKind::External => collect_evidence_files(&root.path, &mut files)?,
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn collect_evidence_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), HarvestError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| HarvestError::ReadMetadata {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.is_file() {
+        if is_evidence_file(path) {
+            files.push(path.to_path_buf());
+        }
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    let mut entries = fs::read_dir(path)
+        .map_err(|source| HarvestError::ReadDirectory {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| HarvestError::ReadDirectory {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    for entry in entries {
+        collect_evidence_files(&entry.path(), files)?;
+    }
+    Ok(())
+}
+
+fn is_evidence_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("diff" | "json" | "jsonl" | "log" | "md" | "patch" | "txt")
+    )
+}
+
+fn evidence_relative_path(root: &Root, path: &Path) -> PathBuf {
+    if root.path.is_file() {
+        return path
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("evidence"));
+    }
+    path.strip_prefix(&root.path)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| PathBuf::from("evidence"))
+}
+
+fn harvested_item_id(
+    root: &Root,
+    relative_path: &Path,
+    body: &str,
+) -> Result<ItemId, ParseItemIdError> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"loom-tune-evidence-item-v1\0");
+    hasher.update(root.kind.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(relative_path.as_os_str().as_encoded_bytes());
+    hasher.update([0]);
+    hasher.update(body.as_bytes());
+    ItemId::new(format!("evidence-{}", hex_lower(&hasher.finalize())))
+}
+
+/// Evidence harvesting failures.
+#[derive(Debug, Display, Error)]
+pub enum HarvestError {
+    /// failed to read evidence metadata at `{path}`
+    ReadMetadata {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// failed to read evidence directory at `{path}`
+    ReadDirectory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// failed to read evidence file at `{path}`
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// harvested evidence item id is invalid
+    ItemId(#[from] ParseItemIdError),
 }
 
 /// Mined evidence split.
@@ -333,7 +525,7 @@ pub enum SplitError {
 }
 
 /// Mined evidence partition used by checker planning.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub train: Vec<Item>,
     pub selection: Vec<Item>,
@@ -371,6 +563,43 @@ mod tests {
         );
         assert!(!report.lines().iter().any(|line| line.contains(".claude")));
         assert!(!report.lines().iter().any(|line| line.contains(".codex")));
+    }
+
+    #[test]
+    fn workspace_harvest_ids_are_stable_across_checkout_paths() {
+        let first = tempfile::tempdir().expect("first workspace");
+        let second = tempfile::tempdir().expect("second workspace");
+        for workspace in [first.path(), second.path()] {
+            let log = workspace.join(".loom/logs/review.jsonl");
+            fs::create_dir_all(log.parent().expect("log parent")).expect("create logs");
+            fs::write(&log, "{\"finding\":\"missing test\"}\n").expect("write log");
+        }
+        let checker = CheckerId::new("behavior.review.finding-recall").expect("checker");
+        let targets = vec![
+            "skill:loom-context-before-edit"
+                .parse::<Target>()
+                .expect("target"),
+        ];
+        let first_items = harvest(
+            &RootReport::from_config(first.path(), &EvidenceConfig::default()),
+            checker.clone(),
+            &targets,
+        )
+        .expect("first harvest");
+        let second_items = harvest(
+            &RootReport::from_config(second.path(), &EvidenceConfig::default()),
+            checker,
+            &targets,
+        )
+        .expect("second harvest");
+
+        assert_eq!(first_items.len(), 1);
+        assert_eq!(first_items[0].id, second_items[0].id);
+        assert_eq!(first_items[0].text().root_kind, RootKind::Workspace);
+        assert_eq!(
+            first_items[0].text().relative_path,
+            PathBuf::from(".loom/logs/review.jsonl")
+        );
     }
 
     #[test]

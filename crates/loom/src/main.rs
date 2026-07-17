@@ -847,7 +847,14 @@ fn run_tune(workspace: &std::path::Path, args: TuneArgs) -> anyhow::Result<()> {
     };
     let request = tune_request(action);
     let runtime = tokio::runtime::Runtime::new()?;
-    let response = runtime.block_on(loom_workflow::tune::run(workspace, request))?;
+    let prepared = runtime.block_on(loom_workflow::tune::prepare(workspace))?;
+    if matches!(&request, loom_workflow::tune::Request::Propose(_)) {
+        println!("evidence roots:");
+        for line in prepared.evidence_roots().lines() {
+            println!("- {line}");
+        }
+    }
+    let response = runtime.block_on(prepared.execute(request))?;
     print!("{}", response.render());
     Ok(())
 }

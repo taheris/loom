@@ -5,27 +5,32 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use displaydoc::Display;
+use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
+use loom_driver::agent::{ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::bd::{BdClient, CreateOpts, UpdateOpts};
 use loom_driver::clock::SystemClock;
-use loom_driver::config::{LoomConfig, LoomConfigError};
+use loom_driver::config::{AgentSelectionError, LoomConfig, LoomConfigError, Phase};
 use loom_driver::git::{GitClient, GitError, GitOid, read_origin_url};
 use loom_driver::identifier::BeadId;
 use loom_driver::lock::{LockError, LockManager, PhaseLock};
+use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
+use loom_driver::scratch::ScratchSession;
 use loom_skills::builtin::{self, CatalogError};
 use loom_skills::discovery::{DiscoveryError, load_workspace};
 use loom_skills::identity::{PhaseName, SkillName};
 use loom_skills::registry::{NamedSkill, RegistryError, SkillRegistry};
 use loom_skills::source::SkillSource;
-use loom_tune::case::{Document, LoadContext, LoadError, LoadedCases, load_documents};
+use loom_tune::case::{Document, Input, LoadContext, LoadError, LoadedCases, load_documents};
 use loom_tune::checker::{
-    Level, Registry as CheckerRegistry, RegistryError as CheckerRegistryError,
+    Domain as CheckerDomain, Level, Registry as CheckerRegistry,
+    RegistryError as CheckerRegistryError,
 };
 use loom_tune::config::{FileConfig as TuneFileConfig, TuneConfig};
 use loom_tune::evidence::{
-    Item, ItemId, RootReport, Snapshot as EvidenceSnapshot, SplitError, SplitMetadata, SplitSalt,
-    Splitter,
+    HarvestError, RootReport, Snapshot as EvidenceSnapshot, SplitError, SplitMetadata, SplitSalt,
+    Splitter, harvest,
 };
-use loom_tune::executor::{self as tune_executor, Artifact as TuneArtifact};
+use loom_tune::executor::{self as tune_executor, Artifact as TuneArtifact, Replay};
 use loom_tune::gate::{self as tune_gate, Outcome as GateOutcome, State as GateState};
 use loom_tune::plan::{self, FrozenPlan, PlanError};
 use loom_tune::proposal::{
@@ -127,19 +132,44 @@ impl ProposalReport {
     }
 }
 
+/// Prepared tune run whose evidence roots can be reported before harvesting.
+pub struct PreparedRun {
+    context: Context,
+}
+
+impl PreparedRun {
+    pub fn evidence_roots(&self) -> &RootReport {
+        &self.context.root_report
+    }
+
+    pub async fn execute(mut self, request: Request) -> Result<Response, TuneError> {
+        match request {
+            Request::List(surface) => Ok(Response::Listing(self.context.render_listing(surface)?)),
+            Request::Propose(proposal) => {
+                self.context.harvest_evidence()?;
+                if proposal.dry_run {
+                    let plan = self.context.plan(&proposal)?;
+                    Ok(Response::DryRun(render_dry_run(&self.context, &plan)))
+                } else {
+                    create_proposal(self.context, &proposal)
+                        .await
+                        .map(Response::Proposal)
+                }
+            }
+        }
+    }
+}
+
+/// Prepare a tune command without reading any evidence root.
+pub async fn prepare(workspace: &Path) -> Result<PreparedRun, TuneError> {
+    Ok(PreparedRun {
+        context: Context::load(workspace).await?,
+    })
+}
+
 /// Run a tune command against `workspace`.
 pub async fn run(workspace: &Path, request: Request) -> Result<Response, TuneError> {
-    let context = Context::load(workspace).await?;
-    match request {
-        Request::List(surface) => Ok(Response::Listing(context.render_listing(surface)?)),
-        Request::Propose(proposal) if proposal.dry_run => {
-            let plan = context.plan(&proposal)?;
-            Ok(Response::DryRun(render_dry_run(&context, &plan)))
-        }
-        Request::Propose(proposal) => create_proposal(context, &proposal)
-            .await
-            .map(Response::Proposal),
-    }
+    prepare(workspace).await?.execute(request).await
 }
 
 #[derive(Debug)]
@@ -153,7 +183,9 @@ struct Context {
     checker_registry: CheckerRegistry,
     disabled_checkers: BTreeSet<loom_tune::CheckerId>,
     target_catalog: TargetCatalog,
+    loom_config: LoomConfig,
     root_report: RootReport,
+    split_salt: SplitSalt,
     evidence: EvidenceSnapshot,
     base_commit: String,
 }
@@ -188,8 +220,8 @@ impl Context {
             origin_url.as_deref(),
             root_commits.iter().map(GitOid::as_str),
         )?;
-        let evidence =
-            build_evidence(&split_salt, &tune_config, target_catalog.targets().cloned())?;
+        let evidence = Splitter::new(split_salt.clone(), tune_config.evidence.selection_fraction)
+            .snapshot(Vec::new());
         Ok(Self {
             workspace,
             tracked_files,
@@ -200,10 +232,22 @@ impl Context {
             checker_registry,
             disabled_checkers,
             target_catalog,
+            loom_config,
             root_report,
+            split_salt,
             evidence,
             base_commit,
         })
+    }
+
+    fn harvest_evidence(&mut self) -> Result<(), TuneError> {
+        self.evidence = build_evidence(
+            &self.split_salt,
+            &self.tune_config,
+            &self.root_report,
+            self.target_catalog.targets().cloned(),
+        )?;
+        Ok(())
     }
 
     fn render_listing(&self, surface: ListSurface) -> Result<String, TuneError> {
@@ -217,6 +261,24 @@ impl Context {
     }
 
     fn plan(&self, proposal: &ProposeRequest) -> Result<PreparedPlan, TuneError> {
+        self.plan_with_evidence(proposal, &self.evidence)
+    }
+
+    fn refreshed_plan(&self, proposal: &ProposeRequest) -> Result<PreparedPlan, TuneError> {
+        let evidence = build_evidence(
+            &self.split_salt,
+            &self.tune_config,
+            &self.root_report,
+            self.target_catalog.targets().cloned(),
+        )?;
+        self.plan_with_evidence(proposal, &evidence)
+    }
+
+    fn plan_with_evidence(
+        &self,
+        proposal: &ProposeRequest,
+        evidence: &EvidenceSnapshot,
+    ) -> Result<PreparedPlan, TuneError> {
         let targets = self.resolve_targets(proposal)?;
         let seed = proposal
             .seed
@@ -234,15 +296,15 @@ impl Context {
             targets: targets.clone(),
             level: proposal.level,
             cases: &loaded_tuning.cases,
-            evidence: &self.evidence,
+            evidence,
             config: &self.tune_config,
             registry: &self.checker_registry,
             seed,
         })?;
         let case_counts = CaseCounts {
             declared: loaded_tuning.cases.cases().len(),
-            mined_train: self.evidence.train.len(),
-            mined_selection: self.evidence.selection.len(),
+            mined_train: evidence.train.len(),
+            mined_selection: evidence.selection.len(),
             selected: frozen.selected_cases.len(),
             skipped: frozen.skipped_cases.len(),
         };
@@ -482,16 +544,24 @@ async fn create_proposal(
     let branch = format!("loom/tune/{bead_id}");
     clone_repo(&context.workspace, &repo, &context.base_commit, &branch).await?;
     let touched = write_candidate_files(&context, proposal, &prepared, &repo)?;
-    let artifacts = target_artifacts(&context, &prepared.targets, &repo)?;
-    let candidate_validation = validate_candidate(
-        &repo,
-        &prepared.frozen,
-        &prepared.loaded_cases,
-        &context.checker_registry,
-        &prepared.targets,
-        &touched,
-        &artifacts,
-    )?;
+    let rebuilt = context.refreshed_plan(proposal)?;
+    let candidate_validation = match prepared.frozen.reject_if_changed(&rebuilt.frozen) {
+        Ok(()) => {
+            let artifacts = target_artifacts(&context, &prepared.targets, &repo)?;
+            validate_candidate(ValidationInput {
+                context: &context,
+                repo: &repo,
+                plan: &prepared.frozen,
+                loaded_cases: &prepared.loaded_cases,
+                registry: &context.checker_registry,
+                targets: &prepared.targets,
+                touched: &touched,
+                artifacts: &artifacts,
+            })
+            .await?
+        }
+        Err(source) => changed_plan_validation(&prepared.frozen, &touched, &source),
+    };
     commit_candidate(&repo, proposal.surface, proposal.level, &bead_id).await?;
     let proposal_head = GitClient::open(&repo)?.head_commit_sha().await?.to_string();
     let state = proposal_state(&candidate_validation.rows);
@@ -792,17 +862,13 @@ fn tuning_guidance_lines(markdown: &str) -> Vec<String> {
 fn build_evidence(
     split_salt: &SplitSalt,
     config: &TuneConfig,
+    root_report: &RootReport,
     targets: impl IntoIterator<Item = Target>,
 ) -> Result<EvidenceSnapshot, TuneError> {
     let splitter = Splitter::new(split_salt.clone(), config.evidence.selection_fraction);
     let checker = loom_tune::CheckerId::new("behavior.review.finding-recall")?;
-    let mut items = Vec::new();
-    for target in targets {
-        if matches!(target, Target::Skill { .. } | Target::Phase { .. }) {
-            let id = ItemId::new(format!("{}", target))?;
-            items.push(Item::new(id, checker.clone(), vec![target]));
-        }
-    }
+    let targets = targets.into_iter().collect::<Vec<_>>();
+    let items = harvest(root_report, checker, &targets)?;
     Ok(splitter.snapshot(items))
 }
 
@@ -902,12 +968,6 @@ fn render_dry_run(context: &Context, plan: &PreparedPlan) -> String {
                 document.case_count
             ));
         }
-    }
-    out.push_str("evidence roots:\n");
-    for line in context.root_report.lines() {
-        out.push_str("- ");
-        out.push_str(&line);
-        out.push('\n');
     }
     out.push_str("evidence split:\n");
     push_split_summary(&mut out, &plan.frozen.evidence_split);
@@ -1089,59 +1149,40 @@ fn candidate_note(level: Level, target: &Target, context: &Context, plan: &Prepa
             out.push_str(&format!("  - {}: {summary}\n", path.display()));
         }
     }
-    out.push_str("- Selected behavioral cases for this target:\n");
-    let case_lines = selected_case_guidance(plan, target);
-    if case_lines.is_empty() {
-        out.push_str("  - (none)\n");
-    } else {
-        for line in case_lines {
-            out.push_str(&format!("  - {line}\n"));
-        }
-    }
     out
-}
-
-fn selected_case_guidance(plan: &PreparedPlan, target: &Target) -> Vec<String> {
-    let mut lines = Vec::new();
-    for selected in &plan.frozen.selected_cases {
-        match &selected.case_id {
-            loom_tune::plan::PlannedCaseId::Declared(id) => {
-                let Some(case) = plan.loaded_cases.cases().iter().find(|case| &case.id == id)
-                else {
-                    continue;
-                };
-                if !target.intersects_any(&case.targets) {
-                    continue;
-                }
-                let terms = tune_executor::expected_terms(&case.expected);
-                lines.push(format!(
-                    "{} via {}: {}",
-                    selected.case_id,
-                    selected.checker,
-                    format_terms(&terms)
-                ));
-            }
-            loom_tune::plan::PlannedCaseId::Mined(_) => lines.push(format!(
-                "{} via {}: mined selection evidence",
-                selected.case_id, selected.checker
-            )),
-        }
-    }
-    lines
-}
-
-fn format_terms(terms: &[String]) -> String {
-    if terms.is_empty() {
-        "no explicit terms".to_owned()
-    } else {
-        terms.join("; ")
-    }
 }
 
 #[derive(Debug, Clone)]
 struct CandidateValidation {
     rows: Vec<ValidationRow>,
     outcome_counts: OutcomeCounts,
+}
+
+fn changed_plan_validation(
+    plan: &FrozenPlan,
+    touched: &[PathBuf],
+    source: &PlanError,
+) -> CandidateValidation {
+    CandidateValidation {
+        rows: vec![
+            ValidationRow {
+                check: "candidate-files".to_owned(),
+                status: ValidationStatus::Passed,
+                detail: format!("{} target file(s) updated", touched.len()),
+            },
+            ValidationRow {
+                check: "checker-plan-freeze".to_owned(),
+                status: ValidationStatus::Failed,
+                detail: source.to_string(),
+            },
+        ],
+        outcome_counts: OutcomeCounts {
+            pending: 0,
+            passed: 0,
+            failed: 0,
+            blocked: plan.selected_cases.len(),
+        },
+    }
 }
 
 fn target_artifacts(
@@ -1193,27 +1234,38 @@ fn current_template_text(
     read_to_string(&context.workspace.join(&entry.relative_path))
 }
 
-fn validate_candidate(
-    repo: &Path,
-    plan: &FrozenPlan,
-    loaded_cases: &LoadedCases,
-    registry: &CheckerRegistry,
-    targets: &[Target],
-    touched: &[PathBuf],
-    artifacts: &[TuneArtifact],
-) -> Result<CandidateValidation, TuneError> {
+struct ValidationInput<'a> {
+    context: &'a Context,
+    repo: &'a Path,
+    plan: &'a FrozenPlan,
+    loaded_cases: &'a LoadedCases,
+    registry: &'a CheckerRegistry,
+    targets: &'a [Target],
+    touched: &'a [PathBuf],
+    artifacts: &'a [TuneArtifact],
+}
+
+async fn validate_candidate(input: ValidationInput<'_>) -> Result<CandidateValidation, TuneError> {
     let mut rows = vec![ValidationRow {
         check: "candidate-files".to_owned(),
         status: ValidationStatus::Passed,
-        detail: format!("{} target file(s) updated", touched.len()),
+        detail: format!("{} target file(s) updated", input.touched.len()),
     }];
-    if targets
+    if input
+        .targets
         .iter()
         .any(|target| matches!(target, Target::Phase { .. } | Target::Partial { .. }))
     {
-        rows.extend(validate_templates(repo));
+        rows.extend(validate_templates(input.repo));
     }
-    let behavior = validate_behavioral_cases(plan, loaded_cases, registry, artifacts);
+    let behavior = validate_behavioral_cases(
+        input.context,
+        input.plan,
+        input.loaded_cases,
+        input.registry,
+        input.artifacts,
+    )
+    .await;
     rows.extend(behavior.rows);
     Ok(CandidateValidation {
         rows,
@@ -1221,7 +1273,8 @@ fn validate_candidate(
     })
 }
 
-fn validate_behavioral_cases(
+async fn validate_behavioral_cases(
+    context: &Context,
     plan: &FrozenPlan,
     loaded_cases: &LoadedCases,
     registry: &CheckerRegistry,
@@ -1233,7 +1286,25 @@ fn validate_behavioral_cases(
             outcome_counts: OutcomeCounts::pending(0),
         };
     }
-    let results = match tune_executor::run(plan, loaded_cases, artifacts) {
+    let replays = match replay_selected_cases(context, plan, loaded_cases, artifacts).await {
+        Ok(replays) => replays,
+        Err(source) => {
+            return CandidateValidation {
+                rows: vec![ValidationRow {
+                    check: "behavioral-cases".to_owned(),
+                    status: ValidationStatus::Failed,
+                    detail: format!("checker replay failed: {source}"),
+                }],
+                outcome_counts: OutcomeCounts {
+                    pending: 0,
+                    passed: 0,
+                    failed: 0,
+                    blocked: plan.selected_cases.len(),
+                },
+            };
+        }
+    };
+    let results = match tune_executor::run(plan, loaded_cases, &replays) {
         Ok(results) => results,
         Err(source) => {
             return CandidateValidation {
@@ -1276,6 +1347,237 @@ fn validate_behavioral_cases(
                 blocked: plan.selected_cases.len(),
             },
         },
+    }
+}
+
+async fn replay_selected_cases(
+    context: &Context,
+    plan: &FrozenPlan,
+    loaded_cases: &LoadedCases,
+    artifacts: &[TuneArtifact],
+) -> Result<Vec<Replay>, TuneError> {
+    let manifest = ProfileImageManifest::from_env()?;
+    let mut replays = Vec::with_capacity(plan.selected_cases.len());
+    for selected in &plan.selected_cases {
+        let (targets, input) = replay_input(context, loaded_cases, &selected.case_id)?;
+        let current_prompt = replay_prompt(
+            &selected.checker,
+            &input,
+            &artifact_text(artifacts, &targets, ReplaySide::Current)?,
+        );
+        let candidate_prompt = replay_prompt(
+            &selected.checker,
+            &input,
+            &artifact_text(artifacts, &targets, ReplaySide::Candidate)?,
+        );
+        let current_output = run_replay_agent(
+            context,
+            &manifest,
+            selected,
+            ReplaySide::Current,
+            current_prompt,
+        )
+        .await?;
+        let candidate_output = run_replay_agent(
+            context,
+            &manifest,
+            selected,
+            ReplaySide::Candidate,
+            candidate_prompt,
+        )
+        .await?;
+        replays.push(Replay::new(
+            selected.case_id.clone(),
+            current_output,
+            candidate_output,
+        ));
+    }
+    Ok(replays)
+}
+
+fn replay_input(
+    context: &Context,
+    loaded_cases: &LoadedCases,
+    case_id: &loom_tune::plan::PlannedCaseId,
+) -> Result<(Vec<Target>, String), TuneError> {
+    match case_id {
+        loom_tune::plan::PlannedCaseId::Declared(id) => {
+            let case = loaded_cases
+                .cases()
+                .iter()
+                .find(|case| &case.id == id)
+                .ok_or_else(|| TuneError::MissingDeclaredCase {
+                    case_id: case_id.clone(),
+                })?;
+            Ok((case.targets.clone(), declared_input(context, &case.input)?))
+        }
+        loom_tune::plan::PlannedCaseId::Mined(id) => {
+            let item = context
+                .evidence
+                .train
+                .iter()
+                .chain(&context.evidence.selection)
+                .find(|item| &item.id == id)
+                .ok_or_else(|| TuneError::MissingEvidenceItem {
+                    case_id: case_id.clone(),
+                })?;
+            Ok((item.targets.clone(), item.text().body.clone()))
+        }
+    }
+}
+
+fn declared_input(context: &Context, input: &Input) -> Result<String, TuneError> {
+    match input {
+        Input::ReviewFindingRecall { patch } => {
+            read_to_string(&context.workspace.join(&patch.relative))
+        }
+        Input::TodoDecomposition { prompt } => {
+            read_to_string(&context.workspace.join(&prompt.relative))
+        }
+        Input::LoopVerifyAfterEdit { fixture, task }
+        | Input::LoopScopeDiscipline { fixture, task }
+        | Input::AgentContextBeforeEdit { fixture, task } => {
+            fixture_input(context, &fixture.relative, task)
+        }
+        Input::InboxResolutionPath {
+            fixture,
+            user_response,
+        }
+        | Input::TuneApplyHandoff {
+            fixture,
+            user_response,
+        } => fixture_input(context, &fixture.relative, user_response),
+    }
+}
+
+fn fixture_input(context: &Context, fixture: &Path, request: &str) -> Result<String, TuneError> {
+    let mut out = format!("Request:\n{request}\n\nFixture files:\n");
+    for relative in context
+        .tracked_files
+        .iter()
+        .filter(|relative| relative.starts_with(fixture))
+    {
+        let body = read_to_string(&context.workspace.join(relative))?;
+        out.push_str(&format!("\n--- {} ---\n{body}\n", relative.display()));
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ReplaySide {
+    Current,
+    Candidate,
+}
+
+impl fmt::Display for ReplaySide {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Current => formatter.write_str("current"),
+            Self::Candidate => formatter.write_str("candidate"),
+        }
+    }
+}
+
+fn artifact_text(
+    artifacts: &[TuneArtifact],
+    targets: &[Target],
+    side: ReplaySide,
+) -> Result<String, TuneError> {
+    let relevant = artifacts
+        .iter()
+        .filter(|artifact| targets.contains(&artifact.target))
+        .collect::<Vec<_>>();
+    if relevant.is_empty() {
+        return Err(TuneError::MissingReplayArtifact {
+            targets: targets.to_vec(),
+        });
+    }
+    let mut out = String::new();
+    for artifact in relevant {
+        let body = match side {
+            ReplaySide::Current => &artifact.current,
+            ReplaySide::Candidate => &artifact.candidate,
+        };
+        out.push_str(&format!("\n--- {} ---\n{body}\n", artifact.target));
+    }
+    Ok(out)
+}
+
+fn replay_prompt(checker: &loom_tune::CheckerId, input: &str, artifact: &str) -> String {
+    format!(
+        "Execute behavioral checker `{checker}` against the supplied input.\n\
+         Apply the artifact guidance as agent strategy, then emit the behavior the task requests.\n\
+         Do not describe or score the artifact itself.\n\n\
+         Artifact guidance:\n{artifact}\n\n\
+         Checker input:\n{input}\n"
+    )
+}
+
+async fn run_replay_agent(
+    context: &Context,
+    manifest: &ProfileImageManifest,
+    selected: &loom_tune::plan::SelectedCase,
+    side: ReplaySide,
+    prompt: String,
+) -> Result<String, TuneError> {
+    let phase = checker_phase(selected.checker.domain());
+    let selection = context.loom_config.agent_for(phase)?;
+    let entry = manifest.lookup(&selection.profile, selection.kind)?;
+    let key = format!("tune-{}-{side}", selected.case_id).replace(':', "-");
+    let scratch = ScratchSession::open(&context.workspace, &key, &prompt, "loom tune replay")?;
+    let mut spawn = crate::spawn::build_spawn_config(
+        entry,
+        selection.kind,
+        context.workspace.clone(),
+        prompt,
+        scratch.path().to_path_buf(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        crate::spawn::launcher_key_env_for_checkout(&context.workspace)?,
+    );
+    selection.apply_to_spawn_config(&mut spawn, context.loom_config.direct_output_limits());
+    spawn.observers = context.loom_config.agent.clone();
+    let mut output = String::new();
+    let outcome = dispatch_replay_agent(selection.kind, &spawn, &mut output).await?;
+    if outcome.exit_code != 0 {
+        return Err(TuneError::ReplayExit {
+            case_id: selected.case_id.clone(),
+            side,
+            exit_code: outcome.exit_code,
+        });
+    }
+    drop(scratch);
+    Ok(output)
+}
+
+async fn dispatch_replay_agent(
+    runtime: loom_driver::agent::AgentRuntime,
+    spawn: &SpawnConfig,
+    output: &mut String,
+) -> Result<SessionOutcome, ProtocolError> {
+    match runtime {
+        loom_driver::agent::AgentRuntime::Pi => {
+            crate::run_agent::<PiBackend>(spawn, None, Some(output)).await
+        }
+        loom_driver::agent::AgentRuntime::Claude => {
+            crate::run_agent::<ClaudeBackend>(spawn, None, Some(output)).await
+        }
+        loom_driver::agent::AgentRuntime::Direct => {
+            crate::run_agent::<DirectBackend>(spawn, None, Some(output)).await
+        }
+    }
+}
+
+fn checker_phase(domain: CheckerDomain) -> Phase {
+    match domain {
+        CheckerDomain::Todo => Phase::Todo,
+        CheckerDomain::Loop | CheckerDomain::Agent | CheckerDomain::Tune => Phase::Loop,
+        CheckerDomain::Inbox => Phase::Inbox,
+        CheckerDomain::Skill
+        | CheckerDomain::Template
+        | CheckerDomain::Review
+        | CheckerDomain::Gate => Phase::Review,
     }
 }
 
@@ -1737,6 +2039,14 @@ pub enum TuneError {
     SkillRegistry(#[from] RegistryError),
     /// checker registry error
     CheckerRegistry(#[from] CheckerRegistryError),
+    /// evidence harvesting error
+    EvidenceHarvest(#[from] HarvestError),
+    /// phase agent selection error
+    AgentSelection(#[from] AgentSelectionError),
+    /// profile-image manifest error
+    Profile(#[from] ProfileError),
+    /// replay agent protocol error
+    Protocol(#[from] ProtocolError),
     /// tuning case load error
     CaseLoad(#[from] LoadError),
     /// checker planning error
@@ -1747,6 +2057,8 @@ pub enum TuneError {
     EvidenceItemId(#[from] loom_tune::evidence::ParseItemIdError),
     /// checker id error
     CheckerId(#[from] loom_tune::checker::ParseCheckerIdError),
+    /// failed to prepare replay scratch state
+    Scratch(#[from] std::io::Error),
     /// invalid skill target name `{name}`
     SkillName {
         name: String,
@@ -1767,6 +2079,22 @@ pub enum TuneError {
     },
     /// tune target `{target}` is not known
     UnknownTarget { target: Target },
+    /// selected declared case `{case_id}` disappeared before replay
+    MissingDeclaredCase {
+        case_id: loom_tune::plan::PlannedCaseId,
+    },
+    /// selected mined evidence `{case_id}` disappeared before replay
+    MissingEvidenceItem {
+        case_id: loom_tune::plan::PlannedCaseId,
+    },
+    /// selected replay has no tuned artifact for targets {targets:?}
+    MissingReplayArtifact { targets: Vec<Target> },
+    /// replay for `{case_id}` ({side}) exited with status {exit_code}
+    ReplayExit {
+        case_id: loom_tune::plan::PlannedCaseId,
+        side: ReplaySide,
+        exit_code: i32,
+    },
     /// no tune targets are available for `{surface}`
     NoTargets { surface: Surface },
     /// `loom tune all` does not accept target names
@@ -1801,4 +2129,62 @@ pub enum TuneError {
     Lock(#[from] LockError),
     /// bd error
     Bd(#[from] loom_driver::bd::BdError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loom_driver::git::{commit_all_in, init_test_repo};
+
+    #[tokio::test]
+    async fn tune_checker_plan_freeze_contract() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        init_test_repo(workspace.path()).expect("init repo");
+        write_parented(
+            &workspace.path().join("skills/review/skill.md"),
+            "---\nname: repo-review\ndescription: Use when reviewing code.\n---\nReview carefully.\n",
+        )
+        .expect("write skill");
+        commit_all_in(workspace.path(), "add skill").expect("commit skill");
+
+        let mut context = Context::load(workspace.path()).await.expect("load context");
+        context.harvest_evidence().expect("initial harvest");
+        let request = ProposeRequest {
+            surface: Surface::Skill,
+            level: Level::Fast,
+            targets: vec!["repo-review".to_owned()],
+            dry_run: false,
+            seed: Some(7),
+        };
+        let prepared = context.plan(&request).expect("freeze initial plan");
+        let candidate_repo = tempfile::tempdir().expect("candidate repo");
+        write_parented(
+            &candidate_repo.path().join("skills/review/skill.md"),
+            "---\nname: repo-review\ndescription: Use when reviewing code.\n---\nReview carefully.\n",
+        )
+        .expect("seed candidate");
+        write_candidate_files(&context, &request, &prepared, candidate_repo.path())
+            .expect("generate candidate");
+        assert!(
+            read_to_string(&candidate_repo.path().join("skills/review/skill.md"))
+                .expect("candidate text")
+                .contains("Tuning Candidate Notes")
+        );
+
+        write_parented(
+            &workspace.path().join(".loom/logs/review.jsonl"),
+            "{\"type\":\"review\",\"finding\":\"new post-candidate evidence\"}\n",
+        )
+        .expect("write changed evidence pool");
+        let rebuilt = context.refreshed_plan(&request).expect("rebuild plan");
+        let error = prepared
+            .frozen
+            .reject_if_changed(&rebuilt.frozen)
+            .expect_err("post-candidate plan drift rejects");
+        assert!(matches!(error, PlanError::PlanChanged { .. }));
+        let validation = changed_plan_validation(&prepared.frozen, &[], &error);
+        assert!(validation.rows.iter().any(|row| {
+            row.check == "checker-plan-freeze" && row.status == ValidationStatus::Failed
+        }));
+    }
 }

@@ -6,6 +6,68 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+fn find_bash() -> PathBuf {
+    let path_var = std::env::var_os("PATH").expect("PATH");
+    std::env::split_paths(&path_var)
+        .map(|directory| directory.join("bash"))
+        .find(|candidate| candidate.is_file())
+        .expect("bash on PATH")
+}
+
+fn mock_pi_path() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .ancestors()
+        .map(|ancestor| ancestor.join("tests/mock-pi/pi.sh"))
+        .find(|candidate| candidate.is_file())
+        .expect("mock pi fixture")
+}
+
+fn install_tune_review_wrix(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let shim = root.join("tune-review-wrix");
+    let count = root.join("tune-review-count");
+    let bash = find_bash();
+    let mock = mock_pi_path();
+    write_file(
+        &shim,
+        &format!(
+            "#!{}\nset -euo pipefail\nprintf 'x\\n' >> '{}'\necho '[wrix] Starting container (mock)...' >&2\nexec '{}' '{}' tune-review\n",
+            bash.display(),
+            count.display(),
+            bash.display(),
+            mock.display(),
+        ),
+    );
+    let mut permissions = std::fs::metadata(&shim)
+        .expect("stat wrix shim")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&shim, permissions).expect("chmod wrix shim");
+
+    let profile_config = root.join("profile-config.json");
+    write_file(&profile_config, "{}\n");
+    let manifest = root.join("profile-images.json");
+    let body = serde_json::json!({
+        "base": {
+            "pi": {
+                "ref": "localhost/wrix-base-pi:tune-test",
+                "source": "/nix/store/tune-test-image",
+                "source_kind": "nix-descriptor",
+                "launcher": shim,
+                "profile_config": profile_config,
+            }
+        }
+    });
+    write_file(
+        &manifest,
+        &format!(
+            "{}\n",
+            serde_json::to_string_pretty(&body).expect("manifest json")
+        ),
+    );
+    (shim, manifest, count)
+}
+
 fn git_command() -> Command {
     let mut command = Command::new("git");
     loom_test_support::scrub_git_local_env(&mut command);
@@ -272,19 +334,31 @@ targets = ["skill:repo-target"]
 #[test]
 fn skill_tune_evidence_roots_and_gate() {
     let tmp = tempfile::tempdir().expect("tmpdir");
+    let external = tempfile::tempdir().expect("external evidence root");
     init_workspace(tmp.path());
     let bin_dir = install_bd_shim(tmp.path());
     let state_dir = tmp.path().join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir state");
     write_file(
+        &external.path().join("agent-session.jsonl"),
+        "{\"type\":\"review\",\"result\":\"external correction\"}\n",
+    );
+    write_file(
+        &tmp.path().join(".loom/logs/skills/review.jsonl"),
+        "{\"type\":\"review\",\"result\":\"workspace finding\"}\n",
+    );
+    write_file(
         &tmp.path().join("loom.toml"),
-        "[tune.evidence]\nexternal_roots = [\"/tmp/explicit-transcripts\"]\n",
+        &format!(
+            "[phase.gate.review]\nagent.backend = \"pi\"\n\n[tune.checks]\nmax_behavior_cases = 1\n\n[tune.evidence]\nexternal_roots = [\"{}\"]\n",
+            external.path().display(),
+        ),
     );
     write_file(
         &tmp.path().join("docs/tuning.md"),
         r#"# Fixture tuning guidance
 
-Tune guidance: Always report missing test coverage when review evidence asks for it.
+Use concrete review inputs when evaluating candidate guidance.
 
 ```loom-case
 id = "review-recall-case"
@@ -298,13 +372,18 @@ patch = "cases/review.diff"
 max_extra_findings = 1
 
 [[expected.findings]]
-contains = ["missing test"]
+contains = ["missing test from replay input"]
 ```
 "#,
     );
-    write_file(&tmp.path().join("docs/cases/review.diff"), "diff --git\n");
+    write_file(
+        &tmp.path().join("docs/cases/review.diff"),
+        "diff --git a/src/lib.rs b/src/lib.rs\n+TUNE_REVIEW_INPUT_CANARY\n",
+    );
     git(tmp.path(), &["add", "."]);
     git(tmp.path(), &["commit", "-q", "-m", "add tuning case"]);
+    let (_wrix, profile_manifest, replay_count) = install_tune_review_wrix(tmp.path());
+    let manifest_path = profile_manifest.to_string_lossy();
 
     let dry_args = [
         "tune",
@@ -315,12 +394,24 @@ contains = ["missing test"]
         "7",
         "loom-context-before-edit",
     ];
-    let dry = run_loom(tmp.path(), &bin_dir, &state_dir, &dry_args);
+    let dry = run_loom_with_env(
+        tmp.path(),
+        &bin_dir,
+        &state_dir,
+        &dry_args,
+        &[("LOOM_PROFILES_MANIFEST", manifest_path.as_ref())],
+    );
     assert_success(&dry, &dry_args);
     let dry_out = stdout(&dry);
+    let roots_at = dry_out.find("evidence roots:").expect("root report");
+    let plan_at = dry_out.find("loom tune dry-run").expect("dry-run report");
+    assert!(
+        roots_at < plan_at,
+        "roots must print before harvesting: {dry_out}"
+    );
     assert!(dry_out.contains("workspace:"), "{dry_out}");
     assert!(
-        dry_out.contains("external: /tmp/explicit-transcripts"),
+        dry_out.contains(&format!("external: {}", external.path().display())),
         "{dry_out}"
     );
     assert!(!dry_out.contains(".claude"), "{dry_out}");
@@ -342,10 +433,21 @@ contains = ["missing test"]
         &bin_dir,
         &state_dir,
         &args,
-        &[("BD_CREATE_ID", "lm-tune.2")],
+        &[
+            ("BD_CREATE_ID", "lm-tune.2"),
+            ("LOOM_PROFILES_MANIFEST", manifest_path.as_ref()),
+        ],
     );
 
     assert_success(&output, &args);
+    assert_eq!(
+        std::fs::read_to_string(&replay_count)
+            .expect("replay count")
+            .lines()
+            .count(),
+        2,
+        "current and candidate must each run through the real Pi spawn path",
+    );
     let envelope = tmp.path().join(".loom/tune/lm-tune.2");
     let manifest: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(envelope.join("manifest.json")).expect("read manifest"),
@@ -365,6 +467,15 @@ contains = ["missing test"]
         manifest["evidence_split"]["selection_fraction"],
         serde_json::json!(0.34),
     );
+    let case_counts = &manifest["case_counts"];
+    let mined = case_counts["mined_train"].as_u64().expect("train count")
+        + case_counts["mined_selection"]
+            .as_u64()
+            .expect("selection count");
+    assert_eq!(
+        mined, 3,
+        "workspace log, tuning doc, and external transcript"
+    );
     assert!(
         manifest["validation"]
             .as_array()
@@ -383,8 +494,11 @@ contains = ["missing test"]
         envelope.join("repo/.loom-override/skills/loom-context-before-edit/skill.md"),
     )
     .expect("candidate skill");
-    assert!(candidate.contains("missing test"), "{candidate}");
-    assert!(candidate.contains("Tune guidance"), "{candidate}");
+    assert!(candidate.contains("concrete review inputs"), "{candidate}");
+    assert!(
+        !candidate.contains("missing test from replay input"),
+        "candidate generation must not copy held-out expected predicates: {candidate}",
+    );
 }
 
 #[test]

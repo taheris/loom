@@ -27,7 +27,7 @@ mod tests {
     use crate::checker::{CheckerId, Level, Registry};
     use crate::config::{ChecksConfig, EvidenceConfig, SelectionFraction, TuneConfig};
     use crate::evidence::{Item, ItemId, RootReport, Snapshot, SplitMetadata};
-    use crate::executor::Artifact;
+    use crate::executor::Replay;
     use crate::gate::{self, Outcome, State};
     use crate::plan::{PlannedCaseId, Pool, Request, build};
     use crate::target::{Catalog as TargetCatalog, Target};
@@ -98,7 +98,7 @@ contains = ["missing test"]
     }
 
     #[test]
-    fn tune_checker_plan_freeze_contract() {
+    fn checker_plan_rebuild_accepts_unchanged_inputs() {
         let repo = TempDir::new().expect("tempdir");
         write(
             &repo.path().join("docs/tuning.md"),
@@ -112,7 +112,7 @@ contains = ["missing test"]
             .expect("target");
         let evidence = Snapshot {
             train: Vec::new(),
-            selection: vec![Item::new(
+            selection: vec![Item::for_test(
                 ItemId::new("selection-review-1").expect("item id"),
                 CheckerId::new("behavior.review.finding-recall").expect("checker"),
                 vec![target.clone()],
@@ -217,16 +217,17 @@ contains = ["missing test"]
             .find(|case| matches!(case.case_id, PlannedCaseId::Declared(_)))
             .expect("declared case selected");
         assert_eq!(selected.pool, Pool::DeclaredRegression);
+        let selected_case = plan.selected_cases[0].case_id.clone();
         let result = crate::executor::run(
             &plan,
             &cases,
-            &[Artifact::new(
-                target,
-                "generic review guidance",
-                "guidance that catches missing test findings",
+            &[Replay::new(
+                selected_case,
+                "LOOM_COMPLETE",
+                r#"LOOM_FINDING: {"evidence":"missing test"}"#,
             )],
         )
-        .expect("checker implementations run");
+        .expect("checker implementations score replayed output");
         let report =
             gate::evaluate(&plan, result, &registry).expect("gate evaluates selected behavior");
         assert_eq!(report.state, State::Passed);

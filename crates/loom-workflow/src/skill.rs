@@ -193,11 +193,15 @@ mod tests {
     use super::*;
     use std::fs;
 
+    use std::os::unix::fs::PermissionsExt;
+
+    use loom_agent::PiBackend;
+    use loom_driver::agent::{ImageSourceKind, RePinContent, SpawnConfig};
     use loom_driver::config::{SkillRegistration, SkillsConfig};
     use loom_driver::git::{commit_all_in, init_test_repo};
     use loom_skills::disclosure::PathDisplay;
     use loom_skills::identity::{SkillDescription, SkillName};
-    use loom_skills::registry::DisclosureSkill;
+    use loom_skills::registry::{DisclosureSkill, RegisteredSkills};
 
     fn disclosure(mode: DisclosureMode, path: Option<PathBuf>) -> DisclosureRegistry {
         DisclosureRegistry {
@@ -219,27 +223,135 @@ mod tests {
         fs::write(path, body).expect("write file");
     }
 
-    #[test]
-    fn skill_registration_policy_auto_and_prompt() {
-        assert_eq!(
-            disclosure_mode_for(AgentRuntime::Direct, SkillRegistration::Auto),
-            DisclosureMode::Prompt,
+    fn spawn_config(skills: RegisteredSkills, prompt: String, scratch: &Path) -> SpawnConfig {
+        SpawnConfig {
+            image_ref: "localhost/wrix-test:pi".into(),
+            image_source: PathBuf::from("/nix/store/zzz-wrix-test"),
+            image_source_kind: Some(ImageSourceKind::NixDescriptor),
+            wrix_launcher: None,
+            profile_config: None,
+            workspace: PathBuf::from("/workspace"),
+            env: vec![],
+            mounts: vec![],
+            initial_prompt: prompt,
+            agent_args: vec![],
+            repin: RePinContent {
+                orientation: String::new(),
+                pinned_context: String::new(),
+                partial_bodies: vec![],
+            },
+            skills: Some(skills),
+            scratch_dir: scratch.to_path_buf(),
+            model_id: None,
+            model: None,
+            thinking_level: None,
+            observers: Default::default(),
+            output_limits: None,
+            shutdown_grace: None,
+            denied_tools: Vec::new(),
+            handshake_timeout: None,
+            stall_warn_interval: None,
+            launcher_env: Vec::new(),
+        }
+    }
+
+    fn install_probe_wrix(directory: &Path, calls: &Path) -> PathBuf {
+        let bash = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+            .map(|path| path.join("bash"))
+            .find(|path| path.is_file())
+            .expect("bash");
+        let script = directory.join("wrix");
+        write(
+            &script,
+            &format!(
+                "#!{}\nset -euo pipefail\nprintf 'x\\n' >> '{}'\necho '[wrix] Starting container (mock)...' >&2\nIFS= read -r probe\nid=\"$(sed -n 's/.*\"id\":\"\\([^\"]*\\)\".*/\\1/p' <<<\"$probe\")\"\nprintf '{{\"type\":\"response\",\"id\":\"%s\",\"command\":\"get_state\",\"success\":true,\"data\":{{\"isStreaming\":false,\"isCompacting\":false,\"messageCount\":0,\"pendingMessageCount\":0}}}}\\n' \"$id\"\nwhile IFS= read -r _line; do :; done\n",
+                bash.display(),
+                calls.display(),
+            ),
         );
-        assert_eq!(
-            disclosure_mode_for(AgentRuntime::Pi, SkillRegistration::Auto),
-            DisclosureMode::Prompt,
+        let mut permissions = fs::metadata(&script).expect("stat wrix").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).expect("chmod wrix");
+        script
+    }
+
+    #[tokio::test]
+    async fn skill_registration_policy_auto_and_prompt() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let calls = workspace.path().join("calls");
+        let wrix = install_probe_wrix(workspace.path(), &calls);
+        let profile = ProfileName::new("rust");
+
+        let auto_plan = SkillPlan::resolve(
+            workspace.path(),
+            &[],
+            "loop",
+            &profile,
+            AgentRuntime::Pi,
+            &SkillsConfig::default(),
+        )
+        .expect("auto plan");
+        let auto = auto_plan
+            .materialize(scratch.path(), workspace.path())
+            .expect("materialize auto skills");
+        assert_eq!(auto.registered.disclosure(), DisclosureMode::Prompt);
+        assert!(!auto.registered.registry().skills().is_empty());
+        let auto_config = spawn_config(
+            auto.registered.clone(),
+            auto.skill_index.as_str().to_owned(),
+            scratch.path(),
         );
-        assert_eq!(
-            disclosure_mode_from_policy(SkillRegistration::Auto, NativeRegistration::Supported),
-            DisclosureMode::Native,
+        let auto_session = PiBackend::spawn_with_wrix_bin(&auto_config, wrix.as_os_str())
+            .await
+            .expect("auto prompt disclosure reaches real backend spawn");
+        drop(auto_session);
+
+        let prompt_policy = SkillsConfig {
+            registration: SkillRegistration::Prompt,
+            ..SkillsConfig::default()
+        };
+        let prompt_plan = SkillPlan::resolve(
+            workspace.path(),
+            &[],
+            "loop",
+            &profile,
+            AgentRuntime::Pi,
+            &prompt_policy,
+        )
+        .expect("prompt plan");
+        let prompt = prompt_plan
+            .materialize(scratch.path(), workspace.path())
+            .expect("materialize prompt skills");
+        assert_eq!(prompt.registered.disclosure(), DisclosureMode::Prompt);
+        let prompt_config = spawn_config(
+            prompt.registered.clone(),
+            prompt.skill_index.as_str().to_owned(),
+            scratch.path(),
         );
+        let prompt_session = PiBackend::spawn_with_wrix_bin(&prompt_config, wrix.as_os_str())
+            .await
+            .expect("prompt policy reaches real backend spawn");
+        drop(prompt_session);
+
+        let native =
+            RegisteredSkills::new(prompt.registered.registry().clone(), DisclosureMode::Native);
+        let native_config = spawn_config(native, String::new(), scratch.path());
+        let error = match PiBackend::spawn_with_wrix_bin(&native_config, wrix.as_os_str()).await {
+            Ok(_) => panic!("declared native mode spawned without a registrar"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            loom_driver::agent::ProtocolError::Unsupported
+        ));
         assert_eq!(
-            disclosure_mode_from_policy(SkillRegistration::Prompt, NativeRegistration::Supported),
-            DisclosureMode::Prompt,
-        );
-        assert_eq!(
-            disclosure_mode_from_policy(SkillRegistration::Prompt, NativeRegistration::Unsupported),
-            DisclosureMode::Prompt,
+            fs::read_to_string(calls)
+                .expect("spawn calls")
+                .lines()
+                .count(),
+            2,
+            "native registration failure must stop before the Wrix child starts",
         );
     }
 

@@ -43,6 +43,8 @@
 #                               agent_end. Used by the container smoke
 #                               and any test that wants the full
 #                               single-turn lifecycle.
+#   tune-review               — probe ok, require the tracked review-input
+#                               canary in the prompt, then emit one finding.
 #   interactive-compaction-canary
 #                             — verify an interactive Pi launch path delivered
 #                               full re-pin context before output.
@@ -218,6 +220,22 @@ run_happy_path() {
     emit_agent_end
 }
 
+run_tune_review() {
+    handle_probe 0
+    local prompt_line
+    IFS= read -r prompt_line
+    if [[ "$prompt_line" != *"TUNE_REVIEW_INPUT_CANARY"* ]]; then
+        echo "mock-pi: tune review prompt did not contain fixture input" >&2
+        exit 4
+    fi
+    if [[ "$prompt_line" == *"Use concrete review inputs when evaluating candidate guidance."* ]]; then
+        emit_message_delta 'LOOM_FINDING: {"token":"fabricated-result","route":"blocking","bonds":["skills"],"target":{"kind":"Criterion","spec":"skills","anchor":"fixture"},"evidence":"missing test from replay input"}'
+    else
+        emit_message_delta 'LOOM_COMPLETE'
+    fi
+    emit_agent_end
+}
+
 run_echo_prompt() {
     handle_probe 0
     local prompt_line message
@@ -354,6 +372,9 @@ case "$MODE" in
         ;;
     happy-path)
         run_happy_path
+        ;;
+    tune-review)
+        run_tune_review
         ;;
     interactive-compaction-canary)
         run_interactive_compaction_canary "$@"

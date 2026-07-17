@@ -28,19 +28,50 @@ impl Artifact {
     }
 }
 
-/// Execute selected behavioral checkers for a frozen plan.
+/// Captured output from current and candidate agent replays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replay {
+    pub case_id: PlannedCaseId,
+    pub current_output: String,
+    pub candidate_output: String,
+}
+
+impl Replay {
+    pub fn new(
+        case_id: PlannedCaseId,
+        current_output: impl Into<String>,
+        candidate_output: impl Into<String>,
+    ) -> Self {
+        Self {
+            case_id,
+            current_output: current_output.into(),
+            candidate_output: candidate_output.into(),
+        }
+    }
+}
+
+/// Score outputs captured by behavioral checker replays for a frozen plan.
 pub fn run(
     plan: &FrozenPlan,
     cases: &LoadedCases,
-    artifacts: &[Artifact],
+    replays: &[Replay],
 ) -> Result<Vec<CaseResult>, Error> {
     let case_by_id = cases
         .cases()
         .iter()
         .map(|case| (case.id.clone(), case))
         .collect::<BTreeMap<_, _>>();
+    let replay_by_id = replays
+        .iter()
+        .map(|replay| (replay.case_id.clone(), replay))
+        .collect::<BTreeMap<_, _>>();
     let mut results = Vec::with_capacity(plan.selected_cases.len());
     for selected in &plan.selected_cases {
+        let replay = replay_by_id
+            .get(&selected.case_id)
+            .ok_or_else(|| Error::MissingReplay {
+                case_id: selected.case_id.clone(),
+            })?;
         let result = match &selected.case_id {
             PlannedCaseId::Declared(id) => {
                 let case = case_by_id
@@ -48,9 +79,9 @@ pub fn run(
                     .ok_or_else(|| Error::MissingDeclaredCase {
                         case_id: selected.case_id.clone(),
                     })?;
-                run_declared(selected, case, artifacts)?
+                run_declared(selected, case, replay)?
             }
-            PlannedCaseId::Mined(_) => run_mined(selected, artifacts)?,
+            PlannedCaseId::Mined(_) => run_mined(selected, replay)?,
         };
         results.push(result);
     }
@@ -106,36 +137,17 @@ pub fn expected_terms(expected: &Expected) -> Vec<String> {
 fn run_declared(
     selected: &SelectedCase,
     case: &Case,
-    artifacts: &[Artifact],
+    replay: &Replay,
 ) -> Result<CaseResult, Error> {
     require_known_checker(&case.checker)?;
-    let relevant = artifacts_for_targets(artifacts, &case.targets);
-    if relevant.is_empty() {
-        return Err(Error::MissingArtifact {
-            case_id: selected.case_id.clone(),
-            targets: case.targets.clone(),
-        });
-    }
-    let current = score_text(
-        &join_artifact_text(&relevant, TextSide::Current),
-        &case.expected,
-    )?;
-    let candidate = score_text(
-        &join_artifact_text(&relevant, TextSide::Candidate),
-        &case.expected,
-    )?;
+    let current = score_output(&replay.current_output, &case.expected)?;
+    let candidate = score_output(&replay.candidate_output, &case.expected)?;
     Ok(CaseResult::new(selected, current, candidate))
 }
 
-fn run_mined(selected: &SelectedCase, artifacts: &[Artifact]) -> Result<CaseResult, Error> {
-    if artifacts.is_empty() {
-        return Err(Error::MissingArtifact {
-            case_id: selected.case_id.clone(),
-            targets: Vec::new(),
-        });
-    }
-    let current = score_presence(artifacts.iter().map(|artifact| artifact.current.as_str()))?;
-    let candidate = score_presence(artifacts.iter().map(|artifact| artifact.candidate.as_str()))?;
+fn run_mined(selected: &SelectedCase, replay: &Replay) -> Result<CaseResult, Error> {
+    let current = score_presence(&replay.current_output)?;
+    let candidate = score_presence(&replay.candidate_output)?;
     Ok(CaseResult::new(selected, current, candidate))
 }
 
@@ -154,61 +166,66 @@ fn require_known_checker(checker: &CheckerId) -> Result<(), Error> {
     }
 }
 
-fn artifacts_for_targets<'a>(artifacts: &'a [Artifact], targets: &[Target]) -> Vec<&'a Artifact> {
-    artifacts
-        .iter()
-        .filter(|artifact| targets.iter().any(|target| target == &artifact.target))
-        .collect()
-}
-
-#[derive(Debug, Clone, Copy)]
-enum TextSide {
-    Current,
-    Candidate,
-}
-
-fn join_artifact_text(artifacts: &[&Artifact], side: TextSide) -> String {
-    let mut text = String::new();
-    for artifact in artifacts {
-        match side {
-            TextSide::Current => text.push_str(&artifact.current),
-            TextSide::Candidate => text.push_str(&artifact.candidate),
-        }
-        text.push('\n');
+fn score_output(output: &str, expected: &Expected) -> Result<Scores, ScoreError> {
+    if let Expected::ReviewFindingRecall(expected) = expected {
+        return score_review_output(output, expected);
     }
-    text
-}
-
-fn score_text(text: &str, expected: &Expected) -> Result<Scores, ScoreError> {
     let terms = expected_terms(expected);
     if terms.is_empty() {
-        return scores(1.0, 1.0);
+        return score_presence(output);
     }
     let matched = terms
         .iter()
-        .filter(|term| contains_case_insensitive(text, term))
+        .filter(|term| contains_case_insensitive(output, term))
         .count();
     let soft = matched as f64 / terms.len() as f64;
     let hard = if matched == terms.len() { 1.0 } else { 0.0 };
     scores(hard, soft)
 }
 
-fn score_presence<'a>(texts: impl Iterator<Item = &'a str>) -> Result<Scores, ScoreError> {
-    let mut count = 0_usize;
-    let mut present = 0_usize;
-    for text in texts {
-        count += 1;
-        if !text.trim().is_empty() {
-            present += 1;
-        }
+fn score_review_output(
+    output: &str,
+    expected: &crate::case::ReviewExpected,
+) -> Result<Scores, ScoreError> {
+    let findings = output
+        .lines()
+        .filter(|line| line.trim_start().starts_with("LOOM_FINDING:"))
+        .collect::<Vec<_>>();
+    if expected.findings.is_empty() {
+        return scores(1.0, 1.0);
     }
-    let soft = if count == 0 {
-        0.0
+    let matched = expected
+        .findings
+        .iter()
+        .filter(|expected| {
+            findings.iter().any(|finding| {
+                expected
+                    .contains
+                    .iter()
+                    .all(|term| contains_case_insensitive(finding, term))
+                    && expected
+                        .file
+                        .as_ref()
+                        .is_none_or(|file| contains_case_insensitive(finding, file))
+            })
+        })
+        .count();
+    let within_extra_limit = expected.max_extra_findings.is_none_or(|limit| {
+        findings.len().saturating_sub(expected.findings.len()) <= limit as usize
+    });
+    let soft = matched as f64 / expected.findings.len() as f64;
+    let hard = if matched == expected.findings.len() && within_extra_limit {
+        1.0
     } else {
-        present as f64 / count as f64
+        0.0
     };
-    let hard = if count == present { 1.0 } else { 0.0 };
     scores(hard, soft)
+}
+
+fn score_presence(output: &str) -> Result<Scores, ScoreError> {
+    let present = !output.trim().is_empty();
+    let value = if present { 1.0 } else { 0.0 };
+    scores(value, value)
 }
 
 fn scores(hard: f64, soft: f64) -> Result<Scores, ScoreError> {
@@ -225,11 +242,8 @@ fn contains_case_insensitive(text: &str, term: &str) -> bool {
 pub enum Error {
     /// selected declared case `{case_id}` was not loaded
     MissingDeclaredCase { case_id: PlannedCaseId },
-    /// selected case `{case_id}` has no tuned artifact for targets {targets:?}
-    MissingArtifact {
-        case_id: PlannedCaseId,
-        targets: Vec<Target>,
-    },
+    /// selected case `{case_id}` has no captured current/candidate replay
+    MissingReplay { case_id: PlannedCaseId },
     /// checker `{checker}` has no executor implementation
     UnsupportedChecker { checker: CheckerId },
     /// checker score was invalid
@@ -256,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_checker_scores_candidate_artifact_terms() {
+    fn declared_checker_scores_replayed_agent_findings() {
         let selected = SelectedCase {
             case_id: PlannedCaseId::Declared(crate::case::Id::new("case-a").expect("case id")),
             checker: CheckerId::new("behavior.review.finding-recall").expect("checker"),
@@ -285,12 +299,12 @@ mod tests {
                 line: 1,
             },
         };
-        let artifact = Artifact::new(
-            "skill:loom-context-before-edit".parse().expect("target"),
-            "read files first",
-            "read files first and report missing test findings",
+        let replay = Replay::new(
+            selected.case_id.clone(),
+            "LOOM_COMPLETE",
+            r#"LOOM_FINDING: {"evidence":"missing test"}"#,
         );
-        let result = run_declared(&selected, &case, &[artifact]).expect("checker runs");
+        let result = run_declared(&selected, &case, &replay).expect("checker runs");
         assert_eq!(result.current.soft.get(), 0.0);
         assert_eq!(result.candidate.soft.get(), 1.0);
     }

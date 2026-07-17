@@ -640,54 +640,16 @@ Common tune flags for proposal-creating commands:
 
 ### Human Review Through Inbox
 
-`loom inbox` replaces `loom msg` as the human decision and operator diagnostic
-queue. There is no `loom msg` alias. The inbox contains outstanding
-`loom:clarify` beads, semantic `loom:blocked` beads, `loom:infra`
-diagnostics, and tune proposals.
+The inbox command modes, addressing, filters, queue ordering, interactive
+resolution authority, terminal markers, and trusted apply batch are defined
+once in [harness.md § Inbox Modes](harness.md#inbox-modes). This spec does not
+restate that shared workflow contract.
 
-| Command | Meaning |
-|---------|---------|
-| `loom inbox` / `loom inbox list` | List pending human-decision and operator diagnostic items. |
-| `loom inbox view <N>` | View list item number `N`. |
-| `loom inbox view -b <bead-id>` | View a specific bead. |
-| `loom inbox view -p <proposal-id>` | View a specific tune proposal. |
-| `loom inbox chat [<N>]` | Launch interactive agent-assisted resolution for one item or the filtered queue. |
-| `loom inbox chat -b <bead-id>` | Launch chat focused on a bead-backed item. |
-| `loom inbox chat -p <proposal-id>` | Launch chat focused on a tune proposal. |
-
-There is no host-side `pick`, `reply`, `resolve`, `apply`, `--option`, `--text`,
-or `--dismiss` surface in v1. Options blocks are structured context for
-`view`/`chat`, not a host-executable menu. Chat is the only Loom-managed
-resolution path; `view` prints durable ids and local paths so the user can use
-manual escape hatches (`bd`, file deletion/repair) if no chat-capable backend is
-available.
-
-`-s/--spec <label>` and `-k/--kind <clarify|blocked|infra|tune>` filter list
-and chat queues. Absence of `--kind` means all kinds; there is no `--kind all`.
-Filters narrow the queue before positional numbering. The default list order is
-group-first, then FIFO within each group: `clarify` oldest→newest, then
-`blocked` oldest→newest, then `infra` oldest→newest, then `tune` oldest→newest.
-A corrupt or unavailable tune proposal remains `kind = tune` with blocked
-status/framing; it appears in default and `-k tune` queues, not as a generic
-blocked bead.
-
-`loom inbox chat` normally loads the visible queue and works through items one at
-a time, often resolving all of them in one session. Targeted chat forms are
-secondary escape hatches. The chat-capable backend/profile comes from
-`[phase.inbox]` or falls back through normal phase defaults; Direct is rejected
-for inbox chat because it has no interactive REPL.
-
-Tune proposals accepted during a chat are queued for a single end-of-chat apply
-batch. The chat agent may repair proposal files only in `.loom/tune/<id>/repo/`
-and update the tune bead; it must not push or dirty `.loom/integration`. If the
-session ends with `LOOM_APPLY: {"proposals":[...]}`, the trusted driver applies
-those proposal branches through the same integration/push-gate machinery used by
-`loom loop`, runs verify + review over the actual combined range, and pushes once
-at the end. `LOOM_COMPLETE` means no driver-side apply handoff is requested.
-The batch is all-or-nothing in v1: `cherry_pick_conflict`, `verify_failed`,
-`review_failed`, or `push_failed` aborts the batch, pushes nothing, and moves
-every proposal in the batch to `apply_failed` with shared diagnostics. Retrying
-requires explicit reauthorization in a later inbox chat.
+Tuning contributes tune-kind proposal records to that authoritative inbox flow.
+Each record and local envelope must satisfy
+[Tune Proposal Worktrees and Beads](#tune-proposal-worktrees-and-beads), so the
+inbox can review the candidate and hand any authorized adoption to the trusted
+driver without making tuning a second resolution authority.
 
 ## Success Criteria
 
@@ -748,11 +710,11 @@ requires explicit reauthorization in a later inbox chat.
   by compiling Askama templates, rendering representative snapshots, and running
   template conformance walkers before inbox exposure
   [test?](template_tune_candidate_validation)
-- `loom inbox` replaces `loom msg` with list/view/chat subcommands, supports
-  numeric, bead, and proposal addressing for view/chat, exposes no `loom msg`
-  alias and no host-side pick/reply/resolve/apply/option/text/dismiss surface,
-  and routes tune adoption through `LOOM_APPLY: {"proposals":[...]}`
-  [test?](loom_inbox_cli_surface)
+- Pending and blocked tune proposal records enter the authoritative
+  [harness.md § Inbox Modes](harness.md#inbox-modes) flow as tune-kind items,
+  and authorized adoption is performed only by that flow's trusted apply
+  handoff
+  [test](inbox_apply_marker_triggers_single_driver_handoff)
 - Skills remain additive strategy guidance and cannot override compiled phase
   protocol, terminal markers, state-mutation authority, or gate discipline
   [judge?](skills_template_boundary_review)
@@ -810,16 +772,12 @@ requires explicit reauthorization in a later inbox chat.
     checkout or push automatically.
 12. **Template validation.** Phase and partial template proposals must validate
     in their proposal worktree before entering `loom inbox` as pending.
-13. **Inbox command rename.** `loom inbox` is the human-decision and operator
-    diagnostic surface for clarifies, semantic blocked dead ends, infra
-    diagnostics, and tune proposals. `loom msg` is removed, with no
-    compatibility alias. `loom inbox chat` is the only Loom-managed resolution
-    path in v1.
-14. **Tune apply handoff.** Accepted tune proposals are applied only by the
-    trusted driver after an inbox chat emits `LOOM_APPLY: {"proposals":[...]}`.
-    The driver applies the accepted batch through the integration/push-gate path,
-    verifies/reviews the actual combined range, pushes once, and marks proposals
-    `applied` only after push succeeds.
+13. **Inbox ownership.** Tuning emits tune-kind proposal records; the command
+    surface and resolution authority are owned exclusively by
+    [harness.md § Inbox Modes](harness.md#inbox-modes).
+14. **Tune apply handoff.** Tune adoption follows the trusted apply contract in
+    [harness.md § Inbox Modes](harness.md#inbox-modes); tuning does not define a
+    second apply path.
 15. **Workspace-first evidence.** Tuning evidence defaults to the workspace;
     external transcript roots require `[tune.evidence].external_roots` and are
     printed before use. Mined evidence is stably split into `train` and

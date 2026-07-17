@@ -560,18 +560,18 @@ mod tests {
 
     fn evidence_snapshot() -> Snapshot {
         Snapshot {
-            train: vec![Item::new(
+            train: vec![Item::for_test(
                 ItemId::new("train-1").expect("id"),
                 CheckerId::new("behavior.review.finding-recall").expect("checker"),
                 vec![target()],
             )],
             selection: vec![
-                Item::new(
+                Item::for_test(
                     ItemId::new("selection-1").expect("id"),
                     CheckerId::new("behavior.review.finding-recall").expect("checker"),
                     vec![target()],
                 ),
-                Item::new(
+                Item::for_test(
                     ItemId::new("selection-2").expect("id"),
                     CheckerId::new("behavior.review.finding-recall").expect("checker"),
                     vec![target()],
