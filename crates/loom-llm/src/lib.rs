@@ -6,7 +6,7 @@
 //! # Public Contract
 //!
 //! `llm` is one of five public-contract crates in the loom
-//! workspace (alongside `loom-events`, `loom-protocol`, `templates`,
+//! workspace (alongside `loom-events`, `loom-protocol`, `loom-templates`,
 //! and `loom-skills`). External Rust consumers depend on this crate
 //! directly for typed LLM access
 //! without taking on Loom's CLI / workflow / beads surface. The

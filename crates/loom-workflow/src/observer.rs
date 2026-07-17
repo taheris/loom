@@ -44,6 +44,7 @@ pub struct ObserverDriverEvent {
 pub struct DefaultObserverChain {
     doom_loop: Option<DoomLoopObserver>,
     duplicate_result: Option<DuplicateResultObserver>,
+    pending_commands: Vec<SessionCommand>,
 }
 
 impl DefaultObserverChain {
@@ -60,6 +61,7 @@ impl DefaultObserverChain {
             Some(Self {
                 doom_loop,
                 duplicate_result,
+                pending_commands: Vec::new(),
             })
         }
     }
@@ -132,9 +134,22 @@ impl DefaultObserverChain {
 impl EventSink for DefaultObserverChain {
     fn emit(&mut self, event: &AgentEvent) {
         if let AgentEvent::ToolResult { id, output, .. } = event {
-            let fingerprint = ResultHasher::output_fingerprint(output);
-            if let Some(observer) = self.doom_loop.as_mut() {
-                observer.observe_tool_result(id, fingerprint);
+            let fingerprint = match ResultHasher::output_fingerprint(output) {
+                Ok(fingerprint) => fingerprint,
+                Err(error) => {
+                    self.pending_commands.push(SessionCommand::Abort(format!(
+                        "observer result canonicalization failed: {error}"
+                    )));
+                    return;
+                }
+            };
+            if let Some(observer) = self.doom_loop.as_mut()
+                && let Err(error) = observer.observe_tool_result(id, fingerprint)
+            {
+                self.pending_commands.push(SessionCommand::Abort(format!(
+                    "observer call canonicalization failed: {error}"
+                )));
+                return;
             }
             if let Some(observer) = self.duplicate_result.as_mut() {
                 observer.observe_tool_result(id, fingerprint);
@@ -150,7 +165,7 @@ impl EventSink for DefaultObserverChain {
     }
 
     fn react(&mut self) -> Vec<SessionCommand> {
-        let mut commands = Vec::new();
+        let mut commands = std::mem::take(&mut self.pending_commands);
         if let Some(observer) = self.doom_loop.as_mut() {
             commands.extend(observer.react());
         }

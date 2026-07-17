@@ -14,7 +14,9 @@ use loom_events::identifier::ToolCallId;
 use loom_events::{AgentEvent, EventSink, SessionCommand};
 use serde_json::Value;
 
-use super::result_hasher::{CallKey, ResultFingerprint, ResultHash, ResultHasher};
+use super::result_hasher::{
+    CallKey, Error as ResultHasherError, ResultFingerprint, ResultHash, ResultHasher,
+};
 
 /// Per-observer configuration. Mirrors the `[agent.doom_loop]` TOML block
 /// the binary's `LoomConfig` exposes — consumers driving
@@ -214,15 +216,23 @@ impl DoomLoopObserver {
 
     /// Observe a tool result whose canonical fingerprint was computed
     /// by the conversation loop's shared hashing pass.
-    pub fn observe_tool_result(&mut self, id: &ToolCallId, fingerprint: ResultFingerprint) {
-        self.process_result(id, fingerprint.hash());
+    pub fn observe_tool_result(
+        &mut self,
+        id: &ToolCallId,
+        fingerprint: ResultFingerprint,
+    ) -> Result<(), ResultHasherError> {
+        self.process_result(id, fingerprint.hash())
     }
 
-    fn process_result(&mut self, id: &ToolCallId, hash: ResultHash) {
+    fn process_result(
+        &mut self,
+        id: &ToolCallId,
+        hash: ResultHash,
+    ) -> Result<(), ResultHasherError> {
         let Some(call) = self.pending_calls.get(id).cloned() else {
-            return;
+            return Ok(());
         };
-        let call_key = ResultHasher::call_key(&call.tool, &call.params);
+        let call_key = ResultHasher::call_key(&call.tool, &call.params)?;
         let window_cap = self.window as usize;
 
         let window = self.windows.entry(call_key.clone()).or_default();
@@ -273,6 +283,13 @@ impl DoomLoopObserver {
             }
             StageState::Stage2 => {}
         }
+        Ok(())
+    }
+
+    fn record_canonicalization_failure(&mut self, error: &ResultHasherError) {
+        self.pending_commands.push(SessionCommand::Abort(format!(
+            "doom-loop observer canonicalization failed: {error}"
+        )));
     }
 
     fn fire_stage_1(&mut self, tool: &str, params: &Value, call_id: &ToolCallId) {
@@ -325,8 +342,11 @@ impl EventSink for DoomLoopObserver {
                 self.record_call(id, tool, params);
             }
             AgentEvent::ToolResult { id, output, .. } => {
-                let fingerprint = ResultHasher::output_fingerprint(output);
-                self.observe_tool_result(id, fingerprint);
+                let result = ResultHasher::output_fingerprint(output)
+                    .and_then(|fingerprint| self.observe_tool_result(id, fingerprint));
+                if let Err(error) = result {
+                    self.record_canonicalization_failure(&error);
+                }
             }
             _ => {}
         }

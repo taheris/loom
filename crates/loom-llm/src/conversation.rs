@@ -100,6 +100,8 @@ pub enum ConversationError {
     },
     /// failed to serialise tool result to JSON
     SerializeToolResult(#[from] serde_json::Error),
+    /// failed to canonicalize tool data as RFC 8785 JSON
+    CanonicalizeToolData(#[from] crate::observer::result_hasher::Error),
 }
 
 /// Multi-turn conversation with built-in tool-use loop.
@@ -334,7 +336,7 @@ impl Conversation {
                         name: call.name.clone(),
                     })?;
                 let output = tool.invoke(call.args.clone()).await?;
-                let fingerprint = ResultHasher::result_fingerprint(&output.content);
+                let fingerprint = ResultHasher::result_fingerprint(&output.content)?;
                 let content = serde_json::to_string(&output.content)?;
                 self.history.push(Message::tool_result(
                     call.call_id.clone(),
@@ -342,7 +344,7 @@ impl Conversation {
                     output.is_error,
                 ));
 
-                self.observe_tool_result(&call.call_id, fingerprint);
+                self.observe_tool_result(&call.call_id, fingerprint)?;
                 if let Some(reason) = self.process_observer_updates(client) {
                     return Err(ConversationError::ObserverAbort { reason });
                 }
@@ -387,17 +389,22 @@ impl Conversation {
         }
     }
 
-    fn observe_tool_result(&mut self, call_id: &LlmToolCallId, fingerprint: ResultFingerprint) {
+    fn observe_tool_result(
+        &mut self,
+        call_id: &LlmToolCallId,
+        fingerprint: ResultFingerprint,
+    ) -> Result<(), crate::observer::result_hasher::Error> {
         if self.doom_loop.is_none() && self.duplicate_result.is_none() {
-            return;
+            return Ok(());
         }
         let event_id = EventToolCallId::new(call_id.as_str());
         if let Some(observer) = self.doom_loop.as_mut() {
-            observer.observe_tool_result(&event_id, fingerprint);
+            observer.observe_tool_result(&event_id, fingerprint)?;
         }
         if let Some(observer) = self.duplicate_result.as_mut() {
             observer.observe_tool_result(&event_id, fingerprint);
         }
+        Ok(())
     }
 
     fn next_observer_envelope(&mut self) -> Option<loom_events::EventEnvelope> {

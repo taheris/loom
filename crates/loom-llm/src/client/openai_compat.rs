@@ -394,6 +394,7 @@ mod tests {
     use loom_events::identifier::{BeadId, SessionId};
     use std::sync::Arc;
     use std::time::Duration;
+    use tokio::sync::Barrier;
     use wiremock::matchers::{header, header_exists, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -683,5 +684,89 @@ mod tests {
             }
             other => panic!("expected DriverEvent, got {other:?}"),
         }
+    }
+
+    /// Simultaneous calls on one shared compatibility Client preserve
+    /// every usage event and allocate distinct event sequence numbers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn openai_compat_emits_all_usage_events_under_concurrent_completions() {
+        const CALLS: usize = 8;
+
+        let server = MockServer::start().await;
+        let expected_calls = u64::try_from(CALLS).expect("completion count fits u64");
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(20))
+                    .set_body_json(serde_json::json!({
+                        "id": "chatcmpl-concurrent",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "llama-3.1-70b",
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {
+                            "prompt_tokens": 7,
+                            "completion_tokens": 11,
+                            "total_tokens": 18
+                        }
+                    })),
+            )
+            .expect(expected_calls)
+            .mount(&server)
+            .await;
+
+        let sink = RecordingSink::default();
+        let recorded = sink.events.clone();
+        let client = Arc::new(
+            OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()))
+                .with_envelope_builder(test_envelope_builder())
+                .with_event_sink(sink),
+        );
+        let barrier = Arc::new(Barrier::new(CALLS));
+        let tasks = (0..CALLS)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let client = client.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    let request =
+                        CompletionRequest::new(ModelId::OpenAiCompat("llama-3.1-70b".to_string()))
+                            .user("hi");
+                    client.complete(request).await
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for task in tasks {
+            task.await
+                .expect("completion task joins")
+                .expect("mock completion succeeds");
+        }
+
+        let events = recorded.lock().expect("recorded events");
+        assert_eq!(events.len(), CALLS);
+        let mut sequences = events
+            .iter()
+            .map(|event| match event {
+                AgentEvent::DriverEvent {
+                    envelope,
+                    driver_kind,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(*driver_kind, loom_events::DriverKind::TokenUsage);
+                    assert_eq!(payload["model"], "llama-3.1-70b");
+                    envelope.seq
+                }
+                other => panic!("expected DriverEvent, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        sequences.sort_unstable();
+        assert_eq!(sequences, (0..expected_calls).collect::<Vec<_>>());
     }
 }

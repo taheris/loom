@@ -156,8 +156,16 @@ impl EventSink for DuplicateResultObserver {
                 self.seen.clear();
             }
             AgentEvent::ToolResult { id, output, .. } => {
-                let fingerprint = ResultHasher::output_fingerprint(output);
-                self.observe_tool_result(id, fingerprint);
+                match ResultHasher::output_fingerprint(output) {
+                    Ok(fingerprint) => self.observe_tool_result(id, fingerprint),
+                    Err(error) => {
+                        tracing::warn!(
+                            tool_call_id = %id,
+                            error = ?error,
+                            "duplicate-result observer skipped uncanonicalizable payload"
+                        );
+                    }
+                }
             }
             _ => {}
         }
@@ -251,7 +259,8 @@ mod tests {
         let payload = big_payload("size-check");
         let canonical_len = ResultHasher::canonical_len(
             &serde_json::from_str::<Value>(&payload).expect("payload parses"),
-        );
+        )
+        .expect("payload canonicalizes");
         obs.emit(&tool_result(0, "first", &payload));
         obs.emit(&tool_result(1, "second", &payload));
         let detections = obs.take_pending();

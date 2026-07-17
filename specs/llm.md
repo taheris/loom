@@ -262,7 +262,7 @@ most recent message for that role when one exists; otherwise they
 start a new message for that role:
 
 ```rust
-let req = CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini15Pro))
+let req = CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini31Pro))
     .system("Answer from the uploaded document")
     .user("Summarize this PDF")
     .user_binary(MimeType::APPLICATION_PDF, pdf_bytes)
@@ -981,7 +981,7 @@ and `--no-default-features` to catch feature-gating regressions.
 
 1. **Public-contract crate.** `llm` is one of five
    public-contract crates in the loom workspace (alongside
-   `loom-events`, `loom-protocol`, `templates`, and `loom-skills`). External
+   `loom-events`, `loom-protocol`, `loom-templates`, and `loom-skills`). External
    Rust consumers depend on it directly. Stability rules: additive type / variant
    changes are minor bumps; removing or renaming public types,
    methods, or `ModelId` variants is a major bump.

@@ -1014,6 +1014,7 @@ mod tests {
     use genai::ModelIden;
     use genai::chat::{PromptTokensDetails, Usage as GenAiUsage};
     use std::sync::{Arc, Mutex};
+    use tokio::sync::Barrier;
     use wiremock::matchers::{body_partial_json, body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1201,6 +1202,155 @@ mod tests {
                 other => panic!("expected DriverEvent, got {other:?}"),
             }
         }
+    }
+
+    const CONCURRENT_COMPLETIONS: usize = 8;
+
+    async fn run_concurrent_completions<C, F>(client: Arc<C>, request: F)
+    where
+        C: LlmClient + 'static,
+        F: Fn() -> CompletionRequest + Send + Sync + 'static,
+    {
+        let barrier = Arc::new(Barrier::new(CONCURRENT_COMPLETIONS));
+        let request = Arc::new(request);
+        let tasks = (0..CONCURRENT_COMPLETIONS)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let client = client.clone();
+                let request = request.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    client.complete(request()).await
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for task in tasks {
+            task.await
+                .expect("completion task joins")
+                .expect("mock completion succeeds");
+        }
+    }
+
+    fn assert_concurrent_usage_events(events: &Arc<Mutex<Vec<AgentEvent>>>, model: &str) {
+        let events = events.lock().expect("recorded events");
+        assert_eq!(events.len(), CONCURRENT_COMPLETIONS);
+        let mut sequences = Vec::with_capacity(events.len());
+        for event in events.iter() {
+            match event {
+                AgentEvent::DriverEvent {
+                    envelope,
+                    driver_kind,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(*driver_kind, DriverKind::TokenUsage);
+                    assert_eq!(payload["model"], model);
+                    sequences.push(envelope.seq);
+                }
+                other => panic!("expected DriverEvent, got {other:?}"),
+            }
+        }
+        sequences.sort_unstable();
+        let event_count = u64::try_from(CONCURRENT_COMPLETIONS).expect("event count fits u64");
+        assert_eq!(sequences, (0..event_count).collect::<Vec<_>>());
+    }
+
+    /// Simultaneous `complete` calls on each shared genai-backed Client
+    /// preserve every usage event and allocate each event a distinct
+    /// sequence number through the mutex-protected sink chain.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn genai_clients_emit_all_usage_events_under_concurrent_completions() {
+        let server = MockServer::start().await;
+        let delay = std::time::Duration::from_millis(20);
+        let expected_calls =
+            u64::try_from(CONCURRENT_COMPLETIONS).expect("completion count fits u64");
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_delay(delay).set_body_json(
+                serde_json::json!({
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                    "stop_sequence": null,
+                    "usage": {"input_tokens": 2, "output_tokens": 1}
+                }),
+            ))
+            .expect(expected_calls)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(delay)
+                    .set_body_json(openai_responses_payload(2, 1, "ok")),
+            )
+            .expect(expected_calls)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/models/gemini-3.1-pro:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_delay(delay).set_body_json(
+                serde_json::json!({
+                    "candidates": [{
+                        "content": {"parts": [{"text": "ok"}]},
+                        "finishReason": "STOP"
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 2,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 3
+                    }
+                }),
+            ))
+            .expect(expected_calls)
+            .mount(&server)
+            .await;
+
+        let endpoint = format!("{}/", server.uri());
+
+        let anthropic_sink = RecordingSink::default();
+        let anthropic_events = anthropic_sink.events.clone();
+        let anthropic = Arc::new(
+            AnthropicClient::new(test_api_key())
+                .with_mock_endpoint(endpoint.clone())
+                .with_event_sink(anthropic_sink),
+        );
+        run_concurrent_completions(anthropic, || {
+            CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)).user("hi")
+        })
+        .await;
+        assert_concurrent_usage_events(&anthropic_events, "claude-sonnet-4-6");
+
+        let openai_sink = RecordingSink::default();
+        let openai_events = openai_sink.events.clone();
+        let openai = Arc::new(
+            OpenAiClient::new(test_api_key())
+                .with_mock_endpoint(endpoint.clone())
+                .with_event_sink(openai_sink),
+        );
+        run_concurrent_completions(openai, || {
+            CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55)).user("hi")
+        })
+        .await;
+        assert_concurrent_usage_events(&openai_events, "gpt-5.5");
+
+        let gemini_sink = RecordingSink::default();
+        let gemini_events = gemini_sink.events.clone();
+        let gemini = Arc::new(
+            GeminiClient::new(test_api_key())
+                .with_mock_endpoint(endpoint)
+                .with_event_sink(gemini_sink),
+        );
+        run_concurrent_completions(gemini, || {
+            CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini31Pro)).user("hi")
+        })
+        .await;
+        assert_concurrent_usage_events(&gemini_events, "gemini-3.1-pro");
     }
 
     /// Calling `complete` with a `ModelId` whose `schema()` does not
