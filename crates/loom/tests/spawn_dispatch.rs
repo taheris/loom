@@ -54,9 +54,8 @@ fn find_bash() -> PathBuf {
 /// Write the wrix shim into `dir` and return its path. The shim records
 /// argv (one quoted token per line) and stdin TTY/pipe state into the two
 /// sibling files, copies the `--spawn-config` JSON aside (so the test can
-/// inspect it without racing the temp-file delete), then exec's mock-pi in
-/// `happy-path` mode so the pi backend handshake AND the prompt round-trip
-/// complete; otherwise the loom binary would hang waiting for `agent_end`.
+/// inspect it without racing the temp-file delete), then execs the selected
+/// mock mode or a dedicated process fixture.
 fn install_wrix_shim(
     dir: &Path,
     argv_file: &Path,
@@ -94,6 +93,9 @@ fn install_wrix_shim(
          done\n\
          \n\
          echo '[wrix] Starting container (mock)...' >&2\n\
+         if [[ -z \"$MOCK_AGENT_MODE\" ]]; then\n\
+             exec '{bash}' \"$MOCK_AGENT\"\n\
+         fi\n\
          exec '{bash}' \"$MOCK_AGENT\" \"$MOCK_AGENT_MODE\"\n",
         bash = bash.display(),
         argv = argv_file.display(),
@@ -217,6 +219,14 @@ fn locate_mock(rel: &str) -> PathBuf {
 /// Locate `tests/mock-pi/pi.sh` relative to the loom-binary crate.
 fn mock_pi_path() -> PathBuf {
     locate_mock("mock-pi/pi.sh")
+}
+
+fn pi_hang_probe_fixture_path() -> PathBuf {
+    locate_mock("fixtures/agent/pi-hang-probe.sh")
+}
+
+fn pi_stall_mid_session_fixture_path() -> PathBuf {
+    locate_mock("fixtures/agent/pi-stall-mid-session.sh")
 }
 
 /// Locate `tests/mock-claude/claude.sh`. Used by the shutdown-watchdog
@@ -1688,9 +1698,10 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
 
 /// Pi handshake against an unresponsive launcher must surface
 /// `ProtocolError::HandshakeTimeout` within the configured budget
-/// instead of hanging silently. mock-pi `hang-probe` reads the
+/// instead of hanging silently. The dedicated fixture reads the
 /// `get_state` line and then sleeps; without the bounded handshake the
-/// loom binary would block forever waiting for the response.
+/// loom binary would block forever waiting for the response. An in-process
+/// parser test cannot exercise the marker-gated timer or assembled todo path.
 #[test]
 fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     let dir = tempfile::tempdir().unwrap();
@@ -1718,8 +1729,8 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         &argv_file,
         &stdin_info,
         &spawn_copy,
-        &mock_pi_path(),
-        "hang-probe",
+        &pi_hang_probe_fixture_path(),
+        "",
     );
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
@@ -1767,11 +1778,12 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
 }
 
 /// Mid-session silence must trip the run_agent stall heartbeat.
-/// mock-pi `stall-mid-session` answers the probe and acks one
-/// prompt, then sleeps; with `LOOM_STALL_WARN_MS=300` the run loop must
+/// The dedicated fixture answers the probe and acks one prompt, then
+/// sleeps; with `LOOM_STALL_WARN_MS=300` the run loop must
 /// emit `"no agent event for stall window"` to stderr while the agent
 /// remains spawned. The test kills loom after observing the warning so
-/// the never-exiting mock does not stretch the suite.
+/// the never-exiting fixture does not stretch the suite; an in-process parser
+/// test cannot exercise the workflow watchdog around the pending event read.
 #[test]
 fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     let dir = tempfile::tempdir().unwrap();
@@ -1799,16 +1811,11 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         &argv_file,
         &stdin_info,
         &spawn_copy,
-        &mock_pi_path(),
-        "stall-mid-session",
+        &pi_stall_mid_session_fixture_path(),
+        "",
     );
 
-    // Spawn loom as the leader of a fresh process group so the cleanup
-    // step at the end can kill the entire group. The mock-pi `exec sleep`
-    // grandchild inherits stderr from loom; without group-kill it would
-    // outlive `child.kill()` (SIGKILL doesn't run loom's drop chain, so
-    // tokio's `kill_on_drop` doesn't fire on the grandchild) and keep the
-    // stderr pipe open, hanging `reader.join()` forever.
+    // The process group lets cleanup kill loom and its fixture sleep without leaving stderr open.
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     seed_active_spec(workspace, loom_bin, "agent");
     let new_path = bd_stub_path(workspace, "[]");

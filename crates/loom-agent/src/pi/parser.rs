@@ -1194,12 +1194,25 @@ mod tests {
     // -- test_pi_malformed_jsonl -----------------------------------------
 
     #[test]
-    fn malformed_json_line_is_skipped_without_events() {
-        let parsed = PiParser::new()
+    fn malformed_json_line_is_skipped_and_stream_continues() {
+        let parser = PiParser::new();
+        let malformed = parser
             .parse_line("not-json")
             .expect("malformed JSON line is skipped");
-        assert!(parsed.events.is_empty());
-        assert!(parsed.response.is_none());
+        assert!(malformed.events.is_empty());
+        assert!(malformed.response.is_none());
+
+        let valid = parser
+            .parse_line(
+                r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","text":"after malformed line"}}"#,
+            )
+            .expect("valid line after malformed JSON parses");
+        assert_eq!(
+            valid.events,
+            vec![ParsedAgentEvent::TextDelta {
+                text: "after malformed line".to_string(),
+            }],
+        );
     }
 
     // -- test_pi_extension_ui_passthrough ---------------------------------

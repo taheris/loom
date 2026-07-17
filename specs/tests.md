@@ -486,6 +486,15 @@ Each mode is single-shot: the script runs until the conversation it
 encodes completes, then exits. The Rust test owns the assertions; the
 mock owns the wire framing.
 
+### Process Lifecycle Fixtures
+
+Pi handshake timeout and workflow stall-heartbeat coverage depend on a
+pending real pipe plus the outer timeout or watchdog. They use separate,
+no-selector scripts under `tests/fixtures/agent/` rather than modes in the
+general mock-pi table. Each script encodes only the pending lifecycle needed by
+one integration test. Malformed output does not require process lifecycle
+coverage and remains a Pi parser unit test.
+
 ### Inbox Bridge Fixture
 
 The Pi inbox bridge follow-up fixture is separate from the mock-pi mode table.
@@ -598,8 +607,8 @@ tree scope with no `--spec` filter. `loom-smoke` is exposed as
 
 ### Integration tests
 
-Each criterion below corresponds to one of the seven load-bearing flows
-in Functional #4.
+These criteria cover the load-bearing flows in Functional #4 and the two
+narrow process-lifecycle boundaries that parser unit tests cannot exercise.
 
 - Startup probe round-trip: mock pi with valid `get_state` data
       → loom proceeds
@@ -607,6 +616,14 @@ in Functional #4.
 - Startup probe malformed-state guard: mock pi with malformed `get_state`
       data → loom fails fast with a version-mismatch error
   [test](pi_startup_probe_fails_with_bad_get_state_shape)
+- A dedicated no-selector Pi fixture leaves the startup probe unanswered so
+      the assembled todo path surfaces its handshake timeout without adding a
+      timeout mode to the general mock-pi table
+  [test](loom_todo_pi_hang_probe_surfaces_handshake_timeout)
+- A dedicated no-selector Pi fixture stalls after one prompt event so the
+      assembled todo path emits its workflow stall warning without adding a
+      stall mode to the general mock-pi table
+  [test](loom_todo_pi_stall_mid_session_emits_stall_warning)
 - `wrix spawn` argv contract: loom invokes
       `wrix --profile-config <file> spawn --spawn-config <file> --stdio`
       with stdin attached as a pipe (not a TTY); recorded `SpawnConfig` JSON
@@ -820,13 +837,14 @@ the rules:
      mid-session steering via stream-json user message, the shutdown
      watchdog SIGTERM→SIGKILL escalation, interactive compaction canary,
      plus `happy-path` for the container smoke.
-   - **Out of scope for mocks**: tool-call simulation, malformed-JSONL
-     injection, hang/timeout simulation, and general multi-turn behavior.
-     The narrow interactive compaction canary is the only scripted multi-turn
-     exception because the bug is visible only after a post-compaction probe.
-     Parser unit tests cover the broader cases with inline string literals,
-     where regressions are easier to read in PR diffs and fixtures don't
-     bit-rot when pi/claude release new event shapes.
+   - **Out of scope for mock mode tables**: tool-call simulation,
+     malformed-JSONL injection, hang/timeout modes, and general multi-turn
+     behavior. The narrow interactive compaction canary is the only scripted
+     multi-turn exception because the bug is visible only after a
+     post-compaction probe. Parser unit tests cover malformed protocol input
+     with inline string literals. Named process-lifecycle fixtures may hold a
+     real pipe pending only for the handshake-timeout and workflow-stall
+     assertions, and carry no mode selector or broader protocol behavior.
 
 3. **Unit test coverage by crate** — every crate has inline
    `#[cfg(test)] mod tests` blocks plus integration tests under
@@ -1078,6 +1096,11 @@ the rules:
    - **Startup probe round-trip** — mock pi replies to `get_state` with
      a valid state object; loom proceeds. Mock pi replies with malformed
      state data; loom fails fast with a version-mismatch error.
+   - **Pi process lifecycle** — separate no-selector fixtures leave the
+     startup probe unanswered or stall after one prompt event. The assembled
+     todo path respectively surfaces the handshake timeout or emits the
+     workflow stall warning; neither behavior belongs in the general mock-pi
+     mode table.
    - **`wrix spawn` argv contract** — loom writes a `SpawnConfig`
      JSON, invokes a `wrix-spawn` shim that records the argv +
      stdin properties (TTY vs pipe), then exec's a mock agent. Asserts
@@ -1277,14 +1300,15 @@ the rules:
   gains one acceptance criterion: a round-trip test asserting that
   `SessionOutcome.cost_usd` is populated for pi sessions, parallel to
   the existing claude `result/total_cost_usd` extraction.
-- **Mock-script protocol breadth** — tool-call simulation, malformed-JSONL
-  injection, hang/timeout simulation, and general multi-turn conversations.
-  These belong in parser unit tests with inline string literals, not in the
-  general mock-pi/mock-claude scripts. The interactive compaction canary is
-  the only multi-turn exception in those mode tables, because it verifies a
-  post-compaction turn rather than protocol breadth. Dedicated bridge fixtures
-  remain single-purpose and carry their own conformance tests instead of being
-  folded into the general mock-agent mode tables.
+- **General mock-script protocol breadth** — tool-call simulation,
+  malformed-JSONL injection, hang/timeout modes, and general multi-turn
+  conversations do not belong in the general mock-pi/mock-claude scripts.
+  Parser unit tests own malformed protocol input. The interactive compaction
+  canary is the only multi-turn exception in those mode tables, because it
+  verifies a post-compaction turn rather than protocol breadth. Dedicated
+  bridge and process-lifecycle fixtures remain single-purpose, carry their own
+  conformance tests, and are not folded into the general mock-agent mode
+  tables.
 - **Per-repo verifier registry separate from `loom.toml`** —
   annotations carry the verifier directly (target name for `[test]`
   / `[judge]`, command for `[check]` / `[system]`); no separate

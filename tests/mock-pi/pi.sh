@@ -43,22 +43,12 @@
 #                               agent_end. Used by the container smoke
 #                               and any test that wants the full
 #                               single-turn lifecycle.
-#   malformed-then-happy      — probe ok, prompt emits a malformed stdout
-#                               line before valid events. The driver must
-#                               skip the bad line and continue.
 #   interactive-compaction-canary
 #                             — verify an interactive Pi launch path delivered
 #                               full re-pin context before output.
 #   interactive-bridge-canary — probe ok; prompt emits compaction_start,
 #                               validates the re-pin steer payload, then
 #                               emits LOOM_COMPLETE.
-#   hang-probe                — read the get_state line and then sleep
-#                               forever without responding. Drives the
-#                               HandshakeTimeout path in spawn_with_handshake.
-#   stall-mid-session         — probe ok, prompt acked with one
-#                               message_delta, then sleep forever without
-#                               emitting agent_end. Drives the run_agent
-#                               stall heartbeat path.
 #
 # Modes are deliberately small — every mode is shaped to exactly one
 # Rust test (or the smoke runner). The script is not a general-purpose
@@ -66,11 +56,8 @@
 set -euo pipefail
 
 # pi RPC framing is JSONL: one complete object per line. Re-exec through
-# stdbuf so libc stdio writes line-buffered without spawning a process-
-# substitution subshell that survives our parent's SIGKILL — the
-# `hang-probe` / `stall-mid-session` modes are killed externally and any
-# leftover `cat` subshell would keep the test's stderr pipe open and
-# cause `Command::output()` to hang forever.
+# stdbuf so libc stdio writes are line-buffered when wrappers drive this
+# script through pipes.
 #
 # Invoke bash explicitly on $0 instead of relying on the kernel's shebang
 # resolver — the script's `#!/usr/bin/env bash` line is not honourable in
@@ -231,15 +218,6 @@ run_happy_path() {
     emit_agent_end
 }
 
-run_malformed_then_happy() {
-    handle_probe 0
-    local _prompt
-    IFS= read -r _prompt
-    emit 'not-json'
-    emit_message_delta 'after malformed line'
-    emit_agent_end
-}
-
 run_echo_prompt() {
     handle_probe 0
     local prompt_line message
@@ -346,31 +324,6 @@ run_set_thinking_level_reject() {
     emit_agent_end
 }
 
-# Read the probe line, then sleep forever — the loom side must surface
-# HandshakeTimeout instead of blocking on the unanswered probe. `exec
-# sleep` so SIGKILL from the loom side hits the PID still holding the
-# inherited stderr fd; otherwise the sleep would survive bash's death,
-# keep the test's stderr pipe open, and `Command::output()` would never
-# return.
-run_hang_probe() {
-    local probe_line
-    IFS= read -r probe_line
-    : "$probe_line"
-    exec sleep 3600
-}
-
-# Probe ok, ack the first prompt with a single message_delta, then sleep
-# without emitting agent_end. The loom event loop must keep running and
-# emit the stall heartbeat warn! line; the test kills this process after
-# the warning lands. See `run_hang_probe` for the `exec sleep` rationale.
-run_stall_mid_session() {
-    handle_probe 0
-    local _prompt
-    IFS= read -r _prompt
-    emit_message_delta "ack"
-    exec sleep 3600
-}
-
 case "$MODE" in
     probe-ok)
         run_probe_ok
@@ -402,20 +355,11 @@ case "$MODE" in
     happy-path)
         run_happy_path
         ;;
-    malformed-then-happy)
-        run_malformed_then_happy
-        ;;
     interactive-compaction-canary)
         run_interactive_compaction_canary "$@"
         ;;
     interactive-bridge-canary)
         run_interactive_bridge_canary
-        ;;
-    hang-probe)
-        run_hang_probe
-        ;;
-    stall-mid-session)
-        run_stall_mid_session
         ;;
     *)
         echo "mock-pi: unknown mode: $MODE" >&2

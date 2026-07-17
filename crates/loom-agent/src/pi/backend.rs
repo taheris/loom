@@ -966,45 +966,6 @@ mod tests {
         assert!(saw_echo, "mock did not echo the prompt");
     }
 
-    #[tokio::test]
-    async fn malformed_json_line_is_skipped_and_stream_continues() {
-        let session = spawn_with_handshake(
-            mock_command("malformed-then-happy"),
-            None,
-            None,
-            TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
-        )
-        .await
-        .expect("spawn");
-        let mut session = session.prompt("hi").await.expect("prompt ok");
-
-        let mut saw_valid_event_after_bad_line = false;
-        loop {
-            match session
-                .next_event()
-                .await
-                .expect("malformed pi stdout line should be skipped")
-            {
-                Some(ParsedAgentEvent::TextDelta { text, .. }) => {
-                    if text.contains("after malformed line") {
-                        saw_valid_event_after_bad_line = true;
-                    }
-                }
-                Some(ParsedAgentEvent::SessionComplete { exit_code, .. }) => {
-                    assert_eq!(exit_code, 0);
-                    break;
-                }
-                Some(_) => continue,
-                None => panic!("unexpected EOF"),
-            }
-        }
-        assert!(
-            saw_valid_event_after_bad_line,
-            "valid event after malformed line was not observed",
-        );
-    }
-
     // -- test_pi_supports_steering ----------------------------------------
 
     #[tokio::test]

@@ -1029,7 +1029,7 @@ the entrypoint run the wrong runtime.
 
 ### Pi backend
 
-- Pi backend waits for the wrix container-start marker before starting the RPC probe budget
+- Pi backend waits for the wrix container-start marker before starting the RPC probe budget; a dedicated no-selector process fixture then leaves the probe unanswered to verify the assembled timeout path
   [test](loom_todo_pi_hang_probe_surfaces_handshake_timeout)
 - Pi backend sends `get_state` after startup and proceeds when the response shape is valid
   [test](startup_probe_succeeds_when_get_state_shape_is_valid)
@@ -1056,7 +1056,7 @@ the entrypoint run the wrong runtime.
 - Pi backend does not accept post-compaction auto-retry output as workflow
   progress until the full re-pin is effective or the session is restarted/failed
   [test](pi_overflow_retry_waits_for_effective_repin)
-- Pi backend handles malformed JSONL gracefully (logs warning, continues)
+- Pi parser handles malformed JSONL gracefully by logging a warning, emitting no event for that line, and continuing with the next valid line
   [test](malformed_json_line_is_skipped_and_stream_continues)
 - Pi backend replies with a cancelled extension_ui_response for extension UI methods that require a host response
   [test](extension_ui_select_yields_auto_cancel_response)
