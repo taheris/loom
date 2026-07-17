@@ -1832,9 +1832,10 @@ Load-bearing constraints on the dep graph:
   the public-contract floor plus the underlying multi-provider
   LLM crate and `schemars`. The crate is independently versionable
   for the same reason `loom-events` is.
-- `loom-templates` depends on `loom-events` only (typed contexts
-  reference `BeadId` / `SpecLabel` / etc.). The Askama compile
-  machinery is a build-time concern, not a runtime dep.
+- `loom-templates` depends on `loom-events` for shared identifiers and on
+  `loom-protocol` for the typed gate/todo values carried or re-exported by its
+  public contexts. It imports no internal runtime or orchestration crate. The
+  Askama compile machinery is a build-time concern, not a runtime dep.
 - `loom-skills` depends on `loom-events` for shared newtypes and on
   parsing/diagnostic libraries only; it does not depend on `loom-driver`,
   `loom-agent`, `loom-templates`, `loom-tune`, or `loom-workflow`.
@@ -1882,8 +1883,8 @@ no internal crates, no timestamps crate, no `ulid`, no `uuid`. The
 contract stays small. `loom-protocol`, `loom-llm`, `loom-templates`, and
 `loom-skills` carry their own small public-surface dep sets
 (parser/JSON/error/hash deps for `loom-protocol`; LLM crate + `schemars` for
-`loom-llm`; Askama for `loom-templates`; Markdown/frontmatter parsing and
-diagnostics for `loom-skills`).
+`loom-llm`; `loom-protocol` + Askama for `loom-templates`;
+Markdown/frontmatter parsing and diagnostics for `loom-skills`).
 
 ### Workspace Lints
 
@@ -2723,7 +2724,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [check](cargo run -p loom-walk -- loom_events_is_leaf)
 - `loom-llm` depends on `loom-events` only (no `loom-driver` / `loom-agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
   [check](cargo run -p loom-walk -- loom_llm_deps)
-- `loom-templates` depends on `loom-events` only (no `loom-driver` / `loom-llm` / `loom-agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
+- `loom-templates` depends on `loom-events` and `loom-protocol` only among internal crates (no `loom-driver` / `loom-llm` / `loom-agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
   [check](cargo run -p loom-walk -- loom_templates_deps)
 - `loom-skills` depends on `loom-events` but not `loom-driver` / `loom-agent` / `loom-templates` / `loom-tune` / `loom-workflow`
   [check](cargo run -p loom-walk -- loom_skills_deps)

@@ -1,14 +1,14 @@
-//! `templates` is a public-contract leaf alongside `loom-events`
-//! and `llm`. Its `[dependencies]` table may depend on no internal
-//! crate other than `loom-events` — references to `loom-driver`,
-//! `agent`, `loom-workflow`, `llm`, `loom-skills`, `loom-tune`, etc.
-//! would either re-shape the consumer-facing dependency graph or pull the
+//! `templates` is a public-contract near-leaf alongside `loom-events`,
+//! `loom-protocol`, and `llm`. Its `[dependencies]` table may depend on no
+//! internal crate other than `loom-events` and `loom-protocol` — references to
+//! `loom-driver`, `agent`, `loom-workflow`, `llm`, `loom-skills`, `loom-tune`,
+//! etc. would either re-shape the consumer-facing dependency graph or pull the
 //! runtime into the template surface.
 
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "loom_templates_deps — `templates` may depend only on `loom-events` among internal `loom-*` crates";
+const RULE: &str = "loom_templates_deps — `templates` may depend only on `loom-events` and `loom-protocol` among internal `loom-*` crates";
 
 const FORBIDDEN: &[&str] = &[
     "loom-driver",
@@ -41,7 +41,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
                     .is_some_and(|c| c == ' ' || c == '\t' || c == '=')
             {
                 violations.push(format!(
-                    "crates/loom-templates/Cargo.toml:{} forbidden internal dep `{}` — `templates` depends only on `loom-events`",
+                    "crates/loom-templates/Cargo.toml:{} forbidden internal dep `{}` — `templates` depends only on `loom-events` and `loom-protocol` among internal crates",
                     lineno + 1,
                     forbidden,
                 ));

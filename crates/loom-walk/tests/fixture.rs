@@ -3391,13 +3391,14 @@ fn direct_tools_net_new_fail_when_a_tool_is_only_reexported() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn loom_templates_deps_pass_when_only_loom_events_internal() {
+fn loom_templates_deps_pass_when_events_and_protocol_are_only_internal_deps() {
     let ws = make_workspace();
     seed(
         ws.path(),
         "crates/loom-templates/Cargo.toml",
         "[package]\nname = \"loom-templates\"\n\
-         [dependencies]\nloom-events = { workspace = true }\naskama = \"0.16\"\n",
+         [dependencies]\nloom-events = { workspace = true }\n\
+         loom-protocol = { workspace = true }\naskama = \"0.16\"\n",
     );
     let out = invoke(&["loom_templates_deps"], Some(ws.path()), None);
     assert_pass(&out);
