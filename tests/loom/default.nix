@@ -1,6 +1,6 @@
 # tests/loom/default.nix
 #
-# Builds the two test entry points consumed by the flake:
+# Builds the test entry points consumed by the flake:
 #
 #   loomTests — deterministic `loom gate` tiers driven by
 #               `craneLib.mkCargoDerivation`. It runs explicit
@@ -9,6 +9,9 @@
 #               tier is excluded because its verifiers shell out to
 #               `nix run` / `podman`, neither of which is available
 #               inside the Nix build sandbox.
+#
+#   test-app-ignores-host-git-signing — regression check that executes
+#               the full-suite script against a host signing config.
 #
 #   loom-smoke — Linux-only `writeShellApplication` wrapping the
 #               container smoke harness (`tests/run-tests.sh`). On
@@ -65,6 +68,78 @@ let
     '';
   };
 
+  fakeFullTestGit = pkgs.writeShellScriptBin "git" ''
+    set -euo pipefail
+
+    if [[ "$*" != "rev-parse --show-toplevel" ]]; then
+      printf 'unexpected git invocation: %s\n' "$*" >&2
+      exit 1
+    fi
+    printf '%s\n' "$TEST_REPO_ROOT"
+  '';
+
+  fakeFullTestNix = pkgs.writeShellScriptBin "nix" ''
+    set -euo pipefail
+
+    signing=$(${pkgs.git}/bin/git config --get commit.gpgsign)
+    if [[ "$signing" != "false" ]]; then
+      printf 'nix inherited host commit.gpgsign=%s\n' "$signing" >&2
+      exit 1
+    fi
+    if [[ "$GIT_CONFIG_GLOBAL" != "$TEST_REPO_ROOT/tests/fixtures/git/test-gitconfig" ]]; then
+      printf 'nix received unexpected GIT_CONFIG_GLOBAL=%s\n' "$GIT_CONFIG_GLOBAL" >&2
+      exit 1
+    fi
+    if [[ "$GIT_CONFIG_SYSTEM" != "/dev/null" ]]; then
+      printf 'nix received unexpected GIT_CONFIG_SYSTEM=%s\n' "$GIT_CONFIG_SYSTEM" >&2
+      exit 1
+    fi
+    if [[ -n "''${WRIX_SIGNING_KEY+x}" ]]; then
+      printf 'nix inherited WRIX_SIGNING_KEY\n' >&2
+      exit 1
+    fi
+    touch "$TEST_APP_OBSERVED"
+    exit 99
+  '';
+
+  fakeFullTestPath = pkgs.buildEnv {
+    name = "full-test-fake-path";
+    paths = [
+      fakeFullTestGit
+      fakeFullTestNix
+    ];
+    pathsToLink = [ "/bin" ];
+  };
+
+  test-app-ignores-host-git-signing = pkgs.runCommand "test-app-ignores-host-git-signing" { } ''
+    set -euo pipefail
+
+    export HOME="$TMPDIR/home"
+    export TEST_REPO_ROOT="$TMPDIR/repo"
+    export TEST_APP_OBSERVED="$TMPDIR/observed"
+    mkdir -p "$HOME" "$TEST_REPO_ROOT/tests/fixtures/git"
+    cp ${../fixtures/git/test-gitconfig} "$TEST_REPO_ROOT/tests/fixtures/git/test-gitconfig"
+    cat > "$HOME/.gitconfig" <<'EOF'
+    [user]
+    signingkey = host-key-that-tests-must-not-use
+    [commit]
+    gpgsign = true
+    EOF
+    unset GIT_CONFIG_GLOBAL
+    unset GIT_CONFIG_SYSTEM
+    export WRIX_SIGNING_KEY="$TMPDIR/host-signing-key"
+
+    set +e
+    PATH="${fakeFullTestPath}/bin:$PATH" bash ${../../scripts/full-test.sh}
+    rc=$?
+    set -e
+    if [[ "$rc" -ne 99 || ! -e "$TEST_APP_OBSERVED" ]]; then
+      printf 'full test script did not reach the isolated nix command (exit %s)\n' "$rc" >&2
+      exit 1
+    fi
+    touch "$out"
+  '';
+
   smokeApp = pkgs.writeShellApplication {
     name = "smoke";
     runtimeInputs = [
@@ -85,7 +160,7 @@ let
   };
 in
 {
-  inherit loomTests;
+  inherit loomTests test-app-ignores-host-git-signing;
 }
 // optionalAttrs isLinux { loom-smoke = smokeApp; }
 // optionalAttrs (!isLinux) { loom-smoke = darwinStub; }

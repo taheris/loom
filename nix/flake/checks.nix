@@ -25,6 +25,10 @@ _:
         stagedSrc
         ;
       loomLib = import ../lib.nix;
+      testsDeriv = import ../../tests/default.nix {
+        inherit pkgs;
+        loomPackage = loom;
+      };
 
       loom-gate-check = craneLib.mkCargoDerivation {
         pname = "loom-gate-check";
@@ -171,6 +175,8 @@ _:
             ;;
         esac
       '';
+
+      test-app-ignores-host-git-signing = testsDeriv.test-app-ignores-host-git-signing;
 
       test-sandbox-skips-unsupported-runtime =
         pkgs.runCommand "test-sandbox-skips-unsupported-runtime" { }
@@ -340,6 +346,7 @@ _:
           profile-manifest-keeps-runtime-path-context
           sandbox-profile-env-has-loom
           sandbox-profile-env-has-wrix
+          test-app-ignores-host-git-signing
           test-sandbox-ignores-read-only-podman-storage-cleanup
           test-sandbox-skips-oci-permission-denied
           test-sandbox-skips-unsupported-runtime

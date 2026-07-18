@@ -34,17 +34,10 @@ _:
           pkgs.cargo-nextest
           pkgs.git
           pkgs.nix
+          loom.bin
           loom.toolchain
         ];
-        text = ''
-          repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd) # best-effort: allow invocation outside a checkout.
-          cd "$repo_root"
-
-          nix flake check --no-warn-dirty
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo nextest run --workspace
-          ${loom.bin}/bin/loom gate system --tree
-        '';
+        text = builtins.readFile ../../scripts/full-test.sh;
       };
 
       fuzzApp = pkgs.writeShellApplication {

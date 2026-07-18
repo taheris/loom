@@ -4106,18 +4106,27 @@ fn seed_workspace_compile_checks_fixture(root: &Path) {
     let
       testApp = pkgs.writeShellApplication {
         name = "test";
-        text = ''
-          nix flake check --no-warn-dirty
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo nextest run --workspace
-          ${loom.bin}/bin/loom gate system --tree
-        '';
+        text = builtins.readFile ../../scripts/full-test.sh;
       };
     in
     {
       apps.test.program = "${testApp}/bin/test";
     };
 }
+"#,
+    );
+    seed(
+        root,
+        "scripts/full-test.sh",
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+export GIT_CONFIG_GLOBAL="$repo_root/tests/fixtures/git/test-gitconfig"
+export GIT_CONFIG_SYSTEM=/dev/null
+unset WRIX_SIGNING_KEY
+nix flake check --no-warn-dirty
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+loom gate system --tree
 "#,
     );
     seed(
@@ -4201,24 +4210,15 @@ fn workspace_compile_checks_are_full_test_app_only_fail_when_full_app_omits_next
     seed_workspace_compile_checks_fixture(ws.path());
     seed(
         ws.path(),
-        "nix/flake/apps.nix",
-        r#"_:
-{
-  perSystem = { pkgs, ... }:
-    let
-      testApp = pkgs.writeShellApplication {
-        name = "test";
-        text = ''
-          nix flake check --no-warn-dirty
-          cargo clippy --workspace --all-targets -- -D warnings
-          loom gate system --tree
-        '';
-      };
-    in
-    {
-      apps.test.program = "${testApp}/bin/test";
-    };
-}
+        "scripts/full-test.sh",
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+export GIT_CONFIG_GLOBAL="$repo_root/tests/fixtures/git/test-gitconfig"
+export GIT_CONFIG_SYSTEM=/dev/null
+unset WRIX_SIGNING_KEY
+nix flake check --no-warn-dirty
+cargo clippy --workspace --all-targets -- -D warnings
+loom gate system --tree
 "#,
     );
     let out = invoke(
@@ -4227,6 +4227,30 @@ fn workspace_compile_checks_are_full_test_app_only_fail_when_full_app_omits_next
         None,
     );
     assert_fail(&out, "full nextest");
+}
+
+#[test]
+fn workspace_compile_checks_are_full_test_app_only_fail_when_full_app_inherits_git_config() {
+    let ws = make_workspace();
+    seed_workspace_compile_checks_fixture(ws.path());
+    seed(
+        ws.path(),
+        "scripts/full-test.sh",
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+nix flake check --no-warn-dirty
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+loom gate system --tree
+"#,
+    );
+    let out = invoke(
+        &["workspace_compile_checks_are_full_test_app_only"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "hermetic global Git config");
+    assert_fail(&out, "disabled host signing-key environment");
 }
 
 #[test]

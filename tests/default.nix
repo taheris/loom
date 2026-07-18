@@ -15,5 +15,9 @@ in
   rustChecks = {
     loom-tests = loomDeriv.loomTests;
   };
-  inherit (loomDeriv) loomTests loom-smoke;
+  inherit (loomDeriv)
+    loom-smoke
+    loomTests
+    test-app-ignores-host-git-signing
+    ;
 }

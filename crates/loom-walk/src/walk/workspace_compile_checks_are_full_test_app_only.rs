@@ -11,6 +11,7 @@ const RULE: &str = "workspace_compile_checks_are_full_test_app_only — nix flak
 
 const APPS_REL: &str = "nix/flake/apps.nix";
 const CHECKS_REL: &str = "nix/flake/checks.nix";
+const FULL_TEST_SCRIPT_REL: &str = "scripts/full-test.sh";
 const WORKSPACE_REL: &str = "nix/workspace.nix";
 
 const FORBIDDEN_CHECK_TOKENS: &[&str] = &["loom-clippy", "loom-nextest", "clippy", "nextest"];
@@ -24,6 +25,25 @@ const REQUIRED_APP_SNIPPETS: &[RequiredAppSnippet] = &[
     RequiredAppSnippet {
         label: "test app",
         needle: "name = \"test\";",
+    },
+    RequiredAppSnippet {
+        label: "full test script",
+        needle: "text = builtins.readFile ../../scripts/full-test.sh;",
+    },
+];
+
+const REQUIRED_SCRIPT_SNIPPETS: &[RequiredAppSnippet] = &[
+    RequiredAppSnippet {
+        label: "hermetic global Git config",
+        needle: "export GIT_CONFIG_GLOBAL=\"$repo_root/tests/fixtures/git/test-gitconfig\"",
+    },
+    RequiredAppSnippet {
+        label: "disabled system Git config",
+        needle: "export GIT_CONFIG_SYSTEM=/dev/null",
+    },
+    RequiredAppSnippet {
+        label: "disabled host signing-key environment",
+        needle: "unset WRIX_SIGNING_KEY",
     },
     RequiredAppSnippet {
         label: "fast flake tier",
@@ -82,6 +102,13 @@ pub fn run(_input: &WalkInput) -> Verdict {
             evidence: format!("{APPS_REL}: file not readable\n{RULE}"),
         };
     };
+    let full_test_script_path = root.join(FULL_TEST_SCRIPT_REL);
+    let Some(full_test_script_body) = read_to_string(&full_test_script_path) else {
+        return Verdict {
+            pass: false,
+            evidence: format!("{FULL_TEST_SCRIPT_REL}: file not readable\n{RULE}"),
+        };
+    };
 
     let mut violations = Vec::new();
     check_flake_checks_omit_compile_surfaces(&checks_body, &mut violations);
@@ -89,7 +116,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
     for required in REQUIRED_DERIVATIONS {
         check_workspace_derivation(&workspace_body, required, &mut violations);
     }
-    check_full_test_app(&apps_body, &mut violations);
+    check_full_test_app(&apps_body, &full_test_script_body, &mut violations);
     verdict_from(RULE, violations)
 }
 
@@ -107,17 +134,26 @@ fn check_flake_checks_omit_compile_surfaces(body: &str, violations: &mut Vec<Str
     }
 }
 
-fn check_full_test_app(body: &str, violations: &mut Vec<String>) {
+fn check_full_test_app(apps_body: &str, script_body: &str, violations: &mut Vec<String>) {
     for required in REQUIRED_APP_SNIPPETS {
-        if body.contains(required.needle) {
+        if apps_body.contains(required.needle) {
             continue;
         }
         violations.push(format!(
-            "{APPS_REL}: missing {} command `{}` in the `nix run .#test` full-suite app",
+            "{APPS_REL}: missing {} declaration `{}` in the `nix run .#test` full-suite app",
             required.label, required.needle,
         ));
     }
-    for (idx, raw) in body.lines().enumerate() {
+    for required in REQUIRED_SCRIPT_SNIPPETS {
+        if script_body.contains(required.needle) {
+            continue;
+        }
+        violations.push(format!(
+            "{FULL_TEST_SCRIPT_REL}: missing {} command `{}` in the `nix run .#test` full-suite app",
+            required.label, required.needle,
+        ));
+    }
+    for (idx, raw) in apps_body.lines().enumerate() {
         let code = code_before_comment(raw);
         if code_tokens(code).any(|token| token == "test-ci") {
             violations.push(format!(
