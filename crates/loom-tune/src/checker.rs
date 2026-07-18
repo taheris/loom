@@ -8,6 +8,8 @@ use thiserror::Error;
 
 use crate::target;
 
+pub mod protocol_boundary;
+
 /// Internal checker id in `kind.domain.name` form.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CheckerId {

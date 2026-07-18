@@ -709,7 +709,7 @@ driver without making tuning a second resolution authority.
 - Phase and partial tuning validates candidate templates in the proposal worktree
   by compiling Askama templates, rendering representative snapshots, and running
   template conformance walkers before inbox exposure
-  [test?](template_tune_candidate_validation)
+  [test](template_tune_candidate_validation)
 - Pending and blocked tune proposal records enter the authoritative
   [harness.md § Inbox Modes](harness.md#inbox-modes) flow as tune-kind items,
   and authorized adoption is performed only by that flow's trusted apply
@@ -717,7 +717,7 @@ driver without making tuning a second resolution authority.
   [test](inbox_apply_marker_triggers_single_driver_handoff)
 - Skills remain additive strategy guidance and cannot override compiled phase
   protocol, terminal markers, state-mutation authority, or gate discipline
-  [judge?](skills_template_boundary_review)
+  [judge](../tests/judges/loom.sh#skills_template_boundary_review)
 
 ## Requirements
 
