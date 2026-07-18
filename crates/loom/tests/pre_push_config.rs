@@ -39,6 +39,7 @@ impl Fixture {
         git(&workspace, &["init", "-q", "-b", "main"]);
         git(&workspace, &["config", "user.email", "test@example.com"]);
         git(&workspace, &["config", "user.name", "Test"]);
+        git(&workspace, &["config", "commit.gpgsign", "false"]);
         std::fs::write(workspace.join("README.md"), "fixture\n").expect("write seed");
         git(&workspace, &["add", "."]);
         git(&workspace, &["commit", "-q", "-m", "Seed fixture"]);
