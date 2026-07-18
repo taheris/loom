@@ -3525,8 +3525,6 @@ mod tests {
     }
 
     async fn clean_push_fixture() -> (tempfile::TempDir, HandoffEvidence, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("gamma");
@@ -3536,8 +3534,7 @@ mod tests {
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
         let stub_body = format!(
-            "#!/bin/bash\n\
-             set -euo pipefail\n\
+            "set -euo pipefail\n\
              printf '%s\\n' \"$*\" >> {argv}\n\
              range=\"$4\"\n\
              tree_oid=$(git rev-parse 'HEAD^{{tree}}')\n\
@@ -3552,8 +3549,8 @@ mod tests {
              printf 'LOOM_COMPLETE\\n'\n",
             argv = argv_log.to_string_lossy(),
         );
-        std::fs::write(&stub, stub_body).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        loom_test_support::write_executable_bash_script(&stub, &stub_body)
+            .expect("write loom review stub");
 
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
