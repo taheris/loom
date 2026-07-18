@@ -955,10 +955,8 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
         .env_remove("LOOM_WRIX_SPAWN_BIN")
-        // Point `LOOM_BIN` at a no-op shim so the per-bead gate's
-        // `loom gate verify --diff` + `loom gate review --diff --bead` calls
-        // exit 0 silently — this test asserts run-phase JSONL log
-        // writes, not gate dispatch.
+        // The gate subprocess shim accepts per-bead verification and emits
+        // typed review evidence; this test asserts run-phase log writes.
         .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
