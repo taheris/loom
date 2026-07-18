@@ -1,6 +1,6 @@
 //! Integration coverage for deterministic `loom todo` preflight.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
@@ -11,10 +11,10 @@ use anyhow::{Result, anyhow};
 use loom_driver::agent::SessionOutcome;
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::GitClient;
-use loom_driver::identifier::{ProfileName, SpecLabel};
+use loom_driver::identifier::{MoleculeId, ProfileName, SpecLabel};
 use loom_driver::logging::phase_log_path;
 use loom_driver::profile_manifest::ProfileImageManifest;
-use loom_driver::state::CacheDb;
+use loom_driver::state::{CacheDb, WorkEpicRow};
 use loom_protocol::todo::{TODO_SUCCESS_PREFIX, parse_todo_success};
 use loom_workflow::todo::{
     ExitSignal, ProductionTodoController, TodoController, TodoError, run as run_todo_workflow,
@@ -141,6 +141,244 @@ impl CommandRunner for CapturingRunner {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct FakeBead {
+    id: String,
+    title: String,
+    status: String,
+    issue_type: String,
+    labels: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+    metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<String>,
+}
+
+#[derive(Default)]
+struct StatefulBd {
+    beads: BTreeMap<String, FakeBead>,
+    calls: Vec<Vec<String>>,
+    update_attempt: usize,
+    fail_update: Option<usize>,
+}
+
+#[derive(Clone)]
+struct StatefulRunner {
+    state: Arc<Mutex<StatefulBd>>,
+}
+
+impl StatefulRunner {
+    fn new(base: &str, fail_update: Option<usize>) -> Self {
+        let mut beads = BTreeMap::new();
+        for (id, label) in [("lm-alpha", "alpha"), ("lm-beta", "beta")] {
+            beads.insert(
+                id.to_string(),
+                FakeBead {
+                    id: id.to_string(),
+                    title: label.to_string(),
+                    status: "closed".to_string(),
+                    issue_type: "epic".to_string(),
+                    labels: vec!["loom:spec".to_string(), format!("spec:{label}")],
+                    parent: None,
+                    metadata: BTreeMap::from([(
+                        "loom.todo_cursor".to_string(),
+                        serde_json::Value::String(base.to_string()),
+                    )]),
+                    notes: None,
+                },
+            );
+        }
+        beads.insert(
+            "lm-oldactive".to_string(),
+            FakeBead {
+                id: "lm-oldactive".to_string(),
+                title: "Previous work".to_string(),
+                status: "open".to_string(),
+                issue_type: "epic".to_string(),
+                labels: vec!["loom:active".to_string()],
+                parent: None,
+                metadata: BTreeMap::new(),
+                notes: None,
+            },
+        );
+        Self {
+            state: Arc::new(Mutex::new(StatefulBd {
+                beads,
+                fail_update,
+                ..StatefulBd::default()
+            })),
+        }
+    }
+
+    fn bead(&self, id: &str) -> Result<FakeBead> {
+        self.state
+            .lock()
+            .map_err(|_| anyhow!("stateful runner lock poisoned"))?
+            .beads
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow!("fake bead `{id}` not found"))
+    }
+}
+
+impl CommandRunner for StatefulRunner {
+    async fn run(&self, args: Vec<OsString>, _timeout: Duration) -> Result<RunOutput, BdError> {
+        let argv = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let mut state = self.state.lock().map_err(|_| BdError::Cli {
+            status: 1,
+            args: "bd fake".to_string(),
+            stderr: "stateful runner lock poisoned".to_string(),
+        })?;
+        state.calls.push(argv.clone());
+        match argv.first().map(String::as_str) {
+            Some("list") => stateful_list(&state, &argv),
+            Some("show") => stateful_show(&state, &argv),
+            Some("create") => stateful_create(&mut state, &argv),
+            Some("close") => stateful_close(&mut state, &argv),
+            Some("update") => stateful_update(&mut state, &argv),
+            command => Ok(failed(&format!("unsupported fake bd command {command:?}"))),
+        }
+    }
+}
+
+fn stateful_list(state: &StatefulBd, argv: &[String]) -> Result<RunOutput, BdError> {
+    let status = prefixed_value(argv, "--status=");
+    let label = prefixed_value(argv, "--label=");
+    let issue_type = prefixed_value(argv, "--type=");
+    let beads = state
+        .beads
+        .values()
+        .filter(|bead| status.is_none_or(|value| bead.status == value))
+        .filter(|bead| label.is_none_or(|value| bead.labels.iter().any(|label| label == value)))
+        .filter(|bead| issue_type.is_none_or(|value| bead.issue_type == value))
+        .cloned()
+        .collect::<Vec<_>>();
+    serde_json::to_vec(&beads)
+        .map(|stdout| RunOutput {
+            status: 0,
+            stdout,
+            stderr: Vec::new(),
+        })
+        .map_err(|source| BdError::Cli {
+            status: 1,
+            args: argv.join(" "),
+            stderr: source.to_string(),
+        })
+}
+
+fn stateful_show(state: &StatefulBd, argv: &[String]) -> Result<RunOutput, BdError> {
+    let bead = argv.get(1).and_then(|id| state.beads.get(id));
+    serde_json::to_vec(&bead.into_iter().collect::<Vec<_>>())
+        .map(|stdout| RunOutput {
+            status: 0,
+            stdout,
+            stderr: Vec::new(),
+        })
+        .map_err(|source| BdError::Cli {
+            status: 1,
+            args: argv.join(" "),
+            stderr: source.to_string(),
+        })
+}
+
+fn stateful_create(state: &mut StatefulBd, argv: &[String]) -> Result<RunOutput, BdError> {
+    let labels = flag_value(argv, "--labels")
+        .map(|value| value.split(',').map(ToOwned::to_owned).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let id = if labels.iter().any(|label| label == "loom:todo") {
+        "lm-work"
+    } else {
+        "lm-created"
+    };
+    let metadata = flag_value(argv, "--metadata")
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|source| BdError::Cli {
+            status: 1,
+            args: argv.join(" "),
+            stderr: source.to_string(),
+        })?
+        .unwrap_or_default();
+    state.beads.insert(
+        id.to_string(),
+        FakeBead {
+            id: id.to_string(),
+            title: flag_value(argv, "--title").unwrap_or_default().to_string(),
+            status: "open".to_string(),
+            issue_type: flag_value(argv, "--type").unwrap_or("task").to_string(),
+            labels,
+            parent: flag_value(argv, "--parent").map(ToOwned::to_owned),
+            metadata,
+            notes: flag_value(argv, "--notes").map(ToOwned::to_owned),
+        },
+    );
+    Ok(created(id))
+}
+
+fn stateful_close(state: &mut StatefulBd, argv: &[String]) -> Result<RunOutput, BdError> {
+    let Some(bead) = argv.get(1).and_then(|id| state.beads.get_mut(id)) else {
+        return Ok(failed("missing fake bead"));
+    };
+    bead.status = "closed".to_string();
+    Ok(closed())
+}
+
+fn stateful_update(state: &mut StatefulBd, argv: &[String]) -> Result<RunOutput, BdError> {
+    state.update_attempt += 1;
+    if state.fail_update == Some(state.update_attempt) {
+        state.fail_update = None;
+        return Ok(failed("injected update failure"));
+    }
+    let Some(bead) = argv.get(1).and_then(|id| state.beads.get_mut(id)) else {
+        return Ok(failed("missing fake bead"));
+    };
+    let mut index = 2;
+    while index < argv.len() {
+        let value = argv.get(index + 1).cloned().unwrap_or_default();
+        match argv[index].as_str() {
+            "--title" => bead.title = value,
+            "--status" => bead.status = value,
+            "--notes" => bead.notes = Some(value),
+            "--add-label" => {
+                if !bead.labels.iter().any(|label| label == &value) {
+                    bead.labels.push(value);
+                }
+            }
+            "--remove-label" => bead.labels.retain(|label| label != &value),
+            "--set-metadata" => {
+                if let Some((key, value)) = value.split_once('=') {
+                    bead.metadata.insert(
+                        key.to_string(),
+                        serde_json::Value::String(value.to_string()),
+                    );
+                }
+            }
+            "--unset-metadata" => {
+                bead.metadata.remove(&value);
+            }
+            _ => return Ok(failed("unsupported fake update flag")),
+        }
+        index += 2;
+    }
+    Ok(empty_json())
+}
+
+fn prefixed_value<'a>(argv: &'a [String], prefix: &str) -> Option<&'a str> {
+    argv.iter().find_map(|arg| arg.strip_prefix(prefix))
+}
+
+fn failed(stderr: &str) -> RunOutput {
+    RunOutput {
+        status: 1,
+        stdout: Vec::new(),
+        stderr: stderr.as_bytes().to_vec(),
+    }
+}
+
 fn empty_json() -> RunOutput {
     ok("[]")
 }
@@ -185,6 +423,12 @@ fn child_bead(id: &str, parent: &str, notes: Option<&str>) -> RunOutput {
     ))
 }
 
+fn active_work_epic(id: &str) -> RunOutput {
+    ok(&format!(
+        r#"[{{"id":"{id}","title":"active","status":"open","issue_type":"epic","labels":["loom:active"]}}]"#
+    ))
+}
+
 fn work_epic_with_notes(id: &str, notes: &str) -> RunOutput {
     let notes_json = serde_json::Value::String(notes.to_string());
     ok(&format!(
@@ -218,6 +462,33 @@ fn preflight_responses(base: &str, head: &str) -> Vec<RunOutput> {
         empty_json(),
         created("lm-work"),
     ]
+}
+
+fn init_two_changed_workspace(workspace: &Path) -> Result<(String, String)> {
+    run_git(workspace, &["init", "-q", "-b", "main"])?;
+    run_git(workspace, &["config", "user.email", "test@example.com"])?;
+    run_git(workspace, &["config", "user.name", "Test"])?;
+    run_git(workspace, &["config", "commit.gpgsign", "false"])?;
+    std::fs::create_dir_all(workspace.join("docs"))?;
+    std::fs::create_dir_all(workspace.join("specs"))?;
+    std::fs::write(
+        workspace.join("docs/README.md"),
+        "- [Alpha](../specs/alpha.md)\n- [Beta](../specs/beta.md)\n",
+    )?;
+    std::fs::write(workspace.join("specs/alpha.md"), "# Alpha\n")?;
+    std::fs::write(workspace.join("specs/beta.md"), "# Beta\n")?;
+    run_git(
+        workspace,
+        &["add", "docs/README.md", "specs/alpha.md", "specs/beta.md"],
+    )?;
+    run_git(workspace, &["commit", "-q", "-m", "seed specs"])?;
+    let base = git_output(workspace, &["rev-parse", "HEAD"])?;
+    std::fs::write(workspace.join("specs/alpha.md"), "# Alpha\n\nchanged\n")?;
+    std::fs::write(workspace.join("specs/beta.md"), "# Beta\n\nchanged\n")?;
+    run_git(workspace, &["add", "specs/alpha.md", "specs/beta.md"])?;
+    run_git(workspace, &["commit", "-q", "-m", "change both specs"])?;
+    let head = git_output(workspace, &["rev-parse", "HEAD"])?;
+    Ok((base, head))
 }
 
 fn init_multi_spec_workspace(workspace: &Path) -> Result<(String, String)> {
@@ -445,14 +716,14 @@ async fn todo_prompt_uses_container_visible_scratchpad_path() -> Result<()> {
 }
 
 #[tokio::test]
-async fn todo_work_epic_starts_with_placeholder_title() -> Result<()> {
+async fn todo_creates_pending_work_epic_before_agent_prompt() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, _head) = init_multi_spec_workspace(dir.path())?;
     let runner = CapturingRunner::new(multi_spec_preflight_responses(&base));
     let calls = runner.clone();
     let mut ctrl = controller(dir.path(), runner)?;
 
-    let _session = ctrl.build_session().await?;
+    let session = ctrl.build_session().await?;
 
     let all_calls = calls.calls()?;
     let work_create = all_calls
@@ -465,6 +736,21 @@ async fn todo_work_epic_starts_with_placeholder_title() -> Result<()> {
     assert_eq!(
         flag_value(work_create, "--title"),
         Some("Pending todo decomposition")
+    );
+    let labels = flag_value(work_create, "--labels")
+        .ok_or_else(|| anyhow!("work epic labels missing: {work_create:?}"))?;
+    assert!(labels.contains("loom:todo"), "labels: {labels}");
+    assert!(!labels.contains("loom:active"), "labels: {labels}");
+    let metadata = flag_value(work_create, "--metadata")
+        .ok_or_else(|| anyhow!("work epic metadata missing: {work_create:?}"))?;
+    assert!(metadata.contains("loom.todo_head"), "metadata: {metadata}");
+    assert!(
+        metadata.contains("loom.todo_fingerprint"),
+        "metadata: {metadata}"
+    );
+    assert_eq!(
+        field(&session.config.initial_prompt, "Work epic")?,
+        "lm-work"
     );
     Ok(())
 }
@@ -630,12 +916,97 @@ async fn todo_success_missing_changed_spec_fails_without_advancing() -> Result<(
     assert_todo_validation_failure_leaves_pending_without_advancing().await
 }
 
-#[tokio::test]
-async fn valid_todo_success_sets_active_and_advances_all_cursors() -> Result<()> {
+#[derive(Debug, Clone, Copy)]
+enum ValidationCase {
+    MissingSpec,
+    ExtraSpec,
+    MissingBead,
+    MisparentedBead,
+}
+
+async fn assert_todo_validation_case(case: ValidationCase) -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
     let mut responses = preflight_responses(&base, &head);
-    responses.push(empty_json());
+    if matches!(case, ValidationCase::MisparentedBead) {
+        responses.push(child_bead("lm-child", "lm-other", None));
+    }
+    let runner = CapturingRunner::new(responses);
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+    let session = ctrl.build_session().await?;
+    let success = match case {
+        ValidationCase::MissingSpec => todo_success(&session.config.initial_prompt, &["alpha"])?,
+        ValidationCase::ExtraSpec => {
+            todo_success(&session.config.initial_prompt, &["alpha", "beta", "gamma"])?
+        }
+        ValidationCase::MissingBead => todo_success_with_specs(
+            &session.config.initial_prompt,
+            r#"{"label":"alpha","outcome":"decomposed","beads":["lm-missing"]},{"label":"gamma","outcome":"no-work","reason":"audited"}"#,
+        )?,
+        ValidationCase::MisparentedBead => todo_success_with_specs(
+            &session.config.initial_prompt,
+            r#"{"label":"alpha","outcome":"decomposed","beads":["lm-child"]},{"label":"gamma","outcome":"no-work","reason":"audited"}"#,
+        )?,
+    };
+
+    let error = match ctrl
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            Some(&success),
+        )
+        .await
+    {
+        Ok(_) => return Err(anyhow!("invalid todo success was accepted")),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, TodoError::TodoValidation { .. }),
+        "case {case:?}: {error:?}"
+    );
+    let updates = calls
+        .calls()?
+        .into_iter()
+        .filter(|argv| argv.first().is_some_and(|arg| arg == "update"))
+        .collect::<Vec<_>>();
+    assert!(
+        updates
+            .iter()
+            .all(|argv| !argv.iter().any(|arg| arg == "--set-metadata")),
+        "case {case:?} advanced a cursor: {updates:?}"
+    );
+    assert!(
+        updates
+            .iter()
+            .all(|argv| !argv.iter().any(|arg| arg == "loom:active")),
+        "case {case:?} changed the active bookmark: {updates:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_success_marker_must_cover_exact_changed_spec_set() -> Result<()> {
+    assert_todo_validation_case(ValidationCase::MissingSpec).await?;
+    assert_todo_validation_case(ValidationCase::ExtraSpec).await
+}
+
+#[tokio::test]
+async fn todo_success_validation_rejects_missing_extra_or_misparented_beads() -> Result<()> {
+    assert_todo_validation_case(ValidationCase::MissingBead).await?;
+    assert_todo_validation_case(ValidationCase::ExtraSpec).await?;
+    assert_todo_validation_case(ValidationCase::MisparentedBead).await
+}
+
+#[tokio::test]
+async fn todo_finalization_sets_active_and_advances_all_cursors() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let mut responses = preflight_responses(&base, &head);
+    responses.push(active_work_epic("lm-oldactive"));
     let runner = CapturingRunner::new(responses);
     let calls = runner.clone();
     let mut ctrl = controller(dir.path(), runner)?;
@@ -690,7 +1061,111 @@ async fn valid_todo_success_sets_active_and_advances_all_cursors() -> Result<()>
             .any(|argv| argv.iter().any(|arg| arg == "--remove-label")
                 && argv.iter().any(|arg| arg == "loom:todo"))
     );
+    assert!(calls.iter().any(|argv| {
+        argv.get(1).is_some_and(|arg| arg == "lm-oldactive")
+            && argv.iter().any(|arg| arg == "--remove-label")
+            && argv.iter().any(|arg| arg == "loom:active")
+    }));
     Ok(())
+}
+
+async fn assert_atomic_finalization_failure(
+    fail_update: Option<usize>,
+    fail_cache: bool,
+) -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, _head) = init_two_changed_workspace(dir.path())?;
+    let runner = StatefulRunner::new(&base, fail_update);
+    let state = Arc::new(CacheDb::open(dir.path().join(".loom/cache.db"))?);
+    state.upsert_work_epic(&WorkEpicRow {
+        epic_id: MoleculeId::new("lm-oldactive"),
+        todo_head: Some(base.clone()),
+        todo_fingerprint: None,
+        is_active: true,
+        iteration_count: 3,
+    })?;
+    let mut ctrl = ProductionTodoController::for_workspace(
+        dir.path().to_path_buf(),
+        Arc::clone(&state),
+        manifest(dir.path())?,
+        ProfileName::new("base"),
+        Arc::new(GitClient::open(dir.path())?),
+        Arc::new(BdClient::with_runner(runner.clone())),
+    );
+    let session = ctrl.build_session().await?;
+    let success = todo_success(&session.config.initial_prompt, &["alpha", "beta"])?;
+    if fail_cache {
+        state.inject_todo_finalization_failure(1)?;
+    }
+
+    let error = match ctrl
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            Some(&success),
+        )
+        .await
+    {
+        Ok(_) => return Err(anyhow!("injected finalization failure was ignored")),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, TodoError::Bd(_) | TodoError::State(_)),
+        "compensation should restore state and preserve the source error: {error:?}"
+    );
+
+    for id in ["lm-alpha", "lm-beta"] {
+        let bead = runner.bead(id)?;
+        assert_eq!(
+            bead.metadata
+                .get("loom.todo_cursor")
+                .and_then(serde_json::Value::as_str),
+            Some(base.as_str()),
+            "{id} cursor changed after failure"
+        );
+    }
+    let old_active = runner.bead("lm-oldactive")?;
+    assert!(
+        old_active.labels.iter().any(|label| label == "loom:active"),
+        "previous active bookmark was not restored: {old_active:?}"
+    );
+    let pending = runner.bead("lm-work")?;
+    assert!(
+        pending.labels.iter().any(|label| label == "loom:todo"),
+        "pending label was not restored: {pending:?}"
+    );
+    assert!(
+        pending.labels.iter().all(|label| label != "loom:active"),
+        "failed work epic remained active: {pending:?}"
+    );
+    assert_eq!(pending.title, "Pending todo decomposition");
+
+    for label in [SpecLabel::new("alpha"), SpecLabel::new("beta")] {
+        let row = state
+            .spec_epic(&label)?
+            .ok_or_else(|| anyhow!("cache row missing for {label}"))?;
+        assert_eq!(row.todo_cursor.as_deref(), Some(base.as_str()));
+    }
+    let old_cached = state
+        .work_epic(&MoleculeId::new("lm-oldactive"))?
+        .ok_or_else(|| anyhow!("old active cache row missing"))?;
+    let pending_cached = state
+        .work_epic(&MoleculeId::new("lm-work"))?
+        .ok_or_else(|| anyhow!("pending cache row missing"))?;
+    assert!(old_cached.is_active);
+    assert!(!pending_cached.is_active);
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_finalization_advances_cursors_and_active_epic_atomically() -> Result<()> {
+    for fail_update in 1..=4 {
+        assert_atomic_finalization_failure(Some(fail_update), false).await?;
+    }
+    assert_atomic_finalization_failure(None, true).await
 }
 
 #[tokio::test]

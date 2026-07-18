@@ -48,6 +48,9 @@ pub enum TodoError {
     /// LOOM_TODO validation failed: {detail}
     TodoValidation { detail: String },
 
+    /// todo finalization failed ({cause}) and compensation also failed: {failures}
+    TodoCompensation { cause: String, failures: String },
+
     /// todo agent supplied no terminal signal — expected a final `LOOM_TODO: <json>` success payload or a worker self-report marker
     MissingExitSignal,
 

@@ -3028,14 +3028,14 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       missing rows, missing/empty title, malformed JSON, nonexistent
       beads, beads outside the work epic, or extra/omitted specs fail
       validation
-  [test?](todo_success_marker_must_cover_exact_changed_spec_set)
+  [test](todo_success_marker_must_cover_exact_changed_spec_set)
 - Validated `LOOM_TODO` finalization is all-or-nothing across changed
       specs: every changed spec cursor advances to the preflight HEAD
       (including `NoWork` outcomes), `LOOM_TODO.title` is applied to
       the work epic, `loom:todo` is removed from the work epic,
       `loom:active` is applied to it, and previous active state is
       cleared. Any failure leaves cursors and active state unchanged
-  [test?](todo_finalization_advances_cursors_and_active_epic_atomically)
+  [test](todo_finalization_advances_cursors_and_active_epic_atomically)
 - Missing criterion evidence in `.loom/cache.db` produces typed
       `EvidenceState::Missing` rows in `criterion_status`; it is never
       treated as no criteria or no work. Malformed criteria block
@@ -3657,7 +3657,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       before rendering the agent prompt, records `loom.todo_head`,
       `loom.todo_fingerprint`, and changed spec labels on it, and does
       not add `loom:active` until validation succeeds
-  [test?](todo_creates_pending_work_epic_before_agent_prompt)
+  [test](todo_creates_pending_work_epic_before_agent_prompt)
 - A pre-existing open `loom:todo` work epic with matching head and
       `TodoFingerprint` is reused; multiple matches or non-matching
       pending work epics block with an Options-format diagnostic
@@ -3671,7 +3671,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
 - `loom todo` validates `TodoSuccess.head`, `TodoFingerprint`, work
       epic id, final title, exact changed-spec coverage, bead existence,
       and bead parentage under the work epic before finalization
-  [test?](todo_success_validation_rejects_missing_extra_or_misparented_beads)
+  [test](todo_success_validation_rejects_missing_extra_or_misparented_beads)
 - Validated `NoWork` outcomes advance the spec cursor just like
       `Decomposed` outcomes; no-work rows require a non-empty reason
   [test](todo_no_work_outcome_advances_cursor_with_reason)
@@ -3687,7 +3687,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       `loom:active` label to the work epic, clears any previous active
       epic, and advances every changed spec epic's `loom.todo_cursor`
       to the preflight HEAD all-or-nothing
-  [test?](todo_finalization_sets_active_and_advances_all_cursors)
+  [test](todo_finalization_sets_active_and_advances_all_cursors)
 - `criterion_status` cache rows join to current criteria by typed
       `(SpecLabel, CriterionId)`; stale annotation evidence renders as
       `EvidenceState::StaleAnnotation`, absent rows as

@@ -174,6 +174,10 @@ impl<R: CommandRunner> BdClient<R> {
             args.push("--set-metadata".into());
             args.push(format!("{key}={value}").into());
         }
+        for key in opts.unset_metadata {
+            args.push("--unset-metadata".into());
+            args.push(key.into());
+        }
         self.invoke(args).await?;
         Ok(())
     }
@@ -338,6 +342,9 @@ pub struct UpdateOpts {
     /// full-object `--metadata <json>` flag whenever only a subset needs
     /// to change.
     pub set_metadata: Vec<(String, String)>,
+    /// Metadata keys forwarded as repeated `bd update --unset-metadata`
+    /// flags. This permits compensation to restore an originally absent key.
+    pub unset_metadata: Vec<String>,
 }
 
 /// Filters accepted by `bd list`. All fields are optional; passing none
@@ -907,6 +914,27 @@ mod tests {
                 &"loom.extra=v=1".to_string(),
             ],
             "each set_metadata entry must travel as one --set-metadata key=value pair: {argv:?}",
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_emits_unset_metadata_keys_when_set() -> Result<()> {
+        let runner = CapturingRunner::new([ok(b"")]);
+        let client = BdClient::with_runner(runner);
+        client
+            .update(
+                &BeadId::new("lm-mol")?,
+                UpdateOpts {
+                    unset_metadata: vec!["loom.todo_cursor".into()],
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
+        let argv = argv_of(&client.runner, 0);
+        assert_eq!(
+            argv,
+            vec!["update", "lm-mol", "--unset-metadata", "loom.todo_cursor"]
         );
         Ok(())
     }

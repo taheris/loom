@@ -279,6 +279,78 @@ impl CacheDb {
         Ok(())
     }
 
+    /// Atomically mirror successful todo finalization and consume its notes.
+    pub fn finalize_todo(
+        &self,
+        spec_epics: &[SpecEpicRow],
+        active_work_epic: &WorkEpicRow,
+    ) -> Result<(), CacheError> {
+        let mut conn = self.conn.lock().map_err(|_| CacheError::Poisoned)?;
+        let tx = conn.transaction()?;
+        for row in spec_epics {
+            tx.execute(
+                "INSERT OR IGNORE INTO specs(label, spec_path) VALUES (?1, ?2)",
+                params![row.spec_label.as_str(), default_spec_path(&row.spec_label)],
+            )?;
+            tx.execute(
+                "INSERT INTO spec_epics(spec_label, epic_id, todo_cursor) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(spec_label) DO UPDATE SET
+                     epic_id = excluded.epic_id,
+                     todo_cursor = excluded.todo_cursor",
+                params![
+                    row.spec_label.as_str(),
+                    row.epic_id.as_str(),
+                    row.todo_cursor.as_deref(),
+                ],
+            )?;
+            tx.execute(
+                "DELETE FROM notes WHERE spec_label = ?1 AND kind = 'implementation'",
+                params![row.spec_label.as_str()],
+            )?;
+        }
+        tx.execute("UPDATE work_epics SET is_active = 0", [])?;
+        tx.execute(
+            "INSERT INTO work_epics(epic_id, todo_head, todo_fingerprint, is_active, iteration_count)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(epic_id) DO UPDATE SET
+                 todo_head = excluded.todo_head,
+                 todo_fingerprint = excluded.todo_fingerprint,
+                 is_active = excluded.is_active,
+                 iteration_count = excluded.iteration_count",
+            params![
+                active_work_epic.epic_id.as_str(),
+                active_work_epic.todo_head.as_deref(),
+                active_work_epic.todo_fingerprint.as_deref(),
+                if active_work_epic.is_active { 1_i64 } else { 0_i64 },
+                i64::from(active_work_epic.iteration_count),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Inject a cache-write failure after `successful_cursor_writes` updates.
+    #[cfg(feature = "test-support")]
+    pub fn inject_todo_finalization_failure(
+        &self,
+        successful_cursor_writes: u32,
+    ) -> Result<(), CacheError> {
+        let conn = self.lock_conn()?;
+        conn.execute_batch(&format!(
+            "CREATE TEMP TABLE todo_finalization_failures (remaining INTEGER NOT NULL);
+             INSERT INTO todo_finalization_failures VALUES ({});
+             CREATE TEMP TRIGGER fail_todo_finalization
+             BEFORE UPDATE OF todo_cursor ON spec_epics
+             BEGIN
+                 UPDATE todo_finalization_failures SET remaining = remaining - 1;
+                 SELECT CASE WHEN (SELECT remaining FROM todo_finalization_failures) < 0
+                     THEN RAISE(FAIL, 'injected todo finalization failure') END;
+             END;",
+            successful_cursor_writes
+        ))?;
+        Ok(())
+    }
+
     /// Read a cached work-epic mirror row.
     pub fn work_epic(&self, epic_id: &MoleculeId) -> Result<Option<WorkEpicRow>, CacheError> {
         let conn = self.lock_conn()?;

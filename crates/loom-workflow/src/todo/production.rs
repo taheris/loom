@@ -63,6 +63,9 @@ struct Preflight {
     fingerprint: loom_protocol::todo::TodoFingerprint,
     changed_specs: Vec<ChangedSpec>,
     work_epic: BeadId,
+    work_epic_title: String,
+    work_epic_was_todo: bool,
+    work_epic_was_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +81,39 @@ struct ChangedSpec {
 struct IndexedSpec {
     label: SpecLabel,
     spec_path: String,
+}
+
+struct PendingWorkEpic {
+    id: BeadId,
+    title: String,
+    was_todo: bool,
+    was_active: bool,
+}
+
+struct NoteMutation {
+    bead_id: BeadId,
+    previous: Option<String>,
+    next: String,
+}
+
+enum Compensation {
+    Note {
+        bead_id: BeadId,
+        previous: Option<String>,
+    },
+    ActiveLabel {
+        bead_id: BeadId,
+    },
+    Cursor {
+        bead_id: BeadId,
+        previous: Option<String>,
+    },
+    WorkEpic {
+        bead_id: BeadId,
+        title: String,
+        was_todo: bool,
+        was_active: bool,
+    },
 }
 
 struct BuiltTodoPrompt {
@@ -278,7 +314,10 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             head,
             fingerprint,
             changed_specs: changed,
-            work_epic,
+            work_epic: work_epic.id,
+            work_epic_title: work_epic.title,
+            work_epic_was_todo: work_epic.was_todo,
+            work_epic_was_active: work_epic.was_active,
         }))
     }
 
@@ -435,7 +474,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         head: &GitSha,
         fingerprint: &loom_protocol::todo::TodoFingerprint,
         changed_specs: &[ChangedSpec],
-    ) -> Result<BeadId, TodoError> {
+    ) -> Result<PendingWorkEpic, TodoError> {
         let pending = self.pending_todo_epics().await?;
         let (matching, nonmatching): (Vec<_>, Vec<_>) = pending.into_iter().partition(|bead| {
             metadata_string(bead, TODO_HEAD_METADATA_KEY).as_deref() == Some(head.as_str())
@@ -443,7 +482,13 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                     == Some(fingerprint.as_str())
         });
         if matching.len() == 1 && nonmatching.is_empty() {
-            return Ok(matching[0].id.clone());
+            let bead = &matching[0];
+            return Ok(PendingWorkEpic {
+                id: bead.id.clone(),
+                title: bead.title.clone(),
+                was_todo: bead.labels.iter().any(Label::is_todo_stage),
+                was_active: bead.labels.iter().any(Label::is_active),
+            });
         }
         if matching.len() > 1 || !nonmatching.is_empty() {
             let ids = matching
@@ -493,7 +538,12 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             is_active: false,
             iteration_count: 0,
         })?;
-        Ok(work_epic)
+        Ok(PendingWorkEpic {
+            id: work_epic,
+            title: PENDING_WORK_EPIC_TITLE.to_string(),
+            was_todo: true,
+            was_active: false,
+        })
     }
 
     async fn pending_todo_epics(&self) -> Result<Vec<loom_driver::bd::Bead>, TodoError> {
@@ -644,7 +694,11 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             }
             if let TodoSpecOutcome::Decomposed { beads } = &spec.outcome {
                 for bead_id in beads.as_slice() {
-                    let bead = self.bd.show(bead_id).await?;
+                    let bead = self.bd.show(bead_id).await.map_err(|source| {
+                        TodoError::TodoValidation {
+                            detail: format!("bead `{bead_id}` could not be found: {source}"),
+                        }
+                    })?;
                     if bead.parent.as_ref() != Some(&preflight.work_epic) {
                         return Err(TodoError::TodoValidation {
                             detail: format!(
@@ -724,7 +778,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         Ok(())
     }
 
-    async fn render_notes_into_beads(&mut self, success: &TodoSuccess) -> Result<(), TodoError> {
+    async fn note_mutations(&self, success: &TodoSuccess) -> Result<Vec<NoteMutation>, TodoError> {
+        let mut mutations: Vec<NoteMutation> = Vec::new();
         for spec in success.specs.as_slice() {
             let TodoSpecOutcome::Decomposed { beads } = &spec.outcome else {
                 continue;
@@ -740,28 +795,100 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             }
             let rendered = render_implementation_notes(&notes);
             for bead_id in beads.as_slice() {
+                if let Some(mutation) = mutations
+                    .iter_mut()
+                    .find(|mutation| mutation.bead_id == *bead_id)
+                {
+                    mutation.next = append_note_block(Some(&mutation.next), &rendered);
+                    continue;
+                }
                 let bead = self.bd.show(bead_id).await?;
-                let notes = append_note_block(bead.notes.as_deref(), &rendered);
-                self.bd
-                    .update(
-                        bead_id,
-                        UpdateOpts {
-                            notes: Some(notes),
-                            ..UpdateOpts::default()
-                        },
-                    )
-                    .await?;
-                self.emit_bd_update(
-                    bead_id,
-                    "LOOM_TODO",
-                    None,
-                    &[],
-                    &[],
-                    Some("implementation-notes"),
-                );
+                mutations.push(NoteMutation {
+                    bead_id: bead_id.clone(),
+                    previous: bead.notes.clone(),
+                    next: append_note_block(bead.notes.as_deref(), &rendered),
+                });
             }
         }
+        Ok(mutations)
+    }
+
+    async fn update_or_rollback(
+        &self,
+        bead_id: &BeadId,
+        update: UpdateOpts,
+        compensation: Compensation,
+        completed: &mut Vec<Compensation>,
+    ) -> Result<(), TodoError> {
+        if let Err(source) = self.bd.update(bead_id, update).await {
+            return Err(self.rollback_error(TodoError::Bd(source), completed).await);
+        }
+        completed.push(compensation);
         Ok(())
+    }
+
+    async fn rollback_error(&self, source: TodoError, completed: &[Compensation]) -> TodoError {
+        let failures = self.compensate(completed).await;
+        if failures.is_empty() {
+            source
+        } else {
+            TodoError::TodoCompensation {
+                cause: source.to_string(),
+                failures: failures.join("; "),
+            }
+        }
+    }
+
+    async fn compensate(&self, completed: &[Compensation]) -> Vec<String> {
+        let mut failures = Vec::new();
+        for compensation in completed.iter().rev() {
+            let (bead_id, update) = match compensation {
+                Compensation::Note { bead_id, previous } => (
+                    bead_id,
+                    UpdateOpts {
+                        notes: Some(previous.clone().unwrap_or_default()),
+                        ..UpdateOpts::default()
+                    },
+                ),
+                Compensation::ActiveLabel { bead_id } => (
+                    bead_id,
+                    UpdateOpts {
+                        add_labels: vec!["loom:active".to_string()],
+                        ..UpdateOpts::default()
+                    },
+                ),
+                Compensation::Cursor { bead_id, previous } => {
+                    let mut update = UpdateOpts::default();
+                    match previous {
+                        Some(cursor) => update
+                            .set_metadata
+                            .push((TODO_CURSOR_METADATA_KEY.to_string(), cursor.clone())),
+                        None => update
+                            .unset_metadata
+                            .push(TODO_CURSOR_METADATA_KEY.to_string()),
+                    }
+                    (bead_id, update)
+                }
+                Compensation::WorkEpic {
+                    bead_id,
+                    title,
+                    was_todo,
+                    was_active,
+                } => {
+                    let mut update = UpdateOpts {
+                        title: Some(title.clone()),
+                        ..UpdateOpts::default()
+                    };
+                    restore_label(&mut update, "loom:todo", *was_todo);
+                    restore_label(&mut update, "loom:active", *was_active);
+                    (bead_id, update)
+                }
+            };
+            if let Err(error) = self.bd.update(bead_id, update).await {
+                failures.push(format!("{bead_id}: {error}"));
+            }
+        }
+        failures
     }
 
     async fn finalize_success(&mut self, success: &TodoSuccess) -> Result<TodoRecord, TodoError> {
@@ -769,34 +896,116 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .preflight
             .clone()
             .ok_or(TodoError::TodoSuccessWithoutPreflight)?;
-        self.render_notes_into_beads(success).await?;
-        for active in self.active_work_epics().await? {
+        let note_mutations = self.note_mutations(success).await?;
+        let active_work_epics = self.active_work_epics().await?;
+        let mut completed = Vec::new();
+
+        for mutation in &note_mutations {
+            self.update_or_rollback(
+                &mutation.bead_id,
+                UpdateOpts {
+                    notes: Some(mutation.next.clone()),
+                    ..UpdateOpts::default()
+                },
+                Compensation::Note {
+                    bead_id: mutation.bead_id.clone(),
+                    previous: mutation.previous.clone(),
+                },
+                &mut completed,
+            )
+            .await?;
+        }
+        for active in &active_work_epics {
+            if active.id == preflight.work_epic {
+                continue;
+            }
+            self.update_or_rollback(
+                &active.id,
+                UpdateOpts {
+                    remove_labels: vec!["loom:active".to_string()],
+                    ..UpdateOpts::default()
+                },
+                Compensation::ActiveLabel {
+                    bead_id: active.id.clone(),
+                },
+                &mut completed,
+            )
+            .await?;
+        }
+        for spec in &preflight.changed_specs {
+            self.update_or_rollback(
+                &spec.spec_epic,
+                UpdateOpts {
+                    set_metadata: vec![(
+                        TODO_CURSOR_METADATA_KEY.to_string(),
+                        preflight.head.to_string(),
+                    )],
+                    ..UpdateOpts::default()
+                },
+                Compensation::Cursor {
+                    bead_id: spec.spec_epic.clone(),
+                    previous: spec.todo_cursor.clone(),
+                },
+                &mut completed,
+            )
+            .await?;
+        }
+        self.update_or_rollback(
+            &preflight.work_epic,
+            UpdateOpts {
+                title: Some(success.title.to_string()),
+                add_labels: vec!["loom:active".to_string()],
+                remove_labels: vec!["loom:todo".to_string()],
+                ..UpdateOpts::default()
+            },
+            Compensation::WorkEpic {
+                bead_id: preflight.work_epic.clone(),
+                title: preflight.work_epic_title.clone(),
+                was_todo: preflight.work_epic_was_todo,
+                was_active: preflight.work_epic_was_active,
+            },
+            &mut completed,
+        )
+        .await?;
+
+        let spec_epics = preflight
+            .changed_specs
+            .iter()
+            .map(|spec| SpecEpicRow {
+                spec_label: spec.label.clone(),
+                epic_id: MoleculeId::new(spec.spec_epic.as_str().to_owned()),
+                todo_cursor: Some(preflight.head.to_string()),
+            })
+            .collect::<Vec<_>>();
+        let work_epic = WorkEpicRow {
+            epic_id: MoleculeId::new(preflight.work_epic.as_str().to_owned()),
+            todo_head: Some(preflight.head.to_string()),
+            todo_fingerprint: Some(preflight.fingerprint.to_string()),
+            is_active: true,
+            iteration_count: 0,
+        };
+        if let Err(source) = self.state.finalize_todo(&spec_epics, &work_epic) {
+            return Err(self
+                .rollback_error(TodoError::State(source), &completed)
+                .await);
+        }
+
+        for mutation in &note_mutations {
+            self.emit_bd_update(
+                &mutation.bead_id,
+                "LOOM_TODO",
+                None,
+                &[],
+                &[],
+                Some("implementation-notes"),
+            );
+        }
+        for active in &active_work_epics {
             if active.id != preflight.work_epic {
-                self.bd
-                    .update(
-                        &active.id,
-                        UpdateOpts {
-                            remove_labels: vec!["loom:active".to_string()],
-                            ..UpdateOpts::default()
-                        },
-                    )
-                    .await?;
                 self.emit_bd_update(&active.id, "LOOM_TODO", None, &[], &["loom:active"], None);
             }
         }
         for spec in &preflight.changed_specs {
-            self.bd
-                .update(
-                    &spec.spec_epic,
-                    UpdateOpts {
-                        set_metadata: vec![(
-                            TODO_CURSOR_METADATA_KEY.to_string(),
-                            preflight.head.to_string(),
-                        )],
-                        ..UpdateOpts::default()
-                    },
-                )
-                .await?;
             self.emit_bd_update(
                 &spec.spec_epic,
                 "LOOM_TODO",
@@ -805,25 +1014,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 &[],
                 Some(TODO_CURSOR_METADATA_KEY),
             );
-            self.state.upsert_spec_epic(&SpecEpicRow {
-                spec_label: spec.label.clone(),
-                epic_id: MoleculeId::new(spec.spec_epic.as_str().to_owned()),
-                todo_cursor: Some(preflight.head.to_string()),
-            })?;
-            self.state
-                .notes_clear(&spec.label, Some("implementation"))?;
         }
-        self.bd
-            .update(
-                &preflight.work_epic,
-                UpdateOpts {
-                    title: Some(success.title.to_string()),
-                    add_labels: vec!["loom:active".to_string()],
-                    remove_labels: vec!["loom:todo".to_string()],
-                    ..UpdateOpts::default()
-                },
-            )
-            .await?;
         self.emit_bd_update(
             &preflight.work_epic,
             "LOOM_TODO",
@@ -832,13 +1023,6 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             &["loom:todo"],
             None,
         );
-        self.state.upsert_work_epic(&WorkEpicRow {
-            epic_id: MoleculeId::new(preflight.work_epic.as_str().to_owned()),
-            todo_head: Some(preflight.head.to_string()),
-            todo_fingerprint: Some(preflight.fingerprint.to_string()),
-            is_active: true,
-            iteration_count: 0,
-        })?;
         Ok(TodoRecord {
             spec_outcomes: summarize_success(success),
         })
@@ -1157,6 +1341,14 @@ fn append_note_block(existing: Option<&str>, block: &str) -> String {
         return block.to_string();
     };
     format!("{}\n\n{}", existing.trim_end(), block)
+}
+
+fn restore_label(update: &mut UpdateOpts, label: &str, was_present: bool) {
+    if was_present {
+        update.add_labels.push(label.to_string());
+    } else {
+        update.remove_labels.push(label.to_string());
+    }
 }
 
 fn summarize_success(success: &TodoSuccess) -> Vec<TodoSpecSummary> {
