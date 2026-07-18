@@ -92,10 +92,13 @@ safety net, so the full-suite app is a pre-push hook rather than a
 CI-only surface.
 
 The targeted hooks are clippy + `loom gate verify --diff <push-range>`
-+ `nix run .#test`. `loom gate verify --diff` uses the scope-derived
-contract in [gate.md](gate.md): project pre-commit hooks for the range,
-then affected `[check]` / `[test]` annotations; no `LOOM_VERIFY_TIERS`
-environment override exists. Each hook runs as an independent prek entry
++ `nix run .#test`. Prek exports the pushed endpoints as
+`PRE_COMMIT_FROM_REF` / `PRE_COMMIT_TO_REF`; `pre-push-checks` appends
+that exact range to the gate hook instead of deriving it from the branch
+upstream. `loom gate verify --diff` uses the scope-derived contract in
+[gate.md](gate.md): project pre-commit hooks for the range, then affected
+`[check]` / `[test]` annotations; no `LOOM_VERIFY_TIERS` environment
+override exists. Each hook runs as an independent prek entry
 with its own `files:` regex where applicable so file-pattern selectivity
 composes with marker-aware fallthrough. On the driver-loop integration
 push the wrapper can short-circuit every covered hook in sub-second
@@ -304,7 +307,7 @@ declared as such.
 - The pre-push stage includes `cargo clippy` file-gated on `\.rs$` and
   targeted `loom gate verify --diff` without any `LOOM_VERIFY_TIERS`
   environment override
-  [test?](pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers)
+  [test](pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers)
 - Each pre-push hook entry routes through the repo-local
   `bin/pre-push-checks` wrapper so marker coverage can be checked per
   hook without relying on ambient PATH
@@ -321,7 +324,7 @@ declared as such.
 - The pre-push stage runs `loom gate verify --diff` against the pushed
   range; scope-derived gate policy excludes `[system]` by default and
   project-specific hook selection stays in `.pre-commit-config.yaml`
-  [test?](pre_push_config_runs_verify_diff_for_pushed_range)
+  [test](pre_push_config_runs_verify_diff_for_pushed_range)
 - The pre-push stage includes an always-run full-suite hook that invokes
   `nix run .#test`
   [check](grep -q 'full-test-suite' .pre-commit-config.yaml)

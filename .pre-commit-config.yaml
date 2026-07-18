@@ -55,7 +55,7 @@ repos:
 
       - id: loom-gate-verify-diff
         name: loom gate verify --diff
-        entry: bin/pre-push-checks --hook-id loom-gate-verify-diff --hook-entry 'loom gate verify --diff @{u}..HEAD' -- loom gate verify --diff '@{u}..HEAD'
+        entry: bin/pre-push-checks --hook-id loom-gate-verify-diff --hook-entry 'loom gate verify --diff' --append-push-range -- loom gate verify --diff
         language: system
         stages: [pre-push]
         always_run: true

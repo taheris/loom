@@ -236,13 +236,10 @@ The bead clone's `origin` remote remains pointing at the loom
 workspace path; the worker never invokes it but this preserves
 host-side ahead/behind tracking when the operator `cd`s into the
 bead clone (e.g., starship prompt). `create_worktree` sets the bead
-branch's upstream to `origin/<integration-branch>`, so `@{u}`
-resolves to the bead's base: the starship ahead/behind count is
-correct, and the pre-push hook's `loom gate verify --diff @{u}..HEAD`
-scopes to exactly the bead's commits. Were the upstream unset, `@{u}`
-could not resolve and the gate would exit non-zero naming the range —
-a hard error, not a silent degrade to a whole-tree walk (see gate.md
-§ Scope flags). The bead
+branch's upstream to `origin/<integration-branch>`, so the starship
+ahead/behind count is correct. The pre-push hook takes its exact range
+from prek's pushed-ref endpoints rather than from `@{u}`, so an unrelated
+or stale upstream cannot change the verified range. The bead
 container has no path mount to the loom workspace and cannot push
 from inside; manual host-side pushes are harmless because the
 integration step still owns rebase + verify + ff. The driver's
@@ -337,7 +334,7 @@ the module; callers see only typed Rust methods.
 | List refs / branches | `gix::Repository::references()` | mature |
 | Read commit graph / HEAD | `gix` | mature |
 | **Create loom workspace** (`loom init`) | `git clone <origin> .loom/integration` (CLI) | one-shot, infrequent; `gix-clone` is unchecked |
-| **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>`, `git checkout -b loom/<id>`, then `git branch --set-upstream-to origin/<integration-branch>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount; upstream makes `@{u}..HEAD` resolve for the push-gate hook |
+| **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>`, `git checkout -b loom/<id>`, then `git branch --set-upstream-to origin/<integration-branch>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount; upstream preserves host-side ahead/behind tracking |
 | **Pre-attempt prepare of bead clone** | `git status --short --branch`; if dirty, `git stash push --include-untracked -m "loom workspace-recovery <bead-id> <timestamp>"`; then rebase local bead commits onto the integration tip (or fast-forward when there are no local commits); finally `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix` when no conflict remains (CLI) | preserves uncommitted/staged/untracked work as an unapplied recovery stash, preserves committed bead work by rebasing it onto the integration tip, and gives clean starts except intentional conflict-recovery dispatches |
 | **Fetch bead branch from bead workspace** | `git fetch <bead-workspace-path> loom/<id>:loom/<id>` (CLI) | filesystem path as ad-hoc URL; runs in loom workspace inside `index.lock` |
 | **Verify commit signatures** | `git verify-commit <commits>` (CLI) | gates integration on signed-by-wrix-key; conditional on signing key resolving (see [Commit signing](#commit-signing)) |
@@ -825,9 +822,10 @@ stage1-eligible, push-only, or unknown.
 Molecule-completion push gate runs at the **loom workspace** after all
 beads in the molecule have integrated and deferred remediation has
 stabilized. The driver fetches origin, rebases local integration commits
-when `origin/<integration-branch>` advanced, computes the actual push
-range `origin/<integration-branch>..HEAD`, runs the actual prek pre-push
-chain for that range, runs `loom gate review --diff <actual-push-range>`
+when `origin/<integration-branch>` advanced, resolves that remote tip and
+`HEAD` to the concrete OID pair for the actual push range, runs the actual
+prek pre-push chain for that range, runs
+`loom gate review --diff <actual-push-range>`
 only after deterministic pre-push success, mints `MarkerProof`, then
 `git push origin <integration-branch>`. The critical section spans
 **fetch/rebase + pre-push verify + review + mint + push** atomically —
@@ -3113,9 +3111,9 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [test](push_gate_repairs_stale_integration_hooks_path)
 - On molecule completion, after stabilization has drained promoted
       remediation, `loom loop` fetches/rebases against
-      `origin/<integration-branch>`, computes the actual push range
-      `origin/<integration-branch>..HEAD`, runs the actual prek
-      pre-push chain for that range, then runs
+      `origin/<integration-branch>`, resolves the remote tip and `HEAD`
+      to the concrete OID pair for the actual push range, runs the actual
+      prek pre-push chain for that range, then runs
       `loom gate review --diff <actual-push-range>` only after
       deterministic success
   [test](molecule_push_gate_verifies_and_reviews_actual_push_range)

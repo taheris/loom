@@ -3272,6 +3272,10 @@ mod tests {
         );
 
         let gate_workspace = controller.git.loom_workspace();
+        let from_oid = loom_driver::git::sync_rev_parse(&gate_workspace, "origin/main")
+            .expect("resolve origin tip");
+        let to_oid =
+            loom_driver::git::sync_rev_parse(&gate_workspace, "HEAD").expect("resolve HEAD");
         controller.exec_review().await.expect("exec_review ok");
 
         let recorded = std::fs::read_to_string(&argv_log).expect("argv log readable");
@@ -3279,7 +3283,7 @@ mod tests {
         assert_eq!(
             lines,
             vec![format!(
-                "{}\talpha\tgate review --diff origin/main..HEAD",
+                "{}\talpha\tgate review --diff {from_oid}..{to_oid}",
                 gate_workspace.display()
             )],
             "review must run from the integration checkout over the actual origin push range; the spec label travels as env context, not as a gate filter: {recorded:?}",

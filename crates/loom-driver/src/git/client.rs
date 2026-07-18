@@ -442,12 +442,6 @@ impl GitClient {
         )
         .await?;
 
-        // Track `origin/<integration_branch>` so the pre-push hook's
-        // `--diff @{u}..HEAD` (`.pre-commit-config.yaml`) resolves to the
-        // bead's commits over its base instead of failing with "no upstream
-        // configured" — which silently degrades the gate to an unscoped,
-        // whole-tree walk. The clone's `origin` is the loom workspace, whose
-        // only branch is the integration branch, so the tracking ref exists.
         let upstream = format!("origin/{}", self.integration_branch);
         run_git(
             &path,
@@ -1066,9 +1060,11 @@ impl GitClient {
             let _ = run_git_raw(&workdir, self.clock.as_ref(), ["rebase", "--abort"], None).await?;
             return Err(cli_error(&rebase_output));
         }
+        let from_oid = self.rev_parse_in_loom(&remote_ref).await?;
+        let to_oid = self.rev_parse_in_loom("HEAD").await?;
         let tree_oid = self.rev_parse_in_loom("HEAD^{tree}").await?;
         Ok(ActualPushRange {
-            range: format!("{remote_ref}..HEAD"),
+            range: format!("{from_oid}..{to_oid}"),
             tree_oid,
             remote_ref,
         })

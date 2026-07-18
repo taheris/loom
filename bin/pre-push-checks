@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "pre-push-checks: usage: pre-push-checks --hook-id <id> --hook-entry <entry> [--push-range <range>] -- <command> [args…]" >&2
+    echo "pre-push-checks: usage: pre-push-checks --hook-id <id> --hook-entry <entry> [--push-range <range>] [--append-push-range] -- <command> [args…]" >&2
 }
 
 scrub_git_local_env() {
@@ -24,6 +24,7 @@ exec_sanitized() {
 hook_id=""
 hook_entry=""
 push_range=""
+append_push_range=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -51,6 +52,10 @@ while [[ $# -gt 0 ]]; do
             push_range="$2"
             shift 2
             ;;
+        --append-push-range)
+            append_push_range=1
+            shift
+            ;;
         --)
             shift
             break
@@ -66,6 +71,26 @@ if [[ $# -eq 0 ]]; then
     exit 2
 fi
 
+resolve_push_range() {
+    local requested="$1"
+    local upstream
+
+    if [[ -n "$requested" ]]; then
+        printf '%s\n' "$requested"
+    elif [[ -n "${PRE_COMMIT_FROM_REF:-}" && -n "${PRE_COMMIT_TO_REF:-}" ]]; then
+        printf '%s..%s\n' "$PRE_COMMIT_FROM_REF" "$PRE_COMMIT_TO_REF"
+    elif upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then # best-effort: direct wrapper calls may have no prek range.
+        printf '%s..HEAD\n' "$upstream"
+    else
+        printf '%s\n' '@{u}..HEAD'
+    fi
+}
+
+if [[ "$append_push_range" == "1" ]]; then
+    push_range="$(resolve_push_range "$push_range")"
+    set -- "$@" "$push_range"
+fi
+
 if [[ ! -f .loom/marker.json ]]; then
     exec_sanitized "$@"
 fi
@@ -74,13 +99,7 @@ if [[ -z "$hook_id" || -z "$hook_entry" ]]; then
     exec_sanitized "$@"
 fi
 
-if [[ -z "$push_range" ]]; then
-    if upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then # best-effort: workspaces without upstream fall through to the literal range.
-        push_range="${upstream}..HEAD"
-    else
-        push_range='@{u}..HEAD'
-    fi
-fi
+push_range="$(resolve_push_range "$push_range")"
 
 scrub_git_local_env
 

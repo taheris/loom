@@ -265,7 +265,7 @@ cost-of-failure differ; the underlying trust surfaces are explicit.
 | **Worker self-check** | In the bead container before `LOOM_COMPLETE`: `loom gate verify --diff <bead-base>..HEAD` plus prompt-level self-review | The bead branch's committed work against its injected base range | Low — the agent is still in-session | Formatting/hook failures, affected `[check]`/`[test]` failures, obvious criteria/style misses the agent can fix before final marker |
 | **Per-bead integration** | In `.loom/integration` after rebase/ff: `loom gate verify --diff <pre-integration-head>..HEAD` | The exact commits just integrated into the loom workspace | Medium — one bead's worth | Cross-bead deterministic breakage after integration, project pre-commit failures, affected `[check]`/`[test]` failures. On failure, integration rolls back and the same bead retries with the gate log in `previous_failure` |
 | **Stabilization** | `loom gate mint -m <molecule-id>` after no original non-deferred work remains ready | The molecule's `loom:deferred` remediation beads | Medium — amortized over a molecule, not one tiny finding | Promotes deferred remediation batches so the loop drains them before push; coalesces repeated finding hashes instead of reminting tiny beads |
-| **Push** | Fetch/rebase to `origin/<integration-branch>`, run the actual prek pre-push chain for `origin/<integration-branch>..HEAD`, then `loom gate review --diff origin/<integration-branch>..HEAD` | The actual push range, not merely the molecule's original base range | Highest — **blocks push**. `GateSuccess` is constructible only from matching `VerifiedScope`, `ReviewedScope`, pre-push hook coverage, marker evidence, and clean tree/config/range fingerprints | Conformance gaps in the pushed range, project pre-push failures, integrity-gate findings in affected annotations, review concerns, dispatch errors, origin-advanced races |
+| **Push** | Fetch/rebase to `origin/<integration-branch>`, resolve the remote tip and `HEAD` to concrete OIDs, run the actual prek pre-push chain for `<remote-oid>..<head-oid>`, then `loom gate review --diff <remote-oid>..<head-oid>` | The actual push range, not merely the molecule's original base range | Highest — **blocks push**. `GateSuccess` is constructible only from matching `VerifiedScope`, `ReviewedScope`, pre-push hook coverage, marker evidence, and clean tree/config/range fingerprints | Conformance gaps in the pushed range, project pre-push failures, integrity-gate findings in affected annotations, review concerns, dispatch errors, origin-advanced races |
 | **Standing safety net** | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled) | Entire spec tree × entire implementation | Catches **verifier-input under-reporting** — any verifier a finite scope would have skipped because its derived input set was too narrow is surfaced here | Cross-file incoherence finite diffs did not surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-reported input sets that are too narrow |
 
 The plan stage has no separate command invocation — the agent runs
@@ -1508,8 +1508,8 @@ mint trigger. The sequence is:
 2. If `origin/<integration-branch>` advanced, the driver rebases local
    integration commits onto it; conflicts route through recovery and no
    marker is minted.
-3. The driver resolves the actual push range
-   `origin/<integration-branch>..HEAD`.
+3. The driver resolves `origin/<integration-branch>` and `HEAD` to the
+   concrete OID endpoints of the actual push range.
 4. The deterministic push gate runs the actual prek pre-push chain for
    that range. The chain's `loom gate verify --diff <range>` hook
    emits its own `GateRun` / `VerifiedScope` evidence.

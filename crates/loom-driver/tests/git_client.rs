@@ -1789,14 +1789,11 @@ async fn bead_clone_origin_unchanged_under_a3() -> Result<()> {
     Ok(())
 }
 
-/// `create_worktree` must set the bead branch's upstream to
-/// `origin/<integration_branch>` so the pre-push hook's
-/// `loom gate verify --diff @{u}..HEAD` (`.pre-commit-config.yaml`)
-/// resolves to the bead's own commits. Without an upstream, `@{u}` fails
-/// ("no upstream configured") and the gate silently degrades to an
-/// unscoped, whole-tree walk.
+/// `create_worktree` sets the bead branch's upstream to
+/// `origin/<integration_branch>` so host-side ahead/behind status compares
+/// the bead's own commits with its integration base.
 #[tokio::test]
-async fn bead_branch_tracks_integration_branch_for_push_scope() -> Result<()> {
+async fn bead_branch_tracks_integration_branch_for_ahead_behind() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
@@ -1812,8 +1809,6 @@ async fn bead_branch_tracks_integration_branch_for_push_scope() -> Result<()> {
         "bead branch upstream must point at origin/<integration_branch>",
     );
 
-    // The agent's commit is the only thing in the `@{u}..HEAD` push range —
-    // exactly the scope the pre-push gate verifies.
     agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
     let count = git_command()
         .arg("-C")
