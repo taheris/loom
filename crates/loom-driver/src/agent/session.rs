@@ -26,6 +26,8 @@ pub struct AgentSession<S> {
     reader: JsonlReader,
     parser: Box<dyn LineParse + Send>,
     pending: VecDeque<ParsedAgentEvent>,
+    open_turns: usize,
+    completion_sent: bool,
     _state: PhantomData<S>,
 }
 
@@ -60,6 +62,8 @@ impl AgentSession<Idle> {
             reader,
             parser,
             pending: VecDeque::new(),
+            open_turns: 0,
+            completion_sent: false,
             _state: PhantomData,
         }
     }
@@ -77,6 +81,8 @@ impl AgentSession<Idle> {
             reader: self.reader,
             parser: self.parser,
             pending: self.pending,
+            open_turns: 1,
+            completion_sent: false,
             _state: PhantomData,
         })
     }
@@ -137,6 +143,7 @@ impl AgentSession<Active> {
         let line = self.parser.encode_steer(msg)?;
         self.stdin.write_all(line.as_bytes()).await?;
         self.stdin.flush().await?;
+        self.open_turns = self.open_turns.saturating_add(1);
         Ok(())
     }
 
@@ -145,6 +152,26 @@ impl AgentSession<Active> {
         let line = self.parser.encode_follow_up(msg)?;
         self.stdin.write_all(line.as_bytes()).await?;
         self.stdin.flush().await?;
+        self.open_turns = self.open_turns.saturating_add(1);
+        Ok(())
+    }
+
+    /// Close the steering window for one observed turn.
+    ///
+    /// A completion frame is written only after every prompt or steer sent so
+    /// far has reached its own `TurnEnd`. Backends with native completion do
+    /// not encode a frame, so this remains a bookkeeping-only operation for
+    /// them.
+    pub async fn finish_turn(&mut self) -> Result<(), ProtocolError> {
+        self.open_turns = self.open_turns.saturating_sub(1);
+        if self.open_turns != 0 || self.completion_sent {
+            return Ok(());
+        }
+        if let Some(line) = self.parser.encode_complete()? {
+            self.stdin.write_all(line.as_bytes()).await?;
+            self.stdin.flush().await?;
+            self.completion_sent = true;
+        }
         Ok(())
     }
 
@@ -165,6 +192,8 @@ impl AgentSession<Active> {
             reader: self.reader,
             parser: self.parser,
             pending: VecDeque::new(),
+            open_turns: 0,
+            completion_sent: false,
             _state: PhantomData,
         })
     }

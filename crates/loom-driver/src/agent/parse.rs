@@ -22,17 +22,17 @@ pub struct ParsedLine {
 
 /// Backend-specific protocol bridge.
 ///
-/// Implementors live in `agent` (one for pi-mono RPC, one for claude
-/// stream-json) and translate between backend wire formats and loom-driver's
-/// neutral surface. The session only knows about `LineParse` — once the
-/// parser converts a line into a [`ParsedLine`], no downstream code can tell
+/// Implementors live in `agent` and translate between backend wire formats
+/// and loom-driver's neutral surface. The session only knows about
+/// `LineParse`; once the parser converts a line into a [`ParsedLine`], no
+/// downstream code can tell
 /// which backend produced it.
 ///
 /// `encode_*` methods serialize driver-side commands (initial prompt, mid-
-/// session steering, abort) into JSONL lines for the session to write to the
-/// agent's stdin. They live alongside `parse_line` because both directions of
-/// the wire are backend-specific and a single trait keeps the session a
-/// concrete generic-free type.
+/// session steering, controlled completion, abort) into JSONL lines for the
+/// session to write to the agent's stdin. They live alongside `parse_line`
+/// because both directions of the wire are backend-specific and a single trait
+/// keeps the session a concrete generic-free type.
 pub trait LineParse: Send {
     /// Parse one JSONL line received from the agent's stdout.
     fn parse_line(&self, line: &str) -> Result<ParsedLine, ProtocolError>;
@@ -50,6 +50,12 @@ pub trait LineParse: Send {
     /// initial prompt frame rather than a queue-only follow-up command.
     fn encode_follow_up(&self, msg: &str) -> Result<String, ProtocolError> {
         self.encode_steer(msg)
+    }
+
+    /// Encode a controlled session-completion command after all queued turns
+    /// have ended. Most backends complete natively and return `None`.
+    fn encode_complete(&self) -> Result<Option<String>, ProtocolError> {
+        Ok(None)
     }
 
     /// Encode an abort command, or `None` if the backend has no abort wire

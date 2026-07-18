@@ -9,7 +9,7 @@
 //!   `Active` after `prompt`).
 //! - [`AgentEvent`] — the backend-neutral event enum the session yields.
 //! - [`LineParse`] / [`ParsedLine`] — backend-specific protocol bridge: line
-//!   parsing plus command encoding for prompt/steer/abort.
+//!   parsing plus command encoding for prompt/steer/complete/abort.
 //! - [`JsonlReader`] — shared stdin line framing (10 MB max line cap).
 //! - [`RePinContent`] — re-pin payload format used by both backends after
 //!   compaction.

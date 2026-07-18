@@ -4,7 +4,7 @@
 //! The host-side driver wires the launcher's stdio to an
 //! [`AgentSession`] backed by a tiny JSONL parser. The runner emits the
 //! same parser-emitted event surface ([`ParsedAgentEvent`]) Pi and Claude
-//! emit; outbound commands (prompt/steer/abort) are encoded as
+//! emit; outbound commands (prompt/steer/complete/abort) are encoded as
 //! `{"type": "...", ...}` JSONL frames — see [`DirectParser`] for the
 //! wire shape.
 
@@ -172,17 +172,19 @@ impl LineParse for DirectParser {
     }
 
     fn encode_prompt(&self, msg: &str) -> Result<String, ProtocolError> {
-        let mut encoded = encode_command(&DirectCommand::Prompt {
+        encode_command(&DirectCommand::Prompt {
             message: msg.to_string(),
-        })?;
-        encoded.push_str(&encode_command(&DirectCommand::Complete)?);
-        Ok(encoded)
+        })
     }
 
     fn encode_steer(&self, msg: &str) -> Result<String, ProtocolError> {
         encode_command(&DirectCommand::Steer {
             message: msg.to_string(),
         })
+    }
+
+    fn encode_complete(&self) -> Result<Option<String>, ProtocolError> {
+        encode_command(&DirectCommand::Complete).map(Some)
     }
 
     fn encode_abort(&self) -> Result<Option<String>, ProtocolError> {
@@ -519,6 +521,90 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         );
     }
 
+    #[tokio::test]
+    async fn direct_session_completes_after_unsteered_turn() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(
+            r#"set -euo pipefail
+IFS= read -r prompt
+case "$prompt" in
+    *'"type":"prompt"'*) ;;
+    *) exit 2 ;;
+esac
+printf '%s\n' '{"type":"turn_end"}'
+IFS= read -r complete
+case "$complete" in
+    *'"type":"complete"'*) ;;
+    *) exit 3 ;;
+esac
+printf '%s\n' '{"type":"session_complete","exit_code":0}'
+"#,
+        );
+        let session = spawn_session(command).await.expect("spawn mock runner");
+        let mut session = session.prompt("hello").await.expect("send prompt");
+
+        assert!(matches!(
+            session.next_event().await.expect("read turn end"),
+            Some(ParsedAgentEvent::TurnEnd)
+        ));
+        session.finish_turn().await.expect("complete final turn");
+        assert!(matches!(
+            session.next_event().await.expect("read completion"),
+            Some(ParsedAgentEvent::SessionComplete { exit_code: 0, .. })
+        ));
+        assert!(session.child_mut().wait().await.expect("wait").success());
+    }
+
+    #[tokio::test]
+    async fn direct_session_waits_for_each_steered_turn_before_completion() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(
+            r#"set -euo pipefail
+IFS= read -r prompt
+printf '%s\n' '{"type":"turn_end"}'
+IFS= read -r first_steer
+case "$first_steer" in
+    *'"type":"steer"'*'"message":"first steer"'*) ;;
+    *) exit 2 ;;
+esac
+printf '%s\n' '{"type":"turn_end"}'
+IFS= read -r second_steer
+case "$second_steer" in
+    *'"type":"steer"'*'"message":"second steer"'*) ;;
+    *) exit 3 ;;
+esac
+printf '%s\n' '{"type":"turn_end"}'
+IFS= read -r complete
+case "$complete" in
+    *'"type":"complete"'*) ;;
+    *) exit 4 ;;
+esac
+printf '%s\n' '{"type":"session_complete","exit_code":0}'
+"#,
+        );
+        let session = spawn_session(command).await.expect("spawn mock runner");
+        let mut session = session.prompt("hello").await.expect("send prompt");
+
+        for steer in ["first steer", "second steer"] {
+            assert!(matches!(
+                session.next_event().await.expect("read turn end"),
+                Some(ParsedAgentEvent::TurnEnd)
+            ));
+            session.steer(steer).await.expect("send steer");
+            session.finish_turn().await.expect("finish steered turn");
+        }
+        assert!(matches!(
+            session.next_event().await.expect("read final turn end"),
+            Some(ParsedAgentEvent::TurnEnd)
+        ));
+        session.finish_turn().await.expect("complete final turn");
+        assert!(matches!(
+            session.next_event().await.expect("read completion"),
+            Some(ParsedAgentEvent::SessionComplete { exit_code: 0, .. })
+        ));
+        assert!(session.child_mut().wait().await.expect("wait").success());
+    }
+
     #[test]
     fn parser_decodes_text_delta_to_parsed_event() {
         let parsed = DirectParser
@@ -633,23 +719,27 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
     }
 
     #[test]
-    fn parser_encodes_prompt_and_complete_as_jsonl() {
+    fn parser_encodes_prompt_without_prequeued_completion() {
         let encoded = DirectParser.encode_prompt("hello").expect("encode");
         assert!(
             encoded.ends_with('\n'),
             "missing trailing newline: {encoded}"
         );
         let lines = encoded.lines().collect::<Vec<_>>();
-        assert_eq!(
-            lines.len(),
-            2,
-            "prompt should emit prompt + complete frames"
-        );
+        assert_eq!(lines.len(), 1, "prompt should emit exactly one frame");
         let prompt: serde_json::Value = serde_json::from_str(lines[0]).expect("valid prompt json");
-        let complete: serde_json::Value =
-            serde_json::from_str(lines[1]).expect("valid complete json");
         assert_eq!(prompt["type"], "prompt");
         assert_eq!(prompt["message"], "hello");
+    }
+
+    #[test]
+    fn parser_encodes_controlled_completion_as_jsonl() {
+        let encoded = DirectParser
+            .encode_complete()
+            .expect("encode")
+            .expect("complete wire command");
+        let complete: serde_json::Value =
+            serde_json::from_str(encoded.trim_end()).expect("valid complete json");
         assert_eq!(complete["type"], "complete");
     }
 

@@ -13,8 +13,8 @@
 //!    stdout — `tool_call` / `tool_result` for each assistant + tool
 //!    pair, `text_delta` + `text_end` for the final assistant text,
 //!    then `turn_end`.
-//! 4. After [`DirectCommand::Complete`] drains commands queued during the
-//!    active turn, or on EOF / [`DirectCommand::Abort`], emit
+//! 4. After the host closes a `turn_end` steering window with
+//!    [`DirectCommand::Complete`], or on EOF / [`DirectCommand::Abort`], emit
 //!    `session_complete` and return.
 
 use std::collections::VecDeque;
@@ -314,6 +314,7 @@ where
                             message: err.to_string(),
                         })
                         .await?;
+                    emitter.emit(&DirectEvent::TurnEnd).await?;
                     exit_code = 1;
                 }
             }
@@ -724,6 +725,43 @@ mod tests {
         }
     }
 
+    struct BlockingClient {
+        started: std::sync::Arc<tokio::sync::Notify>,
+    }
+
+    impl LlmClient for BlockingClient {
+        fn schema(&self) -> SchemaKind {
+            SchemaKind::Anthropic
+        }
+
+        fn supports(&self, _model: &ModelId) -> bool {
+            true
+        }
+
+        fn complete<'a>(
+            &'a self,
+            _req: CompletionRequest,
+        ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+            Box::pin(async move {
+                self.started.notify_one();
+                std::future::pending().await
+            })
+        }
+
+        fn complete_structured_raw<'a>(
+            &'a self,
+            _req: CompletionRequest,
+            _schema: serde_json::Value,
+            _type_name: String,
+        ) -> BoxFuture<'a, Result<String, LlmError>> {
+            Box::pin(async move {
+                Err(LlmError::Provider {
+                    message: "structured not used in runner tests".into(),
+                })
+            })
+        }
+    }
+
     /// The runner registers exactly six tools by name, in the canonical
     /// order documented in `specs/agent.md` § Direct Backend.
     #[test]
@@ -830,15 +868,14 @@ mod tests {
                 tokio::io::BufReader::new(stdin_runner),
                 stdout_runner,
             ));
-            let mut command = command_frame(&DirectCommand::Prompt {
+            let command = command_frame(&DirectCommand::Prompt {
                 message: "hi".to_string(),
             });
-            command.push_str(&command_frame(&DirectCommand::Complete));
             stdin_host
                 .write_all(command.as_bytes())
                 .await
-                .expect("write prompt + complete");
-            stdin_host.flush().await.expect("flush prompt + complete");
+                .expect("write prompt");
+            stdin_host.flush().await.expect("flush prompt");
 
             let mut stdout = tokio::io::BufReader::new(stdout_host);
             let mut lines = Vec::new();
@@ -854,13 +891,21 @@ mod tests {
                     .trim_end_matches('\n')
                     .trim_end_matches('\r')
                     .to_string();
-                let is_complete = serde_json::from_str::<Value>(&line)
+                let kind = serde_json::from_str::<Value>(&line)
                     .expect("json")
                     .get("type")
                     .and_then(Value::as_str)
-                    == Some("session_complete");
+                    .expect("event type")
+                    .to_string();
                 lines.push(line);
-                if is_complete {
+                if kind == "turn_end" {
+                    stdin_host
+                        .write_all(command_frame(&DirectCommand::Complete).as_bytes())
+                        .await
+                        .expect("write complete after turn end");
+                    stdin_host.flush().await.expect("flush complete");
+                }
+                if kind == "session_complete" {
                     break;
                 }
             }
@@ -1006,6 +1051,52 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn failed_turn_closes_before_controlled_completion() {
+        let client = ScriptedClient::new(Vec::new());
+        let (mut stdin_host, stdin_runner) = tokio::io::duplex(4096);
+        let (stdout_runner, stdout_host) = tokio::io::duplex(4096);
+        let runner = tokio::spawn(run_session(
+            client,
+            sample_config(None),
+            tokio::io::BufReader::new(stdin_runner),
+            stdout_runner,
+        ));
+        let mut stdout = tokio::io::BufReader::new(stdout_host);
+
+        stdin_host
+            .write_all(
+                command_frame(&DirectCommand::Prompt {
+                    message: "fail".to_string(),
+                })
+                .as_bytes(),
+            )
+            .await
+            .expect("write prompt");
+        stdin_host.flush().await.expect("flush prompt");
+        assert!(matches!(
+            next_direct_event(&mut stdout).await,
+            DirectEvent::Error { .. }
+        ));
+        assert!(matches!(
+            next_direct_event(&mut stdout).await,
+            DirectEvent::TurnEnd
+        ));
+        stdin_host
+            .write_all(command_frame(&DirectCommand::Complete).as_bytes())
+            .await
+            .expect("write complete");
+        stdin_host.flush().await.expect("flush complete");
+        assert!(matches!(
+            next_direct_event(&mut stdout).await,
+            DirectEvent::SessionComplete { exit_code: 1, .. }
+        ));
+        runner
+            .await
+            .expect("runner task joins")
+            .expect("run_session completes");
+    }
+
     /// Malformed JSONL on stdin emits an Error frame but does not crash
     /// the runner; the session-complete still fires at EOF so the host
     /// observes a clean termination.
@@ -1047,15 +1138,8 @@ mod tests {
     /// `run_session` consumes the client.
     type CapturedRequests = std::sync::Arc<Mutex<Vec<CompletionRequest>>>;
 
-    #[derive(Clone)]
-    struct FirstTurnGate {
-        started: std::sync::Arc<tokio::sync::Notify>,
-        release: std::sync::Arc<tokio::sync::Notify>,
-    }
-
     struct CapturingClient {
         captured: CapturedRequests,
-        first_turn_gate: Option<FirstTurnGate>,
         response: CompletionResponse,
     }
 
@@ -1065,29 +1149,9 @@ mod tests {
             (
                 Self {
                     captured: captured.clone(),
-                    first_turn_gate: None,
                     response,
                 },
                 captured,
-            )
-        }
-
-        fn with_blocked_first_turn(
-            response: CompletionResponse,
-        ) -> (Self, CapturedRequests, FirstTurnGate) {
-            let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
-            let gate = FirstTurnGate {
-                started: std::sync::Arc::new(tokio::sync::Notify::new()),
-                release: std::sync::Arc::new(tokio::sync::Notify::new()),
-            };
-            (
-                Self {
-                    captured: captured.clone(),
-                    first_turn_gate: Some(gate.clone()),
-                    response,
-                },
-                captured,
-                gate,
             )
         }
     }
@@ -1106,15 +1170,10 @@ mod tests {
             req: CompletionRequest,
         ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
             Box::pin(async move {
-                let first_turn = {
-                    let mut captured = self.captured.lock().unwrap_or_else(|p| p.into_inner());
-                    captured.push(req);
-                    captured.len() == 1
-                };
-                if first_turn && let Some(gate) = &self.first_turn_gate {
-                    gate.started.notify_one();
-                    gate.release.notified().await;
-                }
+                self.captured
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .push(req);
                 Ok(self.response.clone())
             })
         }
@@ -1137,6 +1196,20 @@ mod tests {
         let mut line = serde_json::to_string(cmd).expect("command serializes");
         line.push('\n');
         line
+    }
+
+    async fn next_direct_event<R>(reader: &mut R) -> DirectEvent
+    where
+        R: AsyncBufRead + Unpin + Send,
+    {
+        let mut line = String::new();
+        let read = SystemClock::new()
+            .timeout(Duration::from_secs(5), reader.read_line(&mut line))
+            .await
+            .expect("Direct event within timeout")
+            .expect("read Direct event");
+        assert_ne!(read, 0, "stdout closed before next Direct event");
+        serde_json::from_str(line.trim_end()).expect("parse Direct event")
     }
 
     fn forced_budget_planning_request() -> CompletionRequest {
@@ -1239,47 +1312,76 @@ mod tests {
         assert_pinned_planning_prompt_survives(&request);
     }
 
-    /// A steer encoded by the host while the first Direct turn is active is
-    /// drained after the host's one-shot `complete` frame and becomes the next
-    /// Conversation request before `session_complete` is emitted.
+    /// A steer sent after the host observes the first `turn_end` starts the
+    /// next Conversation turn. Completion is withheld until that turn's own
+    /// steering window closes.
     #[tokio::test]
     async fn direct_runner_steer_reaches_next_conversation_turn() {
-        let (client, captured, first_turn_gate) =
-            CapturingClient::with_blocked_first_turn(final_text("ok"));
+        let (client, captured) = CapturingClient::new(final_text("ok"));
         let (mut stdin_host, stdin_runner) = tokio::io::duplex(4096);
-        let mut stdout: Vec<u8> = Vec::new();
-        let runner = run_session(
+        let (stdout_runner, stdout_host) = tokio::io::duplex(4096);
+        let runner = tokio::spawn(run_session(
             client,
             sample_config(Some("claude-sonnet-4-6")),
             tokio::io::BufReader::new(stdin_runner),
-            &mut stdout,
-        );
-        let driver = async move {
-            let encoded_prompt = loom_agent::direct::backend::DirectParser
-                .encode_prompt("orient me on spec X")
-                .expect("encode prompt");
-            stdin_host
-                .write_all(encoded_prompt.as_bytes())
-                .await
-                .expect("write prompt");
-            stdin_host.flush().await.expect("flush prompt");
-            SystemClock::new()
-                .timeout(Duration::from_secs(5), first_turn_gate.started.notified())
-                .await
-                .expect("first Conversation turn starts");
-            let encoded_steer = loom_agent::direct::backend::DirectParser
-                .encode_steer("focus on cache")
-                .expect("encode steer");
-            stdin_host
-                .write_all(encoded_steer.as_bytes())
-                .await
-                .expect("write steer");
-            stdin_host.flush().await.expect("flush steer");
-            first_turn_gate.release.notify_one();
-        };
+            stdout_runner,
+        ));
+        let mut stdout = tokio::io::BufReader::new(stdout_host);
+        let parser = loom_agent::direct::backend::DirectParser;
 
-        let (result, ()) = tokio::join!(runner, driver);
-        result.expect("run_session completes");
+        let prompt = parser
+            .encode_prompt("orient me on spec X")
+            .expect("encode prompt");
+        stdin_host
+            .write_all(prompt.as_bytes())
+            .await
+            .expect("write prompt");
+        stdin_host.flush().await.expect("flush prompt");
+        loop {
+            let event = next_direct_event(&mut stdout).await;
+            assert!(
+                !matches!(event, DirectEvent::SessionComplete { .. }),
+                "session completed before first steering window",
+            );
+            if matches!(event, DirectEvent::TurnEnd) {
+                break;
+            }
+        }
+
+        let steer = parser.encode_steer("focus on cache").expect("encode steer");
+        stdin_host
+            .write_all(steer.as_bytes())
+            .await
+            .expect("write steer");
+        stdin_host.flush().await.expect("flush steer");
+        loop {
+            let event = next_direct_event(&mut stdout).await;
+            assert!(
+                !matches!(event, DirectEvent::SessionComplete { .. }),
+                "session completed before steered turn ended",
+            );
+            if matches!(event, DirectEvent::TurnEnd) {
+                break;
+            }
+        }
+
+        let complete = parser
+            .encode_complete()
+            .expect("encode complete")
+            .expect("Direct complete frame");
+        stdin_host
+            .write_all(complete.as_bytes())
+            .await
+            .expect("write complete");
+        stdin_host.flush().await.expect("flush complete");
+        assert!(matches!(
+            next_direct_event(&mut stdout).await,
+            DirectEvent::SessionComplete { exit_code: 0, .. }
+        ));
+        runner
+            .await
+            .expect("runner task joins")
+            .expect("run_session completes");
 
         let requests = captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
         assert_eq!(requests.len(), 2, "the steer must drive a second turn");
@@ -1291,22 +1393,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["orient me on spec X", "focus on cache"],
         );
-        let events = std::str::from_utf8(&stdout)
-            .expect("utf-8 events")
-            .lines()
-            .map(|line| serde_json::from_str::<DirectEvent>(line).expect("DirectEvent"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event, DirectEvent::TurnEnd))
-                .count(),
-            2,
-        );
-        assert!(matches!(
-            events.last(),
-            Some(DirectEvent::SessionComplete { exit_code: 0, .. })
-        ));
     }
 
     /// Spec contract (`specs/agent.md` § Direct Backend): per-call
@@ -1630,6 +1716,52 @@ mod tests {
             }
             other => panic!("expected DriverEvent, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn abort_during_active_turn_cancels_conversation_and_completes() {
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let client = BlockingClient {
+            started: started.clone(),
+        };
+        let (mut stdin_host, stdin_runner) = tokio::io::duplex(4096);
+        let (stdout_runner, stdout_host) = tokio::io::duplex(4096);
+        let runner = tokio::spawn(run_session(
+            client,
+            sample_config(None),
+            tokio::io::BufReader::new(stdin_runner),
+            stdout_runner,
+        ));
+        let mut stdout = tokio::io::BufReader::new(stdout_host);
+
+        stdin_host
+            .write_all(
+                command_frame(&DirectCommand::Prompt {
+                    message: "wait".to_string(),
+                })
+                .as_bytes(),
+            )
+            .await
+            .expect("write prompt");
+        stdin_host.flush().await.expect("flush prompt");
+        SystemClock::new()
+            .timeout(Duration::from_secs(5), started.notified())
+            .await
+            .expect("active Conversation turn starts");
+        stdin_host
+            .write_all(command_frame(&DirectCommand::Abort).as_bytes())
+            .await
+            .expect("write abort");
+        stdin_host.flush().await.expect("flush abort");
+
+        assert!(matches!(
+            next_direct_event(&mut stdout).await,
+            DirectEvent::SessionComplete { exit_code: 0, .. }
+        ));
+        runner
+            .await
+            .expect("runner task joins")
+            .expect("run_session completes");
     }
 
     /// `abort` halts the session immediately and emits a clean

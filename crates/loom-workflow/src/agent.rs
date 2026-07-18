@@ -29,7 +29,7 @@ use loom_events::{
     DriverEventPayload, DriverKind, EVENT_SCHEMA_VERSION, EnvelopeBuilder, EventSink, InputKind,
     ParsedAgentEvent, SessionCommand, SessionScope, Source,
 };
-use tracing::{info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::agent_input::redact_agent_input;
 use crate::r#loop::{MISSING_AGENT_BINARY_CAUSE, SessionResult};
@@ -388,6 +388,21 @@ pub async fn run_agent_classified<B: AgentBackend>(
                     return protocol_error_session_result(first_event_seen, &e, error_str);
                 }
             }
+        }
+        if matches!(event, AgentEvent::TurnEnd { .. })
+            && let Err(e) = session.finish_turn().await
+        {
+            error!(error = %e, "session turn completion failed");
+            let error_str = format!("session turn completion failed: {e}");
+            emit_protocol_failure_event(
+                sink.as_mut(),
+                envelope_builder.as_mut(),
+                first_event_seen,
+                &e,
+                &error_str,
+            );
+            finish_sink(sink, BeadOutcome::Failed);
+            return protocol_error_session_result(first_event_seen, &e, error_str);
         }
         if let AgentEvent::SessionComplete {
             exit_code,
@@ -1509,6 +1524,94 @@ mod tests {
                 event["kind"] == "driver_event" && event["driver_kind"] == "duplicate_tool_result"
             }),
             "duplicate-result observer payload must be lifted into a DriverEvent: {events:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_generated_direct_steer_finishes_before_controlled_completion() {
+        struct ControlledDirectBackend;
+
+        impl AgentBackend for ControlledDirectBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script_with_parser(
+                    r#"set -euo pipefail
+IFS= read -r prompt
+case "$prompt" in
+    *'"type":"prompt"'*) ;;
+    *) exit 2 ;;
+esac
+printf '%s\n' '{"type":"tool_call","id":"tc-1","tool":"Read","params":{"path":"/tmp/same"}}'
+printf '%s\n' '{"type":"tool_result","id":"tc-1","output":"same","is_error":false}'
+printf '%s\n' '{"type":"turn_end"}'
+IFS= read -r steer
+case "$steer" in
+    *'"type":"steer"'*) ;;
+    *) exit 3 ;;
+esac
+printf '%s\n' '{"type":"turn_end"}'
+IFS= read -r complete
+case "$complete" in
+    *'"type":"complete"'*) ;;
+    *) exit 4 ;;
+esac
+printf '%s\n' '{"type":"session_complete","exit_code":0}'
+"#,
+                    Box::new(loom_agent::direct::backend::DirectParser),
+                )
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (sink, path) = open_test_sink(dir.path());
+        let cfg = sample_spawn_config(dir.path());
+        let observer_config = loom_driver::config::AgentObserversConfig {
+            doom_loop: loom_driver::config::DoomLoopConfig {
+                enabled: true,
+                window: 1,
+                threshold: 1,
+                stage_2_after_stage_1: 3,
+            },
+            duplicate_result: loom_driver::config::DuplicateResultConfig {
+                enabled: false,
+                min_bytes: 256,
+            },
+        };
+        let mut observer =
+            DefaultObserverChain::from_config(&observer_config).expect("observer enabled");
+
+        let result = run_agent_classified::<ControlledDirectBackend>(
+            &cfg,
+            Some(sink),
+            Some(&mut observer),
+            None,
+            Some(builder()),
+        )
+        .await;
+        assert!(
+            matches!(result, SessionResult::Complete { .. }),
+            "expected complete session, got {result:?}",
+        );
+
+        let events = read_jsonl(&path);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["kind"] == "turn_end")
+                .count(),
+            2,
+            "the observer steer must receive its own turn: {events:?}",
+        );
+        let steer = events
+            .iter()
+            .position(|event| event["kind"] == "agent_input" && event["input_kind"] == "steer")
+            .expect("steer input event");
+        let complete = events
+            .iter()
+            .position(|event| event["kind"] == "session_complete")
+            .expect("session complete event");
+        assert!(
+            steer < complete,
+            "steer must precede completion: {events:?}"
         );
     }
 
