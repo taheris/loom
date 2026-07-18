@@ -2960,7 +2960,7 @@ and conservative fall-through for unowned queries.
   `VerifiedScope` for the same resolved content/scope when producing
   push-eligible evidence; no production gate path passes or accepts
   `--verify-exit`
-  [test?](gate_review_consumes_verified_scope_not_verify_exit_scalar)
+  [test](gate_review_consumes_verified_scope_not_verify_exit_scalar)
 - A driver-minted marker short-circuits a wrapped pre-push hook only
   when it proves the same tree OID / clean porcelain, same
   `.pre-commit-config.yaml` digest, same resolved push range, a
@@ -3204,7 +3204,7 @@ promotion errors or blocking on structural bd state — is owned by
   lane via prek for the resolved range before the spec annotation lane;
   if a hook modifies the working tree the run exits non-zero with a
   tree-modified-by-hook failure
-  [test](verify_diff_runs_prek_pre_commit_lane_before_annotations)
+  [test](post_integration_verify_runs_project_precommit_and_affected_check_test)
 - A nested `loom gate verify --files` invoked under a parent
   `verify --diff` records a skipped gate event with reason
   `parent-diff-gate` and exits 0; correctness does not depend on the

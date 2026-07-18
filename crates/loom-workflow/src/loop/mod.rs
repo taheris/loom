@@ -60,9 +60,10 @@ pub use parallel::{
 };
 pub use parallelism::{Parallelism, ParallelismError};
 pub use production::{
-    ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV,
-    REVIEW_SPEC_LABEL_ENV, classify_session, format_unknown_profile_error,
-    format_unknown_runtime_for_profile_error, list_open_for_spec,
+    MoleculeGateHandoff, ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV,
+    REVIEW_INSPECTION_ONLY_ENV, REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV,
+    REVIEW_VERIFIED_LOG_ENV, classify_session, execute_molecule_push_gate,
+    format_unknown_profile_error, format_unknown_runtime_for_profile_error, list_open_for_spec,
 };
 pub use profile::{DEFAULT_PROFILE, resolve_profile, resolve_profile_image};
 pub use retry::{RetryDecision, RetryPolicy};

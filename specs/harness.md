@@ -1607,6 +1607,7 @@ pub struct GateFail {
 }
 
 pub enum GateFailReason {
+    MoleculeStateUnresolved,                 // blocked/clarify/deferred/infra work remains
     VerifierFailed,                          // deterministic GateRun failed
     PrePushHookFailed,                       // pre-push stage failed before review
     ReviewConcern { summary, finding_count },// marker is LOOM_CONCERN; per-finding detail in mint output
@@ -3093,7 +3094,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `AgentEvent` whose effective marker is complete. Holds for all
       execution modes (explicit bead roots, explicit epic roots,
       `--parallel`, and default active-epic continuous mode)
-  [test?](every_successful_loom_loop_references_completed_gate_logs)
+  [test](every_successful_loom_loop_references_completed_gate_logs)
 - `run_parallel_loop` returns `Result<LoopOutcome, LoopError>` —
       identical type to the sequential codepath; parallel mode invokes
       the same molecule push-gate chokepoint after the batch drains,
@@ -3129,7 +3130,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `None` when a child process produced a parseable run; absence
       surfaces as a `GateFail` variant per [Loop Outcome
       Types](#loop-outcome-types)
-  [test?](handoff_evidence_populates_typed_gate_scope_values)
+  [test](handoff_evidence_populates_typed_gate_scope_values)
 - When the molecule-completion audit review produces ≥1 unsuppressed
       streamed `LOOM_FINDING:` record and a `LOOM_CONCERN:` terminator,
       `route="deferred"` findings merge into the molecule's deferred
@@ -3190,7 +3191,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       hold, `Fail { reason }` otherwise); the constructor for
       `GateSuccess` asserts each condition structurally — see
       [Loop Outcome Types](#loop-outcome-types)
-  [test?](push_gate_evaluates_typed_evidence_and_marker_coverage)
+  [test](push_gate_evaluates_typed_evidence_and_marker_coverage)
 - On a **clean** push gate the `MarkerProof` is minted to
       `.loom/marker.json` **immediately before** `git push`, inside
       the gate's critical section, after deterministic pre-push and
@@ -3200,7 +3201,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       marker coverage) mints nothing. A missing or invalid marker falls
       the pre-push consumer through to running hooks rather than failing
       the push by itself
-  [test?](clean_push_mints_marker_after_covered_verify_and_review)
+  [test](clean_push_mints_marker_after_covered_verify_and_review)
 - Push gate refuses when `loom gate review`'s `--diff`-scoped
       invocation emits `LOOM_CONCERN`; molecule routes to recovery
       with cause `review-concern`
@@ -3427,7 +3428,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `<pre-integration-head>..HEAD`; `[system]` is excluded from the
       finite diff default; none of the eligible lanes short-circuit each
       other, and per-hook/verifier pass/fail + stderr is captured
-  [test?](post_integration_verify_runs_project_precommit_and_affected_check_test)
+  [test](post_integration_verify_runs_project_precommit_and_affected_check_test)
 - One or more `loom gate verify` failures → recovery with cause
       `verify-fail`; `previous_failure` carries every failure (not just
       the first), with a 4000-char budget split across them
@@ -3558,7 +3559,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [test](fresh_loop_retries_loom_infra_beads_with_fresh_budget)
 - The push gate refuses to push while any bead in the molecule carries
       `loom:blocked`, `loom:clarify`, or `loom:infra`
-  [test?](clarify_or_infra_present_stops_without_pushing)
+  [test](clarify_or_infra_present_stops_without_pushing)
 - Observer-driven abort (`EventSink::react()` returning
       `SessionCommand::Abort`) classifies as recovery cause
       `observer-abort` with detail naming the responsible observer +

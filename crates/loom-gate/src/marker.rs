@@ -1049,7 +1049,8 @@ mod tests {
         crate::gate_outcome::append_gate_run_lifecycle_events(log.path(), &review)
             .expect("write review gate events");
         let runs = crate::gate_outcome::parse_gate_runs_from_jsonl(log.path());
-        let evidence = crate::gate_outcome::HandoffEvidence::from_runs(runs);
+        let mut evidence = crate::gate_outcome::HandoffEvidence::from_runs(runs);
+        evidence.molecule_state = crate::gate_outcome::MoleculeState::Clean;
         let success = GateSuccess::new(&evidence, 1).expect("good evidence mints success");
         (log, success)
     }

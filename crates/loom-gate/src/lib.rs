@@ -42,8 +42,8 @@ pub use dispatch::{
 };
 pub use gate_outcome::{
     GateFail, GateFailReason, GateOutcome, GatePhase, GateRun, GateRunStatus, GateSuccess,
-    HandoffEvidence, HookCoverage, LoopOutcome, NoGateReason, PrePushCoverage, ReviewedScope,
-    VerifiedScope, append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
+    HandoffEvidence, HookCoverage, LoopOutcome, MoleculeState, NoGateReason, PrePushCoverage,
+    ReviewedScope, VerifiedScope, append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
 };
 pub use inputs::{InputQueryProbe, InputResolver, InputsError, VerifierInputs, filter_by_files};
 pub use integrity::{

@@ -40,14 +40,16 @@ use loom_workflow::inbox::{
 use loom_workflow::r#loop::{
     BatchInfraFailure, BatchResult, GateOutcome, InfraDiagnostic, InfraRetryPolicy, LoopOutcome,
     NoGateReason, Parallelism, ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV,
-    REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV, RetryPolicy, SessionResult, classify_session,
-    format_unknown_profile_error, format_unknown_runtime_for_profile_error,
-    run_loop_with_infra_policy,
+    REVIEW_INSPECTION_ONLY_ENV, REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV,
+    REVIEW_VERIFIED_LOG_ENV, RetryPolicy, SessionResult, classify_session,
+    execute_molecule_push_gate, format_unknown_profile_error,
+    format_unknown_runtime_for_profile_error, run_loop_with_infra_policy,
 };
 use loom_workflow::mint::{BatchOutcome, FindingStatusAction, FindingStatusRecord, MintWalker};
 use loom_workflow::review::{
-    AcceptAllFindingValidator, DispatchScope, IterationCap, ProductionReviewController, ReviewLane,
-    WalkOutput, WorkspaceFindingValidator, review_loop as run_review_loop,
+    AcceptAllFindingValidator, DispatchScope, IterationCap, ProductionReviewController,
+    ReviewController, ReviewLane, WalkOutput, WorkspaceFindingValidator,
+    review_loop as run_review_loop,
 };
 use loom_workflow::run_agent_classified;
 use loom_workflow::todo::{
@@ -3318,6 +3320,7 @@ async fn run_parallel_loop(
     let mut infra_queue_loaded = false;
     let mut finished_ids: HashSet<BeadId> = HashSet::new();
     let mut processed = 0_u32;
+    let mut integrated = 0_u32;
     let mut clarified = 0_u32;
     let mut blocked = 0_u32;
 
@@ -3429,6 +3432,7 @@ async fn run_parallel_loop(
                     infra_budget.clear(&bead);
                     finished_ids.insert(bead);
                     processed = processed.saturating_add(1);
+                    integrated = integrated.saturating_add(1);
                 }
                 BatchResult::Conflict { bead, .. } => {
                     tracing::warn!(
@@ -3596,19 +3600,41 @@ async fn run_parallel_loop(
         }
     }
 
+    let (outer_iterations, gate) = if integrated == 0 {
+        (
+            0,
+            GateOutcome::NoGate {
+                beads_processed: processed,
+                reason: if processed == 0 {
+                    NoGateReason::NoBeadsReady
+                } else {
+                    NoGateReason::SelectionPartial
+                },
+            },
+        )
+    } else {
+        let loom_bin = current_loom_bin()?;
+        let handoff = execute_molecule_push_gate(
+            &bd,
+            &label,
+            &loom_bin,
+            Path::new("beads-push"),
+            &workspace,
+            &git,
+        )
+        .await?;
+        let gate = match loom_gate::GateSuccess::new(&handoff.evidence, 1) {
+            Ok(success) => GateOutcome::Success(success),
+            Err(fail) => GateOutcome::Fail(fail),
+        };
+        (1, gate)
+    };
     Ok(LoopOutcome {
         beads_processed: processed,
         beads_clarified: clarified,
         beads_blocked: blocked,
-        outer_iterations: 0,
-        gate: GateOutcome::NoGate {
-            beads_processed: processed,
-            reason: if processed == 0 {
-                NoGateReason::NoBeadsReady
-            } else {
-                NoGateReason::SelectionPartial
-            },
-        },
+        outer_iterations,
+        gate,
     })
 }
 
@@ -4749,11 +4775,13 @@ fn run_review(
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_review_label(workspace, spec, opts.tree)?;
     let runtime = tokio::runtime::Runtime::new()?;
-    let work_root_guard = if opts.tree {
+    let inspection_only = std::env::var_os(REVIEW_INSPECTION_ONLY_ENV).is_some();
+    let work_root_guard = if opts.tree || inspection_only {
         None
     } else {
         acquire_review_work_root_lock(workspace, &label, opts.bead.as_deref(), &runtime)?
     };
+    let verified_scope = verified_scope_from_env()?;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
@@ -4848,11 +4876,19 @@ fn run_review(
             .with_integration_branch(integration_branch_for_review)
             .with_hook_timeout(hook_timeout_for_review)
             .with_push_range(opts.diff.clone())
+            .with_verified_scope(verified_scope)
             .with_lane(opts.lane)
             .with_dispatch_scope(dispatch_scope)
             .with_suppressions(suppressions_for_review)
             .with_skills_config(skills_cfg_for_review);
-        run_review_loop(&mut controller, IterationCap::default()).await
+        if inspection_only {
+            let output = controller.run_review().await?;
+            Ok::<_, loom_workflow::review::ReviewError>(format!("inspection {:?}", output.outcome))
+        } else {
+            run_review_loop(&mut controller, IterationCap::default())
+                .await
+                .map(|result| format!("{result:?}"))
+        }
     })?;
     let review_stdout = captured_review_stdout
         .lock()
@@ -4862,7 +4898,7 @@ fn run_review(
     if emit_stdout {
         print!("{review_stdout}");
     } else {
-        println!("loom review: {result:?}");
+        println!("loom review: {result}");
     }
     Ok(())
 }
@@ -4905,6 +4941,20 @@ fn suppression_matches_finding(
     let hash = finding.hash();
     suppressions.iter().any(|entry| {
         entry.id.as_deref() == Some(id.as_str()) || entry.hash.as_deref() == Some(hash.as_str())
+    })
+}
+
+fn verified_scope_from_env() -> anyhow::Result<Option<loom_gate::VerifiedScope>> {
+    let Some(path) = std::env::var_os(REVIEW_VERIFIED_LOG_ENV).map(PathBuf::from) else {
+        return Ok(None);
+    };
+    let evidence =
+        loom_gate::HandoffEvidence::from_runs(loom_gate::parse_gate_runs_from_jsonl(&path));
+    evidence.verified.map(Some).ok_or_else(|| {
+        anyhow::anyhow!(
+            "push-eligible review requires completed verified scope in {}",
+            path.display(),
+        )
     })
 }
 

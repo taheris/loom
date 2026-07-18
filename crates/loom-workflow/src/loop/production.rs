@@ -16,7 +16,7 @@
 //! [`LoopError::Profile`] — no silent fallback.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -42,8 +42,8 @@ use tokio::process::Command;
 use tracing::{info, warn};
 
 use loom_gate::{
-    GatePhase, GateRun, GateRunStatus, HandoffEvidence, append_gate_run_lifecycle_events,
-    parse_gate_runs_from_jsonl,
+    GatePhase, GateRun, GateRunStatus, GateSuccess, HandoffEvidence, MarkerProof, MoleculeState,
+    append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
 };
 
 use super::context::{LoopContextInputs, render_loop_prompt};
@@ -88,6 +88,15 @@ pub const REVIEW_EMIT_STDOUT_ENV: &str = "LOOM_REVIEW_EMIT_STDOUT";
 /// the parent controller without adding a public `--spec` gate filter. The
 /// value is context only: `--diff` remains the trust-bearing scope.
 pub const REVIEW_SPEC_LABEL_ENV: &str = "LOOM_REVIEW_SPEC_LABEL";
+
+/// Internal handoff flag that keeps `loom gate review` inspection-only when
+/// the loop-owned molecule controller is responsible for marker minting and
+/// push side effects.
+pub const REVIEW_INSPECTION_ONLY_ENV: &str = "LOOM_REVIEW_INSPECTION_ONLY";
+
+/// Internal handoff path to the completed deterministic gate log whose
+/// [`loom_gate::VerifiedScope`] the push-eligible review must consume.
+pub const REVIEW_VERIFIED_LOG_ENV: &str = "LOOM_REVIEW_VERIFIED_LOG";
 
 struct DriverEventDraft {
     summary: String,
@@ -186,6 +195,7 @@ where
     bd: BdClient<R>,
     label: SpecLabel,
     loom_bin: PathBuf,
+    beads_push_bin: PathBuf,
     workspace: PathBuf,
     git: GitClient,
     manifest: Arc<ProfileImageManifest>,
@@ -278,6 +288,7 @@ where
             bd,
             label,
             loom_bin,
+            beads_push_bin: PathBuf::from("beads-push"),
             workspace,
             git,
             manifest,
@@ -301,6 +312,11 @@ where
             infra_queue_loaded: false,
             ready_parent: None,
         }
+    }
+
+    pub fn with_beads_push_bin(mut self, path: PathBuf) -> Self {
+        self.beads_push_bin = path;
+        self
     }
 
     pub fn with_fixed_queue(mut self, queue: VecDeque<Bead>) -> Self {
@@ -1192,141 +1208,17 @@ where
     }
 
     async fn exec_review(&mut self) -> Result<HandoffEvidence, LoopError> {
-        self.release_handoff_lock_for_child_gate();
-        let actual = self.git.prepare_actual_push_range().await?;
-        let diff_range = actual.range.clone();
-        let mut phase_when = SystemClock::new().wall_now();
-        let review_log_path = self.logs_root.as_deref().map(|root| {
-            let mut path = phase_log_path(root, "review", phase_when);
-            while path.exists() {
-                phase_when += Duration::from_secs(1);
-                path = phase_log_path(root, "review", phase_when);
-            }
-            path
-        });
-        let phase_when_millis = phase_when
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        self.git.run_pre_push_chain().await?;
-        let gate_workspace = self.git.loom_workspace();
-        let config_digest = pre_commit_config_digest(&gate_workspace)?;
-        let hook_coverage = loom_gate::pre_push_hook_coverage_from_config(&gate_workspace)?;
-        if let Some(path) = review_log_path.as_deref() {
-            append_gate_run_lifecycle_events(
-                path,
-                &GateRun::successful_verify(
-                    diff_range.clone(),
-                    actual.tree_oid.to_string(),
-                    config_digest.clone(),
-                    path.to_path_buf(),
-                    hook_coverage,
-                ),
-            )?;
-        }
-        info!(
-            spec = %self.label.as_str(),
-            diff = %diff_range,
-            "loom loop: molecule handoff — pre-push chain finished",
-        );
-        let review_output = Command::new(&self.loom_bin)
-            .current_dir(&gate_workspace)
-            .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
-            .env(REVIEW_EMIT_STDOUT_ENV, "1")
-            .env(REVIEW_SPEC_LABEL_ENV, self.label.as_str())
-            .arg("gate")
-            .arg("review")
-            .arg("--diff")
-            .arg(&diff_range)
-            .output()
-            .await?;
-        let review_status = review_output.status;
-        info!(
-            spec = %self.label.as_str(),
-            diff = %diff_range,
-            exit_code = review_status.code().unwrap_or(-1),
-            "loom loop: molecule handoff — loom gate review --diff finished",
-        );
-        let review_stdout = String::from_utf8_lossy(&review_output.stdout);
-        let review_stderr = String::from_utf8_lossy(&review_output.stderr);
-        if !review_status.success() {
-            return Err(LoopError::ReviewHandoff {
-                detail: format!(
-                    "loom gate review --diff {diff_range} exited {code}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-                    code = review_status.code().unwrap_or(-1),
-                    stdout = review_stdout,
-                    stderr = review_stderr,
-                ),
-            });
-        }
-        let raw_review_marker = parse_exit_signal(&review_stdout);
-        // Parse the typed walk product once: streamed `LOOM_FINDING:`
-        // lines + the terminal marker shape. When the terminal is a
-        // well-formed `LOOM_CONCERN` AND at least one finding rode
-        // through, stash `PreviousFailure::ReviewConcern { summary,
-        // findings }` so the next `run_bead` call (typically a
-        // fix-up bead's first attempt) renders the parsed findings
-        // verbatim in the recovery prompt per `specs/harness.md`
-        // § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*.
-        // The mint path is NOT fired here — push-stage is `audit`,
-        // inspection-only per `specs/gate.md` § *Stages*.
-        let validator = WorkspaceFindingValidator::new(&self.workspace);
-        let walk = WalkOutput::from_stdout(&review_stdout, DispatchScope::PerBead, &validator);
-        let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))?;
-        let unsuppressed_findings = walk
-            .findings()
-            .iter()
-            .filter(|finding| !suppresses_rubric_finding(&config.suppress, finding))
-            .cloned()
-            .collect::<Vec<_>>();
-        let suppressed_review_concern = matches!(walk.terminal(), TerminalSurface::Concern { .. })
-            && !walk.findings().is_empty()
-            && unsuppressed_findings.is_empty();
-        let review_marker = if suppressed_review_concern {
-            Some(ExitSignal::Complete)
-        } else {
-            raw_review_marker
-        };
-        if let TerminalSurface::Concern { summary } = walk.terminal()
-            && !unsuppressed_findings.is_empty()
-        {
-            self.stashed_review_concern = Some(PreviousFailure::ReviewConcern {
-                summary: summary.clone(),
-                findings: unsuppressed_findings,
-            });
-        }
-        if let Some(path) = review_log_path.as_deref() {
-            let marker = review_marker.clone().unwrap_or(ExitSignal::Complete);
-            append_gate_run_lifecycle_events(
-                path,
-                &GateRun::successful_review(
-                    diff_range.clone(),
-                    actual.tree_oid.to_string(),
-                    config_digest.clone(),
-                    path.to_path_buf(),
-                    marker,
-                ),
-            )?;
-        }
-        let mut evidence = review_log_path
-            .as_deref()
-            .map(parse_gate_runs_from_jsonl)
-            .map(HandoffEvidence::from_runs)
-            .unwrap_or_default();
-        evidence.push_range = Some(diff_range);
-        evidence.tree_oid = Some(actual.tree_oid.to_string());
-        evidence.review_marker = review_marker;
-        evidence.review_exit = review_status.code();
-        evidence.suppressed_review_concern = suppressed_review_concern;
-        if let Some(path) = review_log_path.filter(|p| p.exists())
-            && !evidence
-                .gate_log_paths
-                .iter()
-                .any(|candidate| candidate == &path)
-        {
-            evidence.gate_log_paths.push(path);
-        }
-        Ok(evidence)
+        let handoff = execute_molecule_push_gate(
+            &self.bd,
+            &self.label,
+            &self.loom_bin,
+            &self.beads_push_bin,
+            &self.workspace,
+            &self.git,
+        )
+        .await?;
+        self.stashed_review_concern = handoff.review_concern;
+        Ok(handoff.evidence)
     }
 
     async fn exec_per_bead_gate(&mut self, bead: &BeadId) -> Result<PerBeadGateOutcome, LoopError> {
@@ -1424,12 +1316,253 @@ where
     }
 }
 
+pub struct MoleculeGateHandoff {
+    pub evidence: HandoffEvidence,
+    pub review_concern: Option<PreviousFailure>,
+}
+
+pub async fn execute_molecule_push_gate<R: CommandRunner>(
+    bd: &BdClient<R>,
+    label: &SpecLabel,
+    loom_bin: &Path,
+    beads_push_bin: &Path,
+    workspace: &Path,
+    git: &GitClient,
+) -> Result<MoleculeGateHandoff, LoopError> {
+    let molecule_state = molecule_state_for_spec(bd, label).await?;
+    if molecule_state != MoleculeState::Clean {
+        return Ok(MoleculeGateHandoff {
+            evidence: HandoffEvidence {
+                molecule_state,
+                ..HandoffEvidence::default()
+            },
+            review_concern: None,
+        });
+    }
+
+    let actual = git.prepare_actual_push_range().await?;
+    let gate_workspace = git.loom_workspace();
+    let diff_range = actual.range.clone();
+    let config_digest = pre_commit_config_digest(&gate_workspace)?;
+    let hook_coverage = loom_gate::pre_push_hook_coverage_from_config(&gate_workspace)?;
+    let verify_log_path = allocate_gate_log_path(&gate_workspace, "push-verify")?;
+    let verify_result = git.run_pre_push_chain().await;
+    let verify_run = match &verify_result {
+        Ok(()) => GateRun::successful_verify(
+            diff_range.clone(),
+            actual.tree_oid.to_string(),
+            config_digest.clone(),
+            verify_log_path.clone(),
+            hook_coverage,
+        ),
+        Err(_) => GateRun {
+            phase: GatePhase::Verify,
+            push_range: diff_range.clone(),
+            tree_oid: actual.tree_oid.to_string(),
+            config_digest: config_digest.clone(),
+            log_path: verify_log_path.clone(),
+            exit_code: Some(1),
+            status: GateRunStatus::Failed,
+            marker: None,
+            covered_hooks: Vec::new(),
+        },
+    };
+    append_gate_run_lifecycle_events(&verify_log_path, &verify_run)?;
+    if let Err(error) = verify_result {
+        warn!(
+            spec = %label,
+            error = ?error,
+            gate_log_path = %verify_log_path.display(),
+            "loom loop: molecule push gate refused by pre-push verification",
+        );
+        let mut evidence = HandoffEvidence::from_runs(vec![verify_run]);
+        evidence.molecule_state = MoleculeState::Clean;
+        return Ok(MoleculeGateHandoff {
+            evidence,
+            review_concern: None,
+        });
+    }
+
+    let (review_log_path, phase_when) = allocate_review_log_path(&gate_workspace)?;
+    let phase_when_millis = phase_when
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    let review_output = Command::new(loom_bin)
+        .current_dir(&gate_workspace)
+        .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
+        .env(REVIEW_EMIT_STDOUT_ENV, "1")
+        .env(REVIEW_INSPECTION_ONLY_ENV, "1")
+        .env(REVIEW_VERIFIED_LOG_ENV, &verify_log_path)
+        .env(REVIEW_SPEC_LABEL_ENV, label.as_str())
+        .arg("gate")
+        .arg("review")
+        .arg("--diff")
+        .arg(&diff_range)
+        .output()
+        .await?;
+    let review_status = review_output.status;
+    let review_stdout = String::from_utf8_lossy(&review_output.stdout);
+    let validator = WorkspaceFindingValidator::new(&gate_workspace);
+    let walk = WalkOutput::from_stdout(&review_stdout, DispatchScope::PerBead, &validator);
+    let config = LoomConfig::load(LoomConfig::resolve_path(&gate_workspace))?;
+    let unsuppressed_findings = walk
+        .findings()
+        .iter()
+        .filter(|finding| !suppresses_rubric_finding(&config.suppress, finding))
+        .cloned()
+        .collect::<Vec<_>>();
+    let suppressed_review_concern = matches!(walk.terminal(), TerminalSurface::Concern { .. })
+        && !walk.findings().is_empty()
+        && unsuppressed_findings.is_empty();
+    let review_marker = if suppressed_review_concern {
+        Some(ExitSignal::Complete)
+    } else {
+        parse_exit_signal(&review_stdout)
+    };
+    let review_concern = match walk.terminal() {
+        TerminalSurface::Concern { summary } if !unsuppressed_findings.is_empty() => {
+            Some(PreviousFailure::ReviewConcern {
+                summary: summary.clone(),
+                findings: unsuppressed_findings,
+            })
+        }
+        _ => None,
+    };
+
+    let mut runs = parse_gate_runs_from_jsonl(&verify_log_path);
+    if review_log_path.exists() {
+        runs.extend(parse_gate_runs_from_jsonl(&review_log_path));
+    }
+    let mut evidence = HandoffEvidence::from_runs(runs);
+    evidence.molecule_state = MoleculeState::Clean;
+    evidence.push_range = Some(diff_range.clone());
+    evidence.tree_oid = Some(actual.tree_oid.to_string());
+    evidence.review_marker = review_marker;
+    evidence.review_exit = review_status.code();
+    evidence.suppressed_review_concern = suppressed_review_concern;
+
+    if !review_status.success() {
+        warn!(
+            spec = %label,
+            diff = %diff_range,
+            exit_code = review_status.code().unwrap_or(-1),
+            gate_log_path = %review_log_path.display(),
+            "loom loop: molecule push gate refused by review process",
+        );
+        return Ok(MoleculeGateHandoff {
+            evidence,
+            review_concern,
+        });
+    }
+
+    let success = match GateSuccess::new(&evidence, 1) {
+        Ok(success) => success,
+        Err(fail) => {
+            info!(
+                spec = %label,
+                reason = ?fail.reason,
+                "loom loop: molecule push gate refused by typed evidence",
+            );
+            return Ok(MoleculeGateHandoff {
+                evidence,
+                review_concern,
+            });
+        }
+    };
+    MarkerProof::mint(success, &gate_workspace, &SystemClock::new()).map_err(|error| {
+        LoopError::ReviewHandoff {
+            detail: format!("marker mint failed before push: {error}"),
+        }
+    })?;
+    git.push().await?;
+    let beads_output = Command::new(beads_push_bin)
+        .current_dir(workspace)
+        .output()
+        .await?;
+    if !beads_output.status.success() {
+        return Err(LoopError::ReviewHandoff {
+            detail: format!(
+                "beads-push failed after git push: {}",
+                String::from_utf8_lossy(&beads_output.stderr),
+            ),
+        });
+    }
+    Ok(MoleculeGateHandoff {
+        evidence,
+        review_concern,
+    })
+}
+
+async fn molecule_state_for_spec<R: CommandRunner>(
+    bd: &BdClient<R>,
+    label: &SpecLabel,
+) -> Result<MoleculeState, LoopError> {
+    let beads = bd
+        .list(ListOpts {
+            status: None,
+            label: Some(format!("spec:{}", label.as_str())),
+            ..ListOpts::default()
+        })
+        .await?;
+    if beads.iter().any(bead_has_parked_state) {
+        Ok(MoleculeState::Unresolved)
+    } else {
+        Ok(MoleculeState::Clean)
+    }
+}
+
+fn allocate_gate_log_path(workspace: &Path, stem: &str) -> Result<PathBuf, LoopError> {
+    let dir = workspace.join(".loom/logs/gate");
+    std::fs::create_dir_all(&dir)?;
+    let nanos = SystemClock::new()
+        .wall_now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    for suffix in 0..1000_u16 {
+        let name = if suffix == 0 {
+            format!("{stem}-{nanos}.jsonl")
+        } else {
+            format!("{stem}-{nanos}-{suffix}.jsonl")
+        };
+        let path = dir.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => {
+                drop(file);
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique molecule gate log",
+    )
+    .into())
+}
+
+fn allocate_review_log_path(
+    workspace: &Path,
+) -> Result<(PathBuf, std::time::SystemTime), LoopError> {
+    let logs_root = workspace.join(".loom/logs");
+    let mut phase_when = SystemClock::new().wall_now();
+    let mut path = phase_log_path(&logs_root, "review", phase_when);
+    while path.exists() {
+        phase_when += Duration::from_secs(1);
+        path = phase_log_path(&logs_root, "review", phase_when);
+    }
+    Ok((path, phase_when))
+}
+
 fn bead_has_parked_state(bead: &Bead) -> bool {
     bead.status == "blocked"
-        || bead
-            .labels
-            .iter()
-            .any(|label| label.is_blocked() || label.is_clarify() || label.is_deferred())
+        || bead.labels.iter().any(|label| {
+            label.is_blocked() || label.is_clarify() || label.is_deferred() || label.is_infra()
+        })
 }
 
 fn diagnostic_notes(cause: &str, error: &str) -> String {
@@ -2160,15 +2293,53 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn clarify_or_infra_present_stops_without_pushing() {
+        for label in ["loom:clarify", "loom:infra"] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let workspace = dir.path().to_path_buf();
+            let git = git_workspace(&workspace);
+            let body = format!(
+                r#"[{{
+                    "id": "lm-held",
+                    "title": "held molecule work",
+                    "status": "blocked",
+                    "priority": 2,
+                    "issue_type": "task",
+                    "labels": ["spec:alpha", "{label}"]
+                }}]"#,
+            );
+            let bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(body.as_bytes())]));
+            let before = loom_driver::git::sync_rev_parse(&git.loom_workspace(), "origin/main")
+                .expect("origin tip before");
+            let handoff = execute_molecule_push_gate(
+                &bd,
+                &SpecLabel::new("alpha"),
+                Path::new("must-not-run-review"),
+                Path::new("must-not-run-beads-push"),
+                &workspace,
+                &git,
+            )
+            .await
+            .expect("unresolved state is a typed refusal");
+            assert_eq!(handoff.evidence.molecule_state, MoleculeState::Unresolved);
+            assert!(handoff.evidence.gate_runs.is_empty());
+            assert!(!git.loom_workspace().join(".loom/marker.json").exists());
+            let after = loom_driver::git::sync_rev_parse(&git.loom_workspace(), "origin/main")
+                .expect("origin tip after");
+            assert_eq!(before, after, "{label} must refuse the push");
+        }
+    }
+
     #[test]
-    fn parked_state_excludes_semantic_and_deferred_labels_but_not_infra() {
+    fn parked_state_includes_semantic_deferred_and_infra_labels() {
         let mut deferred = bead("lm-deferred");
         deferred.labels.push(Label::new("loom:deferred"));
         assert!(bead_has_parked_state(&deferred));
 
         let mut infra = bead("lm-infra");
         infra.labels.push(Label::new("loom:infra"));
-        assert!(!bead_has_parked_state(&infra));
+        assert!(bead_has_parked_state(&infra));
     }
 
     #[tokio::test]
@@ -3154,14 +3325,8 @@ mod tests {
         }
     }
 
-    /// Regression: `loom loop` used to hold the work-root lock for its whole
-    /// lifetime, so the `loom gate review` child it spawned at the molecule-complete
-    /// handoff timed out trying to acquire the same lock. `exec_review` must
-    /// drop the held [`LockGuard`] before spawning, leaving the kernel-level
-    /// `flock(2)` available to the child. Verified end-to-end: after a stub
-    /// child exits, the lock is reacquirable on a fresh attempt.
     #[tokio::test(flavor = "multi_thread")]
-    async fn exec_review_releases_lock_before_spawning_child() {
+    async fn exec_review_holds_lock_through_marker_and_push() {
         use loom_driver::clock::SystemClock;
         use loom_driver::lock::LockManager;
         use std::os::unix::fs::PermissionsExt;
@@ -3213,14 +3378,18 @@ mod tests {
 
         controller.exec_review().await.expect("exec_review ok");
 
-        // The child has exited and the controller's guard was dropped before
-        // the spawn — the lock must be free. A short timeout keeps the test
-        // fast on the regression (held-lock) path: it would error in <100ms
-        // rather than wait the default 5s.
+        let held = mgr
+            .acquire_work_root_with_timeout_async(&root, &clock, Duration::from_millis(100))
+            .await;
+        assert!(
+            held.is_err(),
+            "push critical section must retain the work-root lock"
+        );
+        drop(controller);
         let _reacquired = mgr
             .acquire_work_root_with_timeout_async(&root, &clock, Duration::from_millis(100))
             .await
-            .expect("lock must be reacquirable after exec_review");
+            .expect("lock must be reacquirable after the controller drops");
     }
 
     /// Molecule-completion handoff computes the origin-synchronized push
@@ -3291,7 +3460,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn exec_review_surfaces_child_failure_detail() {
+    async fn exec_review_child_failure_returns_incomplete_typed_evidence() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3332,59 +3501,56 @@ mod tests {
             },
         );
 
-        let err = controller
+        let evidence = controller
             .exec_review()
             .await
-            .expect_err("child review failure must not mint successful evidence");
-        match err {
-            LoopError::ReviewHandoff { detail } => {
-                assert!(detail.contains("exited 17"), "missing exit code: {detail}");
-                assert!(detail.contains("child stdout"), "missing stdout: {detail}");
-                assert!(detail.contains("child stderr"), "missing stderr: {detail}");
-            }
-            other => panic!("expected ReviewHandoff, got {other:?}"),
-        }
+            .expect("review failure is a typed gate refusal");
+        assert_eq!(evidence.review_exit, Some(17));
+        assert!(evidence.verified.is_some());
+        assert!(evidence.reviewed.is_none());
+        assert!(matches!(
+            GateSuccess::new(&evidence, 1),
+            Err(loom_gate::GateFail {
+                reason: loom_gate::GateFailReason::ReviewEvidenceMissing,
+                ..
+            })
+        ));
+        assert!(
+            !controller
+                .git
+                .loom_workspace()
+                .join(".loom/marker.json")
+                .exists()
+        );
     }
 
-    /// `specs/harness.md` § *handoff_evidence_populates_marker_and_log_path*:
-    /// every `HandoffEvidence` field MUST ride out populated from the
-    /// actual reviewer subprocess outputs — `review_marker` parsed from
-    /// the agent's terminal stdout marker, `review_log_path` resolved
-    /// from the JSONL file the child wrote. A regression that hard-codes
-    /// `None` would only fail this test by surfacing as
-    /// `GateFail::ReviewEvidenceMissing` downstream, so the per-field
-    /// assertions here are load-bearing.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn handoff_evidence_populates_marker_and_log_path() {
+    async fn clean_push_fixture() -> (tempfile::TempDir, HandoffEvidence, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("gamma");
         let workspace = dir.path().to_path_buf();
-        let logs_root = workspace.join(".loom/logs");
-
-        // Stub: `gate review` emits the agent's terminal marker on stdout
-        // and appends to the pinned review JSONL log.
+        let git = git_workspace(&workspace);
+        let gate_workspace = git.loom_workspace();
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
         let stub_body = format!(
-            "#!/bin/sh\n\
-             set -eu\n\
+            "#!/bin/bash\n\
+             set -euo pipefail\n\
              printf '%s\\n' \"$*\" >> {argv}\n\
-             case \"$1 $2\" in\n\
-               'gate review')\n\
-                 stamp=$(date -u -d @$(($LOOM_REVIEW_PHASE_WHEN_MILLIS / 1000)) +%Y%m%dT%H%M%SZ)\n\
-                 mkdir -p {logs_root}/{label}\n\
-                 log={logs_root}/{label}/review-${{stamp}}.jsonl\n\
-                 printf '{{\"event\":\"review-start\"}}\\n' >> \"$log\"\n\
-                 printf 'LOOM_COMPLETE\\n'\n\
-                 ;;\n\
-             esac\n\
-             exit 0\n",
+             range=\"$4\"\n\
+             tree_oid=$(git rev-parse 'HEAD^{{tree}}')\n\
+             verify_log=\"${{LOOM_REVIEW_VERIFIED_LOG:?}}\"\n\
+             config_digest=$(grep '\"driver_kind\":\"gate_run_end\"' \"$verify_log\" | tail -n 1 | sed -E 's/.*\"config_digest\":\"([^\"]*)\".*/\\1/')\n\
+             stamp=$(date -u -d @$(($LOOM_REVIEW_PHASE_WHEN_MILLIS / 1000)) +%Y%m%dT%H%M%SZ)\n\
+             log=\"$PWD/.loom/logs/review/review-${{stamp}}.jsonl\"\n\
+             mkdir -p \"$(dirname \"$log\")\"\n\
+             payload=$(printf '{{\"phase\":\"review\",\"push_range\":\"%s\",\"tree_oid\":\"%s\",\"config_digest\":\"%s\",\"log_path\":\"%s\",\"exit_code\":0,\"status\":\"success\",\"marker\":\"complete\",\"covered_hooks\":[]}}' \"$range\" \"$tree_oid\" \"$config_digest\" \"$log\")\n\
+             printf '{{\"kind\":\"driver_event\",\"driver_kind\":\"gate_run_start\",\"payload\":%s}}\\n' \"$payload\" >> \"$log\"\n\
+             printf '{{\"kind\":\"driver_event\",\"driver_kind\":\"gate_run_end\",\"payload\":%s}}\\n' \"$payload\" >> \"$log\"\n\
+             printf 'LOOM_COMPLETE\\n'\n",
             argv = argv_log.to_string_lossy(),
-            logs_root = logs_root.to_string_lossy(),
-            label = label.as_str(),
         );
         std::fs::write(&stub, stub_body).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -3395,7 +3561,9 @@ mod tests {
             "lm-mol.9",
             "abc12345",
         ));
-        let git = git_workspace(&workspace);
+        let beads_push = dir.path().join("beads-push.sh");
+        loom_test_support::write_executable_bash_script(&beads_push, "set -euo pipefail\nexit 0\n")
+            .expect("write beads-push stub");
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label.clone(),
@@ -3415,42 +3583,54 @@ mod tests {
                 )
             },
         )
-        .with_phase_log_root(logs_root.clone());
+        .with_beads_push_bin(beads_push);
 
         let handoff = controller
             .exec_review()
             .await
             .expect("exec_review must succeed with populated evidence");
+        (dir, handoff, gate_workspace)
+    }
 
-        assert!(
-            handoff.verified.is_some(),
-            "verified scope must be parsed from gate JSONL evidence",
-        );
-        assert!(
-            handoff.reviewed.is_some(),
-            "reviewed scope must be parsed from gate JSONL evidence",
-        );
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handoff_evidence_populates_typed_gate_scope_values() {
+        let (_dir, handoff, gate_workspace) = clean_push_fixture().await;
+        assert_eq!(handoff.molecule_state, MoleculeState::Clean);
+        assert_eq!(handoff.gate_runs.len(), 2, "{:#?}", handoff.gate_runs);
+        assert_eq!(handoff.gate_log_paths.len(), 2);
+        for log_path in &handoff.gate_log_paths {
+            assert!(
+                log_path.starts_with(gate_workspace.join(".loom/logs")),
+                "gate evidence must live with the integration checkout: {log_path:?}",
+            );
+            let body = std::fs::read_to_string(log_path).expect("log readable");
+            assert!(body.contains("gate_run_start"), "{body}");
+            assert!(body.contains("gate_run_end"), "{body}");
+        }
+        let verified = handoff.verified.as_ref().expect("verified scope");
+        let reviewed = handoff.reviewed.as_ref().expect("reviewed scope");
+        assert_eq!(verified.push_range(), reviewed.push_range());
+        assert_eq!(verified.tree_oid(), reviewed.tree_oid());
+        assert_eq!(verified.config_digest(), reviewed.config_digest());
+        assert_eq!(handoff.review_marker, Some(ExitSignal::Complete));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clean_push_mints_marker_after_covered_verify_and_review() {
+        let (_dir, handoff, gate_workspace) = clean_push_fixture().await;
+        assert!(handoff.verified.is_some());
+        assert!(handoff.reviewed.is_some());
+        let marker = loom_gate::verify_marker(&gate_workspace).expect("current marker");
         assert_eq!(
-            handoff.review_marker,
-            Some(ExitSignal::Complete),
-            "review_marker MUST be parsed from the child's stdout — not left at None",
+            marker.push_range(),
+            handoff.push_range.as_deref().expect("range")
         );
-        let log_path = handoff
-            .gate_log_paths
-            .first()
-            .expect("gate_log_paths MUST reference the JSONL file the child wrote");
-        assert!(
-            log_path.starts_with(&logs_root),
-            "log path lives under the per-spec logs root: {log_path:?}",
-        );
-        assert!(
-            log_path.exists(),
-            "review_log_path MUST point at the file the child actually wrote: {log_path:?}",
-        );
-        let body = std::fs::read_to_string(log_path).expect("log readable");
-        assert!(
-            body.contains("gate_run_end"),
-            "log file body must carry typed gate events: {body:?}",
+        let local = loom_driver::git::sync_rev_parse(&gate_workspace, "HEAD").expect("local head");
+        let remote =
+            loom_driver::git::sync_rev_parse(&gate_workspace, "origin/main").expect("remote head");
+        assert_eq!(
+            local, remote,
+            "clean gate must push after minting the marker"
         );
     }
 
@@ -3493,6 +3673,11 @@ mod tests {
             ),
         )
         .unwrap();
+        std::fs::write(
+            workspace.join("specs/alpha.md"),
+            "# alpha\n\n- suppressed [check](cargo test --lib suppressed)\n- live [check](cargo test --lib live)\n",
+        )
+        .unwrap();
         let stub = dir.path().join("loom-stub.sh");
         let suppressed_payload = serde_json::to_string(&suppressed).unwrap();
         let unsuppressed_payload = serde_json::to_string(&unsuppressed).unwrap();
@@ -3516,6 +3701,30 @@ mod tests {
             "deadbeef",
         ));
         let git = git_workspace(&workspace);
+        std::fs::create_dir_all(git.loom_workspace().join("specs")).unwrap();
+        std::fs::copy(
+            workspace.join("specs/alpha.md"),
+            git.loom_workspace().join("specs/alpha.md"),
+        )
+        .unwrap();
+        std::fs::copy(
+            workspace.join("loom.toml"),
+            git.loom_workspace().join("loom.toml"),
+        )
+        .unwrap();
+        let expected_stdout = format!(
+            "LOOM_FINDING: {suppressed_payload}\nLOOM_FINDING: {unsuppressed_payload}\nLOOM_CONCERN: {concern_payload}\n"
+        );
+        let gate_workspace = git.loom_workspace();
+        let validator = WorkspaceFindingValidator::new(&gate_workspace);
+        let expected_walk =
+            WalkOutput::from_stdout(&expected_stdout, DispatchScope::PerBead, &validator);
+        assert_eq!(
+            expected_walk.findings().len(),
+            2,
+            "fixture findings must validate: {:?}",
+            expected_walk.finding_errors(),
+        );
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label,
@@ -3536,7 +3745,11 @@ mod tests {
             },
         );
 
-        controller.exec_review().await.expect("exec_review ok");
+        let handoff = controller.exec_review().await.expect("exec_review ok");
+        assert!(
+            matches!(handoff.review_marker, Some(ExitSignal::Concern { .. })),
+            "review output must preserve concern marker: {handoff:?}",
+        );
 
         let stashed = controller
             .stashed_review_concern
@@ -3577,6 +3790,11 @@ mod tests {
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
         let finding_payload = r#"{"token":"verifier-bypass","route":"deferred","bonds":["alpha"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
+        std::fs::write(
+            workspace.join("specs/alpha.md"),
+            "# alpha\n\n- sample [check](cargo test --lib sample)\n",
+        )
+        .unwrap();
         let concern_payload = r#"{"summary":"reviewer flagged a verifier-bypass"}"#;
         let stub_body = format!(
             "#!/bin/sh\n\
@@ -3601,6 +3819,12 @@ mod tests {
             "deadbeef",
         ));
         let git = git_workspace(&workspace);
+        std::fs::create_dir_all(git.loom_workspace().join("specs")).unwrap();
+        std::fs::copy(
+            workspace.join("specs/alpha.md"),
+            git.loom_workspace().join("specs/alpha.md"),
+        )
+        .unwrap();
         // Capture the SpawnConfig the next `run_bead` synthesizes so we
         // can assert the rendered prompt carried the ReviewConcern body.
         let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));

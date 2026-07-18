@@ -432,6 +432,11 @@ fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
 /// has a real ref database to query even when the test exits before any
 /// tier-1 work happens.
 fn init_workspace_repo(workspace: &Path) {
+    std::fs::write(
+        workspace.join(".pre-commit-config.yaml"),
+        "repos:\n  - repo: local\n    hooks:\n      - id: fixture-pre-push\n        name: fixture pre-push\n        entry: true\n        language: system\n        stages: [pre-push]\n",
+    )
+    .expect("write fixture pre-push config");
     loom_driver::git::init_test_repo_with_integration(workspace)
         .expect("init test repo with loom integration");
 }
@@ -450,6 +455,16 @@ fn install_loom_noop_stub(dir: &Path) -> PathBuf {
         loom_test_support::bash_script(
             "set -euo pipefail\n\
          if [[ \"${2:-}\" == \"review\" ]]; then\n\
+             range=\"${4:?review range}\"\n\
+             tree_oid=$(git rev-parse 'HEAD^{tree}')\n\
+             verify_log=\"${LOOM_REVIEW_VERIFIED_LOG:?}\"\n\
+             config_digest=$(grep '\"driver_kind\":\"gate_run_end\"' \"$verify_log\" | tail -n 1 | sed -E 's/.*\"config_digest\":\"([^\"]*)\".*/\\1/')\n\
+             stamp=$(date -u -d @$((${LOOM_REVIEW_PHASE_WHEN_MILLIS:?} / 1000)) +%Y%m%dT%H%M%SZ)\n\
+             log=\"$PWD/.loom/logs/review/review-${stamp}.jsonl\"\n\
+             mkdir -p \"$(dirname \"$log\")\"\n\
+             payload=$(printf '{\"phase\":\"review\",\"push_range\":\"%s\",\"tree_oid\":\"%s\",\"config_digest\":\"%s\",\"log_path\":\"%s\",\"exit_code\":0,\"status\":\"success\",\"marker\":\"complete\",\"covered_hooks\":[]}' \"$range\" \"$tree_oid\" \"$config_digest\" \"$log\")\n\
+             printf '{\"kind\":\"driver_event\",\"driver_kind\":\"gate_run_start\",\"payload\":%s}\\n' \"$payload\" >> \"$log\"\n\
+             printf '{\"kind\":\"driver_event\",\"driver_kind\":\"gate_run_end\",\"payload\":%s}\\n' \"$payload\" >> \"$log\"\n\
              echo 'LOOM_COMPLETE'\n\
          fi\n",
         ),
@@ -767,6 +782,15 @@ __BD_READY_JSON__\n\
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
+    let beads_push = bin_dir.join("beads-push");
+    std::fs::write(
+        &beads_push,
+        loom_test_support::bash_script("set -euo pipefail\nexit 0\n"),
+    )
+    .unwrap();
+    let mut perm = std::fs::metadata(&beads_push).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&beads_push, perm).unwrap();
     bin_dir
 }
 
@@ -1038,6 +1062,7 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
     );
 
     let bd_bin_dir = install_parallel_bd_stub(workspace);
+    let loom_noop_stub = install_loom_noop_stub(workspace);
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = vec![bd_bin_dir];
     path_entries.extend(std::env::split_paths(&path_var));
@@ -1056,6 +1081,7 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
         .env_remove("LOOM_WRIX_SPAWN_BIN")
+        .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
@@ -1067,6 +1093,45 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
     assert!(
         output.status.success(),
         "parallel loom loop must exit 0 against stubs. stdout={stdout} stderr={stderr}",
+    );
+    assert!(
+        stdout.contains("gate=success"),
+        "parallel processed work must pass the molecule gate, never return NoGate. stdout={stdout}",
+    );
+    let integration = workspace.join(".loom/integration");
+    let ahead = git_command()
+        .arg("-C")
+        .arg(&integration)
+        .args(["rev-list", "--count", "origin/main..main"])
+        .output()
+        .expect("count unpushed integration commits");
+    assert!(ahead.status.success(), "git rev-list failed: {ahead:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&ahead.stdout).trim(),
+        "0",
+        "parallel gate success must publish every integrated commit",
+    );
+    let gate_runs = [
+        integration.join(".loom/logs/gate"),
+        integration.join(".loom/logs/review"),
+    ]
+    .into_iter()
+    .flat_map(|dir| {
+        std::fs::read_dir(dir)
+            .expect("gate log directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .flat_map(|path| loom_gate::parse_gate_runs_from_jsonl(&path))
+    })
+    .collect::<Vec<_>>();
+    assert!(
+        gate_runs
+            .iter()
+            .any(|run| { run.phase == loom_gate::GatePhase::Verify && run.is_success() })
+            && gate_runs
+                .iter()
+                .any(|run| { run.phase == loom_gate::GatePhase::Review && run.is_success() }),
+        "parallel gate success must retain completed verify and review logs: {gate_runs:?}",
     );
     for bead in ["lm-para", "lm-parb"] {
         assert!(
@@ -1197,8 +1262,8 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
     assert!(ahead.status.success(), "git rev-list failed: {ahead:?}");
     assert_eq!(
         String::from_utf8_lossy(&ahead.stdout).trim(),
-        "2",
-        "the push-free review stub leaves both local integration commits visible",
+        "0",
+        "each explicit task-root gate must publish its integrated commit",
     );
 }
 
@@ -1325,7 +1390,6 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         output.status.success(),
         "loom gate review must exit 0 against the bd + wrix stubs. stdout={stdout} stderr={stderr}",
     );
-
     let logs_dir = workspace.join(".loom/logs/review");
     assert!(
         logs_dir.is_dir(),
@@ -1376,8 +1440,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         .collect();
     // The reviewer agent emits `session_complete` once when its session
     // ends; the verdict gate then appends one or more `driver_event`
-    // records (push_gate_walk + the branch event) AFTER
-    // session_complete. Both contracts must hold:
+    // records after session completion.
     let session_complete_count = parsed
         .iter()
         .filter(|v| v["kind"] == "session_complete")
@@ -1392,7 +1455,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         .collect();
     assert!(
         !driver_events.is_empty(),
-        "verdict gate must emit at least one push_gate_* driver event after session_complete. lines={lines:?}",
+        "verdict gate must emit driver events after session_complete. lines={lines:?}",
     );
     let session_complete_index = parsed
         .iter()
@@ -1443,6 +1506,15 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
+    let beads_push = bin_dir.join("beads-push");
+    std::fs::write(
+        &beads_push,
+        loom_test_support::bash_script("set -euo pipefail\nexit 0\n"),
+    )
+    .unwrap();
+    let mut perm = std::fs::metadata(&beads_push).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&beads_push, perm).unwrap();
     bin_dir
 }
 
@@ -1478,6 +1550,15 @@ __BD_BEAD_JSON__\n\
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
+    let beads_push = bin_dir.join("beads-push");
+    std::fs::write(
+        &beads_push,
+        loom_test_support::bash_script("set -euo pipefail\nexit 0\n"),
+    )
+    .unwrap();
+    let mut perm = std::fs::metadata(&beads_push).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&beads_push, perm).unwrap();
     bin_dir
 }
 

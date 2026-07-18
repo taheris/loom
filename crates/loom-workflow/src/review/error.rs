@@ -31,6 +31,9 @@ pub enum ReviewError {
     /// reviewer agent did not emit LOOM_COMPLETE: {0}
     ReviewIncomplete(String),
 
+    /// push-eligible review does not match verified scope: {0}
+    VerifiedScopeMismatch(String),
+
     /// `git push` failed: {0}
     GitPushFailed(String),
 

@@ -36,10 +36,10 @@ use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::CacheDb;
 use loom_events::{AgentEvent, AgentStartMetadata, DriverKind, EnvelopeBuilder};
 use loom_gate::{
-    DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateRun, GateSuccess,
-    HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation,
-    append_gate_run_lifecycle_events, compose_clarify_options, integrity,
-    parse_gate_runs_from_jsonl,
+    DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GatePhase, GateRun, GateRunStatus,
+    GateSuccess, HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds,
+    VerifiedScope, annotation, append_gate_run_lifecycle_events, compose_clarify_options,
+    integrity, parse_gate_runs_from_jsonl,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane};
@@ -152,6 +152,7 @@ where
     /// `GitClient` uses so tests skipping the builder keep prior behavior.
     hook_timeout: Duration,
     push_range: Option<String>,
+    verified_scope: Option<VerifiedScope>,
     /// Which lane(s) of the review this controller drives. `Both` is the
     /// `loom gate review` path; `Judge`/`Rubric` are the focused single-
     /// lane re-runs surfaced by `loom gate judge` / `loom gate rubric`.
@@ -245,6 +246,7 @@ where
             integration_branch: "main".to_string(),
             hook_timeout: Duration::from_secs(loom_driver::config::default_git_hook_timeout_secs()),
             push_range: None,
+            verified_scope: None,
             lane: ReviewLane::Both,
             dispatch_scope: DispatchScope::PerBead,
             suppressions: Vec::new(),
@@ -293,6 +295,34 @@ where
     pub fn with_push_range(mut self, range: Option<String>) -> Self {
         self.push_range = range;
         self
+    }
+
+    pub fn with_verified_scope(mut self, scope: Option<VerifiedScope>) -> Self {
+        self.verified_scope = scope;
+        self
+    }
+
+    fn require_matching_verified_scope(&self) -> Result<(), ReviewError> {
+        let Some(verified) = self.verified_scope.as_ref() else {
+            return Ok(());
+        };
+        let range = self.push_range.as_deref().ok_or_else(|| {
+            ReviewError::VerifiedScopeMismatch("review has no diff range".to_owned())
+        })?;
+        let tree_oid = loom_driver::git::head_tree_oid_sync(&self.workspace)?.to_string();
+        let config_digest = pre_commit_config_digest(&self.workspace)?;
+        if verified.push_range() != range
+            || verified.tree_oid() != tree_oid
+            || verified.config_digest() != config_digest
+        {
+            return Err(ReviewError::VerifiedScopeMismatch(format!(
+                "verified range/tree/config is {}/{}/{}, review resolved {range}/{tree_oid}/{config_digest}",
+                verified.push_range(),
+                verified.tree_oid(),
+                verified.config_digest(),
+            )));
+        }
+        Ok(())
     }
 
     /// Select which lane(s) of the review this controller will drive.
@@ -791,6 +821,7 @@ where
         > + Send,
 {
     async fn run_review(&mut self) -> Result<RunReviewOutput, ReviewError> {
+        self.require_matching_verified_scope()?;
         let built_prompt = self.build_review_prompt().await?;
         let prompt = built_prompt.prompt;
         let entry = self.manifest.lookup(&self.phase_default, self.runtime)?;
@@ -880,6 +911,35 @@ where
             } else {
                 marker.clone()
             };
+        if let (Some(path), Some(range)) = (
+            self.resolve_review_log_for_marker(),
+            self.push_range.as_ref(),
+        ) {
+            let tree_oid = self.verified_scope.as_ref().map_or_else(
+                || loom_driver::git::head_tree_oid_sync(&self.workspace).map(|oid| oid.to_string()),
+                |verified| Ok(verified.tree_oid().to_owned()),
+            )?;
+            let config_digest = self.verified_scope.as_ref().map_or_else(
+                || pre_commit_config_digest(&self.workspace),
+                |verified| Ok(verified.config_digest().to_owned()),
+            )?;
+            let run = GateRun {
+                phase: GatePhase::Review,
+                push_range: range.clone(),
+                tree_oid,
+                config_digest,
+                log_path: path.clone(),
+                exit_code: Some(outcome.exit_code),
+                status: if outcome.exit_code == 0 && effective_marker.is_some() {
+                    GateRunStatus::Success
+                } else {
+                    GateRunStatus::Failed
+                },
+                marker: effective_marker.clone(),
+                covered_hooks: Vec::new(),
+            };
+            append_gate_run_lifecycle_events(&path, &run)?;
+        }
         self.effective_review_marker = effective_marker.clone();
         self.suppressed_review_concern = suppressed_review_concern;
         Ok(RunReviewOutput {
@@ -1101,6 +1161,7 @@ where
             .map(parse_gate_runs_from_jsonl)
             .map(HandoffEvidence::from_runs)
             .unwrap_or_default();
+        evidence.molecule_state = loom_gate::MoleculeState::Clean;
         evidence.review_marker = self
             .effective_review_marker
             .clone()
@@ -2428,6 +2489,46 @@ mod tests {
         let path = workspace.join(format!("specs/{label}.md"));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "## Success Criteria\n\n").unwrap();
+    }
+
+    #[tokio::test]
+    async fn gate_review_consumes_verified_scope_not_verify_exit_scalar() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().to_path_buf();
+        loom_driver::git::init_test_repo(&workspace).expect("init repo");
+        let tree_oid = loom_driver::git::head_tree_oid_sync(&workspace)
+            .expect("tree oid")
+            .to_string();
+        let run = GateRun::successful_verify(
+            "base..verified".to_owned(),
+            tree_oid,
+            blake3::hash(&[]).to_hex().to_string(),
+            workspace.join("verify.jsonl"),
+            vec![loom_gate::HookCoverage {
+                id: "verify".to_owned(),
+                entry: "loom gate verify --diff base..verified".to_owned(),
+            }],
+        );
+        let verified = VerifiedScope::from_run(&run).expect("verified scope");
+        let state = empty_state(&workspace);
+        let manifest = stub_manifest(&workspace);
+        let mut ctrl = ProductionReviewController::new(
+            no_beads_bd(),
+            SpecLabel::new("harness"),
+            PathBuf::from("/usr/bin/loom"),
+            workspace,
+            state,
+            manifest,
+            ProfileName::new("base"),
+            noop_spawn,
+        )
+        .with_push_range(Some("base..different".to_owned()))
+        .with_verified_scope(Some(verified));
+
+        assert!(matches!(
+            ctrl.run_review().await,
+            Err(ReviewError::VerifiedScopeMismatch(_)),
+        ));
     }
 
     #[tokio::test]

@@ -487,7 +487,8 @@ fn mint_marker(git: &GitClient, diff_range: &str, log_path: &Path) -> Result<(),
         ),
     )
     .map_err(|source| source.to_string())?;
-    let evidence = HandoffEvidence::from_runs(loom_gate::parse_gate_runs_from_jsonl(log_path));
+    let mut evidence = HandoffEvidence::from_runs(loom_gate::parse_gate_runs_from_jsonl(log_path));
+    evidence.molecule_state = loom_gate::MoleculeState::Clean;
     let success = GateSuccess::new(&evidence, 1).map_err(|fail| format!("{:?}", fail.reason))?;
     MarkerProof::mint(success, &marker_workspace, &SystemClock::new())
         .map_err(|source| source.to_string())?;

@@ -11,8 +11,16 @@ use loom_events::identifier::{BeadId, SessionId};
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, SessionScope, Source};
 use loom_protocol::gate::ExitSignal;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MoleculeState {
+    Clean,
+    #[default]
+    Unresolved,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandoffEvidence {
+    pub molecule_state: MoleculeState,
     pub gate_runs: Vec<GateRun>,
     pub verified: Option<VerifiedScope>,
     pub reviewed: Option<ReviewedScope>,
@@ -51,6 +59,7 @@ impl HandoffEvidence {
         let review_marker = reviewed.as_ref().and_then(|scope| scope.run.marker.clone());
         let review_exit = reviewed.as_ref().and_then(|scope| scope.run.exit_code);
         Self {
+            molecule_state: MoleculeState::Unresolved,
             gate_runs: runs,
             verified,
             reviewed,
@@ -276,6 +285,9 @@ impl GateSuccess {
         if total_handoffs == 0 {
             return Err(fail(GateFailReason::ReviewEvidenceMissing));
         }
+        if evidence.molecule_state != MoleculeState::Clean {
+            return Err(fail(GateFailReason::MoleculeStateUnresolved));
+        }
         if evidence
             .gate_runs
             .iter()
@@ -415,6 +427,7 @@ impl GateFail {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateFailReason {
+    MoleculeStateUnresolved,
     VerifierFailed,
     PrePushHookFailed,
     ReviewConcern { summary: String },
@@ -958,7 +971,9 @@ mod tests {
             log.to_path_buf(),
             ExitSignal::Complete,
         );
-        HandoffEvidence::from_runs(vec![verify, review])
+        let mut evidence = HandoffEvidence::from_runs(vec![verify, review]);
+        evidence.molecule_state = MoleculeState::Clean;
+        evidence
     }
 
     #[test]
@@ -1072,6 +1087,7 @@ mod tests {
         assert!(!incomplete.is_success());
         assert!(VerifiedScope::from_run(incomplete).is_none());
         let mut evidence = HandoffEvidence::from_runs(runs);
+        evidence.molecule_state = MoleculeState::Clean;
         evidence.gate_log_paths = vec![log.path().to_path_buf()];
         match GateSuccess::new(&evidence, 1) {
             Err(GateFail {
@@ -1124,7 +1140,68 @@ mod tests {
     }
 
     #[test]
-    fn gate_success_refuses_mismatched_range_or_tree() {
+    fn push_gate_evaluates_typed_evidence_and_marker_coverage() {
+        let log = write_log(&format!(
+            "{}\n{}\n",
+            event(
+                "verify",
+                "origin/main..HEAD",
+                "tree-a",
+                "complete",
+                &[hook("pre-push", "loom gate verify --diff @{u}..HEAD")]
+            ),
+            event("review", "origin/main..HEAD", "tree-a", "complete", &[]),
+        ));
+        let mut clean = evidence(log.path());
+        clean.gate_log_paths = vec![log.path().to_path_buf()];
+        assert!(GateSuccess::new(&clean, 1).is_ok());
+
+        let mut unresolved = clean.clone();
+        unresolved.molecule_state = MoleculeState::Unresolved;
+        assert!(matches!(
+            GateSuccess::new(&unresolved, 1),
+            Err(GateFail {
+                reason: GateFailReason::MoleculeStateUnresolved,
+                ..
+            })
+        ));
+
+        let mut verify_failed = clean.clone();
+        verify_failed.gate_runs[0].status = GateRunStatus::Failed;
+        assert!(matches!(
+            GateSuccess::new(&verify_failed, 1),
+            Err(GateFail {
+                reason: GateFailReason::VerifierFailed,
+                ..
+            })
+        ));
+
+        let mut review_concern = clean.clone();
+        review_concern.reviewed = None;
+        review_concern.review_marker = Some(ExitSignal::Concern {
+            summary: "scope concern".to_owned(),
+        });
+        assert!(matches!(
+            GateSuccess::new(&review_concern, 1),
+            Err(GateFail {
+                reason: GateFailReason::ReviewConcern { .. },
+                ..
+            })
+        ));
+
+        let mut uncovered = clean;
+        uncovered.pre_push.as_mut().expect("coverage").hooks.clear();
+        assert!(matches!(
+            GateSuccess::new(&uncovered, 1),
+            Err(GateFail {
+                reason: GateFailReason::MarkerCoverageMissing,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn gate_success_refuses_review_scope_mismatch() {
         let log = write_log(&format!(
             "{}\n{}\n",
             event(

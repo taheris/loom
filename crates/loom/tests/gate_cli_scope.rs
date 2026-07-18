@@ -99,7 +99,7 @@ fn gate_target_exact_match_and_ambiguity_rules() {
 }
 
 #[test]
-fn verify_diff_runs_prek_pre_commit_lane_before_annotations() {
+fn post_integration_verify_runs_project_precommit_and_affected_check_test() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
@@ -107,7 +107,18 @@ fn verify_diff_runs_prek_pre_commit_lane_before_annotations() {
     let order_log = workspace.join("order.log");
     std::fs::write(
         workspace.join("specs/gate.md"),
-        "## Success Criteria\n\n- check after hooks [check](sh check.sh)\n",
+        "## Success Criteria\n\n- check after hooks [check](sh check.sh src/lib.rs)\n- test after check [test](affected_test)\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(workspace.join("src")).unwrap();
+    std::fs::write(
+        workspace.join("Cargo.toml"),
+        "[package]\nname = \"gate-lanes\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("src/lib.rs"),
+        "#[test]\nfn affected_test() {}\n",
     )
     .unwrap();
     write_executable(
@@ -115,17 +126,51 @@ fn verify_diff_runs_prek_pre_commit_lane_before_annotations() {
         &loom_test_support::bash_script("set -euo pipefail\nprintf 'check\n' >> \"$ORDER_LOG\"\n"),
     );
     write_executable(
+        &workspace.join("test-runner.sh"),
+        &loom_test_support::bash_script(
+            "set -euo pipefail\nprintf 'test %s\n' \"$*\" >> \"$ORDER_LOG\"\n",
+        ),
+    );
+    std::fs::write(
+        workspace.join("loom.toml"),
+        format!(
+            "[runner.test]\ncommand = \"sh test-runner.sh {{paths}}\"\ncwd = {:?}\n",
+            workspace.display().to_string(),
+        ),
+    )
+    .expect("write runner config");
+    write_executable(
         &workspace.join("bin/prek"),
         &loom_test_support::bash_script(
             "set -euo pipefail\nprintf 'prek %s\n' \"$*\" >> \"$ORDER_LOG\"\n",
         ),
     );
     init_git(workspace);
+    std::fs::write(
+        workspace.join("src/lib.rs"),
+        "pub fn affected() {}\n\n#[test]\nfn affected_test() {}\n",
+    )
+    .expect("modify affected source");
+    let stage_status = git_command()
+        .arg("-C")
+        .arg(workspace)
+        .args(["add", "src/lib.rs"])
+        .status()
+        .expect("stage affected source");
+    assert!(stage_status.success(), "stage affected source failed");
+    let commit_status = git_command()
+        .arg("-C")
+        .arg(workspace)
+        .args(["commit", "-q", "-m", "change affected source"])
+        .status()
+        .expect("commit affected source");
+    assert!(commit_status.success(), "commit affected source failed");
 
     let out = Command::new(loom_bin())
+        .current_dir(workspace)
         .arg("--workspace")
         .arg(workspace)
-        .args(["gate", "verify", "--diff", "HEAD..HEAD"])
+        .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
         .env("PATH", prepend_path(&workspace.join("bin")))
         .env("ORDER_LOG", &order_log)
         .output()
@@ -139,13 +184,15 @@ fn verify_diff_runs_prek_pre_commit_lane_before_annotations() {
     let mut lines = log.lines();
     let first = lines.next().unwrap_or_default();
     let second = lines.next().unwrap_or_default();
+    let third = lines.next().unwrap_or_default();
     assert!(
         first.starts_with("prek run --hook-stage pre-commit --from-ref "),
         "first lane must be concrete prek pre-commit: {log}",
     );
+    assert_eq!(second, "check", "check lane must follow prek: {log}");
     assert_eq!(
-        second, "check",
-        "annotation lane must run after prek: {log}"
+        third, "test affected_test",
+        "affected test lane must follow check: {log}"
     );
 }
 

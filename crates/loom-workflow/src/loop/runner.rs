@@ -894,7 +894,9 @@ mod tests {
 
     fn typed_evidence(path: &std::path::Path) -> HandoffEvidence {
         let runs = loom_gate::parse_gate_runs_from_jsonl(path);
-        HandoffEvidence::from_runs(runs)
+        let mut evidence = HandoffEvidence::from_runs(runs);
+        evidence.molecule_state = loom_gate::MoleculeState::Clean;
+        evidence
     }
 
     impl AgentLoopController for FakeController {
@@ -1909,8 +1911,7 @@ mod tests {
     /// successful `loom loop` invocation references non-empty JSONL logs
     /// carrying typed successful gate-run events.
     #[tokio::test]
-    async fn every_successful_loom_loop_writes_a_review_log_with_terminal_marker()
-    -> Result<(), LoopError> {
+    async fn every_successful_loom_loop_references_completed_gate_logs() -> Result<(), LoopError> {
         use tempfile::NamedTempFile;
 
         let log = NamedTempFile::new().expect("tempfile");
@@ -1929,9 +1930,16 @@ mod tests {
         assert_eq!(receipt.gate_log_paths, vec![path.clone()]);
         let contents = std::fs::read_to_string(&path).expect("log readable");
         assert!(
-            contents.contains("gate_run_end"),
-            "log must carry typed gate events: {contents:?}",
+            contents.contains("gate_run_start") && contents.contains("gate_run_end"),
+            "log must carry completed typed gate events: {contents:?}",
         );
+        let runs = loom_gate::parse_gate_runs_from_jsonl(&path);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert!(runs.iter().all(loom_gate::GateRun::is_success));
+        assert!(runs.iter().any(|run| {
+            run.phase == loom_gate::GatePhase::Review
+                && run.marker == Some(loom_protocol::gate::ExitSignal::Complete)
+        }));
         Ok(())
     }
 

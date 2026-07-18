@@ -1424,6 +1424,7 @@ mod tests {
             }],
         };
         let evidence = loom_gate::HandoffEvidence {
+            molecule_state: loom_gate::MoleculeState::Clean,
             gate_runs: vec![failed],
             ..loom_gate::HandoffEvidence::default()
         };
@@ -1539,6 +1540,7 @@ mod tests {
                 | ReviewError::Log(_)
                 | ReviewError::Io(_)
                 | ReviewError::ReviewIncomplete(_)
+                | ReviewError::VerifiedScopeMismatch(_)
                 | ReviewError::GitPushFailed(_)
                 | ReviewError::BeadsPushFailed(_)
                 | ReviewError::DetachedHead
