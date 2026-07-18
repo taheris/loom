@@ -1695,12 +1695,13 @@ pub fn classify_session(session: SessionResult, marker: Option<ExitSignal>) -> A
                     error: "wrong-phase-marker: LOOM_CONCERN is review-phase only".to_string(),
                 };
             }
-            if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop))
+            if let Some(marker @ (ExitSignal::Complete | ExitSignal::Noop)) = marker.as_ref()
                 && outcome.exit_code != 0
             {
                 return AgentOutcome::Failure {
                     error: format!(
-                        "agent emitted COMPLETE/NOOP but exited code {}",
+                        "agent emitted {} but exited code {}",
+                        marker.identity(),
                         outcome.exit_code,
                     ),
                 };

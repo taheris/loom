@@ -693,14 +693,16 @@ fn inferred_terminal_marker(outcome: &AgentOutcome) -> Option<&'static str> {
         AgentOutcome::Retry { .. } => Some("LOOM_RETRY"),
         AgentOutcome::Blocked { .. } => Some("LOOM_BLOCKED"),
         AgentOutcome::Clarify { .. } => Some("LOOM_CLARIFY"),
-        AgentOutcome::Failure { error } if error.contains("swallowed marker") => Some("missing"),
+        AgentOutcome::Failure { error } if error.contains("LOOM_CONCERN") => Some("LOOM_CONCERN"),
+        AgentOutcome::Failure { error } if error.contains("LOOM_COMPLETE") => Some("LOOM_COMPLETE"),
+        AgentOutcome::Failure { error } if error.contains("LOOM_NOOP") => Some("LOOM_NOOP"),
         AgentOutcome::Failure { .. }
         | AgentOutcome::InfraPreflight { .. }
         | AgentOutcome::InfraMidSession { .. }
         | AgentOutcome::StaticInfra { .. }
         | AgentOutcome::UnknownProfile { .. }
-        | AgentOutcome::UnknownRuntimeForProfile { .. }
-        | AgentOutcome::IntegrationConflict { .. }
+        | AgentOutcome::UnknownRuntimeForProfile { .. } => Some("missing"),
+        AgentOutcome::IntegrationConflict { .. }
         | AgentOutcome::SignatureVerificationFailed { .. }
         | AgentOutcome::ZeroProgress { .. } => None,
     }
@@ -717,6 +719,33 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
     use tokio::sync::Barrier;
+
+    #[test]
+    fn terminal_marker_inference_covers_marker_failures_and_missing_markers() {
+        let cases = [
+            (
+                AgentOutcome::Failure {
+                    error: "wrong-phase-marker: LOOM_CONCERN".to_string(),
+                },
+                "LOOM_CONCERN",
+            ),
+            (
+                AgentOutcome::Failure {
+                    error: "agent emitted LOOM_COMPLETE but exited code 1".to_string(),
+                },
+                "LOOM_COMPLETE",
+            ),
+            (
+                AgentOutcome::Failure {
+                    error: "agent swallowed marker".to_string(),
+                },
+                "missing",
+            ),
+        ];
+        for (outcome, expected) in cases {
+            assert_eq!(inferred_terminal_marker(&outcome), Some(expected));
+        }
+    }
 
     fn fake_bead(id: &str) -> Bead {
         Bead {
