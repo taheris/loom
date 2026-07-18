@@ -694,7 +694,7 @@ driver without making tuning a second resolution authority.
 - Each tuning invocation creates one tune bead plus one isolated
   `.loom/tune/<bead-id>/` envelope with `repo/`, `manifest.json`,
   `evidence.md`, candidate commit(s), and no changes to the invoking checkout
-  [test?](tune_proposal_worktree_contract)
+  [test](loom_tune_subcommands_create_isolated_proposals)
 - Tune checker planning freezes a deterministic registered-checker plan from the
   internal typed `loom-tune` registry before candidate generation, records the
   level/seed/case-pool/selected/skipped plan/results in the bead/manifest, and

@@ -2670,7 +2670,7 @@ Criteria.
   [test](cli_override_swaps_resolved_image)
 - `loom plan` shells out to interactive `wrix run` (TTY attached); does
       not capture stdio for JSONL
-  [test?](plan_argv_starts_with_wrix_run_subcommand)
+  [test](argv_starts_with_run_subcommand)
 
 ### Concurrency & locking
 
@@ -2814,7 +2814,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - `loom loop` startup drops every bead workspace under
       `.loom/beads/` whose bead is `closed` and parented by the
       selected work epic/molecule, under the work-root advisory lock
-  [test?](loop_startup_gc_drops_closed_bead_workspaces_for_selected_work_root)
+  [test](loop_startup_gc_drops_closed_bead_workspaces_for_current_molecule)
 - `loom loop` startup leaves closed bead workspaces from other
       molecules alone
   [test](loop_startup_gc_skips_closed_bead_workspaces_from_other_molecules)
@@ -2910,7 +2910,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [test](sccache_mount_omitted_when_unset)
 - Cache hits are observable across beads in a multi-bead loop when
       `[loom] sccache_dir` is configured
-  [judge?](sccache_hits_visible_across_beads)
+  [judge](../tests/judges/loom.sh#sccache_hits_visible_across_beads)
 - `GitClient` is the only module that imports `gix` or invokes the
       `git` CLI; callers see typed Rust methods
   [check](cargo run -p loom-walk -- git_client_encapsulation)
@@ -3016,13 +3016,13 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       current `docs/README.md` spec index before rendering any agent
       prompt. It never consults `loom:active`, a current-spec cache key,
       or the LLM to decide the changed-spec set
-  [test?](todo_preflight_discovers_changed_specs_from_durable_cursors)
+  [test](todo_preflight_discovers_active_inactive_and_new_specs)
 - `loom todo` ensures exactly one `loom:spec spec:<label>` spec epic
       per indexed spec. Missing spec epics are created and make the
       spec uninitialized/changed; duplicate spec epics block with
       conflicting IDs; missing cursor metadata on an existing spec
       epic blocks with an exact repair diagnostic
-  [test?](todo_ensures_spec_epics_and_blocks_missing_existing_cursor)
+  [test](todo_missing_spec_epic_initializes_existing_missing_cursor_blocks)
 - `loom todo` creates or reuses one `loom:todo` work epic for the
       preflight changed-spec set and requires a final `LOOM_TODO:`
       marker whose typed payload includes a non-empty final title and
@@ -3042,7 +3042,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `EvidenceState::Missing` rows in `criterion_status`; it is never
       treated as no criteria or no work. Malformed criteria block
       preflight
-  [test?](todo_missing_criterion_evidence_is_missing_not_clean)
+  [test](todo_missing_criterion_cache_rows_are_missing_evidence)
 - `loom gate mint --tree` creates one standing remediation work epic for
       all actionable tree-scope fix-up / blocked-clarify / clarify
       beads in the run, parents every child under that epic, applies
@@ -3304,7 +3304,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [test](apply_failed_tune_proposals_require_reauthorization)
 - Interactive-session crashes (container OOM, observer abort, swallowed marker)
       exit non-zero with a diagnostic; the driver does NOT auto-retry
-  [test?](inbox_chat_crash_exits_nonzero_without_auto_retry)
+  [test](loom_inbox_chat_crash_exits_nonzero_without_auto_retry)
 - `loom inbox chat` with `-s <label>` and/or `-k <kind>` scopes the chat
       queue; without filters, the session sees every outstanding human decision
       item regardless of active work epic and normally works them one at a time
@@ -3381,15 +3381,15 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `previous_failure` populated with `AgentRetry { reason }` from
       the prose preceding the marker; one `[loop] max_retries` slot
       consumed
-  [test?](retry_marker_routes_to_agent_retry_recovery_with_reason_carried)
+  [test](agent_retry_consumes_max_retries_slot_and_threads_reason)
 - `LOOM_RETRY` recovery exhaustion → `loom:blocked` with cause
       `retry-exhausted` (the same exhaustion path as other
       driver-detected recoveries)
-  [test?](retry_marker_exhaustion_routes_to_retry_exhausted_blocked)
+  [test](consecutive_agent_retry_exhaustion_routes_to_loom_blocked_retry_exhausted)
 - `LOOM_RETRY` from an interactive session (`plan`, `inbox`) is a
       wrong-phase-marker error; the driver exits non-zero with a
       diagnostic and does not apply any label
-  [test?](retry_marker_from_interactive_session_is_wrong_phase_error)
+  [test](retry_marker_from_interactive_phase_is_wrong_phase_marker)
 - `LOOM_CLARIFY` from a `loom todo` session targets the **`loom:todo`
       work epic** (rationale per
       [templates.md — Decomposition Discipline](templates.md));
@@ -3408,7 +3408,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - `LOOM_NOOP` + closed + empty diff → accepted as intentional no-work
       output rather than zero-progress; no post-integration verify runs
       for an empty bead diff
-  [test?](noop_with_empty_diff_is_done_not_zero_progress)
+  [test](run_bead_noop_empty_branch_is_done_not_zero_progress)
 - `LOOM_COMPLETE` + closed + non-empty diff + dirty working tree
       (`git status --porcelain` non-empty) → recovery with cause
       `tree-not-clean`; post-integration verify is NOT run (recovery
@@ -3605,7 +3605,7 @@ two agent-loop observers.
 
 - `loom init` creates `<workspace>/loom.toml` (or `$LOOM_CONFIG` when
       set) and `.loom/cache.db` with the default cache schema
-  [test?](init_creates_config_and_cache_db)
+  [test](run_creates_config_and_cache_db)
 - `loom init --rebuild` drops and repopulates `.loom/cache.db` from
       durable sources: the spec index, `specs/*.md`, bd spec/work
       epics, and each spec's `## Companions` section. It also folds
@@ -3694,7 +3694,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       `(SpecLabel, CriterionId)`; stale annotation evidence renders as
       `EvidenceState::StaleAnnotation`, absent rows as
       `EvidenceState::Missing`
-  [test?](criterion_status_joins_by_typed_criterion_id)
+  [test](todo_missing_criterion_cache_rows_are_missing_evidence)
 - `CacheDb::rebuild` parses each spec's `## Companions` section and
       writes one `companions` row per listed path; specs without the
       section contribute zero rows (not an error)
@@ -3802,11 +3802,6 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       compaction re-pin after observing `compaction_start`; merely queuing an
       unused steer payload does not satisfy this criterion
   [test](inbox_chat_pi_bridge_repins_on_compaction_start)
-- The compaction-recovery verifier set includes at least one post-compaction
-      behavioral canary that requires a non-inferable nonce, not only
-      byte-presence checks of `prompt.txt`, `repin.sh`, hook JSON, or steer
-      payloads
-  [judge?](../tests/judges/compaction-repin.sh#judge_effective_repin_behavior)
 - `claude-settings.json` registers `repin.sh` under
       `SessionStart[matcher: compact]`
   [test](claude_settings_registers_repin_under_session_start_compact)

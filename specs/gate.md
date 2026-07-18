@@ -2837,7 +2837,7 @@ and conservative fall-through for unowned queries.
 - `-m/--molecule` promotion does not report stale candidates because
   molecule promotion consumes already-recorded deferred findings and
   cannot prove a missing finding is absent from the whole tree
-  [test?](mint_molecule_promotion_does_not_report_stale_candidates)
+  [test](mint_non_tree_scopes_do_not_report_stale_candidates)
 - Each minted batch bead is parented under the scope-selected work epic
   (the molecule work epic for `-m/--molecule`, or the single standing
   remediation work epic for `--tree`) and carries one `finding:<hash>`
@@ -2910,7 +2910,7 @@ and conservative fall-through for unowned queries.
   [test](mint_rejects_spec_filter)
 - Bare `loom gate mint` prints subcommand help and runs nothing; callers
   choose `--tree` or `-m/--molecule` explicitly
-  [test?](mint_bare_invocation_prints_help_and_runs_nothing)
+  [test](mint_bare_invocation_requires_explicit_scope)
 - The end-of-run summary lists blocking findings, deferred findings
   merged, deferred beads promoted, ready remediation batches created or
   updated, clarify findings raised, skipped live finding hashes,
@@ -2955,7 +2955,7 @@ and conservative fall-through for unowned queries.
   review run; `GateSuccess` is constructible only from matching
   `VerifiedScope`, `ReviewedScope`, pre-push hook coverage, and current
   tree/config/range fingerprints
-  [test?](gate_success_requires_matching_typed_scope_evidence)
+  [test](gate_success_constructor_requires_typed_scope_and_coverage_evidence)
 - `loom gate review --diff <range>` consumes the latest matching
   `VerifiedScope` for the same resolved content/scope when producing
   push-eligible evidence; no production gate path passes or accepts
@@ -3158,7 +3158,7 @@ deferred bd findings and does not fabricate a new `Vec<Finding>`.
   nor blocked). The bullet below pins the subprocess shape that the
   per-bead gate resolves to; deferred remediation beads are not made
   ready until the molecule stabilization step promotes them
-  [test?](loop_per_bead_routes_run_phase_success_through_post_integration_gate)
+  [test](loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate)
 - The production per-bead gate implementation spawns exactly one
   deterministic subprocess against `loom_bin` after integration — argv
   shape `gate verify --diff <pre-integration-head>..HEAD`. A regression

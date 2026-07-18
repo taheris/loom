@@ -346,14 +346,14 @@ declared as such.
 - The bead container's workspace has `core.hooksPath` configured from
   the canonical `wrix.prekHooks` installation so prek fires on agent
   commits
-  [test?](loom_workflow::tests::bead_container_has_canonical_hooks_path)
+  [test](bead_workspace_configures_and_repairs_hooks_path)
 - Bead-container pre-commit hooks fire on the agent's `git commit`
   invocations
   [test?](loom_workflow::tests::agent_commit_runs_pre_commit_chain)
 - The loop prompt requires a final self-check using
   `loom gate verify --diff <bead-base>..HEAD`; workers do not rely on a
   bead-workspace push to trigger pre-push hooks
-  [test?](loom_workflow::tests::loop_prompt_uses_injected_self_check_range)
+  [test](run_template_uses_injected_self_check_range_not_head_shorthand)
 - The bead container has no `nix`, so `nix flake check` is skipped
   inside the bead container's prek invocation (other hooks still fire)
   [test?](loom_workflow::tests::bead_container_skips_nix_flake_check)
