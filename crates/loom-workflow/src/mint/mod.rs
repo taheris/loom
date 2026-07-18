@@ -78,6 +78,7 @@ pub const FINDING_LABEL_PREFIX: &str = "finding:";
 
 const ACTIVE_LABEL: &str = "loom:active";
 const DEFERRED_LABEL: &str = "loom:deferred";
+pub const GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE: &str = "gate-routing-structural-violation";
 const EMPTY_TREE_EPIC_CLOSE_REASON: &str = "empty tree mint remediation cleanup";
 
 /// Live bd statuses that count as a per-finding dedup hit.
@@ -359,6 +360,10 @@ pub struct MintSummary {
     pub would_mint: usize,
     pub promoted_deferred: usize,
     pub would_promote_deferred: usize,
+    pub blocking_findings: usize,
+    pub deferred_findings_merged: usize,
+    pub clarify_findings_raised: usize,
+    pub ready_remediation_batches: usize,
     pub skipped: usize,
     pub suppressed: usize,
     pub ineffective_suppressions: usize,
@@ -496,17 +501,29 @@ impl MintSummary {
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = format!(
-            "minted {} batches ({} findings across {} specs), promoted {} deferred, skipped {} (dedup), suppressed {}, ineffective suppressions {}, refused {}, errors {}",
+            "minted {} batches ({} findings across {} specs); finding lifecycle: blocking {}, deferred merged {}, deferred promoted {} (promoted {} deferred), ready remediation batches {}, clarify raised {}, skipped live {}, suppressed {}, stale {}, partially stale {}, structural conflicts {}, transient errors {}",
             self.minted,
             self.findings_across_minted,
             self.specs_across_minted,
+            self.blocking_findings,
+            self.deferred_findings_merged,
             self.promoted_deferred,
+            self.promoted_deferred,
+            self.ready_remediation_batches,
+            self.clarify_findings_raised,
             self.skipped,
             self.suppressed,
-            self.ineffective_suppressions,
+            self.stale_candidates,
+            self.partial_stale_candidates,
             self.refused,
             self.errors,
         );
+        if self.ineffective_suppressions > 0 {
+            out.push_str(&format!(
+                ", ineffective suppressions {}",
+                self.ineffective_suppressions,
+            ));
+        }
         if self.planned > 0 {
             out.push_str(&format!(", planned {} tree batches", self.planned));
         }
@@ -674,6 +691,461 @@ pub async fn mint_integrity_recovery<R: CommandRunner>(
         .filter_map(IntegrityFinding::to_finding)
         .collect();
     mint_findings_with_options(bd, &typed, head_commit, &MintOptions::default()).await
+}
+
+#[derive(Debug)]
+struct MoleculeMintGroup {
+    lead_spec: SpecLabel,
+    route: FindingRoute,
+    findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MoleculeBatchState {
+    Ready,
+    Deferred,
+    Clarify,
+    BlockedClarifyWithoutOptions,
+}
+
+/// Materialize one molecule-completion review's findings under the explicit
+/// originating molecule. Blocking work becomes ready immediately, deferred
+/// work stays parked until stabilization, and clarify work is one bead per
+/// finding. Structural conflicts park the molecule for human resolution.
+pub async fn route_molecule_findings<R: CommandRunner>(
+    bd: &BdClient<R>,
+    molecule: &MoleculeId,
+    findings: &[Finding],
+    opts: &MintOptions,
+) -> MintSummary {
+    let mut summary = route_molecule_findings_inner(bd, molecule, findings, opts).await;
+    if summary.refused > 0 {
+        match BeadId::new(molecule.as_str()) {
+            Ok(bead) => {
+                if let Err(err) = bd
+                    .update(
+                        &bead,
+                        UpdateOpts {
+                            status: Some("blocked".to_string()),
+                            add_labels: vec!["loom:blocked".to_string()],
+                            notes: Some(format!(
+                                "{GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE}: {}",
+                                summary.render(),
+                            )),
+                            ..UpdateOpts::default()
+                        },
+                    )
+                    .await
+                {
+                    summary.record_error("molecule-routing-block", err.to_string());
+                }
+            }
+            Err(err) => summary.record_error(
+                "molecule-routing-block",
+                format!("molecule id `{molecule}` is not a bead id: {err}"),
+            ),
+        }
+    }
+    summary
+}
+
+async fn route_molecule_findings_inner<R: CommandRunner>(
+    bd: &BdClient<R>,
+    molecule: &MoleculeId,
+    findings: &[Finding],
+    opts: &MintOptions,
+) -> MintSummary {
+    let mut summary = MintSummary::default();
+    let parent = match BeadId::new(molecule.as_str()) {
+        Ok(parent) => parent,
+        Err(err) => {
+            summary.record(BatchOutcome::Errored {
+                fingerprint: molecule.to_string(),
+                message: format!("molecule id `{molecule}` is not a bead id: {err}"),
+            });
+            return summary;
+        }
+    };
+    if let Err(err) = bd.show(&parent).await {
+        summary.record(BatchOutcome::Errored {
+            fingerprint: molecule.to_string(),
+            message: format!("missing molecule epic `{molecule}` or bd read failed: {err}"),
+        });
+        return summary;
+    }
+    let children = match bd
+        .list(ListOpts {
+            parent: Some(parent.clone()),
+            status: Some(DEDUP_STATUSES.to_string()),
+            ..ListOpts::default()
+        })
+        .await
+    {
+        Ok(children) => children,
+        Err(err) => {
+            summary.record(BatchOutcome::Errored {
+                fingerprint: molecule.to_string(),
+                message: format!("bd list failed for molecule `{molecule}`: {err}"),
+            });
+            return summary;
+        }
+    };
+    if let Some(reason) = duplicate_live_finding_reason(&children) {
+        for finding in findings {
+            summary.record_status(finding, FindingStatusAction::Refused);
+        }
+        summary.record(BatchOutcome::Refused {
+            fingerprint: molecule.to_string(),
+            reason,
+        });
+        return summary;
+    }
+
+    let mut survivors = Vec::new();
+    for finding in findings {
+        if suppresses_rubric_finding(&opts.suppressions, finding) {
+            summary.record_status(finding, FindingStatusAction::Suppressed);
+            continue;
+        }
+        if has_ineffective_suppression_match(&opts.suppressions, finding) {
+            summary.ineffective_suppressions += 1;
+        }
+        let hash = finding.hash();
+        match dedup_live_finding(bd, finding).await {
+            FindingDedup::Untracked | FindingDedup::Closed(_) => {}
+            FindingDedup::Tracked(existing_bead) => {
+                summary.record_status(finding, FindingStatusAction::SkippedLive);
+                summary.record(BatchOutcome::SkippedDedup {
+                    fingerprint: hash,
+                    existing_bead,
+                    findings_count: 1,
+                });
+                continue;
+            }
+            FindingDedup::Duplicate { reason } => {
+                summary.record_status(finding, FindingStatusAction::Refused);
+                summary.record(BatchOutcome::Refused {
+                    fingerprint: hash,
+                    reason,
+                });
+                continue;
+            }
+            FindingDedup::Errored { message } => {
+                summary.record_status(finding, FindingStatusAction::Refused);
+                summary.record(BatchOutcome::Errored {
+                    fingerprint: hash,
+                    message,
+                });
+                continue;
+            }
+        }
+        if opts.suppress_closed_same_molecule {
+            match dedup_closed_same_molecule(bd, finding, molecule).await {
+                FindingDedup::Untracked | FindingDedup::Tracked(_) => {}
+                FindingDedup::Closed(existing_bead) => {
+                    summary.record_status(finding, FindingStatusAction::Reported);
+                    summary.record(BatchOutcome::SkippedClosed {
+                        fingerprint: hash,
+                        existing_bead,
+                        findings_count: 1,
+                    });
+                    continue;
+                }
+                FindingDedup::Duplicate { reason } => {
+                    summary.record_status(finding, FindingStatusAction::Refused);
+                    summary.record(BatchOutcome::Refused {
+                        fingerprint: hash,
+                        reason,
+                    });
+                    continue;
+                }
+                FindingDedup::Errored { message } => {
+                    summary.record_status(finding, FindingStatusAction::Refused);
+                    summary.record(BatchOutcome::Errored {
+                        fingerprint: hash,
+                        message,
+                    });
+                    continue;
+                }
+            }
+        }
+        survivors.push(finding.clone());
+    }
+
+    let groups = molecule_mint_groups(survivors);
+    let mut routed_specs = HashSet::new();
+    for group in groups {
+        let routing = group
+            .findings
+            .first()
+            .map_or(FindingRouting::Fixup, classify_routing);
+        let state = match (group.route, routing) {
+            (FindingRoute::Blocking, _) => MoleculeBatchState::Ready,
+            (FindingRoute::Deferred, _) => MoleculeBatchState::Deferred,
+            (FindingRoute::Clarify, FindingRouting::Clarify) => MoleculeBatchState::Clarify,
+            (FindingRoute::Clarify, FindingRouting::BlockedClarifyWithoutOptions) => {
+                MoleculeBatchState::BlockedClarifyWithoutOptions
+            }
+            (FindingRoute::Clarify, FindingRouting::Fixup) => {
+                MoleculeBatchState::BlockedClarifyWithoutOptions
+            }
+        };
+        let outcome = if state == MoleculeBatchState::Deferred {
+            merge_or_create_deferred_batch(
+                bd,
+                &children,
+                &group.findings,
+                &group.lead_spec,
+                &parent,
+            )
+            .await
+        } else {
+            create_molecule_batch(bd, &group.findings, &group.lead_spec, &parent, state).await
+        };
+        let succeeded = matches!(outcome, BatchOutcome::Minted { .. });
+        record_batch_status(&mut summary, &group.findings, &outcome);
+        if succeeded {
+            let count = group.findings.len();
+            summary.findings_across_minted += count;
+            routed_specs.insert(group.lead_spec.as_str().to_owned());
+            match state {
+                MoleculeBatchState::Ready => {
+                    summary.blocking_findings += count;
+                    summary.ready_remediation_batches += 1;
+                }
+                MoleculeBatchState::Deferred => {
+                    summary.deferred_findings_merged += count;
+                }
+                MoleculeBatchState::Clarify => {
+                    summary.clarify_findings_raised += count;
+                }
+                MoleculeBatchState::BlockedClarifyWithoutOptions => {}
+            }
+        }
+        summary.record(outcome);
+    }
+    summary.specs_across_minted = routed_specs.len();
+    summary
+}
+
+fn molecule_mint_groups(findings: Vec<Finding>) -> Vec<MoleculeMintGroup> {
+    let mut groups: Vec<MoleculeMintGroup> = Vec::new();
+    for finding in findings {
+        let Some(lead_spec) = finding.bonds.first().cloned() else {
+            continue;
+        };
+        if finding.route == FindingRoute::Clarify {
+            groups.push(MoleculeMintGroup {
+                lead_spec,
+                route: finding.route,
+                findings: vec![finding],
+            });
+            continue;
+        }
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.lead_spec == lead_spec && group.route == finding.route)
+        {
+            group.findings.push(finding);
+        } else {
+            groups.push(MoleculeMintGroup {
+                lead_spec,
+                route: finding.route,
+                findings: vec![finding],
+            });
+        }
+    }
+    groups.sort_by(|left, right| {
+        left.lead_spec
+            .as_str()
+            .cmp(right.lead_spec.as_str())
+            .then_with(|| left.route.as_wire().cmp(right.route.as_wire()))
+    });
+    groups
+}
+
+async fn merge_or_create_deferred_batch<R: CommandRunner>(
+    bd: &BdClient<R>,
+    children: &[Bead],
+    findings: &[Finding],
+    lead_spec: &SpecLabel,
+    parent: &BeadId,
+) -> BatchOutcome {
+    let spec_label = format!("spec:{lead_spec}");
+    let matches = children
+        .iter()
+        .filter(|bead| {
+            is_deferred_remediation(bead)
+                && bead.labels.iter().any(|label| label.as_str() == spec_label)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => {
+            create_molecule_batch(
+                bd,
+                findings,
+                lead_spec,
+                parent,
+                MoleculeBatchState::Deferred,
+            )
+            .await
+        }
+        [existing] => {
+            let fingerprint = batch_fingerprint(findings);
+            let mut description = existing.description.trim_end().to_owned();
+            if !description.is_empty() {
+                description.push_str("\n\n");
+            }
+            description.push_str(&molecule_batch_description(
+                findings,
+                MoleculeBatchState::Deferred,
+            ));
+            let labels = molecule_batch_labels(findings, MoleculeBatchState::Deferred);
+            match bd
+                .update(
+                    &existing.id,
+                    UpdateOpts {
+                        status: Some("deferred".to_string()),
+                        add_labels: labels,
+                        description: Some(description),
+                        ..UpdateOpts::default()
+                    },
+                )
+                .await
+            {
+                Ok(()) => BatchOutcome::Minted {
+                    fingerprint,
+                    bead_id: existing.id.clone(),
+                    lead_spec: lead_spec.clone(),
+                    findings_count: findings.len(),
+                },
+                Err(err) => BatchOutcome::Errored {
+                    fingerprint,
+                    message: format!(
+                        "bd update failed while merging deferred findings into `{}`: {err}",
+                        existing.id,
+                    ),
+                },
+            }
+        }
+        duplicates => BatchOutcome::Refused {
+            fingerprint: batch_fingerprint(findings),
+            reason: format!(
+                "multiple deferred remediation beads for spec `{lead_spec}` in molecule (ids: {})",
+                duplicates
+                    .iter()
+                    .map(|bead| bead.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        },
+    }
+}
+
+async fn create_molecule_batch<R: CommandRunner>(
+    bd: &BdClient<R>,
+    findings: &[Finding],
+    lead_spec: &SpecLabel,
+    parent: &BeadId,
+    state: MoleculeBatchState,
+) -> BatchOutcome {
+    let fingerprint = batch_fingerprint(findings);
+    let notes = (state == MoleculeBatchState::BlockedClarifyWithoutOptions)
+        .then(|| CLARIFY_WITHOUT_OPTIONS_CAUSE.to_string());
+    let created = bd
+        .create(CreateOpts {
+            title: batch_title(findings, lead_spec),
+            description: molecule_batch_description(findings, state),
+            issue_type: Some("task".to_string()),
+            labels: molecule_batch_labels(findings, state),
+            parent: Some(parent.clone()),
+            notes,
+            ..CreateOpts::default()
+        })
+        .await;
+    let bead_id = match created {
+        Ok(bead_id) => bead_id,
+        Err(err) => {
+            return BatchOutcome::Errored {
+                fingerprint,
+                message: mint_error_message(&MintError::from(err)),
+            };
+        }
+    };
+    let molecule = MoleculeId::new(parent.as_str());
+    if let Err(err) = bd.mol_bond(molecule.as_str(), bead_id.as_str()).await {
+        return BatchOutcome::Errored {
+            fingerprint,
+            message: format!(
+                "created routed bead `{bead_id}` but failed to bond it to molecule `{molecule}`: {err}",
+            ),
+        };
+    }
+    let parked_status = match state {
+        MoleculeBatchState::Deferred => Some("deferred"),
+        MoleculeBatchState::Clarify | MoleculeBatchState::BlockedClarifyWithoutOptions => {
+            Some("blocked")
+        }
+        MoleculeBatchState::Ready => None,
+    };
+    if let Some(status) = parked_status
+        && let Err(err) = bd
+            .update(
+                &bead_id,
+                UpdateOpts {
+                    status: Some(status.to_string()),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await
+    {
+        return BatchOutcome::Errored {
+            fingerprint,
+            message: format!(
+                "created routed bead `{bead_id}` but failed to set status `{status}`: {err}",
+            ),
+        };
+    }
+    BatchOutcome::Minted {
+        fingerprint,
+        bead_id,
+        lead_spec: lead_spec.clone(),
+        findings_count: findings.len(),
+    }
+}
+
+fn molecule_batch_labels(findings: &[Finding], state: MoleculeBatchState) -> Vec<String> {
+    let mut labels = findings.iter().map(finding_label).collect::<Vec<_>>();
+    let mut specs = findings
+        .iter()
+        .flat_map(|finding| finding.bonds.iter())
+        .map(|spec| format!("spec:{spec}"))
+        .collect::<Vec<_>>();
+    specs.sort();
+    specs.dedup();
+    labels.extend(specs);
+    match state {
+        MoleculeBatchState::Ready => {}
+        MoleculeBatchState::Deferred => labels.push(DEFERRED_LABEL.to_string()),
+        MoleculeBatchState::Clarify => labels.push("loom:clarify".to_string()),
+        MoleculeBatchState::BlockedClarifyWithoutOptions => {
+            labels.push("loom:blocked".to_string());
+        }
+    }
+    labels
+}
+
+fn molecule_batch_description(findings: &[Finding], state: MoleculeBatchState) -> String {
+    let mut description = String::new();
+    if state == MoleculeBatchState::BlockedClarifyWithoutOptions {
+        description.push_str(&format!("Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n"));
+    }
+    if state == MoleculeBatchState::Clarify {
+        description.push_str(findings[0].evidence.trim_end());
+        description.push_str("\n\n---\n\n");
+    }
+    append_findings_section(&mut description, findings);
+    description
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1167,10 +1639,13 @@ pub async fn promote_deferred<R: CommandRunner>(
             )
             .await
         {
-            Ok(()) => summary.record(BatchOutcome::PromotedDeferred {
-                bead_id: bead.id,
-                findings_count,
-            }),
+            Ok(()) => {
+                summary.ready_remediation_batches += 1;
+                summary.record(BatchOutcome::PromotedDeferred {
+                    bead_id: bead.id,
+                    findings_count,
+                });
+            }
             Err(err) => summary.record(BatchOutcome::Errored {
                 fingerprint: bead.id.to_string(),
                 message: format!("bd update failed while promoting deferred bead: {err}"),
@@ -2112,6 +2587,237 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StatefulBdState {
+        beads: Vec<Bead>,
+        bonds: Vec<(MoleculeId, BeadId)>,
+        next_child: u32,
+        duplicate_on_children_query: Option<Finding>,
+    }
+
+    #[derive(Clone)]
+    struct StatefulBdRunner {
+        state: Arc<Mutex<StatefulBdState>>,
+    }
+
+    impl StatefulBdRunner {
+        fn molecule() -> Self {
+            let beads = vec![Bead {
+                id: BeadId::new("lm-mol").expect("molecule id"),
+                title: "molecule".to_string(),
+                description: String::new(),
+                status: "open".to_string(),
+                priority: 2,
+                issue_type: "epic".to_string(),
+                labels: vec![Label::new("spec:agent")],
+                parent: None,
+                metadata: BTreeMap::new(),
+                notes: None,
+            }];
+            Self {
+                state: Arc::new(Mutex::new(StatefulBdState {
+                    beads,
+                    bonds: Vec::new(),
+                    next_child: 1,
+                    duplicate_on_children_query: None,
+                })),
+            }
+        }
+
+        fn beads(&self) -> Vec<Bead> {
+            self.state.lock().expect("state lock").beads.clone()
+        }
+
+        fn bonds(&self) -> Vec<(MoleculeId, BeadId)> {
+            self.state.lock().expect("state lock").bonds.clone()
+        }
+
+        fn inject_duplicate_on_children_query(&self, finding: Finding) {
+            self.state
+                .lock()
+                .expect("state lock")
+                .duplicate_on_children_query = Some(finding);
+        }
+    }
+
+    impl CommandRunner for StatefulBdRunner {
+        async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
+            let argv = args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let mut state = self.state.lock().expect("state lock");
+            match argv.first().map(String::as_str) {
+                Some("show") => {
+                    let id = argv.get(1).map(String::as_str).unwrap_or_default();
+                    let rows = state
+                        .beads
+                        .iter()
+                        .filter(|bead| bead.id.as_str() == id)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    Ok(json_output(&rows))
+                }
+                Some("list") => {
+                    if argv.iter().any(|arg| arg == "--parent=lm-mol")
+                        && let Some(finding) = state.duplicate_on_children_query.take()
+                    {
+                        inject_duplicate_children(&mut state.beads, &finding);
+                    }
+                    let rows = filter_stateful_beads(&state.beads, &argv, false);
+                    Ok(json_output(&rows))
+                }
+                Some("ready") => {
+                    let rows = filter_stateful_beads(&state.beads, &argv, true);
+                    Ok(json_output(&rows))
+                }
+                Some("create") => {
+                    let id = BeadId::new(&format!("lm-mol.{}", state.next_child))?;
+                    state.next_child += 1;
+                    let labels = stateful_flag(&argv, "--labels")
+                        .map(|value| value.split(',').map(Label::new).collect())
+                        .unwrap_or_default();
+                    let parent = stateful_flag(&argv, "--parent")
+                        .map(BeadId::new)
+                        .transpose()?;
+                    let bead = Bead {
+                        id: id.clone(),
+                        title: stateful_flag(&argv, "--title")
+                            .unwrap_or_default()
+                            .to_string(),
+                        description: stateful_flag(&argv, "--description")
+                            .unwrap_or_default()
+                            .to_string(),
+                        status: "open".to_string(),
+                        priority: 2,
+                        issue_type: stateful_flag(&argv, "--type").unwrap_or("task").to_string(),
+                        labels,
+                        parent,
+                        metadata: BTreeMap::new(),
+                        notes: stateful_flag(&argv, "--notes").map(str::to_string),
+                    };
+                    state.beads.push(bead);
+                    Ok(ok_stdout(&format!("{id}\n")))
+                }
+                Some("update") => {
+                    let id = BeadId::new(argv.get(1).map(String::as_str).unwrap_or_default())?;
+                    let bead = state
+                        .beads
+                        .iter_mut()
+                        .find(|bead| bead.id == id)
+                        .expect("updated bead exists");
+                    apply_stateful_update(bead, &argv);
+                    Ok(ok_stdout(""))
+                }
+                Some("mol") if argv.get(1).is_some_and(|arg| arg == "bond") => {
+                    let molecule =
+                        MoleculeId::new(argv.get(2).map(String::as_str).unwrap_or_default());
+                    let bead = BeadId::new(argv.get(3).map(String::as_str).unwrap_or_default())?;
+                    state.bonds.push((molecule, bead));
+                    Ok(ok_stdout(""))
+                }
+                other => Ok(RunOutput {
+                    status: 2,
+                    stdout: Vec::new(),
+                    stderr: format!("unsupported stateful bd command: {other:?}").into_bytes(),
+                }),
+            }
+        }
+    }
+
+    fn inject_duplicate_children(beads: &mut Vec<Bead>, finding: &Finding) {
+        for index in 1..=2 {
+            beads.push(Bead {
+                id: BeadId::new(&format!("lm-injected.{index}")).expect("injected child id"),
+                title: "injected duplicate".to_string(),
+                description: molecule_batch_description(
+                    std::slice::from_ref(finding),
+                    MoleculeBatchState::Ready,
+                ),
+                status: "open".to_string(),
+                priority: 2,
+                issue_type: "task".to_string(),
+                labels: molecule_batch_labels(
+                    std::slice::from_ref(finding),
+                    MoleculeBatchState::Ready,
+                )
+                .into_iter()
+                .map(Label::new)
+                .collect(),
+                parent: Some(BeadId::new("lm-mol").expect("molecule id")),
+                metadata: BTreeMap::new(),
+                notes: None,
+            });
+        }
+    }
+
+    fn stateful_flag<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+        argv.iter()
+            .position(|arg| arg == flag)
+            .and_then(|index| argv.get(index + 1))
+            .map(String::as_str)
+    }
+
+    fn filter_stateful_beads(beads: &[Bead], argv: &[String], ready: bool) -> Vec<Bead> {
+        let status = argv.iter().find_map(|arg| arg.strip_prefix("--status="));
+        let label = argv.iter().find_map(|arg| arg.strip_prefix("--label="));
+        let parent = argv.iter().find_map(|arg| arg.strip_prefix("--parent="));
+        let issue_type = argv.iter().find_map(|arg| arg.strip_prefix("--type="));
+        beads
+            .iter()
+            .filter(|bead| {
+                (!ready || bead.status == "open")
+                    && status.is_none_or(|statuses| statuses.split(',').any(|s| s == bead.status))
+                    && label.is_none_or(|wanted| {
+                        bead.labels
+                            .iter()
+                            .any(|candidate| candidate.as_str() == wanted)
+                    })
+                    && parent.is_none_or(|wanted| {
+                        bead.parent
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.as_str() == wanted)
+                    })
+                    && issue_type.is_none_or(|wanted| bead.issue_type == wanted)
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn apply_stateful_update(bead: &mut Bead, argv: &[String]) {
+        let mut index = 2;
+        while index < argv.len() {
+            match argv[index].as_str() {
+                "--status" => bead.status = argv[index + 1].clone(),
+                "--add-label" => {
+                    let label = Label::new(&argv[index + 1]);
+                    if !bead.labels.contains(&label) {
+                        bead.labels.push(label);
+                    }
+                }
+                "--remove-label" => {
+                    bead.labels
+                        .retain(|label| label.as_str() != argv[index + 1]);
+                }
+                "--description" => bead.description = argv[index + 1].clone(),
+                "--notes" => bead.notes = Some(argv[index + 1].clone()),
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            }
+            index += 2;
+        }
+    }
+
+    fn json_output<T: Serialize>(value: &T) -> RunOutput {
+        RunOutput {
+            status: 0,
+            stdout: serde_json::to_vec(value).expect("serialize stateful bd response"),
+            stderr: Vec::new(),
+        }
+    }
+
     fn ok_stdout(body: &str) -> RunOutput {
         RunOutput {
             status: 0,
@@ -2241,6 +2947,255 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stateful_bd_runner_conforms_to_routing_command_contract() {
+        let runner = StatefulBdRunner::molecule();
+        let state = runner.clone();
+        let bd = BdClient::with_runner(runner);
+        let parent = BeadId::new("lm-mol").expect("molecule id");
+
+        let child = bd
+            .create(CreateOpts {
+                title: "deferred remediation".to_string(),
+                description: "finding evidence".to_string(),
+                issue_type: Some("task".to_string()),
+                labels: vec![DEFERRED_LABEL.to_string()],
+                parent: Some(parent.clone()),
+                ..CreateOpts::default()
+            })
+            .await
+            .expect("create child");
+        bd.mol_bond("lm-mol", child.as_str())
+            .await
+            .expect("bond child");
+        bd.update(
+            &child,
+            UpdateOpts {
+                status: Some("deferred".to_string()),
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .expect("park child");
+
+        let children = bd
+            .list(ListOpts {
+                status: Some("deferred".to_string()),
+                parent: Some(parent.clone()),
+                ..ListOpts::default()
+            })
+            .await
+            .expect("list children");
+        let ready = bd
+            .ready(loom_driver::bd::ReadyOpts {
+                parent: Some(parent),
+                ..loom_driver::bd::ReadyOpts::default()
+            })
+            .await
+            .expect("query ready");
+
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, child);
+        assert!(ready.is_empty());
+        assert_eq!(state.bonds(), vec![(MoleculeId::new("lm-mol"), child)]);
+    }
+
+    #[tokio::test]
+    async fn molecule_review_clarify_finding_creates_blocked_clarify_bead() {
+        let clarify = invariant_clash_finding(
+            vec![spec("agent")],
+            spec("agent"),
+            "Architecture",
+            "routing-choice",
+            "## Options — choose routing\n\n### Option 1 — keep molecule-local\nCost: coupling.\n",
+        );
+        let runner = StatefulBdRunner::molecule();
+        let state = runner.clone();
+        let bd = BdClient::with_runner(runner);
+
+        let summary = route_molecule_findings(
+            &bd,
+            &MoleculeId::new("lm-mol"),
+            std::slice::from_ref(&clarify),
+            &MintOptions::default(),
+        )
+        .await;
+
+        assert_eq!(summary.clarify_findings_raised, 1);
+        let child = state
+            .beads()
+            .into_iter()
+            .find(|bead| bead.id.as_str() != "lm-mol")
+            .expect("clarify bead created");
+        assert_eq!(child.status, "blocked");
+        assert!(child.labels.iter().any(Label::is_clarify));
+        assert!(child.description.contains("## Options — choose routing"));
+    }
+
+    #[tokio::test]
+    async fn molecule_review_blocking_finding_creates_same_molecule_remediation() {
+        let mut finding = contract_finding(
+            vec![spec("agent")],
+            "blocking-acceptance-gap",
+            "pushed behavior is incomplete",
+        );
+        finding.route = FindingRoute::Blocking;
+        let runner = StatefulBdRunner::molecule();
+        let state = runner.clone();
+        let bd = BdClient::with_runner(runner);
+
+        let summary = route_molecule_findings(
+            &bd,
+            &MoleculeId::new("lm-mol"),
+            std::slice::from_ref(&finding),
+            &MintOptions::default(),
+        )
+        .await;
+
+        assert_eq!(summary.blocking_findings, 1);
+        assert_eq!(summary.ready_remediation_batches, 1);
+        let remediation = state
+            .beads()
+            .into_iter()
+            .find(|bead| bead.id.as_str() != "lm-mol")
+            .expect("remediation created");
+        assert_eq!(
+            remediation.parent.as_ref().map(BeadId::as_str),
+            Some("lm-mol")
+        );
+        assert_eq!(remediation.status, "open");
+        assert!(
+            remediation
+                .labels
+                .iter()
+                .any(|label| { label.as_str() == finding_label(&finding) })
+        );
+        assert!(!remediation.labels.iter().any(Label::is_deferred));
+        assert_eq!(
+            state.bonds(),
+            vec![(MoleculeId::new("lm-mol"), remediation.id)],
+        );
+    }
+
+    #[tokio::test]
+    async fn molecule_review_deferred_finding_creates_deferred_bead() {
+        let finding = contract_finding(
+            vec![spec("agent")],
+            "deferred-adjacent-drift",
+            "outside the pushed acceptance surface",
+        );
+        let runner = StatefulBdRunner::molecule();
+        let state = runner.clone();
+        let bd = BdClient::with_runner(runner);
+
+        let summary = route_molecule_findings(
+            &bd,
+            &MoleculeId::new("lm-mol"),
+            std::slice::from_ref(&finding),
+            &MintOptions::default(),
+        )
+        .await;
+        let ready = bd
+            .ready(loom_driver::bd::ReadyOpts {
+                parent: Some(BeadId::new("lm-mol").expect("molecule id")),
+                ..loom_driver::bd::ReadyOpts::default()
+            })
+            .await
+            .expect("ready query");
+
+        assert_eq!(summary.deferred_findings_merged, 1);
+        assert!(ready.is_empty(), "deferred remediation must not be ready");
+        let remediation = state
+            .beads()
+            .into_iter()
+            .find(|bead| bead.id.as_str() != "lm-mol")
+            .expect("deferred remediation created");
+        assert_eq!(remediation.status, "deferred");
+        assert!(remediation.labels.iter().any(Label::is_deferred));
+        assert_eq!(
+            remediation.parent.as_ref().map(BeadId::as_str),
+            Some("lm-mol")
+        );
+        assert_eq!(
+            state.bonds(),
+            vec![(MoleculeId::new("lm-mol"), remediation.id)],
+        );
+    }
+
+    #[tokio::test]
+    async fn molecule_routes_gate_routing_structural_conflict_to_blocked() {
+        let finding = contract_finding(
+            vec![spec("agent")],
+            "duplicate-structural-finding",
+            "duplicate injected for conflict",
+        );
+        let runner = StatefulBdRunner::molecule();
+        runner.inject_duplicate_on_children_query(finding.clone());
+        let state = runner.clone();
+        let bd = BdClient::with_runner(runner);
+
+        let summary = route_molecule_findings(
+            &bd,
+            &MoleculeId::new("lm-mol"),
+            std::slice::from_ref(&finding),
+            &MintOptions::default(),
+        )
+        .await;
+
+        assert_eq!(summary.refused, 1);
+        let molecule = state
+            .beads()
+            .into_iter()
+            .find(|bead| bead.id.as_str() == "lm-mol")
+            .expect("molecule remains");
+        assert_eq!(molecule.status, "blocked");
+        assert!(molecule.labels.iter().any(Label::is_blocked));
+        assert!(
+            molecule
+                .notes
+                .as_deref()
+                .is_some_and(|notes| notes.contains(GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE))
+        );
+    }
+
+    #[test]
+    fn mint_end_of_run_summary_reports_finding_lifecycle_outcomes() {
+        let summary = MintSummary {
+            blocking_findings: 2,
+            deferred_findings_merged: 3,
+            promoted_deferred: 1,
+            ready_remediation_batches: 2,
+            clarify_findings_raised: 1,
+            skipped: 4,
+            suppressed: 5,
+            stale_candidates: 6,
+            partial_stale_candidates: 7,
+            refused: 8,
+            errors: 9,
+            ..MintSummary::default()
+        };
+
+        let rendered = summary.render();
+        for expected in [
+            "blocking 2",
+            "deferred merged 3",
+            "deferred promoted 1",
+            "ready remediation batches 2",
+            "clarify raised 1",
+            "skipped live 4",
+            "suppressed 5",
+            "stale 6",
+            "partially stale 7",
+            "structural conflicts 8",
+            "transient errors 9",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing `{expected}`: {rendered}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn promote_deferred_updates_existing_beads_without_minting_findings() {
         let runner = ScriptedRunner::new(vec![
             ok_stdout(&format!("[{}]", epic_row("lm-mol", "gate"))),
@@ -2260,7 +3215,7 @@ mod tests {
             summary.minted, 0,
             "promotion must not create a finding batch"
         );
-        assert!(summary.render().contains("promoted 1 deferred"));
+        assert!(summary.render().contains("deferred promoted 1"));
         let calls = rendered_calls(&invocations);
         assert!(
             calls
@@ -3820,9 +4775,15 @@ reason = "false positive"
         assert_eq!(summary.specs_across_minted, 1, "one spec in minted batches");
         let render = summary.render();
         assert!(
-            render.starts_with(
-                "minted 1 batches (2 findings across 1 specs), promoted 0 deferred, skipped 1 (dedup), suppressed 0, ineffective suppressions 0, refused 1, errors 0\n"
-            ),
+            render.starts_with("minted 1 batches (2 findings across 1 specs); finding lifecycle:"),
+            "header line shape: {render}",
+        );
+        assert!(
+            render.contains("skipped live 1"),
+            "header line shape: {render}"
+        );
+        assert!(
+            render.contains("structural conflicts 1"),
             "header line shape: {render}",
         );
         assert!(

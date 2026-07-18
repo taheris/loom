@@ -3141,22 +3141,22 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       no recovery prompt is produced. Mint does NOT fire during the
       per-bead hot path; deferred findings are promoted by
       `loom gate mint -m <molecule-id>` during stabilization
-  [test?](molecule_completion_review_routes_findings_to_stabilization_or_clarify)
+  [test](molecule_completion_review_routes_findings_to_stabilization_or_clarify)
 - A molecule-completion review finding with `route="blocking"` refuses
       the push and creates or reuses same-molecule remediation work;
       already-integrated original beads are not reopened solely because
       the push-stage review found a concern
-  [test?](molecule_review_blocking_finding_creates_same_molecule_remediation)
+  [test](molecule_review_blocking_finding_creates_same_molecule_remediation)
 - A molecule-completion review finding with `route="deferred"` merges
       into a molecule child bead with `status=deferred` and label
       `loom:deferred`; `bd ready` does not return it until molecule
       stabilization promotes it
-  [test?](molecule_review_deferred_finding_creates_deferred_bead)
+  [test](molecule_review_deferred_finding_creates_deferred_bead)
 - Structural bd conflicts while recording deferred or clarify findings
       route the molecule to `loom:blocked` with cause
       `gate-routing-structural-violation`; already-integrated commits
       are not unwound
-  [test?](molecule_routes_gate_routing_structural_conflict_to_blocked)
+  [test](molecule_routes_gate_routing_structural_conflict_to_blocked)
 - A synthetic post-integrate verify failure writes a durable gate log
       under `.loom/logs/gate/` containing command argv, resolved scope,
       per-lane hook/verifier results, exit code, stdout/stderr tails,
@@ -3181,7 +3181,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       is bounded by `[loop] max_iterations` (default 10) and exits
       cleanly on push success, a fully-stuck molecule, or counter
       exhaustion
-  [test?](continuous_outer_loop_promotes_deferred_remediation_then_exits_on_stall)
+  [test](continuous_outer_loop_promotes_deferred_remediation_then_exits_on_stall)
 - Push gate is a typed-evidence AND: no unresolved blocked/clarify/
       deferred/infra molecule state, successful deterministic pre-push
       `GateRun`/`VerifiedScope`, successful `ReviewedScope`, no
@@ -3507,7 +3507,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       carries `loom:blocked`, `loom:clarify`, `loom:deferred`, or
       `loom:infra`; an orphan remediation bead would slip past this check,
       so the bond invariant is what makes the gate sound
-  [test?](remediation_beads_under_cap_auto_iterate)
+  [test](remediation_beads_under_cap_auto_iterate)
 - Recovery iter ≥ max_iterations → applies `loom:blocked` with cause
       in `bd update --notes`
   [test](at_or_above_max_applies_blocked_with_retry_exhausted_cause)

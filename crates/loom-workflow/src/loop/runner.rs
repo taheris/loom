@@ -210,6 +210,13 @@ pub trait AgentLoopController: Send {
         bead: &BeadId,
     ) -> impl std::future::Future<Output = Result<PerBeadGateOutcome, LoopError>> + Send;
 
+    /// Promote molecule-local deferred remediation after the current ready
+    /// queue drains. A successful promotion is followed by another ready
+    /// poll before the molecule push gate can run.
+    fn promote_deferred(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<StabilizationOutcome, LoopError>> + Send;
+
     /// Emit a driver-side event into the controller's event sink. The
     /// run loop fires `retry_dispatch` here when it re-dispatches a bead
     /// after a recoverable failure; production controllers thread an
@@ -246,6 +253,19 @@ pub use crate::review::RETRY_EXHAUSTED_CAUSE;
 /// structural violation surfaces as a labelled bead the operator
 /// unblocks via `loom inbox`.
 pub const MINT_STRUCTURAL_VIOLATION_CAUSE: &str = "mint-structural-violation";
+
+/// Cause applied to the molecule epic when deferred/clarify finding routing
+/// or stabilization promotion encounters contradictory Beads structure.
+pub use crate::mint::GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE;
+
+/// Result of one molecule stabilization promotion attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StabilizationOutcome {
+    NoDeferred,
+    Promoted { count: usize },
+    StructuralConflict { molecule: BeadId, detail: String },
+    TransientFailure { detail: String },
+}
 
 /// Spec-table cause string written to `bd update --notes` when the
 /// per-bead integration step's `git verify-commit` rejects a fetched
@@ -393,12 +413,49 @@ pub async fn run_loop_with_infra_policy<C: AgentLoopController>(
     'outer: loop {
         let mut beads_this_pass: u32 = 0;
         let mut handoff_this_pass = false;
+        let mut promotion_checked = false;
         loop {
             let deferred = deferred_ids(&infra_retry_queue);
             let bead = match controller.next_ready_bead(&deferred).await? {
                 Some(b) => b,
                 None => match infra_retry_queue.pop_front() {
                     Some(b) => b,
+                    None if !promotion_checked => {
+                        promotion_checked = true;
+                        if progress.outer_iterations >= max_iterations
+                            && progress.outer_iterations > 0
+                        {
+                            stalled_at_max_iterations = true;
+                            break 'outer;
+                        }
+                        match controller.promote_deferred().await? {
+                            StabilizationOutcome::NoDeferred => continue,
+                            StabilizationOutcome::Promoted { count } if count > 0 => {
+                                info!(
+                                    count,
+                                    outer_iterations = progress.outer_iterations,
+                                    "loom loop: promoted deferred remediation; re-polling ready work",
+                                );
+                                continue;
+                            }
+                            StabilizationOutcome::Promoted { .. } => continue,
+                            StabilizationOutcome::StructuralConflict { molecule, detail } => {
+                                controller
+                                    .apply_blocked(
+                                        &molecule,
+                                        GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE,
+                                        &detail,
+                                    )
+                                    .await?;
+                                progress.beads_blocked += 1;
+                                progress.partial_without_handoff = progress.outer_iterations == 0;
+                                break 'outer;
+                            }
+                            StabilizationOutcome::TransientFailure { detail } => {
+                                return Err(LoopError::ReviewHandoff { detail });
+                            }
+                        }
+                    }
                     None => break,
                 },
             };
@@ -865,6 +922,9 @@ mod tests {
         /// in dispatch order. Tests assert on this to confirm the
         /// post-Success step actually fired for a given bead.
         per_bead_gate_calls: Vec<BeadId>,
+        promotion_calls: u32,
+        promotion_outcomes: VecDeque<StabilizationOutcome>,
+        promotion_injects: VecDeque<Vec<Bead>>,
         driver_events: Vec<(String, String, serde_json::Value)>,
     }
 
@@ -973,6 +1033,19 @@ mod tests {
                 }
             }
             Ok(self.review_evidence.pop_front().unwrap_or_default())
+        }
+
+        async fn promote_deferred(&mut self) -> Result<StabilizationOutcome, LoopError> {
+            self.promotion_calls += 1;
+            if let Some(beads) = self.promotion_injects.pop_front() {
+                let count = beads.len();
+                self.ready_queue.extend(beads);
+                return Ok(StabilizationOutcome::Promoted { count });
+            }
+            Ok(self
+                .promotion_outcomes
+                .pop_front()
+                .unwrap_or(StabilizationOutcome::NoDeferred))
         }
 
         fn emit_driver_event(
@@ -1641,6 +1714,63 @@ mod tests {
         assert_eq!(summary.outer_iterations, 2);
         assert!(c.clarified.is_empty());
         assert!(c.blocked.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn continuous_outer_loop_promotes_deferred_remediation_then_exits_on_stall()
+    -> Result<(), LoopError> {
+        let mut controller = FakeController::default();
+        controller.ready_queue.push_back(bead("lm-initial", &[]));
+        controller.agent_outcomes.push_back(AgentOutcome::Success);
+        controller.agent_outcomes.push_back(AgentOutcome::Success);
+        controller.promotion_injects.push_back(vec![]);
+        controller
+            .promotion_injects
+            .push_back(vec![bead("lm-remediation", &["loom:deferred"])]);
+        controller.promotion_injects.push_back(vec![]);
+        controller.review_injects.push_back(vec![]);
+        controller.review_injects.push_back(vec![]);
+
+        let summary = run_loop(&mut controller, RetryPolicy::default(), 10).await?;
+
+        assert_eq!(
+            controller
+                .run_calls
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["lm-initial", "lm-remediation"],
+        );
+        assert_eq!(controller.review_calls, 2);
+        assert_eq!(controller.promotion_calls, 3);
+        assert_eq!(summary.outer_iterations, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remediation_beads_under_cap_auto_iterate() -> Result<(), LoopError> {
+        let mut controller = FakeController::default();
+        controller.ready_queue.push_back(bead("lm-original", &[]));
+        controller.agent_outcomes.push_back(AgentOutcome::Success);
+        controller.agent_outcomes.push_back(AgentOutcome::Success);
+        controller.promotion_injects.push_back(vec![]);
+        controller
+            .promotion_injects
+            .push_back(vec![bead("lm-undercap", &["loom:deferred"])]);
+        controller.review_injects.push_back(vec![]);
+        controller.review_injects.push_back(vec![]);
+
+        let summary = run_loop(&mut controller, RetryPolicy::default(), 2).await?;
+
+        assert!(
+            controller
+                .run_calls
+                .iter()
+                .any(|(id, _)| id.as_str() == "lm-undercap")
+        );
+        assert_eq!(summary.outer_iterations, 2);
+        assert_eq!(controller.review_calls, 2);
         Ok(())
     }
 

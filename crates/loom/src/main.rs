@@ -3002,6 +3002,7 @@ fn run_parallel_loop_root(
             observer_config,
             render_mode,
             infra_policy,
+            config.loop_.max_iterations,
         )
         .await
     })
@@ -3030,6 +3031,14 @@ fn run_sequential_loop_root(
     let label = root.label.clone();
     let fixed_bead = matches!(&root.kind, LoopWorkRootKind::Task).then(|| root.bead.clone());
     let ready_parent = root.ready_parent.clone();
+    let handoff_molecule = match &root.kind {
+        LoopWorkRootKind::Epic => Some(MoleculeId::new(root.id.as_str())),
+        LoopWorkRootKind::Task => root
+            .bead
+            .parent
+            .as_ref()
+            .map(|parent| MoleculeId::new(parent.as_str())),
+    };
     let workspace_buf = workspace.to_path_buf();
     let workspace_for_renderer = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
@@ -3121,6 +3130,9 @@ fn run_sequential_loop_root(
         }
         if let Some(parent) = ready_parent {
             controller = controller.with_ready_parent(parent);
+        }
+        if let Some(molecule) = handoff_molecule {
+            controller = controller.with_handoff_molecule(molecule);
         }
         controller = controller.with_handoff_lock(work_root_guard);
         run_loop_with_infra_policy(&mut controller, retry_policy, infra_policy, max_iterations)
@@ -3302,8 +3314,10 @@ async fn run_parallel_loop(
     observer_config: AgentObserversConfig,
     render_mode: loom_render::RenderMode,
     infra_policy: InfraRetryPolicy,
+    max_iterations: u32,
 ) -> anyhow::Result<LoopOutcome> {
     use loom_driver::bd::UpdateOpts;
+    use loom_workflow::gate_clarify::ClarifyApplyOutcome;
     use loom_workflow::r#loop::AgentOutcome;
 
     let bd = BdClient::new();
@@ -3320,230 +3334,138 @@ async fn run_parallel_loop(
     let mut infra_queue_loaded = false;
     let mut finished_ids: HashSet<BeadId> = HashSet::new();
     let mut processed = 0_u32;
-    let mut integrated = 0_u32;
     let mut clarified = 0_u32;
     let mut blocked = 0_u32;
+    let mut outer_iterations = 0_u32;
+    let mut work_since_gate = false;
+    let mut last_gate: Option<GateOutcome> = None;
 
-    loop {
-        let deferred_ids = infra_retry_queue
-            .iter()
-            .map(|bead| bead.id.clone())
-            .collect::<Vec<_>>();
-        let mut batch_beads = parallel_ready_batch(
-            &bd,
-            &label,
-            ready_parent.as_ref(),
-            batch_limit,
-            &deferred_ids,
-            &finished_ids,
-        )
-        .await?;
-        if batch_beads.is_empty() {
-            if !infra_queue_loaded {
-                infra_retry_queue
-                    .extend(load_parallel_infra_queue(&bd, &label, ready_parent.as_ref()).await?);
-                infra_queue_loaded = true;
-            }
-            while batch_beads.len() < batch_limit {
-                let Some(bead) = infra_retry_queue.pop_front() else {
-                    break;
-                };
-                if finished_ids.contains(&bead.id) {
-                    continue;
-                }
-                batch_beads.push(bead);
-            }
+    let gate = 'outer: loop {
+        if outer_iterations >= max_iterations && last_gate.is_some() {
+            break GateOutcome::Fail(loom_gate::GateFail::stalled(outer_iterations));
         }
-        if batch_beads.is_empty() {
-            break;
-        }
-
-        clear_parallel_infra_state(&bd, &batch_beads).await?;
-        let batch_by_id = batch_beads
-            .iter()
-            .map(|bead| (bead.id.clone(), bead.clone()))
-            .collect::<HashMap<_, _>>();
-        let logs_root_for_merge = logs_root.clone();
-        let logs_root_for_spawn = logs_root.clone();
-        let label_for_closure = label.clone();
-        let workspace_for_closure = workspace.clone();
-        let manifest_for_batch = Arc::clone(&manifest);
-        let cli_profile_for_batch = cli_profile.clone();
-        let phase_default_for_batch = phase_default.clone();
-        let style_rules_for_batch = style_rules.clone();
-        let loom_cfg_for_batch = loom_cfg.clone();
-        let skills_cfg_for_batch = skills_cfg.clone();
-        let observer_config_for_batch = observer_config.clone();
-        let selection_for_batch = selection.clone();
-        let launcher_env_for_batch = launcher_env.clone();
-        let outcome = loom_workflow::r#loop::run_parallel_batch_with_logs(
-            &git,
-            &label,
-            batch_beads,
-            Some(&logs_root_for_merge),
-            move |slot| {
-                let manifest_inner = Arc::clone(&manifest_for_batch);
-                let cli_profile_inner = cli_profile_for_batch.clone();
-                let phase_default_inner = phase_default_for_batch.clone();
-                let logs_root_inner = logs_root_for_spawn.clone();
-                let label_inner = label_for_closure.clone();
-                let style_rules_inner = style_rules_for_batch.clone();
-                let workspace_inner = workspace_for_closure.clone();
-                let loom_cfg_inner = loom_cfg_for_batch.clone();
-                let skills_cfg_inner = skills_cfg_for_batch.clone();
-                let observer_config_inner = observer_config_for_batch.clone();
-                let selection_inner = selection_for_batch.clone();
-                let launcher_env_inner = launcher_env_for_batch.clone();
-                async move {
-                    match dispatch_for_slot(
-                        kind,
-                        shutdown_grace,
-                        slot,
-                        &manifest_inner,
-                        cli_profile_inner.as_ref(),
-                        &phase_default_inner,
-                        &logs_root_inner,
-                        &label_inner,
-                        &style_rules_inner,
-                        &workspace_inner,
-                        &loom_cfg_inner,
-                        &skills_cfg_inner,
-                        &observer_config_inner,
-                        &selection_inner,
-                        direct_output_limits,
-                        launcher_env_inner,
-                        render_mode,
-                    )
-                    .await
-                    {
-                        Ok(outcome) => outcome,
-                        Err(e) => AgentOutcome::Failure {
-                            error: format!("{e:#}"),
-                        },
-                    }
-                }
-            },
-        )
-        .await?;
-
-        for result in outcome.results {
-            match result {
-                BatchResult::Merged { bead } => {
-                    infra_budget.clear(&bead);
-                    finished_ids.insert(bead);
-                    processed = processed.saturating_add(1);
-                    integrated = integrated.saturating_add(1);
-                }
-                BatchResult::Conflict { bead, .. } => {
-                    tracing::warn!(
-                        bead = %bead,
-                        "loom loop: integration conflict — marking for single retry; rerun loom loop to re-dispatch against the moved tip",
+        loop {
+            let deferred_ids = infra_retry_queue
+                .iter()
+                .map(|bead| bead.id.clone())
+                .collect::<Vec<_>>();
+            let mut batch_beads = parallel_ready_batch(
+                &bd,
+                &label,
+                ready_parent.as_ref(),
+                batch_limit,
+                &deferred_ids,
+                &finished_ids,
+            )
+            .await?;
+            if batch_beads.is_empty() {
+                if !infra_queue_loaded {
+                    infra_retry_queue.extend(
+                        load_parallel_infra_queue(&bd, &label, ready_parent.as_ref()).await?,
                     );
-                    bd.update(
-                        &bead,
-                        UpdateOpts {
-                            add_labels: vec![
-                                loom_workflow::r#loop::CONFLICT_RETRY_LABEL.to_string(),
-                            ],
-                            ..UpdateOpts::default()
-                        },
-                    )
-                    .await?;
-                    emit_parallel_route_event(
-                        &logs_root,
-                        &label,
-                        &bead,
-                        loom_events::DriverKind::BdStateTransition,
-                        format!("Beads state updated for {bead}: integration conflict retry"),
-                        serde_json::json!({
-                            "source_route": "loop-integration-conflict",
-                            "identity": "integration-conflict",
-                            "bead_id": bead,
-                            "mutation": "update",
-                            "added_labels": [loom_workflow::r#loop::CONFLICT_RETRY_LABEL],
-                        }),
-                    );
-                    infra_budget.clear(&bead);
-                    finished_ids.insert(bead);
-                    processed = processed.saturating_add(1);
+                    infra_queue_loaded = true;
                 }
-                BatchResult::AgentFailed { bead, .. } => {
-                    infra_budget.clear(&bead);
-                    finished_ids.insert(bead);
-                    processed = processed.saturating_add(1);
-                }
-                BatchResult::AgentInfra { bead, failure } => {
-                    let route = infra_budget.record(&bead, &failure);
-                    match route {
-                        ParallelInfraRoute::Retry { diagnostic } => {
-                            tracing::warn!(
-                                bead = %bead,
-                                cause = %diagnostic.cause,
-                                attempt = ?diagnostic.attempt,
-                                "loom loop: infra failure queued for retry",
-                            );
-                            let retry_bead = batch_by_id.get(&bead).cloned().ok_or_else(|| {
-                                anyhow::anyhow!("parallel infra result missing bead {bead}")
-                            })?;
-                            infra_retry_queue.push_back(retry_bead);
-                        }
-                        ParallelInfraRoute::Park { diagnostic } => {
-                            bd.update(&bead, parallel_infra_update(&diagnostic)).await?;
-                            emit_parallel_route_event(
-                                &logs_root,
-                                &label,
-                                &bead,
-                                loom_events::DriverKind::BdStateTransition,
-                                format!("Beads state updated for {bead}: loom:infra"),
-                                serde_json::json!({
-                                    "source_route": "loop-infra",
-                                    "identity": diagnostic.cause,
-                                    "bead_id": bead,
-                                    "mutation": "update",
-                                    "status": "blocked",
-                                    "added_labels": ["loom:infra"],
-                                }),
-                            );
-                            finished_ids.insert(bead);
-                            processed = processed.saturating_add(1);
-                            blocked = blocked.saturating_add(1);
-                        }
-                    }
-                }
-                BatchResult::AgentBlocked { bead, reason } => {
-                    let notes = if reason.is_empty() {
-                        "agent-blocked".to_string()
-                    } else {
-                        format!("agent-blocked: {reason}")
+                while batch_beads.len() < batch_limit {
+                    let Some(bead) = infra_retry_queue.pop_front() else {
+                        break;
                     };
-                    bd.update(&bead, parallel_park_update("loom:blocked", Some(notes)))
-                        .await?;
-                    emit_parallel_route_event(
-                        &logs_root,
-                        &label,
-                        &bead,
-                        loom_events::DriverKind::BdStateTransition,
-                        format!("Beads state updated for {bead}: loom:blocked"),
-                        serde_json::json!({
-                            "source_route": "loop-marker",
-                            "identity": "LOOM_BLOCKED",
-                            "bead_id": bead,
-                            "mutation": "update",
-                            "status": "blocked",
-                            "added_labels": ["loom:blocked"],
-                        }),
-                    );
-                    infra_budget.clear(&bead);
-                    finished_ids.insert(bead);
-                    processed = processed.saturating_add(1);
-                    blocked = blocked.saturating_add(1);
+                    if finished_ids.contains(&bead.id) {
+                        continue;
+                    }
+                    batch_beads.push(bead);
                 }
-                BatchResult::AgentClarify { bead, question } => {
-                    if loom_protocol::gate::options::has_well_formed_block(&question) {
+            }
+            if batch_beads.is_empty() {
+                break;
+            }
+
+            clear_parallel_infra_state(&bd, &batch_beads).await?;
+            let batch_by_id = batch_beads
+                .iter()
+                .map(|bead| (bead.id.clone(), bead.clone()))
+                .collect::<HashMap<_, _>>();
+            let logs_root_for_merge = logs_root.clone();
+            let logs_root_for_spawn = logs_root.clone();
+            let label_for_closure = label.clone();
+            let workspace_for_closure = workspace.clone();
+            let manifest_for_batch = Arc::clone(&manifest);
+            let cli_profile_for_batch = cli_profile.clone();
+            let phase_default_for_batch = phase_default.clone();
+            let style_rules_for_batch = style_rules.clone();
+            let loom_cfg_for_batch = loom_cfg.clone();
+            let skills_cfg_for_batch = skills_cfg.clone();
+            let observer_config_for_batch = observer_config.clone();
+            let selection_for_batch = selection.clone();
+            let launcher_env_for_batch = launcher_env.clone();
+            let outcome = loom_workflow::r#loop::run_parallel_batch_with_logs(
+                &git,
+                &label,
+                batch_beads,
+                Some(&logs_root_for_merge),
+                move |slot| {
+                    let manifest_inner = Arc::clone(&manifest_for_batch);
+                    let cli_profile_inner = cli_profile_for_batch.clone();
+                    let phase_default_inner = phase_default_for_batch.clone();
+                    let logs_root_inner = logs_root_for_spawn.clone();
+                    let label_inner = label_for_closure.clone();
+                    let style_rules_inner = style_rules_for_batch.clone();
+                    let workspace_inner = workspace_for_closure.clone();
+                    let loom_cfg_inner = loom_cfg_for_batch.clone();
+                    let skills_cfg_inner = skills_cfg_for_batch.clone();
+                    let observer_config_inner = observer_config_for_batch.clone();
+                    let selection_inner = selection_for_batch.clone();
+                    let launcher_env_inner = launcher_env_for_batch.clone();
+                    async move {
+                        match dispatch_for_slot(
+                            kind,
+                            shutdown_grace,
+                            slot,
+                            &manifest_inner,
+                            cli_profile_inner.as_ref(),
+                            &phase_default_inner,
+                            &logs_root_inner,
+                            &label_inner,
+                            &style_rules_inner,
+                            &workspace_inner,
+                            &loom_cfg_inner,
+                            &skills_cfg_inner,
+                            &observer_config_inner,
+                            &selection_inner,
+                            direct_output_limits,
+                            launcher_env_inner,
+                            render_mode,
+                        )
+                        .await
+                        {
+                            Ok(outcome) => outcome,
+                            Err(e) => AgentOutcome::Failure {
+                                error: format!("{e:#}"),
+                            },
+                        }
+                    }
+                },
+            )
+            .await?;
+
+            for result in outcome.results {
+                match result {
+                    BatchResult::Merged { bead } => {
+                        infra_budget.clear(&bead);
+                        finished_ids.insert(bead);
+                        processed = processed.saturating_add(1);
+                        work_since_gate = true;
+                    }
+                    BatchResult::Conflict { bead, .. } => {
+                        tracing::warn!(
+                            bead = %bead,
+                            "loom loop: integration conflict — marking for single retry; rerun loom loop to re-dispatch against the moved tip",
+                        );
                         bd.update(
                             &bead,
                             UpdateOpts {
-                                notes: Some(question),
+                                add_labels: vec![
+                                    loom_workflow::r#loop::CONFLICT_RETRY_LABEL.to_string(),
+                                ],
                                 ..UpdateOpts::default()
                             },
                         )
@@ -3553,81 +3475,243 @@ async fn run_parallel_loop(
                             &label,
                             &bead,
                             loom_events::DriverKind::BdStateTransition,
-                            format!("Beads notes updated with clarify options for {bead}"),
+                            format!("Beads state updated for {bead}: integration conflict retry"),
                             serde_json::json!({
-                                "source_route": "loop-marker",
-                                "identity": "LOOM_CLARIFY",
+                                "source_route": "loop-integration-conflict",
+                                "identity": "integration-conflict",
                                 "bead_id": bead,
                                 "mutation": "update",
-                                "notes": "clarify-options",
+                                "added_labels": [loom_workflow::r#loop::CONFLICT_RETRY_LABEL],
                             }),
                         );
+                        infra_budget.clear(&bead);
+                        finished_ids.insert(bead);
+                        processed = processed.saturating_add(1);
                     }
-                    let report =
-                        loom_workflow::gate_clarify::apply_clarify_or_blocked_report(&bd, &bead)
+                    BatchResult::AgentFailed { bead, .. } => {
+                        infra_budget.clear(&bead);
+                        finished_ids.insert(bead);
+                        processed = processed.saturating_add(1);
+                    }
+                    BatchResult::AgentInfra { bead, failure } => {
+                        let route = infra_budget.record(&bead, &failure);
+                        match route {
+                            ParallelInfraRoute::Retry { diagnostic } => {
+                                tracing::warn!(
+                                    bead = %bead,
+                                    cause = %diagnostic.cause,
+                                    attempt = ?diagnostic.attempt,
+                                    "loom loop: infra failure queued for retry",
+                                );
+                                let retry_bead =
+                                    batch_by_id.get(&bead).cloned().ok_or_else(|| {
+                                        anyhow::anyhow!("parallel infra result missing bead {bead}")
+                                    })?;
+                                infra_retry_queue.push_back(retry_bead);
+                            }
+                            ParallelInfraRoute::Park { diagnostic } => {
+                                bd.update(&bead, parallel_infra_update(&diagnostic)).await?;
+                                emit_parallel_route_event(
+                                    &logs_root,
+                                    &label,
+                                    &bead,
+                                    loom_events::DriverKind::BdStateTransition,
+                                    format!("Beads state updated for {bead}: loom:infra"),
+                                    serde_json::json!({
+                                        "source_route": "loop-infra",
+                                        "identity": diagnostic.cause,
+                                        "bead_id": bead,
+                                        "mutation": "update",
+                                        "status": "blocked",
+                                        "added_labels": ["loom:infra"],
+                                    }),
+                                );
+                                finished_ids.insert(bead);
+                                processed = processed.saturating_add(1);
+                                blocked = blocked.saturating_add(1);
+                            }
+                        }
+                    }
+                    BatchResult::AgentBlocked { bead, reason } => {
+                        let notes = if reason.is_empty() {
+                            "agent-blocked".to_string()
+                        } else {
+                            format!("agent-blocked: {reason}")
+                        };
+                        bd.update(&bead, parallel_park_update("loom:blocked", Some(notes)))
                             .await?;
-                    let context = loom_workflow::gate_clarify::ClarifyRouteContext {
-                        source_route: loom_workflow::gate_clarify::ClarifySourceRoute::LoopMarker,
-                        identity: "LOOM_CLARIFY".to_string(),
-                        gate_log_path: loom_workflow::r#loop::BeadEmit::for_bead(
-                            &logs_root, &label, &bead,
-                        )
-                        .map(|state| state.log_path),
-                    };
-                    for event in report.routing_events(&bead, &context) {
                         emit_parallel_route_event(
                             &logs_root,
                             &label,
                             &bead,
-                            event.driver_kind,
-                            event.summary,
-                            event.payload,
+                            loom_events::DriverKind::BdStateTransition,
+                            format!("Beads state updated for {bead}: loom:blocked"),
+                            serde_json::json!({
+                                "source_route": "loop-marker",
+                                "identity": "LOOM_BLOCKED",
+                                "bead_id": bead,
+                                "mutation": "update",
+                                "status": "blocked",
+                                "added_labels": ["loom:blocked"],
+                            }),
                         );
+                        infra_budget.clear(&bead);
+                        finished_ids.insert(bead);
+                        processed = processed.saturating_add(1);
+                        blocked = blocked.saturating_add(1);
                     }
-                    infra_budget.clear(&bead);
-                    finished_ids.insert(bead);
-                    processed = processed.saturating_add(1);
-                    match report.outcome {
-                        loom_workflow::gate_clarify::ClarifyApplyOutcome::Clarify => {
-                            clarified = clarified.saturating_add(1);
+                    BatchResult::AgentClarify { bead, question } => {
+                        if loom_protocol::gate::options::has_well_formed_block(&question) {
+                            bd.update(
+                                &bead,
+                                UpdateOpts {
+                                    notes: Some(question),
+                                    ..UpdateOpts::default()
+                                },
+                            )
+                            .await?;
+                            emit_parallel_route_event(
+                                &logs_root,
+                                &label,
+                                &bead,
+                                loom_events::DriverKind::BdStateTransition,
+                                format!("Beads notes updated with clarify options for {bead}"),
+                                serde_json::json!({
+                                    "source_route": "loop-marker",
+                                    "identity": "LOOM_CLARIFY",
+                                    "bead_id": bead,
+                                    "mutation": "update",
+                                    "notes": "clarify-options",
+                                }),
+                            );
                         }
-                        loom_workflow::gate_clarify::ClarifyApplyOutcome::BlockedClarifyWithoutOptions => {
-                            blocked = blocked.saturating_add(1);
+                        let report = loom_workflow::gate_clarify::apply_clarify_or_blocked_report(
+                            &bd, &bead,
+                        )
+                        .await?;
+                        let context = loom_workflow::gate_clarify::ClarifyRouteContext {
+                            source_route:
+                                loom_workflow::gate_clarify::ClarifySourceRoute::LoopMarker,
+                            identity: "LOOM_CLARIFY".to_string(),
+                            gate_log_path: loom_workflow::r#loop::BeadEmit::for_bead(
+                                &logs_root, &label, &bead,
+                            )
+                            .map(|state| state.log_path),
+                        };
+                        for event in report.routing_events(&bead, &context) {
+                            emit_parallel_route_event(
+                                &logs_root,
+                                &label,
+                                &bead,
+                                event.driver_kind,
+                                event.summary,
+                                event.payload,
+                            );
+                        }
+                        infra_budget.clear(&bead);
+                        finished_ids.insert(bead);
+                        processed = processed.saturating_add(1);
+                        match report.outcome {
+                            ClarifyApplyOutcome::Clarify => {
+                                clarified = clarified.saturating_add(1);
+                            }
+                            ClarifyApplyOutcome::BlockedClarifyWithoutOptions => {
+                                blocked = blocked.saturating_add(1);
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    let (outer_iterations, gate) = if integrated == 0 {
-        (
-            0,
-            GateOutcome::NoGate {
+        let molecule = match ready_parent.as_ref() {
+            Some(parent) => Some(MoleculeId::new(parent.as_str())),
+            None => loom_workflow::resolve::resolve_open_epic(&bd, &label).await?,
+        };
+        if let Some(molecule) = molecule.as_ref() {
+            let molecule_bead = BeadId::new(molecule.as_str())?;
+            let molecule_exists = match bd.show(&molecule_bead).await {
+                Ok(_) => true,
+                Err(loom_driver::bd::BdError::ShowEmpty)
+                    if !work_since_gate && last_gate.is_none() =>
+                {
+                    false
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let promotion = if molecule_exists {
+                loom_workflow::mint::promote_deferred(&bd, molecule, false).await
+            } else {
+                loom_workflow::mint::MintSummary::default()
+            };
+            if promotion.errors > 0 {
+                anyhow::bail!(
+                    "parallel molecule stabilization failed: {}",
+                    promotion.render()
+                );
+            }
+            if promotion.refused > 0 {
+                bd.update(
+                    &molecule_bead,
+                    UpdateOpts {
+                        status: Some("blocked".to_string()),
+                        add_labels: vec!["loom:blocked".to_string()],
+                        notes: Some(format!(
+                            "{}: {}",
+                            loom_workflow::r#loop::GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE,
+                            promotion.render(),
+                        )),
+                        ..UpdateOpts::default()
+                    },
+                )
+                .await?;
+                blocked = blocked.saturating_add(1);
+                let evidence = loom_gate::HandoffEvidence {
+                    molecule_state: loom_gate::MoleculeState::Unresolved,
+                    ..loom_gate::HandoffEvidence::default()
+                };
+                break 'outer match loom_gate::GateSuccess::new(&evidence, outer_iterations) {
+                    Ok(success) => GateOutcome::Success(success),
+                    Err(fail) => GateOutcome::Fail(fail),
+                };
+            }
+            if promotion.promoted_deferred > 0 {
+                continue 'outer;
+            }
+        }
+
+        if !work_since_gate {
+            break last_gate.take().unwrap_or(GateOutcome::NoGate {
                 beads_processed: processed,
                 reason: if processed == 0 {
                     NoGateReason::NoBeadsReady
                 } else {
                     NoGateReason::SelectionPartial
                 },
-            },
-        )
-    } else {
+            });
+        }
+
         let loom_bin = current_loom_bin()?;
         let handoff = execute_molecule_push_gate(
             &bd,
             &label,
+            molecule.as_ref(),
             &loom_bin,
             Path::new("beads-push"),
             &workspace,
             &git,
         )
         .await?;
-        let gate = match loom_gate::GateSuccess::new(&handoff.evidence, 1) {
+        outer_iterations = outer_iterations.saturating_add(1);
+        work_since_gate = false;
+        let handoff_gate = match loom_gate::GateSuccess::new(&handoff.evidence, outer_iterations) {
             Ok(success) => GateOutcome::Success(success),
             Err(fail) => GateOutcome::Fail(fail),
         };
-        (1, gate)
+        if matches!(handoff_gate, GateOutcome::Success(_)) {
+            break handoff_gate;
+        }
+        last_gate = Some(handoff_gate);
     };
     Ok(LoopOutcome {
         beads_processed: processed,
@@ -4329,6 +4413,10 @@ fn mint_summary_counts(summary: &loom_workflow::mint::MintSummary) -> serde_json
         "would_mint": summary.would_mint,
         "promoted_deferred": summary.promoted_deferred,
         "would_promote_deferred": summary.would_promote_deferred,
+        "blocking_findings": summary.blocking_findings,
+        "deferred_findings_merged": summary.deferred_findings_merged,
+        "clarify_findings_raised": summary.clarify_findings_raised,
+        "ready_remediation_batches": summary.ready_remediation_batches,
         "skipped": summary.skipped,
         "suppressed": summary.suppressed,
         "ineffective_suppressions": summary.ineffective_suppressions,
@@ -6055,6 +6143,10 @@ mod tests {
             would_mint: 0,
             promoted_deferred,
             would_promote_deferred: 0,
+            blocking_findings: 0,
+            deferred_findings_merged: 0,
+            clarify_findings_raised: 0,
+            ready_remediation_batches: 0,
             skipped,
             suppressed: 0,
             ineffective_suppressions: 0,
@@ -6103,6 +6195,10 @@ mod tests {
             would_mint: 0,
             promoted_deferred: 0,
             would_promote_deferred: 0,
+            blocking_findings: 0,
+            deferred_findings_merged: 0,
+            clarify_findings_raised: 0,
+            ready_remediation_batches: 0,
             skipped: 0,
             suppressed: 0,
             ineffective_suppressions: 0,
@@ -6122,8 +6218,8 @@ mod tests {
             "refused > 0 → non-zero exit: {refused:?}",
         );
         assert!(
-            refused.render().contains("refused 1"),
-            "header lists refused count: {}",
+            refused.render().contains("structural conflicts 1"),
+            "header lists structural-conflict count: {}",
             refused.render(),
         );
 

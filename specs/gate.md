@@ -2917,7 +2917,7 @@ and conservative fall-through for unowned queries.
   suppressed rubric findings, stale candidates, partially-stale
   candidates, refused structural conflicts, and transient errors, with
   `LOOM_FINDING_STATUS:` JSON carrying per-finding details
-  [test?](mint_end_of_run_summary_reports_finding_lifecycle_outcomes)
+  [test](mint_end_of_run_summary_reports_finding_lifecycle_outcomes)
 - Push-gate integrity findings recover via deferred remediation until
   the molecule's iteration counter exhausts: the verdict gate
   normalizes `UnresolvedAnnotation`, `StubTestFunction`, and

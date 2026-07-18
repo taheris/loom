@@ -29,7 +29,7 @@ use loom_driver::config::{LoomConfig, LoomTopConfig, Phase, SkillsConfig};
 use loom_driver::git::{
     BeadCloneAlignment, BeadClonePreparation, CreatedWorktree, GitClient, GitOid, RebaseOutcome,
 };
-use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
+use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::logging::phase_log_path;
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
@@ -51,7 +51,7 @@ use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::{AgentOutcome, InfraDiagnostic, SessionResult};
 use super::runner::{
-    AgentLoopController, INVALID_SPAWN_CONFIG_CAUSE, PerBeadGateOutcome,
+    AgentLoopController, INVALID_SPAWN_CONFIG_CAUSE, PerBeadGateOutcome, StabilizationOutcome,
     WORKSPACE_RECOVERY_FAILED_CAUSE,
 };
 use crate::spawn::container_workspace_path;
@@ -265,6 +265,9 @@ where
     /// ready lookup is constrained to descendants of this work root rather
     /// than to a single `spec:<label>` so multi-spec todo batches can run.
     ready_parent: Option<BeadId>,
+    /// Molecule selected by the CLI work root. Explicit epic roots use their
+    /// own id; explicit task roots use their Beads parent.
+    handoff_molecule: Option<MoleculeId>,
 }
 
 impl<S, F, R: CommandRunner> ProductionAgentLoopController<S, F, R>
@@ -311,6 +314,7 @@ where
             infra_queue: VecDeque::new(),
             infra_queue_loaded: false,
             ready_parent: None,
+            handoff_molecule: None,
         }
     }
 
@@ -326,6 +330,11 @@ where
 
     pub fn with_ready_parent(mut self, parent: BeadId) -> Self {
         self.ready_parent = Some(parent);
+        self
+    }
+
+    pub fn with_handoff_molecule(mut self, molecule: MoleculeId) -> Self {
+        self.handoff_molecule = Some(molecule);
         self
     }
 
@@ -1211,6 +1220,7 @@ where
         let handoff = execute_molecule_push_gate(
             &self.bd,
             &self.label,
+            self.handoff_molecule.as_ref(),
             &self.loom_bin,
             &self.beads_push_bin,
             &self.workspace,
@@ -1311,6 +1321,44 @@ where
         Ok(PerBeadGateOutcome::Clean)
     }
 
+    async fn promote_deferred(&mut self) -> Result<StabilizationOutcome, LoopError> {
+        let molecule = if let Some(molecule) = self.handoff_molecule.as_ref() {
+            Some(molecule.clone())
+        } else if let Some(parent) = self.ready_parent.as_ref() {
+            Some(MoleculeId::new(parent.as_str()))
+        } else {
+            crate::resolve::resolve_open_epic(&self.bd, &self.label).await?
+        };
+        let Some(molecule) = molecule else {
+            return Ok(StabilizationOutcome::NoDeferred);
+        };
+        let summary = crate::mint::promote_deferred(&self.bd, &molecule, false).await;
+        for event in summary.routing_events() {
+            self.emit_payload(event);
+        }
+        if summary.refused > 0 {
+            let molecule = BeadId::new(molecule.as_str()).map_err(|_| LoopError::Bug {
+                context: format!("molecule id `{molecule}` is not a bead id"),
+            })?;
+            return Ok(StabilizationOutcome::StructuralConflict {
+                molecule,
+                detail: summary.render(),
+            });
+        }
+        if summary.errors > 0 {
+            return Ok(StabilizationOutcome::TransientFailure {
+                detail: summary.render(),
+            });
+        }
+        if summary.promoted_deferred == 0 {
+            Ok(StabilizationOutcome::NoDeferred)
+        } else {
+            Ok(StabilizationOutcome::Promoted {
+                count: summary.promoted_deferred,
+            })
+        }
+    }
+
     fn emit_driver_event(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
         self.emit_to_log(kind, summary, payload);
     }
@@ -1319,17 +1367,27 @@ where
 pub struct MoleculeGateHandoff {
     pub evidence: HandoffEvidence,
     pub review_concern: Option<PreviousFailure>,
+    pub mint_summary: Option<crate::mint::MintSummary>,
 }
 
 pub async fn execute_molecule_push_gate<R: CommandRunner>(
     bd: &BdClient<R>,
     label: &SpecLabel,
+    selected_molecule: Option<&MoleculeId>,
     loom_bin: &Path,
     beads_push_bin: &Path,
     workspace: &Path,
     git: &GitClient,
 ) -> Result<MoleculeGateHandoff, LoopError> {
-    let molecule_state = molecule_state_for_spec(bd, label).await?;
+    let molecule = match selected_molecule {
+        Some(molecule) => molecule.clone(),
+        None => crate::resolve::resolve_open_epic(bd, label)
+            .await?
+            .ok_or_else(|| LoopError::NoActiveMolecule {
+                label: label.to_string(),
+            })?,
+    };
+    let molecule_state = molecule_state(bd, &molecule).await?;
     if molecule_state != MoleculeState::Clean {
         return Ok(MoleculeGateHandoff {
             evidence: HandoffEvidence {
@@ -1337,6 +1395,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
                 ..HandoffEvidence::default()
             },
             review_concern: None,
+            mint_summary: None,
         });
     }
 
@@ -1380,6 +1439,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         return Ok(MoleculeGateHandoff {
             evidence,
             review_concern: None,
+            mint_summary: None,
         });
     }
 
@@ -1423,10 +1483,28 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         TerminalSurface::Concern { summary } if !unsuppressed_findings.is_empty() => {
             Some(PreviousFailure::ReviewConcern {
                 summary: summary.clone(),
-                findings: unsuppressed_findings,
+                findings: unsuppressed_findings.clone(),
             })
         }
         _ => None,
+    };
+    let mint_summary = if review_concern.is_some() {
+        let options = crate::mint::MintOptions {
+            suppressions: config.suppress.clone(),
+            suppress_closed_same_molecule: true,
+            ..crate::mint::MintOptions::default()
+        };
+        let summary =
+            crate::mint::route_molecule_findings(bd, &molecule, &unsuppressed_findings, &options)
+                .await;
+        if summary.errors > 0 {
+            return Err(LoopError::ReviewHandoff {
+                detail: summary.render(),
+            });
+        }
+        Some(summary)
+    } else {
+        None
     };
 
     let mut runs = parse_gate_runs_from_jsonl(&verify_log_path);
@@ -1434,7 +1512,11 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         runs.extend(parse_gate_runs_from_jsonl(&review_log_path));
     }
     let mut evidence = HandoffEvidence::from_runs(runs);
-    evidence.molecule_state = MoleculeState::Clean;
+    evidence.molecule_state = if mint_summary.is_some() {
+        MoleculeState::Unresolved
+    } else {
+        MoleculeState::Clean
+    };
     evidence.push_range = Some(diff_range.clone());
     evidence.tree_oid = Some(actual.tree_oid.to_string());
     evidence.review_marker = review_marker;
@@ -1452,6 +1534,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         return Ok(MoleculeGateHandoff {
             evidence,
             review_concern,
+            mint_summary,
         });
     }
 
@@ -1466,6 +1549,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
             return Ok(MoleculeGateHandoff {
                 evidence,
                 review_concern,
+                mint_summary,
             });
         }
     };
@@ -1490,21 +1574,30 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
     Ok(MoleculeGateHandoff {
         evidence,
         review_concern,
+        mint_summary,
     })
 }
 
-async fn molecule_state_for_spec<R: CommandRunner>(
+async fn molecule_state<R: CommandRunner>(
     bd: &BdClient<R>,
-    label: &SpecLabel,
+    molecule: &MoleculeId,
 ) -> Result<MoleculeState, LoopError> {
+    let parent = BeadId::new(molecule.as_str()).map_err(|_| LoopError::Bug {
+        context: format!("molecule id `{molecule}` is not a bead id"),
+    })?;
+    let molecule_bead = bd.show(&parent).await?;
+    let progress = bd.mol_progress(molecule).await?;
     let beads = bd
         .list(ListOpts {
-            status: None,
-            label: Some(format!("spec:{}", label.as_str())),
+            status: Some("open,in_progress,blocked,deferred".to_string()),
+            parent: Some(parent),
             ..ListOpts::default()
         })
         .await?;
-    if beads.iter().any(bead_has_parked_state) {
+    if bead_has_parked_state(&molecule_bead)
+        || progress.completed < progress.total
+        || beads.iter().any(bead_has_parked_state)
+    {
         Ok(MoleculeState::Unresolved)
     } else {
         Ok(MoleculeState::Clean)
@@ -2010,12 +2103,9 @@ mod tests {
         std::fs::write(path, format!("# {label}\n")).unwrap();
     }
 
-    /// Return a `ScriptedBd` matching the two `bd` calls
-    /// `fetch_molecule_base_commit` issues under the at-most-one-open-
-    /// epic-per-spec resolution: (1) `bd list --type=epic
-    /// --label=spec:<X> --status=open` returns the single epic, then
-    /// (2) `bd show <mol_id>` returns the same epic with
-    /// `loom.base_commit = <base>` metadata.
+    /// Return a `ScriptedBd` that resolves one active molecule and has
+    /// enough successful responses for a single deferred review finding to
+    /// travel through the live molecule-routing seam.
     fn molecule_lookup_script(
         _workspace: &std::path::Path,
         spec_label: &str,
@@ -2033,9 +2123,20 @@ mod tests {
                 "metadata": {{ "loom.base_commit": "{base}" }}
             }}]"#,
         );
+        let progress =
+            r#"{"molecule_id":"lm-3hhwq","completed":1,"in_progress":0,"total":1,"percent":100.0}"#;
         ScriptedBd::new([
-            ok_stdout(body.as_bytes()), // bd list (resolve_open_epic)
-            ok_stdout(body.as_bytes()), // bd show
+            ok_stdout(body.as_bytes()),
+            ok_stdout(body.as_bytes()),
+            ok_stdout(progress.as_bytes()),
+            ok_stdout(b"[]"),
+            ok_stdout(body.as_bytes()),
+            ok_stdout(b"[]"),
+            ok_stdout(b"[]"),
+            ok_stdout(b"[]"),
+            ok_stdout(b"lm-routed.1\n"),
+            ok_stdout(b""),
+            ok_stdout(b""),
         ])
     }
 
@@ -2299,22 +2400,38 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let workspace = dir.path().to_path_buf();
             let git = git_workspace(&workspace);
-            let body = format!(
+            let epic = br#"[{
+                "id": "lm-held",
+                "title": "held molecule",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "epic",
+                "labels": ["spec:alpha"]
+            }]"#;
+            let child = format!(
                 r#"[{{
-                    "id": "lm-held",
+                    "id": "lm-held.1",
                     "title": "held molecule work",
                     "status": "blocked",
                     "priority": 2,
                     "issue_type": "task",
+                    "parent": "lm-held",
                     "labels": ["spec:alpha", "{label}"]
                 }}]"#,
             );
-            let bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(body.as_bytes())]));
+            let progress = br#"{"molecule_id":"lm-3hhwq","completed":0,"in_progress":0,"total":1,"percent":0.0}"#;
+            let bd = BdClient::with_runner(ScriptedBd::new([
+                ok_stdout(epic),
+                ok_stdout(epic),
+                ok_stdout(progress),
+                ok_stdout(child.as_bytes()),
+            ]));
             let before = loom_driver::git::sync_rev_parse(&git.loom_workspace(), "origin/main")
                 .expect("origin tip before");
             let handoff = execute_molecule_push_gate(
                 &bd,
                 &SpecLabel::new("alpha"),
+                None,
                 Path::new("must-not-run-review"),
                 Path::new("must-not-run-beads-push"),
                 &workspace,
@@ -2329,6 +2446,30 @@ mod tests {
                 .expect("origin tip after");
             assert_eq!(before, after, "{label} must refuse the push");
         }
+    }
+
+    #[tokio::test]
+    async fn molecule_state_refuses_a_parked_molecule_epic() {
+        let epic = br#"[{
+            "id": "lm-parked",
+            "title": "parked molecule",
+            "status": "blocked",
+            "priority": 2,
+            "issue_type": "epic",
+            "labels": ["spec:agent", "loom:blocked"]
+        }]"#;
+        let progress = br#"{"molecule_id":"lm-parked","completed":1,"in_progress":0,"total":1,"percent":100.0}"#;
+        let bd = BdClient::with_runner(ScriptedBd::new([
+            ok_stdout(epic),
+            ok_stdout(progress),
+            ok_stdout(b"[]"),
+        ]));
+
+        let state = molecule_state(&bd, &MoleculeId::new("lm-parked"))
+            .await
+            .expect("read molecule state");
+
+        assert_eq!(state, MoleculeState::Unresolved);
     }
 
     #[test]
@@ -3761,20 +3902,11 @@ mod tests {
         }
     }
 
-    /// `specs/harness.md`
-    /// § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*:
-    /// when the molecule-completion review's stdout carries ≥1
-    /// `LOOM_FINDING:` record and a well-formed `LOOM_CONCERN:` terminator,
-    /// `exec_review` MUST parse the streamed `Vec<Finding>` via
-    /// `WalkOutput::from_stdout` and stash a typed
-    /// `PreviousFailure::ReviewConcern { summary, findings }` so the next
-    /// `run_bead` call (the fix-up bead's first attempt — a fresh
-    /// dispatch, not a retry) consumes it and the parsed findings ride
-    /// through into the rendered recovery prompt verbatim. Mint does NOT
-    /// fire here — push is `audit`, inspection-only per `specs/gate.md`
-    /// § *Stages*.
+    /// A molecule-completion concern travels through the production review
+    /// subprocess, typed walk parser, molecule mint route, and stabilization
+    /// prompt context in one controller invocation.
     #[tokio::test(flavor = "multi_thread")]
-    async fn molecule_completion_review_threads_findings_into_previous_failure_review_concern() {
+    async fn molecule_completion_review_routes_findings_to_stabilization_or_clarify() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3809,12 +3941,9 @@ mod tests {
         std::fs::write(&stub, stub_body).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let bd = BdClient::with_runner(molecule_lookup_script(
-            dir.path(),
-            "alpha",
-            "lm-mol.1",
-            "deadbeef",
-        ));
+        let bd_runner = molecule_lookup_script(dir.path(), "alpha", "lm-mol.1", "deadbeef");
+        let bd_calls = bd_runner.calls_handle();
+        let bd = BdClient::with_runner(bd_runner);
         let git = git_workspace(&workspace);
         std::fs::create_dir_all(git.loom_workspace().join("specs")).unwrap();
         std::fs::copy(
@@ -3854,6 +3983,37 @@ mod tests {
         assert!(controller.stashed_review_concern.is_none());
 
         controller.exec_review().await.expect("exec_review ok");
+
+        {
+            let calls = bd_calls.lock().expect("bd calls lock");
+            let calls = calls
+                .iter()
+                .map(|args| {
+                    args.iter()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let create = calls
+                .iter()
+                .find(|call| call.first().is_some_and(|arg| arg == "create"))
+                .expect("review concern creates remediation");
+            assert!(
+                create
+                    .windows(2)
+                    .any(|pair| pair[0] == "--parent" && pair[1] == "lm-mol.1")
+            );
+            assert!(create.iter().any(|arg| arg.contains("loom:deferred")));
+            assert!(
+                calls
+                    .iter()
+                    .any(|call| { call == &["mol", "bond", "lm-mol.1", "lm-routed.1"] })
+            );
+            assert!(calls.iter().any(|call| {
+                call.windows(2)
+                    .any(|pair| pair[0] == "--status" && pair[1] == "deferred")
+            }));
+        }
 
         // The streamed findings + the terminal concern summary land on
         // the molecule-scoped stash as a typed

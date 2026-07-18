@@ -765,6 +765,10 @@ fn install_parallel_bd_stub(dir: &Path) -> PathBuf {
 __BD_EPIC_JSON__\n\
              exit 0\n\
          fi\n\
+         if [[ \"$cmd\" == 'mol' && \"${{2:-}}\" == 'progress' ]]; then\n\
+             printf '%s\\n' '{{\"molecule_id\":\"lm-active\",\"completed\":2,\"in_progress\":0,\"total\":2,\"percent\":100.0}}'\n\
+             exit 0\n\
+         fi\n\
          if [[ \"$cmd\" == 'ready' ]]; then\n\
              cat <<'__BD_READY_JSON__'\n\
 [{{\"id\":\"lm-para\",\"title\":\"parallel a\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}},{{\"id\":\"lm-parb\",\"title\":\"parallel b\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}}]\n\
@@ -1477,8 +1481,10 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
     let body = format!(
         "#!{bash}\n\
          set -euo pipefail\n\
-         bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
-         bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
+         bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"parent\":\"lm-mola\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
+         bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"parent\":\"lm-molb\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
+         molecule_a='{{\"id\":\"lm-mola\",\"title\":\"first molecule\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:agent\"]}}'\n\
+         molecule_b='{{\"id\":\"lm-molb\",\"title\":\"second molecule\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:agent\"]}}'\n\
          if [[ \"${{1:-}}\" == 'create' ]]; then\n\
              echo 'lm-work'\n\
              exit 0\n\
@@ -1487,8 +1493,14 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
              case \"${{2:-}}\" in\n\
                  lm-multia) printf '[%s]\\n' \"$bead_a\" ;;\n\
                  lm-multib) printf '[%s]\\n' \"$bead_b\" ;;\n\
+                 lm-mola) printf '[%s]\\n' \"$molecule_a\" ;;\n\
+                 lm-molb) printf '[%s]\\n' \"$molecule_b\" ;;\n\
                  *) printf '[]\\n' ;;\n\
              esac\n\
+             exit 0\n\
+         fi\n\
+         if [[ \"${{1:-}}\" == 'mol' && \"${{2:-}}\" == 'progress' ]]; then\n\
+             printf '%s\\n' \"{{\\\"molecule_id\\\":\\\"${{3:-}}\\\",\\\"completed\\\":1,\\\"in_progress\\\":0,\\\"total\\\":1,\\\"percent\\\":100.0}}\"\n\
              exit 0\n\
          fi\n\
          for arg in \"$@\"; do\n\
