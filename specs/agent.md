@@ -1122,9 +1122,9 @@ the entrypoint run the wrong runtime.
 - The cap is measured on the raw UTF-8 byte length of the tool's content string (per stream for `Bash`), not the JSON-serialized size of `ToolOutput.content`
   [test](cap_measured_on_raw_utf8_byte_length_not_serialized)
 - `Bash` caps `stdout` and `stderr` independently and always keeps `exit_code` inline; an oversized stream is offloaded while an under-cap stream stays verbatim
-  [test?](bash_caps_streams_independently_keeps_exit_code_inline)
+  [test](bash_caps_streams_independently_keeps_exit_code_inline)
 - `Grep` and `Glob` string output exceeding `max_inline_bytes` is offloaded and replaced with a reference
-  [test?](grep_and_glob_offload_string_output_over_cap)
+  [test](grep_and_glob_offload_string_output_over_cap)
 - The agent recovers the tail by issuing `Read` against the offload `path` with `offset = head_lines + 1`, reconstructing the full original content (offload round-trips)
   [test](offloaded_file_round_trips_through_read_via_head_lines_offset)
 - Two results with distinct content offload to distinct paths; the file name is a deterministic content hash for fixed input

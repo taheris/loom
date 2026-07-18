@@ -149,10 +149,6 @@ mod tests {
         Grep::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
     }
 
-    fn capped_grep_with(dir: &TempDir, cap: usize) -> Grep {
-        Grep::new(ToolContext::new(dir.path().join("offload"), cap))
-    }
-
     #[tokio::test]
     async fn grep_finds_matching_lines_in_directory() {
         let dir = tempdir().unwrap();
@@ -212,23 +208,5 @@ mod tests {
         let text = out.content.as_str().unwrap();
         assert!(text.contains("[truncated"), "{text}");
         assert_eq!(text.matches("match").count() - 1, 3, "{text}");
-    }
-
-    #[tokio::test]
-    async fn grep_applies_inline_byte_cap_to_result_text() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("big.txt"), "match alpha\nmatch beta\n").unwrap();
-
-        let out = capped_grep_with(&dir, 5)
-            .invoke(json!({ "pattern": "match", "path": dir.path() }))
-            .await
-            .expect("invoke");
-
-        assert!(!out.is_error);
-        assert_eq!(out.content["offloaded"], json!(true));
-        let path = out.content["path"].as_str().expect("offload path");
-        let full = std::fs::read_to_string(path).unwrap();
-        assert!(full.contains("match alpha"), "{full}");
-        assert!(full.contains("match beta"), "{full}");
     }
 }

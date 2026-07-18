@@ -163,34 +163,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bash_applies_inline_cap_to_stdout() {
+    async fn bash_caps_streams_independently_keeps_exit_code_inline() {
         let dir = tempdir().unwrap();
-        let out = capped_bash_with(&dir, 5)
-            .invoke(json!({ "command": "printf 'alpha beta'" }))
+        let out = capped_bash_with(&dir, 8)
+            .invoke(json!({
+                "command": "printf 'stdout exceeds cap\n'; printf 'err\n' >&2; exit 23",
+            }))
             .await
             .expect("invoke");
 
-        assert!(!out.is_error);
+        assert!(out.is_error);
+        assert_eq!(out.content["exit_code"], json!(23));
+        assert_eq!(out.content["stderr"], json!("err\n"));
         assert_eq!(out.content["stdout"]["offloaded"], json!(true));
-        assert_eq!(out.content["stdout"]["total_bytes"], json!(10));
-        assert_eq!(out.content["stderr"].as_str(), Some(""));
+        assert_eq!(out.content["stdout"]["total_bytes"], json!(19));
         let path = out.content["stdout"]["path"].as_str().expect("stdout path");
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "alpha beta");
-    }
-
-    #[tokio::test]
-    async fn bash_applies_inline_cap_to_stderr() {
-        let dir = tempdir().unwrap();
-        let out = capped_bash_with(&dir, 5)
-            .invoke(json!({ "command": "printf 'alpha beta' 1>&2" }))
-            .await
-            .expect("invoke");
-
-        assert!(!out.is_error);
-        assert_eq!(out.content["stderr"]["offloaded"], json!(true));
-        assert_eq!(out.content["stderr"]["total_bytes"], json!(10));
-        assert_eq!(out.content["stdout"].as_str(), Some(""));
-        let path = out.content["stderr"]["path"].as_str().expect("stderr path");
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "alpha beta");
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "stdout exceeds cap\n"
+        );
     }
 }

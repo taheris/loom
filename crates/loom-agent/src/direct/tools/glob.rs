@@ -100,10 +100,6 @@ mod tests {
         Glob::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
     }
 
-    fn capped_glob_with(dir: &TempDir, cap: usize) -> Glob {
-        Glob::new(ToolContext::new(dir.path().join("offload"), cap))
-    }
-
     #[tokio::test]
     async fn glob_lists_files_matching_extension() {
         let dir = tempdir().unwrap();
@@ -161,24 +157,5 @@ mod tests {
             .await
             .expect("invoke");
         assert!(out.is_error);
-    }
-
-    #[tokio::test]
-    async fn glob_applies_inline_byte_cap_to_result_text() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("alpha_long_name.rs"), "").unwrap();
-        std::fs::write(dir.path().join("beta_long_name.rs"), "").unwrap();
-
-        let out = capped_glob_with(&dir, 5)
-            .invoke(json!({ "pattern": "*.rs", "path": dir.path() }))
-            .await
-            .expect("invoke");
-
-        assert!(!out.is_error);
-        assert_eq!(out.content["offloaded"], json!(true));
-        let path = out.content["path"].as_str().expect("offload path");
-        let full = std::fs::read_to_string(path).unwrap();
-        assert!(full.contains("alpha_long_name.rs"), "{full}");
-        assert!(full.contains("beta_long_name.rs"), "{full}");
     }
 }

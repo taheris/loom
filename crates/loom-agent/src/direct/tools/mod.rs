@@ -333,7 +333,61 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
+    use loom_llm::Tool;
+
     use super::*;
+
+    #[tokio::test]
+    async fn grep_and_glob_offload_string_output_over_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let grep_source = dir.path().join("grep-source.txt");
+        let glob_source = dir.path().join("glob-result-with-long-name.data");
+        std::fs::write(&grep_source, "needle with long payload\nignored\n")
+            .expect("write grep fixture");
+        std::fs::write(&glob_source, "").expect("write glob fixture");
+        let ctx = ToolContext::new(dir.path().join("offload"), 8);
+
+        let grep_output = Grep::new(ctx.clone())
+            .invoke(json!({ "pattern": "needle", "path": grep_source }))
+            .await
+            .expect("invoke Grep");
+        let expected_grep = format!("{}:1:needle with long payload", grep_source.display());
+        assert!(!grep_output.is_error);
+        assert_eq!(grep_output.content["offloaded"], json!(true));
+        assert_eq!(
+            grep_output.content["total_bytes"],
+            json!(expected_grep.len())
+        );
+        let grep_path = grep_output.content["path"]
+            .as_str()
+            .expect("Grep offload path");
+        assert_eq!(
+            std::fs::read_to_string(grep_path).expect("read Grep offload"),
+            expected_grep
+        );
+
+        let glob_output = Glob::new(ctx)
+            .invoke(json!({
+                "pattern": "glob-result-*.data",
+                "path": dir.path(),
+            }))
+            .await
+            .expect("invoke Glob");
+        let expected_glob = glob_source.display().to_string();
+        assert!(!glob_output.is_error);
+        assert_eq!(glob_output.content["offloaded"], json!(true));
+        assert_eq!(
+            glob_output.content["total_bytes"],
+            json!(expected_glob.len())
+        );
+        let glob_path = glob_output.content["path"]
+            .as_str()
+            .expect("Glob offload path");
+        assert_eq!(
+            std::fs::read_to_string(glob_path).expect("read Glob offload"),
+            expected_glob
+        );
+    }
 
     #[test]
     fn same_content_concurrent_offloads_converge_to_one_file() {
