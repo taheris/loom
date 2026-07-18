@@ -245,6 +245,9 @@ where
     /// Attempt number rendered into the current bead's prompt and copied
     /// into durable post-integrate gate logs.
     current_attempt: u32,
+    /// Bead workspace awaiting lifecycle cleanup after its integrated diff
+    /// clears the deterministic per-bead gate.
+    current_worktree_path: Option<PathBuf>,
     fixed_queue: Option<VecDeque<Bead>>,
     infra_queue: VecDeque<Bead>,
     infra_queue_loaded: bool,
@@ -292,6 +295,7 @@ where
             skills_cfg: SkillsConfig::default(),
             pre_integration_tip: None,
             current_attempt: 0,
+            current_worktree_path: None,
             fixed_queue: None,
             infra_queue: VecDeque::new(),
             infra_queue_loaded: false,
@@ -460,6 +464,26 @@ where
         }
         Ok(advanced)
     }
+
+    async fn reap_closed_worktree(&mut self, bead: &BeadId) -> Result<(), LoopError> {
+        let Some(path) = self.current_worktree_path.clone() else {
+            return Ok(());
+        };
+        if self.bd.show(bead).await?.status != "closed" {
+            return Ok(());
+        }
+        self.git.remove_worktree(&path).await?;
+        self.current_worktree_path = None;
+        self.emit_to_log(
+            DriverKind::WorktreeCleanupOk,
+            &format!("closed bead workspace reaped for {bead}"),
+            serde_json::json!({
+                "bead_id": bead.to_string(),
+                "worktree_path": path.to_string_lossy(),
+            }),
+        );
+        Ok(())
+    }
 }
 
 impl<S, F, R: CommandRunner> AgentLoopController for ProductionAgentLoopController<S, F, R>
@@ -551,6 +575,7 @@ where
         previous_failure: Option<String>,
     ) -> Result<AgentOutcome, LoopError> {
         self.current_emit = None;
+        self.current_worktree_path = None;
         if bead.labels.iter().any(loom_driver::bd::Label::is_infra) {
             self.bd
                 .update(
@@ -594,6 +619,7 @@ where
         // wrix container can commit and the driver can fold the work
         // back via push + merge_branch on clean exit.
         let worktree = self.git.create_worktree(&self.label, &bead.id).await?;
+        self.current_worktree_path = Some(worktree.path.clone());
         info!(
             bead = %bead.id,
             path = %worktree.path.display(),
@@ -947,7 +973,7 @@ where
                     self.emit_to_log(
                         DriverKind::Other("bead_workspace_preserved".to_string()),
                         &format!(
-                            "bead workspace preserved until durable push for {}",
+                            "bead workspace preserved through per-bead gate for {}",
                             bead.id
                         ),
                         serde_json::json!({
@@ -1389,6 +1415,7 @@ where
             return Ok(PerBeadGateOutcome::Recovery { detail });
         }
 
+        self.reap_closed_worktree(bead).await?;
         Ok(PerBeadGateOutcome::Clean)
     }
 

@@ -2655,7 +2655,7 @@ Criteria.
       labels or backend runtimes result in `wrix spawn` invocations with
       the matching `image_ref`, `image_source`, `image_source_kind`, and
       ProfileConfig
-  [test?](per_bead_profile_runtime_dispatch_produces_distinct_image_refs)
+  [test](per_bead_profile_runtime_dispatch_produces_distinct_image_refs)
 - Loom reads `LOOM_PROFILES_MANIFEST` at startup and parses it into
       `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>`; missing
       env var or missing file errors before any bead spawn
@@ -2747,7 +2747,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [test](loom_init_configures_integration_hooks_path_from_wrix_prekhooks)
 - `loom loop` never touches the operator's working tree at
       `/workspace`; all dispatch runs against the loom workspace
-  [test?](loom_loop_does_not_touch_operator_workspace)
+  [test](loom_loop_does_not_touch_operator_workspace)
 - The integration branch is settable via `[loom] integration_branch`
       in `loom.toml` (default `main`); the loom workspace has that
       branch checked out and never switches
@@ -2765,10 +2765,10 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - Bead workspaces persist across attempts, recovery iterations,
       and `loom loop` invocations until the bead's first attempt
       after `bd close`
-  [test?](bead_workspace_survives_retry_until_close)
+  [test](bead_workspace_survives_retry_until_close)
 - A bead workspace is reaped on the first `loom loop` iteration that
       observes the bead in `closed` status
-  [test?](bead_workspace_reaped_on_bd_close)
+  [test](bead_workspace_reaped_on_bd_close)
 - Pre-dispatch dirty bead workspaces are preserved before destructive
       cleanup: tracked modifications, staged changes, and untracked files
       outside the ignore set are saved with a named `git stash push

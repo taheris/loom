@@ -10,13 +10,16 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
-use loom_driver::agent::{SessionOutcome, SpawnConfig};
-use loom_driver::bd::{BdClient, Bead, Label};
+use loom_driver::agent::{AgentRuntime, ImageSourceKind, SessionOutcome, SpawnConfig};
+use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, Label, RunOutput};
 use loom_driver::git::{GitClient, init_test_repo_with_integration};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::logging::{BeadOutcome, LogSink};
@@ -25,7 +28,6 @@ use loom_workflow::r#loop::{
     AgentLoopController, AgentOutcome, ProductionAgentLoopController, SessionResult,
 };
 use loom_workflow::todo::ExitSignal;
-use std::time::SystemTime;
 use tempfile::TempDir;
 
 fn git_command() -> Command {
@@ -100,6 +102,340 @@ fn setup() -> (
     (dir, workspace, manifest, git)
 }
 
+fn pair_manifest(dir: &Path) -> Arc<ProfileImageManifest> {
+    let rust_profile = dir.join("rust-pi-profile.json");
+    let python_profile = dir.join("python-claude-profile.json");
+    let body = format!(
+        r#"{{
+          "rust": {{ "pi": {{ "ref": "localhost/wrix-rust-pi:one", "source": "/nix/store/rust-pi-source", "source_kind": "nix-descriptor", "profile_config": {rust_profile:?} }} }},
+          "python": {{ "claude": {{ "ref": "localhost/wrix-python-claude:two", "source": "/nix/store/python-claude-source", "source_kind": "docker-archive", "profile_config": {python_profile:?} }} }}
+        }}"#,
+        rust_profile = rust_profile.display().to_string(),
+        python_profile = python_profile.display().to_string(),
+    );
+    let path = dir.join("pair-profile-images.json");
+    std::fs::write(&path, body).expect("write pair manifest");
+    Arc::new(ProfileImageManifest::from_path(&path).expect("parse pair manifest"))
+}
+
+fn retry_session(reason: &str) -> (SessionResult, Option<ExitSignal>) {
+    (
+        SessionResult::Complete(SessionOutcome {
+            exit_code: 0,
+            cost_usd: None,
+        }),
+        Some(ExitSignal::Retry {
+            reason: reason.to_string(),
+        }),
+    )
+}
+
+#[derive(Clone)]
+struct LifecycleBdRunner {
+    bead_id: BeadId,
+    closed: Arc<AtomicBool>,
+}
+
+impl CommandRunner for LifecycleBdRunner {
+    async fn run(&self, args: Vec<OsString>, _timeout: Duration) -> Result<RunOutput, BdError> {
+        let command = args.first().map(|arg| arg.to_string_lossy());
+        match command.as_deref() {
+            Some("close") => {
+                self.closed.store(true, Ordering::SeqCst);
+                Ok(RunOutput {
+                    status: 0,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+            }
+            Some("show") => {
+                let status = if self.closed.load(Ordering::SeqCst) {
+                    "closed"
+                } else {
+                    "open"
+                };
+                let body = format!(
+                    r#"[{{"id":"{}","title":"lifecycle","description":"","status":"{status}","priority":2,"issue_type":"task","labels":["profile:base"]}}]"#,
+                    self.bead_id,
+                );
+                Ok(RunOutput {
+                    status: 0,
+                    stdout: body.into_bytes(),
+                    stderr: Vec::new(),
+                })
+            }
+            _ => Ok(RunOutput {
+                status: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            }),
+        }
+    }
+}
+
+#[tokio::test]
+async fn per_bead_profile_runtime_dispatch_produces_distinct_image_refs() -> Result<()> {
+    let (dir, workspace, _manifest, git_client) = setup();
+    let manifest = pair_manifest(dir.path());
+    let observed = Arc::new(Mutex::new(Vec::<SpawnConfig>::new()));
+
+    let rust_observed = Arc::clone(&observed);
+    let mut rust_controller = ProductionAgentLoopController::new(
+        BdClient::new(),
+        SpecLabel::new("harness"),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        git_client,
+        Arc::clone(&manifest),
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, _bead_id: BeadId| {
+            rust_observed.lock().expect("observed configs").push(cfg);
+            async { retry_session("preserve rust workspace") }
+        },
+    )
+    .with_agent_runtime(AgentRuntime::Pi);
+    let mut rust_bead = fake_bead("lm-rustpi");
+    rust_bead.labels = vec![Label::new("profile:rust")];
+    assert!(matches!(
+        rust_controller.run_bead(&rust_bead, None).await?,
+        AgentOutcome::Retry { .. }
+    ));
+
+    let python_observed = Arc::clone(&observed);
+    let mut python_controller = ProductionAgentLoopController::new(
+        BdClient::new(),
+        SpecLabel::new("harness"),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        GitClient::open(&workspace)?,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, _bead_id: BeadId| {
+            python_observed.lock().expect("observed configs").push(cfg);
+            async { retry_session("preserve python workspace") }
+        },
+    )
+    .with_agent_runtime(AgentRuntime::Claude);
+    let mut python_bead = fake_bead("lm-pyclaude");
+    python_bead.labels = vec![Label::new("profile:python")];
+    assert!(matches!(
+        python_controller.run_bead(&python_bead, None).await?,
+        AgentOutcome::Retry { .. }
+    ));
+
+    let configs = observed.lock().expect("observed configs");
+    assert_eq!(configs.len(), 2);
+    assert_eq!(configs[0].image_ref, "localhost/wrix-rust-pi:one");
+    assert_eq!(
+        configs[0].image_source,
+        Path::new("/nix/store/rust-pi-source")
+    );
+    assert_eq!(
+        configs[0].image_source_kind,
+        Some(ImageSourceKind::NixDescriptor)
+    );
+    assert_eq!(
+        configs[0].profile_config.as_deref(),
+        Some(dir.path().join("rust-pi-profile.json").as_path())
+    );
+    assert_eq!(configs[1].image_ref, "localhost/wrix-python-claude:two");
+    assert_eq!(
+        configs[1].image_source,
+        Path::new("/nix/store/python-claude-source")
+    );
+    assert_eq!(
+        configs[1].image_source_kind,
+        Some(ImageSourceKind::DockerArchive)
+    );
+    assert_eq!(
+        configs[1].profile_config.as_deref(),
+        Some(dir.path().join("python-claude-profile.json").as_path())
+    );
+    assert_ne!(configs[0].workspace, configs[1].workspace);
+    Ok(())
+}
+
+#[tokio::test]
+async fn loom_loop_does_not_touch_operator_workspace() -> Result<()> {
+    let (_dir, workspace, manifest, git_client) = setup();
+    std::fs::write(workspace.join("README.md"), "operator edit\n")?;
+    std::fs::write(workspace.join("operator-note.txt"), "leave untouched\n")?;
+    let before_status = git_capture(&workspace, &["status", "--porcelain"])?;
+    let before_head = git_capture(&workspace, &["rev-parse", "HEAD"])?;
+    let expected_bead_workspace = workspace.join(".loom/beads/lm-isolated");
+
+    let mut controller = ProductionAgentLoopController::new(
+        BdClient::new(),
+        SpecLabel::new("harness"),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        git_client,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, _bead_id: BeadId| {
+            assert_eq!(cfg.workspace, expected_bead_workspace);
+            async { retry_session("operator checkout remains isolated") }
+        },
+    );
+
+    let outcome = controller.run_bead(&fake_bead("lm-isolated"), None).await?;
+    assert!(matches!(outcome, AgentOutcome::Retry { .. }));
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("README.md"))?,
+        "operator edit\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("operator-note.txt"))?,
+        "leave untouched\n"
+    );
+    assert_eq!(
+        git_capture(&workspace, &["status", "--porcelain"])?,
+        before_status
+    );
+    assert_eq!(
+        git_capture(&workspace, &["rev-parse", "HEAD"])?,
+        before_head
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn bead_workspace_survives_retry_until_close() -> Result<()> {
+    let (_dir, workspace, manifest, git_client) = setup();
+    let bead = fake_bead("lm-retrypersist");
+    let expected = workspace.join(".loom/beads/lm-retrypersist");
+    let marker = expected.join("target/retry-state");
+    let first_marker = marker.clone();
+
+    let mut first_invocation = ProductionAgentLoopController::new(
+        BdClient::new(),
+        SpecLabel::new("harness"),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        git_client,
+        Arc::clone(&manifest),
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, _bead_id: BeadId| {
+            assert_eq!(cfg.workspace, expected);
+            std::fs::create_dir_all(first_marker.parent().expect("marker parent"))
+                .expect("create target");
+            std::fs::write(&first_marker, "first attempt\n").expect("write retry state");
+            async { retry_session("fresh dispatch requested") }
+        },
+    );
+    assert!(matches!(
+        first_invocation.run_bead(&bead, None).await?,
+        AgentOutcome::Retry { .. }
+    ));
+    drop(first_invocation);
+    assert_eq!(std::fs::read_to_string(&marker)?, "first attempt\n");
+
+    let second_marker = marker.clone();
+    let expected = workspace.join(".loom/beads/lm-retrypersist");
+    let mut second_invocation = ProductionAgentLoopController::new(
+        BdClient::new(),
+        SpecLabel::new("harness"),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        GitClient::open(&workspace)?,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, _bead_id: BeadId| {
+            assert_eq!(cfg.workspace, expected);
+            assert_eq!(
+                std::fs::read_to_string(&second_marker).expect("read retry state"),
+                "first attempt\n"
+            );
+            async {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Blocked {
+                        reason: "stop after persistence assertion".to_string(),
+                    }),
+                )
+            }
+        },
+    );
+    assert!(matches!(
+        second_invocation
+            .run_bead(&bead, Some("fresh dispatch requested".to_string()))
+            .await?,
+        AgentOutcome::Blocked { .. }
+    ));
+    assert!(
+        marker.exists(),
+        "retry workspace state must remain until close"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn bead_workspace_reaped_on_bd_close() -> Result<()> {
+    let (_dir, workspace, manifest, git_client) = setup();
+    let bead = fake_bead("lm-reapclosed");
+    let worktree = workspace.join(".loom/beads/lm-reapclosed");
+    let runner = LifecycleBdRunner {
+        bead_id: bead.id.clone(),
+        closed: Arc::new(AtomicBool::new(false)),
+    };
+    let agent_runner = runner.clone();
+    let gate = workspace.join("gate-ok.sh");
+    loom_test_support::write_executable_bash_script(&gate, "set -euo pipefail\n")?;
+
+    let mut controller = ProductionAgentLoopController::new(
+        BdClient::with_runner(runner.clone()),
+        SpecLabel::new("harness"),
+        gate,
+        workspace,
+        git_client,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, bead_id: BeadId| {
+            let bd = BdClient::with_runner(agent_runner.clone());
+            async move {
+                std::fs::write(cfg.workspace.join("closed-work.txt"), "closed work\n")
+                    .expect("write work");
+                git(&cfg.workspace, &["add", "closed-work.txt"]).expect("git add");
+                git(&cfg.workspace, &["commit", "-q", "-m", "closed bead work"])
+                    .expect("git commit");
+                bd.close(&bead_id, None).await.expect("agent bd close");
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            }
+        },
+    );
+
+    assert_eq!(
+        controller.run_bead(&bead, None).await?,
+        AgentOutcome::Success
+    );
+    assert!(
+        worktree.exists(),
+        "workspace must survive until the integrated diff clears its gate"
+    );
+    controller.exec_per_bead_gate(&bead.id).await?;
+    assert!(runner.closed.load(Ordering::SeqCst));
+    assert!(
+        !worktree.exists(),
+        "the clean post-session lifecycle point must reap a closed bead workspace"
+    );
+    Ok(())
+}
+
 /// `loom loop --parallel 1` dispatches every bead through a per-bead
 /// workspace under `.loom/beads/<bead-id>/` (flat — globally-unique
 /// bead ids, no spec partition per `harness.md` § Bead dispatch). The
@@ -109,7 +445,7 @@ fn setup() -> (
 /// agent success the driver fetches the bead branch from the workspace
 /// into the loom workspace, merges it into the integration branch,
 /// deletes the transient branch, and preserves the workspace until the
-/// durable push gate completes.
+/// deterministic per-bead gate observes the agent's closure.
 #[tokio::test]
 async fn run_bead_dispatches_into_per_bead_worktree_and_preserves_after_success() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
