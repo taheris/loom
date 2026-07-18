@@ -382,7 +382,9 @@ async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
     git(&loom, &["commit", "-q", "-m", "bead b commit"])?;
 
     git(&loom, &["checkout", "-q", "main"])?;
-    let client = GitClient::open(repo.path())?;
+    let key = gen_signing_key(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key);
     assert_eq!(client.merge_branch("bead-a").await?, MergeResult::Ok);
 
     let bead_b_pre = String::from_utf8(
@@ -505,7 +507,9 @@ async fn merge_branch_replays_recorded_rerere_resolution() -> Result<()> {
     git(&loom, &["checkout", "-q", "main"])?;
     git(&loom, &["branch", "-f", "feature", &feature_base])?;
 
-    let client = GitClient::open(repo.path())?;
+    let key = gen_signing_key(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key);
     let result = client.merge_branch("feature").await?;
 
     assert_eq!(
@@ -1034,6 +1038,7 @@ async fn workspace_recovery_stash_left_unapplied_and_context_injected() -> Resul
     let label = SpecLabel::new("harness");
     let bead = BeadId::new("lm-stash.1")?;
     let created = client.create_worktree(&label, &bead).await?;
+    git(&created.path, &["config", "commit.gpgsign", "false"])?;
 
     agent_commit(&created.path, "bead.txt", "bead work\n", "bead work")?;
     std::fs::write(loom.join("integration.txt"), "integration work\n")?;
