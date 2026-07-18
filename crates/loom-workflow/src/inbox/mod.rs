@@ -17,7 +17,7 @@ pub use context::build_inbox_context;
 pub use error::InboxError;
 pub use list::{
     InboxItem, InboxKind, InboxRow, InfraInfo, TuneInfo, build_queue, build_rows, find_by_bead_id,
-    find_by_index, find_by_proposal_id, kind_of, spec_label_of,
+    find_by_index, find_by_proposal_id, frame_unavailable_tune_items, kind_of, spec_label_of,
 };
 pub use options::{
     OptionEntry, OptionsParse, find_options_block_range, parse_options, parse_options_in,

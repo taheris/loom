@@ -39,6 +39,7 @@ use crate::spawn::{container_workspace_path, launcher_key_env_for_checkout};
 use super::context::build_inbox_context;
 use super::list::{
     InboxItem, InboxKind, build_queue, find_by_bead_id, find_by_index, find_by_proposal_id,
+    frame_unavailable_tune_items,
 };
 use super::terminal::{TerminalMarker, TerminalMarkerError, parse as parse_terminal_marker};
 use super::{ApplyError, apply_proposals, ensure_integration_clean_after_chat};
@@ -146,7 +147,8 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
             bd.list(inbox_list_opts()).await
         })
         .map_err(|e| ChatError::BdList(e.to_string()))?;
-    let queue = build_queue(&beads, opts.spec_filter.as_ref(), opts.kind_filter, false);
+    let mut queue = build_queue(&beads, opts.spec_filter.as_ref(), opts.kind_filter, false);
+    frame_unavailable_tune_items(workspace, &mut queue);
     let visible = select_visible(queue, opts.target.as_ref())?;
     let items_surfaced = visible.len();
     if visible.is_empty() {
@@ -302,12 +304,13 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
             bd.list(inbox_list_opts()).await
         })
         .map_err(|e| ChatError::BdList(e.to_string()))?;
-    let remaining = build_queue(
+    let mut remaining = build_queue(
         &beads_after,
         opts.spec_filter.as_ref(),
         opts.kind_filter,
         false,
     );
+    frame_unavailable_tune_items(workspace, &mut remaining);
     Ok(ChatReport {
         items_surfaced,
         items_remaining: remaining.len(),

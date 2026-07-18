@@ -1939,6 +1939,61 @@ mod tests {
     }
 
     #[test]
+    fn agent_stream_failure_classifier_distinguishes_preflight_interrupted_and_blocked() {
+        let outcomes = [
+            classify_session(
+                SessionResult::PreflightFailed {
+                    error: "unexpected EOF before first agent event".to_string(),
+                },
+                None,
+            ),
+            classify_session(
+                SessionResult::MidSessionFailed {
+                    error: "unexpected EOF after text_delta".to_string(),
+                },
+                None,
+            ),
+            classify_session(
+                SessionResult::Complete(SessionOutcome {
+                    exit_code: 0,
+                    cost_usd: None,
+                }),
+                Some(ExitSignal::Blocked {
+                    reason: "semantic dead end with no safe options".to_string(),
+                }),
+            ),
+        ];
+
+        assert!(
+            matches!(
+                &outcomes[0],
+                AgentOutcome::InfraPreflight { error }
+                    if error == "unexpected EOF before first agent event"
+            ),
+            "preflight EOF must stay retryable infra: {:?}",
+            outcomes[0]
+        );
+        assert!(
+            matches!(
+                &outcomes[1],
+                AgentOutcome::InfraMidSession { error }
+                    if error == "unexpected EOF after text_delta"
+            ),
+            "interrupted EOF must stay retryable infra: {:?}",
+            outcomes[1]
+        );
+        assert!(
+            matches!(
+                &outcomes[2],
+                AgentOutcome::Blocked { reason }
+                    if reason == "semantic dead end with no safe options"
+            ),
+            "LOOM_BLOCKED must remain semantic: {:?}",
+            outcomes[2]
+        );
+    }
+
+    #[test]
     fn classify_session_preserves_static_infra_cause() {
         let outcome = classify_session(
             SessionResult::StaticInfra {

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::str::FromStr;
 
 use loom_driver::bd::{Bead, Label};
@@ -183,6 +184,28 @@ pub fn build_queue(
         .collect()
 }
 
+/// Present tune items with unavailable local proposal repositories or corrupt
+/// metadata as blocked while keeping host-side list/view modes read-only.
+pub fn frame_unavailable_tune_items(workspace: &Path, items: &mut [InboxItem]) {
+    for item in items {
+        let Some(tune) = item.tune.as_mut() else {
+            continue;
+        };
+        let repo = workspace
+            .join(".loom/tune")
+            .join(&tune.proposal_id)
+            .join("repo");
+        let unavailable =
+            tune.proposal_branch.is_none() || tune.proposal_head.is_none() || !repo.is_dir();
+        if unavailable {
+            if tune.state == "pending" {
+                tune.state = "blocked".to_string();
+            }
+            item.bead.status = "blocked".to_string();
+        }
+    }
+}
+
 pub fn build_rows(items: &[InboxItem], spec_filter: Option<&SpecLabel>) -> Vec<InboxRow> {
     items
         .iter()
@@ -245,11 +268,19 @@ fn build_candidate(
     if kind.is_some_and(|want| want != classified.kind) || !matches_spec(bead, spec) {
         return None;
     }
+    let mut visible_bead = bead.clone();
+    if classified
+        .tune
+        .as_ref()
+        .is_some_and(|tune| matches!(tune.state.as_str(), "blocked" | "apply_failed"))
+    {
+        visible_bead.status = "blocked".to_string();
+    }
     Some((
         pos,
         InboxItem {
             index: 0,
-            bead: bead.clone(),
+            bead: visible_bead,
             kind: classified.kind,
             spec: spec_label_of(bead).or_else(|| metadata_spec_label(&bead.metadata)),
             summary: summary_for(bead),
@@ -310,16 +341,11 @@ fn is_tune_bead(bead: &Bead) -> bool {
 }
 
 fn tune_info(bead: &Bead) -> Option<TuneInfo> {
-    let state = metadata_string(&bead.metadata, TUNE_STATE_KEY).unwrap_or_else(|| {
-        if bead.status == "blocked" {
-            "blocked".to_owned()
-        } else {
-            "pending".to_owned()
-        }
-    });
-    if !matches!(state.as_str(), "pending" | "blocked" | "apply_failed") {
-        return None;
-    }
+    let state = match metadata_string(&bead.metadata, TUNE_STATE_KEY).as_deref() {
+        Some(state @ ("pending" | "blocked" | "apply_failed")) => state.to_string(),
+        Some("accepted" | "applied" | "rejected") => return None,
+        Some(_) | None => "blocked".to_string(),
+    };
     Some(TuneInfo {
         proposal_id: metadata_string(&bead.metadata, TUNE_ID_KEY)
             .unwrap_or_else(|| bead.id.to_string()),

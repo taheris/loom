@@ -35,7 +35,7 @@ use loom_gate::{
 use loom_protocol::todo::parse_todo_success;
 use loom_workflow::inbox::{
     InboxItem, InboxKind, build_queue, build_rows, find_by_bead_id, find_by_index,
-    find_by_proposal_id, parse_options_in,
+    find_by_proposal_id, frame_unavailable_tune_items, parse_options_in,
 };
 use loom_workflow::r#loop::{
     BatchInfraFailure, BatchResult, GateOutcome, InfraDiagnostic, InfraRetryPolicy, LoopOutcome,
@@ -4949,9 +4949,10 @@ fn merge_inbox_filters(
     Ok(ResolvedInboxFilters { spec, kind })
 }
 
-fn run_inbox_list(_workspace: &Path, filters: ResolvedInboxFilters) -> anyhow::Result<()> {
+fn run_inbox_list(workspace: &Path, filters: ResolvedInboxFilters) -> anyhow::Result<()> {
     let beads = load_inbox_beads()?;
-    let items = build_queue(&beads, filters.spec.as_ref(), filters.kind, true);
+    let mut items = build_queue(&beads, filters.spec.as_ref(), filters.kind, true);
+    frame_unavailable_tune_items(workspace, &mut items);
     let rows = build_rows(&items, filters.spec.as_ref());
     if rows.is_empty() {
         println!("(no outstanding inbox items)");
@@ -4989,7 +4990,8 @@ fn run_inbox_view(
     proposal: Option<String>,
 ) -> anyhow::Result<()> {
     let beads = load_inbox_beads()?;
-    let items = build_queue(&beads, filters.spec.as_ref(), filters.kind, true);
+    let mut items = build_queue(&beads, filters.spec.as_ref(), filters.kind, true);
+    frame_unavailable_tune_items(workspace, &mut items);
     let item = select_inbox_item(&items, number, bead.as_deref(), proposal.as_deref())?;
     render_inbox_item_view(workspace, item);
     Ok(())

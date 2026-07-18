@@ -238,6 +238,17 @@ case "$mode" in
             bd update "$id" --status open --set-metadata loom.tune.state=accepted
         done < <(printf '%s\n' "$prompt" | awk '/^### [0-9]+\. lm-/ && /\[tune\]/ {{print $3}}')
         ;;
+    authorized-repair)
+        workspace="${{2:?}}"
+        while IFS= read -r id; do
+            bd update "$id" --notes "infra repaired with human authorization" --remove-label loom:infra --status open
+        done < <(printf '%s\n' "$prompt" | awk '/^### [0-9]+\. lm-/ && /\[infra\]/ {{print $3}}')
+        while IFS= read -r id; do
+            repair_path="$workspace/.loom/tune/$id/repo/chat-repair.txt"
+            printf 'authorized tune repair\n' > "$repair_path"
+            bd update "$id" --notes "proposal repaired with human authorization" --status blocked --set-metadata loom.tune.state=blocked
+        done < <(printf '%s\n' "$prompt" | awk '/^### [0-9]+\. lm-/ && /\[tune\]/ {{print $3}}')
+        ;;
     resolve-none)
         :
         ;;
@@ -991,6 +1002,108 @@ fn loom_inbox_chat_scope_filters_queue() {
     assert!(prompt.contains("lm-tune"), "{prompt}");
     assert!(!prompt.contains("lm-alpha"), "{prompt}");
     assert!(!prompt.contains("lm-beta"), "{prompt}");
+}
+
+#[test]
+fn inbox_chat_bd_authority_and_tune_repair_scope() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    seed_bead(
+        &env.state_dir,
+        "lm-infraauth",
+        "repair infra",
+        "transport failed",
+        "blocked",
+        &["loom:infra", "spec:agent"],
+    );
+    create_tune_proposal(
+        &env,
+        "lm-tuneauth",
+        &[("candidate.txt", "original candidate\n")],
+    );
+    let integration = env.workspace.join(".loom/integration");
+    let integration_before = sync_head_commit_sha(&integration).expect("integration head");
+    let origin_before =
+        sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin head");
+    let push_marker = env.workspace.join("unexpected-chat-push");
+    let hooks = env.workspace.join("chat-hooks");
+    std::fs::create_dir_all(&hooks).expect("create chat hooks");
+    let pre_push = hooks.join("pre-push");
+    std::fs::write(
+        &pre_push,
+        loom_test_support::bash_script(&format!(
+            "set -euo pipefail\nprintf 'push attempted\\n' > {push_marker:?}\n"
+        )),
+    )
+    .expect("write push detector");
+    let mut permissions = std::fs::metadata(&pre_push)
+        .expect("stat push detector")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&pre_push, permissions).expect("chmod push detector");
+    let configured = git_command()
+        .arg("-C")
+        .arg(&integration)
+        .args(["config", "core.hooksPath"])
+        .arg(&hooks)
+        .status()
+        .expect("configure push detector");
+    assert!(
+        configured.success(),
+        "configure push detector: {configured}"
+    );
+
+    let output = run_chat(&env, "authorized-repair", &[]);
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    assert_eq!(read_field(&env.state_dir, "lm-infraauth", "status"), "open");
+    assert!(
+        !read_labels(&env.state_dir, "lm-infraauth")
+            .iter()
+            .any(|label| label == "loom:infra")
+    );
+    assert!(read_field(&env.state_dir, "lm-infraauth", "notes").contains("human authorization"));
+    assert_eq!(
+        read_metadata(&env.state_dir, "lm-tuneauth")["loom.tune.state"],
+        "blocked"
+    );
+    assert_eq!(
+        read_field(&env.state_dir, "lm-tuneauth", "status"),
+        "blocked"
+    );
+    let repair = env
+        .workspace
+        .join(".loom/tune/lm-tuneauth/repo/chat-repair.txt");
+    assert_eq!(
+        std::fs::read_to_string(repair).expect("authorized repair file"),
+        "authorized tune repair\n"
+    );
+
+    assert_eq!(
+        sync_head_commit_sha(&integration).expect("post-chat integration head"),
+        integration_before
+    );
+    assert_eq!(
+        sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("post-chat origin head"),
+        origin_before
+    );
+    assert_eq!(
+        status_porcelain_sync(&integration).expect("integration status"),
+        ""
+    );
+    assert!(!push_marker.exists(), "inbox chat must not invoke git push");
+    assert!(
+        !env.workspace.join("apply-loom.log").exists(),
+        "LOOM_COMPLETE must not trigger the trusted apply/push handoff"
+    );
+    let log = read_invocation_log(&env.state_dir);
+    assert!(log.contains("update lm-infraauth"), "{log}");
+    assert!(log.contains("update lm-tuneauth"), "{log}");
 }
 
 #[test]

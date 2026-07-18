@@ -3253,7 +3253,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       specs plus pending, blocked, and apply-failed tune proposal beads
       (cross-spec default); no active-spec cache value is consulted, and closed
       beads are excluded even when labels remain
-  [test?](inbox_list_includes_infra_and_excludes_closed_items)
+  [test](inbox_list_includes_infra_and_excludes_closed_items)
 - `loom inbox list -s <label>` (alias `--spec`) filters the list to items
       carrying the `spec:<label>` bead label or proposal metadata
   [test](inbox_spec_filter_narrows_list_to_matching_spec)
@@ -3261,14 +3261,14 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       kind; absence of `--kind` means all kinds. Filters narrow before
       positional numbering and default ordering is group-first (`clarify`,
       `blocked`, `infra`, `tune`) then FIFO within each group
-  [test?](inbox_kind_filter_narrows_list_including_infra)
+  [test](inbox_kind_filter_narrows_list_including_infra)
 - `loom inbox view <N>` / `loom inbox view -b <id>` /
       `loom inbox view -p <proposal-id>` renders the addressed item host-side
       without launching a container, including durable ids, infra diagnostic
       fields when present, and manual repair paths; corrupt/unavailable tune
       proposals remain tune-kind items with blocked status rather than being
       skipped
-  [test?](inbox_view_modes_render_host_side_with_infra_diagnostics)
+  [test](inbox_view_modes_render_host_side_with_infra_diagnostics)
 - `loom inbox` exposes no host-side `pick`, `reply`, `resolve`, `apply`,
       `--option`, `--text`, `-c/--chat`, or `-d/--dismiss`; conflicting address
       flags error before any side effects
@@ -3281,7 +3281,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       queue and may repair tune proposal artifacts only under
       `.loom/tune/<id>/repo/`; it never pushes and never leaves
       `.loom/integration` dirty
-  [test?](inbox_chat_bd_authority_and_tune_repair_scope)
+  [test](inbox_chat_bd_authority_and_tune_repair_scope)
 - The driver does **not** reconcile bd state after an interactive session —
       no canonical unblock, no status reversion, no label re-application.
       Whatever bd/proposal state the chat agent (with human authorization)
@@ -3372,7 +3372,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       agent case (marker emitted, options block absent or malformed)
       falls back to `loom:blocked` with cause `clarify-without-options`
       — no stranded clarify bead reaches `loom inbox`
-  [test?](direct_emit_clarify_without_options_block_falls_back_to_blocked)
+  [test](direct_emit_clarify_without_options_block_falls_back_to_blocked)
 - Clarify downgrades emit `DriverKind::ClarifyDowngraded`, write a bd
       note breadcrumb with cause `clarify-without-options`, and pair the
       resulting bd label/status mutation with `DriverKind::BdStateTransition`
@@ -3522,7 +3522,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `infra-preflight`; EOF after one or more agent-sourced events but before
       `session_complete` is retryable `infra-interrupted`; an explicit
       worker `LOOM_BLOCKED` remains semantic `loom:blocked`
-  [test?](agent_stream_failure_classifier_distinguishes_preflight_interrupted_and_blocked)
+  [test](agent_stream_failure_classifier_distinguishes_preflight_interrupted_and_blocked)
 - Retryable infra failures use a per-bead, per-`loom loop` budget from
       `[loop.infra] max_attempts` (default 3), move failed beads to the
       tail of an in-memory retry queue, continue other ready work, and

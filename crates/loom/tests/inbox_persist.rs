@@ -127,7 +127,7 @@ fn inbox_bare_prints_help_and_list_prints_items() {
 }
 
 #[test]
-fn inbox_list_excludes_closed_blocked_or_clarify_beads() {
+fn inbox_list_includes_infra_and_excludes_closed_items() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     let state_dir = workspace.join("bd-state");
@@ -137,10 +137,10 @@ fn inbox_list_excludes_closed_blocked_or_clarify_beads() {
     seed_bead(
         &state_dir,
         "lm-closed",
-        "closed clarify",
-        CLARIFY_DESC,
+        "closed diagnostic",
+        "closed body",
         "closed",
-        &["loom:clarify", "spec:agent"],
+        &["loom:infra", "loom:clarify", "loom:blocked", "spec:agent"],
     );
     seed_bead(
         &state_dir,
@@ -149,6 +149,37 @@ fn inbox_list_excludes_closed_blocked_or_clarify_beads() {
         CLARIFY_DESC,
         "open",
         &["loom:clarify", "spec:agent"],
+    );
+    seed_bead(
+        &state_dir,
+        "lm-infra",
+        "agent transport failed",
+        "infra-preflight: stream EOF",
+        "blocked",
+        &["loom:infra", "spec:agent"],
+    );
+    seed_metadata(
+        &state_dir,
+        "lm-infra",
+        serde_json::json!({
+            "loom.infra.phase":"pre-stream",
+            "loom.infra.first_event_seen":false,
+            "loom.infra.attempt":3,
+            "loom.infra.max_attempts":3
+        }),
+    );
+    seed_bead(
+        &state_dir,
+        "lm-corrupt",
+        "corrupt tune proposal",
+        "Tune metadata is corrupt",
+        "open",
+        &["loom:tune", "spec:skills"],
+    );
+    seed_metadata(
+        &state_dir,
+        "lm-corrupt",
+        serde_json::json!({"loom.tune.state":"not-a-state"}),
     );
     seed_bead(
         &state_dir,
@@ -167,8 +198,14 @@ fn inbox_list_excludes_closed_blocked_or_clarify_beads() {
     let output = run_loom_inbox(workspace, &bin_dir, &state_dir, &["list"]);
     assert!(output.status.success(), "stderr={}", stderr(&output));
     let out = stdout(&output);
-    assert!(out.contains("lm-open"), "{out}");
-    assert!(out.contains("lm-tune"), "{out}");
+    assert!(out.contains("lm-open [clarify]"), "{out}");
+    assert!(out.contains("lm-infra [infra]"), "{out}");
+    let corrupt_row = out
+        .lines()
+        .find(|line| line.contains("lm-corrupt [tune]"))
+        .expect("corrupt tune row");
+    assert!(corrupt_row.contains("(blocked)"), "{out}");
+    assert!(out.contains("lm-tune [tune]"), "{out}");
     assert!(!out.contains("lm-closed"), "{out}");
 }
 
@@ -209,7 +246,7 @@ fn inbox_spec_filter_narrows_list_to_matching_spec() {
 }
 
 #[test]
-fn inbox_kind_filter_narrows_list() {
+fn inbox_kind_filter_narrows_list_including_infra() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     let state_dir = workspace.join("bd-state");
@@ -245,25 +282,64 @@ fn inbox_kind_filter_narrows_list() {
         "lm-c",
         serde_json::json!({"loom.tune.state":"apply_failed"}),
     );
+    seed_bead(
+        &state_dir,
+        "lm-d",
+        "older infra",
+        "transport failed first",
+        "blocked",
+        &["loom:infra"],
+    );
+    seed_bead(
+        &state_dir,
+        "lm-e",
+        "newer infra",
+        "transport failed second",
+        "blocked",
+        &["loom:infra"],
+    );
 
     let all = run_loom_inbox(workspace, &bin_dir, &state_dir, &["list"]);
     assert!(all.status.success(), "stderr={}", stderr(&all));
     let out = stdout(&all);
     let clarify_pos = out.find("lm-b").expect("clarify row");
     let blocked_pos = out.find("lm-a").expect("blocked row");
+    let older_infra_pos = out.find("lm-d").expect("older infra row");
+    let newer_infra_pos = out.find("lm-e").expect("newer infra row");
     let tune_pos = out.find("lm-c").expect("tune row");
-    assert!(clarify_pos < blocked_pos && blocked_pos < tune_pos, "{out}");
+    assert!(
+        clarify_pos < blocked_pos
+            && blocked_pos < older_infra_pos
+            && older_infra_pos < newer_infra_pos
+            && newer_infra_pos < tune_pos,
+        "{out}"
+    );
 
-    let blocked = run_loom_inbox(workspace, &bin_dir, &state_dir, &["list", "-k", "blocked"]);
-    assert!(blocked.status.success(), "stderr={}", stderr(&blocked));
-    let out = stdout(&blocked);
-    assert!(out.contains("  1. lm-a [blocked]"), "{out}");
-    assert!(!out.contains("lm-b"), "{out}");
-    assert!(!out.contains("lm-c"), "{out}");
+    for (kind, expected) in [
+        ("clarify", &["lm-b"][..]),
+        ("blocked", &["lm-a"][..]),
+        ("infra", &["lm-d", "lm-e"][..]),
+        ("tune", &["lm-c"][..]),
+    ] {
+        let filtered = run_loom_inbox(workspace, &bin_dir, &state_dir, &["list", "-k", kind]);
+        assert!(filtered.status.success(), "stderr={}", stderr(&filtered));
+        let out = stdout(&filtered);
+        for (index, id) in expected.iter().enumerate() {
+            assert!(
+                out.contains(&format!("{:>3}. {id} [{kind}]", index + 1)),
+                "{out}"
+            );
+        }
+        for absent in ["lm-a", "lm-b", "lm-c", "lm-d", "lm-e"] {
+            if !expected.contains(&absent) {
+                assert!(!out.contains(absent), "{out}");
+            }
+        }
+    }
 }
 
 #[test]
-fn inbox_view_modes_render_host_side() {
+fn inbox_view_modes_render_host_side_with_infra_diagnostics() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     let state_dir = workspace.join("bd-state");
@@ -285,11 +361,33 @@ fn inbox_view_modes_render_host_side() {
     );
     seed_bead(
         &state_dir,
+        "lm-infra",
+        "transport diagnostic",
+        "worker never started",
+        "blocked",
+        &["loom:infra", "spec:agent"],
+    );
+    seed_metadata(
+        &state_dir,
+        "lm-infra",
+        serde_json::json!({
+            "loom.infra.phase":"pre-stream",
+            "loom.infra.first_event_seen":false,
+            "loom.infra.attempt":3,
+            "loom.infra.max_attempts":3,
+            "loom.infra.exit_status":127,
+            "loom.infra.stderr_tail":"container stderr",
+            "loom.infra.spawn_error_tail":"agent binary missing",
+            "loom.infra.log_path":".loom/logs/agent/lm-infra.jsonl"
+        }),
+    );
+    seed_bead(
+        &state_dir,
         "lm-prop",
-        "proposal",
-        "Proposal report body",
+        "corrupt proposal",
+        "Proposal artifacts are unavailable",
         "open",
-        &["loom:tune", "spec:skills"],
+        &["loom:tune", "loom:blocked", "spec:skills"],
     );
     seed_metadata(
         &state_dir,
@@ -300,19 +398,42 @@ fn inbox_view_modes_render_host_side() {
             "loom.tune.proposal_head":"abc123"
         }),
     );
-    std::fs::create_dir_all(workspace.join(".loom/tune/lm-prop/repo")).unwrap();
 
-    let by_bead = run_loom_inbox(workspace, &bin_dir, &state_dir, &["view", "-b", "lm-view"]);
+    let by_bead = run_loom_inbox(workspace, &bin_dir, &state_dir, &["view", "-b", "lm-infra"]);
     assert!(by_bead.status.success(), "stderr={}", stderr(&by_bead));
     let out = stdout(&by_bead);
-    assert!(out.contains("inbox item lm-view [clarify]"), "{out}");
-    assert!(out.contains("options summary: from notes"), "{out}");
-    assert!(out.contains("option 1: note option"), "{out}");
-    assert!(out.contains("manual escape hatches"), "{out}");
+    assert!(
+        out.contains("inbox item lm-infra [infra] (blocked)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("worker did not reach semantic judgement"),
+        "{out}"
+    );
+    assert!(out.contains("phase: pre-stream"), "{out}");
+    assert!(out.contains("first_event_seen: false"), "{out}");
+    assert!(out.contains("attempt: 3/3"), "{out}");
+    assert!(out.contains("exit_status: 127"), "{out}");
+    assert!(out.contains("stderr_tail: container stderr"), "{out}");
+    assert!(
+        out.contains("spawn_error_tail: agent binary missing"),
+        "{out}"
+    );
+    assert!(
+        out.contains("log_path: .loom/logs/agent/lm-infra.jsonl"),
+        "{out}"
+    );
+    assert!(
+        out.contains("bd update lm-infra --remove-label=loom:infra --status=open"),
+        "{out}"
+    );
 
     let by_number = run_loom_inbox(workspace, &bin_dir, &state_dir, &["view", "1"]);
     assert!(by_number.status.success(), "stderr={}", stderr(&by_number));
-    assert!(stdout(&by_number).contains("lm-view"));
+    let out = stdout(&by_number);
+    assert!(out.contains("inbox item lm-view [clarify]"), "{out}");
+    assert!(out.contains("options summary: from notes"), "{out}");
+    assert!(out.contains("option 1: note option"), "{out}");
 
     let by_proposal = run_loom_inbox(workspace, &bin_dir, &state_dir, &["view", "-p", "lm-prop"]);
     assert!(
@@ -321,9 +442,17 @@ fn inbox_view_modes_render_host_side() {
         stderr(&by_proposal)
     );
     let out = stdout(&by_proposal);
-    assert!(out.contains("inbox item lm-prop [tune]"), "{out}");
+    assert!(out.contains("inbox item lm-prop [tune] (blocked)"), "{out}");
     assert!(out.contains("proposal branch: loom/tune/lm-prop"), "{out}");
-    assert!(out.contains("repo:"), "{out}");
+    assert!(out.contains("repo:") && out.contains("(missing)"), "{out}");
+    assert!(out.contains("loom inbox chat -p lm-prop"), "{out}");
+    assert!(
+        out.contains(&format!(
+            "inspect {}/.loom/tune/lm-prop",
+            workspace.display()
+        )),
+        "{out}"
+    );
 }
 
 #[test]

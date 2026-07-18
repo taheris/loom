@@ -270,6 +270,55 @@ fn loom_loop_bead_routes_clarify_marker_to_label_and_status_blocked() {
     );
 }
 
+#[test]
+fn direct_emit_clarify_without_options_block_falls_back_to_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+    let state_dir = workspace.join("bd-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    seed_bead(
+        &state_dir,
+        "lm-noopts",
+        "clarify without persisted options",
+        "The agent forgot to persist the canonical options block.",
+        &["spec:agent", "profile:base"],
+    );
+    let bin_dir = install_bd_shim(workspace);
+    let manifest = write_minimal_manifest(workspace);
+
+    let output = run_loom_loop_bead(
+        workspace,
+        &bin_dir,
+        &state_dir,
+        &manifest,
+        "clarify-marker",
+        "lm-noopts",
+    );
+    let log = read_invocation_log(&state_dir);
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}\nbd-shim log:\n{log}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(read_field(&state_dir, "lm-noopts", "status"), "blocked");
+    let labels = read_labels(&state_dir, "lm-noopts");
+    assert!(
+        labels.iter().any(|label| label == "loom:blocked"),
+        "{labels:?}\n{log}"
+    );
+    assert!(
+        !labels.iter().any(|label| label == "loom:clarify"),
+        "{labels:?}\n{log}"
+    );
+    assert!(
+        read_field(&state_dir, "lm-noopts", "notes").contains("clarify-without-options"),
+        "{log}"
+    );
+    assert!(!driver_closed_bead(&log, "lm-noopts"), "{log}");
+}
+
 // -------------------------------------------------------------------
 // B6 — `test_run_does_not_close_bead`
 // -------------------------------------------------------------------
