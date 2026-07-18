@@ -111,6 +111,10 @@ impl<R: CommandRunner> BdClient<R> {
             args.push("--metadata".into());
             args.push(metadata.into());
         }
+        if let Some(notes) = opts.notes {
+            args.push("--notes".into());
+            args.push(notes.into());
+        }
         let out = self.invoke(args).await?;
         let stdout = String::from_utf8(out.stdout)?;
         let trimmed = stdout.trim();
@@ -309,6 +313,8 @@ pub struct CreateOpts {
     /// Forwarded verbatim to `bd create --metadata <json>` when set. `bd`
     /// expects a JSON object; callers must serialise before passing.
     pub metadata: Option<String>,
+    /// Free-text breadcrumb forwarded to `bd create --notes <text>`.
+    pub notes: Option<String>,
 }
 
 /// Fields accepted by `bd update`. Empty defaults forward nothing.
@@ -669,6 +675,7 @@ mod tests {
                 labels: vec!["profile:rust".into()],
                 parent: Some(BeadId::new("lm-3hhwq")?),
                 metadata: None,
+                notes: Some("routing breadcrumb".into()),
             })
             .await?;
         assert_eq!(id, BeadId::new("lm-new.7")?);
@@ -682,6 +689,8 @@ mod tests {
         assert!(argv.contains(&"lm-3hhwq".to_string()));
         assert!(argv.contains(&"--labels".to_string()));
         assert!(argv.contains(&"profile:rust".to_string()));
+        assert!(argv.contains(&"--notes".to_string()));
+        assert!(argv.contains(&"routing breadcrumb".to_string()));
         Ok(())
     }
 

@@ -35,7 +35,8 @@ use loom_driver::logging::phase_log_path;
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::resolve_scratch_key;
 use loom_events::{
-    AgentEvent, AgentStartMetadata, DriverKind, EnvelopeBuilder, SessionScope, Source,
+    AgentEvent, AgentStartMetadata, DriverEventPayload, DriverKind, EnvelopeBuilder, SessionScope,
+    Source,
 };
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -395,10 +396,26 @@ where
 
     /// Append a single driver event to the current bead's log file.
     /// Silent no-op when [`Self::current_emit`] is unset.
-    fn emit_to_log(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
+    fn emit_to_log(&mut self, kind: DriverKind, summary: &str, mut payload: serde_json::Value) {
         if let Some(state) = self.current_emit.as_mut() {
+            if matches!(kind, DriverKind::ClarifyDowngraded)
+                && let Some(object) = payload.as_object_mut()
+            {
+                object.insert(
+                    "event_sequence".to_string(),
+                    serde_json::json!(state.builder.current_seq()),
+                );
+                object.insert(
+                    "gate_log_path".to_string(),
+                    serde_json::json!(state.log_path.to_string_lossy()),
+                );
+            }
             state.emit(kind, summary, payload);
         }
+    }
+
+    fn emit_payload(&mut self, event: DriverEventPayload) {
+        self.emit_to_log(event.driver_kind, &event.summary, event.payload);
     }
 
     /// Run one `git verify-commit` pass over `range` in the loom
@@ -750,6 +767,8 @@ where
         );
         let (session, marker) = (self.spawn)(spawn_config, bead.id.clone()).await;
         let marker_is_noop = matches!(marker.as_ref(), Some(ExitSignal::Noop));
+        let marker_for_event = marker.clone();
+        let session_exit_code = session_exit_code(&session);
         drop(scratch);
         // Resolve the per-bead log file the closure just finished writing
         // to so subsequent driver events (tree-not-clean / merge / push /
@@ -760,6 +779,22 @@ where
         }
 
         let outcome = classify_session(session, marker);
+        self.emit_to_log(
+            DriverKind::MarkerRouted,
+            &format!(
+                "terminal marker {} routed to {} for bead {}",
+                marker_name(marker_for_event.as_ref()),
+                agent_outcome_route(&outcome),
+                bead.id,
+            ),
+            serde_json::json!({
+                "source_route": "loop-marker",
+                "identity": marker_name(marker_for_event.as_ref()),
+                "route": agent_outcome_route(&outcome),
+                "bead_id": bead.id.to_string(),
+                "exit_code": session_exit_code,
+            }),
+        );
         if outcome == AgentOutcome::Success {
             // Tree-clean precedes verify-fail / review-concern per
             // `specs/harness.md` § Verdict Gate. The pre-attempt
@@ -1010,6 +1045,17 @@ where
                     },
                 )
                 .await?;
+            self.emit_to_log(
+                DriverKind::BdStateTransition,
+                &format!("Beads notes updated with clarify options for {bead}"),
+                serde_json::json!({
+                    "source_route": "loop-marker",
+                    "identity": "LOOM_CLARIFY",
+                    "bead_id": bead,
+                    "mutation": "update",
+                    "notes": "clarify-options",
+                }),
+            );
         }
         // Verdict-gate direct-emit LOOM_CLARIFY check (specs/gate.md §
         // Options Format Contract): inspect the bead under dispatch for a
@@ -1017,7 +1063,15 @@ where
         // malformed / absent → loom:blocked with cause
         // `clarify-without-options` so `loom inbox`'s queue is not handed
         // an empty options block.
-        crate::gate_clarify::apply_clarify_or_blocked(&self.bd, bead).await?;
+        let report = crate::gate_clarify::apply_clarify_or_blocked_report(&self.bd, bead).await?;
+        let context = crate::gate_clarify::ClarifyRouteContext {
+            source_route: crate::gate_clarify::ClarifySourceRoute::LoopMarker,
+            identity: "LOOM_CLARIFY".to_string(),
+            gate_log_path: self.current_emit.as_ref().map(|emit| emit.log_path.clone()),
+        };
+        for event in report.routing_events(bead, &context) {
+            self.emit_payload(event);
+        }
         Ok(())
     }
 
@@ -1039,6 +1093,19 @@ where
                 },
             )
             .await?;
+        self.emit_to_log(
+            DriverKind::BdStateTransition,
+            &format!("Beads state updated for {bead}: loom:blocked"),
+            serde_json::json!({
+                "source_route": "loop-marker",
+                "identity": "LOOM_BLOCKED",
+                "bead_id": bead,
+                "mutation": "update",
+                "status": "blocked",
+                "added_labels": ["loom:blocked"],
+                "notes_cause": cause,
+            }),
+        );
         Ok(())
     }
 
@@ -1082,6 +1149,19 @@ where
                 },
             )
             .await?;
+        self.emit_to_log(
+            DriverKind::BdStateTransition,
+            &format!("Beads state updated for {bead}: loom:infra"),
+            serde_json::json!({
+                "source_route": "loop-infra",
+                "identity": diagnostic.cause,
+                "bead_id": bead,
+                "mutation": "update",
+                "status": "blocked",
+                "added_labels": ["loom:infra"],
+                "notes_cause": diagnostic.cause,
+            }),
+        );
         Ok(())
     }
 
@@ -1546,6 +1626,38 @@ pub fn format_unknown_runtime_for_profile_error(
         )
     };
     format!("requested profile:{profile} runtime:{runtime} not declared; {declared_part}")
+}
+
+fn session_exit_code(session: &SessionResult) -> Option<i32> {
+    match session {
+        SessionResult::Complete(outcome) => Some(outcome.exit_code),
+        SessionResult::PreflightFailed { .. }
+        | SessionResult::MidSessionFailed { .. }
+        | SessionResult::StaticInfra { .. }
+        | SessionResult::ObserverAbort { .. } => None,
+    }
+}
+
+pub(super) fn marker_name(marker: Option<&ExitSignal>) -> &'static str {
+    marker.map_or("missing", ExitSignal::identity)
+}
+
+pub(super) fn agent_outcome_route(outcome: &AgentOutcome) -> &'static str {
+    match outcome {
+        AgentOutcome::Success => "success",
+        AgentOutcome::Noop => "noop",
+        AgentOutcome::Failure { .. } | AgentOutcome::ZeroProgress { .. } => "recovery",
+        AgentOutcome::Retry { .. } => "retry",
+        AgentOutcome::Blocked { .. } | AgentOutcome::SignatureVerificationFailed { .. } => {
+            "blocked"
+        }
+        AgentOutcome::Clarify { .. } => "clarify",
+        AgentOutcome::IntegrationConflict { .. } => "integration-conflict-retry",
+        AgentOutcome::InfraPreflight { .. } | AgentOutcome::InfraMidSession { .. } => "infra-retry",
+        AgentOutcome::StaticInfra { .. }
+        | AgentOutcome::UnknownProfile { .. }
+        | AgentOutcome::UnknownRuntimeForProfile { .. } => "infra-blocked",
+    }
 }
 
 /// Translate a `(SessionResult, Option<ExitSignal>)` pair into an

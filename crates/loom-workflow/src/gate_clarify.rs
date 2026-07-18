@@ -13,9 +13,13 @@
 //! `loop` / `review` phases and the molecule epic for the `todo_*`
 //! phases (`specs/templates.md` § Decomposition Discipline).
 
+use std::path::PathBuf;
+
 use loom_driver::bd::{BdClient, BdError, CommandRunner, UpdateOpts};
 use loom_driver::identifier::BeadId;
+use loom_events::{DriverEventPayload, DriverKind};
 use loom_protocol::gate::options::has_well_formed_block;
+use serde::Serialize;
 
 /// Cause string written into the target bead's notes when the gate
 /// downgrades a direct-emit `LOOM_CLARIFY` because the bead's notes ∪
@@ -23,6 +27,40 @@ use loom_protocol::gate::options::has_well_formed_block;
 /// mint-side per-finding processing path so a single cause label
 /// surfaces from both enforcement sites.
 pub const CLARIFY_WITHOUT_OPTIONS_CAUSE: &str = "clarify-without-options";
+
+/// Production route that requested clarify validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClarifySourceRoute {
+    LoopMarker,
+    TodoMarker,
+    ReviewVerdict,
+}
+
+impl ClarifySourceRoute {
+    const fn as_wire(self) -> &'static str {
+        match self {
+            Self::LoopMarker => "loop-marker",
+            Self::TodoMarker => "todo-marker",
+            Self::ReviewVerdict => "review-verdict",
+        }
+    }
+}
+
+/// Result of parsing the target's notes and description as an Options block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OptionsParseResult {
+    WellFormed,
+    MissingOrMalformed,
+}
+
+/// Context attached to clarify route observability events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClarifyRouteContext {
+    pub source_route: ClarifySourceRoute,
+    pub identity: String,
+    pub gate_log_path: Option<PathBuf>,
+}
 
 /// Outcome of [`apply_clarify_or_blocked`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +72,87 @@ pub enum ClarifyApplyOutcome {
     /// block; `loom:blocked` was applied with cause
     /// [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] instead.
     BlockedClarifyWithoutOptions,
+}
+
+/// Applied clarify decision plus the evidence needed for route events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClarifyApplyReport {
+    pub outcome: ClarifyApplyOutcome,
+    pub options_parse_result: OptionsParseResult,
+    pub evidence_hash: String,
+    pub evidence_excerpt: String,
+}
+
+impl ClarifyApplyReport {
+    /// Build events that must follow the successful Beads mutation.
+    #[must_use]
+    pub fn routing_events(
+        &self,
+        bead: &BeadId,
+        context: &ClarifyRouteContext,
+    ) -> Vec<DriverEventPayload> {
+        let effective_label = match self.outcome {
+            ClarifyApplyOutcome::Clarify => "loom:clarify",
+            ClarifyApplyOutcome::BlockedClarifyWithoutOptions => "loom:blocked",
+        };
+        let mut events = Vec::with_capacity(2);
+        if matches!(
+            self.outcome,
+            ClarifyApplyOutcome::BlockedClarifyWithoutOptions
+        ) {
+            events.push(DriverEventPayload::new(
+                DriverKind::ClarifyDowngraded,
+                format!("clarify route downgraded to blocked for {bead}"),
+                serde_json::json!({
+                    "source_route": context.source_route.as_wire(),
+                    "identity": context.identity,
+                    "options_parse_result": self.options_parse_result,
+                    "evidence_hash": self.evidence_hash,
+                    "evidence_excerpt": self.evidence_excerpt,
+                    "cause": CLARIFY_WITHOUT_OPTIONS_CAUSE,
+                    "gate_log_path": context.gate_log_path,
+                }),
+            ));
+        }
+        events.push(DriverEventPayload::new(
+            DriverKind::BdStateTransition,
+            format!("Beads state updated for {bead}: {effective_label}"),
+            serde_json::json!({
+                "source_route": context.source_route.as_wire(),
+                "identity": context.identity,
+                "bead_id": bead,
+                "mutation": "update",
+                "status": "blocked",
+                "added_labels": [effective_label],
+                "notes_cause": if matches!(
+                    self.outcome,
+                    ClarifyApplyOutcome::BlockedClarifyWithoutOptions
+                ) {
+                    Some(CLARIFY_WITHOUT_OPTIONS_CAUSE)
+                } else {
+                    None
+                },
+            }),
+        ));
+        events
+    }
+}
+
+pub(crate) fn evidence_hash(text: &str) -> String {
+    blake3::hash(text.as_bytes()).to_hex().to_string()
+}
+
+pub(crate) fn evidence_excerpt(text: &str) -> String {
+    const LIMIT: usize = 240;
+
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = flattened.chars();
+    let excerpt = chars.by_ref().take(LIMIT).collect::<String>();
+    if chars.next().is_some() {
+        format!("{excerpt}…")
+    } else {
+        excerpt
+    }
 }
 
 /// Inspect the target bead's notes ∪ description for a well-formed
@@ -50,6 +169,14 @@ pub async fn apply_clarify_or_blocked<R: CommandRunner>(
     bd: &BdClient<R>,
     bead: &BeadId,
 ) -> Result<ClarifyApplyOutcome, BdError> {
+    Ok(apply_clarify_or_blocked_report(bd, bead).await?.outcome)
+}
+
+/// Apply clarify validation and retain diagnostics for route observability.
+pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
+    bd: &BdClient<R>,
+    bead: &BeadId,
+) -> Result<ClarifyApplyReport, BdError> {
     let snapshot = bd.show(bead).await?;
     let mut union = snapshot.notes.unwrap_or_default();
     if !union.is_empty() {
@@ -67,7 +194,12 @@ pub async fn apply_clarify_or_blocked<R: CommandRunner>(
             },
         )
         .await?;
-        Ok(ClarifyApplyOutcome::Clarify)
+        Ok(ClarifyApplyReport {
+            outcome: ClarifyApplyOutcome::Clarify,
+            options_parse_result: OptionsParseResult::WellFormed,
+            evidence_hash: evidence_hash(&union),
+            evidence_excerpt: evidence_excerpt(&union),
+        })
     } else {
         bd.update(
             bead,
@@ -79,7 +211,12 @@ pub async fn apply_clarify_or_blocked<R: CommandRunner>(
             },
         )
         .await?;
-        Ok(ClarifyApplyOutcome::BlockedClarifyWithoutOptions)
+        Ok(ClarifyApplyReport {
+            outcome: ClarifyApplyOutcome::BlockedClarifyWithoutOptions,
+            options_parse_result: OptionsParseResult::MissingOrMalformed,
+            evidence_hash: evidence_hash(&union),
+            evidence_excerpt: evidence_excerpt(&union),
+        })
     }
 }
 
@@ -227,5 +364,54 @@ body
         let bead = BeadId::new("lm-x.1").expect("id");
         let outcome = apply_clarify_or_blocked(&bd, &bead).await.expect("ok");
         assert_eq!(outcome, ClarifyApplyOutcome::BlockedClarifyWithoutOptions);
+    }
+
+    #[tokio::test]
+    async fn clarify_downgrade_builds_driver_events_and_bd_breadcrumb() {
+        let runner = ScriptedRunner::new(vec![
+            ok(&bead_row(
+                "lm-x.1",
+                "clarify question without options",
+                None,
+            )),
+            ok(""),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let bead = BeadId::new("lm-x.1").expect("id");
+        let report = apply_clarify_or_blocked_report(&bd, &bead)
+            .await
+            .expect("apply downgrade");
+        let events = report.routing_events(
+            &bead,
+            &ClarifyRouteContext {
+                source_route: ClarifySourceRoute::LoopMarker,
+                identity: "LOOM_CLARIFY".to_string(),
+                gate_log_path: Some(PathBuf::from(".loom/logs/harness/lm-x.1.jsonl")),
+            },
+        );
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].driver_kind, DriverKind::ClarifyDowngraded);
+        assert_eq!(events[1].driver_kind, DriverKind::BdStateTransition);
+        assert_eq!(events[0].payload["cause"], CLARIFY_WITHOUT_OPTIONS_CAUSE);
+        assert_eq!(
+            events[0].payload["options_parse_result"],
+            "missing-or-malformed"
+        );
+        assert!(
+            events[0].payload["evidence_hash"]
+                .as_str()
+                .is_some_and(|hash| !hash.is_empty())
+        );
+
+        let calls = argv(&invocations);
+        let update = &calls[1];
+        assert!(update.iter().any(|arg| arg == "loom:blocked"));
+        assert!(
+            update
+                .iter()
+                .any(|arg| arg.contains(CLARIFY_WITHOUT_OPTIONS_CAUSE))
+        );
     }
 }

@@ -51,7 +51,7 @@ use loom_workflow::review::{
 };
 use loom_workflow::run_agent_classified;
 use loom_workflow::todo::{
-    ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
+    ExitSignal, ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
 };
 use loom_workflow::{DefaultObserverChain, init, logs_cmd, plan, spec, status, use_spec};
 
@@ -2101,11 +2101,36 @@ fn run_gate_mint(
         ResolvedMintScope::Molecule(molecule) => {
             let _guard = acquire_work_root_lock(workspace, molecule.as_str())?;
             let dry_run = args.dry_run;
+            let workspace = workspace.to_path_buf();
+            let logs_root = workspace.join(".loom/logs");
+            let config = LoomConfig::load(LoomConfig::resolve_path(&workspace))?;
+            let phase_when = SystemClock::new().wall_now();
+            let render_mode = default_live_render_mode();
+            let renderer_id = BeadId::new("lm-gate")?;
             runtime.block_on(async move {
                 let bd = BdClient::new();
-                Ok::<_, anyhow::Error>(
-                    loom_workflow::mint::promote_deferred(&bd, &molecule, dry_run).await,
-                )
+                let mut progress = GateMintProgress::open(
+                    &logs_root,
+                    &workspace,
+                    render_mode,
+                    &renderer_id,
+                    phase_when,
+                    config.direct_output_limits().max_inline_bytes,
+                )?;
+                progress.emit(
+                    loom_events::DriverKind::GateRunStart,
+                    format!("mint molecule run started for {molecule}"),
+                    serde_json::json!({
+                        "gate_phase": "mint",
+                        "scope": "molecule",
+                        "molecule_id": molecule,
+                        "dry_run": dry_run,
+                    }),
+                )?;
+                let summary = loom_workflow::mint::promote_deferred(&bd, &molecule, dry_run).await;
+                emit_mint_summary_events(&mut progress, &summary, "molecule")?;
+                progress.finish(&summary)?;
+                Ok::<_, anyhow::Error>(summary)
             })?
         }
         ResolvedMintScope::Tree => {
@@ -2329,6 +2354,7 @@ fn run_gate_mint(
                     match walker.run_rubric(&scope).await {
                         Ok(stdout) => {
                             let output_bytes = stdout.len();
+                            let marker = parse_exit_signal(&stdout);
                             match loom_workflow::review::parse_walk_output(
                                 &stdout,
                                 scope.dispatch_scope(),
@@ -2336,6 +2362,25 @@ fn run_gate_mint(
                             ) {
                                 Ok(parsed) => {
                                     let parsed_findings = parsed.len();
+                                    let marker_route = if parsed_findings == 0 {
+                                        "complete"
+                                    } else {
+                                        "finding-routing"
+                                    };
+                                    progress.emit(
+                                        loom_events::DriverKind::MarkerRouted,
+                                        format!(
+                                            "rubric marker {} routed to {marker_route}",
+                                            marker.as_ref().map_or("missing", ExitSignal::identity),
+                                        ),
+                                        serde_json::json!({
+                                            "source_route": "mint-marker",
+                                            "identity": marker.as_ref().map_or("missing", ExitSignal::identity),
+                                            "route": marker_route,
+                                            "spec_label": label_name,
+                                            "finding_count": parsed_findings,
+                                        }),
+                                    )?;
                                     findings.extend(parsed);
                                     progress.emit(
                                         loom_events::DriverKind::GateRunLane,
@@ -2353,6 +2398,19 @@ fn run_gate_mint(
                                 }
                                 Err(err) => {
                                     let message = err.to_string();
+                                    progress.emit(
+                                        loom_events::DriverKind::MarkerRouted,
+                                        format!(
+                                            "rubric marker {} routed to malformed-walk",
+                                            marker.as_ref().map_or("missing", ExitSignal::identity),
+                                        ),
+                                        serde_json::json!({
+                                            "source_route": "mint-marker",
+                                            "identity": marker.as_ref().map_or("missing", ExitSignal::identity),
+                                            "route": "malformed-walk",
+                                            "spec_label": label_name,
+                                        }),
+                                    )?;
                                     progress.emit(
                                         loom_events::DriverKind::GateRunLane,
                                         format!(
@@ -2427,7 +2485,7 @@ fn run_gate_mint(
                 for (fingerprint, message) in walk_errors {
                     summary.record_error(fingerprint, message);
                 }
-                emit_mint_summary_events(&mut progress, &summary)?;
+                emit_mint_summary_events(&mut progress, &summary, "tree")?;
                 progress.finish(&summary)?;
                 Ok(summary)
             })?
@@ -3354,6 +3412,20 @@ async fn run_parallel_loop(
                         },
                     )
                     .await?;
+                    emit_parallel_route_event(
+                        &logs_root,
+                        &label,
+                        &bead,
+                        loom_events::DriverKind::BdStateTransition,
+                        format!("Beads state updated for {bead}: integration conflict retry"),
+                        serde_json::json!({
+                            "source_route": "loop-integration-conflict",
+                            "identity": "integration-conflict",
+                            "bead_id": bead,
+                            "mutation": "update",
+                            "added_labels": [loom_workflow::r#loop::CONFLICT_RETRY_LABEL],
+                        }),
+                    );
                     infra_budget.clear(&bead);
                     finished_ids.insert(bead);
                     processed = processed.saturating_add(1);
@@ -3380,6 +3452,21 @@ async fn run_parallel_loop(
                         }
                         ParallelInfraRoute::Park { diagnostic } => {
                             bd.update(&bead, parallel_infra_update(&diagnostic)).await?;
+                            emit_parallel_route_event(
+                                &logs_root,
+                                &label,
+                                &bead,
+                                loom_events::DriverKind::BdStateTransition,
+                                format!("Beads state updated for {bead}: loom:infra"),
+                                serde_json::json!({
+                                    "source_route": "loop-infra",
+                                    "identity": diagnostic.cause,
+                                    "bead_id": bead,
+                                    "mutation": "update",
+                                    "status": "blocked",
+                                    "added_labels": ["loom:infra"],
+                                }),
+                            );
                             finished_ids.insert(bead);
                             processed = processed.saturating_add(1);
                             blocked = blocked.saturating_add(1);
@@ -3394,23 +3481,83 @@ async fn run_parallel_loop(
                     };
                     bd.update(&bead, parallel_park_update("loom:blocked", Some(notes)))
                         .await?;
+                    emit_parallel_route_event(
+                        &logs_root,
+                        &label,
+                        &bead,
+                        loom_events::DriverKind::BdStateTransition,
+                        format!("Beads state updated for {bead}: loom:blocked"),
+                        serde_json::json!({
+                            "source_route": "loop-marker",
+                            "identity": "LOOM_BLOCKED",
+                            "bead_id": bead,
+                            "mutation": "update",
+                            "status": "blocked",
+                            "added_labels": ["loom:blocked"],
+                        }),
+                    );
                     infra_budget.clear(&bead);
                     finished_ids.insert(bead);
                     processed = processed.saturating_add(1);
                     blocked = blocked.saturating_add(1);
                 }
                 BatchResult::AgentClarify { bead, question } => {
-                    let notes = if question.is_empty() {
-                        None
-                    } else {
-                        Some(question)
-                    };
-                    bd.update(&bead, parallel_park_update("loom:clarify", notes))
+                    if loom_protocol::gate::options::has_well_formed_block(&question) {
+                        bd.update(
+                            &bead,
+                            UpdateOpts {
+                                notes: Some(question),
+                                ..UpdateOpts::default()
+                            },
+                        )
                         .await?;
+                        emit_parallel_route_event(
+                            &logs_root,
+                            &label,
+                            &bead,
+                            loom_events::DriverKind::BdStateTransition,
+                            format!("Beads notes updated with clarify options for {bead}"),
+                            serde_json::json!({
+                                "source_route": "loop-marker",
+                                "identity": "LOOM_CLARIFY",
+                                "bead_id": bead,
+                                "mutation": "update",
+                                "notes": "clarify-options",
+                            }),
+                        );
+                    }
+                    let report =
+                        loom_workflow::gate_clarify::apply_clarify_or_blocked_report(&bd, &bead)
+                            .await?;
+                    let context = loom_workflow::gate_clarify::ClarifyRouteContext {
+                        source_route: loom_workflow::gate_clarify::ClarifySourceRoute::LoopMarker,
+                        identity: "LOOM_CLARIFY".to_string(),
+                        gate_log_path: loom_workflow::r#loop::BeadEmit::for_bead(
+                            &logs_root, &label, &bead,
+                        )
+                        .map(|state| state.log_path),
+                    };
+                    for event in report.routing_events(&bead, &context) {
+                        emit_parallel_route_event(
+                            &logs_root,
+                            &label,
+                            &bead,
+                            event.driver_kind,
+                            event.summary,
+                            event.payload,
+                        );
+                    }
                     infra_budget.clear(&bead);
                     finished_ids.insert(bead);
                     processed = processed.saturating_add(1);
-                    clarified = clarified.saturating_add(1);
+                    match report.outcome {
+                        loom_workflow::gate_clarify::ClarifyApplyOutcome::Clarify => {
+                            clarified = clarified.saturating_add(1);
+                        }
+                        loom_workflow::gate_clarify::ClarifyApplyOutcome::BlockedClarifyWithoutOptions => {
+                            blocked = blocked.saturating_add(1);
+                        }
+                    }
                 }
             }
         }
@@ -3609,6 +3756,32 @@ fn parallel_diagnostic_notes(cause: &str, error: &str) -> String {
     } else {
         format!("{cause}: {error}")
     }
+}
+
+fn emit_parallel_route_event(
+    logs_root: &Path,
+    label: &SpecLabel,
+    bead: &BeadId,
+    kind: loom_events::DriverKind,
+    summary: impl AsRef<str>,
+    mut payload: serde_json::Value,
+) {
+    let Some(mut emit) = loom_workflow::r#loop::BeadEmit::for_bead(logs_root, label, bead) else {
+        return;
+    };
+    if matches!(kind, loom_events::DriverKind::ClarifyDowngraded)
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert(
+            "event_sequence".to_string(),
+            serde_json::json!(emit.builder.current_seq()),
+        );
+        object.insert(
+            "gate_log_path".to_string(),
+            serde_json::json!(emit.log_path.to_string_lossy()),
+        );
+    }
+    emit.emit(kind, summary.as_ref(), payload);
 }
 
 /// One slot's dispatch: build the per-bead [`SpawnConfig`] against the
@@ -4026,8 +4199,20 @@ impl GateMintProgress {
         &mut self,
         driver_kind: loom_events::DriverKind,
         summary: impl Into<String>,
-        payload: serde_json::Value,
+        mut payload: serde_json::Value,
     ) -> anyhow::Result<()> {
+        if matches!(driver_kind, loom_events::DriverKind::ClarifyDowngraded)
+            && let Some(object) = payload.as_object_mut()
+        {
+            object.insert(
+                "event_sequence".to_string(),
+                serde_json::json!(self.builder.current_seq()),
+            );
+            object.insert(
+                "gate_log_path".to_string(),
+                serde_json::json!(self.sink.log_path()),
+            );
+        }
         let event = loom_events::AgentEvent::from_driver_event(
             loom_events::DriverEventPayload::new(driver_kind, summary.into(), payload),
             self.builder.build_with_source(loom_events::Source::Driver),
@@ -4076,18 +4261,6 @@ fn default_live_render_mode() -> loom_render::RenderMode {
     let tty = loom_render::in_place::stdout_supports_indicator();
     let no_color = std::env::var_os("NO_COLOR").is_some();
     loom_render::RenderMode::select(tty, no_color, false, false, false)
-}
-
-fn finding_status_action_wire(action: FindingStatusAction) -> &'static str {
-    match action {
-        FindingStatusAction::Reported => "reported",
-        FindingStatusAction::Minted => "minted",
-        FindingStatusAction::SkippedLive => "skipped-live",
-        FindingStatusAction::Suppressed => "suppressed",
-        FindingStatusAction::StaleCandidate => "stale-candidate",
-        FindingStatusAction::PartialStaleCandidate => "partial-stale-candidate",
-        FindingStatusAction::Refused => "refused",
-    }
 }
 
 fn mint_summary_counts(summary: &loom_workflow::mint::MintSummary) -> serde_json::Value {
@@ -4260,9 +4433,13 @@ fn mint_batch_summary(outcome: &BatchOutcome) -> String {
 fn emit_mint_summary_events(
     progress: &mut GateMintProgress,
     summary: &loom_workflow::mint::MintSummary,
+    scope: &str,
 ) -> anyhow::Result<()> {
+    for event in summary.routing_events() {
+        progress.emit(event.driver_kind, event.summary, event.payload)?;
+    }
     for status in &summary.statuses {
-        let action = finding_status_action_wire(status.action);
+        let action = status.action.as_wire();
         progress.emit(
             loom_events::DriverKind::GateRunLane,
             format!("finding status {action}: {}", status.hash),
@@ -4283,12 +4460,12 @@ fn emit_mint_summary_events(
     progress.emit(
         loom_events::DriverKind::GateRunEnd,
         format!(
-            "mint tree run finished: minted {} batches, skipped {}, refused {}, errors {}",
+            "mint {scope} run finished: minted {} batches, skipped {}, refused {}, errors {}",
             summary.minted, summary.skipped, summary.refused, summary.errors,
         ),
         serde_json::json!({
             "gate_phase": "mint",
-            "scope": "tree",
+            "scope": scope,
             "stage": "summary",
             "counts": mint_summary_counts(summary),
         }),
@@ -4344,17 +4521,13 @@ fn open_todo_sink_with_renderer(
     workspace: &Path,
     render_mode: loom_render::RenderMode,
     renderer_id: &BeadId,
+    when: std::time::SystemTime,
     max_inline_bytes: usize,
 ) -> Result<LogSink, ProtocolError> {
     let renderer =
         build_stdout_renderer(render_mode, renderer_id, workspace, false, max_inline_bytes);
-    LogSink::open_phase_at(
-        logs_root,
-        "todo",
-        Some(renderer),
-        SystemClock::new().wall_now(),
-    )
-    .map_err(|error| ProtocolError::Io(std::io::Error::other(error.to_string())))
+    LogSink::open_phase_at(logs_root, "todo", Some(renderer), when)
+        .map_err(|error| ProtocolError::Io(std::io::Error::other(error.to_string())))
 }
 
 fn open_review_sink_with_renderer(
@@ -5073,6 +5246,8 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
     let runtime = tokio::runtime::Runtime::new()?;
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
+    let logs_root_for_controller = logs_root.clone();
+    let phase_when = SystemClock::new().wall_now();
     let workspace_for_renderer = workspace.to_path_buf();
     let render_mode = resolve_render_mode(RenderFlags {
         plain: false,
@@ -5093,7 +5268,8 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
         )
         .with_loom_config(loom_cfg_for_todo)
         .with_agent_runtime(kind)
-        .with_skills_config(skills_cfg_for_todo);
+        .with_skills_config(skills_cfg_for_todo)
+        .with_phase_log(logs_root_for_controller, phase_when);
         run_todo_workflow(&mut controller, |spawn_cfg: SpawnConfig| {
             let selection = selection.clone();
             let observer_config = observer_config.clone();
@@ -5108,6 +5284,7 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
                     &workspace_for_renderer,
                     render_mode,
                     &renderer_id,
+                    phase_when,
                     direct_output_limits.max_inline_bytes,
                 )?;
                 let outcome = dispatch_with_envelope(
@@ -5765,6 +5942,7 @@ mod tests {
         let mk = |minted: usize, promoted_deferred: usize, skipped: usize| MintSummary {
             batches: Vec::new(),
             statuses: Vec::new(),
+            routing: Vec::new(),
             active_epic: None,
             minted,
             planned: 0,
@@ -5812,6 +5990,7 @@ mod tests {
         let mk = |refused: usize, errors: usize| MintSummary {
             batches: Vec::new(),
             statuses: Vec::new(),
+            routing: Vec::new(),
             active_epic: None,
             minted: 0,
             planned: 0,

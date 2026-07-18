@@ -12,6 +12,7 @@
 
 pub mod agent;
 mod agent_input;
+mod event_log;
 pub mod gate_clarify;
 pub mod inbox;
 pub mod init;

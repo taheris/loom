@@ -26,11 +26,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, Label, ListOpts, UpdateOpts};
 use loom_driver::config::SuppressionConfig;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_events::{DriverEventPayload, DriverKind};
 use loom_gate::IntegrityFinding;
 use loom_protocol::gate::options::has_well_formed_block;
 use serde::Serialize;
 
-use crate::gate_clarify::CLARIFY_WITHOUT_OPTIONS_CAUSE;
+use crate::gate_clarify::{
+    CLARIFY_WITHOUT_OPTIONS_CAUSE, OptionsParseResult, evidence_excerpt as route_evidence_excerpt,
+    evidence_hash,
+};
 use crate::resolve::{
     ResolveError, ensure_spec_metadata_epic, resolve_open_epic, resolve_or_mint_open_epic,
 };
@@ -232,6 +236,62 @@ pub enum FindingStatusAction {
     Refused,
 }
 
+impl FindingStatusAction {
+    #[must_use]
+    pub const fn as_wire(self) -> &'static str {
+        match self {
+            Self::Reported => "reported",
+            Self::Minted => "minted",
+            Self::SkippedLive => "skipped-live",
+            Self::Suppressed => "suppressed",
+            Self::StaleCandidate => "stale-candidate",
+            Self::PartialStaleCandidate => "partial-stale-candidate",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FindingRoutingRecord {
+    pub id: String,
+    pub hash: String,
+    pub token: ConcernToken,
+    pub requested_route: FindingRoute,
+    pub action: FindingStatusAction,
+    pub options_parse_result: Option<OptionsParseResult>,
+    pub evidence_hash: String,
+    pub evidence_excerpt: String,
+}
+
+impl FindingRoutingRecord {
+    fn new(finding: &Finding, action: FindingStatusAction) -> Self {
+        let options_parse_result = (finding.route == FindingRoute::Clarify).then(|| {
+            if has_well_formed_block(&finding.evidence) {
+                OptionsParseResult::WellFormed
+            } else {
+                OptionsParseResult::MissingOrMalformed
+            }
+        });
+        Self {
+            id: finding.id(),
+            hash: finding.hash(),
+            token: finding.token,
+            requested_route: finding.route,
+            action,
+            options_parse_result,
+            evidence_hash: evidence_hash(&finding.evidence),
+            evidence_excerpt: route_evidence_excerpt(&finding.evidence),
+        }
+    }
+
+    #[must_use]
+    pub fn clarify_downgraded(&self) -> bool {
+        self.requested_route == FindingRoute::Clarify
+            && self.options_parse_result == Some(OptionsParseResult::MissingOrMalformed)
+            && self.action == FindingStatusAction::Minted
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FindingStatusRecord {
     pub id: String,
@@ -292,6 +352,7 @@ pub struct MintOptions {
 pub struct MintSummary {
     pub batches: Vec<BatchOutcome>,
     pub statuses: Vec<FindingStatusRecord>,
+    pub routing: Vec<FindingRoutingRecord>,
     pub active_epic: Option<BeadId>,
     pub minted: usize,
     pub planned: usize,
@@ -310,6 +371,80 @@ pub struct MintSummary {
 }
 
 impl MintSummary {
+    /// Build route and Beads-transition events for successful mint actions.
+    #[must_use]
+    pub fn routing_events(&self) -> Vec<DriverEventPayload> {
+        let mut events = Vec::new();
+        for routing in &self.routing {
+            let action = routing.action.as_wire();
+            events.push(DriverEventPayload::new(
+                DriverKind::MarkerRouted,
+                format!("finding {} routed to {action}", routing.hash),
+                serde_json::json!({
+                    "source_route": "mint-finding",
+                    "identity": routing.id,
+                    "finding_hash": routing.hash,
+                    "finding_token": routing.token,
+                    "requested_route": routing.requested_route.as_wire(),
+                    "route": action,
+                }),
+            ));
+            if routing.clarify_downgraded() {
+                events.push(DriverEventPayload::new(
+                    DriverKind::ClarifyDowngraded,
+                    format!("clarify finding {} downgraded to blocked", routing.hash),
+                    serde_json::json!({
+                        "source_route": "mint-finding",
+                        "identity": routing.id,
+                        "finding_hash": routing.hash,
+                        "finding_token": routing.token,
+                        "options_parse_result": routing.options_parse_result,
+                        "evidence_hash": routing.evidence_hash,
+                        "evidence_excerpt": routing.evidence_excerpt,
+                        "cause": CLARIFY_WITHOUT_OPTIONS_CAUSE,
+                    }),
+                ));
+            }
+        }
+        for outcome in &self.batches {
+            match outcome {
+                BatchOutcome::Minted { bead_id, .. } => events.push(DriverEventPayload::new(
+                    DriverKind::BdStateTransition,
+                    format!("Beads item {bead_id} created for routed findings"),
+                    serde_json::json!({
+                        "source_route": "mint-finding",
+                        "bead_id": bead_id,
+                        "mutation": "create",
+                        "status": "open",
+                    }),
+                )),
+                BatchOutcome::PromotedDeferred { bead_id, .. } => {
+                    events.push(DriverEventPayload::new(
+                        DriverKind::BdStateTransition,
+                        format!("Beads item {bead_id} promoted from deferred"),
+                        serde_json::json!({
+                            "source_route": "mint-finding",
+                            "bead_id": bead_id,
+                            "mutation": "update",
+                            "status": "open",
+                            "removed_labels": ["loom:deferred"],
+                        }),
+                    ));
+                }
+                BatchOutcome::Planned { .. }
+                | BatchOutcome::WouldMint { .. }
+                | BatchOutcome::SkippedDedup { .. }
+                | BatchOutcome::Refused { .. }
+                | BatchOutcome::WouldPromoteDeferred { .. }
+                | BatchOutcome::SkippedClosed { .. }
+                | BatchOutcome::StaleCandidate { .. }
+                | BatchOutcome::PartialStaleCandidate { .. }
+                | BatchOutcome::Errored { .. } => {}
+            }
+        }
+        events
+    }
+
     /// Append a non-finding infrastructure/walk error to the rendered summary.
     ///
     /// Tree-scope mint uses this when a verifier or rubric source fails after
@@ -334,6 +469,8 @@ impl MintSummary {
         }
         self.statuses
             .push(FindingStatusRecord::new(finding, action));
+        self.routing
+            .push(FindingRoutingRecord::new(finding, action));
     }
 
     fn record(&mut self, outcome: BatchOutcome) {
@@ -1570,6 +1707,8 @@ async fn create_batch_under_parent<R: CommandRunner>(
     let labels = batch_labels(findings, &label, routing);
     let title = batch_title(findings, lead_spec);
     let description = batch_description(findings, &fingerprint, routing);
+    let notes = matches!(routing, FindingRouting::BlockedClarifyWithoutOptions)
+        .then(|| CLARIFY_WITHOUT_OPTIONS_CAUSE.to_string());
     match bd
         .create(CreateOpts {
             title,
@@ -1577,6 +1716,7 @@ async fn create_batch_under_parent<R: CommandRunner>(
             issue_type: Some("task".to_string()),
             labels,
             parent: Some(parent.clone()),
+            notes,
             ..CreateOpts::default()
         })
         .await
@@ -3383,6 +3523,27 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
         let summary = mint_findings(&bd, &[finding], "head-sha").await;
         assert_eq!(summary.minted, 1);
+        assert_eq!(summary.routing.len(), 1);
+        assert!(summary.routing[0].clarify_downgraded());
+        assert_eq!(
+            summary.routing[0].options_parse_result,
+            Some(OptionsParseResult::MissingOrMalformed),
+        );
+        assert!(!summary.routing[0].evidence_hash.is_empty());
+        assert_eq!(summary.routing[0].evidence_excerpt, malformed_evidence);
+        let event_kinds = summary
+            .routing_events()
+            .into_iter()
+            .map(|event| event.driver_kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event_kinds,
+            vec![
+                DriverKind::MarkerRouted,
+                DriverKind::ClarifyDowngraded,
+                DriverKind::BdStateTransition,
+            ],
+        );
         let calls = rendered_calls(&invocations);
         let create = calls
             .iter()
@@ -3415,6 +3576,11 @@ reason = "false positive"
         assert!(
             description.contains(CLARIFY_WITHOUT_OPTIONS_CAUSE),
             "description must cite the cause string: {description}",
+        );
+        assert_eq!(
+            flag_arg(create, "--notes"),
+            CLARIFY_WITHOUT_OPTIONS_CAUSE,
+            "mint downgrade must leave a compact Beads note breadcrumb",
         );
     }
 

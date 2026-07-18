@@ -1047,6 +1047,20 @@ pub enum TerminalSurface {
 }
 
 impl TerminalSurface {
+    /// Canonical marker identity used by route observability.
+    #[must_use]
+    pub const fn identity(&self) -> &'static str {
+        match self {
+            Self::Complete => "LOOM_COMPLETE",
+            Self::Noop => "LOOM_NOOP",
+            Self::Blocked { .. } => "LOOM_BLOCKED",
+            Self::Clarify { .. } => "LOOM_CLARIFY",
+            Self::Retry { .. } => "LOOM_RETRY",
+            Self::Concern { .. } | Self::Malformed { .. } => "LOOM_CONCERN",
+            Self::Missing => "missing",
+        }
+    }
+
     /// Stable rendering used in `BadWalk::MalformedFinding` recovery
     /// prompts so the agent sees what the terminal looked like alongside
     /// the per-finding errors.
@@ -1122,6 +1136,21 @@ pub enum ExitSignal {
     /// stream/terminator pairing-rule variants are owned by the verdict
     /// gate.
     BadWalk(BadWalk),
+}
+
+impl ExitSignal {
+    /// Canonical marker identity used by route observability.
+    #[must_use]
+    pub const fn identity(&self) -> &'static str {
+        match self {
+            Self::Complete => "LOOM_COMPLETE",
+            Self::Noop => "LOOM_NOOP",
+            Self::Blocked { .. } => "LOOM_BLOCKED",
+            Self::Clarify { .. } => "LOOM_CLARIFY",
+            Self::Retry { .. } => "LOOM_RETRY",
+            Self::Concern { .. } | Self::BadWalk(_) => "LOOM_CONCERN",
+        }
+    }
 }
 
 const COMPLETE: &str = "LOOM_COMPLETE";

@@ -3376,7 +3376,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - Clarify downgrades emit `DriverKind::ClarifyDowngraded`, write a bd
       note breadcrumb with cause `clarify-without-options`, and pair the
       resulting bd label/status mutation with `DriverKind::BdStateTransition`
-  [test?](clarify_downgrade_emits_driver_events_and_bd_breadcrumb)
+  [test](clarify_downgrade_emits_driver_events_and_bd_breadcrumb)
 - `LOOM_RETRY` agent marker → recovery with cause `agent-retry`,
       `previous_failure` populated with `AgentRetry { reason }` from
       the prose preceding the marker; one `[loop] max_retries` slot

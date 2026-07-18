@@ -5,13 +5,14 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use loom_driver::agent::SessionOutcome;
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{ProfileName, SpecLabel};
+use loom_driver::logging::phase_log_path;
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::CacheDb;
 use loom_protocol::todo::{TODO_SUCCESS_PREFIX, parse_todo_success};
@@ -931,6 +932,62 @@ async fn todo_clarify_marks_work_epic() -> Result<()> {
             .iter()
             .any(|argv| argv.iter().any(|arg| arg == "loom:clarify"))
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn clarify_downgrade_emits_driver_events_and_bd_breadcrumb() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let mut responses = preflight_responses(&base, &head);
+    responses.push(work_epic_with_notes("lm-work", "clarify without options"));
+    responses.push(empty_json());
+    let runner = CapturingRunner::new(responses);
+    let calls = runner.clone();
+    let logs_root = dir.path().join(".loom/logs");
+    let when = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let mut ctrl = controller(dir.path(), runner)?.with_phase_log(logs_root.clone(), when);
+    let _session = ctrl.build_session().await?;
+
+    ctrl.record_outcome(
+        &SessionOutcome {
+            exit_code: 0,
+            cost_usd: None,
+        },
+        Some(&ExitSignal::Clarify {
+            question: "which decomposition?".to_string(),
+        }),
+        None,
+    )
+    .await?;
+
+    let log_path = phase_log_path(&logs_root, "todo", when);
+    let events = std::fs::read_to_string(&log_path)?
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let kinds = events
+        .iter()
+        .map(|event| event["driver_kind"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec!["marker_routed", "clarify_downgraded", "bd_state_transition"]
+    );
+    let downgrade = &events[1];
+    assert_eq!(downgrade["payload"]["cause"], "clarify-without-options");
+    assert_eq!(downgrade["payload"]["event_sequence"], downgrade["seq"]);
+    assert_eq!(
+        downgrade["payload"]["gate_log_path"],
+        log_path.to_string_lossy().as_ref(),
+    );
+    assert!(calls.calls()?.iter().any(|argv| {
+        argv.first().is_some_and(|arg| arg == "update")
+            && argv.iter().any(|arg| arg == "loom:blocked")
+            && argv
+                .iter()
+                .any(|arg| arg.contains("clarify-without-options"))
+    }));
     Ok(())
 }
 

@@ -384,6 +384,25 @@ async fn merge_back_one(
     let mut emit = logs_root
         .zip(label)
         .and_then(|(root, lbl)| BeadEmit::for_bead(root, lbl, &bead.id));
+    if let Some(identity) = inferred_terminal_marker(&outcome)
+        && let Some(event_sink) = emit.as_mut()
+    {
+        event_sink.emit(
+            DriverKind::MarkerRouted,
+            &format!(
+                "terminal marker {identity} routed to {} for bead {}",
+                super::production::agent_outcome_route(&outcome),
+                bead.id,
+            ),
+            serde_json::json!({
+                "source_route": "loop-marker",
+                "identity": identity,
+                "route": super::production::agent_outcome_route(&outcome),
+                "bead_id": bead.id.to_string(),
+                "parallel": true,
+            }),
+        );
+    }
     match outcome {
         AgentOutcome::Success | AgentOutcome::Noop => {
             // A3: the worker never pushes; the driver fetches the bead
@@ -664,6 +683,26 @@ async fn merge_back_one(
                 reason: detail,
             })
         }
+    }
+}
+
+fn inferred_terminal_marker(outcome: &AgentOutcome) -> Option<&'static str> {
+    match outcome {
+        AgentOutcome::Success => Some("LOOM_COMPLETE"),
+        AgentOutcome::Noop => Some("LOOM_NOOP"),
+        AgentOutcome::Retry { .. } => Some("LOOM_RETRY"),
+        AgentOutcome::Blocked { .. } => Some("LOOM_BLOCKED"),
+        AgentOutcome::Clarify { .. } => Some("LOOM_CLARIFY"),
+        AgentOutcome::Failure { error } if error.contains("swallowed marker") => Some("missing"),
+        AgentOutcome::Failure { .. }
+        | AgentOutcome::InfraPreflight { .. }
+        | AgentOutcome::InfraMidSession { .. }
+        | AgentOutcome::StaticInfra { .. }
+        | AgentOutcome::UnknownProfile { .. }
+        | AgentOutcome::UnknownRuntimeForProfile { .. }
+        | AgentOutcome::IntegrationConflict { .. }
+        | AgentOutcome::SignatureVerificationFailed { .. }
+        | AgentOutcome::ZeroProgress { .. } => None,
     }
 }
 

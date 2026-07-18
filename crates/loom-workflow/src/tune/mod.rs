@@ -535,6 +535,7 @@ async fn create_proposal(
             labels,
             parent: None,
             metadata: None,
+            notes: None,
         })
         .await?;
     let envelope = context.workspace.join(".loom/tune").join(bead_id.as_str());

@@ -2,19 +2,24 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use askama::Template;
 use loom_driver::agent::{AgentRuntime, SessionOutcome};
 use loom_driver::bd::{
     BdClient, CommandRunner, CreateOpts, Label, ListOpts, TokioRunner, UpdateOpts,
 };
+use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomTopConfig, SkillsConfig};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
+use loom_driver::logging::{BeadOutcome, LogSink, phase_log_path};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::{CacheDb, SpecEpicRow, WorkEpicRow};
-use loom_events::AgentStartMetadata;
+use loom_events::{
+    AgentEvent, AgentStartMetadata, DriverEventPayload, DriverKind, EnvelopeBuilder, Source,
+};
 use loom_protocol::todo::{GitSha, TodoSpecOutcome, TodoSuccess};
 use tracing::{debug, info};
 
@@ -47,6 +52,9 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     preflight: Option<Preflight>,
     loom_cfg: LoomTopConfig,
     skills_cfg: SkillsConfig,
+    phase_log_root: Option<PathBuf>,
+    phase_log_when: SystemTime,
+    envelope_builder: Mutex<Option<EnvelopeBuilder>>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +117,9 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             preflight: None,
             loom_cfg: LoomTopConfig::default(),
             skills_cfg: SkillsConfig::default(),
+            phase_log_root: None,
+            phase_log_when: SystemClock::new().wall_now(),
+            envelope_builder: Mutex::new(None),
         }
     }
 
@@ -125,6 +136,105 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     pub fn with_skills_config(mut self, cfg: SkillsConfig) -> Self {
         self.skills_cfg = cfg;
         self
+    }
+
+    pub fn with_phase_log(mut self, logs_root: PathBuf, when: SystemTime) -> Self {
+        self.phase_log_root = Some(logs_root);
+        self.phase_log_when = when;
+        self
+    }
+
+    fn emit_driver_event(&mut self, event: DriverEventPayload) {
+        let Some(logs_root) = self.phase_log_root.as_deref() else {
+            return;
+        };
+        let path = phase_log_path(logs_root, "todo", self.phase_log_when);
+        let mut guard = match self.envelope_builder.lock() {
+            Ok(guard) => guard,
+            Err(error) => {
+                tracing::warn!(
+                    error = ?error,
+                    path = %path.display(),
+                    "todo route envelope builder mutex poisoned",
+                );
+                return;
+            }
+        };
+        if guard.is_none() {
+            *guard = Some(crate::event_log::resume_phase_driver_envelope(
+                &path,
+                crate::event_log::RoutePhase::Todo,
+                self.phase_log_when,
+            ));
+        }
+        let Some(builder) = guard.as_mut() else {
+            return;
+        };
+        let mut payload = event.payload;
+        if matches!(event.driver_kind, DriverKind::ClarifyDowngraded)
+            && let Some(object) = payload.as_object_mut()
+        {
+            object.insert(
+                "event_sequence".to_string(),
+                serde_json::json!(builder.current_seq()),
+            );
+            object.insert(
+                "gate_log_path".to_string(),
+                serde_json::json!(path.to_string_lossy()),
+            );
+        }
+        let agent_event = AgentEvent::from_driver_event(
+            DriverEventPayload::new(event.driver_kind, event.summary, payload),
+            builder.build_with_source(Source::Driver),
+        );
+        match LogSink::open_at_path_append(&path) {
+            Ok(mut sink) => {
+                if let Err(error) = sink.emit(&agent_event) {
+                    tracing::warn!(
+                        error = ?error,
+                        path = %path.display(),
+                        "todo route event emit failed",
+                    );
+                }
+                if let Err(error) = sink.finish(BeadOutcome::Done) {
+                    tracing::warn!(
+                        error = ?error,
+                        path = %path.display(),
+                        "todo route event finish failed",
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                error = ?error,
+                path = %path.display(),
+                "todo route event sink open failed",
+            ),
+        }
+    }
+
+    fn emit_bd_update(
+        &mut self,
+        bead: &BeadId,
+        identity: &str,
+        status: Option<&str>,
+        added_labels: &[&str],
+        removed_labels: &[&str],
+        notes_cause: Option<&str>,
+    ) {
+        self.emit_driver_event(DriverEventPayload::new(
+            DriverKind::BdStateTransition,
+            format!("Beads state updated for {bead}"),
+            serde_json::json!({
+                "source_route": "todo-marker",
+                "identity": identity,
+                "bead_id": bead,
+                "mutation": "update",
+                "status": status,
+                "added_labels": added_labels,
+                "removed_labels": removed_labels,
+                "notes_cause": notes_cause,
+            }),
+        ));
     }
 
     async fn preflight(&self) -> Result<Option<Preflight>, TodoError> {
@@ -559,8 +669,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         Ok(())
     }
 
-    async fn record_validation_failure(&self, detail: &str) -> Result<(), TodoError> {
-        let Some(preflight) = self.preflight.as_ref() else {
+    async fn record_validation_failure(&mut self, detail: &str) -> Result<(), TodoError> {
+        let Some(preflight) = self.preflight.clone() else {
             return Ok(());
         };
         self.bd
@@ -572,15 +682,23 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 },
             )
             .await?;
+        self.emit_bd_update(
+            &preflight.work_epic,
+            "LOOM_TODO",
+            None,
+            &[],
+            &[],
+            Some("todo-validation-failed"),
+        );
         Ok(())
     }
 
     async fn record_missing_exit_signal(
-        &self,
+        &mut self,
         outcome: &SessionOutcome,
         marker: Option<&ExitSignal>,
     ) -> Result<(), TodoError> {
-        let Some(preflight) = self.preflight.as_ref() else {
+        let Some(preflight) = self.preflight.clone() else {
             return Ok(());
         };
         self.bd
@@ -595,10 +713,18 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 },
             )
             .await?;
+        self.emit_bd_update(
+            &preflight.work_epic,
+            marker.map_or("missing", ExitSignal::identity),
+            None,
+            &[],
+            &[],
+            Some("missing-exit-signal"),
+        );
         Ok(())
     }
 
-    async fn render_notes_into_beads(&self, success: &TodoSuccess) -> Result<(), TodoError> {
+    async fn render_notes_into_beads(&mut self, success: &TodoSuccess) -> Result<(), TodoError> {
         for spec in success.specs.as_slice() {
             let TodoSpecOutcome::Decomposed { beads } = &spec.outcome else {
                 continue;
@@ -625,15 +751,23 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                         },
                     )
                     .await?;
+                self.emit_bd_update(
+                    bead_id,
+                    "LOOM_TODO",
+                    None,
+                    &[],
+                    &[],
+                    Some("implementation-notes"),
+                );
             }
         }
         Ok(())
     }
 
-    async fn finalize_success(&self, success: &TodoSuccess) -> Result<TodoRecord, TodoError> {
+    async fn finalize_success(&mut self, success: &TodoSuccess) -> Result<TodoRecord, TodoError> {
         let preflight = self
             .preflight
-            .as_ref()
+            .clone()
             .ok_or(TodoError::TodoSuccessWithoutPreflight)?;
         self.render_notes_into_beads(success).await?;
         for active in self.active_work_epics().await? {
@@ -647,6 +781,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                         },
                     )
                     .await?;
+                self.emit_bd_update(&active.id, "LOOM_TODO", None, &[], &["loom:active"], None);
             }
         }
         for spec in &preflight.changed_specs {
@@ -662,6 +797,14 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                     },
                 )
                 .await?;
+            self.emit_bd_update(
+                &spec.spec_epic,
+                "LOOM_TODO",
+                None,
+                &[],
+                &[],
+                Some(TODO_CURSOR_METADATA_KEY),
+            );
             self.state.upsert_spec_epic(&SpecEpicRow {
                 spec_label: spec.label.clone(),
                 epic_id: MoleculeId::new(spec.spec_epic.as_str().to_owned()),
@@ -681,6 +824,14 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 },
             )
             .await?;
+        self.emit_bd_update(
+            &preflight.work_epic,
+            "LOOM_TODO",
+            None,
+            &["loom:active"],
+            &["loom:todo"],
+            None,
+        );
         self.state.upsert_work_epic(&WorkEpicRow {
             epic_id: MoleculeId::new(preflight.work_epic.as_str().to_owned()),
             todo_head: Some(preflight.head.to_string()),
@@ -693,8 +844,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         })
     }
 
-    async fn record_blocked(&self, reason: &str) -> Result<TodoRecord, TodoError> {
-        let Some(preflight) = self.preflight.as_ref() else {
+    async fn record_blocked(&mut self, reason: &str) -> Result<TodoRecord, TodoError> {
+        let Some(preflight) = self.preflight.clone() else {
             return Ok(TodoRecord::default());
         };
         self.bd
@@ -708,6 +859,14 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 },
             )
             .await?;
+        self.emit_bd_update(
+            &preflight.work_epic,
+            "LOOM_BLOCKED",
+            Some("blocked"),
+            &["loom:blocked"],
+            &[],
+            Some("agent-blocked"),
+        );
         Ok(TodoRecord {
             spec_outcomes: preflight
                 .changed_specs
@@ -798,12 +957,41 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         marker: Option<&ExitSignal>,
         todo_success: Option<&TodoSuccess>,
     ) -> Result<TodoRecord, TodoError> {
+        let identity = todo_success.map_or_else(
+            || marker.map_or("missing", ExitSignal::identity),
+            |_| "LOOM_TODO",
+        );
+        let route = todo_outcome_route(outcome, marker, todo_success);
+        self.emit_driver_event(DriverEventPayload::new(
+            DriverKind::MarkerRouted,
+            format!("terminal marker {identity} routed to {route}"),
+            serde_json::json!({
+                "source_route": "todo-marker",
+                "identity": identity,
+                "route": route,
+                "work_epic": self.preflight.as_ref().map(|preflight| &preflight.work_epic),
+                "exit_code": outcome.exit_code,
+            }),
+        ));
         if let Some(ExitSignal::Clarify { .. }) = marker {
-            if let Some(preflight) = self.preflight.as_ref() {
-                let applied =
-                    crate::gate_clarify::apply_clarify_or_blocked(&self.bd, &preflight.work_epic)
-                        .await?;
-                info!(work_epic = %preflight.work_epic, outcome = ?applied, "loom todo: LOOM_CLARIFY routed to work epic");
+            if let Some(preflight) = self.preflight.clone() {
+                let report = crate::gate_clarify::apply_clarify_or_blocked_report(
+                    &self.bd,
+                    &preflight.work_epic,
+                )
+                .await?;
+                let context = crate::gate_clarify::ClarifyRouteContext {
+                    source_route: crate::gate_clarify::ClarifySourceRoute::TodoMarker,
+                    identity: "LOOM_CLARIFY".to_string(),
+                    gate_log_path: self
+                        .phase_log_root
+                        .as_deref()
+                        .map(|root| phase_log_path(root, "todo", self.phase_log_when)),
+                };
+                for event in report.routing_events(&preflight.work_epic, &context) {
+                    self.emit_driver_event(event);
+                }
+                info!(work_epic = %preflight.work_epic, outcome = ?report.outcome, "loom todo: LOOM_CLARIFY routed to work epic");
             }
             return Ok(TodoRecord::default());
         }
@@ -830,6 +1018,23 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             return Err(err);
         }
         self.finalize_success(success).await
+    }
+}
+
+fn todo_outcome_route(
+    outcome: &SessionOutcome,
+    marker: Option<&ExitSignal>,
+    todo_success: Option<&TodoSuccess>,
+) -> &'static str {
+    match marker {
+        Some(ExitSignal::Clarify { .. }) => "clarify",
+        Some(ExitSignal::Blocked { .. }) => "blocked",
+        Some(ExitSignal::Retry { .. }) => "retry",
+        Some(ExitSignal::Complete | ExitSignal::Noop | ExitSignal::Concern { .. })
+        | Some(ExitSignal::BadWalk(_)) => "wrong-phase-marker",
+        None if outcome.exit_code != 0 => "recovery",
+        None if todo_success.is_some() => "success",
+        None => "recovery",
     }
 }
 

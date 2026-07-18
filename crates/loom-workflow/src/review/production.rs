@@ -34,10 +34,7 @@ use loom_driver::logging::{BeadOutcome, LogSink};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::CacheDb;
-use loom_events::identifier::SessionId;
-use loom_events::{
-    AgentEvent, AgentStartMetadata, DriverKind, EnvelopeBuilder, SessionScope, Source,
-};
+use loom_events::{AgentEvent, AgentStartMetadata, DriverKind, EnvelopeBuilder};
 use loom_gate::{
     DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateRun, GateSuccess,
     HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation,
@@ -599,6 +596,13 @@ fn classify_review_phase_with_suppressions(
     }
 }
 
+fn review_outcome_route(outcome: &ReviewOutcome) -> &'static str {
+    match outcome {
+        ReviewOutcome::Complete => "complete",
+        ReviewOutcome::Incomplete { .. } => "recovery",
+    }
+}
+
 fn wrong_phase_marker_detail(marker_name: &str, phase_kind: &str) -> String {
     if phase_kind == "review" && marker_name == "LOOM_CLARIFY" {
         return "wrong-review-path: direct LOOM_CLARIFY is not a review terminal; emit a \
@@ -835,6 +839,41 @@ where
         let suppressed_review_concern = all_findings_suppressed(&walk, &self.suppressions);
         let typed_outcome =
             classify_review_phase_with_suppressions(&walk, outcome.exit_code, &self.suppressions);
+        self.emit_driver_event(
+            DriverKind::MarkerRouted,
+            &format!(
+                "terminal marker {} routed to {}",
+                walk.terminal().identity(),
+                review_outcome_route(&typed_outcome),
+            ),
+            serde_json::json!({
+                "source_route": "review-marker",
+                "identity": walk.terminal().identity(),
+                "route": review_outcome_route(&typed_outcome),
+                "exit_code": outcome.exit_code,
+                "finding_count": walk.findings().len(),
+                "finding_error_count": walk.finding_errors().len(),
+            }),
+        );
+        for finding in walk.findings() {
+            let action = if suppresses_rubric_finding(&self.suppressions, finding) {
+                "suppressed"
+            } else {
+                "review-concern"
+            };
+            self.emit_driver_event(
+                DriverKind::MarkerRouted,
+                &format!("finding {} routed to {action}", finding.hash()),
+                serde_json::json!({
+                    "source_route": "review-finding",
+                    "identity": finding.id(),
+                    "finding_hash": finding.hash(),
+                    "finding_token": finding.token,
+                    "requested_route": finding.route.as_wire(),
+                    "route": action,
+                }),
+            );
+        }
         let effective_marker =
             if matches!(typed_outcome, ReviewOutcome::Complete) && suppressed_review_concern {
                 Some(ExitSignal::Complete)
@@ -892,6 +931,18 @@ where
                     },
                 )
                 .await?;
+            self.emit_driver_event(
+                DriverKind::BdStateTransition,
+                &format!("Beads state updated for {} after push refusal", bead.id),
+                serde_json::json!({
+                    "source_route": "review-verdict",
+                    "identity": cause.as_str(),
+                    "bead_id": bead.id,
+                    "mutation": "update",
+                    "status": "blocked",
+                    "added_labels": ["loom:blocked"],
+                }),
+            );
             parked.push(bead.id.clone());
         }
         Ok(parked)
@@ -930,7 +981,20 @@ where
         // well-formed `## Options — …` block in notes ∪ description.
         // Well-formed → loom:clarify; malformed / absent → loom:blocked
         // with cause `clarify-without-options`.
-        crate::gate_clarify::apply_clarify_or_blocked(&self.bd, bead).await?;
+        let report = crate::gate_clarify::apply_clarify_or_blocked_report(&self.bd, bead).await?;
+        let context = crate::gate_clarify::ClarifyRouteContext {
+            source_route: crate::gate_clarify::ClarifySourceRoute::ReviewVerdict,
+            identity: "review-clarify".to_string(),
+            gate_log_path: self.resolve_review_log_for_marker(),
+        };
+        for event in report.routing_events(bead, &context) {
+            let loom_events::DriverEventPayload {
+                driver_kind,
+                summary,
+                payload,
+            } = event;
+            self.emit_driver_event(driver_kind, &summary, payload);
+        }
         Ok(())
     }
 
@@ -964,6 +1028,18 @@ where
                 },
             )
             .await?;
+        self.emit_driver_event(
+            DriverKind::BdStateTransition,
+            &format!("Beads state updated for integrity clarify on {}", epic.id),
+            serde_json::json!({
+                "source_route": "review-integrity-finding",
+                "identity": "integrity-finding",
+                "bead_id": epic.id,
+                "mutation": "update",
+                "status": "blocked",
+                "added_labels": ["loom:clarify"],
+            }),
+        );
         Ok(())
     }
 
@@ -981,6 +1057,9 @@ where
             .await
             .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
         let summary = crate::mint::mint_integrity_recovery(&self.bd, findings, head.as_str()).await;
+        for event in summary.routing_events() {
+            self.emit_driver_event(event.driver_kind, &event.summary, event.payload);
+        }
         if summary.refused > 0 || summary.errors > 0 {
             warn!(
                 label = %self.label,
@@ -1109,6 +1188,18 @@ where
 
     async fn close_bead(&mut self, id: &BeadId, reason: &str) -> Result<(), ReviewError> {
         self.bd.close(id, Some(reason)).await?;
+        self.emit_driver_event(
+            DriverKind::BdStateTransition,
+            &format!("Beads item {id} closed by review verdict"),
+            serde_json::json!({
+                "source_route": "review-verdict",
+                "identity": "epic-auto-close",
+                "bead_id": id,
+                "mutation": "close",
+                "status": "closed",
+                "reason": reason,
+            }),
+        );
         Ok(())
     }
 
@@ -1129,7 +1220,12 @@ where
         Ok(())
     }
 
-    fn emit_driver_event(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
+    fn emit_driver_event(
+        &mut self,
+        kind: DriverKind,
+        summary: &str,
+        mut payload: serde_json::Value,
+    ) {
         // Open a transient LogSink at the same phase log path the
         // reviewer agent's sink uses (same `when`, same `phase_log_root`,
         // no renderer), write one `DriverEvent`, finish. The file is
@@ -1148,27 +1244,35 @@ where
             }
         };
         if guard.is_none() {
-            let session_ms = self
-                .phase_log_when
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis());
-            let clock = SystemClock::new();
-            *guard = Some(EnvelopeBuilder::new(
-                SessionScope::phase(SessionId::new(format!("review-{session_ms}")), None),
-                Source::Driver,
-                move || {
-                    clock
-                        .wall_now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |duration| duration.as_millis() as i64)
-                },
+            *guard = Some(crate::event_log::resume_phase_driver_envelope(
+                &phase_log_path(&logs_root, "review", self.phase_log_when),
+                crate::event_log::RoutePhase::Review,
+                self.phase_log_when,
             ));
         }
         // Lazy-init above guarantees `guard` is `Some` here; fall back
         // to a silent no-op if a future refactor breaks that invariant
         // rather than panicking inside the verdict-gate hot path.
         let envelope = match guard.as_mut() {
-            Some(builder) => builder.build(),
+            Some(builder) => {
+                if matches!(kind, DriverKind::ClarifyDowngraded)
+                    && let Some(object) = payload.as_object_mut()
+                {
+                    object.insert(
+                        "event_sequence".to_string(),
+                        serde_json::json!(builder.current_seq()),
+                    );
+                    object.insert(
+                        "gate_log_path".to_string(),
+                        serde_json::json!(phase_log_path(
+                            &logs_root,
+                            "review",
+                            self.phase_log_when,
+                        )),
+                    );
+                }
+                builder.build()
+            }
             None => return,
         };
         drop(guard);
@@ -1181,16 +1285,27 @@ where
         let sink_result = LogSink::open_phase_at(&logs_root, "review", None, self.phase_log_when);
         match sink_result {
             Ok(mut sink) => {
-                if let Err(e) = sink.emit(&event) {
-                    warn!(error = %e, "review controller: emit driver event failed");
+                if let Err(error) = sink.emit(&event) {
+                    warn!(
+                        error = ?error,
+                        path = %sink.log_path().display(),
+                        "review controller: emit driver event failed",
+                    );
                 }
-                // Finish is idempotent — the agent-event sink (opened
-                // separately in run_review) reaches the same file and
-                // will run finish itself with the bead outcome.
-                let _ = sink.finish(BeadOutcome::Done);
+                if let Err(error) = sink.finish(BeadOutcome::Done) {
+                    warn!(
+                        error = ?error,
+                        path = %sink.log_path().display(),
+                        "review controller: finish driver event sink failed",
+                    );
+                }
             }
-            Err(e) => {
-                warn!(error = %e, "review controller: open phase sink for driver event failed");
+            Err(error) => {
+                warn!(
+                    error = ?error,
+                    path = %phase_log_path(&logs_root, "review", self.phase_log_when).display(),
+                    "review controller: open phase sink for driver event failed",
+                );
             }
         }
     }

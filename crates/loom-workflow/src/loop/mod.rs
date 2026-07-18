@@ -47,6 +47,7 @@ mod tree_clean;
 mod verify;
 
 pub use context::{LoopContextInputs, build_loop_context, render_loop_prompt};
+pub use driver_emit::BeadEmit;
 pub use error::LoopError;
 pub use loom_gate::{
     GateFail, GateFailReason, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,

@@ -862,10 +862,23 @@ fn todo_agent_events_render_live_progress() {
             "every event must carry a `kind` field. line {i}: {line}",
         );
     }
-    let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
-    assert_eq!(
-        last["kind"], "session_complete",
-        "the final event must be session_complete. lines={lines:?}",
+    let parsed = lines
+        .iter()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event JSON"))
+        .collect::<Vec<_>>();
+    let session_complete = parsed
+        .iter()
+        .position(|event| event["kind"] == "session_complete")
+        .expect("session_complete event");
+    let marker_routed = parsed
+        .iter()
+        .position(|event| {
+            event["kind"] == "driver_event" && event["driver_kind"] == "marker_routed"
+        })
+        .expect("marker_routed event");
+    assert!(
+        session_complete < marker_routed,
+        "driver routing must follow agent session completion. lines={lines:?}",
     );
 }
 
@@ -1604,10 +1617,19 @@ fn loom_todo_pi_compaction_drives_repin_steer_through_run_agent() {
          absence means the production driver did not steer on CompactionStart. \
          events={events:?}",
     );
-    assert_eq!(
-        events.last().expect("at least one event")["kind"],
-        "session_complete",
-        "the final event must be session_complete. events={events:?}",
+    let session_complete = events
+        .iter()
+        .position(|event| event["kind"] == "session_complete")
+        .expect("session_complete event");
+    let marker_routed = events
+        .iter()
+        .position(|event| {
+            event["kind"] == "driver_event" && event["driver_kind"] == "marker_routed"
+        })
+        .expect("marker_routed event");
+    assert!(
+        session_complete < marker_routed,
+        "driver routing must follow agent session completion. events={events:?}",
     );
 }
 
