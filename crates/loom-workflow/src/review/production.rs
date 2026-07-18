@@ -1475,6 +1475,32 @@ mod tests {
     }
 
     #[test]
+    fn concern_summary_marker_names_route_to_review_concern_not_swallowed() {
+        let finding_line = r#"LOOM_FINDING: {"token":"spec-coherence-fail","route":"blocking","bonds":["harness"],"target":{"kind":"Criterion","spec":"harness","anchor":"verdict-gate"},"evidence":"parallel missing-marker routing is incorrect"}"#;
+        let expected = "parallel missing-marker path reported as LOOM_COMPLETE instead of missing";
+        let stdout = format!("{finding_line}\nLOOM_CONCERN: {{\"summary\":\"{expected}\"}}\n");
+        let walk =
+            WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &AcceptAllFindingValidator);
+
+        assert_eq!(
+            walk.terminal(),
+            &TerminalSurface::Concern {
+                summary: expected.to_owned(),
+            },
+        );
+        match classify_review_phase(&walk, 0) {
+            ReviewOutcome::Incomplete { detail } => {
+                assert!(detail.contains(expected), "summary missing: {detail}");
+                assert!(
+                    !detail.contains("swallowed marker"),
+                    "structured concern was misclassified: {detail}",
+                );
+            }
+            other => panic!("expected review concern, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn all_suppressed_concern_walk_exits_clean_after_shape_validation() {
         let finding_line = r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["harness"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
         let concern_line = r#"LOOM_CONCERN: {"summary":"reviewer flagged a verifier-bypass"}"#;

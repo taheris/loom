@@ -1160,6 +1160,34 @@ const CLARIFY: &str = "LOOM_CLARIFY";
 const RETRY: &str = "LOOM_RETRY";
 const CONCERN: &str = "LOOM_CONCERN";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalMarker {
+    Complete,
+    Noop,
+    Blocked,
+    Clarify,
+    Retry,
+    Concern,
+}
+
+impl TerminalMarker {
+    const ALL: [(Self, &'static str); 6] = [
+        (Self::Complete, COMPLETE),
+        (Self::Noop, NOOP),
+        (Self::Blocked, BLOCKED),
+        (Self::Clarify, CLARIFY),
+        (Self::Retry, RETRY),
+        (Self::Concern, CONCERN),
+    ];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MarkerMatch {
+    marker: TerminalMarker,
+    start: usize,
+    end: usize,
+}
+
 /// Scan the agent's combined output (or the `result` field of the final
 /// stream-json line) for an exit signal.
 ///
@@ -1167,6 +1195,7 @@ const CONCERN: &str = "LOOM_CONCERN";
 /// marker emitted earlier in the session is treated as swallowed; multiple
 /// markers on the final line likewise collapse to `None` per the
 /// mutual-exclusivity rule in `specs/harness.md` § Marker definitions.
+/// Marker-shaped text inside a quoted JSON string is payload, not a terminal.
 ///
 /// `LOOM_BLOCKED` and `LOOM_CLARIFY` are bare markers — no trailing colon,
 /// no trailing payload. The reason / question is read from the text
@@ -1190,55 +1219,68 @@ pub fn parse_exit_signal(output: &str) -> Option<ExitSignal> {
     let final_line = lines[final_idx];
     let prior = &lines[..final_idx];
 
-    if has_multiple_markers(final_line) {
+    let markers = terminal_markers(final_line);
+    let [terminal] = markers.as_slice() else {
         return None;
-    }
+    };
 
-    if let Some(idx) = final_line.find(CONCERN) {
-        return Some(parse_concern(&final_line[idx + CONCERN.len()..]));
+    match terminal.marker {
+        TerminalMarker::Complete => Some(ExitSignal::Complete),
+        TerminalMarker::Noop => Some(ExitSignal::Noop),
+        TerminalMarker::Blocked => required_reason_at(terminal.start, final_line, prior)
+            .map(|reason| ExitSignal::Blocked { reason }),
+        TerminalMarker::Clarify => Some(ExitSignal::Clarify {
+            question: reason_at(terminal.start, final_line, prior),
+        }),
+        TerminalMarker::Retry => Some(ExitSignal::Retry {
+            reason: reason_at(terminal.start, final_line, prior),
+        }),
+        TerminalMarker::Concern => Some(parse_concern(&final_line[terminal.end..])),
     }
-    if let Some(reason) = required_reason_for(BLOCKED, final_line, prior) {
-        return Some(ExitSignal::Blocked { reason });
-    }
-    if let Some(question) = reason_for(CLARIFY, final_line, prior) {
-        return Some(ExitSignal::Clarify { question });
-    }
-    if let Some(reason) = reason_for(RETRY, final_line, prior) {
-        return Some(ExitSignal::Retry { reason });
-    }
-    if final_line.contains(COMPLETE) {
-        return Some(ExitSignal::Complete);
-    }
-    if final_line.contains(NOOP) {
-        return Some(ExitSignal::Noop);
-    }
-    None
 }
 
-/// Count distinct marker keywords on `line`. The keywords are matched as
-/// substrings; `CONCERN` is a substring of nothing else in the set, and
-/// the others are pairwise non-overlapping, so distinct hits map one-to-one
-/// to distinct markers.
-fn has_multiple_markers(line: &str) -> bool {
-    let markers = [COMPLETE, NOOP, BLOCKED, CLARIFY, CONCERN, RETRY];
-    let mut hits = 0;
-    for marker in markers {
-        if line.contains(marker) {
-            hits += 1;
-            if hits > 1 {
-                return true;
+fn terminal_markers(line: &str) -> Vec<MarkerMatch> {
+    let mut markers = Vec::new();
+    let mut in_string = false;
+    let mut escaping = false;
+    for (start, ch) in line.char_indices() {
+        if in_string {
+            if escaping {
+                escaping = false;
+            } else if ch == '\\' {
+                escaping = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            continue;
+        }
+        for (marker, token) in TerminalMarker::ALL {
+            if line[start..].starts_with(token) {
+                markers.push(MarkerMatch {
+                    marker,
+                    start,
+                    end: start + token.len(),
+                });
             }
         }
     }
-    false
+    markers
 }
 
-fn final_line_contains_marker(output: &str, marker: &str) -> bool {
+fn final_line_contains_marker(output: &str, marker: TerminalMarker) -> bool {
     output
         .lines()
         .rev()
         .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| line.contains(marker))
+        .is_some_and(|line| {
+            terminal_markers(line)
+                .iter()
+                .any(|candidate| candidate.marker == marker)
+        })
 }
 
 #[derive(Deserialize)]
@@ -1267,28 +1309,24 @@ fn parse_concern(after_marker: &str) -> ExitSignal {
     }
 }
 
-fn required_reason_for(marker: &str, line: &str, prior: &[&str]) -> Option<String> {
-    let reason = reason_for(marker, line, prior)?;
-    if reason.is_empty() {
-        None
-    } else {
-        Some(reason)
-    }
+fn required_reason_at(marker_start: usize, line: &str, prior: &[&str]) -> Option<String> {
+    let reason = reason_at(marker_start, line, prior);
+    (!reason.is_empty()).then_some(reason)
 }
 
-fn reason_for(marker: &str, line: &str, prior: &[&str]) -> Option<String> {
-    let idx = line.find(marker)?;
-    let same_line = line[..idx].trim();
+fn reason_at(marker_start: usize, line: &str, prior: &[&str]) -> String {
+    let same_line = line[..marker_start].trim();
     if !same_line.is_empty() {
-        return Some(same_line.to_string());
+        return same_line.to_string();
     }
-    for prev in prior.iter().rev() {
-        let trimmed = prev.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-    Some(String::new())
+    prior
+        .iter()
+        .rev()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .unwrap_or_default()
 }
 
 /// Top-level error for [`parse_walk_output`]. Either a per-record
@@ -1689,7 +1727,7 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
                 },
             })
         }
-        TerminalSurface::Missing if final_line_contains_marker(output, BLOCKED) => {
+        TerminalSurface::Missing if final_line_contains_marker(output, TerminalMarker::Blocked) => {
             Err(WalkOutputError::InvalidTerminal { marker: BLOCKED })
         }
         TerminalSurface::Missing if !walk.findings().is_empty() => {
@@ -2064,6 +2102,28 @@ mod tests {
             }
             other => panic!("expected Concern, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn concern_payload_marker_names_are_data_not_terminal_markers() {
+        let expected =
+            "missing-marker path reported as LOOM_COMPLETE, not LOOM_BLOCKED or LOOM_RETRY";
+        let out = format!(r#"LOOM_CONCERN: {{"summary":"{expected}"}}"#);
+        match parse_exit_signal(&out) {
+            Some(ExitSignal::Concern { summary }) => assert_eq!(summary, expected),
+            other => panic!("expected Concern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concern_with_trailing_terminal_marker_is_rejected() {
+        let out = r#"LOOM_CONCERN: {"summary":"scope drift"} LOOM_COMPLETE"#;
+        assert_eq!(parse_exit_signal(out), None);
+    }
+
+    #[test]
+    fn duplicate_same_terminal_marker_is_rejected() {
+        assert_eq!(parse_exit_signal("LOOM_COMPLETE LOOM_COMPLETE"), None);
     }
 
     #[test]
