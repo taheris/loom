@@ -425,6 +425,26 @@ impl From<TuneLevelArg> for loom_tune::checker::Level {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+enum SpecTierArg {
+    Check,
+    Test,
+    System,
+    Judge,
+}
+
+impl From<SpecTierArg> for Tier {
+    fn from(arg: SpecTierArg) -> Self {
+        match arg {
+            SpecTierArg::Check => Self::Check,
+            SpecTierArg::Test => Self::Test,
+            SpecTierArg::System => Self::System,
+            SpecTierArg::Judge => Self::Judge,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Initialize the workspace (create `.loom/` config + cache DB).
@@ -469,8 +489,17 @@ enum Command {
         #[arg(value_name = "LABEL")]
         label: String,
         /// Print the unique nixpkgs names referenced by spec annotation targets.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "targets")]
         deps: bool,
+        /// Print annotation tiers and targets, one per line.
+        #[arg(long, conflicts_with = "deps")]
+        targets: bool,
+        /// Restrict target output to one annotation tier.
+        #[arg(long, value_enum, value_name = "TIER", requires = "targets")]
+        tier: Option<SpecTierArg>,
+        /// Print exact annotation targets without tier prefixes.
+        #[arg(long, requires = "targets")]
+        plain: bool,
     },
     /// Interactive spec interview with optional initial anchors.
     Plan {
@@ -777,9 +806,13 @@ fn main() -> ExitCode {
             path,
         } => run_logs(&workspace, bead.as_deref(), follow, raw, verbose, path)
             .map(|()| ExitCode::SUCCESS),
-        Command::Spec { label, deps } => {
-            run_spec(&workspace, label, deps).map(|()| ExitCode::SUCCESS)
-        }
+        Command::Spec {
+            label,
+            deps,
+            targets,
+            tier,
+            plain,
+        } => run_spec(&workspace, label, deps, targets, tier, plain).map(|()| ExitCode::SUCCESS),
         Command::Plan {
             anchor_labels,
             profile,
@@ -5552,34 +5585,55 @@ fn current_loom_bin() -> anyhow::Result<PathBuf> {
     Ok(std::env::current_exe()?)
 }
 
-fn run_spec(workspace: &std::path::Path, label: String, deps: bool) -> anyhow::Result<()> {
+fn run_spec(
+    workspace: &std::path::Path,
+    label: String,
+    deps: bool,
+    targets: bool,
+    tier: Option<SpecTierArg>,
+    plain: bool,
+) -> anyhow::Result<()> {
     let label = SpecLabel::new(label);
     if deps {
         let pkgs = spec::deps_for_label(workspace, &label)?;
         for pkg in pkgs {
             println!("{pkg}");
         }
-    } else {
-        let spec_path = workspace
-            .join("specs")
-            .join(format!("{}.md", label.as_str()));
-        let body = std::fs::read_to_string(&spec_path)?;
-        let parsed = loom_gate::annotation::parse_content(&spec_path, &body);
-        let mut annotated_lines: std::collections::BTreeSet<u32> =
-            std::collections::BTreeSet::new();
-        for ann in &parsed.annotations {
-            annotated_lines.insert(ann.criterion_line);
-            println!(
-                "{tier}\t{line}\t{target}",
-                tier = ann.tier.as_wire(),
-                line = ann.criterion_line,
-                target = ann.target,
-            );
-        }
-        for crit in &parsed.criteria {
-            if !annotated_lines.contains(&crit.line) {
-                println!("none\t{line}\t", line = crit.line);
+        return Ok(());
+    }
+    if targets {
+        let tier = tier.map(Tier::from);
+        for annotation in spec::list_for_label(workspace, &label)?
+            .into_iter()
+            .filter(|annotation| tier.is_none_or(|tier| annotation.tier == tier))
+        {
+            if plain {
+                println!("{}", annotation.target);
+            } else {
+                println!("[{}] {}", annotation.tier, annotation.target);
             }
+        }
+        return Ok(());
+    }
+
+    let spec_path = workspace
+        .join("specs")
+        .join(format!("{}.md", label.as_str()));
+    let body = std::fs::read_to_string(&spec_path)?;
+    let parsed = loom_gate::annotation::parse_content(&spec_path, &body);
+    let mut annotated_lines: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for ann in &parsed.annotations {
+        annotated_lines.insert(ann.criterion_line);
+        println!(
+            "{tier}\t{line}\t{target}",
+            tier = ann.tier.as_wire(),
+            line = ann.criterion_line,
+            target = ann.target,
+        );
+    }
+    for crit in &parsed.criteria {
+        if !annotated_lines.contains(&crit.line) {
+            println!("none\t{line}\t", line = crit.line);
         }
     }
     Ok(())

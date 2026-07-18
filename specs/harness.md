@@ -3335,7 +3335,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - `loom spec <label> --targets` prints one annotation per line as
       `[tier] target`; `--tier <tier>` narrows to that tier; `--plain`
       prints exact target strings without the `[tier] ` prefix
-  [test?](spec_targets_lists_annotation_targets_with_tier_and_plain_modes)
+  [test](spec_targets_lists_annotation_targets_with_tier_and_plain_modes)
 
 ### Verdict gate
 
@@ -3707,7 +3707,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
   [test](cache_corruption_recovery_never_implies_clean_todo)
 - `loom plan [labels...]` does NOT create epics and does NOT write to
       bd; plan sessions edit specs/index/notes only
-  [test?](plan_does_not_create_epic_or_touch_bd)
+  [test](plan_does_not_create_epic_or_touch_bd)
 - `loom plan [labels...]` reads existing implementation notes for
       anchor/touched specs and writes back merged arrays via
       `loom note set` (interview-driven keep/drop/add — not blind
