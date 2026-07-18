@@ -1006,12 +1006,12 @@ the entrypoint run the wrong runtime.
 
 - `Session` interoperability trait defined in `loom-events` with `prompt`, `steer`, `cancel`, `set_mode` methods
   [test](session_trait_exposes_prompt_steer_cancel_set_mode)
-- `AgentBackend` trait defined in loom-driver with associated `spawn`; no `SUPPORTS_STEERING` constant (all three backends steer)
+- `AgentBackend` trait defined in loom-driver with associated `spawn`; steering remains an unconditional session capability rather than an `AgentBackend` capability constant
   [check](cargo run -p loom-walk -- agent_backend_trait_contract)
 - `run_agent` compiles with `PiBackend`, `ClaudeBackend`, and `DirectBackend` as concrete types
   [test](all_backends_dispatch_through_run_agent)
 - Agent backends emit only canonical `AgentEvent` variants owned by [events.md](events.md)
-  [check](cargo test -p loom-events --lib every_spec_variant_present)
+  [test](agent_event_payload_fields_match_spec)
 - `SpawnConfig` struct captures image_ref, image_source, image_source_kind, workspace, env, initial_prompt, agent_args, scratch_dir, and omits launcher/ProfileConfig-only host fields from JSON
   [check](cargo test -p loom-workflow --lib spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
 - `SpawnConfig` defaults absent Direct observer config to enabled
@@ -1092,7 +1092,9 @@ the entrypoint run the wrong runtime.
   as pinned instruction context when truncating or summarizing ordinary
   conversation history
   [test](direct_context_budget_preserves_initial_prompt_pin)
-- Direct backend's `Session` impl spawns a container via `wrix spawn` with the `direct` runtime layer; the container's entrypoint exec's `loom-direct-runner`
+- Direct backend steering reaches the in-container runner and drives the next `Conversation` turn before the one-shot session completes
+  [test](direct_runner_steer_reaches_next_conversation_turn)
+- Direct backend's `Session` impl invokes `wrix spawn` with the direct runtime in both launcher and container configuration
   [test](direct_session_spawn_invokes_wrix_spawn_with_direct_runtime)
 - `loom-direct-runner` constructs a `loom-llm::Conversation`, registers the six sandbox-aware tools, runs the loop, and emits `AgentEvent` JSONL to stdout — the same common event shape as the subprocess backends
   [test](direct_runner_emits_agent_event_jsonl_compatible_with_common_agent_events)

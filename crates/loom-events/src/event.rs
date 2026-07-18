@@ -1470,37 +1470,6 @@ mod tests {
         );
     }
 
-    /// G3 — every spec variant lands as a real `AgentEvent` arm. Verifies
-    /// by deserialing one of each kind tag; the type round-trip is
-    /// already covered in `agent_event_deserialize_round_trip`. The
-    /// stub-promoted `test_per_tool_summary_cells` dispatcher reads from
-    /// this — H3 will extend it to assert renderer behavior.
-    #[test]
-    fn every_spec_variant_present() {
-        let kinds = [
-            "agent_start",
-            "agent_input",
-            "agent_end",
-            "turn_start",
-            "turn_end",
-            "session_complete",
-            "text_delta",
-            "text_end",
-            "thinking_delta",
-            "thinking_end",
-            "toolcall_delta",
-            "tool_call",
-            "tool_result",
-            "tool_progress",
-            "compaction_start",
-            "compaction_end",
-            "auto_retry",
-            "error",
-            "driver_event",
-        ];
-        assert_eq!(kinds.len(), 19, "spec mandates exactly 19 variants");
-    }
-
     /// G3 — `driver_event` accepts arbitrary `driver_kind` strings;
     /// adding new kinds is additive on the wire and does NOT require a
     /// schema bump. Deserializing two distinct kinds proves this.

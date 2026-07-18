@@ -13,9 +13,11 @@
 //!    stdout — `tool_call` / `tool_result` for each assistant + tool
 //!    pair, `text_delta` + `text_end` for the final assistant text,
 //!    then `turn_end`.
-//! 4. On [`DirectCommand::Complete`], EOF, or [`DirectCommand::Abort`],
-//!    emit `session_complete` and return.
+//! 4. After [`DirectCommand::Complete`] drains commands queued during the
+//!    active turn, or on EOF / [`DirectCommand::Abort`], emit
+//!    `session_complete` and return.
 
+use std::collections::VecDeque;
 use std::io;
 use std::sync::{Arc, Mutex};
 
@@ -167,8 +169,8 @@ fn read_api_key(var: &str) -> Result<ApiKey, RunnerError> {
 }
 
 /// Drive one Direct session against `client`. Reads JSONL commands from
-/// `stdin`, emits JSONL events to `stdout`, returns when stdin closes or
-/// the runner receives [`DirectCommand::Complete`] or [`DirectCommand::Abort`].
+/// `stdin`, emits JSONL events to `stdout`, and lets commands received during
+/// an active turn drain before a requested completion.
 pub async fn run_session<C, R, W>(
     client: C,
     config: SpawnConfig,
@@ -212,30 +214,100 @@ where
     };
     let mut emitter = Emitter::new(stdout);
     let mut lines = stdin.lines();
+    let mut pending = VecDeque::new();
     let mut exit_code: i32 = 0;
     let mut initial_prompt_pending = true;
+    let mut input_closed = false;
+    let mut complete_requested = false;
+    let mut abort_requested = false;
 
-    while let Some(line) = lines.next_line().await.map_err(RunnerError::Io)? {
-        let trimmed = line.trim_end_matches('\r');
-        if trimmed.is_empty() {
-            continue;
+    loop {
+        if abort_requested || (pending.is_empty() && (input_closed || complete_requested)) {
+            break;
         }
-        match serde_json::from_str::<DirectCommand>(trimmed) {
-            Ok(DirectCommand::Prompt { message }) => {
-                debug!(bytes = message.len(), "received prompt");
+        let input = match pending.pop_front() {
+            Some(input) => input,
+            None => match lines.next_line().await.map_err(RunnerError::Io)? {
+                Some(line) => {
+                    let Some(input) = decode_input(&line) else {
+                        continue;
+                    };
+                    input
+                }
+                None => {
+                    input_closed = true;
+                    continue;
+                }
+            },
+        };
+
+        match input {
+            PendingInput::Command(DirectCommand::Prompt { message })
+            | PendingInput::Command(DirectCommand::Steer { message }) => {
                 let pin_initial_prompt = initial_prompt_pending;
-                initial_prompt_pending = false;
-                if let Err(err) = run_prompt(
-                    &mut conv,
-                    &recording,
-                    &driver_events,
-                    &ctx,
-                    &mut emitter,
-                    message,
-                    pin_initial_prompt,
-                )
-                .await
+                if pin_initial_prompt {
+                    debug!(bytes = message.len(), "received prompt");
+                    initial_prompt_pending = false;
+                } else {
+                    debug!(bytes = message.len(), "received follow-up or steer");
+                }
+
+                let mut turn_result = None;
+                let mut input_error = None;
                 {
+                    let turn = run_prompt(
+                        &mut conv,
+                        &recording,
+                        &driver_events,
+                        &ctx,
+                        &mut emitter,
+                        message,
+                        pin_initial_prompt,
+                    );
+                    tokio::pin!(turn);
+                    loop {
+                        tokio::select! {
+                            biased;
+                            line = lines.next_line(), if !input_closed => {
+                                match line {
+                                    Ok(Some(line)) => {
+                                        if let Some(input) = decode_input(&line) {
+                                            if matches!(
+                                                input,
+                                                PendingInput::Command(DirectCommand::Abort)
+                                            ) {
+                                                abort_requested = true;
+                                                break;
+                                            }
+                                            pending.push_back(input);
+                                        }
+                                    }
+                                    Ok(None) => input_closed = true,
+                                    Err(err) => {
+                                        input_error = Some(err);
+                                        break;
+                                    }
+                                }
+                            }
+                            result = &mut turn => {
+                                turn_result = Some(result);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(err) = input_error {
+                    return Err(RunnerError::Io(err));
+                }
+                if abort_requested {
+                    info!(
+                        queued_commands = pending.len(),
+                        "received abort, terminating session",
+                    );
+                    continue;
+                }
+                if let Some(Err(err)) = turn_result {
                     warn!(error = ?err, "prompt failed");
                     emitter
                         .emit(&DirectEvent::Error {
@@ -245,23 +317,25 @@ where
                     exit_code = 1;
                 }
             }
-            Ok(DirectCommand::Steer { message }) => {
-                debug!(bytes = message.len(), "received steer");
-                conv.user_cached(message, CacheControl::Ephemeral(PROMPT_CACHE_TTL));
+            PendingInput::Command(DirectCommand::Complete) => {
+                info!(
+                    queued_commands = pending.len(),
+                    "received complete; draining queued session commands",
+                );
+                complete_requested = true;
             }
-            Ok(DirectCommand::Complete) => {
-                info!("received complete, terminating session");
-                break;
+            PendingInput::Command(DirectCommand::Abort) => {
+                info!(
+                    queued_commands = pending.len(),
+                    "received abort, terminating session",
+                );
+                abort_requested = true;
             }
-            Ok(DirectCommand::Abort) => {
-                info!("received abort, terminating session");
-                break;
-            }
-            Err(err) => {
-                warn!(error = ?err, line = %trimmed, "malformed command frame");
+            PendingInput::Malformed { line, error } => {
+                warn!(error = %error, line = %line, "malformed command frame");
                 emitter
                     .emit(&DirectEvent::Error {
-                        message: format!("invalid command frame: {err}"),
+                        message: format!("invalid command frame: {error}"),
                     })
                     .await?;
                 exit_code = 1;
@@ -276,6 +350,25 @@ where
         })
         .await?;
     Ok(())
+}
+
+enum PendingInput {
+    Command(DirectCommand),
+    Malformed { line: String, error: String },
+}
+
+fn decode_input(line: &str) -> Option<PendingInput> {
+    let trimmed = line.trim_end_matches('\r');
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(match serde_json::from_str::<DirectCommand>(trimmed) {
+        Ok(command) => PendingInput::Command(command),
+        Err(error) => PendingInput::Malformed {
+            line: trimmed.to_string(),
+            error: error.to_string(),
+        },
+    })
 }
 
 async fn run_prompt<C, W>(
@@ -509,7 +602,7 @@ pub enum RunnerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_driver::agent::{OutputLimits, RePinContent};
+    use loom_driver::agent::{LineParse, OutputLimits, RePinContent};
     use loom_driver::clock::{Clock, SystemClock};
     use loom_driver::config::{
         AgentObserversConfig, DoomLoopConfig, DuplicateResultConfig, LoomConfig, Phase,
@@ -951,22 +1044,49 @@ mod tests {
     /// inspect the lowered messages and tool definitions without
     /// reaching a live provider. The shared handle stays alive after
     /// `run_session` consumes the client.
+    type CapturedRequests = std::sync::Arc<Mutex<Vec<CompletionRequest>>>;
+
+    #[derive(Clone)]
+    struct FirstTurnGate {
+        started: std::sync::Arc<tokio::sync::Notify>,
+        release: std::sync::Arc<tokio::sync::Notify>,
+    }
+
     struct CapturingClient {
-        captured: std::sync::Arc<Mutex<Vec<CompletionRequest>>>,
+        captured: CapturedRequests,
+        first_turn_gate: Option<FirstTurnGate>,
         response: CompletionResponse,
     }
 
     impl CapturingClient {
-        fn new(
-            response: CompletionResponse,
-        ) -> (Self, std::sync::Arc<Mutex<Vec<CompletionRequest>>>) {
+        fn new(response: CompletionResponse) -> (Self, CapturedRequests) {
             let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
                     captured: captured.clone(),
+                    first_turn_gate: None,
                     response,
                 },
                 captured,
+            )
+        }
+
+        fn with_blocked_first_turn(
+            response: CompletionResponse,
+        ) -> (Self, CapturedRequests, FirstTurnGate) {
+            let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
+            let gate = FirstTurnGate {
+                started: std::sync::Arc::new(tokio::sync::Notify::new()),
+                release: std::sync::Arc::new(tokio::sync::Notify::new()),
+            };
+            (
+                Self {
+                    captured: captured.clone(),
+                    first_turn_gate: Some(gate.clone()),
+                    response,
+                },
+                captured,
+                gate,
             )
         }
     }
@@ -985,10 +1105,15 @@ mod tests {
             req: CompletionRequest,
         ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
             Box::pin(async move {
-                self.captured
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .push(req);
+                let first_turn = {
+                    let mut captured = self.captured.lock().unwrap_or_else(|p| p.into_inner());
+                    captured.push(req);
+                    captured.len() == 1
+                };
+                if first_turn && let Some(gate) = &self.first_turn_gate {
+                    gate.started.notify_one();
+                    gate.release.notified().await;
+                }
                 Ok(self.response.clone())
             })
         }
@@ -1048,8 +1173,12 @@ mod tests {
         .expect("run_session completes");
 
         let requests = captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        assert_eq!(requests.len(), 2, "two prompt frames produce requests");
-        requests[1].clone()
+        assert_eq!(
+            requests.len(),
+            4,
+            "the initial prompt, two steers, and current prompt each reach the client",
+        );
+        requests.last().expect("current prompt request").clone()
     }
 
     fn assert_pinned_planning_prompt_survives(request: &CompletionRequest) {
@@ -1109,6 +1238,76 @@ mod tests {
         assert_pinned_planning_prompt_survives(&request);
     }
 
+    /// A steer encoded by the host while the first Direct turn is active is
+    /// drained after the host's one-shot `complete` frame and becomes the next
+    /// Conversation request before `session_complete` is emitted.
+    #[tokio::test]
+    async fn direct_runner_steer_reaches_next_conversation_turn() {
+        let (client, captured, first_turn_gate) =
+            CapturingClient::with_blocked_first_turn(final_text("ok"));
+        let (mut stdin_host, stdin_runner) = tokio::io::duplex(4096);
+        let mut stdout: Vec<u8> = Vec::new();
+        let runner = run_session(
+            client,
+            sample_config(Some("claude-sonnet-4-6")),
+            tokio::io::BufReader::new(stdin_runner),
+            &mut stdout,
+        );
+        let driver = async move {
+            let encoded_prompt = loom_agent::direct::backend::DirectParser
+                .encode_prompt("orient me on spec X")
+                .expect("encode prompt");
+            stdin_host
+                .write_all(encoded_prompt.as_bytes())
+                .await
+                .expect("write prompt");
+            stdin_host.flush().await.expect("flush prompt");
+            SystemClock::new()
+                .timeout(Duration::from_secs(5), first_turn_gate.started.notified())
+                .await
+                .expect("first Conversation turn starts");
+            let encoded_steer = loom_agent::direct::backend::DirectParser
+                .encode_steer("focus on cache")
+                .expect("encode steer");
+            stdin_host
+                .write_all(encoded_steer.as_bytes())
+                .await
+                .expect("write steer");
+            stdin_host.flush().await.expect("flush steer");
+            first_turn_gate.release.notify_one();
+        };
+
+        let (result, ()) = tokio::join!(runner, driver);
+        result.expect("run_session completes");
+
+        let requests = captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(requests.len(), 2, "the steer must drive a second turn");
+        assert_eq!(
+            requests[1]
+                .messages
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>(),
+            vec!["orient me on spec X", "focus on cache"],
+        );
+        let events = std::str::from_utf8(&stdout)
+            .expect("utf-8 events")
+            .lines()
+            .map(|line| serde_json::from_str::<DirectEvent>(line).expect("DirectEvent"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, DirectEvent::TurnEnd))
+                .count(),
+            2,
+        );
+        assert!(matches!(
+            events.last(),
+            Some(DirectEvent::SessionComplete { exit_code: 0, .. })
+        ));
+    }
+
     /// Spec contract (`specs/agent.md` § Direct Backend): per-call
     /// `CacheControl::Ephemeral(CacheTtl)` markers in the runner's prompt
     /// construction flow through to the provider request. The runner
@@ -1121,7 +1320,7 @@ mod tests {
     fn direct_cache_control_propagates_to_anthropic_request() {
         let (client, captured) = CapturingClient::new(final_text("ok"));
         let stdin =
-            b"{\"type\":\"prompt\",\"message\":\"orient me on spec X\"}\n{\"type\":\"steer\",\"message\":\"focus on cache\"}\n{\"type\":\"prompt\",\"message\":\"continue\"}\n"
+            b"{\"type\":\"prompt\",\"message\":\"orient me on spec X\"}\n{\"type\":\"steer\",\"message\":\"focus on cache\"}\n"
                 .to_vec();
         let mut stdout: Vec<u8> = Vec::new();
 
@@ -1138,7 +1337,7 @@ mod tests {
         assert_eq!(
             requests.len(),
             2,
-            "two prompt frames produce two completion requests",
+            "the prompt and steer produce two completion requests",
         );
         assert_eq!(
             requests[0].model,
@@ -1177,8 +1376,8 @@ mod tests {
             .collect();
         assert_eq!(
             second_cached.len(),
-            3,
-            "first prompt, steer, and second prompt each become cache breakpoints: {:?}",
+            2,
+            "the first prompt and steer become cache breakpoints: {:?}",
             requests[1].messages,
         );
     }

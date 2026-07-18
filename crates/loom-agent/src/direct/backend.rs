@@ -207,8 +207,8 @@ pub enum DirectCommand {
     /// Inject `message` as a steering user turn the runner queues for
     /// the next iteration.
     Steer { message: String },
-    /// Mark the one-shot workflow prompt complete so the runner emits
-    /// `session_complete` without waiting for stdin EOF.
+    /// Request one-shot completion after commands queued during the active
+    /// turn have drained.
     Complete,
     /// Cancel the in-flight `Conversation::run` and return to idle.
     Abort,
@@ -309,6 +309,8 @@ mod tests {
     use super::*;
     use loom_driver::agent::RePinContent;
     use loom_driver::config::{AgentObserversConfig, DoomLoopConfig, DuplicateResultConfig};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     fn sample_repin() -> RePinContent {
@@ -417,64 +419,102 @@ mod tests {
         );
     }
 
-    /// Spec contract (`specs/agent.md` § Direct backend):
-    /// `DirectBackend::spawn` launches `wrix --profile-config <file> spawn
-    /// --spawn-config <file> --stdio`, and the spawn-config the wrapper
-    /// reads carries `WRIX_AGENT=direct` so the container's entrypoint dispatches to
-    /// the direct runtime layer (`lib/sandbox/linux/entrypoint.sh` exec's
-    /// `loom-direct-runner` on this value). Both halves of the contract
-    /// are pinned here: the argv shape via [`build_wrix_command`]
-    /// inspection (the in-process function `DirectBackend::spawn` calls)
-    /// and the runtime-layer signal via the on-disk spawn-config the
-    /// wrapper deserialises.
-    #[test]
-    fn direct_session_spawn_invokes_wrix_spawn_with_direct_runtime() {
-        let scratch = tempfile::tempdir().expect("tempdir");
-        let cfg = sample_config(scratch.path().to_path_buf());
-        assert!(
-            cfg.env
-                .iter()
-                .any(|(k, v)| k == "WRIX_AGENT" && v == "direct"),
-            "sample_config must seed the direct runtime marker; got env={:?}",
-            cfg.env,
-        );
+    /// `DirectBackend::spawn` invokes the external Wrix launcher with the
+    /// profile/spawn-config argv and passes `WRIX_AGENT=direct` through both
+    /// launcher and container configuration boundaries.
+    #[tokio::test]
+    async fn direct_session_spawn_invokes_wrix_spawn_with_direct_runtime() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let launcher = root.path().join("wrix");
+        let argv_log = root.path().join("argv.log");
+        let env_log = root.path().join("env.log");
+        let config_log = root.path().join("spawn-config-copy.json");
+        fs::write(
+            &launcher,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$WRIX_TEST_ARGV_LOG"
+printf '%s\n' "$WRIX_AGENT" > "$WRIX_TEST_ENV_LOG"
+spawn_config=""
+while (( $# > 0 )); do
+    if [[ "$1" == "--spawn-config" ]]; then
+        spawn_config="$2"
+        shift 2
+    else
+        shift
+    fi
+done
+if [[ -z "$spawn_config" ]]; then
+    printf '%s\n' 'missing --spawn-config' >&2
+    exit 2
+fi
+cp "$spawn_config" "$WRIX_TEST_CONFIG_LOG"
+IFS= read -r _prompt
+printf '%s\n' '{"type":"session_complete","exit_code":0}'
+"#,
+        )
+        .expect("write fake wrix");
+        let mut permissions = fs::metadata(&launcher)
+            .expect("stat fake wrix")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&launcher, permissions).expect("chmod fake wrix");
 
-        let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");
+        let scratch_dir = root.path().join("scratch");
+        let mut cfg = sample_config(scratch_dir.clone());
+        cfg.wrix_launcher = Some(launcher);
+        cfg.launcher_env = vec![
+            ("WRIX_AGENT".into(), "direct".into()),
+            (
+                "WRIX_TEST_ARGV_LOG".into(),
+                argv_log.to_string_lossy().into_owned(),
+            ),
+            (
+                "WRIX_TEST_ENV_LOG".into(),
+                env_log.to_string_lossy().into_owned(),
+            ),
+            (
+                "WRIX_TEST_CONFIG_LOG".into(),
+                config_log.to_string_lossy().into_owned(),
+            ),
+        ];
 
-        let wrix_bin = OsStr::new("wrix");
-        let profile_config = cfg.profile_config.as_deref().expect("profile config");
-        let cmd = build_wrix_command(wrix_bin, Some(profile_config), &spawn_config_path);
-        let std_cmd = cmd.as_std();
+        let session = DirectBackend::spawn(&cfg)
+            .await
+            .expect("spawn through Wrix");
+        let mut session = session.prompt("hello Direct").await.expect("send prompt");
+        assert!(matches!(
+            session.next_event().await.expect("read event"),
+            Some(ParsedAgentEvent::SessionComplete { exit_code: 0, .. })
+        ));
+        let status = session.child_mut().wait().await.expect("wait fake wrix");
+        assert!(status.success());
 
+        let args = fs::read_to_string(&argv_log).expect("read argv log");
+        let expected_spawn_config = scratch_dir.join(SPAWN_CONFIG_FILE);
         assert_eq!(
-            std_cmd.get_program(),
-            wrix_bin,
-            "program must be the wrix launcher, not podman directly",
-        );
-        let args: Vec<&OsStr> = std_cmd.get_args().collect();
-        assert_eq!(
-            args,
+            args.lines().collect::<Vec<_>>(),
             vec![
-                OsStr::new("--profile-config"),
-                profile_config.as_os_str(),
-                OsStr::new("spawn"),
-                OsStr::new("--spawn-config"),
-                spawn_config_path.as_os_str(),
-                OsStr::new("--stdio"),
+                "--profile-config",
+                "/nix/store/wrix-test-direct-profile-config.json",
+                "spawn",
+                "--spawn-config",
+                expected_spawn_config.to_str().expect("UTF-8 scratch path"),
+                "--stdio",
             ],
-            "argv contract is `--profile-config <file> spawn --spawn-config <file> --stdio`; got={args:?}",
         );
-
-        let bytes = std::fs::read(&spawn_config_path).expect("read spawn-config");
-        let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode spawn-config");
+        assert_eq!(
+            fs::read_to_string(&env_log).expect("read env log"),
+            "direct\n",
+        );
+        let decoded: SpawnConfig =
+            serde_json::from_slice(&fs::read(&config_log).expect("read copied spawn config"))
+                .expect("decode copied spawn config");
         assert!(
             decoded
                 .env
                 .iter()
-                .any(|(k, v)| k == "WRIX_AGENT" && v == "direct"),
-            "spawn-config.json must round-trip WRIX_AGENT=direct so the \
-             entrypoint exec's loom-direct-runner; got env={:?}",
-            decoded.env,
+                .any(|(key, value)| key == "WRIX_AGENT" && value == "direct")
         );
     }
 

@@ -2,8 +2,8 @@
 //!
 //! The backend trait is the static-dispatch seam between workflow code and
 //! concrete agent runtimes. This walk parses the trait surface and verifies it
-//! still exposes an associated `spawn` function while keeping steering as an
-//! unconditional session capability, not a `SUPPORTS_STEERING` gate.
+//! still exposes an associated `spawn` function without reintroducing a
+//! backend-level `SUPPORTS_STEERING` gate.
 
 use super::util::{line_of, parse_rs, rel, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
@@ -61,7 +61,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
             && item_const.ident == "SUPPORTS_STEERING"
         {
             violations.push(format!(
-                "{path_rel}:{} `SUPPORTS_STEERING` must not be part of AgentBackend; all current backends steer",
+                "{path_rel}:{} `SUPPORTS_STEERING` must not be part of AgentBackend; steering belongs to the session contract",
                 line_of(item_const),
             ));
         }
