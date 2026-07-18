@@ -682,15 +682,15 @@ and `--no-default-features` to catch feature-gating regressions.
 - Default logging does not emit binary bytes, base64 payloads, prompt bodies, or response bodies; MIME type and byte length are safe to log
   [judge](../tests/judges/loom.sh#judge_llm_multimodal_logging_redaction)
 - `GeminiClient` serializes PDF binary parts to Gemini `inline_data` with `mime_type: "application/pdf"` and base64 `data`
-  [test?](gemini_multimodal_serializes_pdf_inline_data)
+  [test](gemini_multimodal_serializes_pdf_inline_data)
 - `AnthropicClient` serializes PDF binary parts to native Anthropic `document` content blocks with `source: { type: "base64", media_type: "application/pdf", data }`, not prompt text
-  [test?](anthropic_multimodal_serializes_pdf_document_block)
+  [test](anthropic_multimodal_serializes_pdf_document_block)
 - `AnthropicClient` serializes supported image binary parts to native Anthropic `image` content blocks with `source: { type: "base64", media_type, data }`, not prompt text
-  [test?](anthropic_multimodal_serializes_image_block)
+  [test](anthropic_multimodal_serializes_image_block)
 - `OpenAiClient` serializes PDF binary parts to OpenAI Responses `input_file` content with `filename` and `file_data` data URI, not prompt text
   [test](openai_multimodal_serializes_pdf_input_file)
 - `OpenAiClient` serializes supported image binary parts to OpenAI-native image content with a data URL, not prompt text
-  [test?](openai_multimodal_serializes_image_data_url)
+  [test](openai_multimodal_serializes_image_data_url)
 - Providers that require a filename synthesize a safe generic filename from `MimeType` when `BinaryContent::name` is absent
   [test](provider_filename_synthesized_when_binary_name_absent)
 - `OpenAiCompatClient` rejects binary parts with `LlmError::UnsupportedCapability` before network I/O while preserving text-only Chat-Completions compatibility

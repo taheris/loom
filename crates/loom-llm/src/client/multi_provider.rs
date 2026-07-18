@@ -1592,6 +1592,161 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gemini_multimodal_serializes_pdf_inline_data() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/models/gemini-3.1-pro:generateContent"))
+            .and(header("x-goog-api-key", "test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {"parts": [{"text": "ok"}]},
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 4,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 5
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            GeminiClient::new(test_api_key()).with_mock_endpoint(format!("{}/", server.uri()));
+        let req = CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini31Pro))
+            .user("summarize")
+            .user_binary(
+                crate::request::MimeType::APPLICATION_PDF,
+                vec![0x25_u8, 0x50, 0x44, 0x46],
+            );
+
+        let response = client.complete(req).await.expect("Gemini request succeeds");
+        assert_eq!(response.text, "ok");
+        let body = single_received_json(&server).await;
+        let parts = body["contents"][0]["parts"]
+            .as_array()
+            .expect("multipart user parts array");
+        assert_eq!(
+            parts,
+            &[
+                serde_json::json!({"text": "summarize"}),
+                serde_json::json!({
+                    "inline_data": {
+                        "mime_type": "application/pdf",
+                        "data": "JVBERg=="
+                    }
+                }),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_multimodal_serializes_pdf_document_block() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .and(header("x-api-key", "test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-6",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "usage": {"input_tokens": 4, "output_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            AnthropicClient::new(test_api_key()).with_mock_endpoint(format!("{}/", server.uri()));
+        let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .user("summarize")
+            .user_binary(
+                crate::request::MimeType::APPLICATION_PDF,
+                vec![0x25_u8, 0x50, 0x44, 0x46],
+            );
+
+        let response = client
+            .complete(req)
+            .await
+            .expect("Anthropic request succeeds");
+        assert_eq!(response.text, "ok");
+        let body = single_received_json(&server).await;
+        let content = body["messages"][0]["content"]
+            .as_array()
+            .expect("multipart user content array");
+        assert_eq!(
+            content,
+            &[
+                serde_json::json!({"type": "text", "text": "summarize"}),
+                serde_json::json!({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": "JVBERg=="
+                    }
+                }),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_multimodal_serializes_image_block() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .and(header("x-api-key", "test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-6",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "usage": {"input_tokens": 4, "output_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            AnthropicClient::new(test_api_key()).with_mock_endpoint(format!("{}/", server.uri()));
+        let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .user("describe")
+            .user_binary(
+                crate::request::MimeType::IMAGE_PNG,
+                vec![0x89_u8, 0x50, 0x4e, 0x47],
+            );
+
+        let response = client
+            .complete(req)
+            .await
+            .expect("Anthropic request succeeds");
+        assert_eq!(response.text, "ok");
+        let body = single_received_json(&server).await;
+        let content = body["messages"][0]["content"]
+            .as_array()
+            .expect("multipart user content array");
+        assert_eq!(
+            content,
+            &[
+                serde_json::json!({"type": "text", "text": "describe"}),
+                serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw=="
+                    }
+                }),
+            ],
+        );
+    }
+
+    #[tokio::test]
     async fn openai_multimodal_serializes_pdf_input_file() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1631,6 +1786,46 @@ mod tests {
             .expect("PDF is serialized as input_file");
         assert_eq!(file["filename"], "report.pdf");
         assert_eq!(file["file_data"], "data:application/pdf;base64,JVBERg==");
+    }
+
+    #[tokio::test]
+    async fn openai_multimodal_serializes_image_data_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(header("authorization", "Bearer test-key"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_responses_payload(8, 2, "ok")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            OpenAiClient::new(test_api_key()).with_mock_endpoint(format!("{}/", server.uri()));
+        let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55))
+            .user("describe")
+            .user_binary(
+                crate::request::MimeType::IMAGE_PNG,
+                vec![0x89_u8, 0x50, 0x4e, 0x47],
+            );
+
+        let response = client.complete(req).await.expect("OpenAI request succeeds");
+        assert_eq!(response.text, "ok");
+        let body = single_received_json(&server).await;
+        let content = body["input"][0]["content"]
+            .as_array()
+            .expect("multipart user content array");
+        assert_eq!(
+            content,
+            &[
+                serde_json::json!({"type": "input_text", "text": "describe"}),
+                serde_json::json!({
+                    "type": "input_image",
+                    "detail": "auto",
+                    "image_url": "data:image/png;base64,iVBORw=="
+                }),
+            ],
+        );
     }
 
     #[tokio::test]
