@@ -3405,7 +3405,7 @@ promotion errors or blocking on structural bd state — is owned by
   target in the group
   [test](run_with_runners_exit_code_parser_shares_verdict_across_group)
 
-## Not in scope of this spec
+## Out of Scope
 
 The gate enforces; it does not own:
 
