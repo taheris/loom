@@ -44,24 +44,15 @@ pub fn bead_log_path(
         .join(format!("{}-{}.jsonl", bead_id.as_str(), stamp))
 }
 
-/// Resolve the per-phase JSONL log path under
-/// `<logs_root>/<spec-label>/<phase>-<utc-timestamp>.jsonl`.
+/// Resolve a standalone phase's JSONL log path under
+/// `<logs_root>/<phase>/<phase>-<utc-timestamp>.jsonl`.
 ///
-/// `loom todo`, `loom plan`, and `loom review` operate against a spec rather
-/// than a single bead, so their event streams live alongside per-bead logs
-/// under the same `<spec-label>/` directory but use the phase name as the
-/// file-stem prefix. The function is pure: callers handle directory creation
-/// (see [`crate::logging::LogSink::open_phase_at`]).
-pub fn phase_log_path(
-    logs_root: &Path,
-    spec_label: &SpecLabel,
-    phase: &str,
-    when: SystemTime,
-) -> PathBuf {
+/// The phase directory is the routing root for non-bead sessions such as
+/// `loom todo`, gate review, and tune runs. The function is pure: callers
+/// handle directory creation (see [`crate::sink::LogSink::open_phase_at`]).
+pub fn phase_log_path(logs_root: &Path, phase: &str, when: SystemTime) -> PathBuf {
     let stamp = format_utc_timestamp(when);
-    logs_root
-        .join(spec_label.as_str())
-        .join(format!("{phase}-{stamp}.jsonl"))
+    logs_root.join(phase).join(format!("{phase}-{stamp}.jsonl"))
 }
 
 #[cfg(test)]
@@ -107,27 +98,21 @@ mod tests {
     }
 
     #[test]
-    fn phase_log_path_uses_phase_name_as_file_stem_prefix() {
+    fn phase_log_path_uses_phase_routing_root_and_file_prefix() {
         let path = phase_log_path(
             Path::new("/x/.loom/logs"),
-            &SpecLabel::new("alpha"),
             "todo",
             UNIX_EPOCH + Duration::from_secs(1777811445),
         );
         assert_eq!(
             path,
-            Path::new("/x/.loom/logs/alpha/todo-20260503T123045Z.jsonl"),
+            Path::new("/x/.loom/logs/todo/todo-20260503T123045Z.jsonl"),
         );
     }
 
     #[test]
-    fn phase_log_path_nests_under_spec_label() {
-        let p = phase_log_path(
-            Path::new("/r"),
-            &SpecLabel::new("harness"),
-            "check",
-            UNIX_EPOCH,
-        );
-        assert_eq!(p.parent(), Some(Path::new("/r/harness")));
+    fn phase_log_path_does_not_depend_on_a_spec_label() {
+        let path = phase_log_path(Path::new("/r"), "review", UNIX_EPOCH);
+        assert_eq!(path.parent(), Some(Path::new("/r/review")));
     }
 }

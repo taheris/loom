@@ -643,6 +643,7 @@ mod tests {
                 partial_bodies: vec![],
             },
             skills: None,
+            event_metadata: None,
             scratch_dir: PathBuf::new(),
             model_id: model_id.map(str::to_string),
             model: None,

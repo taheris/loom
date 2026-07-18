@@ -25,7 +25,7 @@ use thiserror::Error;
 use loom_driver::clock::Clock;
 use loom_driver::identifier::BeadId;
 use loom_events::AgentEvent;
-use loom_render::{BeadOutcome, RenderMode, build_renderer};
+use loom_render::{BeadOutcome, RenderMode, build_renderer_with_tool_body_limit};
 
 const LOG_EXTENSION: &str = "jsonl";
 
@@ -177,8 +177,19 @@ pub async fn replay(
     writer: Box<dyn Write + Send>,
     clock: Arc<dyn Clock>,
 ) -> Result<(), LogsError> {
+    replay_with_tool_body_limit(opts, writer, clock, loom_render::tool_body::BODY_CAP_BYTES).await
+}
+
+pub async fn replay_with_tool_body_limit(
+    opts: ReplayOpts<'_>,
+    writer: Box<dyn Write + Send>,
+    clock: Arc<dyn Clock>,
+    max_inline_bytes: usize,
+) -> Result<(), LogsError> {
     match opts.mode {
-        ReplayMode::Render(mode) => replay_rendered(opts, mode, writer, clock).await,
+        ReplayMode::Render(mode) => {
+            replay_rendered(opts, mode, writer, clock, max_inline_bytes).await
+        }
         ReplayMode::Raw => replay_raw(opts, writer, clock).await,
     }
 }
@@ -188,8 +199,16 @@ async fn replay_rendered(
     mode: RenderMode,
     writer: Box<dyn Write + Send>,
     clock: Arc<dyn Clock>,
+    max_inline_bytes: usize,
 ) -> Result<(), LogsError> {
-    let mut renderer = build_renderer(mode, writer, opts.bead_id.clone(), false, false);
+    let mut renderer = build_renderer_with_tool_body_limit(
+        mode,
+        writer,
+        opts.bead_id.clone(),
+        false,
+        false,
+        max_inline_bytes,
+    );
     let file = File::open(opts.path)?;
     let mut reader = BufReader::new(file);
     let mut line_no = 0_usize;

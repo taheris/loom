@@ -35,7 +35,9 @@ use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::CacheDb;
 use loom_events::identifier::SessionId;
-use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, SessionScope, Source};
+use loom_events::{
+    AgentEvent, AgentStartMetadata, DriverKind, EnvelopeBuilder, SessionScope, Source,
+};
 use loom_gate::{
     DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateRun, GateSuccess,
     HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation,
@@ -207,13 +209,13 @@ where
         > + Send,
 {
     /// Re-resolve the review log path the same way `exec_review` does, from
-    /// `(phase_log_root, label, "review", phase_log_when)`, keeping it only
+    /// `(phase_log_root, "review", phase_log_when)`, keeping it only
     /// when the file is on disk — so the sealed `GateSuccess` constructor's
     /// evidence check reads the file the reviewer agent actually wrote.
     fn resolve_review_log_for_marker(&self) -> Option<PathBuf> {
         self.phase_log_root
             .as_deref()
-            .map(|root| phase_log_path(root, &self.label, "review", self.phase_log_when))
+            .map(|root| phase_log_path(root, "review", self.phase_log_when))
             .filter(|p| p.exists())
     }
 
@@ -811,6 +813,12 @@ where
             .skill_plan
             .materialize(scratch.path(), &self.workspace)?;
         spawn_config.skills = Some(skill_session.registered);
+        spawn_config.event_metadata = Some(AgentStartMetadata {
+            title: banner,
+            profile: self.phase_default.clone(),
+            spec_label: self.label.clone(),
+            parent_tool_call_id: None,
+        });
         info!(
             label = %self.label,
             image_ref = %spawn_config.image_ref,
@@ -1170,8 +1178,7 @@ where
             summary: summary.to_string(),
             payload,
         };
-        let sink_result =
-            LogSink::open_phase_at(&logs_root, &self.label, "review", None, self.phase_log_when);
+        let sink_result = LogSink::open_phase_at(&logs_root, "review", None, self.phase_log_when);
         match sink_result {
             Ok(mut sink) => {
                 if let Err(e) = sink.emit(&event) {

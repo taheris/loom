@@ -101,6 +101,7 @@ mod tests {
                 partial_bodies: Vec::new(),
             },
             skills: None,
+            event_metadata: None,
             scratch_dir: PathBuf::new(),
             model_id: None,
             model: None,

@@ -770,19 +770,11 @@ __BD_READY_JSON__\n\
     bin_dir
 }
 
-/// The run-time promise from `specs/harness.md` *Run UX & Logging*
-/// is that every `loom todo` invocation emits a per-phase JSONL file
-/// under `<workspace>/.loom/logs/<spec-label>/todo-<utc>.jsonl`.
-/// Without this gate the workflow happily ran agents to completion while
-/// `run_agent` previously discarded every event with a `trace!` call;
-/// users saw two INFO lines and an empty `loom logs`. The test drives
-/// the same mock-pi handshake as the dispatch tests above, then asserts
-/// the log file appears at the documented path with at least one valid
-/// event line that round-trips through `serde_json`. A future regression
-/// that removes the sink wiring trips this assertion before any
-/// user-visible breakage.
+/// Drive the real `loom todo` command through its Pi handshake and assert the
+/// shared renderer prints agent output before the production summary writer.
+/// The same run also verifies the phase-root JSONL path and canonical events.
 #[test]
-fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
+fn todo_agent_events_render_live_progress() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
 
@@ -836,12 +828,31 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
         "phase log file stem must start with `todo-`: got {stem}",
     );
 
+    let progress_position = stdout
+        .find("LOOM_TODO:")
+        .unwrap_or_else(|| panic!("live todo payload missing from stdout: {stdout}"));
+    let summary_position = stdout
+        .find("loom todo: agent exited")
+        .unwrap_or_else(|| panic!("todo summary missing from stdout: {stdout}"));
+    assert!(
+        progress_position < summary_position,
+        "live agent progress must precede the final todo summary: {stdout}",
+    );
+
     let body = std::fs::read_to_string(log_path).expect("read log");
     let lines: Vec<&str> = body.lines().filter(|l| !l.is_empty()).collect();
     assert!(
         !lines.is_empty(),
         "log file must contain at least one event line, got empty body. path={}",
         log_path.display(),
+    );
+    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(first["kind"], "agent_start", "lines={lines:?}");
+    assert_eq!(first["seq"], 0, "lines={lines:?}");
+    assert_eq!(
+        first["schema_version"],
+        loom_events::EVENT_SCHEMA_VERSION,
+        "lines={lines:?}",
     );
     for (i, line) in lines.iter().enumerate() {
         let v: serde_json::Value = serde_json::from_str(line)
@@ -1302,7 +1313,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         "loom gate review must exit 0 against the bd + wrix stubs. stdout={stdout} stderr={stderr}",
     );
 
-    let logs_dir = workspace.join(".loom/logs/agent");
+    let logs_dir = workspace.join(".loom/logs/review");
     assert!(
         logs_dir.is_dir(),
         "phase log directory must exist after `loom gate review`: {}\nstdout={stdout}\nstderr={stderr}",
@@ -1322,7 +1333,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     assert_eq!(
         entries.len(),
         1,
-        "exactly one phase JSONL file must appear at `<logs>/loom-agent/review-*.jsonl`: got {entries:?}",
+        "exactly one phase JSONL file must appear at `<logs>/review/review-*.jsonl`: got {entries:?}",
     );
 
     let env_info = std::fs::read_to_string(&stdin_info).expect("read shim env info");
@@ -1370,12 +1381,17 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         !driver_events.is_empty(),
         "verdict gate must emit at least one push_gate_* driver event after session_complete. lines={lines:?}",
     );
-    // The first driver event is always `push_gate_walk` — the fence
-    // every branch shares.
-    assert_eq!(
-        driver_events[0]["driver_kind"], "push_gate_walk",
-        "first driver event must be push_gate_walk. got: {}",
-        driver_events[0],
+    let session_complete_index = parsed
+        .iter()
+        .position(|event| event["kind"] == "session_complete")
+        .expect("session_complete index");
+    let push_gate_walk_index = parsed
+        .iter()
+        .position(|event| event["driver_kind"] == "push_gate_walk")
+        .expect("push_gate_walk event");
+    assert!(
+        push_gate_walk_index > session_complete_index,
+        "push_gate_walk must follow the reviewer session; events={parsed:?}",
     );
 }
 

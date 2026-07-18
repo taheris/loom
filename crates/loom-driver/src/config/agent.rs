@@ -362,6 +362,7 @@ mod tests {
                 partial_bodies: Vec::new(),
             },
             skills: None,
+            event_metadata: None,
             scratch_dir: PathBuf::from("/workspace/.loom/scratch/k"),
             model_id: None,
             model: None,

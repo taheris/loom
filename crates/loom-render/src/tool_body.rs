@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_body_rendering_uses_byte_only_inline_budget() {
+    fn default_tool_body_budget_has_no_line_cap() {
         let body: String = (1..=200)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()

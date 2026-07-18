@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use loom_events::AgentStartMetadata;
 use loom_skills::registry::RegisteredSkills;
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +82,10 @@ pub struct SpawnConfig {
     /// host-side registry payload.
     #[serde(skip)]
     pub skills: Option<RegisteredSkills>,
+    /// Host-owned metadata for the first `agent_start` event. It never crosses
+    /// the Wrix JSON boundary; the host event driver consumes it before spawn.
+    #[serde(skip)]
+    pub event_metadata: Option<AgentStartMetadata>,
     /// Pre-populated `.loom/scratch/<key>/` for this session. Owned
     /// by the workflow code through a [`ScratchSession`] guard whose
     /// lifetime spans the spawn; backends read `repin.sh` and
@@ -415,6 +420,7 @@ mod tests {
                 partial_bodies: vec![],
             },
             skills: None,
+            event_metadata: None,
             scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
             model_id: None,
             model,

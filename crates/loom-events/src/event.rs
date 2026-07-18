@@ -97,6 +97,14 @@ pub enum DriverKind {
     GateRunEnd,
     /// Gate invocation was skipped before running verifier work.
     GateRunSkipped,
+    /// A terminal worker marker or gate finding was routed to its typed outcome.
+    MarkerRouted,
+    /// A clarify route was downgraded to blocked because its options block was
+    /// missing or malformed.
+    ClarifyDowngraded,
+    /// The driver applied a status, label, metadata, or note mutation to a
+    /// Beads item while routing an outcome.
+    BdStateTransition,
     /// Forward-compat fallback: any wire `driver_kind` string that does
     /// not match a known variant lands here. Known variants never fall
     /// through.
@@ -135,6 +143,9 @@ impl DriverKind {
             DriverKind::GateRunLane => "gate_run_lane",
             DriverKind::GateRunEnd => "gate_run_end",
             DriverKind::GateRunSkipped => "gate_run_skipped",
+            DriverKind::MarkerRouted => "marker_routed",
+            DriverKind::ClarifyDowngraded => "clarify_downgraded",
+            DriverKind::BdStateTransition => "bd_state_transition",
             DriverKind::Other(s) => s.as_str(),
         }
     }
@@ -170,6 +181,9 @@ impl DriverKind {
             "gate_run_lane" => DriverKind::GateRunLane,
             "gate_run_end" => DriverKind::GateRunEnd,
             "gate_run_skipped" => DriverKind::GateRunSkipped,
+            "marker_routed" => DriverKind::MarkerRouted,
+            "clarify_downgraded" => DriverKind::ClarifyDowngraded,
+            "bd_state_transition" => DriverKind::BdStateTransition,
             other => DriverKind::Other(other.to_string()),
         }
     }
@@ -425,6 +439,18 @@ pub struct EventEnvelope {
 pub enum Source {
     Agent,
     Driver,
+}
+
+/// Current persisted event-log schema version.
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
+
+/// Host-owned metadata required to open an agent event session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentStartMetadata {
+    pub title: String,
+    pub profile: ProfileName,
+    pub spec_label: SpecLabel,
+    pub parent_tool_call_id: Option<ToolCallId>,
 }
 
 /// Backend-neutral event flowing from a running agent up to the workflow
@@ -1537,6 +1563,9 @@ mod tests {
             "gate_run_lane",
             "gate_run_end",
             "gate_run_skipped",
+            "marker_routed",
+            "clarify_downgraded",
+            "bd_state_transition",
         ];
         for kind in kinds {
             let json = serde_json::json!({
@@ -1647,6 +1676,9 @@ mod tests {
             ("gate_run_lane", DriverKind::GateRunLane),
             ("gate_run_end", DriverKind::GateRunEnd),
             ("gate_run_skipped", DriverKind::GateRunSkipped),
+            ("marker_routed", DriverKind::MarkerRouted),
+            ("clarify_downgraded", DriverKind::ClarifyDowngraded),
+            ("bd_state_transition", DriverKind::BdStateTransition),
         ];
         for (wire, variant) in known {
             assert_eq!(DriverKind::from_wire(wire), variant);

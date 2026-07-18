@@ -78,26 +78,21 @@ impl LogSink {
         Ok(sink)
     }
 
-    /// Open a sink for a non-bead phase (`loom todo`, `loom plan`,
-    /// `loom review`). The path follows
-    /// `<logs_root>/<spec-label>/<phase>-<utc>.jsonl` so phase logs share the
-    /// same per-spec directory tree as bead logs without colliding.
+    /// Open a sink for a standalone phase under
+    /// `<logs_root>/<phase>/<phase>-<utc>.jsonl`.
     ///
     /// `renderer` is optional because phase logs may run in non-interactive
-    /// contexts (CI, scripted spawns) where the per-bead progress chrome is
-    /// noise; emitting only to the file is the lighter contract.
+    /// contexts where human output is not attached to the event stream.
     pub fn open_phase_at(
         logs_root: &Path,
-        spec_label: &SpecLabel,
         phase: &str,
         renderer: Option<Box<dyn Renderer>>,
         when: SystemTime,
     ) -> Result<Self, LogError> {
-        let log_path = phase_log_path(logs_root, spec_label, phase, when);
+        let log_path = phase_log_path(logs_root, phase, when);
         let sink = Self::open_append_at_path(log_path.clone(), renderer)?;
         info!(
             target: "loom_driver::logging::sink",
-            spec_label = spec_label.as_str(),
             phase = phase,
             log_path = %log_path.display(),
             "phase started — log path",
@@ -567,39 +562,11 @@ mod tests {
     }
 
     #[test]
-    fn phase_sink_writes_under_spec_directory_with_phase_prefix() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let logs = dir.path().join(".loom/logs");
-        let label = SpecLabel::new("alpha");
-        let mut sink = LogSink::open_phase_at(
-            &logs,
-            &label,
-            "todo",
-            None,
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
-        )
-        .expect("open phase sink");
-        sink.emit(&AgentEvent::TurnEnd {
-            envelope: sample_envelope(),
-        })
-        .expect("emit");
-        let path = sink.log_path().to_path_buf();
-        sink.finish(BeadOutcome::Done).expect("finish");
-
-        assert_eq!(path.parent(), Some(logs.join("alpha").as_path()));
-        let stem = path.file_stem().and_then(|s| s.to_str()).expect("stem");
-        assert!(stem.starts_with("todo-"), "{stem:?}");
-        let lines = std::fs::read_to_string(&path).expect("read");
-        assert!(lines.contains("\"kind\":\"turn_end\""), "{lines:?}");
-    }
-
-    #[test]
     fn non_bead_agent_sessions_write_phase_jsonl_logs() {
         let dir = tempfile::tempdir().expect("tempdir");
         let logs = dir.path().join(".loom/logs");
         let mut sink = LogSink::open_phase_at(
             &logs,
-            &SpecLabel::new("todo"),
             "todo",
             None,
             SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
@@ -614,6 +581,8 @@ mod tests {
 
         assert_eq!(path.parent(), Some(logs.join("todo").as_path()));
         assert_eq!(path.extension().and_then(|s| s.to_str()), Some("jsonl"));
+        let stem = path.file_stem().and_then(|s| s.to_str()).expect("stem");
+        assert!(stem.starts_with("todo-"), "{stem:?}");
         let body = std::fs::read_to_string(&path).expect("read");
         assert!(body.contains("\"kind\":\"turn_end\""), "{body:?}");
     }

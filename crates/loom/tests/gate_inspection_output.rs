@@ -142,7 +142,7 @@ fn write_bead(state_dir: &Path, id: &str, status: &str, issue_type: &str, labels
 }
 
 fn latest_gate_mint_log(workspace: &Path) -> PathBuf {
-    let gate_dir = workspace.join(".loom/logs/gate");
+    let gate_dir = workspace.join(".loom/logs/mint");
     let mut entries = std::fs::read_dir(&gate_dir)
         .unwrap_or_else(|err| panic!("read gate log dir {}: {err}", gate_dir.display()))
         .filter_map(Result::ok)
@@ -289,9 +289,13 @@ fn gate_mint_tree_streams_progress_events() {
     );
 
     let events = read_jsonl(&latest_gate_mint_log(workspace));
+    for event in &events {
+        serde_json::from_value::<loom_events::AgentEvent>(event.clone())
+            .expect("gate mint JSONL rows must use the canonical AgentEvent schema");
+    }
     assert!(
-        events.iter().all(|event| event["kind"] == "driver_event"),
-        "gate mint progress log must use driver_event rows only: {events:#?}",
+        events.iter().any(|event| event["kind"] == "agent_start"),
+        "the rubric agent session must be present in the command-wide event log: {events:#?}",
     );
     assert!(events.iter().any(|event| {
         event["driver_kind"] == "gate_run_lane"

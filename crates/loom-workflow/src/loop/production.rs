@@ -34,12 +34,15 @@ use loom_driver::lock::LockGuard;
 use loom_driver::logging::phase_log_path;
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::resolve_scratch_key;
-use loom_events::DriverKind;
+use loom_events::{
+    AgentEvent, AgentStartMetadata, DriverKind, EnvelopeBuilder, SessionScope, Source,
+};
 use tokio::process::Command;
 use tracing::{info, warn};
 
 use loom_gate::{
-    GateRun, HandoffEvidence, append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
+    GatePhase, GateRun, GateRunStatus, HandoffEvidence, append_gate_run_lifecycle_events,
+    parse_gate_runs_from_jsonl,
 };
 
 use super::context::{LoopContextInputs, render_loop_prompt};
@@ -68,7 +71,7 @@ use loom_templates::run::{PreviousFailure, RecoveryStash, WorkspaceAlignment, Wo
 /// Env var the molecule-completion handoff sets when spawning `loom gate
 /// review` so the child re-uses the parent's pinned `phase_when`
 /// timestamp. With both sides computing the JSONL log path from the
-/// same `(logs_root, label, "review", when)` tuple, the parent can
+/// same `(logs_root, "review", when)` tuple, the parent can
 /// thread `review_log_path` into [`HandoffEvidence`] without scanning
 /// directories.
 pub const REVIEW_PHASE_WHEN_ENV: &str = "LOOM_REVIEW_PHASE_WHEN_MILLIS";
@@ -728,6 +731,16 @@ where
         };
         let skill_session = skill_plan.materialize(scratch.path(), &worktree.path)?;
         spawn_config.skills = Some(skill_session.registered);
+        spawn_config.event_metadata = Some(AgentStartMetadata {
+            title: bead.title.clone(),
+            profile: super::profile::resolve_profile(
+                &bead.labels,
+                self.cli_profile.as_ref(),
+                &self.phase_default,
+            ),
+            spec_label: self.label.clone(),
+            parent_tool_call_id: None,
+        });
         info!(
             bead = %bead.id,
             image_ref = %spawn_config.image_ref,
@@ -1078,10 +1091,10 @@ where
         let diff_range = actual.range.clone();
         let mut phase_when = SystemClock::new().wall_now();
         let review_log_path = self.logs_root.as_deref().map(|root| {
-            let mut path = phase_log_path(root, &self.label, "review", phase_when);
+            let mut path = phase_log_path(root, "review", phase_when);
             while path.exists() {
                 phase_when += Duration::from_secs(1);
-                path = phase_log_path(root, &self.label, "review", phase_when);
+                path = phase_log_path(root, "review", phase_when);
             }
             path
         });
@@ -1224,7 +1237,7 @@ where
         ];
         let gate_workspace = self.git.loom_workspace();
         let verify_output = Command::new(&self.loom_bin)
-            .current_dir(gate_workspace)
+            .current_dir(&gate_workspace)
             .args(&verify_args)
             .output()
             .await?;
@@ -1244,8 +1257,8 @@ where
                 format!("{stdout_tail}\n{stderr_tail}"),
             );
             let integration_sha = self.git.integration_commit_sha().await?.to_string();
-            let rollback_planned = self.pre_integration_tip.is_some();
-            let rollback_state = if rollback_planned {
+            let tree_oid = loom_driver::git::head_tree_oid_sync(&gate_workspace)?.to_string();
+            let rollback_state = if self.pre_integration_tip.is_some() {
                 "pending"
             } else {
                 "skipped-no-integration-advance"
@@ -1256,17 +1269,17 @@ where
                 gate_log_dir,
                 PostIntegrateGateLog {
                     argv: verify_args,
-                    scope_flag: "--diff",
                     scope: diff_range.clone(),
                     exit_code: verify_code,
                     stdout: stdout_tail.clone(),
                     stderr: stderr_tail.clone(),
-                    terminal_marker: parse_exit_signal(&stdout_tail)
-                        .map(|m| terminal_marker_json(&m)),
+                    terminal_marker: parse_exit_signal(&stdout_tail),
                     integration_sha,
+                    tree_oid,
+                    config_digest: pre_commit_config_digest(&gate_workspace)?,
                     bead_id: bead.clone(),
                     retry_attempt: self.current_attempt,
-                    rollback_state: rollback_state.to_string(),
+                    rollback_state,
                     failures: vec![failure.clone()],
                 },
             )?;
@@ -1341,8 +1354,6 @@ fn write_post_integrate_gate_log(
     dir: PathBuf,
     record: PostIntegrateGateLog,
 ) -> Result<PathBuf, LoopError> {
-    use std::io::Write as _;
-
     std::fs::create_dir_all(&dir)?;
     let clock = SystemClock::new();
     let stamp = clock
@@ -1361,7 +1372,7 @@ fn write_post_integrate_gate_log(
             format!("{stem}-{suffix}.jsonl")
         };
         let path = dir.join(file_name);
-        let mut file = match std::fs::OpenOptions::new()
+        let file = match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
@@ -1370,37 +1381,20 @@ fn write_post_integrate_gate_log(
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(LoopError::Io(err)),
         };
-        let log_path = path.to_string_lossy().to_string();
-        let failures = record
-            .failures
-            .iter()
-            .map(|failure| {
-                serde_json::json!({
-                    "target": failure.target,
-                    "exit_code": failure.exit_code,
-                    "stderr_tail": failure.stderr_tail,
-                })
-            })
-            .collect::<Vec<_>>();
-        let body = serde_json::json!({
-            "kind": "post_integrate_gate",
-            "argv": record.argv,
-            "scope_flag": record.scope_flag,
-            "scope": record.scope,
-            "exit_code": record.exit_code,
-            "stdout": record.stdout,
-            "stderr": record.stderr,
-            "terminal_marker": record.terminal_marker,
-            "integration_sha": record.integration_sha,
-            "bead_id": record.bead_id.to_string(),
-            "retry_attempt": record.retry_attempt,
-            "rollback_state": record.rollback_state,
-            "failures": failures,
-            "log_path": log_path,
-        });
-        serde_json::to_writer(&mut file, &body).map_err(std::io::Error::other)?;
-        writeln!(&mut file)?;
-        file.sync_all()?;
+        drop(file);
+        let run = GateRun {
+            phase: GatePhase::Verify,
+            push_range: record.scope.clone(),
+            tree_oid: record.tree_oid.clone(),
+            config_digest: record.config_digest.clone(),
+            log_path: path.clone(),
+            exit_code: Some(record.exit_code),
+            status: GateRunStatus::Failed,
+            marker: record.terminal_marker.clone(),
+            covered_hooks: Vec::new(),
+        };
+        append_gate_run_lifecycle_events(&path, &run)?;
+        append_post_integrate_diagnostics(&path, &record)?;
         return Ok(path);
     }
     Err(LoopError::Io(std::io::Error::new(
@@ -1411,17 +1405,87 @@ fn write_post_integrate_gate_log(
 
 struct PostIntegrateGateLog {
     argv: Vec<String>,
-    scope_flag: &'static str,
     scope: String,
     exit_code: i32,
     stdout: String,
     stderr: String,
-    terminal_marker: Option<serde_json::Value>,
+    terminal_marker: Option<ExitSignal>,
     integration_sha: String,
+    tree_oid: String,
+    config_digest: String,
     bead_id: BeadId,
     retry_attempt: u32,
-    rollback_state: String,
+    rollback_state: &'static str,
     failures: Vec<VerifierFailure>,
+}
+
+fn append_post_integrate_diagnostics(
+    path: &std::path::Path,
+    record: &PostIntegrateGateLog,
+) -> Result<(), LoopError> {
+    use std::io::Write as _;
+
+    let contents = std::fs::read_to_string(path)?;
+    let last_line = contents
+        .lines()
+        .next_back()
+        .ok_or_else(|| std::io::Error::other("gate lifecycle log did not contain an event"))?;
+    let last_event = serde_json::from_str::<AgentEvent>(last_line)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let last_envelope = last_event.envelope();
+    let clock = SystemClock::new();
+    let mut builder = EnvelopeBuilder::with_seq_start(
+        SessionScope::phase(
+            last_envelope.session_id.clone(),
+            last_envelope.molecule_id.clone(),
+        ),
+        Source::Driver,
+        last_envelope.seq + 1,
+        move || {
+            clock
+                .wall_now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis() as i64)
+        },
+    );
+    let failures = record
+        .failures
+        .iter()
+        .map(|failure| {
+            serde_json::json!({
+                "target": failure.target,
+                "exit_code": failure.exit_code,
+                "stderr_tail": failure.stderr_tail,
+            })
+        })
+        .collect::<Vec<_>>();
+    let event = AgentEvent::DriverEvent {
+        envelope: builder.build(),
+        driver_kind: DriverKind::VerdictGate,
+        summary: format!("post-integration verify failed for bead {}", record.bead_id),
+        payload: serde_json::json!({
+            "phase": "post_integrate_verify",
+            "argv": record.argv,
+            "scope_flag": "--diff",
+            "scope": record.scope,
+            "exit_code": record.exit_code,
+            "stdout": record.stdout,
+            "stderr": record.stderr,
+            "terminal_marker": record.terminal_marker.as_ref().map(terminal_marker_json),
+            "integration_sha": record.integration_sha,
+            "bead_id": record.bead_id.to_string(),
+            "retry_attempt": record.retry_attempt,
+            "rollback_state": record.rollback_state,
+            "failures": failures,
+            "log_path": path.to_string_lossy(),
+        }),
+    };
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    serde_json::to_writer(&mut file, &event).map_err(std::io::Error::other)?;
+    writeln!(&mut file)?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn terminal_marker_json(marker: &ExitSignal) -> serde_json::Value {
@@ -3940,6 +4004,7 @@ mod tests {
         std::fs::write(loom_ws.join("integrated.txt"), "merged\n").expect("write");
         loom_driver::git::commit_all_in(&loom_ws, "integrated bead").expect("commit");
         let merged_tip = loom_driver::git::sync_head_commit_sha(&loom_ws).expect("ff'd sha");
+        let merged_tree = loom_driver::git::head_tree_oid_sync(&loom_ws).expect("merged tree");
         assert_ne!(
             merged_tip.to_string(),
             base_tip.to_string(),
@@ -4021,37 +4086,75 @@ mod tests {
                     "durable post-integrate log must be JSONL: {gate_log_path:?}",
                 );
                 let gate_log = std::fs::read_to_string(gate_log_path).expect("gate log readable");
-                let gate_log_json: serde_json::Value = serde_json::from_str(
-                    gate_log
-                        .lines()
-                        .next()
-                        .expect("gate log contains one JSONL event"),
-                )
-                .expect("gate log json");
-                assert_eq!(gate_log_json["kind"], "post_integrate_gate");
+                let events = gate_log
+                    .lines()
+                    .map(|line| {
+                        serde_json::from_str::<loom_events::AgentEvent>(line)
+                            .expect("every gate JSONL line is a canonical AgentEvent")
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(events.len(), 5, "{events:?}");
+                let lifecycle_kinds = events[..4]
+                    .iter()
+                    .map(|event| match event {
+                        loom_events::AgentEvent::DriverEvent { driver_kind, .. } => {
+                            driver_kind.as_wire()
+                        }
+                        other => panic!("gate lifecycle must use driver events, got {other:?}"),
+                    })
+                    .collect::<Vec<_>>();
                 assert_eq!(
-                    gate_log_json["argv"],
+                    lifecycle_kinds,
+                    [
+                        "gate_run_start",
+                        "gate_run_scope",
+                        "gate_run_lane",
+                        "gate_run_end",
+                    ]
+                );
+                let loom_events::AgentEvent::DriverEvent {
+                    driver_kind,
+                    payload,
+                    ..
+                } = &events[4]
+                else {
+                    panic!("post-integrate diagnostics must be a driver event");
+                };
+                assert_eq!(*driver_kind, DriverKind::VerdictGate);
+                assert_eq!(
+                    payload["argv"],
                     serde_json::json!(["gate", "verify", "--diff", format!("{}..HEAD", base_tip)])
                 );
-                assert_eq!(gate_log_json["scope_flag"], "--diff");
-                assert_eq!(gate_log_json["exit_code"], 1);
-                assert_eq!(gate_log_json["integration_sha"], merged_tip.to_string());
-                assert_eq!(gate_log_json["rollback_state"], "pending");
-                assert_eq!(gate_log_json["failures"][0]["exit_code"], 1);
+                assert_eq!(payload["scope_flag"], "--diff");
+                assert_eq!(payload["exit_code"], 1);
+                assert_eq!(payload["integration_sha"], merged_tip.to_string());
+                assert_eq!(payload["bead_id"], "lm-1");
+                assert_eq!(payload["retry_attempt"], 0);
+                assert_eq!(payload["rollback_state"], "pending");
                 assert_eq!(
-                    gate_log_json["failures"][0]["target"],
-                    serde_json::json!(format!("loom gate verify --diff {}..HEAD", base_tip))
+                    payload["log_path"].as_str(),
+                    Some(gate_log_path.to_string_lossy().as_ref())
                 );
-                assert_eq!(
-                    gate_log_json["log_path"],
-                    serde_json::json!(gate_log_path.to_string_lossy())
-                );
+                assert_eq!(payload["stdout"], "");
                 assert!(
-                    gate_log_json["stderr"]
+                    payload["stderr"]
                         .as_str()
-                        .unwrap_or_default()
-                        .contains("cargo test")
+                        .is_some_and(|output| output.contains("cargo test")),
+                    "{payload:?}",
                 );
+                assert_eq!(payload["failures"][0]["exit_code"], 1);
+                assert!(
+                    payload["failures"][0]["target"]
+                        .as_str()
+                        .is_some_and(|target| target.contains("loom gate verify --diff"))
+                );
+                let runs = parse_gate_runs_from_jsonl(gate_log_path);
+                assert_eq!(runs.len(), 1, "{runs:?}");
+                assert_eq!(runs[0].status, GateRunStatus::Failed);
+                assert_eq!(runs[0].exit_code, Some(1));
+                assert_eq!(runs[0].push_range, format!("{}..HEAD", base_tip));
+                assert_eq!(runs[0].tree_oid, merged_tree.to_string());
+                assert_eq!(runs[0].log_path, *gate_log_path);
             }
             other => panic!("expected stashed PostIntegrateFail, got {other:?}"),
         }
@@ -4139,6 +4242,16 @@ mod tests {
             &first_gate_log_path, second_gate_log_path,
             "retry attempts must write distinct durable gate logs",
         );
+        for path in [&first_gate_log_path, second_gate_log_path] {
+            let child_log = std::fs::read_to_string(path).expect("gate child log readable");
+            for line in child_log.lines() {
+                serde_json::from_str::<loom_events::AgentEvent>(line)
+                    .expect("gate child log line is a canonical AgentEvent");
+            }
+            let runs = parse_gate_runs_from_jsonl(path);
+            assert_eq!(runs.len(), 1, "{runs:?}");
+            assert_eq!(runs[0].status, GateRunStatus::Failed);
+        }
         let first_gate_log = first_gate_log_path.to_string_lossy().to_string();
         let second_gate_log = second_gate_log_path.to_string_lossy().to_string();
         let body = std::fs::read_to_string(bead_log_path).expect("driver event log readable");

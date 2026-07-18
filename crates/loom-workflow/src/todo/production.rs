@@ -14,6 +14,7 @@ use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::{CacheDb, SpecEpicRow, WorkEpicRow};
+use loom_events::AgentStartMetadata;
 use loom_protocol::todo::{GitSha, TodoSpecOutcome, TodoSuccess};
 use tracing::{debug, info};
 
@@ -782,6 +783,12 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             .skill_plan
             .materialize(scratch.path(), &self.workspace)?;
         config.skills = Some(skill_session.registered);
+        config.event_metadata = Some(AgentStartMetadata {
+            title: banner,
+            profile: self.phase_default.clone(),
+            spec_label: SpecLabel::new("todo"),
+            parent_tool_call_id: None,
+        });
         Ok(TodoSession { config, scratch })
     }
 

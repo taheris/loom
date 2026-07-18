@@ -542,6 +542,9 @@ pub struct TerminalRenderer {
     /// the writer is known to be non-TTY. The CLI surface decides this
     /// and wires it through `RenderMode::select`.
     indicator_enabled: bool,
+    /// Byte budget for visible tool-output content. Live Direct sessions and
+    /// replay load this from `[direct].max_inline_bytes`.
+    tool_body_limit: usize,
     /// OSC 8 hyperlink wrapping for path-bearing summary cells.
     /// Default is disabled; callers in supported terminals enable via
     /// [`TerminalRenderer::with_osc8`].
@@ -639,6 +642,7 @@ impl TerminalRenderer {
             // `color=false` to disable the indicator so captured-buffer
             // assertions stay stable.
             indicator_enabled: color && !parallel && live,
+            tool_body_limit: tool_body::BODY_CAP_BYTES,
             osc8: tool_body::Osc8Context::disabled(),
             term_width_override: None,
             text_needs_newline: false,
@@ -691,6 +695,12 @@ impl TerminalRenderer {
         } else {
             "  ".to_string()
         }
+    }
+
+    /// Set the raw UTF-8 byte budget used for inline tool-output content.
+    pub fn with_tool_body_limit(mut self, max_inline_bytes: usize) -> Self {
+        self.tool_body_limit = max_inline_bytes;
+        self
     }
 
     /// Enable OSC 8 hyperlink wrapping for path-bearing summary cells.
@@ -1203,7 +1213,12 @@ impl TerminalRenderer {
                 self.cumulative_tool_output_body(id, previous, snapshot)
             }
             Some(previous) if previous.starts_with(snapshot) => String::new(),
-            Some(_) | None => tool_body::cap_body(snapshot, self.bead_id.as_str(), id.as_str()),
+            Some(_) | None => tool_body::cap_body_with_limit(
+                snapshot,
+                self.bead_id.as_str(),
+                id.as_str(),
+                self.tool_body_limit,
+            ),
         };
         if self.should_store_tool_snapshot(id, snapshot) {
             self.observed_tool_output
@@ -1218,7 +1233,7 @@ impl TerminalRenderer {
         previous: &str,
         snapshot: &str,
     ) -> String {
-        let cap = tool_body::BODY_CAP_BYTES;
+        let cap = self.tool_body_limit;
         let start = previous.len();
         if start > cap {
             return String::new();
@@ -1546,19 +1561,38 @@ pub fn build_renderer(
     parallel: bool,
     live: bool,
 ) -> Box<dyn Renderer> {
+    build_renderer_with_tool_body_limit(
+        mode,
+        out,
+        bead_id,
+        parallel,
+        live,
+        tool_body::BODY_CAP_BYTES,
+    )
+}
+
+/// Construct a renderer with the configured Direct inline-output budget.
+pub fn build_renderer_with_tool_body_limit(
+    mode: RenderMode,
+    out: Box<dyn Write + Send>,
+    bead_id: BeadId,
+    parallel: bool,
+    live: bool,
+    max_inline_bytes: usize,
+) -> Box<dyn Renderer> {
+    let color = matches!(mode, RenderMode::Pretty | RenderMode::Verbose);
     match mode {
-        RenderMode::Pretty => Box::new(PrettyRenderer::new(out, bead_id, parallel, live)),
-        RenderMode::Plain | RenderMode::Default => {
-            Box::new(PlainRenderer::new(out, bead_id, parallel, live))
-        }
-        RenderMode::Verbose | RenderMode::VerbosePlain => {
-            let color = matches!(mode, RenderMode::Verbose);
-            let inner = if live {
+        RenderMode::Pretty
+        | RenderMode::Plain
+        | RenderMode::Default
+        | RenderMode::Verbose
+        | RenderMode::VerbosePlain => {
+            let renderer = if live {
                 TerminalRenderer::new(out, mode, bead_id, parallel, color)
             } else {
                 TerminalRenderer::new_replay(out, mode, bead_id, parallel, color)
             };
-            Box::new(inner)
+            Box::new(renderer.with_tool_body_limit(max_inline_bytes))
         }
         RenderMode::Json => Box::new(JsonRenderer::new(out)),
         RenderMode::Raw => Box::new(RawRenderer::new(out)),
@@ -1594,6 +1628,19 @@ mod tests {
     where
         F: FnOnce(&mut TerminalRenderer),
     {
+        capture_with_limit(mode, parallel, color, tool_body::BODY_CAP_BYTES, f)
+    }
+
+    fn capture_with_limit<F>(
+        mode: RenderMode,
+        parallel: bool,
+        color: bool,
+        max_inline_bytes: usize,
+        f: F,
+    ) -> String
+    where
+        F: FnOnce(&mut TerminalRenderer),
+    {
         let buf: Vec<u8> = Vec::new();
         let cell = std::sync::Arc::new(std::sync::Mutex::new(buf));
         let cell_for_writer = cell.clone();
@@ -1620,7 +1667,8 @@ mod tests {
             BeadId::new("lm-1").expect("valid bead id"),
             parallel,
             color,
-        );
+        )
+        .with_tool_body_limit(max_inline_bytes);
         f(&mut r);
         let guard = cell.lock().expect("not poisoned");
         String::from_utf8(guard.clone()).expect("utf-8")
@@ -1795,6 +1843,41 @@ mod tests {
         assert!(out.contains("+"), "{out:?}");
         assert!(out.contains("-"), "{out:?}");
         assert!(out.contains("diff"), "{out:?}");
+    }
+
+    #[test]
+    fn terminal_renderer_honours_non_default_tool_body_limit() {
+        let max_inline_bytes = 37;
+        let body = format!("{}tail", "x".repeat(max_inline_bytes));
+        let out = capture_with_limit(
+            RenderMode::Plain,
+            false,
+            false,
+            max_inline_bytes,
+            |renderer| {
+                renderer
+                    .render_event(&AgentEvent::ToolCall {
+                        envelope: sample_envelope(),
+                        id: ToolCallId::new("configured-cap"),
+                        tool: "Bash".into(),
+                        params: json!({"command": "emit bytes"}),
+                        parent_tool_call_id: None,
+                    })
+                    .expect("render call");
+                renderer
+                    .render_event(&AgentEvent::ToolResult {
+                        envelope: sample_envelope(),
+                        id: ToolCallId::new("configured-cap"),
+                        output: body,
+                        is_error: false,
+                    })
+                    .expect("render result");
+            },
+        );
+
+        assert!(out.contains(&"x".repeat(max_inline_bytes)), "{out:?}");
+        assert!(out.contains("display-only cap at 37 bytes"), "{out:?}");
+        assert!(out.contains("4 bytes omitted"), "{out:?}");
     }
 
     #[test]

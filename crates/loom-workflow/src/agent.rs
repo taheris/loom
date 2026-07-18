@@ -26,8 +26,8 @@ use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::logging::{BeadOutcome, LogSink};
 use loom_events::identifier::SessionId;
 use loom_events::{
-    DriverEventPayload, DriverKind, EnvelopeBuilder, EventSink, InputKind, ParsedAgentEvent,
-    SessionCommand, SessionScope, Source,
+    DriverEventPayload, DriverKind, EVENT_SCHEMA_VERSION, EnvelopeBuilder, EventSink, InputKind,
+    ParsedAgentEvent, SessionCommand, SessionScope, Source,
 };
 use tracing::{info, trace, warn};
 
@@ -110,6 +110,11 @@ pub async fn run_agent_classified<B: AgentBackend>(
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_STALL_WARN_SECS));
     let clock = SystemClock::new();
     let mut first_event_seen = false;
+    if let Err(err) = emit_agent_start_event(&mut sink, &mut envelope_builder, config) {
+        let error = err.to_string();
+        finish_sink(sink, BeadOutcome::Failed);
+        return SessionResult::PreflightFailed { error };
+    }
     let session = match B::spawn(config).await {
         Ok(session) => {
             emit_driver_event(
@@ -599,6 +604,42 @@ fn finish_sink(sink: Option<LogSink>, outcome: BeadOutcome) {
     {
         warn!(error = %e, "log sink finish failed");
     }
+}
+
+fn emit_agent_start_event(
+    sink: &mut Option<LogSink>,
+    builder: &mut Option<EnvelopeBuilder>,
+    config: &SpawnConfig,
+) -> Result<(), ProtocolError> {
+    let Some(sink) = sink.as_mut() else {
+        return Ok(());
+    };
+    if builder.is_none() {
+        *builder = Some(phase_envelope_builder());
+    }
+    let metadata = config.event_metadata.as_ref().ok_or_else(|| {
+        ProtocolError::Io(std::io::Error::other(
+            "agent event metadata is required when a log sink is attached",
+        ))
+    })?;
+    let builder = builder.as_mut().ok_or_else(|| {
+        ProtocolError::Io(std::io::Error::other(
+            "agent event envelope builder was not initialized",
+        ))
+    })?;
+    let envelope = builder.build_with_source(Source::Driver);
+    let started_at_ms = envelope.ts_ms;
+    let event = AgentEvent::AgentStart {
+        envelope,
+        schema_version: EVENT_SCHEMA_VERSION,
+        title: metadata.title.clone(),
+        profile: metadata.profile.clone(),
+        spec_label: metadata.spec_label.clone(),
+        started_at_ms,
+        parent_tool_call_id: metadata.parent_tool_call_id.clone(),
+    };
+    sink.emit(&event)
+        .map_err(|error| ProtocolError::Io(std::io::Error::other(error.to_string())))
 }
 
 fn emit_agent_input_event(
@@ -1091,14 +1132,8 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let sink = LogSink::open_phase_at(
-            dir.path(),
-            &SpecLabel::new("todo"),
-            "todo",
-            None,
-            SystemTime::UNIX_EPOCH,
-        )
-        .expect("open phase sink");
+        let sink = LogSink::open_phase_at(dir.path(), "todo", None, SystemTime::UNIX_EPOCH)
+            .expect("open phase sink");
         let path = sink.log_path().to_path_buf();
         let cfg = sample_spawn_config(dir.path());
 
@@ -1109,6 +1144,13 @@ mod tests {
 
         let events = read_jsonl(&path);
         assert!(!events.is_empty(), "phase log must contain events");
+        assert_eq!(events[0]["kind"], "agent_start", "{events:?}");
+        assert_eq!(events[0]["seq"], 0, "{events:?}");
+        assert_eq!(events[0]["source"], "driver", "{events:?}");
+        assert_eq!(events[0]["schema_version"], EVENT_SCHEMA_VERSION);
+        assert_eq!(events[0]["title"], "test agent session");
+        assert_eq!(events[1]["driver_kind"], "container_spawn", "{events:?}");
+        assert_eq!(events[2]["kind"], "agent_input", "{events:?}");
         let session_id = events[0]["session_id"]
             .as_str()
             .expect("session_id string")
@@ -1218,6 +1260,12 @@ mod tests {
                 partial_bodies: vec![],
             },
             skills: None,
+            event_metadata: Some(loom_events::AgentStartMetadata {
+                title: "test agent session".to_string(),
+                profile: loom_events::identifier::ProfileName::new("test"),
+                spec_label: SpecLabel::new("agent"),
+                parent_tool_call_id: None,
+            }),
             scratch_dir: scratch.join("scratch"),
             model_id: None,
             model: None,
@@ -1978,8 +2026,8 @@ mod tests {
 
     /// `B::spawn` returning `Err` is the preflight failure path. The
     /// driver must emit a `driver_event { kind: infra_failure }` into
-    /// the sink BEFORE finishing it, so a replay can show the cause
-    /// rather than just the empty log + closing line.
+    /// the sink after the required `agent_start` and before finishing it, so a
+    /// replay can show the session metadata and failure cause.
     #[tokio::test]
     async fn preflight_failure_emits_infra_failure_driver_event() {
         struct FailingBackend;
@@ -2006,31 +2054,27 @@ mod tests {
             other => panic!("expected PreflightFailed, got {other:?}"),
         }
         let events = read_jsonl(&path);
-        assert_eq!(
-            events.len(),
-            1,
-            "preflight path emits exactly one driver event: {events:?}",
-        );
-        assert_eq!(events[0]["kind"], "driver_event");
-        assert_eq!(events[0]["driver_kind"], "infra_failure");
-        assert_eq!(events[0]["source"], "driver");
-        assert_eq!(events[0]["payload"]["phase"], "preflight");
-        assert_eq!(events[0]["payload"]["first_event_seen"], false);
-        assert_eq!(events[0]["payload"]["infra_class"], "infra-preflight");
-        assert_eq!(events[0]["payload"]["cause"], "io");
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0]["kind"], "agent_start");
+        let infra = infra_event(&events);
+        assert_eq!(infra["source"], "driver");
+        assert_eq!(infra["payload"]["phase"], "preflight");
+        assert_eq!(infra["payload"]["first_event_seen"], false);
+        assert_eq!(infra["payload"]["infra_class"], "infra-preflight");
+        assert_eq!(infra["payload"]["cause"], "io");
         assert!(
-            events[0]["payload"]["error"]
+            infra["payload"]["error"]
                 .as_str()
                 .is_some_and(|s| s.contains("io failure")),
             "payload error body must carry the ProtocolError display: {:?}",
-            events[0]["payload"],
+            infra["payload"],
         );
         assert!(
-            events[0]["payload"]["spawn_error"]
+            infra["payload"]["spawn_error"]
                 .as_str()
                 .is_some_and(|s| s.contains("io failure")),
             "spawn failures must carry spawn_error: {:?}",
-            events[0]["payload"],
+            infra["payload"],
         );
     }
 
@@ -2057,7 +2101,8 @@ mod tests {
             other => panic!("expected PreflightFailed, got {other:?}"),
         }
         let events = read_jsonl(&path);
-        assert_eq!(events[0]["driver_kind"], "container_spawn");
+        assert_eq!(events[0]["kind"], "agent_start");
+        assert_eq!(events[1]["driver_kind"], "container_spawn");
         let infra = infra_event(&events);
         assert_eq!(infra["payload"]["phase"], "pre-stream");
         assert_eq!(infra["payload"]["first_event_seen"], false);

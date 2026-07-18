@@ -376,6 +376,7 @@ mod tests {
             agent_args: vec!["--print".into()],
             repin: sample_repin(),
             skills: None,
+            event_metadata: None,
             scratch_dir: scratch.path().to_path_buf(),
             model_id: None,
             model: None,

@@ -161,6 +161,7 @@ mod tests {
                         partial_bodies: vec![],
                     },
                     skills: None,
+                    event_metadata: None,
                     scratch_dir,
                     model_id: None,
                     model: None,

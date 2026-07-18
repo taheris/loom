@@ -27,6 +27,6 @@ pub use path::{bead_log_path, format_utc_timestamp, phase_log_path};
 pub use redacted::Redacted;
 pub use renderer::{
     BeadOutcome, JsonRenderer, PlainRenderer, PrettyRenderer, RawRenderer, RenderMode, Renderer,
-    TerminalRenderer, build_renderer,
+    TerminalRenderer, build_renderer, build_renderer_with_tool_body_limit,
 };
 pub use sink::{LogError, LogSink};

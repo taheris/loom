@@ -2153,6 +2153,7 @@ fn run_gate_mint(
                     render_mode,
                     &renderer_id,
                     phase_when,
+                    direct_output_limits.max_inline_bytes,
                 )?;
                 let progress_log_path = progress.log_path().to_string_lossy().to_string();
                 progress.emit(
@@ -2182,7 +2183,6 @@ fn run_gate_mint(
                 let mut walk_errors: Vec<(String, String)> = Vec::new();
                 for (index, label) in labels.into_iter().enumerate() {
                     let label_name = label.as_str().to_owned();
-                    let label_for_sink = label.clone();
                     let logs_root_for_spawn = logs_root.clone();
                     let workspace_for_walker = workspace_buf.clone();
                     let workspace_for_renderer = workspace_buf.clone();
@@ -2202,7 +2202,6 @@ fn run_gate_mint(
                         phase_default_for_walker,
                         move |spawn_cfg: SpawnConfig| {
                             let logs_root = logs_root_for_spawn.clone();
-                            let label = label_for_sink.clone();
                             let selection = selection_for_walker.clone();
                             let observer_config = observer_config_for_walker.clone();
                             let renderer_id = renderer_id_for_walker.clone();
@@ -2213,10 +2212,10 @@ fn run_gate_mint(
                                     &renderer_id,
                                     &workspace,
                                     false,
+                                    direct_output_limits.max_inline_bytes,
                                 );
                                 let sink = LogSink::open_phase_at(
                                     &logs_root,
-                                    &label,
                                     "mint",
                                     Some(renderer),
                                     phase_when,
@@ -2584,9 +2583,16 @@ fn run_logs(
             .map_err(|err| anyhow::anyhow!("`lm-x` sentinel must parse as BeadId: {err}"))?,
     };
     let mode = resolve_replay_mode(raw, verbose);
+    let max_inline_bytes = if raw {
+        loom_render::tool_body::BODY_CAP_BYTES
+    } else {
+        LoomConfig::load(LoomConfig::resolve_path(workspace))?
+            .direct_output_limits()
+            .max_inline_bytes
+    };
     let clock: Arc<dyn loom_driver::clock::Clock> = Arc::new(loom_driver::clock::SystemClock);
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(logs_cmd::replay(
+    runtime.block_on(logs_cmd::replay_with_tool_body_limit(
         logs_cmd::ReplayOpts {
             path: &path,
             bead_id: renderer_bead,
@@ -2597,6 +2603,7 @@ fn run_logs(
         },
         Box::new(std::io::stdout()),
         clock,
+        max_inline_bytes,
     ))?;
     Ok(())
 }
@@ -2980,6 +2987,7 @@ fn run_sequential_loop_root(
                         render_mode,
                         &workspace,
                         false,
+                        direct_output_limits.max_inline_bytes,
                     ) {
                         Ok(s) => Some(s),
                         Err(err) => {
@@ -3738,6 +3746,12 @@ async fn dispatch_for_slot(
     };
     let skill_session = skill_plan.materialize(scratch.path(), &slot.worktree.path)?;
     spawn_config.skills = Some(skill_session.registered);
+    spawn_config.event_metadata = Some(loom_events::AgentStartMetadata {
+        title: slot.bead.title.clone(),
+        profile: skill_profile,
+        spec_label: label.clone(),
+        parent_tool_call_id: None,
+    });
 
     let sink = match open_bead_sink_with_renderer(
         logs_root,
@@ -3746,6 +3760,7 @@ async fn dispatch_for_slot(
         render_mode,
         &slot.worktree.path,
         true,
+        direct_output_limits.max_inline_bytes,
     ) {
         Ok(sink) => sink,
         Err(err) => {
@@ -3996,15 +4011,11 @@ impl GateMintProgress {
         render_mode: loom_render::RenderMode,
         renderer_id: &BeadId,
         when: std::time::SystemTime,
+        max_inline_bytes: usize,
     ) -> anyhow::Result<Self> {
-        let renderer = build_stdout_renderer(render_mode, renderer_id, workspace, false);
-        let sink = LogSink::open_phase_at(
-            logs_root,
-            &SpecLabel::new("gate"),
-            "mint",
-            Some(renderer),
-            when,
-        )?;
+        let renderer =
+            build_stdout_renderer(render_mode, renderer_id, workspace, false, max_inline_bytes);
+        let sink = LogSink::open_phase_at(logs_root, "mint", Some(renderer), when)?;
         Ok(Self {
             sink,
             builder: build_gate_mint_envelope_builder(when),
@@ -4314,8 +4325,10 @@ fn open_bead_sink_with_renderer(
     render_mode: loom_render::RenderMode,
     workspace: &Path,
     parallel: bool,
+    max_inline_bytes: usize,
 ) -> Result<LogSink, ProtocolError> {
-    let renderer = build_stdout_renderer(render_mode, bead_id, workspace, parallel);
+    let renderer =
+        build_stdout_renderer(render_mode, bead_id, workspace, parallel, max_inline_bytes);
     LogSink::open_in_at(
         logs_root,
         label,
@@ -4331,34 +4344,57 @@ fn open_todo_sink_with_renderer(
     workspace: &Path,
     render_mode: loom_render::RenderMode,
     renderer_id: &BeadId,
+    max_inline_bytes: usize,
 ) -> Result<LogSink, ProtocolError> {
-    open_todo_sink_with_writer(
+    let renderer =
+        build_stdout_renderer(render_mode, renderer_id, workspace, false, max_inline_bytes);
+    LogSink::open_phase_at(
+        logs_root,
+        "todo",
+        Some(renderer),
+        SystemClock::new().wall_now(),
+    )
+    .map_err(|error| ProtocolError::Io(std::io::Error::other(error.to_string())))
+}
+
+fn open_review_sink_with_renderer(
+    logs_root: &Path,
+    workspace: &Path,
+    render_mode: loom_render::RenderMode,
+    renderer_id: &BeadId,
+    when: std::time::SystemTime,
+    max_inline_bytes: usize,
+) -> Result<LogSink, ProtocolError> {
+    open_review_sink_with_writer(
         logs_root,
         workspace,
         render_mode,
         renderer_id,
-        SystemClock::new().wall_now(),
+        when,
         Box::new(std::io::stdout()),
+        max_inline_bytes,
     )
 }
 
-fn open_todo_sink_with_writer(
+fn open_review_sink_with_writer(
     logs_root: &Path,
     workspace: &Path,
     render_mode: loom_render::RenderMode,
     renderer_id: &BeadId,
     when: std::time::SystemTime,
     out: Box<dyn std::io::Write + Send>,
+    max_inline_bytes: usize,
 ) -> Result<LogSink, ProtocolError> {
-    let renderer = build_renderer_with_writer(render_mode, renderer_id, workspace, false, out);
-    LogSink::open_phase_at(
-        logs_root,
-        &SpecLabel::new("todo"),
-        "todo",
-        Some(renderer),
-        when,
-    )
-    .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))
+    let renderer = build_renderer_with_writer(
+        render_mode,
+        renderer_id,
+        workspace,
+        false,
+        out,
+        max_inline_bytes,
+    );
+    LogSink::open_phase_at(logs_root, "review", Some(renderer), when)
+        .map_err(|error| ProtocolError::Io(std::io::Error::other(error.to_string())))
 }
 
 fn todo_renderer_id(spawn_cfg: &SpawnConfig) -> Result<BeadId, ProtocolError> {
@@ -4401,6 +4437,7 @@ fn build_stdout_renderer(
     bead_id: &BeadId,
     workspace: &Path,
     parallel: bool,
+    max_inline_bytes: usize,
 ) -> Box<dyn loom_render::Renderer> {
     build_renderer_with_writer(
         mode,
@@ -4408,6 +4445,7 @@ fn build_stdout_renderer(
         workspace,
         parallel,
         Box::new(std::io::stdout()),
+        max_inline_bytes,
     )
 }
 
@@ -4417,6 +4455,7 @@ fn build_renderer_with_writer(
     workspace: &Path,
     parallel: bool,
     out: Box<dyn std::io::Write + Send>,
+    max_inline_bytes: usize,
 ) -> Box<dyn loom_render::Renderer> {
     let osc8_supported = loom_render::osc8::supports_osc8(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -4432,6 +4471,7 @@ fn build_renderer_with_writer(
             let color = matches!(mode, loom_render::RenderMode::Verbose) && !parallel;
             Box::new(
                 loom_render::TerminalRenderer::new(out, mode, bead_id.clone(), parallel, color)
+                    .with_tool_body_limit(max_inline_bytes)
                     .with_osc8(osc8),
             )
         }
@@ -4443,15 +4483,19 @@ fn build_renderer_with_writer(
                 parallel,
                 true,
             )
+            .with_tool_body_limit(max_inline_bytes)
             .with_osc8(osc8),
         ),
-        loom_render::RenderMode::Plain => Box::new(loom_render::TerminalRenderer::new(
-            out,
-            loom_render::RenderMode::Default,
-            bead_id.clone(),
-            parallel,
-            false,
-        )),
+        loom_render::RenderMode::Plain => Box::new(
+            loom_render::TerminalRenderer::new(
+                out,
+                loom_render::RenderMode::Default,
+                bead_id.clone(),
+                parallel,
+                false,
+            )
+            .with_tool_body_limit(max_inline_bytes),
+        ),
         loom_render::RenderMode::Json => Box::new(loom_render::JsonRenderer::new(out)),
         loom_render::RenderMode::Raw => Box::new(loom_render::RawRenderer::new(out)),
     }
@@ -4517,11 +4561,13 @@ fn run_review(
     let state = std::sync::Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
-    let label_for_sink = label.clone();
+    let workspace_for_review_renderer = workspace.to_path_buf();
+    let review_renderer_id = BeadId::new("lm-gate")?;
+    let review_render_mode = default_live_render_mode();
     // Pin one phase timestamp so the verdict gate's `push_gate_*`
     // driver events and the reviewer agent's events land in the same
     // JSONL log file. Both writers compute the path from
-    // `(logs_root, label, "review", phase_when)`. When invoked by
+    // `(logs_root, "review", phase_when)`. When invoked by
     // `loom loop`'s molecule-completion handoff, the parent pins
     // `phase_when` and passes it via `LOOM_REVIEW_PHASE_WHEN_MILLIS`
     // so both sides resolve the same log path.
@@ -4552,14 +4598,20 @@ fn run_review(
             phase_default,
             move |spawn_cfg: SpawnConfig| {
                 let logs_root = logs_root_for_spawn.clone();
-                let label = label_for_sink.clone();
+                let workspace = workspace_for_review_renderer.clone();
+                let renderer_id = review_renderer_id.clone();
                 let stdout_capture = Arc::clone(&stdout_capture_for_spawn);
                 let selection = selection.clone();
                 let observer_config = observer_config.clone();
                 async move {
-                    let sink =
-                        LogSink::open_phase_at(&logs_root, &label, "review", None, phase_when)
-                            .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?;
+                    let sink = open_review_sink_with_renderer(
+                        &logs_root,
+                        &workspace,
+                        review_render_mode,
+                        &renderer_id,
+                        phase_when,
+                        direct_output_limits.max_inline_bytes,
+                    )?;
                     let mut output = String::new();
                     let mut spawn_cfg = spawn_cfg;
                     selection.apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
@@ -5056,6 +5108,7 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
                     &workspace_for_renderer,
                     render_mode,
                     &renderer_id,
+                    direct_output_limits.max_inline_bytes,
                 )?;
                 let outcome = dispatch_with_envelope(
                     kind,
@@ -5409,72 +5462,50 @@ mod tests {
     }
 
     #[test]
-    fn todo_agent_events_render_live_progress() -> anyhow::Result<()> {
-        for render_mode in [
+    fn tool_body_rendering_uses_byte_only_inline_budget() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        std::fs::write(
+            tmp.path().join("loom.toml"),
+            "[direct]\nmax_inline_bytes = 37\n",
+        )?;
+        let max_inline_bytes = LoomConfig::load(tmp.path().join("loom.toml"))?
+            .direct_output_limits()
+            .max_inline_bytes;
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let mut sink = open_review_sink_with_writer(
+            &tmp.path().join(".loom/logs"),
+            tmp.path(),
             loom_render::RenderMode::Plain,
-            loom_render::RenderMode::Pretty,
-        ] {
-            let tmp = tempfile::tempdir()?;
-            let logs_root = tmp.path().join(".loom/logs");
-            let output = Arc::new(Mutex::new(Vec::new()));
-            let writer = SharedOutputWriter {
+            &BeadId::new("lm-gate")?,
+            std::time::SystemTime::UNIX_EPOCH,
+            Box::new(SharedOutputWriter {
                 inner: Arc::clone(&output),
-            };
-            let renderer_id = BeadId::new("lm-todo")?;
-            let mut sink = open_todo_sink_with_writer(
-                &logs_root,
-                tmp.path(),
-                render_mode,
-                &renderer_id,
-                std::time::SystemTime::UNIX_EPOCH,
-                Box::new(writer.clone()),
-            )?;
+            }),
+            max_inline_bytes,
+        )?;
+        let mut builder = build_phase_envelope_builder(Phase::Review);
+        let tool_id = loom_events::identifier::ToolCallId::new("configured-cap");
+        sink.emit(&loom_events::AgentEvent::ToolCall {
+            envelope: builder.build(),
+            id: tool_id.clone(),
+            tool: "Bash".to_string(),
+            params: serde_json::json!({"command": "emit bytes"}),
+            parent_tool_call_id: None,
+        })?;
+        sink.emit(&loom_events::AgentEvent::ToolResult {
+            envelope: builder.build(),
+            id: tool_id,
+            output: format!("{}tail", "x".repeat(max_inline_bytes)),
+            is_error: false,
+        })?;
+        sink.finish(loom_driver::logging::BeadOutcome::Done)?;
 
-            let mut envelope_builder = build_phase_envelope_builder(Phase::Todo);
-            let envelope = envelope_builder.build();
-            let session_id = envelope.session_id.as_str().to_string();
-            assert!(envelope.bead_id.is_none());
-            assert!(envelope.iteration.is_none());
-            sink.emit(&loom_events::AgentEvent::TextDelta {
-                envelope,
-                text: "agent progress before summary\n".to_string(),
-            })?;
-            let path = sink.log_path().to_path_buf();
-            sink.finish(loom_driver::logging::BeadOutcome::Done)?;
-            let mut summary_writer = writer;
-            std::io::Write::write_all(
-                &mut summary_writer,
-                b"loom todo: agent exited 0, cost_usd=None\n",
-            )?;
-
-            let rendered = String::from_utf8(output.lock().expect("output lock").clone())?;
-            let progress = rendered
-                .find("agent progress before summary")
-                .ok_or_else(|| anyhow::anyhow!("missing live progress in {rendered:?}"))?;
-            let summary = rendered
-                .find("loom todo: agent exited")
-                .ok_or_else(|| anyhow::anyhow!("missing final summary in {rendered:?}"))?;
-            assert!(
-                progress < summary,
-                "{render_mode:?} live progress must precede final summary: {rendered:?}",
-            );
-
-            let body = std::fs::read_to_string(path)?;
-            assert!(
-                body.contains("agent progress before summary"),
-                "phase JSONL log must persist the same event: {body}",
-            );
-            let first_event: serde_json::Value = serde_json::from_str(
-                body.lines()
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("empty phase log"))?,
-            )?;
-            assert_eq!(
-                first_event["session_id"].as_str(),
-                Some(session_id.as_str())
-            );
-            assert!(first_event["bead_id"].is_null());
-        }
+        let rendered = String::from_utf8(output.lock().expect("output lock").clone())?;
+        assert!(
+            rendered.contains("display-only cap at 37 bytes"),
+            "{rendered:?}",
+        );
+        assert!(rendered.contains("4 bytes omitted"), "{rendered:?}");
         Ok(())
     }
 

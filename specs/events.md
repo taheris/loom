@@ -177,7 +177,8 @@ Known `driver_kind` wire values include `verdict_gate`, `retry_dispatch`,
 `duplicate_tool_result`, `doom_loop_tripped`, `epic_auto_closed`,
 `bead_branch_pushed`, `merge_ok`, `merge_conflict`, `integration_conflict`,
 `signature_verification_failed`, `worktree_cleanup_ok`, `tree_not_clean`,
-and `workspace_recovery`.
+`workspace_recovery`, `marker_routed`, `clarify_downgraded`, and
+`bd_state_transition`.
 Gate lifecycle values carried by the same field are `gate_run_start`,
 `gate_run_scope`, `gate_run_lane`, `gate_run_end`, and `gate_run_skipped`;
 [gate.md](gate.md) owns their GateRun semantics. Unknown future strings must
@@ -345,7 +346,7 @@ not abort the run.
 - `LogSink::emit` writes the JSONL log and drives the renderer from the same event call
   [check](cargo run -p loom-walk -- single_event_channel)
 - Formatted `loom logs` replay and live rendering for every non-interactive LLM-bearing command share the same renderer pipeline
-  [test?](live_llm_commands_use_shared_renderer_pipeline)
+  [test](live_llm_commands_use_shared_renderer_pipeline)
 - Normal Pretty/Plain output renders transcript text without requiring `--verbose`: agent inputs, assistant text, exposed thinking, and inline tool-result text up to the Loom-controlled LLM inline budget
   [test](normal_rendering_shows_llm_visible_transcript)
 - Verbose Pretty/Plain output adds diagnostic event metadata without changing transcript visibility or tool-body caps

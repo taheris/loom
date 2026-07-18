@@ -23,8 +23,9 @@ pub mod event;
 pub mod identifier;
 
 pub use event::{
-    AgentEvent, DriverEventPayload, DriverKind, EnvelopeBuilder, EventEnvelope, InputKind,
-    InputRedaction, ParsedAgentEvent, RedactionClass, SessionScope, Source,
+    AgentEvent, AgentStartMetadata, DriverEventPayload, DriverKind, EVENT_SCHEMA_VERSION,
+    EnvelopeBuilder, EventEnvelope, InputKind, InputRedaction, ParsedAgentEvent, RedactionClass,
+    SessionScope, Source,
 };
 
 /// Boxed event stream returned by [`Session::prompt`].

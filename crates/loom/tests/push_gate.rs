@@ -360,8 +360,8 @@ fn read_labels(state_dir: &Path, id: &str) -> Vec<String> {
 /// and return them in emission order. Empty when no review log was
 /// written (e.g. the controller errored before opening the phase log
 /// or no `emit_driver_event` call landed for this phase).
-fn read_driver_events(workspace: &Path, label: &str) -> Vec<serde_json::Value> {
-    let logs_dir = workspace.join(format!(".loom/logs/{label}"));
+fn read_driver_events(workspace: &Path, _label: &str) -> Vec<serde_json::Value> {
+    let logs_dir = workspace.join(".loom/logs/review");
     let entries = match std::fs::read_dir(&logs_dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),
@@ -626,6 +626,61 @@ fn seed_iteration_at_cap(workspace: &Path, mol_id: &str) {
 // -------------------------------------------------------------------
 // Scenario 4 — clean path: every input passes, push fires
 // -------------------------------------------------------------------
+
+#[test]
+fn live_llm_commands_use_shared_renderer_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let label = "reviewrender";
+
+    std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(
+        workspace.join(format!("specs/{label}.md")),
+        "## Success Criteria\n\n",
+    )
+    .unwrap();
+    let base_sha = init_workspace_repo(workspace);
+    let state_dir = workspace.join("bd-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    seed_bead(
+        &state_dir,
+        "lm-mol",
+        "molecule epic",
+        "Review renderer fixture.\n",
+        &["spec:reviewrender"],
+    );
+    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
+    let bin_dir = install_path_shims(workspace, true);
+    let manifest = write_minimal_manifest(workspace);
+
+    let output = run_loom_gate_review(
+        workspace,
+        &bin_dir,
+        &state_dir,
+        &manifest,
+        "complete-marker",
+        label,
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "live gate review failed: stdout={stdout}\nstderr={stderr}",
+    );
+    let transcript = stdout
+        .find("# Post-Epic Review")
+        .unwrap_or_else(|| panic!("rendered agent input missing: {stdout}"));
+    let marker = stdout
+        .find("LOOM_COMPLETE")
+        .unwrap_or_else(|| panic!("rendered agent output missing: {stdout}"));
+    let summary = stdout
+        .find("loom review:")
+        .unwrap_or_else(|| panic!("review summary missing: {stdout}"));
+    assert!(
+        transcript < marker && marker < summary,
+        "live transcript must precede the command summary: {stdout}",
+    );
+}
 
 /// Clean push: `LOOM_COMPLETE`, no `loom:blocked` / `loom:clarify`
 /// beads, no integrity findings → the gate must reach `push_gate_clean`

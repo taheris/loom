@@ -443,7 +443,7 @@ where
         let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratch = ScratchSession::open(&self.workspace, &key, &prompt, &banner)
             .map_err(|e| WalkError::Rubric(format!("scratch: {e}")))?;
-        let spawn_config = crate::spawn::build_spawn_config(
+        let mut spawn_config = crate::spawn::build_spawn_config(
             entry,
             self.runtime,
             self.workspace.clone(),
@@ -454,6 +454,12 @@ where
             vec![],
             vec![],
         );
+        spawn_config.event_metadata = Some(loom_events::AgentStartMetadata {
+            title: banner,
+            profile: self.phase_default.clone(),
+            spec_label: self.label.clone(),
+            parent_tool_call_id: None,
+        });
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);
         let (_outcome, _marker, stdout) = result.map_err(|e| WalkError::Rubric(e.to_string()))?;

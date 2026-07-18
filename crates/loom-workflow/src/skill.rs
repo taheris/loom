@@ -241,6 +241,7 @@ mod tests {
                 partial_bodies: vec![],
             },
             skills: Some(skills),
+            event_metadata: None,
             scratch_dir: scratch.to_path_buf(),
             model_id: None,
             model: None,

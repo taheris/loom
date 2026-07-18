@@ -79,6 +79,7 @@ mod tests {
                 MaterializedRegistry::new(vec![]),
                 disclosure,
             )),
+            event_metadata: None,
             scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
             model_id: None,
             model: None,
