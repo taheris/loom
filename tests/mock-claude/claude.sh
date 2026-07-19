@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # Mock claude binary for loom-agent tests and the container smoke runner.
 #
 # Reads stream-json on stdin, emits stream-json on stdout. The first
@@ -21,10 +23,9 @@
 #                  — verify interactive `claude --settings <file>` loads
 #                    the compact SessionStart hook before emitting output.
 #
-# Modes are deliberately small — every mode is shaped to exactly one
-# Rust test (or the smoke runner). The script is not a general-purpose
+# Modes are deliberately small and single-purpose. A mode may support
+# multiple tests of the same wire behavior; this is not a general-purpose
 # claude emulator.
-set -euo pipefail
 
 MODE="${1:-default}"
 CANARY_NONCE="LOOM_COMPACTION_CANARY_NONCE_4f0b3f0f"

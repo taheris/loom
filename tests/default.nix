@@ -6,10 +6,23 @@
 # is exposed separately as a `nix run .#smoke` app, not a flake check.
 #
 # Spec: specs/tests.md § Nix Integration / CI integration.
-{ pkgs, loomPackage, ... }:
+{
+  pkgs,
+  loomPackage,
+  smokeProfileManifest ? null,
+  smokeSandbox ? null,
+  ...
+}:
 
 let
-  loomDeriv = import ./loom/default.nix { inherit pkgs loomPackage; };
+  loomDeriv = import ./loom/default.nix {
+    inherit
+      pkgs
+      loomPackage
+      smokeProfileManifest
+      smokeSandbox
+      ;
+  };
 in
 {
   rustChecks = {

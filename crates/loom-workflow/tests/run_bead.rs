@@ -33,6 +33,7 @@ use tempfile::TempDir;
 fn git_command() -> Command {
     let mut command = Command::new("git");
     loom_test_support::scrub_git_local_env(&mut command);
+    loom_test_support::configure_hermetic_git(&mut command);
     command
 }
 
@@ -98,7 +99,8 @@ fn setup() -> (
     let dir = tempfile::tempdir().expect("tempdir");
     let manifest = write_manifest(dir.path());
     let workspace = dir.path().join("ws");
-    let git = init_test_repo_with_integration(&workspace).expect("init repo");
+    let mut git = init_test_repo_with_integration(&workspace).expect("init repo");
+    git.disable_signing_key_resolution();
     (dir, workspace, manifest, git)
 }
 

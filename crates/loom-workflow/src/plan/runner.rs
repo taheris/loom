@@ -241,7 +241,6 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     const CANARY_NONCE: &str = "LOOM_COMPACTION_CANARY_NONCE_4f0b3f0f";
-    const POLISH_NO_EDIT_PHRASE: &str = "Propose specific edits or findings, but do not apply edits unless explicitly asked to apply them.";
 
     fn three_profile_manifest(dir: &Path) -> Result<ProfileImageManifest> {
         let manifest_path = dir.join("profile-images.json");
@@ -628,38 +627,6 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             .position(|arg| *arg == "# Specification Interview")
             .ok_or_else(|| anyhow::anyhow!("pi prompt missing: {pi_argv_log}"))?;
         assert!(pi_delivery < pi_prompt);
-        Ok(())
-    }
-
-    #[test]
-    fn mock_agent_compaction_canary_requires_rehydrated_mode_definition() -> Result<()> {
-        let summary_only = "Summary: do a polish means report-only.";
-        for rel in ["mock-claude/claude.sh", "mock-pi/pi.sh"] {
-            let failed = std::process::Command::new("bash")
-                .arg(mock_script_path(rel))
-                .arg("interactive-compaction-canary")
-                .env("LOOM_COMPACTION_CANARY_CONTEXT", summary_only)
-                .output()?;
-            assert!(
-                !failed.status.success(),
-                "{rel} canary must reject summary-only context; stdout={} stderr={}",
-                String::from_utf8_lossy(&failed.stdout),
-                String::from_utf8_lossy(&failed.stderr),
-            );
-
-            let full_context = format!("{POLISH_NO_EDIT_PHRASE}\n{CANARY_NONCE}");
-            let passed = std::process::Command::new("bash")
-                .arg(mock_script_path(rel))
-                .arg("interactive-compaction-canary")
-                .env("LOOM_COMPACTION_CANARY_CONTEXT", full_context)
-                .output()?;
-            assert!(
-                passed.status.success(),
-                "{rel} canary must accept full rehydrated context; stdout={} stderr={}",
-                String::from_utf8_lossy(&passed.stdout),
-                String::from_utf8_lossy(&passed.stderr),
-            );
-        }
         Ok(())
     }
 

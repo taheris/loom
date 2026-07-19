@@ -4368,3 +4368,73 @@ fn loom_gate_check_derivation_exists_fail_when_absent() {
     );
     assert_fail(&out, "no derivation runs `loom gate check`");
 }
+
+fn seed_test_nix_surface(root: &Path) {
+    seed(
+        root,
+        "flake.nix",
+        "systems = [ \"aarch64-darwin\" \"aarch64-linux\" \"x86_64-darwin\" \"x86_64-linux\" ];\n",
+    );
+    seed(
+        root,
+        "nix/flake/lib.nix",
+        "smokeSandbox = wrixLib.mkSandbox { agentPkg = smokeMockPi; };\nsmokeProfileManifest = wrixLib.mkProfileImages { };\n",
+    );
+    seed(
+        root,
+        "nix/flake/tests.nix",
+        "packages.loom-tests = testsDeriv.rustChecks.loom-tests;\n",
+    );
+    seed(
+        root,
+        "nix/workspace.nix",
+        "extraSrcs = { \"flake.nix\" = \"${src}/flake.nix\"; };\n",
+    );
+    seed(
+        root,
+        "nix/flake/apps.nix",
+        "test = {\nsmoke = {\nfuzz-loom = {\ntext = builtins.readFile ../../scripts/full-test.sh;\n",
+    );
+    seed(root, "nix/flake/checks.nix", "checks = { };\n");
+    seed(
+        root,
+        "tests/default.nix",
+        "loom-tests = loomDeriv.loomTests;\ninherit loom-smoke;\n",
+    );
+    seed(
+        root,
+        "tests/loom/default.nix",
+        "loom gate check --tree\nloom gate test --tree\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_WRIX_SPAWN_BIN\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
+    );
+    seed(
+        root,
+        "scripts/full-test.sh",
+        "nix flake check --no-warn-dirty\ncargo clippy --workspace --all-targets -- -D warnings\ncargo nextest run --workspace\nloom gate system --tree\n",
+    );
+    seed(
+        root,
+        "tests/run-tests.sh",
+        "LOOM_TEST_PROFILE_CONFIG\nunset WRIX_AGENT\nloom --agent pi loop \"$BEAD_ID\"\nif [[ \"$ELAPSED\" -gt 30 ]]; then\n",
+    );
+}
+
+#[test]
+fn test_nix_surface_contract_pass() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn test_nix_surface_contract_fail_when_test_tier_is_missing() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    seed(
+        ws.path(),
+        "tests/loom/default.nix",
+        "loom gate check --tree\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_WRIX_SPAWN_BIN\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
+    );
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "loom gate test --tree");
+}

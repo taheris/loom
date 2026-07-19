@@ -14,7 +14,7 @@ use loom_gate::annotation::{parse, parse_content};
 use loom_gate::integrity::{
     CommandResolver, DispatchPendingExecutor, FsCommandResolver, IntegrityFinding,
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
-    TestPathResolver, check, check_atomic_acceptance, check_forward,
+    TestPathResolver, check, check_atomic_acceptance, check_forward, scan_workspace_pair,
 };
 use loom_gate::{Annotation, DispatchOptions, TierCwds};
 use tempfile::tempdir;
@@ -266,7 +266,7 @@ fn check_flags_cargo_test_annotation_with_missing_test_name() {
 }
 
 #[test]
-fn end_to_end_specs_dir_check_combines_both_directions() {
+fn synthetic_specs_dir_check_combines_both_directions() {
     let dir = tempdir().unwrap();
     let specs = dir.path().join("specs");
     fs::create_dir_all(&specs).unwrap();
@@ -313,6 +313,35 @@ fn end_to_end_specs_dir_check_combines_both_directions() {
             .iter()
             .any(|f| matches!(f, IntegrityFinding::MultipleAnnotations { count: 2, .. })),
         "multiple-annotations finding present: {findings:?}"
+    );
+}
+
+#[test]
+fn end_to_end_specs_dir_check_combines_both_directions() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("loom-gate crate must live under the workspace crates directory");
+    let specs = workspace_root.join("specs");
+    let parsed = parse(&specs).expect("parse workspace specs");
+    let commands = FsCommandResolver::new(workspace_root);
+    let (tests, stubs) = scan_workspace_pair(workspace_root).expect("scan workspace tests");
+
+    let mut findings = check_forward(
+        &parsed.annotations,
+        &[],
+        workspace_root,
+        &commands,
+        &tests,
+        &stubs,
+        &StubExec(false),
+    );
+    findings.extend(check_atomic_acceptance(&parsed.annotations));
+
+    assert!(
+        findings.is_empty(),
+        "workspace annotation corpus has unresolved, stub, stale-pending, or atomic-acceptance findings: {findings:#?}",
     );
 }
 

@@ -11,10 +11,20 @@ _:
 
 {
   perSystem =
-    { pkgs, loom, ... }:
+    {
+      pkgs,
+      loom,
+      smokeProfileManifest,
+      smokeSandbox,
+      ...
+    }:
     let
       testsDeriv = import ../../tests/default.nix {
-        inherit pkgs;
+        inherit
+          pkgs
+          smokeProfileManifest
+          smokeSandbox
+          ;
         loomPackage = loom;
       };
     in

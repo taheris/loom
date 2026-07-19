@@ -182,11 +182,9 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
     Ok(())
 }
 
-/// Acceptance (`specs/tests.md` line 597 — `parallel_run_two_beads_e2e`):
-/// `loom loop --parallel 2` with two ready beads creates one workspace
-/// per bead under `.loom/beads/<bead-id>/` (concurrent dispatch).
+/// Worktree allocation creates one isolated clone per bead.
 #[tokio::test]
-async fn parallel_run_two_beads_e2e() -> Result<()> {
+async fn parallel_worktree_creation_isolated_per_bead() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
     let label = SpecLabel::new("harness");

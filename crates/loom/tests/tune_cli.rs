@@ -71,6 +71,7 @@ fn install_tune_review_wrix(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
 fn git_command() -> Command {
     let mut command = Command::new("git");
     loom_test_support::scrub_git_local_env(&mut command);
+    loom_test_support::configure_hermetic_git(&mut command);
     command
 }
 
@@ -175,6 +176,7 @@ fn run_loom_with_env(
     entries.extend(std::env::split_paths(&path_var));
     let new_path = std::env::join_paths(entries).expect("join PATH");
     let mut command = Command::new(env!("CARGO_BIN_EXE_loom"));
+    loom_test_support::configure_hermetic_git(&mut command);
     command
         .arg("--workspace")
         .arg(workspace)

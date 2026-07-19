@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # Mock pi binary for loom-agent tests.
 #
 # Reads JSONL commands on stdin, emits JSONL responses+events on stdout.
@@ -52,10 +54,9 @@
 #                               validates the re-pin steer payload, then
 #                               emits LOOM_COMPLETE.
 #
-# Modes are deliberately small — every mode is shaped to exactly one
-# Rust test (or the smoke runner). The script is not a general-purpose
+# Modes are deliberately small and single-purpose. A mode may support
+# multiple tests of the same wire behavior; this is not a general-purpose
 # pi emulator.
-set -euo pipefail
 
 # pi RPC framing is JSONL: one complete object per line. Re-exec through
 # stdbuf so libc stdio writes are line-buffered when wrappers drive this
@@ -71,7 +72,7 @@ if [[ -z "${MOCK_PI_REEXEC:-}" ]]; then
     exec stdbuf -oL bash "$0" "$@"
 fi
 
-MODE="${1:-default}"
+MODE="${MOCK_PI_SCENARIO:-${1:-default}}"
 CANARY_NONCE="LOOM_COMPACTION_CANARY_NONCE_4f0b3f0f"
 POLISH_NO_EDIT_PHRASE="Propose specific edits or findings, but do not apply edits unless explicitly asked to apply them."
 
@@ -213,8 +214,22 @@ run_probe_ok() {
 
 run_happy_path() {
     handle_probe 0
-    local prompt_line payload
+    local prompt_line payload bead_id
     IFS= read -r prompt_line
+    if [[ "${LOOM_SMOKE_WORKER:-0}" == "1" && "$prompt_line" == *"Issue: "* ]]; then
+        bead_id="$(sed -n 's/.*Issue: \([a-z0-9.-]*\)\\n.*/\1/p' <<<"$prompt_line")"
+        if [[ -z "$bead_id" ]]; then
+            echo "mock-pi: smoke prompt missing bead id" >&2
+            exit 5
+        fi
+        git config user.email smoke@example.com
+        git config user.name "Loom Smoke"
+        git config commit.gpgsign false
+        printf 'implemented by mock pi\n' > loom-smoke-result.txt
+        git add loom-smoke-result.txt
+        git commit -q -m "Implement smoke bead"
+        bd close "$bead_id" >/dev/null
+    fi
     payload="$(todo_payload_from_prompt "$prompt_line")"
     emit_message_delta "$payload"
     emit_agent_end

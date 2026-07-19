@@ -2376,7 +2376,10 @@ mod tests {
     /// controller-construction site so `run_bead`'s per-bead worktree
     /// dispatch has a real repo to bind against.
     fn git_workspace(workspace: &std::path::Path) -> loom_driver::git::GitClient {
-        loom_driver::git::init_test_repo_with_integration(workspace).expect("init test repo")
+        let mut git =
+            loom_driver::git::init_test_repo_with_integration(workspace).expect("init test repo");
+        git.disable_signing_key_resolution();
+        git
     }
 
     fn bead(id: &str) -> Bead {

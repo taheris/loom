@@ -756,22 +756,21 @@ fn run_single_event_sink_property() -> Result<()> {
     sink.finish(BeadOutcome::Done)?;
 
     let on_disk = fs::read_to_string(&log_path)?;
-    let on_disk_kinds: Vec<String> = on_disk
+    let on_disk_events = on_disk
         .lines()
-        .map(|l| -> Result<String> {
-            let v: Value = serde_json::from_str(l)?;
-            Ok(v["kind"].as_str().unwrap_or("").to_string())
-        })
-        .collect::<Result<_>>()?;
-    let terminal = captured_str(&buf);
-
-    if on_disk_kinds.len() != events.len() {
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected_events = events
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    if on_disk_events != expected_events {
         return Err(anyhow!(
-            "on-disk events ({}) diverged from emit count ({})",
-            on_disk_kinds.len(),
-            events.len()
+            "on-disk event order or payload diverged:\nexpected={expected_events:#?}\nactual={on_disk_events:#?}",
         ));
     }
+
+    let terminal = captured_str(&buf);
     let term_tool_lines = terminal
         .lines()
         .filter(|l| l.contains("Read") || l.contains("Edit"))

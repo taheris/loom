@@ -45,6 +45,13 @@ pub fn scrub_git_local_env(command: &mut std::process::Command) {
     }
 }
 
+/// Prevents test Git processes from inheriting operator signing configuration.
+pub fn configure_hermetic_git(command: &mut std::process::Command) {
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/git/test-gitconfig");
+    command.env("GIT_CONFIG_GLOBAL", config);
+}
+
 pub fn bash_path() -> std::path::PathBuf {
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
@@ -59,6 +66,21 @@ pub fn bash_path() -> std::path::PathBuf {
 
 pub fn bash_script(body: &str) -> String {
     format!("#!{}\n{body}", bash_path().display())
+}
+
+#[cfg(unix)]
+fn cleanup_temp_file(path: &std::path::Path, original: std::io::Error) -> std::io::Error {
+    match std::fs::remove_file(path) {
+        Ok(()) => original,
+        Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => original,
+        Err(cleanup) => std::io::Error::new(
+            cleanup.kind(),
+            format!(
+                "{original}; also failed to remove temporary script {}: {cleanup}",
+                path.display()
+            ),
+        ),
+    }
 }
 
 #[cfg(unix)]
@@ -90,24 +112,20 @@ pub fn write_executable_bash_script(
         };
 
         if let Err(error) = file.write_all(script.as_bytes()) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(error);
+            return Err(cleanup_temp_file(&temp_path, error));
         }
         if let Err(error) = file.sync_all() {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(error);
+            return Err(cleanup_temp_file(&temp_path, error));
         }
         drop(file);
 
         if let Err(error) =
             std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o755))
         {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(error);
+            return Err(cleanup_temp_file(&temp_path, error));
         }
         if let Err(error) = std::fs::rename(&temp_path, path) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(error);
+            return Err(cleanup_temp_file(&temp_path, error));
         }
         return Ok(());
     }
@@ -116,4 +134,20 @@ pub fn write_executable_bash_script(
         ErrorKind::AlreadyExists,
         "could not allocate a temporary executable-script path",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hermetic_git_command_disables_operator_signing() {
+        let mut command = std::process::Command::new("true");
+        super::configure_hermetic_git(&mut command);
+        let config = command
+            .get_envs()
+            .find_map(|(key, value)| (key == "GIT_CONFIG_GLOBAL").then_some(value).flatten())
+            .expect("GIT_CONFIG_GLOBAL");
+        let body = std::fs::read_to_string(config).expect("read hermetic Git config");
+
+        assert!(body.contains("gpgsign = false"), "config={body}");
+    }
 }

@@ -20,7 +20,13 @@
 #               `nix run .#smoke` is a no-op rather than an error.
 #
 # Spec: specs/tests.md § Nix Integration / Cross-platform / CI integration.
-{ pkgs, loomPackage, ... }:
+{
+  pkgs,
+  loomPackage,
+  smokeProfileManifest ? null,
+  smokeSandbox ? null,
+  ...
+}:
 
 let
   inherit (pkgs) lib;
@@ -43,6 +49,10 @@ let
       pkgs.git
       pkgs.cargo-nextest
       pkgs.cacert
+      pkgs.flock
+      pkgs.jq
+      pkgs.openssh
+      pkgs.prek
       bin
     ];
     buildPhaseCargoCommand = ''
@@ -140,15 +150,27 @@ let
     touch "$out"
   '';
 
+  smokeEntry = smokeProfileManifest.passthru.manifest.base.pi;
+
   smokeApp = pkgs.writeShellApplication {
     name = "smoke";
     runtimeInputs = [
       bin
-      pkgs.podman
-      pkgs.jq
+      pkgs.beads
       pkgs.git
+      pkgs.jq
+      pkgs.nix
+      pkgs.podman
+      pkgs.skopeo
     ];
-    text = builtins.readFile ../run-tests.sh;
+    text = ''
+      export LOOM_TEST_IMAGE=${smokeSandbox.image.source or smokeSandbox.image}
+      export LOOM_TEST_IMAGE_REF=${smokeEntry.ref}
+      export LOOM_TEST_IMAGE_SOURCE_KIND=${smokeEntry.source_kind}
+      export LOOM_TEST_PROFILE_CONFIG=${smokeEntry.profile_config}
+      export LOOM_WRIX_SPAWN_BIN=${smokeSandbox.launcher}/bin/wrix
+      ${builtins.readFile ../run-tests.sh}
+    '';
   };
 
   darwinStub = pkgs.writeShellApplication {

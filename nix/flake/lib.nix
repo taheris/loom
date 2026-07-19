@@ -108,6 +108,11 @@ in
         treefmt = config.treefmt.build.wrapper;
       };
       piCodingAgent = pkgs.pi-coding-agent;
+      smokeMockPi = pkgs.writeShellScriptBin "pi" ''
+        export MOCK_PI_SCENARIO=happy-path
+        export LOOM_SMOKE_WORKER=1
+        exec ${pkgs.bash}/bin/bash ${../../tests/mock-pi/pi.sh} "$@"
+      '';
 
       # The same file + hash pin the toolchain for the wrix sandbox
       # profile, the loom workspace build, and the devshell.
@@ -148,6 +153,15 @@ in
         ];
       };
 
+      smokeSandbox = wrixLib.mkSandbox {
+        profile = wrixLib.profiles.base;
+        agent = "pi";
+        agentPkg = smokeMockPi;
+        packages = [ loom.bin ];
+      };
+
+      smokeProfileManifest = wrixLib.mkProfileImages { base = smokeSandbox.image; };
+
       profileManifest = loomLib.mkProfileManifest {
         inherit pkgs wrixLib;
         loomBin = loom.bin;
@@ -171,6 +185,8 @@ in
           rustProfile
           rustToolchain
           sandbox
+          smokeProfileManifest
+          smokeSandbox
           wrixLib
           ;
       };

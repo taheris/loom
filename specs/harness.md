@@ -59,7 +59,7 @@ loom (host)
     ├─ build SpawnConfig (image_ref, image_source, image_source_kind, env allowlist, mounts, scratch_dir)
     ├─ serialize to /tmp/loom-<id>.json
     │
-    ├─ spawn: wrix --profile-config <file> spawn --spawn-config /tmp/loom-<id>.json --stdio
+    ├─ spawn: agent-owned `wrix spawn` invocation (see agent.md)
     │   │
     │   └─ exec podman run [no -t, stdio piped] <image> <entrypoint>
     │       │
@@ -596,13 +596,10 @@ Per-bead dispatch is:
    are not serialized into the per-launch JSON because launcher selection is
    host-only and the matching ProfileConfig supplies the image digest.
 
-Loom derives `WRIX_AGENT` from the same `AgentRuntime` and places it in
-both `SpawnConfig.launcher_env` for the host-side `wrix spawn` child
-process and the in-container `SpawnConfig.env` allowlist. The operator's
-parent-shell `WRIX_AGENT` is never the source of truth; wrix consumes the
-launcher env before podman startup and passes the same value to the
-entrypoint — see [agent.md — Entrypoint Agent
-Selection](agent.md#entrypoint-agent-selection).
+Backend-derived launcher and container agent selection for a resolved image
+entry is owned by [agent.md — SpawnConfig](agent.md#spawnconfig) and
+[Entrypoint Agent Selection](agent.md#entrypoint-agent-selection). This
+manifest section does not define a second environment-selection contract.
 
 Interactive shell-outs that bypass `SpawnConfig` still use the same
 manifest lookup; the per-backend plan/chat launch shapes are owned by
@@ -610,11 +607,11 @@ manifest lookup; the per-backend plan/chat launch shapes are owned by
 section owns only the image-selection hand-off: those shell-outs look up
 their profile/runtime pair (per [Configuration](#configuration); default
 `base`) in the manifest and export
-`WRIX_DEFAULT_IMAGE_REF=<entry.ref>`,
-`WRIX_DEFAULT_IMAGE_SOURCE=<entry.source>`, and
-`WRIX_AGENT=<runtime>` into the child environment before exec'ing
-`wrix run`. The launcher reads those env vars when no `--spawn-config`
-is supplied. `wrix run` has no `--profile` argv parser; any extra tokens
+`WRIX_DEFAULT_IMAGE_REF=<entry.ref>` and
+`WRIX_DEFAULT_IMAGE_SOURCE=<entry.source>` before exec'ing `wrix run`;
+the backend launcher environment remains agent-owned. The launcher reads the
+image-selection env vars when no `--spawn-config` is supplied. `wrix run` has
+no `--profile` argv parser; any extra tokens
 between the workspace positional and the in-container command are
 forwarded into the container as the command vector, so the env-var
 hand-off is the sole image-selection contract on this path.
@@ -2637,9 +2634,6 @@ Criteria.
 - Loom never invokes `podman run` directly (grep `crates/` for
       `podman` finds only documentation references)
   [check](cargo run -p loom-walk -- loom_does_not_invoke_podman)
-- `wrix --profile-config <file> spawn --spawn-config <file> --stdio` accepts a JSON config,
-      reuses container construction from existing `wrix run`, omits TTY
-  [test](wrix_spawn_invocation_records_correct_argv)
 - `SpawnConfig` JSON shape is stable: serialization round-trip preserves
       documented per-launch fields and key names, including `image_ref`,
       `image_source`, and `image_source_kind`, while omitting
@@ -2994,11 +2988,6 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - Each backend applies `SpawnConfig.launcher_env` to the `wrix
       spawn` child process environment before exec
   [test](apply_launcher_env_sets_child_process_env)
-- Backend-derived `WRIX_AGENT` is inserted into both
-      `SpawnConfig.launcher_env` and the in-container
-      `SpawnConfig.env` allowlist, overriding an absent or conflicting
-      parent-shell value
-  [test](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
 
 ### Workflow commands
 
@@ -3832,11 +3821,6 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
   [system](nix build .#loom)
 - Loom binary is available in the hook-free CI devShell
   [system](nix develop .#ci -c loom --version)
-- `cargo clippy --workspace` and full workspace nextest are covered by
-      `nix run .#test`, while fast flake checks omit those workspace
-      compile surfaces and the workspace derivations retain a shared
-      cargoArtifacts cache
-  [check](cargo run -p loom-walk -- workspace_compile_checks_are_full_test_app_only)
 
 ## Requirements
 
@@ -4212,10 +4196,9 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
    `RequestId` for protocol identifiers. No bare `String` for typed IDs.
    `AgentRuntime` is an enum (`Pi`, `Claude`, `Direct`), not a newtype.
 3. **Nix integration** — built via the wrix Rust package builder.
-   `packages.loom` consumes `.bin` so devshell rebuilds skip the
-   clippy/nextest passes; those land in the explicit `nix run .#test`
-   full-suite app rather than the fast `nix flake check` set. Binary is
-   included in the devShell.
+   `packages.loom` consumes `.bin`; the test-tier and full-suite composition
+   is owned by [tests.md — Nix Integration](tests.md#nix-integration). Binary
+   is included in the devShell.
 
 ## Out of Scope
 

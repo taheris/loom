@@ -45,7 +45,7 @@ supported path, no `--no-verify` required.
 | Stage      | Wall-time target          | Hooks |
 |------------|---------------------------|-------|
 | pre-commit | ~1s target; bounded by staged-file annotation selectivity | `repo: builtin` `trailing-whitespace`, `end-of-file-fixer` (excludes `.beads/config.yaml`), `check-merge-conflict`; `treefmt --fail-on-change`; `shell-reexec-explicit-interpreter`; `loom gate verify --files` (spec annotation lane only: affected `[check]` / `[test]` verifiers scoped to staged files per [gate.md § Verifier inputs](gate.md); `[system]` excluded) |
-| pre-push   | <10s fast tier + full required suite | repo-local `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix flake check` (fast derivations; no-ops in the bead container with no `nix`; marker-aware like the rest of the push path); `bin/pre-push-checks` wrapping `cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`); `bin/pre-push-checks` wrapping `loom gate verify --diff <push-range>` (scope-derived project pre-commit lane + affected `[check]` / `[test]`; `[system]` excluded unless added as an explicit hook); `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix run .#test` (full suite: fast flake tier + workspace clippy + full nextest + gate/system checks; always runs when not marker-covered) |
+| pre-push   | <10s fast tier + full required suite | repo-local `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix flake check` (fast derivations; no-ops in the bead container with no `nix`; marker-aware like the rest of the push path); `bin/pre-push-checks` wrapping `cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`); `bin/pre-push-checks` wrapping `loom gate verify --diff <push-range>` (scope-derived project pre-commit lane + affected `[check]` / `[test]`; `[system]` excluded unless added as an explicit hook); `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix run .#test` (suite composition owned by [tests.md](tests.md); always runs when not marker-covered) |
 
 There is no standalone `loom gate verify-marker` hook; the marker is
 consulted by the `pre-push-checks` wrapper per-hook (see *Marker
@@ -69,10 +69,9 @@ covered for the same tree, config, and push range; otherwise the wrapper
 falls through and executes the hook. Coverage, not a fast/slow label,
 controls the shortcut.
 
-`nix flake check` is still budgeted as the fast derivation set. It runs
-as the first pre-push hook and inside the full-suite app, but it does
-not expose full workspace clippy or nextest checks. On pre-push it is
-routed through repo-local `bin/pre-push-checks`, so a driver-minted
+`nix flake check` is budgeted as the first pre-push hook. Its test-tier
+composition relative to the full-suite app is owned by [tests.md](tests.md).
+On pre-push it is routed through repo-local `bin/pre-push-checks`, so a driver-minted
 marker may skip it only if the marker's `GateSuccess` proves the hook
 ran and passed. Its derivation chain contains checks that don't require
 compiling the workspace under test: the treefmt-check derivation plus a
@@ -82,14 +81,10 @@ is precompiled (via crane's `cargoArtifacts` chain, reused), so the
 derivation's wall-clock budget is the checks themselves, not the build.
 Target: <10s warm when it runs.
 
-The full required suite lives at `nix run .#test`, not in flake checks.
-That app runs the fast flake tier, `cargo clippy --workspace
---all-targets -- -D warnings`, full workspace `cargo nextest run
---workspace`, and `loom gate system --tree`. The current container smoke
-surface is the separate `nix run .#smoke` app owned by [tests.md](tests.md)
-and reached through the system tier. This repository has no separate CI
-safety net, so the full-suite app is a pre-push hook rather than a
-CI-only surface.
+The full required suite and container smoke composition are owned by
+[tests.md — Nix Integration](tests.md#nix-integration). This spec owns only
+their hook placement: `nix run .#test` is a pre-push hook rather than a
+CI-only surface because this repository has no separate CI safety net.
 
 The targeted hooks are clippy + `loom gate verify --diff <push-range>`
 + `nix run .#test`. Prek exports the pushed endpoints as
@@ -336,10 +331,6 @@ declared as such.
 
 ### Fast tier composition
 
-- `nix flake check` omits workspace clippy and nextest from the flake
-  checks set, while `nix run .#test` covers workspace clippy, full
-  nextest, and system verifiers
-  [check](cargo run -p loom-walk -- workspace_compile_checks_are_full_test_app_only)
 - `loom gate check` is exposed as a flake-check derivation distinct
   from the targeted pre-push hooks
   [check](cargo run -p loom-walk -- loom_gate_check_derivation_exists)

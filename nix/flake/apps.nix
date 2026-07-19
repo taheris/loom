@@ -16,13 +16,19 @@ _:
     {
       pkgs,
       loom,
+      smokeProfileManifest,
+      smokeSandbox,
       ...
     }:
     let
       inherit (pkgs.stdenv.hostPlatform) isLinux;
 
       testsDeriv = import ../../tests/default.nix {
-        inherit pkgs;
+        inherit
+          pkgs
+          smokeProfileManifest
+          smokeSandbox
+          ;
         loomPackage = loom;
       };
 

@@ -26,116 +26,19 @@ parsers, and Nix-pinned protocol versions to catch upstream drift.
 
 ## Architecture
 
-### Test File Layout
+### Test Homes and Boundaries
 
-Each crate uses two complementary Rust test homes:
+Rust tests use two complementary homes. Inline test modules cover private,
+white-box behavior close to the owning code. Cargo integration tests exercise
+public APIs, cross-module behavior, or real process boundaries when those
+boundaries are load-bearing. A crate uses either or both homes according to the
+surface it exposes; integration-test files are not required for leaf crates
+whose contract is fully exercised inline.
 
-- **Inline `#[cfg(test)] mod tests { … }`** at the bottom of each source file
-  — white-box tests with access to private impl details, kept next to the
-  code they exercise so changes land together.
-- **Cargo integration tests** under `crates/<crate>/tests/*.rs` —
-  black-box tests that import the crate by its public API, exercising
-  cross-module behaviour and the surfaces that downstream crates also see.
-
-```
-loom/
-  crates/
-    loom-driver/
-      src/
-        state/
-          db.rs               # CacheDb impl + inline #[cfg(test)] mod tests
-          rebuild.rs          # rebuild logic + inline tests
-          companions.rs       # `## Companions` parser + inline tests
-        bd/
-          client.rs           # bd CLI wrapper + inline tests
-          label.rs            # Label newtype + inline tests
-        agent/
-          repin.rs            # RePinContent + inline tests (doc-tested)
-          ...
-      tests/
-        cache_db.rs           # Integration: CacheDb across rebuild + queries
-        lock_manager.rs       # Integration: per-spec advisory locking
-        git_client.rs         # Integration: GitClient against a temp repo
-        logging.rs            # Integration: shared renderer + log channel
-        properties.rs         # proptest invariants for cache DB rebuild
-    loom-events/              # Public contract leaf crate — `AgentEvent`,
-      src/                    #   identifier newtypes, `Session` trait. Tiny
-        identifier/           #   dep surface (serde, futures-core, thiserror).
-          bead.rs             # BeadId + inline tests (validation, serde)
-          ...                 # one file per id newtype, all with inline tests
-        event.rs              # AgentEvent + envelope types
-        lib.rs                # Session / EventSink contract + inline tests
-    loom-agent/
-      src/
-        pi/
-          mod.rs
-          parser.rs           # JSONL parsing + inline tests (string literals)
-          backend.rs          # spawn / lifecycle + inline tests driving mock-pi
-          messages.rs
-        claude/
-          mod.rs
-          parser.rs           # stream-json parsing + inline tests (string literals)
-          backend.rs          # spawn / lifecycle + inline tests driving mock-claude
-          messages.rs
-      tests/
-        static_dispatch.rs    # Compile-time check: all concrete backends impl AgentBackend
-        properties.rs         # proptest invariants for subprocess protocol parsers
-    loom-workflow/
-      src/
-        loop/
-          mod.rs              # loop orchestration + inline tests for unit-level helpers
-        gate/
-          mod.rs              # push gate + inline tests
-        ...
-      tests/
-        parallel.rs           # Integration: --parallel N bead-clone dispatch
-    loom-templates/
-      src/
-        ...                   # per-template module + inline rendering tests
-      tests/
-        render.rs             # Integration: every template renders with partials
-    loom/
-      tests/
-        loop_smoke.rs         # Integration: CLI subcommand surface
-        agent_flag.rs         # Integration: --agent flag parsing/validation
-        spawn_dispatch.rs     # Integration: shim-based wrix spawn argv
-                              #   contract + stdin-pipe-not-tty assertion
-                              # properties.rs is reserved here for cross-crate
-                              #   invariants; per-crate properties live in
-                              #   each crate's own tests/properties.rs
-    loom-walk/                # [check]-tier verifier binary — takes named
-      src/                    #   walks as positional args. Annotations point
-        main.rs               #   at it: [check](cargo run -p loom-walk -- <name>)
-        walk/
-          mod.rs              # name → walk fn dispatch
-          no_gix_outside_git_client.rs
-          no_types_files.rs
-          template_ctx.rs
-          newtype_identifiers.rs
-          no_hardcoded_tmp_paths.rs
-          ...                 # one walk per file
-      tests/
-        fixture.rs            # per-walk pass/fail fixtures
-    loom-gate/                # The gate runner. Owns annotation dispatch,
-      src/                    #   status cache, integrity gate. See gate.md.
-        annotation.rs         # [tier](target) parser
-        dispatch.rs           # per-tier dispatch (subprocess, batched, LLM)
-        runner.rs             # toolchain detection + <workspace>/loom.toml [runner.*]
-        cache.rs              # status cache schema + reads/writes
-        integrity.rs          # integrity gate (itself a [check] walk)
-      tests/
-        annotation_parse.rs   # Integration: spec walking + annotation extract
-        dispatch.rs           # Integration: per-tier dispatch contract
-        cache.rs              # Integration: status cache round-trip
-        integrity.rs          # Integration: forward + atomic-acceptance
-
-tests/
-  loom/
-    default.nix               # Nix derivation: explicit `loom gate` tiers
-    run-tests.sh              # Container smoke harness (single happy-path)
-    mock-pi/pi.sh             # Mock pi (scoped scenario modes)
-    mock-claude/claude.sh     # Mock claude (scoped scenario modes)
-```
+The repository-level test infrastructure contains process fixtures, the Nix
+verifier derivation, and the container smoke harness. Internal per-crate file
+and module organization remains an implementation choice rather than part of
+this spec's contract.
 
 ### Annotation Contract
 
@@ -195,54 +98,32 @@ passes `clock.now()`.
 wall time stays zero; tests can express "this file is 15 days old"
 without sleeping.
 
-**Banned patterns** (enforced by walks in `loom-walk`):
+**Production-source bans** (enforced by walks in `loom-walk`):
 
-- `std::thread::sleep` — anywhere, no exceptions.
+- `std::thread::sleep` in production Rust sources.
 - `tokio::time::sleep` outside `SystemClock::sleep`'s implementation.
 - `tokio::time::timeout` outside `SystemClock::timeout`'s
   implementation.
-- `Instant::now()` / `SystemTime::now()` outside `SystemClock::now()`.
+- `Instant::now()` / `SystemTime::now()` outside clock implementations.
 
-Tests that need to advance time construct a `MockClock` directly
-(`MockClock::new()` or via a small `with_mock_clock` helper in
-`loom-driver::testing`) and pass it as `&dyn Clock` into whatever
-component is under test. There is no other opt-out path; the bans
-apply uniformly across `src/` and `tests/`.
+Unit tests for time-dependent components construct a `MockClock` and pass it
+through the production clock boundary. Process-lifecycle and hard performance
+integration tests may use bounded host deadlines when the operating-system
+process boundary or elapsed time is the behavior under test; those sites remain
+exceptional under Non-Functional #8.
 
 ### Style Enforcement
 
-Two complementary mechanisms:
+[`docs/style-rules.md`](../docs/style-rules.md) and the workspace lint
+configuration own the style rules and exact Clippy policy. This spec owns only
+test-tier classification: compiler and source-walking style checks are
+`[check]` verifiers, while tests that execute behavior remain `[test]`
+verifiers. `loom-walk` provides the source-analysis runner for checks that
+Clippy cannot express; sibling component specs bind architectural walks to the
+contracts they own.
 
-**Workspace clippy lints** for what clippy supports natively
-(`unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`,
-`allow_attributes`). The full configuration is the contract in
-[`docs/style-rules.md`](../docs/style-rules.md) under RS-3
-(*Workspace lint configuration*); this spec does not duplicate the
-rule list. Tests opt out via per-file
-`#![allow(clippy::unwrap_used, ...)]` at the top of
-`crates/*/tests/*.rs` and inside `#[cfg(test)] mod tests`
-blocks.
-
-**Source-walking checks** for rules clippy can't express. Each walk
-is a `[check]`-tier verifier in `loom-walk`. The rule set is owned
-by [`docs/style-rules.md`](../docs/style-rules.md) (RS-5, RS-7, RS-8,
-RS-16, RS-18, and the test-discipline rules TST-*); this spec lists
-the walks the repo ships, not the rules they enforce:
-
-| Walk | Enforces |
-|------|----------|
-| `no_derive_from_on_newtypes` | RS-8 |
-| `no_types_or_error_files` | RS-5 |
-| `git_client_encapsulation` | architectural — `GitClient` is the only `gix` / `git` CLI site |
-| `single_event_channel` | architectural — renderer + log writer subscribe to one `AgentEvent` sender |
-| `newtype_identifiers` | RS-7 |
-| `template_context_structs` | architectural — each Askama template has a typed context |
-| `no_hardcoded_tmp_paths` | NFR #7 (Darwin sandbox compatibility) |
-
-`syn` and `walkdir` are `[dev-dependencies]` of `loom-walk`. Output
-on failure follows the verifier-runner contract in gate.md:
-JSON-line stdout `{"pass": false, "evidence": "<path>:<line> <rule>"}`
-so reviewers can click directly into the violation.
+Walk output follows the verifier-runner contract in [gate.md](gate.md), so a
+failure identifies the source location and applicable rule.
 
 ### Property-Based Testing
 
@@ -461,30 +342,16 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
 
 ### Mock Pi Design
 
-Mock pi is a shell script that frames pi-mono's RPC protocol as JSONL
-on stdin/stdout. Its job is to exercise *process-level* paths the
-parser unit tests cannot reach — round-tripping through real pipes,
-stdin write-back from `ParsedLine::response`, and child reaping. Each
-mode is shaped to exactly one Rust test that drives it; the script is
-not a general-purpose pi emulator.
+Mock pi is a scenario-selectable shell fixture that frames pi-mono's RPC
+protocol as JSONL on stdin/stdout. It exercises process paths parser unit tests
+cannot reach: startup handshakes, real pipes, command write-back, compaction
+re-pin delivery, and child reaping. Scenarios stay single-purpose and
+single-shot, but one scenario may support multiple tests of the same observable
+wire behavior. The fixture is not a general-purpose Pi emulator.
 
-Modes (selected via `argv[1]`):
-
-| Mode | Used by | Wire behavior |
-|------|---------|---------------|
-| `probe-ok` | startup probe round-trip test | Replies to `get_state` with a valid state object |
-| `probe-bad-state` | startup probe failure test | Replies to `get_state` with malformed state data |
-| `echo-prompt` | wire-shape assertion test | Probe ok, then echoes the prompt payload as a `message_delta` |
-| `steering` | mid-session steer test | Probe ok, prompt → first turn, then echoes the steer payload on the next turn |
-| `compaction` | re-pin-via-steer test | Probe ok, emits `compaction_start`, expects the re-pin steer, echoes it back, emits `compaction_end` |
-| `interactive-compaction-canary` | interactive re-pin behavioral canary | After forced compaction, answers the `do a polish` probe correctly only when the delivered re-pin contains the full interview-mode definition and a test-only nonce. Pi plan uses the native-TUI extension path; Pi inbox non-TTY coverage uses the controlled bridge. |
-| `set-model` | per-phase model override test | Probe ok, expects `set_model { provider, modelId }`, echoes the pair into a later `message_delta` |
-| `set-model-reject` | model override failure test | Probe ok, rejects `set_model` so the backend hard-fails the handshake |
-| `happy-path` | container smoke | Probe ok, prompt → `message_delta` → `agent_end` |
-
-Each mode is single-shot: the script runs until the conversation it
-encodes completes, then exits. The Rust test owns the assertions; the
-mock owns the wire framing.
+Conformance tests drive every retained scenario through its consuming backend,
+workflow, or smoke path. Parser-only malformed-input cases remain inline Rust
+fixtures rather than mock process modes.
 
 ### Process Lifecycle Fixtures
 
@@ -507,15 +374,11 @@ exchange so the fixture does not grow into another Pi protocol emulator.
 
 ### Mock Claude Design
 
-Mock claude follows the same pattern as mock pi but speaks Claude
-Code's stream-json framing (also JSONL) on stdin/stdout.
-
-| Mode | Used by | Wire behavior |
-|------|---------|---------------|
-| `steering` | mid-session steer test | Emits one assistant turn, waits for a stream-json user message on stdin, emits a second assistant turn echoing the steer payload, then `result/success` |
-| `ignore-stdin` | shutdown watchdog test | Emits `result/success`, ignores SIGTERM and stdin close so the test exercises the SIGTERM → SIGKILL escalation |
-| `interactive-compaction-canary` / `interactive-bridge-canary` | plan/inbox re-pin behavioral canary | Simulates the launched interactive Claude process, native Pi extension hand-off, or controlled Pi inbox bridge: verifies the compact hook/config, extension, or re-pin steer is loaded through the production launch path, triggers compaction, then answers a post-compaction probe correctly only when the delivered context contains the full interview-mode definition and a test-only nonce |
-| `happy-path` | container smoke | system → assistant → `result/success` |
+Mock Claude follows the same narrow, single-shot fixture pattern while speaking
+Claude Code's stream-json framing. Its scenarios cover steering, shutdown
+escalation, interactive compaction-hook delivery, and the smoke lifecycle.
+Conformance comes from production launch paths that execute the mock; invoking
+the script directly with a test-synthesized success payload is not evidence.
 
 ### Nix Integration
 
@@ -592,15 +455,30 @@ tree scope with no `--spec` filter. `loom-smoke` is exposed as
       work epics, notes, and criterion evidence without any
       `current_spec` operation
   [test](cache_db_round_trips_specs_epics_notes_and_criteria)
-- Pi RPC protocol tests cover every command and every event type
-      in the pi v0.72 protocol table, asserting on every documented
-      field (not just type discrimination) so a renamed field fails
-      deserialization at test time
+- Pi successful response envelopes preserve correlation id, command,
+      success, data, and absent-error fields
   [test](pi_response_success_populates_data_field)
-- Claude stream-json protocol tests cover all `ClaudeMessage`
-      variants including `Unknown` via `#[serde(other)]`, with
-      field-level assertions on each variant
+- Pi failure response envelopes preserve command failure and error fields
+  [test](pi_response_failure_populates_error_field)
+- Pi prompt, steer, and abort command serializers preserve their wire fields
+  [test](command_structs_serialize_to_expected_type_field)
+- Pi follow-up encoding preserves the idle prompt-cycle wire shape
+  [test](encode_follow_up_emits_idle_prompt_command)
+- Pi extension auto-cancel responses preserve type, id, and cancellation fields
+  [test](extension_ui_response_serializes_with_all_fields)
+- Claude `result` messages preserve every documented result field
   [test](result_message_round_trips_every_documented_field)
+- Claude `system` messages preserve subtype and session id
+  [test](system_message_maps_subtype_and_session_id)
+- Claude assistant blocks preserve text and tool-use fields
+  [test](assistant_block_text_and_tool_use_field_mapping)
+- Claude user blocks preserve tool-result fields
+  [test](user_block_tool_result_field_mapping)
+- Claude control requests preserve id, tool, and input
+  [test](control_request_message_round_trips_all_fields)
+- Unknown Claude message types resolve through the forward-compatible
+      `Unknown` variant
+  [test](unknown_event_type_does_not_error)
 - Template rendering tests cover every Askama template with
       representative inputs
   [test](template_renders_are_byte_stable_across_runs)
@@ -624,56 +502,10 @@ narrow process-lifecycle boundaries that parser unit tests cannot exercise.
       assembled todo path emits its workflow stall warning without adding a
       stall mode to the general mock-pi table
   [test](loom_todo_pi_stall_mid_session_emits_stall_warning)
-- `wrix spawn` argv contract: loom invokes
-      `wrix --profile-config <file> spawn --spawn-config <file> --stdio`
-      with stdin attached as a pipe (not a TTY); recorded `SpawnConfig` JSON
-      matches the on-disk shape
-  [test](wrix_spawn_invocation_records_correct_argv)
-- `WRIX_AGENT` launcher-env contract: command construction is exercised
-      with the parent shell lacking `WRIX_AGENT` and with a conflicting
-      parent value; the recorded `wrix spawn` child env contains the
-      backend-derived runtime (`pi`, `claude`, or `direct`)
-  [test](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
-- Parallel run end-to-end: `loom loop --parallel 2` with two ready
-      beads dispatches two mock-agent spawns concurrently, each in its
-      own bead clone, then integrates both branches back to the driver
-  [test](parallel_run_two_beads_e2e)
-- `GitClient` round-trip: create bead clone, status, rebase + fast-forward
-      integration (clean / non-conflicting / conflict variants), remove — all
-      against a temp repo via the typed Rust API
-  [test](create_and_remove_worktree_round_trip)
-- Cache DB lifecycle: `open` on fresh path creates schema; `rebuild`
-      populates from the spec index, spec files, mock bd spec/work
-      epics, and companions; `recreate` recovers from a corrupted file
-      without treating cache loss as clean todo state
-  [test](cache_db_rebuild_populates_specs_epics_and_companions)
-- Todo multi-spec regression fixture: one commit modifies a spec already
-      represented in the active work epic, an existing inactive/stale spec,
-      and a brand-new spec added to `docs/README.md`; `loom todo`
-      discovers all three from durable cursors regardless of `loom:active`
-  [test](todo_preflight_discovers_active_inactive_and_new_specs)
 - Todo validation rejects an agent `LOOM_TODO` payload that omits any
       changed spec; no spec cursor advances and no work epic becomes
       `loom:active`
   [test](todo_success_missing_changed_spec_fails_without_advancing)
-- Missing criterion evidence rows in `.loom/cache.db` render as
-      `EvidenceState::Missing` and never as no criteria/no work
-  [test](todo_missing_criterion_cache_rows_are_missing_evidence)
-- Phase/work-root advisory locking: two contending acquisitions on the
-      same plan/todo/bead/epic root serialize via `flock`; the second
-      waits via `MockClock` advance, then errors naming the held root.
-      Crashed child releases lock immediately for parent
-  [test](second_acquire_times_out_with_work_root_busy)
-- Logging tee: renderer and on-disk `.jsonl` log subscribe to the
-      same `AgentEvent` stream — capturing both yields line-for-line
-      equality on the log side
-  [test](run_single_event_sink_property)
-- Mock-agent compaction canaries exercise post-compaction behavior, not just
-      payload assembly: the fixture fails when the delivered context contains
-      only a compacted summary and passes only when the post-compaction
-      `do a polish` probe can rely on both the full report-only/no-edit mode
-      definition and a test-only nonce
-  [test](mock_agent_compaction_canary_requires_rehydrated_mode_definition)
 - The dedicated Pi inbox-bridge follow-up fixture stays outside the mock-pi
       mode table and covers only the probe → prompt → one human follow-up
       prompt → terminal-marker exchange
@@ -681,52 +513,31 @@ narrow process-lifecycle boundaries that parser unit tests cannot exercise.
 
 ### Container smoke
 
-- `nix run .#smoke` spawns a real podman container, unsets the
-      parent-shell `WRIX_AGENT`, runs `loom loop <bead-id>` against a
-      Pi-backed bead with child env `WRIX_AGENT=pi` and
-      `MOCK_PI_SCENARIO=happy-path`, exits 0 with the bead closed
+- `nix run .#smoke` follows the [agent-owned container launch
+      boundary](agent.md#container-integration) to run a Pi-backed mock-agent
+      bead against live bd, exiting 0 with the bead closed
   [system](nix run .#smoke)
 
-### Style enforcement
+### Test-source portability
 
-**Configuration** — these tests check that the rules are *declared*:
+Style-rule and component-architecture criteria are owned by
+[`docs/style-rules.md`](../docs/style-rules.md) and the relevant component
+specs. This test-strategy spec retains only the test portability outcome it
+owns:
 
-- `[workspace.lints.clippy]` denies `unwrap_used`, `expect_used`,
-      `panic`, `todo`, `unimplemented`; warns `allow_attributes`
-  [check](grep -q 'unwrap_used = "deny"' Cargo.toml)
-
-**Outcome** — these tests check that the *codebase complies* with
-the rules:
-
-- `cargo clippy --workspace` and full workspace nextest are covered by
-      the `nix run .#test` full-suite app, while `nix flake check`
-      omits them from the fast checks set
-  [check](cargo run -p loom-walk -- workspace_compile_checks_are_full_test_app_only)
-- No `derive(From)` / `derive(Into)` on tuple-struct newtypes
-  [check](cargo run -p loom-walk -- no_derive_from_on_newtypes)
-- No `crates/*/src/{types,error}.rs` files at crate roots
-  [check](cargo run -p loom-walk -- no_types_or_error_files)
-- `GitClient` is the only module importing `gix` or invoking the
-      `git` CLI
-  [check](cargo run -p loom-walk -- git_client_encapsulation)
-- Renderer + log writer subscribe to the same `AgentEvent` channel
-  [check](cargo run -p loom-walk -- single_event_channel)
-- Domain identifiers are tuple-struct newtypes
-  [check](cargo run -p loom-walk -- newtype_identifiers)
-- Each Askama template has a typed context struct
-  [check](cargo run -p loom-walk -- template_context_structs)
-- Tests use `tempfile::tempdir`, never hardcoded `/tmp/...` paths
+- Rust tests use isolated temporary directories rather than hardcoded host
+      temporary paths
   [check](cargo run -p loom-walk -- no_hardcoded_tmp_paths)
 
 ### Determinism
 
-- No `std::thread::sleep` in any source file
+- No `std::thread::sleep` in production Rust sources
   [check](cargo run -p loom-walk -- no_thread_sleep)
-- No `tokio::time::sleep` outside `SystemClock::sleep`
+- No `tokio::time::sleep` in production Rust sources outside `SystemClock::sleep`
   [check](cargo run -p loom-walk -- no_tokio_sleep_outside_clock)
-- No `tokio::time::timeout` outside `SystemClock::timeout`
+- No `tokio::time::timeout` in production Rust sources outside `SystemClock::timeout`
   [check](cargo run -p loom-walk -- no_tokio_timeout_outside_clock)
-- No `Instant::now()` / `SystemTime::now()` outside `SystemClock`
+- No real-clock reads in production Rust sources outside clock implementations
   [check](cargo run -p loom-walk -- no_real_clock_outside_system_clock)
 - No `#[ignore]` outside the container smoke runner
   [test](no_ignore_for_flake)
@@ -739,68 +550,72 @@ the rules:
 
 ### Property-based testing
 
-- JSONL line parser proptest: never panics on arbitrary bytes,
-      respects `MAX_LINE_BYTES`, never emits `AgentEvent` from a
-      malformed line
+- JSONL backend parsers never panic on arbitrary bounded text
   [test](jsonl_arbitrary_bytes_never_panic)
-- Pi protocol parser proptest: round-trip identity for known
-      shapes, unknown shapes map to typed errors, never panics
+- Malformed JSONL never emits an agent event or protocol response
+  [test](jsonl_malformed_line_emits_no_events)
+- The JSONL framing cap remains ten mebibytes
+  [test](max_line_bytes_is_ten_megabytes)
+- Pi prompt encoding round-trips arbitrary message text
+  [test](pi_encode_prompt_round_trips)
+- Pi steer encoding round-trips arbitrary message text
+  [test](pi_encode_steer_round_trips)
+- Unknown correlated Pi message types return a typed protocol error
+  [test](pi_unknown_message_type_surfaces_typed_error)
+- Pi parsing never panics on arbitrary bytes
   [test](pi_arbitrary_bytes_never_panic)
-- Claude stream-json parser proptest: round-trip identity for
-      known shapes, `Unknown` variant catches unknown types, never
-      panics
+- Claude system messages preserve generated known-shape fields
+  [test](claude_system_round_trips)
+- Claude result messages preserve generated result fields
+  [test](claude_result_round_trips)
+- Unknown Claude types resolve through the serde fallback
+  [test](claude_unknown_type_falls_through_serde_other)
+- Claude parsing never panics on arbitrary bytes
   [test](claude_arbitrary_bytes_never_panic)
-- Cache DB rebuild proptest: arbitrary spec/index content never
-      corrupts schema; corrupted cache recovers via `recreate` or reports
-      durable-source inconsistency
+- Arbitrary spec bodies do not corrupt the cache schema during rebuild
   [test](rebuild_never_corrupts_schema)
+- Arbitrary corrupt cache bytes recover through `recreate`
+  [test](recreate_recovers_from_arbitrary_bytes)
+- Cache rebuild round-trips generated durable source shapes
+  [test](rebuild_round_trips_known_shapes)
 - `PROPTEST_CASES=32` for CI; overridable via env var
   [check](grep -q 'pub const CI_PROPTEST_CASES: u32 = 32' crates/loom-test-support/src/lib.rs)
 
 ### Snapshot testing
 
-- Every Askama template has at least one `insta` snapshot under
-      `crates/loom-templates/tests/snapshots/`
-  [test](run_snapshot)
-- `loom --help` and every subcommand `--help` have `insta`
-      snapshots
-  [test](loom_help_snapshot)
+- Every Askama workflow template has a representative `insta` snapshot
+  [test](every_askama_template_has_snapshot)
+- `loom --help` and every subcommand `--help` have `insta` snapshots
+  [test](all_cli_help_snapshots)
 - Loop renderer uses substring + structural assertions, not
       `insta` (ensures terminal-output flexibility)
   [check](cargo run -p loom-walk -- renderer_no_insta_dependency)
 
 ### Cross-platform
 
-- `loom-tests` remains buildable as a package for
-      `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `aarch64-darwin`
-  [check](grep -q 'packages.loom-tests' nix/flake/tests.nix)
-- `nix run .#smoke` selects the real podman smoke implementation only
-      on Linux systems
-  [check](grep -q 'isLinux' tests/loom/default.nix)
-- `nix run .#smoke` on Darwin exits 0 with a clear "not
-      available on Darwin" message
-  [check](grep -q 'container smoke not available on Darwin' tests/loom/default.nix)
+- The flake source declares shared `loom-tests` package wiring for its four
+      configured Linux and Darwin system identifiers
+  [check](cargo run -p loom-walk -- test_nix_surface_contract)
+- The smoke app selects the real image-backed implementation only on Linux
+  [check](cargo run -p loom-walk -- test_nix_surface_contract)
+- The Darwin smoke branch is an explicit successful unavailable-platform stub
+  [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 ### CI integration
 
-- `tests` derivation is exposed for `nix build` and invokes explicit
-      deterministic gate tiers (batching `cargo nextest run` for
-      `[test]` and dispatching per-annotation subprocesses for `[check]`);
-      it is not part of the flake `checks` set
-  [check](grep -q 'packages.loom-tests' nix/flake/tests.nix)
-- `nix run .#test` exists as the full required suite app
-  [check](grep -q 'name = "test"' nix/flake/apps.nix)
-- `nix run .#smoke` exists as a `writeShellApplication` with a Linux
-      implementation and Darwin stub
-  [check](grep -q 'name = "smoke"' tests/loom/default.nix)
-- `nix run .#fuzz-loom` exists for on-demand `cargo fuzz` runs
-      (not gated by `nix flake check`)
-  [check](grep -q 'name = "fuzz-loom"' nix/flake/apps.nix)
-- Container smoke enforces a <30s wall-time budget
-  [check](grep -qE 'ELAPSED.*-gt 30' tests/run-tests.sh)
-- Pi Coding Agent and Claude Code are tracked via nixpkgs (no local
-      language-package pins in this repo)
-  [check](grep -q 'agentPkg = piCodingAgent' nix/flake/lib.nix)
+- The `loom-tests` package invokes both deterministic gate tiers and remains
+      outside the flake `checks` set
+  [check](cargo run -p loom-walk -- test_nix_surface_contract)
+- `nix run .#test` composes the fast flake tier, workspace Clippy, full
+      nextest, and system verifiers
+  [check](cargo run -p loom-walk -- workspace_compile_checks_are_full_test_app_only)
+- `nix run .#smoke` carries a concrete mock-Pi image, immutable ProfileConfig,
+      Linux implementation, and Darwin stub
+  [check](cargo run -p loom-walk -- test_nix_surface_contract)
+- `nix run .#fuzz-loom` is on-demand and absent from flake checks
+  [check](cargo run -p loom-walk -- test_nix_surface_contract)
+- Container smoke enforces a 30-second wall-time budget
+  [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 ## Requirements
 
@@ -816,13 +631,12 @@ the rules:
      over real pipes, no containers. Live in
      `crates/<crate>/tests/*.rs`. Annotated `[test]`; run via
      `loom gate test`.
-   - **Container smoke** — one happy-path scenario that spawns a real
-     podman container via `wrix spawn`, runs a mock agent *inside*
-     the container, drives `loom loop <bead-id>` against it, and asserts
-     the bead closes. Validates host↔container plumbing
-     (entrypoint.sh, bind mounts, `WRIX_AGENT` branching, container
-     teardown) — *not* protocol depth, which the integration level
-     already covers. Annotated `[system](nix run .#smoke)`; run
+   - **Container smoke** — one happy-path scenario that uses the
+     [agent-owned container launch boundary](agent.md#container-integration),
+     runs a mock agent *inside* the container, drives `loom loop <bead-id>`,
+     and asserts the bead closes. It validates host↔container assembly and
+     teardown — *not* protocol depth, which the integration level already
+     covers. Annotated `[system](nix run .#smoke)`; run
      via `loom gate system`. Linux-only (no podman in Darwin CI).
 
 2. **Mock agent processes** — process-level fixtures driven over real pipes
@@ -846,10 +660,12 @@ the rules:
      real pipe pending only for the handshake-timeout and workflow-stall
      assertions, and carry no mode selector or broader protocol behavior.
 
-3. **Unit test coverage by crate** — every crate has inline
-   `#[cfg(test)] mod tests` blocks plus integration tests under
-   `tests/*.rs`. The lists below are the contract surfaces, not an
-   exhaustive enumeration; specific edge cases live in the test code.
+3. **Rust test coverage by component** — private behavior is exercised
+   inline where white-box access is useful; public, cross-module, and process
+   boundaries use Cargo integration tests where that boundary adds signal.
+   Leaf crates are not required to create an integration-test file solely for
+   layout symmetry. The lists below describe coverage areas rather than
+   internal file organization.
 
    #### loom-driver
    - Newtype construction and serde round-trips (`BeadId`, `SpecLabel`,
@@ -877,7 +693,7 @@ the rules:
    - Config file loading (TOML parsing into `LoomConfig`), defaults when
      file is absent or fields are missing
    - `SpawnConfig` JSON serialization round-trips with stable field ordering
-     and key names (the contract with `wrix --profile-config <file> spawn --spawn-config`).
+     and key names at the [agent-owned launch boundary](agent.md#spawnconfig).
      Adding a field is non-breaking; renaming or removing one is — the test
      pins the on-disk shape so changes surface as test failures, not silent
      wire-format drift. Includes the optional
@@ -950,10 +766,9 @@ the rules:
    #### loom-workflow
    - `loom plan [SPEC_LABEL ...]` anchor parsing, including zero anchors,
      multiple anchors, missing-label-as-new-spec, and interspersed options
-   - `loom todo` changed-spec preflight from durable spec epic cursors,
-     including active, inactive/stale, and brand-new indexed specs
-   - `LOOM_TODO:` terminal parsing/validation against the preflight roster
-     and work epic
+   - Todo preflight, terminal validation, and lifecycle tests execute the
+     [harness-owned Todo contract](harness.md#functional), including production CLI
+     routing where cursor discovery is the behavior under test
    - Profile/runtime selection from bead labels plus resolved backend
      (parse, fallback to base, flag override, missing runtime failure)
    - Interactive `plan` / `inbox chat` command-construction tests cover the
@@ -962,44 +777,20 @@ the rules:
    - Retry logic (failure count tracking, `loom:clarify` label after max
      retries)
    - Push gate logic (clean completion, fix-up beads, iteration cap)
-   - Spec/work epic lifecycle: spec epic initialization, missing-cursor
-     blocking, pending `loom:todo` reuse, and active work epic finalization
    - No per-bead `bd dolt push/pull` is invoked: assert `BdClient` exposes
      no `dolt_push`/`dolt_pull` methods and the workflow paths do not
      spawn `bd dolt …` subprocess calls (containers reach the authoritative
      state via the bind-mounted Dolt socket)
-   - Parallel batch dispatch: given 3 ready beads and `--parallel 3`,
-     the dispatcher creates 3 bead clones under `.loom/beads/`,
-     spawns 3 `wrix spawn` futures concurrently, and reports all
-     results before integration
-   - Parallel batch with N=1 (the default): one bead clone is created
-     per bead, same shape as N>1 (no special-case sequential path)
-   - Integration ordering: branches rebase + fast-forward into the
-     integration branch sequentially, not in parallel (avoids index
-     lock races)
-   - On worker failure, the bead clone persists (per-bead-close
-     lifecycle) and the bead is queued for retry per the retry policy
-   - On integration merge conflict, the bead clone is preserved and the
-     verdict gate gives the agent one `integration-conflict` retry; a
-     second conflict escalates to `loom:clarify` with the conflict files
-     and new integration tip
+   - Parallel dispatch and integration tests execute the
+     [harness-owned bead lifecycle](harness.md#bead-dispatch) through public
+     seams; production CLI coverage is used when command routing is the
+     behavior under test
 
    #### Concurrency & locking (loom-driver)
-   - `flock` wrapper acquires/releases an exclusive lock on a file path;
-     blocking variant returns when the lock is free, try-variant returns a
-     typed error if held
-   - Phase/work-root lock path resolution: `plan.lock`, `todo.lock`, and
-     `<bead-or-epic-id>.lock` are created on first acquire, parent dirs
-     created on demand
-   - Workspace lock path: `$XDG_STATE_HOME/loom/locks/<workspace-basename>/workspace.lock`
-   - Lock-class dispatch: `LockClass::None`, `LockClass::Plan`,
-     `LockClass::Todo`, `LockClass::WorkRoot(id)`, `LockClass::Workspace`
-     are derived from the parsed CLI command before any side effects
-   - Two threads contending on the same phase/work-root lock: first wins,
-     second waits up to 5s then errors with a clear message naming the held
-     root
-   - Crash test: spawn a child, have it acquire the lock, kill it; parent
-     re-acquires immediately (kernel released the flock)
+   - Lock tests execute the [harness-owned locking
+     contract](harness.md#concurrency--locking). In-process tests cover typed
+     selection and error mapping; process tests are reserved for actual flock
+     contention and crash release.
 
    #### Auxiliary commands (loom-workflow)
    - `loom init` writes a default `loom.toml` and creates `.loom/cache.db`
@@ -1028,20 +819,10 @@ the rules:
      retention, and tracing-boundary tests are owned by [events.md](events.md)
 
    #### GitClient (loom-driver)
-   - `GitClient::create_worktree(label, bead_id)` materializes a standalone
-     bead clone under `.loom/beads/<bead-id>/` on branch
-     `loom/<bead-id>` from the loom workspace
-   - `GitClient::remove_worktree(path)` removes the bead clone directory;
-     idempotent if already removed
-   - `GitClient::merge_branch(branch)` rebases a bead branch onto the
-     configured integration branch and fast-forwards it; returns a typed
-     `MergeResult` distinguishing success and conflict
-   - `GitClient::status` reports working-tree changes against HEAD
-   - Hybrid implementation: callers see only the typed Rust API.
-     Whichever path is used internally (gix vs `git` CLI) is
-     encapsulated — no `gix::` or `tokio::process::Command::new("git")`
-     references appear outside the `GitClient` module. Verified by a
-     `[check]`-tier walk in `loom-walk` (`git_client_encapsulation`).
+   - Git integration tests execute the [harness-owned typed Git
+     contract](harness.md#bead-dispatch) against temporary repositories.
+     Process tests cover only behavior that cannot be exercised through an
+     in-memory seam.
 
    #### loom-walk
    - Walk dispatch: `loom-walk <name>` invokes the named walk; an
@@ -1088,83 +869,30 @@ the rules:
    - Test-tier silent-zero-match sniffing: cargo / nextest / pytest
      stdout post-processed to detect zero-match cases and fail loud
 
-4. **Integration test coverage** — load-bearing flows that exercise
-   cross-crate behavior or pipe-level orchestration. Protocol-level
-   shape coverage (event mapping, malformed JSONL, control_request
-   responses) belongs in parser unit tests; this list is the
-   integration-tier contract.
-   - **Startup probe round-trip** — mock pi replies to `get_state` with
-     a valid state object; loom proceeds. Mock pi replies with malformed
-     state data; loom fails fast with a version-mismatch error.
-   - **Pi process lifecycle** — separate no-selector fixtures leave the
-     startup probe unanswered or stall after one prompt event. The assembled
-     todo path respectively surfaces the handshake timeout or emits the
-     workflow stall warning; neither behavior belongs in the general mock-pi
-     mode table.
-   - **`wrix spawn` argv contract** — loom writes a `SpawnConfig`
-     JSON, invokes a `wrix-spawn` shim that records the argv +
-     stdin properties (TTY vs pipe), then exec's a mock agent. Asserts
-     the JSON shape (including `image_source_kind` whenever `image_source`
-     is emitted), the `--spawn-config <file> --stdio` argv, and that stdin is
-     a pipe (not a TTY).
-   - **`WRIX_AGENT` launcher-env contract** — the same command-construction
-     shim records child environment for pi, claude, and direct backend
-     selections. Parent-shell `WRIX_AGENT` is unset in one case and set
-     to a conflicting value in another; the child env always matches the
-     resolved backend runtime.
-   - **Parallel run end-to-end** — `loom loop --parallel 2` with two
-     ready beads dispatches two mock-agent spawns concurrently
-     (overlapping spawn timestamps captured by the mock), each in its
-     own bead clone under `.loom/beads/<id>/`, then rebases +
-     fast-forwards both branches into the integration branch
-     sequentially.
-   - **`GitClient` round-trip** — create bead clone, list, status,
-     rebase + ff (clean / non-conflicting / conflict variants),
-     remove — all against a temp repo via the typed Rust API.
-   - **Cache DB lifecycle** — `CacheDb::open` on a fresh path creates
-     schema; `rebuild` populates from the spec index, `specs/*.md`, and
-     mock bd spec/work epics; `recreate` recovers from a corrupted file.
-   - **Todo changed-spec regression** — fixture repo with one commit
-     modifying a spec already represented in the active work epic, an
-     inactive/stale spec, and a brand-new indexed spec; verifies preflight
-     includes all three, missing cache
-     rows are `EvidenceState::Missing`, omitted `LOOM_TODO` rows fail,
-     and valid finalization advances every cursor all-or-nothing.
-   - **Phase/work-root advisory locking** — two contending acquisitions
-     on the same plan/todo/bead/epic lock serialize via `flock`; the
-     second waits up to 5s (driven by `MockClock`), then errors with a
-     clear message naming the held root. Crash test: child acquires + is
-     killed; parent re-acquires immediately.
-   - **Logging tee** — renderer and on-disk `.jsonl` log subscribe to
-     the same `AgentEvent` stream; assert line-for-line equality on
-     the log side.
+4. **Integration test coverage** — load-bearing tests execute public
+   cross-crate or operating-system process seams. Backend launch and protocol
+   behavior is owned by [agent.md](agent.md); cache, Git, todo, parallel
+   dispatch, and locking behavior is owned by [harness.md](harness.md); event
+   fan-out and persistence behavior is owned by [events.md](events.md). This
+   spec owns the classification and fixture discipline: parser-only shape
+   checks stay in unit tests, while startup handshakes, pending pipes, child
+   reaping, and production CLI routing use integration tests.
 
 5. **Container smoke coverage** — one happy-path scenario validates
-   host↔container plumbing that the integration tier cannot reach: a
-   temp `.beads/` is seeded with one ready bead labelled
-   `profile:base`; a test image bundles `mock-pi` at a known path
-   inside the container; with parent-shell `WRIX_AGENT` unset, loom
-   invokes `wrix spawn` with `WRIX_AGENT=pi` and
-   `MOCK_PI_SCENARIO=happy-path`; the smoke asserts the container exits
-   clean and the bead closes.
+   host↔container plumbing that the integration tier cannot reach. A temporary
+   workspace is seeded with one ready `profile:base` bead, and a concrete test
+   image carries mock Pi through the [agent-owned container launch
+   boundary](agent.md#container-integration). The smoke asserts the container
+   exits cleanly and the bead closes.
    Workflow-level coverage (plan/todo/loop/gate/inbox/tune, profile/runtime
    selection, agent switching) lives in inline
    `#[cfg(test)] mod tests` blocks under `loom-workflow/src/` — those
    are exercised via `cargo nextest run`, not the smoke.
 
-6. **Rust style enforcement** — two complementary mechanisms:
-   - **Clippy lints** in `[workspace.lints.clippy]`: `unwrap_used = "deny"`,
-     `expect_used = "deny"`, `panic = "deny"`, `todo = "deny"`,
-     `unimplemented = "deny"`, `allow_attributes = "warn"`. Tests opt out
-     via per-file `#![allow(clippy::unwrap_used, ...)]` at the top of
-     `crates/*/tests/*.rs` and inside `#[cfg(test)] mod tests` blocks.
-   - **Source-walking checks** in `loom-walk` for rules clippy can't
-     express. Each walk is a `[check]`-tier verifier. Uses `syn` for
-     AST patterns (no `derive(From)` / `derive(Into)` on tuple
-     structs, `GitClient` encapsulation, single `AgentEvent` channel
-     for renderer + log writer, newtype identifier shape, typed
-     Askama context structs) and `walkdir` for filesystem-shape rules
-     (no `crates/*/src/{types,error}.rs` at crate roots).
+6. **Rust style enforcement** — [`docs/style-rules.md`](../docs/style-rules.md)
+   and the workspace configuration own the exact lint policy. Clippy-backed and
+   source-walking assertions are `[check]` verifiers; component specs own the
+   architectural facts those walks inspect.
 
 7. **Annotation contract** — every acceptance criterion in any spec
    under `specs/` carries a `[check]`, `[test]`, `[system]`, or
@@ -1239,14 +967,16 @@ the rules:
    mock). The integration tier may mock `bd` where the test concern
    is orthogonal to the issue tracker, but the smoke validates that
    loom and `bd` interact correctly under realistic conditions.
-7. **Cross-platform** — unit and integration tests pass on Linux *and*
-   Darwin (`x86_64`/`aarch64` for both). The container smoke is
-   Linux-only (podman dependency); on Darwin the `smoke` app exits
-   0 with a clear "container smoke not available on Darwin" message.
-   Tests use `tempfile::tempdir` exclusively, never hardcoded
-   `/tmp/...` paths — Nix's Darwin build sandbox doesn't grant access
-   to the host's `/tmp`, so any test that hardcodes one fails to even
-   start under `nix flake check`. Darwin smoke support is a follow-up.
+7. **Cross-platform source composition** — the flake declares shared test
+   package wiring for its configured Linux and Darwin system identifiers.
+   The source-level verifier checks that composition; platform-native builds
+   remain the authority for whether a package builds on that host and are not
+   inferred from a foreign-system source grep. The container smoke is
+   Linux-only (podman dependency); on Darwin the `smoke` app exits 0 with a
+   clear "container smoke not available on Darwin" message. Tests use
+   `tempfile::tempdir` rather than hardcoded `/tmp/...` paths so the source is
+   compatible with Darwin's build sandbox. Darwin smoke support is a
+   follow-up.
 8. **Subprocess-spawning tests are exceptional** — each subprocess test
    (mock-pi, mock-claude, real `git`) costs 50-200ms; ten of them blow
    the 5s soft target alone. A test that spawns a subprocess must

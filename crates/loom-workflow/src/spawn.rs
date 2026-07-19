@@ -197,50 +197,57 @@ mod tests {
         );
     }
 
-    #[test]
-    fn wrix_spawn_child_env_sets_backend_derived_wrix_agent() {
-        let cfg = build_spawn_config(
-            &entry(),
-            AgentRuntime::Pi,
-            PathBuf::from("/workspace"),
-            "prompt".into(),
-            PathBuf::from("/workspace/.loom/scratch/key"),
-            vec![("WRIX_AGENT".into(), "claude".into())],
-            vec![],
-            vec![],
-            vec![("WRIX_AGENT".into(), "claude".into())],
-        );
+    #[tokio::test]
+    async fn wrix_spawn_child_env_sets_backend_derived_wrix_agent() {
+        for runtime in [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct] {
+            for parent_value in [None, Some("conflicting-parent")] {
+                let cfg = build_spawn_config(
+                    &entry(),
+                    runtime,
+                    PathBuf::from("/workspace"),
+                    "prompt".into(),
+                    PathBuf::from("/workspace/.loom/scratch/key"),
+                    parent_value
+                        .map(|value| vec![("WRIX_AGENT".into(), value.into())])
+                        .unwrap_or_default(),
+                    vec![],
+                    vec![],
+                    parent_value
+                        .map(|value| vec![("WRIX_AGENT".into(), value.into())])
+                        .unwrap_or_default(),
+                );
+                let expected = runtime.as_str();
 
-        assert_eq!(
-            cfg.env
-                .iter()
-                .filter(|(key, _)| key == "WRIX_AGENT")
-                .collect::<Vec<_>>(),
-            vec![&("WRIX_AGENT".to_string(), "pi".to_string())],
-        );
-        assert_eq!(
-            cfg.launcher_env
-                .iter()
-                .filter(|(key, _)| key == "WRIX_AGENT")
-                .collect::<Vec<_>>(),
-            vec![&("WRIX_AGENT".to_string(), "pi".to_string())],
-        );
-        assert_eq!(
-            cfg.env
-                .iter()
-                .filter(|(key, _)| key == "LOOM_BIN")
-                .collect::<Vec<_>>(),
-            vec![&("LOOM_BIN".to_string(), "loom".to_string())],
-        );
-        assert_eq!(
-            cfg.wrix_launcher,
-            Some(PathBuf::from("/nix/store/raw-wrix/bin/wrix")),
-        );
-        assert_eq!(
-            cfg.profile_config,
-            Some(PathBuf::from("/nix/store/wrix-rust-pi-profile-config.json")),
-        );
-        assert_eq!(cfg.image_source_kind, Some(ImageSourceKind::NixDescriptor));
+                assert_eq!(
+                    cfg.env
+                        .iter()
+                        .filter(|(key, _)| key == "WRIX_AGENT")
+                        .map(|(_, value)| value.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![expected],
+                );
+                assert_eq!(
+                    cfg.launcher_env
+                        .iter()
+                        .filter(|(key, _)| key == "WRIX_AGENT")
+                        .map(|(_, value)| value.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![expected],
+                );
+
+                let mut child = tokio::process::Command::new("printenv");
+                child.arg("WRIX_AGENT");
+                if let Some(value) = parent_value {
+                    child.env("WRIX_AGENT", value);
+                } else {
+                    child.env_remove("WRIX_AGENT");
+                }
+                loom_agent::apply_launcher_env(&mut child, &cfg.launcher_env);
+                let output = child.output().await.expect("spawn child env recorder");
+                assert!(output.status.success(), "printenv must observe WRIX_AGENT");
+                assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+            }
+        }
     }
 
     #[test]

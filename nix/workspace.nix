@@ -57,6 +57,7 @@ let
   # Specs, mock binaries, and any other non-Cargo inputs the tests and
   # `[check]`-tier verifiers read from the workspace root.
   extraSrcs = {
+    "flake.nix" = "${src}/flake.nix";
     "tests/mock-pi" = "${src}/tests/mock-pi";
     "tests/mock-claude" = "${src}/tests/mock-claude";
     "tests/inbox-bridge" = "${src}/tests/inbox-bridge";

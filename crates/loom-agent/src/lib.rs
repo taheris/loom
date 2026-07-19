@@ -128,10 +128,7 @@ fn strip_shell_quotes(token: &str) -> &str {
 ///
 /// [`SpawnConfig::launcher_env`]: loom_driver::agent::SpawnConfig::launcher_env
 /// [`SpawnConfig::env`]: loom_driver::agent::SpawnConfig::env
-pub(crate) fn apply_launcher_env(
-    cmd: &mut tokio::process::Command,
-    launcher_env: &[(String, String)],
-) {
+pub fn apply_launcher_env(cmd: &mut tokio::process::Command, launcher_env: &[(String, String)]) {
     cmd.envs(launcher_env.iter().map(|(k, v)| (k, v)));
 }
 

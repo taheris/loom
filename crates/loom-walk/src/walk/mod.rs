@@ -70,6 +70,7 @@ mod template_context_structs;
 mod template_pinning_matrix;
 mod template_wire_format_restatement;
 mod templates_no_removed_surface;
+mod test_nix_surface_contract;
 mod todo_contexts_carry_criterion_status;
 mod todo_template_uses_driver_created_work_epic;
 mod tune_surface_conformance;
@@ -359,6 +360,10 @@ pub static REGISTRY: &[Walk] = &[
         run: templates_no_removed_surface::run,
     },
     Walk {
+        name: "test_nix_surface_contract",
+        run: test_nix_surface_contract::run,
+    },
+    Walk {
         name: "todo_contexts_carry_criterion_status",
         run: todo_contexts_carry_criterion_status::run,
     },
@@ -458,6 +463,7 @@ mod tests {
             "session_trait_in_loom_events",
             "single_event_channel",
             "surface_conformance",
+            "test_nix_surface_contract",
             "newtype_identifiers",
             "template_context_structs",
             "template_pinning_matrix",

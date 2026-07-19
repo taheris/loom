@@ -178,8 +178,7 @@ fn ann(tier: AnnotationTier, target: &str) -> CriterionAnnotation {
     }
 }
 
-#[test]
-fn plan_snapshot() {
+fn plan_snapshot() -> Result<()> {
     let ctx = PlanContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         anchor_labels: vec![SpecLabel::new("harness"), SpecLabel::new("future-spec")],
@@ -193,24 +192,23 @@ fn plan_snapshot() {
         spec_conventions: "docs/spec-conventions.md".to_string(),
         skill_index: SkillIndexMarkdown::empty(),
     };
-    insta::assert_snapshot!(ctx.render().unwrap());
+    insta::assert_snapshot!(ctx.render()?);
+    Ok(())
 }
 
-#[test]
 fn todo_snapshot() -> Result<()> {
     insta::assert_snapshot!(todo_ctx()?.render()?);
     Ok(())
 }
 
-#[test]
-fn run_snapshot() {
+fn run_snapshot() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
         molecule_id: Some(MoleculeId::new("lm-3hhwq")),
-        issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::from_agent_error(
@@ -223,7 +221,8 @@ fn run_snapshot() {
         style_rules: "docs/style-rules.md".to_string(),
         skill_index: SkillIndexMarkdown::empty(),
     };
-    insta::assert_snapshot!(ctx.render().unwrap());
+    insta::assert_snapshot!(ctx.render()?);
+    Ok(())
 }
 
 /// Fresh dispatch: `attempt = 0` with `previous_failure = None` must render
@@ -399,8 +398,7 @@ fn run_snapshot_build_failure() {
     insta::assert_snapshot!(ctx.render().unwrap());
 }
 
-#[test]
-fn review_snapshot() {
+fn review_snapshot() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
@@ -423,11 +421,11 @@ fn review_snapshot() {
         default_profile: ProfileName::new("rust"),
         skill_index: SkillIndexMarkdown::empty(),
     };
-    insta::assert_snapshot!(ctx.render().unwrap());
+    insta::assert_snapshot!(ctx.render()?);
+    Ok(())
 }
 
-#[test]
-fn inbox_snapshot() {
+fn inbox_snapshot() -> Result<()> {
     let mut item = inbox_item(
         "lm-clar.1",
         "harness",
@@ -454,5 +452,16 @@ fn inbox_snapshot() {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         skill_index: SkillIndexMarkdown::empty(),
     };
-    insta::assert_snapshot!(ctx.render().unwrap());
+    insta::assert_snapshot!(ctx.render()?);
+    Ok(())
+}
+
+#[test]
+fn every_askama_template_has_snapshot() -> Result<()> {
+    plan_snapshot()?;
+    todo_snapshot()?;
+    run_snapshot()?;
+    review_snapshot()?;
+    inbox_snapshot()?;
+    Ok(())
 }

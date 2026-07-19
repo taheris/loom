@@ -2109,7 +2109,10 @@ fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError>
 #[doc(hidden)]
 pub fn commit_all_in(workspace: &Path, msg: &str) -> Result<(), GitError> {
     run_test_git(workspace, &["add", "-A"])?;
-    run_test_git(workspace, &["commit", "-q", "-m", msg])
+    run_test_git(
+        workspace,
+        &["-c", "commit.gpgsign=false", "commit", "-q", "-m", msg],
+    )
 }
 
 fn run_test_git(dir: &Path, args: &[&str]) -> Result<(), GitError> {

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # Dedicated fixture for the `loom inbox chat` Pi RPC bridge follow-up path.
 # It accepts one probe, one initial prompt, and one post-completion prompt.
-set -euo pipefail
 
 emit() {
     printf '%s\n' "$1"
