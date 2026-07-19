@@ -1529,9 +1529,9 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
 }
 
 /// Install a `bd` shim that returns `bead_json` for JSON list subcommands,
-/// returns a synthetic id for `bd create --json`, and exits 0 silently for
-/// everything else (`bd close`, `bd update`). Returns the bin directory the
-/// caller should prepend to PATH.
+/// complete progress for `bd mol progress`, and a synthetic id for
+/// `bd create --json`. It exits 0 silently for everything else (`bd close`,
+/// `bd update`). Returns the bin directory the caller should prepend to PATH.
 fn install_bd_bead_stub(dir: &Path, bead_json: &str) -> PathBuf {
     let bin_dir = dir.join("bd-bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
@@ -1542,6 +1542,10 @@ fn install_bd_bead_stub(dir: &Path, bead_json: &str) -> PathBuf {
          set -euo pipefail\n\
          if [[ \"${{1:-}}\" == 'create' ]]; then\n\
              echo 'lm-work'\n\
+             exit 0\n\
+         fi\n\
+         if [[ \"${{1:-}}\" == 'mol' && \"${{2:-}}\" == 'progress' ]]; then\n\
+             printf '%s\\n' \"{{\\\"molecule_id\\\":\\\"${{3:-}}\\\",\\\"completed\\\":1,\\\"in_progress\\\":0,\\\"total\\\":1,\\\"percent\\\":100.0}}\"\n\
              exit 0\n\
          fi\n\
          for arg in \"$@\"; do\n\
