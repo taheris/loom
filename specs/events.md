@@ -23,9 +23,8 @@ copies of the event stream, not a separate state model.
 
 `loom-events` is the public contract crate. It owns `AgentEvent`, the common
 envelope, identifier newtypes, `DriverKind`, the `Session` interoperability
-trait, `EventSink`, and `SessionCommand`. It is a leaf crate so frontends,
-SSE bridges, `llm` consumers, and log analyzers can depend on the event
-contract without pulling in the Loom driver.
+trait, `EventSink`, and `SessionCommand`. Its leaf dependency constraint is
+owned by [harness.md § Dependency Graph](harness.md#dependency-graph).
 
 `loom-render` owns human and machine renderers plus the `LogSink` event sink.
 It depends on `loom-events` for the public event contract and may use
@@ -409,8 +408,6 @@ not abort the run.
   [test](gate_invocations_write_separate_jsonl_logs_with_parent_breadcrumb)
 - Incomplete gate event logs are marked incomplete rather than rendered as successful completed gate runs
   [test](incomplete_gate_event_log_is_not_successful)
-- `loom-events` remains a leaf public-contract crate
-  [check](cargo run -p loom-walk -- loom_events_is_leaf)
 - `loom-render` depends on `loom-events` and does not depend on `loom-driver` or `loom-workflow`
   [check](cargo run -p loom-walk -- loom_render_deps)
 

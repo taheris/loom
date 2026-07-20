@@ -329,12 +329,14 @@ contract and imports no internal crate. `loom-protocol`, `loom-llm`, and
 `loom-templates` builds on `loom-events` and `loom-protocol`. They do not import
 runtime orchestration.
 
-`loom-render` consumes events. `loom-agent` consumes events, LLM primitives,
-and materialized skills; `loom-direct-runner` composes agent tools with the LLM
-conversation. `loom-tune` consumes events and skills. `loom-gate` consumes
-events and protocol values. `loom-workflow` is the orchestration top and may
-compose the internal crates. Runtime crates do not depend on `loom-test-support`
-or `loom-walk`.
+`loom-render`'s dependency direction is owned by
+[events.md § Crate Boundaries](events.md#crate-boundaries). `loom-agent`
+consumes events, LLM primitives, and materialized skills;
+`loom-direct-runner` composes agent tools with the LLM conversation.
+`loom-tune` consumes events and skills. `loom-gate` consumes events and
+protocol values. `loom-workflow` is the orchestration top and may compose the
+internal crates. Runtime crates do not depend on `loom-test-support` or
+`loom-walk`.
 
 ### Workspace Dependencies
 
