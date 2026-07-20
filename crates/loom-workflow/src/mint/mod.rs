@@ -140,6 +140,7 @@ pub enum BatchOutcome {
         bead_id: BeadId,
         lead_spec: SpecLabel,
         findings_count: usize,
+        status: MaterializedStatus,
     },
     /// Tree planning selected an actionable batch, but materialization is
     /// deferred until a tree work epic exists.
@@ -201,6 +202,25 @@ pub enum BatchOutcome {
         fingerprint: String,
         message: String,
     },
+}
+
+/// Beads status applied when a finding batch is materialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterializedStatus {
+    Open,
+    Blocked,
+    Deferred,
+}
+
+impl MaterializedStatus {
+    #[must_use]
+    pub const fn as_wire(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Blocked => "blocked",
+            Self::Deferred => "deferred",
+        }
+    }
 }
 
 impl BatchOutcome {
@@ -413,14 +433,16 @@ impl MintSummary {
         }
         for outcome in &self.batches {
             match outcome {
-                BatchOutcome::Minted { bead_id, .. } => events.push(DriverEventPayload::new(
+                BatchOutcome::Minted {
+                    bead_id, status, ..
+                } => events.push(DriverEventPayload::new(
                     DriverKind::BdStateTransition,
                     format!("Beads item {bead_id} created for routed findings"),
                     serde_json::json!({
                         "source_route": "mint-finding",
                         "bead_id": bead_id,
                         "mutation": "create",
-                        "status": "open",
+                        "status": status.as_wire(),
                     }),
                 )),
                 BatchOutcome::PromotedDeferred { bead_id, .. } => {
@@ -568,6 +590,7 @@ impl MintSummary {
                     bead_id,
                     lead_spec,
                     findings_count,
+                    ..
                 } => {
                     out.push_str(&format!(
                         "  minted {fingerprint} → {bead_id} (spec:{lead_spec}, {findings_count} findings)\n",
@@ -1018,6 +1041,7 @@ async fn merge_or_create_deferred_batch<R: CommandRunner>(
                     bead_id: existing.id.clone(),
                     lead_spec: lead_spec.clone(),
                     findings_count: findings.len(),
+                    status: MaterializedStatus::Deferred,
                 },
                 Err(err) => BatchOutcome::Errored {
                     fingerprint,
@@ -1081,28 +1105,19 @@ async fn create_molecule_batch<R: CommandRunner>(
             ),
         };
     }
-    let parked_status = match state {
-        MoleculeBatchState::Deferred => Some("deferred"),
+    let status = match state {
+        MoleculeBatchState::Ready => MaterializedStatus::Open,
+        MoleculeBatchState::Deferred => MaterializedStatus::Deferred,
         MoleculeBatchState::Clarify | MoleculeBatchState::BlockedClarifyWithoutOptions => {
-            Some("blocked")
+            MaterializedStatus::Blocked
         }
-        MoleculeBatchState::Ready => None,
     };
-    if let Some(status) = parked_status
-        && let Err(err) = bd
-            .update(
-                &bead_id,
-                UpdateOpts {
-                    status: Some(status.to_string()),
-                    ..UpdateOpts::default()
-                },
-            )
-            .await
-    {
+    if let Err(err) = apply_materialized_status(bd, &bead_id, status).await {
         return BatchOutcome::Errored {
             fingerprint,
             message: format!(
-                "created routed bead `{bead_id}` but failed to set status `{status}`: {err}",
+                "created routed bead `{bead_id}` but failed to set status `{}`: {err}",
+                status.as_wire(),
             ),
         };
     }
@@ -1111,6 +1126,7 @@ async fn create_molecule_batch<R: CommandRunner>(
         bead_id,
         lead_spec: lead_spec.clone(),
         findings_count: findings.len(),
+        status,
     }
 }
 
@@ -2184,7 +2200,7 @@ async fn create_batch_under_parent<R: CommandRunner>(
     let description = batch_description(findings, &fingerprint, routing);
     let notes = matches!(routing, FindingRouting::BlockedClarifyWithoutOptions)
         .then(|| CLARIFY_WITHOUT_OPTIONS_CAUSE.to_string());
-    match bd
+    let bead_id = match bd
         .create(CreateOpts {
             title,
             description,
@@ -2196,20 +2212,55 @@ async fn create_batch_under_parent<R: CommandRunner>(
         })
         .await
     {
-        Ok(bead_id) => BatchOutcome::Minted {
-            fingerprint,
-            bead_id,
-            lead_spec: lead_spec.clone(),
-            findings_count: findings.len(),
-        },
+        Ok(bead_id) => bead_id,
         Err(err) => {
             let err = MintError::from(err);
-            BatchOutcome::Errored {
+            return BatchOutcome::Errored {
                 fingerprint,
                 message: mint_error_message(&err),
-            }
+            };
         }
+    };
+    let status = match routing {
+        FindingRouting::Fixup => MaterializedStatus::Open,
+        FindingRouting::Clarify | FindingRouting::BlockedClarifyWithoutOptions => {
+            MaterializedStatus::Blocked
+        }
+    };
+    if let Err(err) = apply_materialized_status(bd, &bead_id, status).await {
+        return BatchOutcome::Errored {
+            fingerprint,
+            message: format!(
+                "created routed bead `{bead_id}` but failed to set status `{}`: {err}",
+                status.as_wire(),
+            ),
+        };
     }
+    BatchOutcome::Minted {
+        fingerprint,
+        bead_id,
+        lead_spec: lead_spec.clone(),
+        findings_count: findings.len(),
+        status,
+    }
+}
+
+async fn apply_materialized_status<R: CommandRunner>(
+    bd: &BdClient<R>,
+    bead: &BeadId,
+    status: MaterializedStatus,
+) -> Result<(), loom_driver::bd::BdError> {
+    if status == MaterializedStatus::Open {
+        return Ok(());
+    }
+    bd.update(
+        bead,
+        UpdateOpts {
+            status: Some(status.as_wire().to_string()),
+            ..UpdateOpts::default()
+        },
+    )
+    .await
 }
 
 /// Caches bonded-spec resolution so two findings naming the same missing
@@ -4015,8 +4066,10 @@ reason = "false positive"
             ok_stdout("lm-tree.1\n"),
             ok_stdout(""),
             ok_stdout(""),
+            ok_stdout(""),
             ok_stdout("lm-tree.2\n"),
             ok_stdout("lm-tree.3\n"),
+            ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
@@ -4182,6 +4235,37 @@ reason = "false positive"
             }),
             "blocked-clarify child carries loom:blocked only: {task_creates:?}",
         );
+    }
+
+    #[tokio::test]
+    async fn mint_tree_clarify_children_are_blocked_pending_inbox() {
+        let run = run_mixed_tree_materialization().await;
+        let parked = run
+            .calls
+            .iter()
+            .filter(|call| {
+                call.first().map(String::as_str) == Some("update")
+                    && call.windows(2).any(|pair| {
+                        pair[0] == "--status" && pair[1] == MaterializedStatus::Blocked.as_wire()
+                    })
+            })
+            .map(|call| call[1].as_str())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(
+            parked,
+            HashSet::from(["lm-tree.1", "lm-tree.3"]),
+            "clarify and blocked-clarify children must be visibly parked: {:?}",
+            run.calls,
+        );
+        let statuses = run
+            .summary
+            .routing_events()
+            .into_iter()
+            .filter(|event| event.driver_kind == DriverKind::BdStateTransition)
+            .filter_map(|event| event.payload["status"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert_eq!(statuses, ["blocked", "open", "blocked"]);
     }
 
     #[tokio::test]
@@ -4425,6 +4509,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-harn", "harness")),
             ok_stdout("lm-clarify.1\n"),
+            ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
@@ -4444,6 +4529,16 @@ reason = "false positive"
         assert!(
             labels.contains(&"loom:clarify"),
             "invariant-clash must carry loom:clarify: {labels:?}",
+        );
+        assert!(
+            calls.iter().any(|call| call
+                == &[
+                    "update".to_string(),
+                    "lm-clarify.1".to_string(),
+                    "--status".to_string(),
+                    "blocked".to_string(),
+                ]),
+            "clarify child must be parked pending inbox: {calls:?}",
         );
 
         let description = flag_arg(create, "--description");
@@ -4473,6 +4568,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-harn", "harness")),
             ok_stdout("lm-blocked.1\n"),
+            ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
@@ -4536,6 +4632,16 @@ reason = "false positive"
             flag_arg(create, "--notes"),
             CLARIFY_WITHOUT_OPTIONS_CAUSE,
             "mint downgrade must leave a compact Beads note breadcrumb",
+        );
+        assert!(
+            calls.iter().any(|call| call
+                == &[
+                    "update".to_string(),
+                    "lm-blocked.1".to_string(),
+                    "--status".to_string(),
+                    "blocked".to_string(),
+                ]),
+            "blocked fallback must be parked pending inbox: {calls:?}",
         );
     }
 

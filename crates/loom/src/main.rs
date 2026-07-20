@@ -4509,6 +4509,7 @@ fn mint_batch_payload(outcome: &BatchOutcome) -> serde_json::Value {
             bead_id,
             lead_spec,
             findings_count,
+            status,
         } => serde_json::json!({
             "stage": "mint",
             "action": outcome.kind(),
@@ -4516,6 +4517,7 @@ fn mint_batch_payload(outcome: &BatchOutcome) -> serde_json::Value {
             "bead_id": bead_id,
             "lead_spec": lead_spec,
             "findings_count": findings_count,
+            "status": status.as_wire(),
         }),
         BatchOutcome::Planned {
             fingerprint,

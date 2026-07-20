@@ -349,6 +349,10 @@ and conservative fall-through for unowned queries.
   `loom:blocked` with cause `clarify-without-options` — never a
   stranded clarify bead the chat-drafter cannot resolve
   [test](mint_clarify_bound_finding_without_options_falls_back_to_blocked)
+- Tree-minted `loom:clarify` beads and their `loom:blocked` malformed-options
+  fallbacks have `status=blocked` while awaiting `loom inbox`, so Beads visibly
+  marks them as parked and excludes them from `bd ready`
+  [test](mint_tree_clarify_children_are_blocked_pending_inbox)
 - Fix-up batches enumerate every finding in the bead description
   (one item per finding: finding id, hash, token, target's canonical
   form, evidence excerpt); the title is stable across runs for the
