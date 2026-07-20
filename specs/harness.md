@@ -1548,46 +1548,13 @@ pub enum NoGateReason {
 }
 ```
 
-**`GateSuccess`** — the bulletproof variant. Construction asserts
-matching typed gate evidence for the final pushable state *plus* on-
-disk evidence that the relevant gate child processes actually ran.
-Field shapes are non-`Option`: absence of any value is a failure path
-that constructs `GateFail` instead. The constructor lives in
-`loom-gate` (alongside `MarkerProof::from_gate_success`, the mint
-authority that consumes a sealed `GateSuccess`); the `_private: ()`
-field is the structural seal that prevents struct-literal construction
-outside the crate, so `GateSuccess::new` is the sole minting path
-regardless of its `pub` visibility.
-
-```rust
-pub struct GateSuccess {
-    pub verified: VerifiedScope,        // deterministic success for exact range
-    pub reviewed: ReviewedScope,        // review success for same exact range
-    pub pre_push: PrePushCoverage,      // hook ids / entries proven passed
-    pub tree_oid: GitOid,               // current clean HEAD tree
-    pub push_range: ResolvedDiffRange,  // origin/<branch>..HEAD at push time
-    pub gate_log_paths: Vec<PathBuf>,   // evidence files exist and contain end events
-    _private: (),                       // structural seal — no struct-literal path
-}
-
-impl GateSuccess {
-    /// Asserts: deterministic and review evidence refer to the same
-    /// resolved range and tree; pre-push coverage includes every hook
-    /// the marker may authorize; relevant config digests match;
-    /// gate_log_paths exist and contain successful GateRun end events;
-    /// the workspace is porcelain-clean at the tree_oid. Any failure
-    /// returns Err(GateFail::new(...)).
-    pub fn new(...) -> Result<Self, GateFail> { ... }
-}
-```
-
-**Gate evidence types.** `GateRun` is the typed record for any gate
-invocation (success, failure, skip, or abort). `VerifiedScope` is a
-sealed deterministic-success value derived only from a successful
-`GateRun`. `ReviewedScope` is a sealed review-success value derived
-only from a successful review run. These types are architecture-bearing:
-review and marker minting consume typed evidence, never a scalar such
-as `--verify-exit 0`.
+**`GateSuccess`** — the gate-owned push-authorizing receipt carried by
+the harness-owned `GateOutcome::Success` variant. Its evidence types,
+sealed shape, and sole construction contract are defined once in
+[gate.md § Gate success receipt](gate.md#gate-success-receipt). Harness
+workflow code collects the gate evidence and can produce a clean
+`LoopOutcome` only by passing that evidence through the gate-owned
+constructor; it does not define a second receipt contract.
 
 **`GateFail`** — carries the failure reason explicitly so CLI/log
 summaries and the next outer-loop iteration consume it directly,
@@ -3069,14 +3036,6 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       is a pure function of the `GateOutcome` variant
       (`Success` → 0, `Fail` → non-zero, `NoGate` → 0)
   [test](loom_loop_exit_code_is_function_of_gate_outcome_variant)
-- `GateSuccess` is constructible only by the gate-invocation code
-      (`pub(crate)` constructor, no struct-literal path) and only from
-      matching typed evidence: successful `VerifiedScope`, successful
-      `ReviewedScope`, pre-push hook coverage for the actual push range,
-      matching tree/config/range fingerprints, and existing gate logs
-      containing successful `GateRun` end events; any condition failing
-      returns `GateFail` instead
-  [test](gate_success_constructor_requires_typed_scope_and_coverage_evidence)
 - Every `loom loop` returning `LoopOutcome { gate: Success(r), .. }`
       references non-empty gate JSONL logs in `r.gate_log_paths`; each
       log contains a `gate_run_start` and matching successful
@@ -3172,15 +3131,11 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       cleanly on push success, a fully-stuck molecule, or counter
       exhaustion
   [test](continuous_outer_loop_promotes_deferred_remediation_then_exits_on_stall)
-- Push gate is a typed-evidence AND: no unresolved blocked/clarify/
-      deferred/infra molecule state, successful deterministic pre-push
-      `GateRun`/`VerifiedScope`, successful `ReviewedScope`, no
-      terminal integrity finding, and marker coverage for the hooks the
-      push will encounter. Failure on any input refuses the push. The
-      verdict is encoded as `GateOutcome` (`Success` when all inputs
-      hold, `Fail { reason }` otherwise); the constructor for
-      `GateSuccess` asserts each condition structurally — see
-      [Loop Outcome Types](#loop-outcome-types)
+- Push gate supplies the completed molecule state and actual push-range
+      gate runs to the gate-owned `GateSuccess` constructor. Receipt
+      rejection refuses the push and becomes `GateOutcome::Fail`; the
+      accepted evidence and matching rules are defined only in
+      [gate.md § Gate success receipt](gate.md#gate-success-receipt)
   [test](push_gate_evaluates_typed_evidence_and_marker_coverage)
 - On a **clean** push gate the `MarkerProof` is minted to
       `.loom/marker.json` **immediately before** `git push`, inside
@@ -4005,61 +3960,19 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
    state as a consequence of an interactive session. See [Verdict Gate §
    Interactive vs worker sessions](#verdict-gate) for the full
    no-reconciliation contract.
-9. **Push gate — typed-evidence AND, structurally enforced.** Push
-   fires only when every required input below holds; failure on any one
-   refuses push. The driver computes each input explicitly — no implicit
-   short-circuit, no `&&` chaining that could mask a failure. The push
-   verdict is encoded in the typed [`GateOutcome`](#loop-outcome-types)
-   variant: `Success(GateSuccess)` when all inputs hold,
-   `Fail(GateFail { reason, .. })` on any failure. **`GateSuccess` is
-   constructible only inside the gate-invocation code and only when
-   every condition below is satisfied** — the constructor
-   (`pub(crate)`, no struct-literal path) asserts each condition before
-   returning. There is no code path that yields `GateSuccess` without
-   the gate actually firing clean. Combined with FR1's worker-queue
-   filter (epics never reach worker dispatch) and the existing close-
-   on-Clean walk, this composes "epic close is reachable only via a
-   `GateSuccess`" as a structural invariant.
-
-   1. **Molecule state.** Every bead in the molecule has reached
-      `[done]` — no `loom:blocked`, `loom:clarify`, `loom:deferred`, or
-      `loom:infra` outstanding.
-   2. **Origin-synchronized push range.** The driver has fetched origin,
-      rebased local integration commits if needed, and resolved the
-      actual range `origin/<integration-branch>..HEAD` that `git push`
-      will update.
-   3. **Deterministic pre-push evidence.** The actual prek pre-push
-      chain has passed for that range. The resulting `GateRun` /
-      `VerifiedScope` includes the project pre-push hooks, the nested
-      `loom gate verify --diff <range>` hook, and affected `[check]` /
-      `[test]` annotations per [gate.md](gate.md). Dispatch errors
-      count as fails, not skips.
-   4. **Review evidence.** `loom gate review --diff <actual-push-range>`
-      has produced a successful `ReviewedScope` for the same resolved
-      range/tree as the deterministic evidence. Any non-complete marker
-      refuses the push and routes per marker semantics.
-   5. **Integrity findings.** Zero push-gate-terminal integrity findings
-      across the actual push range, where the finding set is defined by
-      [gate.md § Integrity gate](gate.md#integrity-gate). Integrity
-      findings are recoverable within the molecule's iteration cap:
-      while below cap, the verdict gate normalizes findings to typed
-      `Finding`s, merges them into deferred remediation batches,
-      refuses the push, increments the counter, promotes them with
-      `loom gate mint -m`, and re-enters the loop. On cap exhaustion,
-      the gate falls back to terminal escalation — `loom:clarify` on
-      the molecule's epic with the integrity gate's auto-generated
-      `## Options — …` block.
-   6. **Marker coverage.** The marker to be minted can prove same clean
-      tree, same `.pre-commit-config.yaml` digest, same resolved push
-      range, pre-push hook coverage, and matching `VerifiedScope` /
-      `ReviewedScope` so the subsequent pre-push wrapper may
-      short-circuit only covered hooks.
-
-   **Production wiring requirement.** The push-gate verdict MUST
-   consume typed `GateRun` / `VerifiedScope` / `ReviewedScope` evidence,
-   marker coverage, and integrity findings — not just bead labels or
-   scalar exit codes. Any path that pushes without evaluating all inputs
-   is a bug.
+9. **Push gate — consume the gate-owned receipt.** Harness owns the
+   molecule-completion orchestration: require resolved molecule state,
+   synchronize the integration branch with origin, resolve the actual
+   push range, execute deterministic pre-push verification followed by
+   review, and route integrity findings through molecule remediation.
+   It then supplies the resulting handoff evidence to `GateSuccess::new`.
+   The receipt's evidence set, matching rules, structural seal, and
+   rejection conditions are owned only by
+   [gate.md § Gate success receipt](gate.md#gate-success-receipt).
+   A rejected receipt becomes `GateOutcome::Fail` and refuses the push;
+   an accepted receipt is the only path to marker minting and the clean
+   push branch. Together with FR1's epic worker filter, this keeps a
+   clean epic close unreachable without a gate-authorized receipt.
 
    Per FR1, auto-iteration on promoted deferred remediation beads is
    owned by `loom loop`'s outer loop, bounded by `[loop]

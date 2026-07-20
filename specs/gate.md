@@ -1,17 +1,6 @@
 # Loom Gate
 
-The quality gate. Decides whether code is good enough to ship.
-
-The umbrella concept covering the gate stages (plan / worker self-
-check / per-bead integration / stabilization / push / standing safety
-net) and one command tree (`loom gate <subcommand>`).
-`loom gate verify` runs deterministic verifiers; `loom gate review`
-runs the LLM rubric (inspection-only); `loom gate mint` materializes
-molecule-deferred or tree-sweep findings into bd remediation work —
-the only subcommand that mutates bd state. Distinct from the *Verdict Gate* execution layer
-in [harness.md](harness.md) — that section owns the per-bead
-mechanics that wrap the gate; this spec owns the rubric, the
-invariants, the lanes, and the stages.
+The quality gate decides whether code is good enough to ship.
 
 ## Problem Statement
 
@@ -33,6 +22,870 @@ dominant failure modes.
 
 This spec gives one place one responsibility: catch divergences
 before they ship.
+
+## Architecture
+
+`loom gate` is one command tree spanning deterministic verification,
+LLM review, finding minting, and marker validation across plan, worker,
+integration, stabilization, push, and standing stages. This spec owns
+the gate rubric, invariants, stages, typed success receipt, and trust
+marker; [harness.md § Verdict Gate](harness.md#verdict-gate) owns the
+worker and per-bead execution mechanics that consume those results.
+Only `loom gate mint` mutates bd state; verification and review remain
+inspection paths.
+
+## Success Criteria
+
+The gate's spec defines the verifier-annotation taxonomy, so these
+criteria self-host — they use the same `[check]` / `[test]` /
+`[system]` / `[judge]` annotations the rest of the spec defines. The
+integrity gate's self-referential tests (under *Integrity gate — four
+directions* below) pin that this self-hosting actually resolves: a
+`[check]` annotation in `specs/gate.md` whose first token is on
+PATH, and a `[judge]` annotation pointing at the gate's own
+`src/integrity.rs`, both pass forward resolution.
+
+### Annotation parsing
+
+- Parser walks every `.md` file in the specs directory in lexical order
+  [test](parse_walks_all_md_files_in_lex_order)
+- Parser skips non-`.md` files in the specs directory
+  [test](parse_skips_non_markdown_files_in_specs_dir)
+- Parser aggregates criteria across multiple spec files into a single
+  `ParsedSpecs`
+  [test](parse_aggregates_criteria_across_files)
+- Parser returns a typed read-directory error when the specs directory
+  is missing rather than producing an empty result
+  [test](parse_returns_read_dir_error_for_missing_directory)
+
+### Integrity gate — four directions
+
+Directions 1–3 (forward resolution, stub-pointing, atomic acceptance)
+are covered by the criteria below. Direction 4 (inputs-protocol
+honesty) is covered by the `inputs-protocol-error` criteria under
+*Verifier inputs* below — opt-in resolution, opted-in query failure,
+and conservative fall-through for unowned queries.
+
+- **Forward — baseline.** A spec with all valid annotations yields no
+  findings
+  [test](parse_then_check_with_all_valid_annotations_yields_no_findings)
+- **Forward — broken targets per tier.** Each tier flags its own
+  broken-target shape: `[check]` first token absent on PATH, `[test]`
+  path with no matching function, `[judge]` file absent
+  [test](fixture_with_broken_target_per_tier_flags_each_one)
+- **Forward — judge `#fn` selector.** A `[judge](script#fn)` target
+  resolves when the leading script path exists; the `#fn` suffix is
+  stripped before the on-disk check (per the *Verifier inputs* table's
+  `[judge](script#fn)` row). `::fn` is accepted during migration but
+  `#fn` is canonical because the URL-fragment shape is what markdown
+  renderers click through to
+  [test](forward_judge_accepts_script_with_hash_fn_selector)
+- **Forward — judge spec-relative resolution.** Path resolution joins
+  the relative target against the annotation's spec-file directory, not
+  the repo root; absolute paths are honoured as-is. This matches the
+  markdown renderer's relative-link resolution so a clickable
+  `[judge](../tests/judges/x.sh#fn)` in `specs/foo.md` resolves to
+  `tests/judges/x.sh` on disk
+  [test](forward_judge_resolves_relative_to_spec_dir)
+- **Forward — judge legacy `::fn` selector.** A `[judge](script::fn)`
+  target still resolves during the `::` → `#` migration; the `::fn`
+  suffix is stripped before the on-disk check
+  [test](forward_judge_accepts_script_with_fn_selector)
+- **Forward — system `::attr` selector.** A `[system](path::attr)`
+  target (e.g. `[system](tests/unit.nix::eval-smoke)`)
+  resolves when the leading path exists; the `::attr` suffix is
+  stripped before the PATH / file check, matching the `[judge]` shape
+  [test](forward_system_accepts_path_with_attr_selector)
+- **Forward — test-tier missing function.** A `[test](cargo test …)`
+  annotation whose test name does not match any function in the
+  workspace is flagged
+  [test](check_flags_cargo_test_annotation_with_missing_test_name)
+- **Stub-pointing.** A `[test]` annotation whose body invokes the
+  `_pending_stub` sigil is flagged as `StubTestFunction`
+  [test](stub_pointing_test_annotation_flags_via_workspace_scanner)
+- **Atomic-acceptance.** Two annotations on one criterion flags
+  `MultipleAnnotations`
+  [test](two_annotations_on_one_criterion_flags_atomic_acceptance)
+- **End-to-end.** A specs directory containing both broken-target and
+  multiple-annotation fixtures surfaces findings from both directions
+  in one pass
+  [test](end_to_end_specs_dir_check_combines_both_directions)
+- **Verify lane — terminal.** Integrity findings exit non-zero from
+  `loom gate check` and `loom gate verify` runs (the integrity gate is
+  itself a `[check]`-tier verifier, so it fails the same way the
+  per-annotation `[check]` dispatch does)
+  [test](gate_check_fails_on_integrity_finding_for_unresolved_annotation)
+- **Self-hosting — check tier.** The integrity gate accepts a
+  `[check]` annotation in `specs/gate.md` whose first token
+  resolves on PATH (closes the bootstrap concern: the spec that defines
+  the taxonomy can carry its own annotations)
+  [test](self_referential_check_annotation_resolves_against_integrity_gate_implementation)
+- **Self-hosting — judge tier.** A `[judge]` annotation in
+  `specs/gate.md` pointing at the integrity gate's own
+  `src/integrity.rs` resolves
+  [test](self_referential_judge_annotation_resolves_against_integrity_source_file)
+
+### Integrity gate — pending modifier
+
+- **Parser recognises `?` modifier — all tiers.** `[check?]`,
+  `[test?]`, `[system?]`, `[judge?]` all parse; the parser populates
+  a `pending: bool` on the resulting annotation
+  [test](parse_recognises_pending_modifier_for_all_four_tiers)
+- **Pending — unresolved target silently passes.**
+  `[check?](missing-cmd)`, `[test?](missing::fn)`,
+  `[system?](missing-system-cmd)`, `[judge?](missing/path.md)` all
+  clear forward resolution with no finding
+  [test](pending_marked_unresolved_target_yields_no_finding)
+- **Pending — resolved target emits `UnneededPendingMarker`.** A
+  `[check?](true)` (where `true` is on PATH) flags the stale marker,
+  naming spec + line + target
+  [test](pending_marked_resolved_target_yields_unneeded_pending_marker)
+- **Pending `[test?]` — stub body silently passes.** The modifier
+  suppresses `StubTestFunction` the same way it suppresses
+  `UnresolvedAnnotation`
+  [test](pending_marked_stub_test_body_yields_no_finding)
+- **Pending `[test?]` — non-stub body emits `UnneededPendingMarker`.**
+  Co-incidence with target resolution forces the implementing diff to
+  drop `?` at the same commit that lands the real body
+  [test](pending_marked_non_stub_test_body_yields_unneeded_pending_marker)
+- **Atomic-acceptance — `?` does not suppress.** Two annotations on
+  one criterion still flag `MultipleAnnotations`, whether either,
+  both, or neither carries `?`
+  [test](pending_modifier_does_not_suppress_atomic_acceptance_finding)
+- **`UnneededPendingMarker` — terminal at push gate.** Surfaces
+  alongside `UnresolvedAnnotation` and `StubTestFunction` per the
+  *Findings and Minting* emit-shape table
+  [test](unneeded_pending_marker_is_terminal_at_push_gate)
+- **`unneeded-pending-marker` — auto-generated options.** `mint`
+  emits a `## Options — …` block whose Option 1 is "drop the `?`",
+  per *Integrity gate* above
+  [test](mint_emits_drop_marker_option_for_unneeded_pending_marker)
+
+### Standing-safety-net bonding
+
+- `loom gate mint --tree` resolves each finding's bonded specs via typed
+  `bonds` / target data, ensures exactly one spec epic exists for each
+  bonded indexed spec (per [harness.md — Spec and Work Epic
+  Lifecycle](harness.md#spec-and-work-epic-lifecycle)), auto-creates
+  and immediately closes missing metadata-only spec epics, and refuses
+  duplicate spec epics before creating remediation work
+  [test](mint_tree_scope_resolves_bonded_spec_epics_without_per_spec_work_epics)
+- `loom gate mint --tree` creates exactly one remediation work epic for
+  all actionable tree-scope batches in a run, parents every fix-up,
+  blocked-clarify, and clarify bead under it, applies `loom:active` to
+  that epic, clears `loom:active` from any previous work epic, names the
+  active epic id and `loom loop` command in the summary, and writes no
+  current-spec or pointer-table state
+  [test](mint_tree_scope_mints_single_active_work_epic_for_all_actionable_batches)
+- `loom gate mint --tree` creates no remediation work epic and leaves
+  `loom:active` unchanged when no unsuppressed actionable finding remains
+  after suppression, dedup, and structural validation
+  [test](mint_tree_scope_without_actionable_findings_creates_no_epic)
+- `loom gate audit --tree` is inspection-only: it walks the same
+  rubric `mint --tree` walks and prints findings to stdout, but
+  produces zero bd writes
+  [test](audit_tree_scope_makes_no_bd_writes)
+
+### Findings and Minting
+
+- `loom gate mint` refuses to run when `LOOM_INSIDE=1`, exiting
+  non-zero with a deterministic error message and producing no bd
+  writes
+  [test](mint_refuses_when_loom_inside_env_is_set)
+- The walk emits `LOOM_FINDING: <json>` records on stdout, one
+  JSON object per finding, streamed as findings are identified
+  (not batched at end-of-walk). The JSON shape is `{"token": ...,
+  "route": "blocking|deferred|clarify", "bonds": [...], "target":
+  {"kind": ..., ...}, "evidence": ...}`
+  [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
+- Long evidence may include raw line breaks inside JSON strings; the
+  driver normalizes them before typed validation and preserves the
+  resulting evidence line breaks
+  [test](raw_multiline_evidence_is_normalized_before_strict_validation)
+- The review walk terminates with exactly one of `LOOM_COMPLETE`,
+  `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, or `LOOM_BLOCKED`;
+  `LOOM_BLOCKED` includes a reason explaining why no options can be safely
+  surfaced, review clarifications are `route="clarify"` findings with Options
+  in `evidence`, and a walk that emits `LOOM_FINDING:` records without a
+  terminal marker fails the mint invocation with non-zero exit
+  [test](mint_walk_without_terminal_marker_fails_run)
+- A walk that terminates with `LOOM_RETRY` (review itself could not
+  run for environmental reasons) routes to recovery cause
+  `agent-retry` per [harness.md § Verdict Gate](harness.md#verdict-gate);
+  consumes one `[loop] max_retries` slot; exhaustion escalates to
+  `loom:blocked` with cause `retry-exhausted`
+  [test](retry_marker_routes_to_agent_retry_recovery_cause)
+- `LOOM_CONCERN:` payload parses as JSON `{"summary": "<non-empty
+  string>"}` via the same `serde_json` pipeline that consumes
+  `LOOM_FINDING:` records; the parsed summary becomes the verdict-log
+  entry for the walk
+  [test](concern_payload_parses_as_json_with_summary_field)
+- Parse failures on the `LOOM_CONCERN:` payload — invalid JSON, missing
+  `summary` field, empty `summary` string — surface as
+  `RecoveryCause::BadWalk(BadWalk::Concern { payload })` carrying the
+  literal post-marker text so the recovery prompt can quote it back
+  to the agent
+  [test](concern_malformed_payload_routes_to_bad_walk_concern_with_literal_payload)
+- A walk that emits `LOOM_CONCERN:` with zero preceding `LOOM_FINDING:`
+  records surfaces as `RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings
+  { summary })` — concern claimed without enumeration
+  [test](concern_without_streamed_findings_routes_to_badwalk_concern_without_findings)
+- A walk that streams one or more `LOOM_FINDING:` records and terminates
+  with `LOOM_COMPLETE` surfaces as `RecoveryCause::BadWalk(BadWalk::
+  FindingsWithoutConcern { finding_count })`
+  [test](findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
+- The wire-format anti-drift verifier (a `[check]`-tier audit) scans
+  every file under `crates/loom-templates/templates/` for the literal
+  substrings `LOOM_CONCERN:` and `LOOM_FINDING:` and fails if they
+  appear in any file other than `partial/findings_walk.md`. Bare-prose
+  mentions without the colon (e.g. *"the `LOOM_CONCERN` marker"*) are
+  unaffected
+  [check](cargo run -p loom-walk -- template_wire_format_restatement)
+- The anti-drift verifier accepts the canonical layout: with
+  `LOOM_FINDING:` / `LOOM_CONCERN:` substrings present only in
+  `partial/findings_walk.md`, the walk reports zero violations
+  [test](anti_drift_verifier_passes_canonical_partial_layout)
+- The anti-drift verifier fails a fixture where a template restates
+  the wire-format outside the canonical partial — e.g. injecting
+  `LOOM_FINDING:` into `review.md` directly — naming the offending
+  file and line
+  [test](anti_drift_verifier_fails_fixture_with_restated_wire_format)
+- The driver parses `LOOM_FINDING:` JSON payloads via `serde_json`
+  into typed `Finding` records; the `target` field deserializes as
+  an internally-tagged enum whose variant is selected by `kind`,
+  validated against the `token`'s expected variant
+  [test](mint_parses_loom_finding_json_into_typed_record_with_tagged_target)
+- A malformed `LOOM_FINDING:` record — invalid JSON after raw string
+  line-break normalization, unknown token, unknown spec, target variant
+  mismatching token, or unresolved target content — fails the mint
+  invocation with a typed parse error naming the offending record's
+  start line; no silent skip
+  [test](mint_malformed_loom_finding_fails_run_with_typed_error)
+- The driver computes a versioned lower-kebab finding id from each
+  validated typed finding; evidence text, options prose, line numbers,
+  batch size, sibling batch membership, current bd parent, and `bonds`
+  ordering do not affect the id
+  [test](mint_computes_versioned_finding_id_excluding_volatile_context)
+- The driver computes a compact finding hash from the finding id and
+  refuses on hash collision instead of merging two different ids under
+  one `finding:<hash>` label
+  [test](mint_refuses_finding_hash_collision)
+- `StyleRule` targets include a concrete subject in addition to
+  `rule_id`; a rule-id-only style target is rejected as too broad for
+  dedup or suppression
+  [test](style_rule_finding_requires_concrete_subject)
+- Mint dedups by `finding:<hash>` labels across live statuses; one
+  live result skips that finding, zero live results allows minting,
+  and more than one live result refuses the mint run as a structural
+  violation
+  [test](mint_dedups_per_finding_hash_label_across_live_statuses)
+- Closed beads carrying `finding:<hash>` suppress automatic reminting
+  only within the same owning molecule; closed matches outside the
+  molecule are historical context only and do not suppress newly
+  observed current findings
+  [test](closed_finding_hash_label_suppresses_remint_only_within_same_molecule)
+- A blocked clarify bead carrying `finding:<hash>` dedups the same
+  clarify-route finding while it remains live, so unresolved
+  `loom:clarify` decisions do not remint endlessly
+  [test](blocked_clarify_bead_dedups_same_finding_hash)
+- `[[suppress]]` entries in `loom.toml` require `reason` and exactly
+  one of `id` (canonical finding id) or `hash` (compact finding hash);
+  matching rubric-origin findings are reported as suppressed and
+  removed from verdict / mint processing
+  [test](loom_toml_suppress_entries_filter_rubric_findings_by_id_or_hash)
+- Suppressions do not apply to deterministic or integrity findings;
+  matching `[[suppress]]` ids or hashes for those findings are
+  reported as ineffective and the findings still fail / mint normally
+  [test](suppressions_do_not_filter_deterministic_or_integrity_findings)
+- A well-formed `LOOM_CONCERN` walk whose every streamed finding is
+  suppressed exits clean after emitting suppressed-status records;
+  suppression does not forgive malformed stream / terminator pairing
+  [test](all_suppressed_concern_walk_exits_clean_after_shape_validation)
+- Inline code-comment suppressions are unsupported; the gate does not
+  scan source comments for suppression directives
+  [check](cargo run -p loom-walk -- no_inline_suppression_comment_contract)
+- `LOOM_FINDING_STATUS:` driver-emitted JSON lines carry each enriched
+  finding's id, hash, bd label, token, target, and action without
+  requiring the LLM to emit derived identity fields
+  [test](driver_emits_finding_status_json_with_identity_and_action)
+- At `--tree` scope, a live remediation bead whose `finding:<hash>` labels
+  are all absent from the current unsuppressed finding set is reported
+  as a stale candidate, not auto-closed
+  [test](mint_tree_reports_stale_candidates_without_closing)
+- At `--tree` scope, a live batch whose finding labels are partially
+  stale is reported as a partially-stale candidate with current and
+  absent finding ids, not auto-superseded
+  [test](mint_tree_reports_partially_stale_batches_without_superseding)
+- `-m/--molecule` promotion does not report stale candidates because
+  molecule promotion consumes already-recorded deferred findings and
+  cannot prove a missing finding is absent from the whole tree
+  [test](mint_non_tree_scopes_do_not_report_stale_candidates)
+- Each minted batch bead is parented under the scope-selected work epic
+  (the molecule work epic for `-m/--molecule`, or the single standing
+  remediation work epic for `--tree`) and carries one `finding:<hash>`
+  label per contained finding plus one `spec:<X>` label per unique entry
+  across the union of `bonds` over the batch's findings
+  [test](mint_batches_parent_under_scope_selected_work_epic_with_union_spec_labels)
+- The bonding lead is the first element of each finding's `bonds` array
+  after validating unique spec epics for bonded specs. Findings sharing a
+  lead may bundle into the same lead-spec remediation batch, but the lead
+  affects grouping/labels only and does not create a per-spec parent epic
+  for tree-scope minting; finding ids and hashes remain unchanged
+  [test](mint_bonding_lead_groups_findings_without_selecting_tree_parent_epic)
+- For target variants that carry a spec field (currently
+  `Criterion` and `Invariant`), `target.spec` MUST appear in that
+  finding's `bonds`; a finding that violates this is rejected with
+  a typed parse error and the containing mint run is refused
+  [test](mint_rejects_criterion_target_whose_spec_is_not_in_bonds)
+- Clarify-bound findings mint as single-finding beads (one bead
+  per clarify-route finding, not bundled into the spec's remediation
+  batch) carrying `finding:<hash>` and `loom:clarify` labels, with
+  the description embedding the `## Options — …` block extracted from
+  the finding's `evidence` per the *Options Format Contract*
+  [test](mint_clarify_bound_finding_creates_single_bead_with_finding_hash_label_and_options_block)
+- Any clarify-route finding whose `evidence` lacks a well-formed
+  `## Options — <summary>` heading with at least one `### Option
+  <N> — <title>` subsection falls back to a remediation bead carrying
+  `loom:blocked` with cause `clarify-without-options` — never a
+  stranded clarify bead the chat-drafter cannot resolve
+  [test](mint_clarify_bound_finding_without_options_falls_back_to_blocked)
+- Fix-up batches enumerate every finding in the bead description
+  (one item per finding: finding id, hash, token, target's canonical
+  form, evidence excerpt); the title is stable across runs for the
+  same contained finding-hash set
+  [test](mint_batch_description_enumerates_finding_identity_and_title_is_stable)
+- A remediation batch carrying multiple findings exposes worker
+  discretion to fix all and close, fix a subset and split the remainder
+  into sibling remediation beads under the work epic via
+  `bd create --parent=<work-epic-id>` for deferred work, or emit
+  `LOOM_CLARIFY` for no-progress cases; the bead's acceptance criterion
+  is "agent processed the batch", not "every finding individually
+  resolved"
+  [judge](../tests/judges/loom.sh#judge_remediation_batch_acceptance)
+- The per-bead hot path runs deterministic
+  `loom gate verify --diff <pre-integration-head>..HEAD` after
+  integration and does not invoke focused LLM review or `mint` by
+  default
+  [test](exec_per_bead_gate_invokes_post_integration_verify_only)
+- `mint --tree` walks both the deterministic verifiers and the LLM
+  rubric, normalizing findings from either source into the same typed
+  mint flow
+  [test](mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both)
+- Mint is idempotent against partial failure: a crash mid-run leaves
+  successfully-minted findings with their `finding:<hash>` labels; a
+  re-run's per-finding dedup query skips those hashes and retries only
+  the unfinished findings
+  [test](mint_idempotent_after_partial_failure_retries_only_unfinished_findings)
+- `mint --tree` never leaves an open active remediation work epic with
+  zero child beads: if the epic was created but no child bead was
+  created before failure, the driver closes or neutralizes the epic and
+  restores the `loom:active` bookmark to its pre-run state; if at least
+  one child bead was created, the non-empty epic remains open/active and
+  rerun dedups the completed children
+  [test](mint_tree_partial_failure_never_leaves_empty_active_epic)
+- `mint --dry-run` prints proposed bd writes and makes zero bd writes;
+  at `--tree` it still walks the rubric/verifiers, and at
+  `-m/--molecule` it previews deferred-promotion changes
+  [test](mint_dry_run_makes_no_bd_writes)
+- `mint` rejects `--spec`; lead-spec routing comes only from each
+  finding's typed `bonds` and target after multi-spec lead selection
+  [test](mint_rejects_spec_filter)
+- Bare `loom gate mint` prints subcommand help and runs nothing; callers
+  choose `--tree` or `-m/--molecule` explicitly
+  [test](mint_bare_invocation_requires_explicit_scope)
+- The end-of-run summary lists blocking findings, deferred findings
+  merged, deferred beads promoted, ready remediation batches created or
+  updated, clarify findings raised, skipped live finding hashes,
+  suppressed rubric findings, stale candidates, partially-stale
+  candidates, refused structural conflicts, and transient errors, with
+  `LOOM_FINDING_STATUS:` JSON carrying per-finding details
+  [test](mint_end_of_run_summary_reports_finding_lifecycle_outcomes)
+- Push-gate integrity findings recover via deferred remediation until
+  the molecule's iteration counter exhausts: the verdict gate
+  normalizes `UnresolvedAnnotation`, `StubTestFunction`, and
+  `UnneededPendingMarker` into typed `Finding`s, merges them into the
+  molecule's deferred remediation set, promotes them with
+  `loom gate mint -m/--molecule`, refuses the push, increments the
+  counter, and re-enters the loop. On cap exhaustion, the gate falls
+  back to terminal `loom:clarify` on the molecule's epic with one
+  composed auto-generated `## Options — …` block (kind-grouped
+  resolutions per *Integrity gate* above)
+  [test](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
+- The bead-container worker runs the injected exact self-check range
+  (`loom gate verify --diff <bead-base>..HEAD`, or `@{u}..HEAD` only
+  when upstream is that base) before emitting `LOOM_COMPLETE`, reruns it
+  after any later commit or hook-generated change, and performs
+  prompt-level self-review before final marker emit
+  [judge](../tests/judges/loom.sh#judge_loop_preflight_exact_range_and_self_review)
+
+### Gate evidence and marker coverage
+
+- Every `loom gate` invocation that runs work writes a JSONL gate log
+  under `.loom/logs/gate/` and emits `driver_event` records for
+  `gate_run_start`, `gate_run_scope`, per-lane progress, and
+  `gate_run_end`; a start without an end is treated as incomplete
+  evidence, not success
+  [test](gate_invocations_emit_jsonl_lifecycle_events)
+- `DriverKind` is a typed enum with an `Other(String)` fallback; gate
+  lifecycle kinds (`GateRunStart`, `GateRunScope`, `GateRunLane`,
+  `GateRunEnd`, `GateRunSkipped`) serialize through the existing
+  `driver_event.driver_kind` string field rather than new top-level
+  `AgentEvent` variants
+  [test](driver_kind_typed_enum_carries_gate_lifecycle_values)
+- `VerifiedScope` is constructible only from a successful deterministic
+  `GateRun`; `ReviewedScope` is constructible only from a successful
+  review run; `GateSuccess` is constructible only from matching
+  `VerifiedScope`, `ReviewedScope`, pre-push hook coverage, and current
+  tree/config/range fingerprints
+  [test](gate_success_constructor_requires_typed_scope_and_coverage_evidence)
+- `loom gate review --diff <range>` consumes the latest matching
+  `VerifiedScope` for the same resolved content/scope when producing
+  push-eligible evidence; no production gate path passes or accepts
+  `--verify-exit`
+  [test](gate_review_consumes_verified_scope_not_verify_exit_scalar)
+- A driver-minted marker short-circuits a wrapped pre-push hook only
+  when it proves the same tree OID / clean porcelain, same
+  `.pre-commit-config.yaml` digest, same resolved push range, a
+  successful pre-push `GateRun` containing that hook id/entry as
+  passed, and successful `VerifiedScope` + `ReviewedScope` for the
+  same range; otherwise `pre-push-checks` falls through
+  [test](marker_short_circuit_requires_hook_coverage_for_same_tree_config_and_range)
+
+### Wire-format wiring and dead-code excision
+
+The production wiring obligation — every caller that constructs
+`GateInputs` for the review-phase verdict gate must populate
+`streamed_findings` from a real `parse_walk_output` invocation
+rather than leaving it at default — is owned by
+[harness.md § Verdict gate](harness.md#verdict-gate). This
+subsection covers the wire-format-side dead-code excision and the
+ReviewConcern display-vocabulary retirement that the wiring change
+depends on.
+
+- `ReviewError::ConcernWithoutBeadDeltas` is removed from
+  `crates/loom-workflow/src/review/error.rs` and the raise site at
+  `review/runner.rs` is removed in the same diff; no production code
+  path constructs this error variant
+  [test](no_path_constructs_concern_without_bead_deltas_in_production)
+- `parse_review_flag` (the legacy `<token> -- <reason>` whole-stdout
+  hunter) is removed from `crates/loom-workflow/src/review/phase_verdict.rs`;
+  the function and all its callers are deleted
+  [test](parse_review_flag_is_not_defined_or_called_in_production)
+- `decide_concern` no longer parses the terminal `summary` field as a
+  `ReviewConcern` token; the legacy fallback path
+  (`ReviewConcern::parse(summary)`) is removed. An unrecognized
+  summary with at least one streamed finding routes to
+  `RecoveryCause::ReviewConcern { summary, findings }`, not
+  `SwallowedMarker`
+  [test](decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed)
+- The `ReviewConcern` 12-variant enum stays as a display vocabulary
+  for `bd update --notes` and verdict-log human-readable cause
+  labels, but `ReviewConcern::parse` has no production caller. The
+  per-finding render in `PreviousFailure::ReviewConcern` derives the
+  human-readable label from `findings[0].token` (or a "multiple"
+  label when heterogeneous)
+  [test](previous_failure_review_concern_renders_human_label_from_findings_not_summary)
+
+### Wire-format strict validation and max-context preservation
+
+- A `LOOM_FINDING:` record whose JSON payload fails parse after raw
+  string line-break normalization — invalid JSON (most common: trailing
+  backticks from markdown fencing), unknown `token`, target/token
+  variant mismatch, unresolved spec label or anchor — surfaces as
+  `RecoveryCause::BadWalk(BadWalk::MalformedFinding { errors, terminal })`
+  with the well-formed terminal preserved alongside the per-record
+  parse errors
+  [test](backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved)
+- The `LOOM_FINDING:` substring match is case-sensitive and
+  colon-suffixed; bare-prose mentions without the colon do not match
+  [test](loom_finding_substring_match_requires_uppercase_and_colon_suffix)
+- `BadWalk::Concern` carries `{ payload, parsed_findings: Vec<Finding> }`;
+  well-formed findings streamed ahead of a malformed terminal are
+  preserved in `parsed_findings`
+  [test](bad_walk_concern_preserves_well_formed_findings_alongside_malformed_payload)
+- `BadWalk::FindingsWithoutConcern` carries
+  `{ finding_count, findings: Vec<Finding> }`; the parsed findings
+  ride through so the next iteration's prompt and `loom gate mint`
+  can both consume them
+  [test](bad_walk_findings_without_concern_carries_parsed_findings_vec)
+- The `BadWalk::MalformedFinding { errors, terminal }` variant
+  carries every per-record parse error AND the well-formed terminal
+  surface (or a typed `Missing`/`Malformed` variant when the
+  terminal itself failed). Construction without both pieces is a
+  compile error
+  [test](bad_walk_malformed_finding_variant_carries_errors_and_terminal_by_struct_shape)
+
+### Verification surface (matrix + property)
+
+- The review-phase classifier signature consumes a typed `WalkOutput`
+  (with field-private struct + `pub WalkOutput::from_stdout`
+  constructor that runs `parse_walk_output` internally), not raw
+  `&str`. Any production caller passing a `&str` is a compile error,
+  and any caller constructing `WalkOutput` with bogus fields cannot
+  compile because the fields are private at the `loom-protocol`
+  crate boundary
+  [test](classify_review_phase_signature_requires_typed_walk_output)
+- The (stream-shape × terminal-shape) failure matrix is exhaustive:
+  every cell in the 4 × 6 cross-product (S0..S3 stream shapes × six
+  terminal shapes) has a parameterised test asserting the typed
+  outcome variant and the maximum-context invariant
+  [test](walk_output_failure_matrix_routes_every_cell_with_typed_outcome_and_preserves_max_context)
+- Every constructible `Finding` (each `ConcernToken` × canonical
+  `FindingTarget` combination) round-trips byte-equal through
+  `serde_json::to_string` → embed in a `LOOM_FINDING:` record →
+  embed in a synthetic walk output → `parse_walk_output`, with
+  stable finding id and hash
+  [test](every_finding_round_trips_through_wire_format_with_stable_identity)
+- `ConcernToken::CrossSpecClash` round-trips through the wire format
+  with canonical target `Criterion { spec, anchor }` and is exercised
+  by the round-trip property test cell set
+  [test](concern_token_cross_spec_clash_round_trips_with_criterion_target)
+- `ConcernToken::SpecConventionsViolation` round-trips through the
+  wire format with canonical target `Criterion { spec, anchor }` and
+  is exercised by the round-trip property test cell set
+  [test](concern_token_spec_conventions_violation_round_trips_with_criterion_target)
+- `cross-spec-clash` and `spec-conventions-violation` are
+  tree-scope-only tokens: the rubric emits them at `--tree` scope;
+  `--diff` / `--files` scope rejects them. A finding carrying either
+  token parsed at non-tree scope surfaces a typed `FindingParseError`
+  variant naming the scope mismatch, alongside the existing
+  diff-context restriction on `scope-creep` / `scope-shortfall`
+  [test](tree_scope_only_tokens_rejected_at_non_tree_scope)
+
+### `loom-protocol` crate
+
+The Rust contract for the gate's wire format lives in
+`loom-protocol::gate` — a leaf crate carrying the typed `Finding`
+record + closed-set `ConcernToken` enum + `FindingTarget` /
+`TargetKind` / `FindingValidator` / `FindingParseError` + `BadWalk` /
+`TerminalSurface` / `WalkOutput` / `WalkOutputError` / `ExitSignal` +
+the `parse_walk_output` / `WalkOutput::from_stdout` /
+`parse_exit_signal` parsers + the `LOOM_FINDING_PREFIX` constant. Per
+*Canonical contract location*.
+
+- The `loom-protocol` crate exists as a leaf workspace member with
+  the `gate` module carrying every type listed above. The crate's
+  dependencies are limited to `serde`, `serde_json`, `thiserror` /
+  `displaydoc`, `blake3` (finding-hash crate — algorithm is
+  implementer's choice per *Finding id, finding hash, suppression,
+  and dedup*, but the dep set is closed), and `loom-events` (for
+  `SpecLabel`); no transitive
+  dependency on `loom-templates`, `loom-workflow`, or `loom-gate`
+  [test](loom_protocol_crate_has_minimal_leaf_dependency_set)
+- `loom-templates::finding` and `loom-templates::previous_failure` re-
+  export the typed contract from `loom-protocol::gate` via `pub use`
+  so existing callers (including `PreviousFailure::ReviewConcern {
+  findings }`) compile without changes. The original definitions are
+  removed from `loom-templates`
+  [test](loom_templates_re_exports_finding_contract_from_loom_protocol)
+- `loom-workflow::review::finding` (the `WalkOutput` typed product +
+  `parse_walk_output` parser) and `loom-workflow::todo::exit::ExitSignal`
+  / `parse_exit_signal` move to `loom-protocol::gate`. Existing
+  `loom-workflow` imports either remap or re-export
+  [test](loom_workflow_re_exports_walk_output_and_exit_signal_from_loom_protocol)
+- The `WalkOutput` struct's fields are private; `WalkOutput::from_stdout`
+  is `pub` (consumers need to call it) but is the only construction
+  path. The silent-loss failure class — production caller constructs
+  `WalkOutput` with bogus fields, bypassing the typed parse pipeline —
+  is structurally unrepresentable via field-privacy, not via
+  `pub(crate)` constructor scoping
+  [test](walk_output_fields_private_only_constructor_is_from_stdout)
+- The crate's MAJOR version is the wire-format protocol version. A
+  breaking wire change (renamed token, retyped target shape, removed
+  enum variant) requires a major bump. Additive changes (new
+  `ConcernToken` variant, new `FindingTarget` variant, new fields with
+  `#[serde(default)]`) are minor bumps. No `"protocol": <n>` field
+  appears on `LOOM_FINDING:` / `LOOM_CONCERN:` payloads — the typed
+  parse errors give loud structural breakage on version skew
+  [test](loom_protocol_wire_format_does_not_carry_protocol_version_field)
+- The `finding_no_duplicate_definitions` walker continues to enforce
+  one canonical definition of `Finding`, `ConcernToken`,
+  `FindingTarget`, `WalkOutput`, `BadWalk`, and `ExitSignal` across
+  the workspace; the canonical home after extraction is
+  `loom-protocol::gate`
+  [check](cargo run -p loom-walk -- finding_no_duplicate_definitions)
+
+### Production walker wiring
+
+The seam between `loom gate mint --tree`'s CLI arm and the underlying
+walker is the `MintWalker` trait. The tree-sweep CLI arm dispatches
+through the trait so findings reach the mint pipeline from a real walk.
+A tree-sweep arm that constructs an empty finding vector
+unconditionally — bypassing the walker — is a structural defect. The
+`-m/--molecule` arm is different: it promotes already-recorded
+deferred bd findings and does not fabricate a new `Vec<Finding>`.
+
+- A production `MintWalker` implementation exists in
+  `loom-workflow::mint::walk` (alongside the trait). Its `run_rubric`
+  spawns the reviewer agent subprocess against the rendered review
+  prompt and returns the agent's combined stdout; its `run_verifiers`
+  dispatches the deterministic verifier set + the integrity gate
+  forward-resolution check and returns one `VerifierFailure` per failed
+  dispatch outcome. Both methods are used only for `MintScope::Tree`
+  [test](production_mint_walker_exists_and_dispatches_rubric_and_verifiers)
+- `run_gate_mint` in the loom CLI binary dispatches by scope:
+  `--tree` constructs production walker(s) and obtains findings only
+  through the `MintWalker` trait (`run_verifiers` once for the tree,
+  then `run_rubric` per walked spec) before passing collected findings
+  to the minting pipeline. A verifier/rubric source failure records an
+  error in the mint summary and exits non-zero, but does not discard
+  findings already collected from other specs; stale-candidate reporting
+  is suppressed for that incomplete tree walk. `-m/--molecule` calls the
+  deferred-promotion path and never constructs a placeholder empty
+  findings vector
+  [test](run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion)
+- `loom loop`'s per-bead path routes a loop-phase `Success` outcome
+  through exactly one post-integration deterministic gate result; a
+  clean result makes the bead's integration durable (neither clarified
+  nor blocked). The bullet below pins the subprocess shape that the
+  per-bead gate resolves to; deferred remediation beads are not made
+  ready until the molecule stabilization step promotes them
+  [test](loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate)
+- The production per-bead gate implementation spawns exactly one
+  deterministic subprocess against `loom_bin` after integration — argv
+  shape `gate verify --diff <pre-integration-head>..HEAD`. A regression
+  that invokes `gate mint`, passes `--bead` / `--spec`, invokes
+  `--verify-exit`, or starts a focused review session on the per-bead
+  hot path is caught at the production controller
+  [test](exec_per_bead_gate_invokes_post_integration_verify_only)
+
+### Molecule mint summary semantics
+
+- `loom gate mint -m/--molecule <id>` exits 0 when it successfully
+  promotes zero or more deferred remediation beads; the summary lists
+  promoted counts and any reobserved closed findings
+  [test](mint_molecule_exits_zero_on_successful_promotion_summary)
+- `loom gate mint -m/--molecule <id>` exits non-zero when promotion
+  sees a structural conflict (duplicate live finding hashes, missing
+  work epic, or bd write failure), and the summary names the
+  conflicting bead ids or bd error
+  [test](mint_molecule_exits_nonzero_on_structural_or_write_errors)
+
+Loop-side interpretation of these exit codes — retrying transient
+promotion errors or blocking on structural bd state — is owned by
+[harness.md § Functional](harness.md#functional).
+
+### Commands surface — explicit scopes and status
+
+- Bare `loom gate` (no subcommand) prints `loom gate --help` —
+  identical output to `loom gate --help`. No verifier runs, no cache
+  read, no bd writes
+  [test](bare_loom_gate_prints_subcommand_help)
+- Bare `loom gate verify` prints the verify subcommand help and runs no
+  verifier, project hook, cache lookup, bd write, or marker check
+  [test](bare_loom_gate_verify_prints_help_and_runs_nothing)
+- `loom gate verify` rejects a positional selector; exact target
+  selection uses `--target <annotation target>`
+  [test](gate_verify_rejects_positional_selector)
+- `--target` is mutually exclusive with `--files`, `--diff`, and
+  `--tree`; zero matches fail loudly; cross-tier matches under
+  `verify --target` fail and suggest a tier subcommand; multiple
+  criteria sharing the same target inside one tier are accepted
+  [test](gate_target_exact_match_and_ambiguity_rules)
+- `loom gate verify --diff <base>..<head>` runs the project pre-commit
+  lane via prek for the resolved range before the spec annotation lane;
+  if a hook modifies the working tree the run exits non-zero with a
+  tree-modified-by-hook failure
+  [test](post_integration_verify_runs_project_precommit_and_affected_check_test)
+- A nested `loom gate verify --files` invoked under a parent
+  `verify --diff` records a skipped gate event with reason
+  `parent-diff-gate` and exits 0; correctness does not depend on the
+  project's hook id
+  [test](nested_verify_files_under_parent_diff_gate_records_skip)
+- Scope-derived tier policy has no `LOOM_VERIFY_TIERS` override:
+  `verify --files` runs affected `[check]`/`[test]`, `verify --diff`
+  runs project pre-commit plus affected `[check]`/`[test]`, and
+  `verify --tree` runs full `[check]`/`[test]`/`[system]`
+  [test](verify_tier_policy_is_scope_derived_without_env_override)
+- `loom gate status --diff <range>` / `--files <paths...>` / `--tree`
+  reads criterion evidence from `.loom/cache.db` and prints the report
+  per `Status cache` above; status without an explicit scope prints help
+  and runs no cache lookup
+  [test](loom_gate_status_requires_explicit_scope)
+- `loom gate status` is `refused_inside_loom() == false`; running
+  under `LOOM_INSIDE=1` is allowed because the cache read is local
+  and read-only
+  [test](loom_gate_status_is_allowed_under_loom_inside_env)
+
+### Status cache
+
+- `.loom/cache.db` is created on first `open` when the path is missing
+  [test](open_creates_db_file_when_missing)
+- A criterion-evidence `CacheRow` round-trips through sqlite preserving
+  every field, including typed `(SpecLabel, CriterionId)` identity and
+  the current annotation snapshot
+  [test](round_trip_through_sqlite_preserves_every_field)
+- The `row_for` helper writes a row that round-trips through the unified
+  cache
+  [test](row_for_helper_writes_round_trip_row)
+- Report rendered from on-disk rows summarises pass/fail per tier
+  [test](render_report_reads_from_disk_and_summarises_per_tier)
+- Broken-annotation entries in the report come from integrity findings,
+  not from the cache file itself
+  [test](broken_annotations_in_report_come_from_integrity_findings)
+- **Cache render <500ms — sqlite path.** The report renders in <500ms
+  on a 2000-row corpus when read from sqlite (hard target from
+  *Status cache*)
+  [test](render_under_500ms_on_2000_row_corpus)
+- **Cache render <500ms — in-memory path.** Same <500ms target holds
+  for the in-memory `render_from_rows` path
+  [test](render_from_rows_under_500ms_on_2000_row_corpus)
+
+### Verifier inputs
+
+- `[test]` annotations resolve declared inputs as the union of the
+  owning crate's source directories (via `cargo metadata`) and the spec
+  section the annotation lives in (spec-section auto-include)
+  [test](test_tier_resolution_uses_cargo_metadata_plus_spec_autoinclude)
+- A `[judge]` target is located by shared selector-stripping (`#fn` /
+  `::fn` / `::attr`) plus spec-relative resolution, the same helper the
+  integrity gate uses, so the input resolver and integrity gate cannot
+  disagree about where the script lives
+  [test](judge_tier_strips_selector_and_collects_relative_to_spec_dir)
+- A judge script reports per-function inputs via `<script> --print-inputs
+  <fn>` collect mode — `judge_files` records its path arguments while
+  `judge_criterion` and the LLM call are skipped, and the recorded paths
+  are emitted as `{"inputs":[...]}`
+  [test](judge_collect_mode_records_judge_files_paths)
+- The input-query batch form maps each target to its globs in one spawn —
+  `<script> --print-inputs` with no `<fn>` emits `{"inputs":{"<fn>":[...]}}`
+  for every rubric, so discovery spawns no more processes than batched
+  execution
+  [test](batch_print_inputs_maps_each_target_to_its_globs)
+- The `--print-inputs` query is issued through the verifier's command
+  template, not by prepending the flag to the command's first token, so a
+  `cargo run -p <crate> -- <walk>` verifier is queried as the walk's own
+  argument
+  [test](print_inputs_issued_through_command_template_not_argv_head)
+- A verifier that reports no inputs of its own always runs under a
+  `--files` scope — the resolver never narrows an undeterminable input
+  set to the spec section alone
+  [test](undeclared_verifier_always_runs_under_files_scope)
+- An opted-in input-query that exits non-zero or emits a malformed
+  inputs document is flagged `inputs-protocol-error` — opt-in being a
+  `[judge]` collect mode or a `[check]` / `[system]` runner that
+  declares an `inputs` query
+  [test](opted_in_input_query_failure_flagged_inputs_protocol_error)
+- A verifier whose input-query contract loom does not own — an
+  unregistered command, or a runner with no `inputs` query — falls
+  through to the conservative always-run default without an
+  `inputs-protocol-error`
+  [test](unowned_verifier_input_query_falls_through_silently)
+- A `[check]` / `[system]` target that matches a runner resolves via
+  that runner, not via a `tokens[0]` PATH/file check; only an unmatched
+  target falls back to the `tokens[0]` check
+  [test](runner_matched_target_resolves_via_runner_not_token_path_check)
+- A runner-matched verifier's queried inputs decide its `--files` scope
+  inclusion: the scope filter keeps the matched sibling whose queried
+  glob is staged and drops the one whose glob is disjoint, priming the
+  matched `[check]` group in a single query spawn
+  [test](filter_by_files_keeps_runner_matched_check_sibling_whose_queried_input_is_staged)
+
+### Scope handling
+
+- Live-workspace scope for a `[test](crate::module::test)` annotation
+  includes the owning crate's files plus its transitive dependency
+  files
+  [test](live_workspace_scope_includes_own_files_and_transitive_dep_files)
+- Live-workspace scope for an annotation referencing an unknown crate
+  is empty
+  [test](live_workspace_scope_for_unknown_crate_is_empty)
+- Live-workspace scope for a `[test](<crate>)` placeholder-target
+  annotation is empty
+  [test](live_workspace_scope_for_crate_placeholder_target_is_empty)
+
+### Dispatch — per-tier process model
+
+- Runner-matched `[check]` annotations batch into one subprocess per
+  runner
+  [test](run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn)
+- Unmatched `[check]` annotations use the fallback path and spawn one
+  subprocess per annotation
+  [test](dispatcher_spawns_one_subprocess_per_unmatched_check_annotation)
+- `[system]` tier spawns one subprocess per annotation (system
+  verifiers are inherently slow and self-contained; batching doesn't
+  help)
+  [test](dispatcher_spawns_one_subprocess_per_system_annotation)
+- `[test]` tier batches every in-scope target into one runner
+  subprocess per invocation
+  [test](test_tier_batches_all_targets_into_one_runner_subprocess)
+- `[test]` tier filters targets by `--files` scope intersection before
+  invoking the runner
+  [test](test_tier_filters_targets_by_files_scope_intersection)
+- `[test]` tier returns no subprocess when the `--files` filter
+  excludes every target
+  [test](test_tier_returns_none_when_files_filter_excludes_everything)
+- `[test]` tier returns no subprocess when no `[test]` annotations are
+  in scope at all
+  [test](test_tier_returns_none_when_no_test_annotations_in_input)
+- `[judge]` tier batches every target into one runner subprocess per
+  invocation
+  [test](judge_tier_batches_all_targets_into_one_runner_subprocess)
+- `[judge]` tier ignores `--files` scope filtering (unlike `[test]`)
+  [test](judge_tier_ignores_files_scope_unlike_test_tier)
+- Dispatcher skips annotations whose tier does not match the requested
+  tier
+  [test](check_tier_skips_annotations_with_non_check_tier)
+
+### Dispatch — env contract
+
+- The dispatcher sets `LOOM_FILES` and `LOOM_SPEC` env vars on every
+  verifier subprocess (per *Verifier-runner contract*)
+  [test](dispatcher_sets_loom_files_and_loom_spec_env_on_verifier_subprocess)
+
+### Dispatch — JSON verdict and exit-code fallback
+
+- `[check]` tier falls back to "exit code 0 → pass" when the verifier
+  emits no JSON line (per *Fallback for non-conforming verifiers*)
+  [test](check_tier_falls_back_to_exit_code_pass_when_verifier_omits_json)
+- `[check]` tier falls back to "non-zero exit → fail" when the verifier
+  emits no JSON line
+  [test](check_tier_falls_back_to_exit_code_fail_when_verifier_omits_json)
+- `[test]` runner falls back to exit code when the runner omits a JSON
+  per-target line
+  [test](test_tier_falls_back_to_exit_code_when_runner_omits_json_line)
+- A malformed JSON verdict (e.g. `pass` field with wrong type) surfaces
+  as a typed dispatch error rather than silently passing
+  [test](dispatcher_surfaces_malformed_verdict_when_pass_key_has_wrong_type)
+- Incidental JSON on stdout that isn't a recognised verdict line falls
+  through to the exit-code path
+  [test](dispatcher_falls_through_to_exit_code_on_incidental_json)
+- A verifier command that fails to spawn (command not found) surfaces
+  as a dispatch error — the gate-exit-2 case from the
+  *Verifier-runner contract*
+  [test](dispatcher_surfaces_spawn_failure_when_command_not_found)
+
+### Runners — batched dispatch
+
+- `run_with_runners` groups matched annotations into one batch per
+  runner and falls back to per-annotation spawn for unmatched
+  annotations
+  [test](run_with_runners_groups_matched_into_one_batch_and_falls_back_for_unmatched)
+- When multiple runners' `match` regexes could apply, the first match
+  in spec order wins
+  [test](run_with_runners_first_match_wins_in_spec_order)
+- When a batched-runner invocation does not produce per-target output
+  for every annotation in the batch, the missing targets surface as
+  dispatch failures
+  [test](run_with_runners_dispatch_fails_targets_missing_from_batch_output)
+- Runner cwd resolution — explicit `cwd` is resolved against the repo
+  root
+  [test](run_with_runners_resolves_cwd_against_repo_root)
+- Runner cwd resolution — a runner with no `cwd` falls through to the
+  tier-default `cwd`
+  [test](run_with_runners_falls_through_to_tier_default_when_runner_cwd_is_none)
+- Runner cwd resolution — a runner with no `cwd` and no tier-default
+  uses the repo root
+  [test](run_with_runners_uses_repo_root_when_neither_runner_nor_tier_cwd_set)
+- Tier-default `cwd` also applies to per-annotation fallback when the
+  matched runner has no cwd
+  [test](run_with_runners_tier_default_applies_to_unmatched_per_annotation_fallback)
+- `libtest-json` parser maps test-event names back to annotation
+  targets
+  [test](run_with_runners_libtest_json_maps_test_names_back_to_annotations)
+- `exit-code` parser shares a single per-runner verdict across every
+  target in the group
+  [test](run_with_runners_exit_code_parser_shares_verdict_across_group)
 
 ## Invariants — what must never happen
 
@@ -1416,15 +2269,28 @@ identity (tier/target/runner or hook id, duration, exit), full failure
 and skip details, scope digests, relevant config digests, and log path;
 it does not store large successful stdout bodies.
 
+### Gate success receipt
+
 `VerifiedScope` is a sealed deterministic-success value derived from a
-passing `GateRun`. `ReviewedScope` is a sealed review-success value
-derived from a passing review run. `GateSuccess` is the push-
-authorizing composite that can be constructed only from matching
-`VerifiedScope`, `ReviewedScope`, pre-push hook coverage, and the
-current workspace fingerprint. Push-eligible review consumes typed
-`VerifiedScope` evidence for the same resolved content/scope; manual
-diagnostic review may run without it, but cannot feed `GateSuccess` or
-marker minting. The retired `--verify-exit` scalar is not a trust input.
+passing `GateRun`; `ReviewedScope` is the corresponding sealed value
+derived from a passing review run. Push-eligible review consumes typed
+`VerifiedScope` evidence for the same resolved content and scope.
+Manual diagnostic review may run without that evidence, but cannot feed
+the success receipt or marker minting. The retired `--verify-exit`
+scalar is not a trust input.
+
+`GateSuccess` is the sealed, push-authorizing receipt carried by
+`GateOutcome::Success`. Its non-optional evidence consists of the
+matching `VerifiedScope` and `ReviewedScope`, pre-push hook coverage,
+the resolved push range and tree fingerprint, and paths to the gate
+logs that contain successful matching `GateRun` end events.
+`GateSuccess::new` is the sole construction path. It returns
+`GateFail` unless the scopes describe the same content, range, tree,
+and relevant configuration; every covered hook has passed for that
+range; the coverage fingerprints match both scopes; the gate logs
+exist and end successfully; and the molecule is clean. The structural
+seal prevents callers from bypassing these checks with a struct
+literal.
 
 Matching is content-based, not argv-string-based: same workspace tree,
 same scope kind, same resolved base/head commits for diff scope, same
@@ -1442,9 +2308,8 @@ range, config, and hook coverage" a typed Rust value rather than an
 ad-hoc filesystem stamp.
 
 The mint authority lives in `loom-gate::marker`. The constructor
-`MarkerProof::from_gate_success` is `pub(crate)`, accepts a sealed
-`GateSuccess` (defined in [harness.md § Loop Outcome
-Types](harness.md#loop-outcome-types)), computes the current workspace
+`MarkerProof::from_gate_success` is `pub(crate)`, accepts the sealed
+[`GateSuccess`](#gate-success-receipt), computes the current workspace
 fingerprint, and returns a `MarkerProof`. No code path outside the
 marker module can mint a marker; no code path outside the gate-
 invocation module can construct the `GateSuccess` that mint requires.
@@ -2554,859 +3419,6 @@ unrepresentable (see [harness.md Loop Outcome Types](harness.md#loop-outcome-typ
 The worker-queue filter (harness.md FR1) prevents the agent from
 receiving an epic as a worker task. Together, the conditions for
 the original gate-skip class are structurally unreachable.
-
-## Success Criteria
-
-The gate's spec defines the verifier-annotation taxonomy, so these
-criteria self-host — they use the same `[check]` / `[test]` /
-`[system]` / `[judge]` annotations the rest of the spec defines. The
-integrity gate's self-referential tests (under *Integrity gate — four
-directions* below) pin that this self-hosting actually resolves: a
-`[check]` annotation in `specs/gate.md` whose first token is on
-PATH, and a `[judge]` annotation pointing at the gate's own
-`src/integrity.rs`, both pass forward resolution.
-
-### Annotation parsing
-
-- Parser walks every `.md` file in the specs directory in lexical order
-  [test](parse_walks_all_md_files_in_lex_order)
-- Parser skips non-`.md` files in the specs directory
-  [test](parse_skips_non_markdown_files_in_specs_dir)
-- Parser aggregates criteria across multiple spec files into a single
-  `ParsedSpecs`
-  [test](parse_aggregates_criteria_across_files)
-- Parser returns a typed read-directory error when the specs directory
-  is missing rather than producing an empty result
-  [test](parse_returns_read_dir_error_for_missing_directory)
-
-### Integrity gate — four directions
-
-Directions 1–3 (forward resolution, stub-pointing, atomic acceptance)
-are covered by the criteria below. Direction 4 (inputs-protocol
-honesty) is covered by the `inputs-protocol-error` criteria under
-*Verifier inputs* below — opt-in resolution, opted-in query failure,
-and conservative fall-through for unowned queries.
-
-- **Forward — baseline.** A spec with all valid annotations yields no
-  findings
-  [test](parse_then_check_with_all_valid_annotations_yields_no_findings)
-- **Forward — broken targets per tier.** Each tier flags its own
-  broken-target shape: `[check]` first token absent on PATH, `[test]`
-  path with no matching function, `[judge]` file absent
-  [test](fixture_with_broken_target_per_tier_flags_each_one)
-- **Forward — judge `#fn` selector.** A `[judge](script#fn)` target
-  resolves when the leading script path exists; the `#fn` suffix is
-  stripped before the on-disk check (per the *Verifier inputs* table's
-  `[judge](script#fn)` row). `::fn` is accepted during migration but
-  `#fn` is canonical because the URL-fragment shape is what markdown
-  renderers click through to
-  [test](forward_judge_accepts_script_with_hash_fn_selector)
-- **Forward — judge spec-relative resolution.** Path resolution joins
-  the relative target against the annotation's spec-file directory, not
-  the repo root; absolute paths are honoured as-is. This matches the
-  markdown renderer's relative-link resolution so a clickable
-  `[judge](../tests/judges/x.sh#fn)` in `specs/foo.md` resolves to
-  `tests/judges/x.sh` on disk
-  [test](forward_judge_resolves_relative_to_spec_dir)
-- **Forward — judge legacy `::fn` selector.** A `[judge](script::fn)`
-  target still resolves during the `::` → `#` migration; the `::fn`
-  suffix is stripped before the on-disk check
-  [test](forward_judge_accepts_script_with_fn_selector)
-- **Forward — system `::attr` selector.** A `[system](path::attr)`
-  target (e.g. `[system](tests/unit.nix::eval-smoke)`)
-  resolves when the leading path exists; the `::attr` suffix is
-  stripped before the PATH / file check, matching the `[judge]` shape
-  [test](forward_system_accepts_path_with_attr_selector)
-- **Forward — test-tier missing function.** A `[test](cargo test …)`
-  annotation whose test name does not match any function in the
-  workspace is flagged
-  [test](check_flags_cargo_test_annotation_with_missing_test_name)
-- **Stub-pointing.** A `[test]` annotation whose body invokes the
-  `_pending_stub` sigil is flagged as `StubTestFunction`
-  [test](stub_pointing_test_annotation_flags_via_workspace_scanner)
-- **Atomic-acceptance.** Two annotations on one criterion flags
-  `MultipleAnnotations`
-  [test](two_annotations_on_one_criterion_flags_atomic_acceptance)
-- **End-to-end.** A specs directory containing both broken-target and
-  multiple-annotation fixtures surfaces findings from both directions
-  in one pass
-  [test](end_to_end_specs_dir_check_combines_both_directions)
-- **Verify lane — terminal.** Integrity findings exit non-zero from
-  `loom gate check` and `loom gate verify` runs (the integrity gate is
-  itself a `[check]`-tier verifier, so it fails the same way the
-  per-annotation `[check]` dispatch does)
-  [test](gate_check_fails_on_integrity_finding_for_unresolved_annotation)
-- **Self-hosting — check tier.** The integrity gate accepts a
-  `[check]` annotation in `specs/gate.md` whose first token
-  resolves on PATH (closes the bootstrap concern: the spec that defines
-  the taxonomy can carry its own annotations)
-  [test](self_referential_check_annotation_resolves_against_integrity_gate_implementation)
-- **Self-hosting — judge tier.** A `[judge]` annotation in
-  `specs/gate.md` pointing at the integrity gate's own
-  `src/integrity.rs` resolves
-  [test](self_referential_judge_annotation_resolves_against_integrity_source_file)
-
-### Integrity gate — pending modifier
-
-- **Parser recognises `?` modifier — all tiers.** `[check?]`,
-  `[test?]`, `[system?]`, `[judge?]` all parse; the parser populates
-  a `pending: bool` on the resulting annotation
-  [test](parse_recognises_pending_modifier_for_all_four_tiers)
-- **Pending — unresolved target silently passes.**
-  `[check?](missing-cmd)`, `[test?](missing::fn)`,
-  `[system?](missing-system-cmd)`, `[judge?](missing/path.md)` all
-  clear forward resolution with no finding
-  [test](pending_marked_unresolved_target_yields_no_finding)
-- **Pending — resolved target emits `UnneededPendingMarker`.** A
-  `[check?](true)` (where `true` is on PATH) flags the stale marker,
-  naming spec + line + target
-  [test](pending_marked_resolved_target_yields_unneeded_pending_marker)
-- **Pending `[test?]` — stub body silently passes.** The modifier
-  suppresses `StubTestFunction` the same way it suppresses
-  `UnresolvedAnnotation`
-  [test](pending_marked_stub_test_body_yields_no_finding)
-- **Pending `[test?]` — non-stub body emits `UnneededPendingMarker`.**
-  Co-incidence with target resolution forces the implementing diff to
-  drop `?` at the same commit that lands the real body
-  [test](pending_marked_non_stub_test_body_yields_unneeded_pending_marker)
-- **Atomic-acceptance — `?` does not suppress.** Two annotations on
-  one criterion still flag `MultipleAnnotations`, whether either,
-  both, or neither carries `?`
-  [test](pending_modifier_does_not_suppress_atomic_acceptance_finding)
-- **`UnneededPendingMarker` — terminal at push gate.** Surfaces
-  alongside `UnresolvedAnnotation` and `StubTestFunction` per the
-  *Findings and Minting* emit-shape table
-  [test](unneeded_pending_marker_is_terminal_at_push_gate)
-- **`unneeded-pending-marker` — auto-generated options.** `mint`
-  emits a `## Options — …` block whose Option 1 is "drop the `?`",
-  per *Integrity gate* above
-  [test](mint_emits_drop_marker_option_for_unneeded_pending_marker)
-
-### Standing-safety-net bonding
-
-- `loom gate mint --tree` resolves each finding's bonded specs via typed
-  `bonds` / target data, ensures exactly one spec epic exists for each
-  bonded indexed spec (per [harness.md — Spec and Work Epic
-  Lifecycle](harness.md#spec-and-work-epic-lifecycle)), auto-creates
-  and immediately closes missing metadata-only spec epics, and refuses
-  duplicate spec epics before creating remediation work
-  [test](mint_tree_scope_resolves_bonded_spec_epics_without_per_spec_work_epics)
-- `loom gate mint --tree` creates exactly one remediation work epic for
-  all actionable tree-scope batches in a run, parents every fix-up,
-  blocked-clarify, and clarify bead under it, applies `loom:active` to
-  that epic, clears `loom:active` from any previous work epic, names the
-  active epic id and `loom loop` command in the summary, and writes no
-  current-spec or pointer-table state
-  [test](mint_tree_scope_mints_single_active_work_epic_for_all_actionable_batches)
-- `loom gate mint --tree` creates no remediation work epic and leaves
-  `loom:active` unchanged when no unsuppressed actionable finding remains
-  after suppression, dedup, and structural validation
-  [test](mint_tree_scope_without_actionable_findings_creates_no_epic)
-- `loom gate audit --tree` is inspection-only: it walks the same
-  rubric `mint --tree` walks and prints findings to stdout, but
-  produces zero bd writes
-  [test](audit_tree_scope_makes_no_bd_writes)
-
-### Findings and Minting
-
-- `loom gate mint` refuses to run when `LOOM_INSIDE=1`, exiting
-  non-zero with a deterministic error message and producing no bd
-  writes
-  [test](mint_refuses_when_loom_inside_env_is_set)
-- The walk emits `LOOM_FINDING: <json>` records on stdout, one
-  JSON object per finding, streamed as findings are identified
-  (not batched at end-of-walk). The JSON shape is `{"token": ...,
-  "route": "blocking|deferred|clarify", "bonds": [...], "target":
-  {"kind": ..., ...}, "evidence": ...}`
-  [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
-- Long evidence may include raw line breaks inside JSON strings; the
-  driver normalizes them before typed validation and preserves the
-  resulting evidence line breaks
-  [test](raw_multiline_evidence_is_normalized_before_strict_validation)
-- The review walk terminates with exactly one of `LOOM_COMPLETE`,
-  `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, or `LOOM_BLOCKED`;
-  `LOOM_BLOCKED` includes a reason explaining why no options can be safely
-  surfaced, review clarifications are `route="clarify"` findings with Options
-  in `evidence`, and a walk that emits `LOOM_FINDING:` records without a
-  terminal marker fails the mint invocation with non-zero exit
-  [test](mint_walk_without_terminal_marker_fails_run)
-- A walk that terminates with `LOOM_RETRY` (review itself could not
-  run for environmental reasons) routes to recovery cause
-  `agent-retry` per [harness.md § Verdict Gate](harness.md#verdict-gate);
-  consumes one `[loop] max_retries` slot; exhaustion escalates to
-  `loom:blocked` with cause `retry-exhausted`
-  [test](retry_marker_routes_to_agent_retry_recovery_cause)
-- `LOOM_CONCERN:` payload parses as JSON `{"summary": "<non-empty
-  string>"}` via the same `serde_json` pipeline that consumes
-  `LOOM_FINDING:` records; the parsed summary becomes the verdict-log
-  entry for the walk
-  [test](concern_payload_parses_as_json_with_summary_field)
-- Parse failures on the `LOOM_CONCERN:` payload — invalid JSON, missing
-  `summary` field, empty `summary` string — surface as
-  `RecoveryCause::BadWalk(BadWalk::Concern { payload })` carrying the
-  literal post-marker text so the recovery prompt can quote it back
-  to the agent
-  [test](concern_malformed_payload_routes_to_bad_walk_concern_with_literal_payload)
-- A walk that emits `LOOM_CONCERN:` with zero preceding `LOOM_FINDING:`
-  records surfaces as `RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings
-  { summary })` — concern claimed without enumeration
-  [test](concern_without_streamed_findings_routes_to_badwalk_concern_without_findings)
-- A walk that streams one or more `LOOM_FINDING:` records and terminates
-  with `LOOM_COMPLETE` surfaces as `RecoveryCause::BadWalk(BadWalk::
-  FindingsWithoutConcern { finding_count })`
-  [test](findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
-- The wire-format anti-drift verifier (a `[check]`-tier audit) scans
-  every file under `crates/loom-templates/templates/` for the literal
-  substrings `LOOM_CONCERN:` and `LOOM_FINDING:` and fails if they
-  appear in any file other than `partial/findings_walk.md`. Bare-prose
-  mentions without the colon (e.g. *"the `LOOM_CONCERN` marker"*) are
-  unaffected
-  [check](cargo run -p loom-walk -- template_wire_format_restatement)
-- The anti-drift verifier accepts the canonical layout: with
-  `LOOM_FINDING:` / `LOOM_CONCERN:` substrings present only in
-  `partial/findings_walk.md`, the walk reports zero violations
-  [test](anti_drift_verifier_passes_canonical_partial_layout)
-- The anti-drift verifier fails a fixture where a template restates
-  the wire-format outside the canonical partial — e.g. injecting
-  `LOOM_FINDING:` into `review.md` directly — naming the offending
-  file and line
-  [test](anti_drift_verifier_fails_fixture_with_restated_wire_format)
-- The driver parses `LOOM_FINDING:` JSON payloads via `serde_json`
-  into typed `Finding` records; the `target` field deserializes as
-  an internally-tagged enum whose variant is selected by `kind`,
-  validated against the `token`'s expected variant
-  [test](mint_parses_loom_finding_json_into_typed_record_with_tagged_target)
-- A malformed `LOOM_FINDING:` record — invalid JSON after raw string
-  line-break normalization, unknown token, unknown spec, target variant
-  mismatching token, or unresolved target content — fails the mint
-  invocation with a typed parse error naming the offending record's
-  start line; no silent skip
-  [test](mint_malformed_loom_finding_fails_run_with_typed_error)
-- The driver computes a versioned lower-kebab finding id from each
-  validated typed finding; evidence text, options prose, line numbers,
-  batch size, sibling batch membership, current bd parent, and `bonds`
-  ordering do not affect the id
-  [test](mint_computes_versioned_finding_id_excluding_volatile_context)
-- The driver computes a compact finding hash from the finding id and
-  refuses on hash collision instead of merging two different ids under
-  one `finding:<hash>` label
-  [test](mint_refuses_finding_hash_collision)
-- `StyleRule` targets include a concrete subject in addition to
-  `rule_id`; a rule-id-only style target is rejected as too broad for
-  dedup or suppression
-  [test](style_rule_finding_requires_concrete_subject)
-- Mint dedups by `finding:<hash>` labels across live statuses; one
-  live result skips that finding, zero live results allows minting,
-  and more than one live result refuses the mint run as a structural
-  violation
-  [test](mint_dedups_per_finding_hash_label_across_live_statuses)
-- Closed beads carrying `finding:<hash>` suppress automatic reminting
-  only within the same owning molecule; closed matches outside the
-  molecule are historical context only and do not suppress newly
-  observed current findings
-  [test](closed_finding_hash_label_suppresses_remint_only_within_same_molecule)
-- A blocked clarify bead carrying `finding:<hash>` dedups the same
-  clarify-route finding while it remains live, so unresolved
-  `loom:clarify` decisions do not remint endlessly
-  [test](blocked_clarify_bead_dedups_same_finding_hash)
-- `[[suppress]]` entries in `loom.toml` require `reason` and exactly
-  one of `id` (canonical finding id) or `hash` (compact finding hash);
-  matching rubric-origin findings are reported as suppressed and
-  removed from verdict / mint processing
-  [test](loom_toml_suppress_entries_filter_rubric_findings_by_id_or_hash)
-- Suppressions do not apply to deterministic or integrity findings;
-  matching `[[suppress]]` ids or hashes for those findings are
-  reported as ineffective and the findings still fail / mint normally
-  [test](suppressions_do_not_filter_deterministic_or_integrity_findings)
-- A well-formed `LOOM_CONCERN` walk whose every streamed finding is
-  suppressed exits clean after emitting suppressed-status records;
-  suppression does not forgive malformed stream / terminator pairing
-  [test](all_suppressed_concern_walk_exits_clean_after_shape_validation)
-- Inline code-comment suppressions are unsupported; the gate does not
-  scan source comments for suppression directives
-  [check](cargo run -p loom-walk -- no_inline_suppression_comment_contract)
-- `LOOM_FINDING_STATUS:` driver-emitted JSON lines carry each enriched
-  finding's id, hash, bd label, token, target, and action without
-  requiring the LLM to emit derived identity fields
-  [test](driver_emits_finding_status_json_with_identity_and_action)
-- At `--tree` scope, a live remediation bead whose `finding:<hash>` labels
-  are all absent from the current unsuppressed finding set is reported
-  as a stale candidate, not auto-closed
-  [test](mint_tree_reports_stale_candidates_without_closing)
-- At `--tree` scope, a live batch whose finding labels are partially
-  stale is reported as a partially-stale candidate with current and
-  absent finding ids, not auto-superseded
-  [test](mint_tree_reports_partially_stale_batches_without_superseding)
-- `-m/--molecule` promotion does not report stale candidates because
-  molecule promotion consumes already-recorded deferred findings and
-  cannot prove a missing finding is absent from the whole tree
-  [test](mint_non_tree_scopes_do_not_report_stale_candidates)
-- Each minted batch bead is parented under the scope-selected work epic
-  (the molecule work epic for `-m/--molecule`, or the single standing
-  remediation work epic for `--tree`) and carries one `finding:<hash>`
-  label per contained finding plus one `spec:<X>` label per unique entry
-  across the union of `bonds` over the batch's findings
-  [test](mint_batches_parent_under_scope_selected_work_epic_with_union_spec_labels)
-- The bonding lead is the first element of each finding's `bonds` array
-  after validating unique spec epics for bonded specs. Findings sharing a
-  lead may bundle into the same lead-spec remediation batch, but the lead
-  affects grouping/labels only and does not create a per-spec parent epic
-  for tree-scope minting; finding ids and hashes remain unchanged
-  [test](mint_bonding_lead_groups_findings_without_selecting_tree_parent_epic)
-- For target variants that carry a spec field (currently
-  `Criterion` and `Invariant`), `target.spec` MUST appear in that
-  finding's `bonds`; a finding that violates this is rejected with
-  a typed parse error and the containing mint run is refused
-  [test](mint_rejects_criterion_target_whose_spec_is_not_in_bonds)
-- Clarify-bound findings mint as single-finding beads (one bead
-  per clarify-route finding, not bundled into the spec's remediation
-  batch) carrying `finding:<hash>` and `loom:clarify` labels, with
-  the description embedding the `## Options — …` block extracted from
-  the finding's `evidence` per the *Options Format Contract*
-  [test](mint_clarify_bound_finding_creates_single_bead_with_finding_hash_label_and_options_block)
-- Any clarify-route finding whose `evidence` lacks a well-formed
-  `## Options — <summary>` heading with at least one `### Option
-  <N> — <title>` subsection falls back to a remediation bead carrying
-  `loom:blocked` with cause `clarify-without-options` — never a
-  stranded clarify bead the chat-drafter cannot resolve
-  [test](mint_clarify_bound_finding_without_options_falls_back_to_blocked)
-- Fix-up batches enumerate every finding in the bead description
-  (one item per finding: finding id, hash, token, target's canonical
-  form, evidence excerpt); the title is stable across runs for the
-  same contained finding-hash set
-  [test](mint_batch_description_enumerates_finding_identity_and_title_is_stable)
-- A remediation batch carrying multiple findings exposes worker
-  discretion to fix all and close, fix a subset and split the remainder
-  into sibling remediation beads under the work epic via
-  `bd create --parent=<work-epic-id>` for deferred work, or emit
-  `LOOM_CLARIFY` for no-progress cases; the bead's acceptance criterion
-  is "agent processed the batch", not "every finding individually
-  resolved"
-  [judge](../tests/judges/loom.sh#judge_remediation_batch_acceptance)
-- The per-bead hot path runs deterministic
-  `loom gate verify --diff <pre-integration-head>..HEAD` after
-  integration and does not invoke focused LLM review or `mint` by
-  default
-  [test](exec_per_bead_gate_invokes_post_integration_verify_only)
-- `mint --tree` walks both the deterministic verifiers and the LLM
-  rubric, normalizing findings from either source into the same typed
-  mint flow
-  [test](mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both)
-- Mint is idempotent against partial failure: a crash mid-run leaves
-  successfully-minted findings with their `finding:<hash>` labels; a
-  re-run's per-finding dedup query skips those hashes and retries only
-  the unfinished findings
-  [test](mint_idempotent_after_partial_failure_retries_only_unfinished_findings)
-- `mint --tree` never leaves an open active remediation work epic with
-  zero child beads: if the epic was created but no child bead was
-  created before failure, the driver closes or neutralizes the epic and
-  restores the `loom:active` bookmark to its pre-run state; if at least
-  one child bead was created, the non-empty epic remains open/active and
-  rerun dedups the completed children
-  [test](mint_tree_partial_failure_never_leaves_empty_active_epic)
-- `mint --dry-run` prints proposed bd writes and makes zero bd writes;
-  at `--tree` it still walks the rubric/verifiers, and at
-  `-m/--molecule` it previews deferred-promotion changes
-  [test](mint_dry_run_makes_no_bd_writes)
-- `mint` rejects `--spec`; lead-spec routing comes only from each
-  finding's typed `bonds` and target after multi-spec lead selection
-  [test](mint_rejects_spec_filter)
-- Bare `loom gate mint` prints subcommand help and runs nothing; callers
-  choose `--tree` or `-m/--molecule` explicitly
-  [test](mint_bare_invocation_requires_explicit_scope)
-- The end-of-run summary lists blocking findings, deferred findings
-  merged, deferred beads promoted, ready remediation batches created or
-  updated, clarify findings raised, skipped live finding hashes,
-  suppressed rubric findings, stale candidates, partially-stale
-  candidates, refused structural conflicts, and transient errors, with
-  `LOOM_FINDING_STATUS:` JSON carrying per-finding details
-  [test](mint_end_of_run_summary_reports_finding_lifecycle_outcomes)
-- Push-gate integrity findings recover via deferred remediation until
-  the molecule's iteration counter exhausts: the verdict gate
-  normalizes `UnresolvedAnnotation`, `StubTestFunction`, and
-  `UnneededPendingMarker` into typed `Finding`s, merges them into the
-  molecule's deferred remediation set, promotes them with
-  `loom gate mint -m/--molecule`, refuses the push, increments the
-  counter, and re-enters the loop. On cap exhaustion, the gate falls
-  back to terminal `loom:clarify` on the molecule's epic with one
-  composed auto-generated `## Options — …` block (kind-grouped
-  resolutions per *Integrity gate* above)
-  [test](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
-- The bead-container worker runs the injected exact self-check range
-  (`loom gate verify --diff <bead-base>..HEAD`, or `@{u}..HEAD` only
-  when upstream is that base) before emitting `LOOM_COMPLETE`, reruns it
-  after any later commit or hook-generated change, and performs
-  prompt-level self-review before final marker emit
-  [judge](../tests/judges/loom.sh#judge_loop_preflight_exact_range_and_self_review)
-
-### Gate evidence and marker coverage
-
-- Every `loom gate` invocation that runs work writes a JSONL gate log
-  under `.loom/logs/gate/` and emits `driver_event` records for
-  `gate_run_start`, `gate_run_scope`, per-lane progress, and
-  `gate_run_end`; a start without an end is treated as incomplete
-  evidence, not success
-  [test](gate_invocations_emit_jsonl_lifecycle_events)
-- `DriverKind` is a typed enum with an `Other(String)` fallback; gate
-  lifecycle kinds (`GateRunStart`, `GateRunScope`, `GateRunLane`,
-  `GateRunEnd`, `GateRunSkipped`) serialize through the existing
-  `driver_event.driver_kind` string field rather than new top-level
-  `AgentEvent` variants
-  [test](driver_kind_typed_enum_carries_gate_lifecycle_values)
-- `VerifiedScope` is constructible only from a successful deterministic
-  `GateRun`; `ReviewedScope` is constructible only from a successful
-  review run; `GateSuccess` is constructible only from matching
-  `VerifiedScope`, `ReviewedScope`, pre-push hook coverage, and current
-  tree/config/range fingerprints
-  [test](gate_success_constructor_requires_typed_scope_and_coverage_evidence)
-- `loom gate review --diff <range>` consumes the latest matching
-  `VerifiedScope` for the same resolved content/scope when producing
-  push-eligible evidence; no production gate path passes or accepts
-  `--verify-exit`
-  [test](gate_review_consumes_verified_scope_not_verify_exit_scalar)
-- A driver-minted marker short-circuits a wrapped pre-push hook only
-  when it proves the same tree OID / clean porcelain, same
-  `.pre-commit-config.yaml` digest, same resolved push range, a
-  successful pre-push `GateRun` containing that hook id/entry as
-  passed, and successful `VerifiedScope` + `ReviewedScope` for the
-  same range; otherwise `pre-push-checks` falls through
-  [test](marker_short_circuit_requires_hook_coverage_for_same_tree_config_and_range)
-
-### Wire-format wiring and dead-code excision
-
-The production wiring obligation — every caller that constructs
-`GateInputs` for the review-phase verdict gate must populate
-`streamed_findings` from a real `parse_walk_output` invocation
-rather than leaving it at default — is owned by
-[harness.md § Verdict gate](harness.md#verdict-gate). This
-subsection covers the wire-format-side dead-code excision and the
-ReviewConcern display-vocabulary retirement that the wiring change
-depends on.
-
-- `ReviewError::ConcernWithoutBeadDeltas` is removed from
-  `crates/loom-workflow/src/review/error.rs` and the raise site at
-  `review/runner.rs` is removed in the same diff; no production code
-  path constructs this error variant
-  [test](no_path_constructs_concern_without_bead_deltas_in_production)
-- `parse_review_flag` (the legacy `<token> -- <reason>` whole-stdout
-  hunter) is removed from `crates/loom-workflow/src/review/phase_verdict.rs`;
-  the function and all its callers are deleted
-  [test](parse_review_flag_is_not_defined_or_called_in_production)
-- `decide_concern` no longer parses the terminal `summary` field as a
-  `ReviewConcern` token; the legacy fallback path
-  (`ReviewConcern::parse(summary)`) is removed. An unrecognized
-  summary with at least one streamed finding routes to
-  `RecoveryCause::ReviewConcern { summary, findings }`, not
-  `SwallowedMarker`
-  [test](decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed)
-- The `ReviewConcern` 12-variant enum stays as a display vocabulary
-  for `bd update --notes` and verdict-log human-readable cause
-  labels, but `ReviewConcern::parse` has no production caller. The
-  per-finding render in `PreviousFailure::ReviewConcern` derives the
-  human-readable label from `findings[0].token` (or a "multiple"
-  label when heterogeneous)
-  [test](previous_failure_review_concern_renders_human_label_from_findings_not_summary)
-
-### Wire-format strict validation and max-context preservation
-
-- A `LOOM_FINDING:` record whose JSON payload fails parse after raw
-  string line-break normalization — invalid JSON (most common: trailing
-  backticks from markdown fencing), unknown `token`, target/token
-  variant mismatch, unresolved spec label or anchor — surfaces as
-  `RecoveryCause::BadWalk(BadWalk::MalformedFinding { errors, terminal })`
-  with the well-formed terminal preserved alongside the per-record
-  parse errors
-  [test](backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved)
-- The `LOOM_FINDING:` substring match is case-sensitive and
-  colon-suffixed; bare-prose mentions without the colon do not match
-  [test](loom_finding_substring_match_requires_uppercase_and_colon_suffix)
-- `BadWalk::Concern` carries `{ payload, parsed_findings: Vec<Finding> }`;
-  well-formed findings streamed ahead of a malformed terminal are
-  preserved in `parsed_findings`
-  [test](bad_walk_concern_preserves_well_formed_findings_alongside_malformed_payload)
-- `BadWalk::FindingsWithoutConcern` carries
-  `{ finding_count, findings: Vec<Finding> }`; the parsed findings
-  ride through so the next iteration's prompt and `loom gate mint`
-  can both consume them
-  [test](bad_walk_findings_without_concern_carries_parsed_findings_vec)
-- The `BadWalk::MalformedFinding { errors, terminal }` variant
-  carries every per-record parse error AND the well-formed terminal
-  surface (or a typed `Missing`/`Malformed` variant when the
-  terminal itself failed). Construction without both pieces is a
-  compile error
-  [test](bad_walk_malformed_finding_variant_carries_errors_and_terminal_by_struct_shape)
-
-### Verification surface (matrix + property)
-
-- The review-phase classifier signature consumes a typed `WalkOutput`
-  (with field-private struct + `pub WalkOutput::from_stdout`
-  constructor that runs `parse_walk_output` internally), not raw
-  `&str`. Any production caller passing a `&str` is a compile error,
-  and any caller constructing `WalkOutput` with bogus fields cannot
-  compile because the fields are private at the `loom-protocol`
-  crate boundary
-  [test](classify_review_phase_signature_requires_typed_walk_output)
-- The (stream-shape × terminal-shape) failure matrix is exhaustive:
-  every cell in the 4 × 6 cross-product (S0..S3 stream shapes × six
-  terminal shapes) has a parameterised test asserting the typed
-  outcome variant and the maximum-context invariant
-  [test](walk_output_failure_matrix_routes_every_cell_with_typed_outcome_and_preserves_max_context)
-- Every constructible `Finding` (each `ConcernToken` × canonical
-  `FindingTarget` combination) round-trips byte-equal through
-  `serde_json::to_string` → embed in a `LOOM_FINDING:` record →
-  embed in a synthetic walk output → `parse_walk_output`, with
-  stable finding id and hash
-  [test](every_finding_round_trips_through_wire_format_with_stable_identity)
-- `ConcernToken::CrossSpecClash` round-trips through the wire format
-  with canonical target `Criterion { spec, anchor }` and is exercised
-  by the round-trip property test cell set
-  [test](concern_token_cross_spec_clash_round_trips_with_criterion_target)
-- `ConcernToken::SpecConventionsViolation` round-trips through the
-  wire format with canonical target `Criterion { spec, anchor }` and
-  is exercised by the round-trip property test cell set
-  [test](concern_token_spec_conventions_violation_round_trips_with_criterion_target)
-- `cross-spec-clash` and `spec-conventions-violation` are
-  tree-scope-only tokens: the rubric emits them at `--tree` scope;
-  `--diff` / `--files` scope rejects them. A finding carrying either
-  token parsed at non-tree scope surfaces a typed `FindingParseError`
-  variant naming the scope mismatch, alongside the existing
-  diff-context restriction on `scope-creep` / `scope-shortfall`
-  [test](tree_scope_only_tokens_rejected_at_non_tree_scope)
-
-### `loom-protocol` crate
-
-The Rust contract for the gate's wire format lives in
-`loom-protocol::gate` — a leaf crate carrying the typed `Finding`
-record + closed-set `ConcernToken` enum + `FindingTarget` /
-`TargetKind` / `FindingValidator` / `FindingParseError` + `BadWalk` /
-`TerminalSurface` / `WalkOutput` / `WalkOutputError` / `ExitSignal` +
-the `parse_walk_output` / `WalkOutput::from_stdout` /
-`parse_exit_signal` parsers + the `LOOM_FINDING_PREFIX` constant. Per
-*Canonical contract location*.
-
-- The `loom-protocol` crate exists as a leaf workspace member with
-  the `gate` module carrying every type listed above. The crate's
-  dependencies are limited to `serde`, `serde_json`, `thiserror` /
-  `displaydoc`, `blake3` (finding-hash crate — algorithm is
-  implementer's choice per *Finding id, finding hash, suppression,
-  and dedup*, but the dep set is closed), and `loom-events` (for
-  `SpecLabel`); no transitive
-  dependency on `loom-templates`, `loom-workflow`, or `loom-gate`
-  [test](loom_protocol_crate_has_minimal_leaf_dependency_set)
-- `loom-templates::finding` and `loom-templates::previous_failure` re-
-  export the typed contract from `loom-protocol::gate` via `pub use`
-  so existing callers (including `PreviousFailure::ReviewConcern {
-  findings }`) compile without changes. The original definitions are
-  removed from `loom-templates`
-  [test](loom_templates_re_exports_finding_contract_from_loom_protocol)
-- `loom-workflow::review::finding` (the `WalkOutput` typed product +
-  `parse_walk_output` parser) and `loom-workflow::todo::exit::ExitSignal`
-  / `parse_exit_signal` move to `loom-protocol::gate`. Existing
-  `loom-workflow` imports either remap or re-export
-  [test](loom_workflow_re_exports_walk_output_and_exit_signal_from_loom_protocol)
-- The `WalkOutput` struct's fields are private; `WalkOutput::from_stdout`
-  is `pub` (consumers need to call it) but is the only construction
-  path. The silent-loss failure class — production caller constructs
-  `WalkOutput` with bogus fields, bypassing the typed parse pipeline —
-  is structurally unrepresentable via field-privacy, not via
-  `pub(crate)` constructor scoping
-  [test](walk_output_fields_private_only_constructor_is_from_stdout)
-- The crate's MAJOR version is the wire-format protocol version. A
-  breaking wire change (renamed token, retyped target shape, removed
-  enum variant) requires a major bump. Additive changes (new
-  `ConcernToken` variant, new `FindingTarget` variant, new fields with
-  `#[serde(default)]`) are minor bumps. No `"protocol": <n>` field
-  appears on `LOOM_FINDING:` / `LOOM_CONCERN:` payloads — the typed
-  parse errors give loud structural breakage on version skew
-  [test](loom_protocol_wire_format_does_not_carry_protocol_version_field)
-- The `finding_no_duplicate_definitions` walker continues to enforce
-  one canonical definition of `Finding`, `ConcernToken`,
-  `FindingTarget`, `WalkOutput`, `BadWalk`, and `ExitSignal` across
-  the workspace; the canonical home after extraction is
-  `loom-protocol::gate`
-  [check](cargo run -p loom-walk -- finding_no_duplicate_definitions)
-
-### Production walker wiring
-
-The seam between `loom gate mint --tree`'s CLI arm and the underlying
-walker is the `MintWalker` trait. The tree-sweep CLI arm dispatches
-through the trait so findings reach the mint pipeline from a real walk.
-A tree-sweep arm that constructs an empty finding vector
-unconditionally — bypassing the walker — is a structural defect. The
-`-m/--molecule` arm is different: it promotes already-recorded
-deferred bd findings and does not fabricate a new `Vec<Finding>`.
-
-- A production `MintWalker` implementation exists in
-  `loom-workflow::mint::walk` (alongside the trait). Its `run_rubric`
-  spawns the reviewer agent subprocess against the rendered review
-  prompt and returns the agent's combined stdout; its `run_verifiers`
-  dispatches the deterministic verifier set + the integrity gate
-  forward-resolution check and returns one `VerifierFailure` per failed
-  dispatch outcome. Both methods are used only for `MintScope::Tree`
-  [test](production_mint_walker_exists_and_dispatches_rubric_and_verifiers)
-- `run_gate_mint` in the loom CLI binary dispatches by scope:
-  `--tree` constructs production walker(s) and obtains findings only
-  through the `MintWalker` trait (`run_verifiers` once for the tree,
-  then `run_rubric` per walked spec) before passing collected findings
-  to the minting pipeline. A verifier/rubric source failure records an
-  error in the mint summary and exits non-zero, but does not discard
-  findings already collected from other specs; stale-candidate reporting
-  is suppressed for that incomplete tree walk. `-m/--molecule` calls the
-  deferred-promotion path and never constructs a placeholder empty
-  findings vector
-  [test](run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion)
-- `loom loop`'s per-bead path routes a loop-phase `Success` outcome
-  through exactly one post-integration deterministic gate result; a
-  clean result makes the bead's integration durable (neither clarified
-  nor blocked). The bullet below pins the subprocess shape that the
-  per-bead gate resolves to; deferred remediation beads are not made
-  ready until the molecule stabilization step promotes them
-  [test](loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate)
-- The production per-bead gate implementation spawns exactly one
-  deterministic subprocess against `loom_bin` after integration — argv
-  shape `gate verify --diff <pre-integration-head>..HEAD`. A regression
-  that invokes `gate mint`, passes `--bead` / `--spec`, invokes
-  `--verify-exit`, or starts a focused review session on the per-bead
-  hot path is caught at the production controller
-  [test](exec_per_bead_gate_invokes_post_integration_verify_only)
-
-### Molecule mint summary semantics
-
-- `loom gate mint -m/--molecule <id>` exits 0 when it successfully
-  promotes zero or more deferred remediation beads; the summary lists
-  promoted counts and any reobserved closed findings
-  [test](mint_molecule_exits_zero_on_successful_promotion_summary)
-- `loom gate mint -m/--molecule <id>` exits non-zero when promotion
-  sees a structural conflict (duplicate live finding hashes, missing
-  work epic, or bd write failure), and the summary names the
-  conflicting bead ids or bd error
-  [test](mint_molecule_exits_nonzero_on_structural_or_write_errors)
-
-Loop-side interpretation of these exit codes — retrying transient
-promotion errors or blocking on structural bd state — is owned by
-[harness.md § Functional](harness.md#functional).
-
-### Commands surface — explicit scopes and status
-
-- Bare `loom gate` (no subcommand) prints `loom gate --help` —
-  identical output to `loom gate --help`. No verifier runs, no cache
-  read, no bd writes
-  [test](bare_loom_gate_prints_subcommand_help)
-- Bare `loom gate verify` prints the verify subcommand help and runs no
-  verifier, project hook, cache lookup, bd write, or marker check
-  [test](bare_loom_gate_verify_prints_help_and_runs_nothing)
-- `loom gate verify` rejects a positional selector; exact target
-  selection uses `--target <annotation target>`
-  [test](gate_verify_rejects_positional_selector)
-- `--target` is mutually exclusive with `--files`, `--diff`, and
-  `--tree`; zero matches fail loudly; cross-tier matches under
-  `verify --target` fail and suggest a tier subcommand; multiple
-  criteria sharing the same target inside one tier are accepted
-  [test](gate_target_exact_match_and_ambiguity_rules)
-- `loom gate verify --diff <base>..<head>` runs the project pre-commit
-  lane via prek for the resolved range before the spec annotation lane;
-  if a hook modifies the working tree the run exits non-zero with a
-  tree-modified-by-hook failure
-  [test](post_integration_verify_runs_project_precommit_and_affected_check_test)
-- A nested `loom gate verify --files` invoked under a parent
-  `verify --diff` records a skipped gate event with reason
-  `parent-diff-gate` and exits 0; correctness does not depend on the
-  project's hook id
-  [test](nested_verify_files_under_parent_diff_gate_records_skip)
-- Scope-derived tier policy has no `LOOM_VERIFY_TIERS` override:
-  `verify --files` runs affected `[check]`/`[test]`, `verify --diff`
-  runs project pre-commit plus affected `[check]`/`[test]`, and
-  `verify --tree` runs full `[check]`/`[test]`/`[system]`
-  [test](verify_tier_policy_is_scope_derived_without_env_override)
-- `loom gate status --diff <range>` / `--files <paths...>` / `--tree`
-  reads criterion evidence from `.loom/cache.db` and prints the report
-  per `Status cache` above; status without an explicit scope prints help
-  and runs no cache lookup
-  [test](loom_gate_status_requires_explicit_scope)
-- `loom gate status` is `refused_inside_loom() == false`; running
-  under `LOOM_INSIDE=1` is allowed because the cache read is local
-  and read-only
-  [test](loom_gate_status_is_allowed_under_loom_inside_env)
-
-### Status cache
-
-- `.loom/cache.db` is created on first `open` when the path is missing
-  [test](open_creates_db_file_when_missing)
-- A criterion-evidence `CacheRow` round-trips through sqlite preserving
-  every field, including typed `(SpecLabel, CriterionId)` identity and
-  the current annotation snapshot
-  [test](round_trip_through_sqlite_preserves_every_field)
-- The `row_for` helper writes a row that round-trips through the unified
-  cache
-  [test](row_for_helper_writes_round_trip_row)
-- Report rendered from on-disk rows summarises pass/fail per tier
-  [test](render_report_reads_from_disk_and_summarises_per_tier)
-- Broken-annotation entries in the report come from integrity findings,
-  not from the cache file itself
-  [test](broken_annotations_in_report_come_from_integrity_findings)
-- **Cache render <500ms — sqlite path.** The report renders in <500ms
-  on a 2000-row corpus when read from sqlite (hard target from
-  *Status cache*)
-  [test](render_under_500ms_on_2000_row_corpus)
-- **Cache render <500ms — in-memory path.** Same <500ms target holds
-  for the in-memory `render_from_rows` path
-  [test](render_from_rows_under_500ms_on_2000_row_corpus)
-
-### Verifier inputs
-
-- `[test]` annotations resolve declared inputs as the union of the
-  owning crate's source directories (via `cargo metadata`) and the spec
-  section the annotation lives in (spec-section auto-include)
-  [test](test_tier_resolution_uses_cargo_metadata_plus_spec_autoinclude)
-- A `[judge]` target is located by shared selector-stripping (`#fn` /
-  `::fn` / `::attr`) plus spec-relative resolution, the same helper the
-  integrity gate uses, so the input resolver and integrity gate cannot
-  disagree about where the script lives
-  [test](judge_tier_strips_selector_and_collects_relative_to_spec_dir)
-- A judge script reports per-function inputs via `<script> --print-inputs
-  <fn>` collect mode — `judge_files` records its path arguments while
-  `judge_criterion` and the LLM call are skipped, and the recorded paths
-  are emitted as `{"inputs":[...]}`
-  [test](judge_collect_mode_records_judge_files_paths)
-- The input-query batch form maps each target to its globs in one spawn —
-  `<script> --print-inputs` with no `<fn>` emits `{"inputs":{"<fn>":[...]}}`
-  for every rubric, so discovery spawns no more processes than batched
-  execution
-  [test](batch_print_inputs_maps_each_target_to_its_globs)
-- The `--print-inputs` query is issued through the verifier's command
-  template, not by prepending the flag to the command's first token, so a
-  `cargo run -p <crate> -- <walk>` verifier is queried as the walk's own
-  argument
-  [test](print_inputs_issued_through_command_template_not_argv_head)
-- A verifier that reports no inputs of its own always runs under a
-  `--files` scope — the resolver never narrows an undeterminable input
-  set to the spec section alone
-  [test](undeclared_verifier_always_runs_under_files_scope)
-- An opted-in input-query that exits non-zero or emits a malformed
-  inputs document is flagged `inputs-protocol-error` — opt-in being a
-  `[judge]` collect mode or a `[check]` / `[system]` runner that
-  declares an `inputs` query
-  [test](opted_in_input_query_failure_flagged_inputs_protocol_error)
-- A verifier whose input-query contract loom does not own — an
-  unregistered command, or a runner with no `inputs` query — falls
-  through to the conservative always-run default without an
-  `inputs-protocol-error`
-  [test](unowned_verifier_input_query_falls_through_silently)
-- A `[check]` / `[system]` target that matches a runner resolves via
-  that runner, not via a `tokens[0]` PATH/file check; only an unmatched
-  target falls back to the `tokens[0]` check
-  [test](runner_matched_target_resolves_via_runner_not_token_path_check)
-- A runner-matched verifier's queried inputs decide its `--files` scope
-  inclusion: the scope filter keeps the matched sibling whose queried
-  glob is staged and drops the one whose glob is disjoint, priming the
-  matched `[check]` group in a single query spawn
-  [test](filter_by_files_keeps_runner_matched_check_sibling_whose_queried_input_is_staged)
-
-### Scope handling
-
-- Live-workspace scope for a `[test](crate::module::test)` annotation
-  includes the owning crate's files plus its transitive dependency
-  files
-  [test](live_workspace_scope_includes_own_files_and_transitive_dep_files)
-- Live-workspace scope for an annotation referencing an unknown crate
-  is empty
-  [test](live_workspace_scope_for_unknown_crate_is_empty)
-- Live-workspace scope for a `[test](<crate>)` placeholder-target
-  annotation is empty
-  [test](live_workspace_scope_for_crate_placeholder_target_is_empty)
-
-### Dispatch — per-tier process model
-
-- Runner-matched `[check]` annotations batch into one subprocess per
-  runner
-  [test](run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn)
-- Unmatched `[check]` annotations use the fallback path and spawn one
-  subprocess per annotation
-  [test](dispatcher_spawns_one_subprocess_per_unmatched_check_annotation)
-- `[system]` tier spawns one subprocess per annotation (system
-  verifiers are inherently slow and self-contained; batching doesn't
-  help)
-  [test](dispatcher_spawns_one_subprocess_per_system_annotation)
-- `[test]` tier batches every in-scope target into one runner
-  subprocess per invocation
-  [test](test_tier_batches_all_targets_into_one_runner_subprocess)
-- `[test]` tier filters targets by `--files` scope intersection before
-  invoking the runner
-  [test](test_tier_filters_targets_by_files_scope_intersection)
-- `[test]` tier returns no subprocess when the `--files` filter
-  excludes every target
-  [test](test_tier_returns_none_when_files_filter_excludes_everything)
-- `[test]` tier returns no subprocess when no `[test]` annotations are
-  in scope at all
-  [test](test_tier_returns_none_when_no_test_annotations_in_input)
-- `[judge]` tier batches every target into one runner subprocess per
-  invocation
-  [test](judge_tier_batches_all_targets_into_one_runner_subprocess)
-- `[judge]` tier ignores `--files` scope filtering (unlike `[test]`)
-  [test](judge_tier_ignores_files_scope_unlike_test_tier)
-- Dispatcher skips annotations whose tier does not match the requested
-  tier
-  [test](check_tier_skips_annotations_with_non_check_tier)
-
-### Dispatch — env contract
-
-- The dispatcher sets `LOOM_FILES` and `LOOM_SPEC` env vars on every
-  verifier subprocess (per *Verifier-runner contract*)
-  [test](dispatcher_sets_loom_files_and_loom_spec_env_on_verifier_subprocess)
-
-### Dispatch — JSON verdict and exit-code fallback
-
-- `[check]` tier falls back to "exit code 0 → pass" when the verifier
-  emits no JSON line (per *Fallback for non-conforming verifiers*)
-  [test](check_tier_falls_back_to_exit_code_pass_when_verifier_omits_json)
-- `[check]` tier falls back to "non-zero exit → fail" when the verifier
-  emits no JSON line
-  [test](check_tier_falls_back_to_exit_code_fail_when_verifier_omits_json)
-- `[test]` runner falls back to exit code when the runner omits a JSON
-  per-target line
-  [test](test_tier_falls_back_to_exit_code_when_runner_omits_json_line)
-- A malformed JSON verdict (e.g. `pass` field with wrong type) surfaces
-  as a typed dispatch error rather than silently passing
-  [test](dispatcher_surfaces_malformed_verdict_when_pass_key_has_wrong_type)
-- Incidental JSON on stdout that isn't a recognised verdict line falls
-  through to the exit-code path
-  [test](dispatcher_falls_through_to_exit_code_on_incidental_json)
-- A verifier command that fails to spawn (command not found) surfaces
-  as a dispatch error — the gate-exit-2 case from the
-  *Verifier-runner contract*
-  [test](dispatcher_surfaces_spawn_failure_when_command_not_found)
-
-### Runners — batched dispatch
-
-- `run_with_runners` groups matched annotations into one batch per
-  runner and falls back to per-annotation spawn for unmatched
-  annotations
-  [test](run_with_runners_groups_matched_into_one_batch_and_falls_back_for_unmatched)
-- When multiple runners' `match` regexes could apply, the first match
-  in spec order wins
-  [test](run_with_runners_first_match_wins_in_spec_order)
-- When a batched-runner invocation does not produce per-target output
-  for every annotation in the batch, the missing targets surface as
-  dispatch failures
-  [test](run_with_runners_dispatch_fails_targets_missing_from_batch_output)
-- Runner cwd resolution — explicit `cwd` is resolved against the repo
-  root
-  [test](run_with_runners_resolves_cwd_against_repo_root)
-- Runner cwd resolution — a runner with no `cwd` falls through to the
-  tier-default `cwd`
-  [test](run_with_runners_falls_through_to_tier_default_when_runner_cwd_is_none)
-- Runner cwd resolution — a runner with no `cwd` and no tier-default
-  uses the repo root
-  [test](run_with_runners_uses_repo_root_when_neither_runner_nor_tier_cwd_set)
-- Tier-default `cwd` also applies to per-annotation fallback when the
-  matched runner has no cwd
-  [test](run_with_runners_tier_default_applies_to_unmatched_per_annotation_fallback)
-- `libtest-json` parser maps test-event names back to annotation
-  targets
-  [test](run_with_runners_libtest_json_maps_test_names_back_to_annotations)
-- `exit-code` parser shares a single per-runner verdict across every
-  target in the group
-  [test](run_with_runners_exit_code_parser_shares_verdict_across_group)
 
 ## Out of Scope
 
