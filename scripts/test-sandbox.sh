@@ -35,7 +35,6 @@ require_nested_device() {
 }
 
 require_nested_device /dev/fuse "running inside a container without /dev/fuse; podman cannot mount the sandbox filesystem."
-require_nested_device /dev/net/tun "running inside a container without /dev/net/tun; podman cannot configure sandbox networking."
 
 if ! command -v podman >/dev/null 2>&1; then
     skip_unsupported_container_runtime "podman is not available on PATH."
@@ -109,7 +108,7 @@ if [[ -z "$bead_workspace" ]]; then
     git -c core.hooksPath=/dev/null clone --quiet --local "$workspace_source" "$bead_workspace"
 fi
 
-if ! run_out=$(podman "${podman_args[@]}" run --rm --network=pasta --cap-add=NET_ADMIN --cgroups=disabled \
+if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none --cap-add=NET_ADMIN --cgroups=disabled \
     --volume "$bead_workspace:/workspace:rw" "$ref" /bin/bash -lc '
         set -euo pipefail
         pi --version >/dev/null

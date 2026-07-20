@@ -36,9 +36,14 @@ surface it exposes; integration-test files are not required for leaf crates
 whose contract is fully exercised inline.
 
 The repository-level test infrastructure contains process fixtures, the Nix
-verifier derivation, and the container smoke harness. Internal per-crate file
-and module organization remains an implementation choice rather than part of
-this spec's contract.
+verifier derivation, and the container smoke harness. Behavioral and protocol
+tests use mock agents. The sole real-agent exception is an assembled-system
+health check that launches the selected packaged Pi agent with `--version`
+inside a network-disabled container without provider credentials; it sends no
+prompt, performs no protocol turn, and makes no LLM API request.
+
+Internal per-crate file and module organization remains an implementation
+choice rather than part of this spec's contract.
 
 ### Annotation Contract
 
@@ -511,12 +516,17 @@ narrow process-lifecycle boundaries that parser unit tests cannot exercise.
       prompt → terminal-marker exchange
   [test](inbox_bridge_pi_followup_fixture_accepts_one_prompt_reply)
 
-### Container smoke
+### Assembled-system checks
 
 - `nix run .#smoke` follows the [agent-owned container launch
       boundary](agent.md#container-integration) to run a Pi-backed mock-agent
       bead against live bd, exiting 0 with the bead closed
   [system](nix run .#smoke)
+- `nix run .#test-sandbox` launches the selected packaged Pi agent only for an
+      offline `--version` health check: container networking is disabled, no
+      provider credentials are supplied, and no prompt, protocol turn, or LLM
+      API request occurs
+  [system](nix run .#test-sandbox)
 
 ### Test-source portability
 
@@ -920,10 +930,18 @@ owns:
     acknowledgment in the PR description ("snapshot updated because:
     ...") to surface accidental drift.
 
+10. **Packaged-agent health check** — assembled-system verification may execute
+    the selected real packaged agent only as a network-disabled `--version`
+    launch without provider credentials. It does not send a prompt, exercise a
+    protocol turn, or call an LLM API. All agent behavior and protocol coverage
+    remains mock-driven.
+
 ### Non-Functional
 
 1. **Deterministic** — no real LLM API calls; no real wall-clock waits.
-   Mock agents return canned responses. Time-dependent components take
+   The packaged-agent exception in Functional #10 is an offline,
+   non-conversational process-health check. Mock agents return canned responses.
+   Time-dependent components take
    an injectable `Clock` trait; tests use a `MockClock` with controllable
    advance (see *Architecture / Determinism Through Clock Injection*).
 2. **Fast** — soft targets per gate command, warm cache:
@@ -987,7 +1005,8 @@ owns:
    accompanied by a protocol-bump checklist (re-run parser tests, scan
    upstream changelog for new event types, add `Unknown` coverage if
    any new types lack typed variants, update mock scripts if new types
-   reach pipe-level paths). No live wire tests against real binaries.
+   reach pipe-level paths). No live wire tests run against real binaries; the
+   Functional #10 exception proves only that the selected package launches.
    Detection coverage: silent breaks in *exercised* fields surface as
    `serde_json` errors in parser tests when the pinned version is
    bumped. Fields not exercised by any test could still drift silently
@@ -1002,13 +1021,15 @@ owns:
 
 ## Out of Scope
 
-- **Real-binary tests at any tier** — no test invokes real pi-mono,
-  real Claude Code, or any LLM API. Mock pi and mock claude scripts
-  cover the protocol surface (parser tests use inline strings; mocks
-  cover pipe-level paths; smoke runs mock pi inside the container).
-  Validation against real binaries happens during development, outside
-  CI. The pinned nixpkgs input plus parser tests with field-level
-  coverage catch silent protocol drift on bumps.
+- **Real-binary behavioral tests** — no test invokes real Claude Code or uses
+  real Pi for a conversation, prompt, protocol turn, or LLM API request. Mock
+  pi and mock claude scripts cover the protocol surface (parser tests use
+  inline strings; mocks cover pipe-level paths; smoke runs mock pi inside the
+  container). The sole real-agent exception is the offline packaged-Pi
+  `--version` health check in Functional #10; it detects image/runtime
+  packaging drift but does not validate conversational or protocol behavior.
+  The pinned nixpkgs input plus parser tests with field-level coverage catch
+  silent protocol drift on bumps.
 - **macOS container smoke** — the smoke requires `podman` (Linux). Darwin
   container testing is a follow-up.
 - **Mocking `bd`** — the container smoke uses live `bd` (see NFR #6).

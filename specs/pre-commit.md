@@ -105,8 +105,11 @@ warm cache.
 Bead-workspace placement and canonical hook-path creation/repair are owned by
 [harness.md § Bead Dispatch](harness.md#bead-dispatch). This spec consumes that
 workspace guarantee: an agent's ordinary `git commit` traverses the same
-configured pre-commit policy as a host commit. Workers do not push; final
-in-session feedback follows the loop completion self-check contract owned by
+configured pre-commit policy as a host commit. The shared `test-sandbox`
+verifier consumes the
+[tests-owned packaged-agent health policy](tests.md#assembled-system-checks);
+the hook-chain checks do not drive an agent conversation. Workers do not push.
+Final in-session feedback follows the contract in
 [templates.md — Loop completion self-check and self-review](templates.md#loop-completion-self-check-and-self-review).
 
 What this catches in-session:

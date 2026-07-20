@@ -1239,9 +1239,10 @@ the entrypoint run the wrong runtime.
   image with the Pi agent runtime selected explicitly (`agent = "pi"`),
   matching wrix's one-agent-per-image format.
   [system](nix build .#sandbox)
-- The selected Pi agent binary launches inside that built sandbox image and
-  responds to `--version`; failures identify when the selected runtime is
-  missing or broken.
+- The selected packaged Pi agent binary launches inside that built sandbox
+  image and responds to `--version` under the
+  [tests-owned packaged-agent health policy](tests.md#assembled-system-checks);
+  failures identify a missing or broken runtime package.
   [system](nix run .#test-sandbox)
 
 ## Requirements

@@ -131,6 +131,12 @@ _:
 
       fakePodmanCreatesReadOnlyStorage = pkgs.writeShellScript "podman" ''
         set -euo pipefail
+        if [[ -n "''${LOOM_TEST_PODMAN_ARGS_LOG:-}" ]]; then
+          for arg in "$@"; do
+            printf '<%s>' "$arg" >> "$LOOM_TEST_PODMAN_ARGS_LOG"
+          done
+          printf '\n' >> "$LOOM_TEST_PODMAN_ARGS_LOG"
+        fi
         root=""
         cmd=""
         while [[ "$#" -gt 0 ]]; do
@@ -280,6 +286,34 @@ _:
             touch "$out"
           '';
 
+      test-sandbox-disables-container-network =
+        pkgs.runCommand "test-sandbox-disables-container-network" { }
+          ''
+            set -euo pipefail
+            fakebin=$(mktemp -d)
+            ln -s ${fakePodmanCreatesReadOnlyStorage} "$fakebin/podman"
+            export PATH="$fakebin:${
+              makeBinPath [
+                pkgs.coreutils
+                pkgs.gnused
+                pkgs.bash
+              ]
+            }"
+            export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
+            export LOOM_TEST_PODMAN_ARGS_LOG="$TMPDIR/podman-args"
+            export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
+            export LOOM_TEST_SANDBOX_SOURCE="$TMPDIR/source"
+            export LOOM_TEST_SANDBOX_WORKSPACE="$LOOM_TEST_SANDBOX_SOURCE"
+            mkdir -p "$LOOM_TEST_SANDBOX_SOURCE/.git"
+            touch "$LOOM_TEST_SANDBOX_SOURCE/Cargo.toml"
+            bash ${../../scripts/test-sandbox.sh}
+            if [[ $(<"$LOOM_TEST_PODMAN_ARGS_LOG") != *'<run><--rm><--network=none>'* ]]; then
+              printf 'expected test-sandbox podman run to disable networking; observed:\n%s\n' "$(<"$LOOM_TEST_PODMAN_ARGS_LOG")" >&2
+              exit 1
+            fi
+            touch "$out"
+          '';
+
       profileManifestEntries = concatLists (
         attrValues (mapAttrs (_profile: attrValues) profileManifest.passthru.manifest)
       );
@@ -357,6 +391,7 @@ _:
           sandbox-profile-env-has-loom
           sandbox-profile-env-has-wrix
           test-app-ignores-host-git-signing
+          test-sandbox-disables-container-network
           test-sandbox-ignores-read-only-podman-storage-cleanup
           test-sandbox-skips-oci-permission-denied
           test-sandbox-skips-unsupported-runtime
