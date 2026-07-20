@@ -22,8 +22,7 @@ use loom_driver::bd::{BdClient, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::config::LoomConfig;
 use loom_driver::git::{
     clone_loom_workspace, enable_rerere, fast_forward_loom_workspace_to_origin, read_origin_url,
-    reconcile_signing_config, resolve_prek_hooks_path_for_workspace, resolve_signing_key,
-    write_hooks_config,
+    resolve_prek_hooks_path_for_workspace, write_hooks_config,
 };
 use loom_driver::identifier::MoleculeId;
 use loom_driver::lock::{LockGuard, LockManager};
@@ -82,39 +81,23 @@ pub fn run(
     opts: InitOpts,
     molecules: &[ActiveMolecule],
 ) -> Result<InitReport, InitError> {
-    run_with_resolvers(
+    run_with_hooks_resolver(
         workspace,
         opts,
         molecules,
-        resolve_signing_key,
         resolve_prek_hooks_path_for_workspace,
     )
 }
 
-fn run_with_resolvers(
+fn run_with_hooks_resolver(
     workspace: &Path,
     opts: InitOpts,
     molecules: &[ActiveMolecule],
-    resolve: impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
     resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<InitReport, InitError> {
     let lock_mgr = LockManager::new(workspace)?;
     let guard = lock_mgr.acquire_workspace()?;
-    run_locked(workspace, opts, molecules, guard, resolve, resolve_hooks)
-}
-
-#[cfg(test)]
-fn run_with_resolvers_and_lock_state_home(
-    workspace: &Path,
-    opts: InitOpts,
-    molecules: &[ActiveMolecule],
-    resolve: impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
-    resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
-    lock_state_home: &Path,
-) -> Result<InitReport, InitError> {
-    let lock_mgr = LockManager::with_state_home(workspace, lock_state_home)?;
-    let guard = lock_mgr.acquire_workspace()?;
-    run_locked(workspace, opts, molecules, guard, resolve, resolve_hooks)
+    run_locked(workspace, opts, molecules, guard, resolve_hooks)
 }
 
 fn run_locked(
@@ -122,7 +105,6 @@ fn run_locked(
     opts: InitOpts,
     molecules: &[ActiveMolecule],
     _guard: LockGuard,
-    resolve: impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
     resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<InitReport, InitError> {
     let runtime_dir = workspace.join(".loom");
@@ -159,7 +141,7 @@ fn run_locked(
     };
 
     let integration_workspace =
-        materialize_integration_workspace(workspace, &config_path, &resolve, &resolve_hooks)?;
+        materialize_integration_workspace(workspace, &config_path, &resolve_hooks)?;
 
     Ok(InitReport {
         config_path,
@@ -184,7 +166,6 @@ fn run_locked(
 fn materialize_integration_workspace(
     workspace: &Path,
     config_path: &Path,
-    resolve: &impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
     resolve_hooks: &impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<Option<MaterializedIntegration>, InitError> {
     let dest = workspace.join(".loom/integration");
@@ -196,12 +177,7 @@ fn materialize_integration_workspace(
         // dispatch).
         let config = LoomConfig::load(config_path)?;
         fast_forward_loom_workspace_to_origin(&dest, &config.loom.integration_branch)?;
-        // Re-init must refresh signing + rerere idempotently: stale host
-        // paths must not shadow the current wrix/global gitconfig, and a
-        // key provisioned after first init must upgrade the workspace.
         enable_rerere(&dest)?;
-        let signing_key = resolve(&dest)?;
-        reconcile_signing_config(&dest, signing_key.as_deref())?;
         let hooks_path = resolve_hooks(workspace)?;
         write_hooks_config(&dest, &hooks_path)?;
         return Ok(Some(MaterializedIntegration {
@@ -215,12 +191,10 @@ fn materialize_integration_workspace(
     let config = LoomConfig::load(config_path)?;
     clone_loom_workspace(&origin_url, &dest, &config.loom.integration_branch)?;
 
-    // Enable rerere unconditionally so the driver-side rebase replays
-    // recorded conflict resolutions; sync the signing block to the current
-    // wrix key, or remove it so the operator's global gitconfig governs.
+    // Enable rerere unconditionally so driver-side rebases replay recorded
+    // conflict resolutions. `loom loop` installs repository Git policy in a
+    // separate, fail-fast startup preflight.
     enable_rerere(&dest)?;
-    let signing_key = resolve(&dest)?;
-    reconcile_signing_config(&dest, signing_key.as_deref())?;
     let hooks_path = resolve_hooks(workspace)?;
     write_hooks_config(&dest, &hooks_path)?;
 
@@ -421,13 +395,9 @@ mod tests {
     }
 
     fn run_with_hooks(workspace: &Path, hooks: PathBuf) -> Result<InitReport, InitError> {
-        run_with_resolvers(
-            workspace,
-            InitOpts::default(),
-            &[],
-            |_dir| Ok(None),
-            |_workspace| Ok(hooks.clone()),
-        )
+        run_with_hooks_resolver(workspace, InitOpts::default(), &[], |_workspace| {
+            Ok(hooks.clone())
+        })
     }
 
     /// Spec contract `[test]` annotation
@@ -491,13 +461,9 @@ mod tests {
         let workspace = temp_child_workspace(tmp.path(), "loom-init-hooks-missing-ws");
         loom_driver::git::init_test_repo(&workspace)?;
 
-        let err = run_with_resolvers(
-            &workspace,
-            InitOpts::default(),
-            &[],
-            |_dir| Ok(None),
-            |_workspace| Err(loom_driver::git::GitError::PrekHooksUnresolved),
-        )
+        let err = run_with_hooks_resolver(&workspace, InitOpts::default(), &[], |_workspace| {
+            Err(loom_driver::git::GitError::PrekHooksUnresolved)
+        })
         .expect_err("unresolved hooks must fail init");
         assert!(matches!(
             err,
@@ -557,175 +523,6 @@ mod tests {
         Ok(())
     }
 
-    fn gen_ssh_key(dir: &Path) -> PathBuf {
-        let key = dir.join("signing-key");
-        let status = std::process::Command::new("ssh-keygen")
-            .args(["-t", "ed25519", "-N", "", "-q", "-C", "", "-f"])
-            .arg(&key)
-            .status()
-            .expect("spawn ssh-keygen");
-        assert!(status.success(), "ssh-keygen must succeed");
-        key
-    }
-
-    /// Spec contract `[test]` annotation (`specs/harness.md` § Success
-    /// Criteria · Commit signing): `loom init` writes the signing block
-    /// (`gpg.format=ssh`, `user.signingkey`, `commit.gpgsign=true`,
-    /// `gpg.ssh.allowedSignersFile`) into the loom workspace's local
-    /// `.git/config` when a signing key resolves. Driven through the
-    /// injectable resolver seam because `$WRIX_SIGNING_KEY` cannot be set
-    /// under edition 2024's unsafe `env::set_var`.
-    #[test]
-    fn loom_init_writes_signing_gitconfig() -> Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let workspace = temp_child_workspace(tmp.path(), "loom-init-signing-ws");
-        loom_driver::git::init_test_repo(&workspace)?;
-        let key = gen_ssh_key(tmp.path());
-        let hooks = fake_prek_hooks(tmp.path())?;
-
-        let report = run_with_resolvers(
-            &workspace,
-            InitOpts::default(),
-            &[],
-            |_dir| Ok(Some(key.clone())),
-            |_workspace| Ok(hooks.clone()),
-        )?;
-        let integ = report
-            .integration_workspace
-            .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;
-
-        let config = std::fs::read_to_string(integ.path.join(".git/config"))?;
-        assert!(config.contains("format = ssh"), "gpg.format: {config}");
-        assert!(
-            config.contains(&format!("signingkey = {}", key.display())),
-            "user.signingkey: {config}",
-        );
-        assert!(
-            config.contains("gpgsign = true"),
-            "commit.gpgsign: {config}"
-        );
-        let signers = integ.path.join(".git/loom-allowed-signers");
-        assert!(
-            config.contains(&format!("allowedSignersFile = {}", signers.display())),
-            "gpg.ssh.allowedSignersFile: {config}",
-        );
-        assert!(
-            signers.is_file(),
-            "allowed_signers must be derived into the loom workspace: {signers:?}",
-        );
-        Ok(())
-    }
-
-    /// Regression (`criterion:harness:loom_init_writes_signing_gitconfig`):
-    /// a re-init over an existing loom workspace must refresh the signing +
-    /// rerere block idempotently, so a workspace materialized before the
-    /// signing key was provisioned gets upgraded on the next `loom init`
-    /// rather than staying stuck on the global gitconfig. The first init
-    /// resolves no key (no signing block written); the second resolves the
-    /// key and the block must then appear in the existing workspace.
-    #[test]
-    fn loom_init_reinit_upgrades_signing_gitconfig() -> Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let state_home = tempfile::tempdir()?;
-        let workspace = temp_child_workspace(tmp.path(), "loom-init-reinit-signing-ws");
-        loom_driver::git::init_test_repo(&workspace)?;
-        let key = gen_ssh_key(tmp.path());
-        let hooks = fake_prek_hooks(tmp.path())?;
-
-        // First init: no key resolves → no signing block.
-        let first = run_with_resolvers_and_lock_state_home(
-            &workspace,
-            InitOpts::default(),
-            &[],
-            |_dir| Ok(None),
-            |_workspace| Ok(hooks.clone()),
-            state_home.path(),
-        )?
-        .integration_workspace
-        .ok_or_else(|| anyhow!("first init must materialize integration workspace"))?;
-        assert!(first.created, "first init must clone");
-        let config = std::fs::read_to_string(first.path.join(".git/config"))?;
-        assert!(
-            !config.contains("signingkey"),
-            "no signing block expected on first init without a key: {config}",
-        );
-
-        // Second init over the existing workspace: key now resolves → the
-        // reconcile path must write the signing block into the workspace it
-        // did NOT re-clone.
-        let second = run_with_resolvers_and_lock_state_home(
-            &workspace,
-            InitOpts::default(),
-            &[],
-            |_dir| Ok(Some(key.clone())),
-            |_workspace| Ok(hooks.clone()),
-            state_home.path(),
-        )?
-        .integration_workspace
-        .ok_or_else(|| anyhow!("second init must report the existing workspace"))?;
-        assert!(!second.created, "second init must NOT re-clone");
-        assert_eq!(second.path, first.path);
-
-        let config = std::fs::read_to_string(second.path.join(".git/config"))?;
-        assert!(config.contains("format = ssh"), "gpg.format: {config}");
-        assert!(
-            config.contains(&format!("signingkey = {}", key.display())),
-            "user.signingkey must be written on re-init: {config}",
-        );
-        assert!(
-            config.contains("gpgsign = true"),
-            "commit.gpgsign: {config}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn loom_init_reinit_removes_stale_signing_gitconfig_without_key() -> Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let state_home = tempfile::tempdir()?;
-        let workspace = temp_child_workspace(tmp.path(), "loom-init-clear-signing-ws");
-        loom_driver::git::init_test_repo(&workspace)?;
-        let key = gen_ssh_key(tmp.path());
-        let hooks = fake_prek_hooks(tmp.path())?;
-
-        let first = run_with_resolvers_and_lock_state_home(
-            &workspace,
-            InitOpts::default(),
-            &[],
-            |_dir| Ok(Some(key.clone())),
-            |_workspace| Ok(hooks.clone()),
-            state_home.path(),
-        )?
-        .integration_workspace
-        .ok_or_else(|| anyhow!("first init must materialize integration workspace"))?;
-        let signers = first.path.join(".git/loom-allowed-signers");
-        assert!(signers.exists(), "precondition: signing block written");
-
-        let second = run_with_resolvers_and_lock_state_home(
-            &workspace,
-            InitOpts::default(),
-            &[],
-            |_dir| Ok(None),
-            |_workspace| Ok(hooks.clone()),
-            state_home.path(),
-        )?
-        .integration_workspace
-        .ok_or_else(|| anyhow!("second init must report the existing workspace"))?;
-        assert!(!second.created, "second init must NOT re-clone");
-
-        let config = std::fs::read_to_string(second.path.join(".git/config"))?;
-        assert!(
-            !config.contains("signingkey"),
-            "stale signing key must be removed when no key resolves: {config}",
-        );
-        assert!(
-            !config.contains("gpgsign"),
-            "stale gpgsign must be removed when no key resolves: {config}",
-        );
-        assert!(!signers.exists(), "stale allowed_signers must be removed");
-        Ok(())
-    }
-
     /// Spec contract `[test]` annotation (`specs/harness.md` § Success
     /// Criteria · Verdict Gate): `loom init` enables rerere
     /// (`rerere.enabled=true`, `rerere.autoupdate=true`) in the loom
@@ -751,44 +548,6 @@ mod tests {
         assert!(
             config.contains("autoupdate = true"),
             "rerere.autoupdate: {config}",
-        );
-        Ok(())
-    }
-
-    /// Spec contract `[test]` annotation (`specs/harness.md` § Success
-    /// Criteria · Commit signing): when no signing key resolves, `loom init`
-    /// writes no signing block — the operator's global gitconfig governs.
-    /// The test repo's origin is a local bare path (not GitHub), so the
-    /// deploy-key fallback is skipped.
-    #[test]
-    fn no_wrix_keys_leaves_global_gitconfig_governing() -> Result<()> {
-        if std::env::var_os("WRIX_SIGNING_KEY").is_some() {
-            // Ambient env carries a real signing key; the no-key path
-            // cannot be exercised in this environment.
-            return Ok(());
-        }
-        let tmp = tempfile::tempdir()?;
-        let workspace = temp_child_workspace(tmp.path(), "loom-init-nokey-ws");
-        loom_driver::git::init_test_repo(&workspace)?;
-        let hooks = fake_prek_hooks(tmp.path())?;
-
-        let report = run_with_hooks(&workspace, hooks)?;
-        let integ = report
-            .integration_workspace
-            .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;
-
-        let config = std::fs::read_to_string(integ.path.join(".git/config"))?;
-        assert!(
-            !config.contains("signingkey"),
-            "no signing block expected when key unresolved: {config}",
-        );
-        assert!(
-            !config.contains("gpgsign"),
-            "no commit.gpgsign expected when key unresolved: {config}",
-        );
-        assert!(
-            !integ.path.join(".git/loom-allowed-signers").exists(),
-            "no allowed_signers file expected when key unresolved",
         );
         Ok(())
     }

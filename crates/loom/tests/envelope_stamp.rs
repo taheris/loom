@@ -108,6 +108,7 @@ fn run_loom_loop_bead(
         .arg("--agent")
         .arg("pi")
         .arg("loop")
+        .arg("--host-key")
         .arg(bead_id)
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)

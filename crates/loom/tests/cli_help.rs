@@ -418,6 +418,10 @@ fn loom_loop_help_documents_work_roots_and_removed_selectors() {
         out.contains("BEAD_OR_EPIC_ID"),
         "loop help must name work roots: {out}"
     );
+    assert!(
+        out.contains("--host-key") && out.contains("ambient host Git"),
+        "loop help must make host-key access an explicit opt-in: {out}",
+    );
     for removed in ["--spec", "--once", "--all-specs"] {
         assert!(
             !out.contains(removed),

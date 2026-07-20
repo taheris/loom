@@ -102,6 +102,7 @@ fn run_loom_with_flags(
         .arg("--agent")
         .arg("pi")
         .arg("loop")
+        .arg("--host-key")
         .arg(bead_id)
         .args(flags)
         .env("PATH", new_path)

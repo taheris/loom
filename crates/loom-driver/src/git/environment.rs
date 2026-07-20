@@ -32,7 +32,7 @@ pub(super) fn tokio_git_command() -> TokioCommand {
     command
 }
 
-fn scrub_std_command(command: &mut StdCommand) {
+pub(super) fn scrub_std_command(command: &mut StdCommand) {
     for &name in LOCAL_ENV_VARS {
         command.env_remove(name);
     }

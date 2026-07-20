@@ -746,7 +746,7 @@ where
         let extra_env = self.loom_cfg.container_sccache_env();
         // Host key paths handed to the `wrix spawn` launcher so it mounts
         // the deploy + signing keys into the bead container; the agent boots
-        // without git keys otherwise (`specs/harness.md` § Commit signing).
+        // without git keys otherwise (`specs/harness.md` § Repository Git isolation).
         let launcher_env = self.git.launcher_key_env()?;
         let mut spawn_config = match build_spawn_config_from_manifest(
             &self.manifest,

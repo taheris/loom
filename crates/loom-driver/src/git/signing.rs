@@ -1,27 +1,24 @@
-//! Commit-signing + rerere gitconfig writes for loom-materialized
-//! workspaces.
+//! Repository Git isolation and rerere configuration.
 //!
-//! Mirrors wrix's host-side signing rule (see `lib/sandbox/linux/default.nix`
-//! and `scripts/setup-deploy-key` in the wrix flake): a two-tier
-//! signing-key resolver feeds a local `.git/config` block that makes commit
-//! signing non-interactive in the host-only loom workspace. The block is
-//! written ONLY into that workspace — never into bead clones, whose
-//! in-container worker commits are signed by wrix's `git-ssh-setup.sh`
-//! global config and would be broken by a host-path local block that shadows
-//! it (`specs/harness.md` § Commit signing). The key resolution and gitconfig
-//! writes live here, alongside the rest of the `git` CLI surface, so the
-//! `git_client_encapsulation` rule stays satisfied.
+//! `loom loop` resolves repository keys before bead selection, then delegates
+//! repository-local transport and signing policy to `wrix init`. Wrix helper
+//! tokens are stable across the host and container contexts in which bead
+//! clones run; private host paths are passed only to Wrix child processes.
+//!
+//! Legacy absolute-path config is only removed during migration; host-only
+//! signing writers are test fixtures. Keeping all Git CLI access here
+//! preserves the `git_client_encapsulation` rule.
 
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
+use std::process::{Command as StdCommand, Stdio};
 
 use super::client::read_origin_url;
 use super::error::GitError;
 
-/// Wrix convention: the signing identity stamped into the
-/// allowed_signers file when `$GIT_AUTHOR_EMAIL` is unset.
+/// Wrix convention used by host-only signing test fixtures.
+#[cfg(any(test, feature = "test-support"))]
 const DEFAULT_SIGNING_IDENTITY: &str = "sandbox@wrix.dev";
 
 /// Basename of the derived allowed_signers file under a workspace's
@@ -38,6 +35,247 @@ pub const WRIX_DEPLOY_KEY_ENV: &str = "WRIX_DEPLOY_KEY";
 /// analogue of [`WRIX_DEPLOY_KEY_ENV`].
 pub const WRIX_SIGNING_KEY_ENV: &str = "WRIX_SIGNING_KEY";
 
+/// Signing authority for Loom-managed Git processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyMode {
+    /// Require and use repository-scoped Wrix deploy and signing keys.
+    Repository,
+    /// Explicitly permit the operator's ambient Git signing configuration.
+    Host,
+}
+
+/// Resolved Git policy installed into Loom's integration and bead clones.
+#[derive(Debug, Clone)]
+pub struct RepoGitPolicy {
+    mode: KeyMode,
+    wrix_bin: PathBuf,
+    key_name: Option<String>,
+    deploy_key: Option<PathBuf>,
+    signing_key: Option<PathBuf>,
+}
+
+impl RepoGitPolicy {
+    /// Resolve the repository keys required by `loom loop`.
+    pub fn resolve(origin_dir: &Path, wrix_bin: PathBuf, mode: KeyMode) -> Result<Self, GitError> {
+        if mode == KeyMode::Host {
+            return Ok(Self {
+                mode,
+                wrix_bin,
+                key_name: None,
+                deploy_key: None,
+                signing_key: None,
+            });
+        }
+
+        reject_ambient_transport_overrides([
+            ("GIT_SSH_COMMAND", std::env::var_os("GIT_SSH_COMMAND")),
+            ("GIT_SSH", std::env::var_os("GIT_SSH")),
+        ])?;
+        let deploy_key = require_absolute_key_path(
+            resolve_deploy_key(origin_dir)?.ok_or(GitError::RepositoryDeployKeyRequired)?,
+        )?;
+        let signing_key = require_absolute_key_path(
+            resolve_signing_key(origin_dir)?.ok_or(GitError::RepositorySigningKeyRequired)?,
+        )?;
+        let key_name = deploy_key
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| GitError::RepositoryKeyName {
+                path: deploy_key.clone(),
+            })?
+            .to_string();
+
+        Ok(Self {
+            mode,
+            wrix_bin,
+            key_name: Some(key_name),
+            deploy_key: Some(deploy_key),
+            signing_key: Some(signing_key),
+        })
+    }
+
+    /// Build an explicit repository policy for cross-crate tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn for_test(
+        wrix_bin: PathBuf,
+        key_name: String,
+        deploy_key: PathBuf,
+        signing_key: PathBuf,
+    ) -> Self {
+        Self {
+            mode: KeyMode::Repository,
+            wrix_bin,
+            key_name: Some(key_name),
+            deploy_key: Some(deploy_key),
+            signing_key: Some(signing_key),
+        }
+    }
+
+    /// Install context-stable Wrix Git policy or explicitly restore host policy.
+    pub fn apply(&self, workspace: &Path) -> Result<(), GitError> {
+        if self.mode == KeyMode::Host {
+            return clear_managed_git_policy(workspace);
+        }
+        let (Some(key_name), Some(deploy_key), Some(signing_key)) = (
+            self.key_name.as_deref(),
+            self.deploy_key.as_deref(),
+            self.signing_key.as_deref(),
+        ) else {
+            return Err(GitError::RepositoryPolicyIncomplete);
+        };
+
+        remove_legacy_allowed_signers(workspace)?;
+        let mut command = StdCommand::new(&self.wrix_bin);
+        super::environment::scrub_std_command(&mut command);
+        let output = command
+            .args(["init", "--offline", "--no-hooks", "--key", key_name])
+            .env(WRIX_DEPLOY_KEY_ENV, deploy_key)
+            .env(WRIX_SIGNING_KEY_ENV, signing_key)
+            .current_dir(workspace)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|source| GitError::WrixSpawn {
+                executable: self.wrix_bin.clone(),
+                source,
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Err(GitError::WrixInit {
+                workdir: workspace.to_path_buf(),
+                status: output.status.code().unwrap_or(-1),
+                detail: if stderr.is_empty() { stdout } else { stderr },
+            });
+        }
+        validate_wrix_policy(workspace, key_name)
+    }
+
+    /// Host key paths passed only to the Wrix launcher process.
+    pub fn launcher_env(&self) -> Vec<(String, String)> {
+        let mut env = Vec::new();
+        if let Some(key) = &self.signing_key {
+            env.push((
+                WRIX_SIGNING_KEY_ENV.to_string(),
+                key.to_string_lossy().into_owned(),
+            ));
+        }
+        if let Some(key) = &self.deploy_key {
+            env.push((
+                WRIX_DEPLOY_KEY_ENV.to_string(),
+                key.to_string_lossy().into_owned(),
+            ));
+        }
+        env
+    }
+
+    /// Allowed-signers file created by `wrix init` for repository mode.
+    pub fn allowed_signers_path(&self, workspace: &Path) -> Option<PathBuf> {
+        (self.mode == KeyMode::Repository).then(|| workspace.join(".git/wrix/allowed_signers"))
+    }
+}
+
+fn reject_ambient_transport_overrides(
+    overrides: [(&str, Option<OsString>); 2],
+) -> Result<(), GitError> {
+    for (variable, value) in overrides {
+        if value.is_some_and(|value| !value.is_empty()) {
+            return Err(GitError::AmbientGitTransportOverride {
+                variable: variable.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn require_absolute_key_path(path: PathBuf) -> Result<PathBuf, GitError> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err(GitError::RepositoryKeyPathNotAbsolute { path })
+    }
+}
+
+fn validate_wrix_policy(workspace: &Path, key_name: &str) -> Result<(), GitError> {
+    let expected = [
+        ("gpg.format", "ssh".to_string()),
+        ("gpg.ssh.program", "wrix-git-sign".to_string()),
+        (
+            "gpg.ssh.allowedSignersFile",
+            "wrix/allowed_signers".to_string(),
+        ),
+        (
+            "user.signingkey",
+            format!("wrix/signing-key/{key_name}-signing"),
+        ),
+        ("commit.gpgsign", "true".to_string()),
+    ];
+    for (key, expected_value) in expected {
+        let actual = local_git_config(workspace, key)?;
+        if actual.as_deref() != Some(expected_value.as_str()) {
+            return Err(invalid_wrix_policy(
+                workspace,
+                format!("{key} must be `{expected_value}`, found {actual:?}"),
+            ));
+        }
+    }
+    let ssh_command = local_git_config(workspace, "core.sshCommand")?;
+    if !ssh_command
+        .as_deref()
+        .is_some_and(|value| value.contains("wrix/git-ssh"))
+    {
+        return Err(invalid_wrix_policy(
+            workspace,
+            format!("core.sshCommand does not invoke wrix/git-ssh: {ssh_command:?}"),
+        ));
+    }
+    for relative in [".git/wrix/allowed_signers", ".git/wrix/git-ssh"] {
+        if !workspace.join(relative).is_file() {
+            return Err(invalid_wrix_policy(
+                workspace,
+                format!("required policy file is missing: {relative}"),
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = std::fs::metadata(workspace.join(".git/wrix/git-ssh"))?
+            .permissions()
+            .mode();
+        if mode & 0o111 == 0 {
+            return Err(invalid_wrix_policy(
+                workspace,
+                ".git/wrix/git-ssh is not executable".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn local_git_config(workspace: &Path, key: &str) -> Result<Option<String>, GitError> {
+    let output = crate::git::environment::std_git_command()
+        .arg("-C")
+        .arg(workspace)
+        .args(["config", "--local", "--get", key])
+        .output()
+        .map_err(GitError::Spawn)?;
+    if output.status.success() {
+        Ok(Some(String::from_utf8(output.stdout)?.trim().to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+fn invalid_wrix_policy(workspace: &Path, detail: String) -> GitError {
+    GitError::WrixPolicyInvalid {
+        workdir: workspace.to_path_buf(),
+        detail,
+    }
+}
+
 /// Resolve the wrix signing key for loom-materialized workspaces, using
 /// the same two-tier precedence wrix applies host-side:
 ///
@@ -49,12 +287,11 @@ pub const WRIX_SIGNING_KEY_ENV: &str = "WRIX_SIGNING_KEY";
 ///    `origin_dir`'s origin URL (parsed as `github.com[:/]<user>/<repo>`);
 ///    `<host>` is `hostname -s` (short form, falling back to `hostname`).
 ///    A non-GitHub origin URL skips the fallback.
-/// 3. Otherwise `Ok(None)` — the operator's global `~/.gitconfig` governs.
+/// 3. Otherwise `Ok(None)`. Default loop startup converts this into a hard
+///    error; only explicit host-key mode permits ambient Git policy.
 ///
-/// `origin_dir` is the loom workspace whose `origin` points at GitHub: for
-/// `loom init` that is the freshly-cloned `.loom/integration`; for
-/// `GitClient::create_worktree` it is the loom workspace (a bead clone's
-/// own `origin` points back at the loom workspace path, not GitHub).
+/// `origin_dir` is normally `.loom/integration`, whose `origin` points at the
+/// repository remote (a bead clone's origin is only a local workspace path).
 pub fn resolve_signing_key(origin_dir: &Path) -> Result<Option<PathBuf>, GitError> {
     resolve_from(
         &ResolveInputs::for_kind(KeyKind::Signing, origin_dir)?,
@@ -66,9 +303,8 @@ pub fn resolve_signing_key(origin_dir: &Path) -> Result<Option<PathBuf>, GitErro
 /// [`resolve_signing_key`] with the `-signing` suffix dropped: the keyname
 /// fallback is `<repo>-<host>` and the env var is `$WRIX_DEPLOY_KEY`.
 /// Set-but-missing is a hard error ([`GitError::DeployKeyMissing`]). Loom
-/// passes the resolved host path to `wrix spawn` as `$WRIX_DEPLOY_KEY`
-/// so the launcher mounts the key into the bead container; loom's own git
-/// invocations never read it (`specs/harness.md` § Commit signing).
+/// passes the resolved host path only to Wrix child processes; Loom never
+/// reads the private material (`specs/harness.md` § Repository Git isolation).
 pub fn resolve_deploy_key(origin_dir: &Path) -> Result<Option<PathBuf>, GitError> {
     resolve_from(
         &ResolveInputs::for_kind(KeyKind::Deploy, origin_dir)?,
@@ -195,9 +431,8 @@ fn resolve_hostname() -> Option<String> {
     None
 }
 
-/// Sync the loom workspace signing block to the currently resolved key.
-/// Passing `None` removes Loom's local signing keys so global gitconfig
-/// governs again.
+/// Configure a legacy host-only signing fixture for integration tests.
+#[cfg(any(test, feature = "test-support"))]
 pub fn reconcile_signing_config(
     target_dir: &Path,
     signing_key: Option<&Path>,
@@ -208,13 +443,8 @@ pub fn reconcile_signing_config(
     }
 }
 
-/// Write the signing block into `target_dir`'s local `.git/config` and
-/// derive the allowed_signers file at `target_dir/.git/loom-allowed-signers`.
-///
-/// The block declares `gpg.format=ssh`, `user.signingkey=<signing_key>`,
-/// `gpg.ssh.allowedSignersFile=<target_dir>/.git/loom-allowed-signers`, and
-/// `commit.gpgsign=true`. Local config beats the operator's `~/.gitconfig`,
-/// so this is the sole authority on signing inside the workspace.
+/// Write a host-only signing fixture for integration tests.
+#[cfg(any(test, feature = "test-support"))]
 pub fn write_signing_config(target_dir: &Path, signing_key: &Path) -> Result<(), GitError> {
     let allowed_signers_file = target_dir.join(".git").join(ALLOWED_SIGNERS_FILE);
     // `.ok()` discards VarError (unset or non-UTF-8): either case means the
@@ -245,12 +475,28 @@ pub fn write_signing_config(target_dir: &Path, signing_key: &Path) -> Result<(),
 fn clear_signing_config(target_dir: &Path) -> Result<(), GitError> {
     for key in [
         "gpg.format",
+        "gpg.ssh.program",
         "user.signingkey",
         "gpg.ssh.allowedSignersFile",
         "commit.gpgsign",
     ] {
         unset_git_config(target_dir, key)?;
     }
+    remove_legacy_allowed_signers(target_dir)
+}
+
+fn clear_managed_git_policy(target_dir: &Path) -> Result<(), GitError> {
+    clear_signing_config(target_dir)?;
+    unset_git_config(target_dir, "core.sshCommand")?;
+    let wrix_dir = target_dir.join(".git/wrix");
+    match std::fs::remove_dir_all(wrix_dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(GitError::Io(err)),
+    }
+}
+
+fn remove_legacy_allowed_signers(target_dir: &Path) -> Result<(), GitError> {
     let allowed_signers_file = target_dir.join(".git").join(ALLOWED_SIGNERS_FILE);
     match std::fs::remove_file(allowed_signers_file) {
         Ok(()) => Ok(()),
@@ -272,8 +518,8 @@ pub fn enable_rerere(target_dir: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
-/// `ssh-keygen -y -f <signing_key>` — the public half of the signing pair.
-/// The wrix signing key is passphrase-less, so this is non-interactive.
+/// `ssh-keygen -y -f <signing_key>` — test-fixture public-key derivation.
+#[cfg(any(test, feature = "test-support"))]
 fn derive_public_key(signing_key: &Path) -> Result<String, GitError> {
     let output = StdCommand::new("ssh-keygen")
         .arg("-y")
@@ -327,7 +573,23 @@ fn unset_git_config(target_dir: &Path, key: &str) -> Result<(), GitError> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
+
+    #[test]
+    fn repository_mode_rejects_ambient_git_transport_override() {
+        let error = reject_ambient_transport_overrides([
+            ("GIT_SSH_COMMAND", Some(OsString::from("ssh -i host-key"))),
+            ("GIT_SSH", None),
+        ])
+        .expect_err("ambient transport must not shadow repository policy");
+        assert!(matches!(
+            error,
+            GitError::AmbientGitTransportOverride { variable }
+                if variable == "GIT_SSH_COMMAND"
+        ));
+    }
 
     #[test]
     fn parse_github_repo_handles_ssh_https_and_dot_git() {
@@ -357,8 +619,7 @@ mod tests {
         assert_eq!(parse_github_repo("github.com-no-separator/x/y"), None);
     }
 
-    /// Spec contract `[test]` annotation (`specs/harness.md` § Success
-    /// Criteria · Commit signing): the fallback keyname is derived as
+    /// Repository Git isolation derives the fallback keyname as
     /// `<repo>-<host>-signing` where `<repo>` comes from the origin URL and
     /// `<host>` is the short hostname.
     #[test]
@@ -456,11 +717,7 @@ mod tests {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// Spec contract `[test]` annotation (`specs/harness.md` § Success
-    /// Criteria · Commit signing): `write_signing_config` writes the
-    /// `gpg.format=ssh` / `user.signingkey` / `commit.gpgsign=true` /
-    /// `gpg.ssh.allowedSignersFile` block into the target's local
-    /// `.git/config`.
+    /// The host-only signing fixture writes a complete local SSH block.
     #[test]
     fn write_signing_config_writes_expected_block() {
         let tmp = tempfile::tempdir().unwrap();
@@ -491,29 +748,62 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_signing_config_clears_stale_block_without_key() {
+    fn repository_policy_rejects_success_without_wrix_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("repo");
+        std::fs::create_dir(&target).unwrap();
+        init_git_repo(&target);
+        let deploy = tmp.path().join("repo-key");
+        let signing = tmp.path().join("repo-key-signing");
+        std::fs::write(&deploy, "deploy").unwrap();
+        std::fs::write(&signing, "signing").unwrap();
+        let wrix = tmp.path().join("wrix");
+        std::fs::write(&wrix, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&wrix, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let policy = RepoGitPolicy::for_test(wrix, "repo-key".into(), deploy, signing);
+
+        let error = policy
+            .apply(&target)
+            .expect_err("a successful no-op must fail closed");
+        assert!(matches!(error, GitError::WrixPolicyInvalid { .. }));
+    }
+
+    #[test]
+    fn host_key_policy_clears_managed_repo_config() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path();
         init_git_repo(target);
-        let key = gen_ssh_key(tmp.path());
+        for (key, value) in [
+            ("gpg.format", "ssh"),
+            ("gpg.ssh.program", "wrix-git-sign"),
+            ("gpg.ssh.allowedSignersFile", "wrix/allowed_signers"),
+            ("user.signingkey", "wrix/signing-key/repo-signing"),
+            ("commit.gpgsign", "true"),
+            ("core.sshCommand", "wrix/git-ssh"),
+        ] {
+            sync_git_config(target, key, value).unwrap();
+        }
+        std::fs::create_dir_all(target.join(".git/wrix")).unwrap();
+        std::fs::write(target.join(".git/wrix/allowed_signers"), "key\n").unwrap();
+        let policy =
+            RepoGitPolicy::resolve(target, PathBuf::from("unused-wrix"), KeyMode::Host).unwrap();
 
-        write_signing_config(target, &key).unwrap();
-        let signers_path = target.join(".git").join(ALLOWED_SIGNERS_FILE);
-        assert!(signers_path.exists(), "precondition: signers file exists");
+        policy.apply(target).unwrap();
 
-        reconcile_signing_config(target, None).unwrap();
-
-        assert_eq!(git_config_get(target, "gpg.format"), None);
-        assert_eq!(git_config_get(target, "user.signingkey"), None);
-        assert_eq!(git_config_get(target, "commit.gpgsign"), None);
-        assert_eq!(git_config_get(target, "gpg.ssh.allowedSignersFile"), None);
-        assert!(!signers_path.exists(), "stale signers file must be removed");
+        for key in [
+            "gpg.format",
+            "gpg.ssh.program",
+            "gpg.ssh.allowedSignersFile",
+            "user.signingkey",
+            "commit.gpgsign",
+            "core.sshCommand",
+        ] {
+            assert_eq!(git_config_get(target, key), None, "stale {key}");
+        }
+        assert!(!target.join(".git/wrix").exists());
     }
 
-    /// Spec contract `[test]` annotation (`specs/harness.md` § Success
-    /// Criteria · Commit signing): the allowed_signers file is derived via
-    /// `ssh-keygen -y -f <signing-key>` and prefixed with the wrix
-    /// signing identity.
+    /// Host-only test fixtures derive the expected allowed-signers identity.
     #[test]
     fn allowed_signers_derived_from_signing_key() {
         let tmp = tempfile::tempdir().unwrap();

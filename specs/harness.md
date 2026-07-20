@@ -338,7 +338,7 @@ the module; callers see only typed Rust methods.
 | **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>`, `git checkout -b loom/<id>`, then `git branch --set-upstream-to origin/<integration-branch>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount; upstream preserves host-side ahead/behind tracking |
 | **Pre-attempt prepare of bead clone** | `git status --short --branch`; if dirty, `git stash push --include-untracked -m "loom workspace-recovery <bead-id> <timestamp>"`; then rebase local bead commits onto the integration tip (or fast-forward when there are no local commits); finally `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix` when no conflict remains (CLI) | preserves uncommitted/staged/untracked work as an unapplied recovery stash, preserves committed bead work by rebasing it onto the integration tip, and gives clean starts except intentional conflict-recovery dispatches |
 | **Fetch bead branch from bead workspace** | `git fetch <bead-workspace-path> loom/<id>:loom/<id>` (CLI) | filesystem path as ad-hoc URL; runs in loom workspace inside `index.lock` |
-| **Verify commit signatures** | `git verify-commit <commits>` (CLI) | gates integration on signed-by-wrix-key; conditional on signing key resolving (see [Commit signing](#commit-signing)) |
+| **Verify commit signatures** | `git verify-commit <commits>` (CLI) | gates repository-key-mode integration on signatures trusted by `.git/wrix/allowed_signers` (see [Repository Git isolation](#repository-git-isolation)) |
 | **Rebase + ff into integration branch** | `git rebase` + `git merge --ff-only` (CLI) | `gix-merge` cannot persist `MERGE_HEAD`/`MERGE_MSG`; avoids index dance |
 | **Delete bead-branch ref in loom workspace** | `git branch -D loom/<id>` (CLI) | end of per-bead critical section, unconditional |
 | **Push integration to origin** | `git push origin <integration-branch>` (CLI) | with non-ff retry |
@@ -358,132 +358,61 @@ The hybrid line is reviewed each loom release; gix operations
 migrate inward as the corresponding `crate-status.md` items become
 checked.
 
-### Commit signing
+### Repository Git isolation
 
-Loom's host-side git operations must sign without prompting for
-the operator's GPG passphrase. The driver-side rebase produces new
-commits in the loom workspace, which is operated on the host only
-(never bind-mounted into a bead container). It receives a local
-`.git/config` block pointing at the wrix-injected SSH signing key,
-making driver signing non-interactive.
+`loom loop` defaults to repository-scoped Git authority. Before bead
+selection or any integration fetch/rebase, startup resolves **both** the
+deploy and signing keys using Wrix precedence:
 
-Bead clones deliberately do **not** receive this local block. A bead
-clone is the workspace wrix bind-mounts into the bead container,
-where the worker's in-container commits are the load-bearing signed
-path. wrix's `git-ssh-setup.sh` entrypoint configures container
-signing in the **global** `~/.gitconfig`, pointing `user.signingkey`
-at the in-container key copy (`/etc/wrix/keys/<basename>`). Because
-a local `.git/config` always beats global, a loom-written local block
-carrying the **host** key path — which does not exist in-container —
-would shadow the entrypoint's correct container path and break the
-worker's `git commit` ("Couldn't load public key …: No such file or
-directory"). So loom writes no signing block into bead clones;
-host-side operator debug/test commits in a clone fall through to the
-operator's global gitconfig instead.
+1. `$WRIX_DEPLOY_KEY` / `$WRIX_SIGNING_KEY`, when set, must be absolute
+   paths to existing files; a relative or missing target is a hard error.
+2. Otherwise the keys resolve from
+   `$HOME/.ssh/deploy_keys/<repo>-<host>` and
+   `$HOME/.ssh/deploy_keys/<repo>-<host>-signing`, where `<repo>` comes
+   from the integration clone's GitHub origin and `<host>` is the short
+   hostname.
+3. If either key remains unresolved, startup exits non-zero with an
+   actionable error before querying Beads or spawning an agent. There is
+   no implicit ambient-host fallback.
 
-**Key resolution mirrors wrix's host-side rule** (see
-`lib/sandbox/linux/default.nix` and `scripts/setup-deploy-key` in
-the wrix flake — same two-tier precedence, set-but-missing fails
-loud):
+Repository mode also rejects ambient `$GIT_SSH_COMMAND` or `$GIT_SSH`, which
+would otherwise outrank repository-local `core.sshCommand`; the diagnostic
+requires unsetting the override or explicitly selecting `--host-key`.
 
-1. `$WRIX_SIGNING_KEY` pointing at an existing file. Set-but-
-   missing exits non-zero at startup naming the path; silent
-   fallback would mask a parent-process misconfiguration.
-2. `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` if the env var
-   is unset and the file exists. `<repo>` is the repo segment of
-   the loom workspace's origin URL (parsed as
-   `github.com[:/]<user>/<repo>`); `<host>` is `hostname -s`
-   (short form, fallback to `hostname`). Same derivation as
-   wrix's `setup-deploy-key` script uses to choose the keyname
-   at provisioning time, so the two ends stay in sync without
-   shared config. If the origin URL doesn't match the GitHub
-   pattern, the fallback is skipped.
-3. If neither resolves, loom writes no signing block; the
-   operator's global `~/.gitconfig` governs (and may prompt). This
-   is the "wrix isn't set up on this host" path — intentionally
-   noisy rather than silently degraded.
+After resolution, Loom runs `wrix init --offline --no-hooks --key
+<key-name>` in `.loom/integration`, with the resolved key paths supplied
+only to that child process. Wrix writes context-stable repository-local
+transport and SSH-signing policy: helper tokens resolve the deploy/signing
+key in the current execution context instead of storing a host private-key
+path. The resulting policy uses the repository deploy key for Git transport,
+the repository signing key for commits, and
+`.git/wrix/allowed_signers` for verification. Loom validates the expected
+local config and policy files after Wrix exits; a successful no-op or
+partial policy fails closed. Loom's canonical hook-path reconciliation
+remains separate.
 
-Auth is handled by the `GIT_SSH_COMMAND` env var wrix already
-sets; loom inherits it and does not duplicate auth configuration.
-Deploy-key resolution (same precedence with the suffix dropped:
-`<repo>-<host>` instead of `<repo>-<host>-signing`) yields the host
-key path loom hands to the `wrix spawn` **launcher** environment
-(see *Launcher key environment* below); loom's own git invocations
-never read it — the key is consumed by wrix to mount it into the
-bead container.
+A bead clone receives the same Wrix policy when it is first created and
+again whenever it is reused, before dirty-work stashing, origin fetch, or
+the host-side pre-dispatch rebase. This is load-bearing: the pre-dispatch
+rebase can rewrite commits on the host, while the same clone is later mounted
+at `/workspace` and commits inside the container. Context-stable helper tokens
+allow both paths to use the repository key; an absolute host key path would
+break in-container, while omitting local policy would let the host-side rebase
+fall through to the operator's GPG key.
 
-**Launcher key environment.** A bead container's agent commits and
-pushes from inside the sandbox, so it needs the deploy + signing
-keys mounted in. wrix mounts them only when their host paths are
-named in the launcher process environment (`$WRIX_DEPLOY_KEY` /
-`$WRIX_SIGNING_KEY`) — the in-container `SpawnConfig.env`
-allowlist cannot carry them, because that is the env wrix builds
-*inside* the container, and the host key paths are meaningless
-there. At bead dispatch the driver resolves both keys against the
-loom workspace (`GitClient::launcher_key_env`, same two-tier
-precedence as signing) and carries the resolved HOST paths on
-`SpawnConfig.launcher_env`; the backend sets them on the `wrix
-spawn` child process before exec. `launcher_env` is host-only
-state: it is `#[serde(skip)]`-excluded from the spawn-config JSON
-so host key paths never land in a world-readable file, and wrix
-re-points `$WRIX_DEPLOY_KEY` / `$WRIX_SIGNING_KEY` to the fixed
-in-container destinations (`/etc/wrix/keys/<basename>`) once the
-keys are mounted. A key that does not resolve is simply omitted —
-`wrix spawn` fails loudly on its own when a key it needs is
-absent, and the "wrix isn't set up on this host" path stays
-non-fatal on loom's side.
+`--host-key` is the sole opt-in exception. In that mode Loom removes managed
+Wrix/legacy signing and transport config from its integration and bead clones
+and permits ambient host Git credentials and signing configuration. Without
+that flag, Loom never consults the host GPG key as a signing fallback.
 
-**Workspace gitconfig writes.** When `loom init` materializes the
-loom workspace, the driver writes a local `.git/config` block keyed
-to **host** paths (the loom workspace is operated on the host):
+**Launcher key environment.** In repository mode the already-resolved host
+paths are carried on `SpawnConfig.launcher_env` as `WRIX_DEPLOY_KEY` and
+`WRIX_SIGNING_KEY`. They are `#[serde(skip)]`-excluded from spawn-config JSON.
+Wrix stages them at fixed `/etc/wrix/keys/...` paths and rewrites the child env,
+so private host paths never enter container configuration. The in-container
+env allowlist does not carry host paths.
 
-```ini
-[gpg]
-    format = ssh
-[user]
-    signingkey = <resolved signing-key host path>
-[gpg "ssh"]
-    allowedSignersFile = <workspace>/.git/loom-allowed-signers
-[commit]
-    gpgsign = true
-```
-
-When `GitClient::create_worktree` materializes a bead clone, it
-writes **no** signing block. The clone is bind-mounted into the bead
-container, where the host key path the block would carry does not
-exist, and a local block beats — and so would shadow — wrix's
-`git-ssh-setup.sh` global config that points `user.signingkey` at the
-in-container key copy. In-container worker commits therefore sign via
-that wrix global config; host-side operator debug/test commits in
-the clone fall through to the operator's global gitconfig. The driver
-itself never commits in a bead clone (its commits land in the loom
-workspace), so dropping the clone block does not affect any loom-driven
-signing path. The public half is derived from the host key (the only
-place the private key exists at write time). Local config beats the
-operator's `~/.gitconfig` in git's hierarchy, so the loom-workspace
-block is the sole authority on host-side signing there — operator
-GPG/passphrase setup is bypassed without modification.
-
-**allowed_signers derivation.** Wrix derives the allowed_signers
-file inside the container via `ssh-keygen -y -f $SIGNING_KEY` against
-the public-key half of the same pair. Loom mirrors this on the host:
-at the same moment it writes the gitconfig block, it runs
-`ssh-keygen -y -f <signing-key>` and writes the result with the
-identity prefix (`$GIT_AUTHOR_EMAIL` or `sandbox@wrix.dev` per
-wrix convention) to `<workspace>/.git/loom-allowed-signers`. The
-signing key is passphrase-less, so the derivation is non-interactive.
-The file lives under `.git/` so workspace removal cleans it up
-automatically.
-
-**Scope.** This subsection covers commit signing only.
-SSH-over-git auth (deploy key for github.com push) flows through
-wrix's existing `GIT_SSH_COMMAND` pathway, inherited via the
-operator's shell environment; loom does not reconfigure it. Container
-gitconfig is unchanged — bead-container commits are already signed
-by wrix's `git-ssh-setup.sh` entrypoint and need no host-side
-intervention.
-
-**rerere configuration.** Alongside the signing block, `loom init`
+**rerere configuration.** Independently of repository Git policy, `loom init`
 writes `[rerere] enabled = true` and `[rerere] autoupdate = true`
 into the loom workspace's local `.git/config`. The driver-side
 rebase in the per-bead integration step relies on rerere to replay
@@ -762,10 +691,11 @@ atomic under the lock:
    flow](#bead-dispatch)).
 2. **Verify signatures (pass 1)** on the fetched commits using
    `git verify-commit` against
-   `<workspace>/.git/loom-allowed-signers` (see
-   [Commit signing](#commit-signing)). Conditional on the signing
-   key resolving; skipped if no key is configured. Verification
-   failure routes the bead to `loom:blocked` with cause
+   `<workspace>/.git/wrix/allowed_signers` (see
+   [Repository Git isolation](#repository-git-isolation)). Repository
+   mode always verifies because missing keys fail at startup; explicit
+   `--host-key` mode verifies only when it has an allowed-signers file.
+   Verification failure routes the bead to `loom:blocked` with cause
    `signature-verification-failed` — agent-retry cannot fix a
    signature on existing commits, so this is operator
    investigation territory (likely a misconfigured wrix
@@ -773,7 +703,8 @@ atomic under the lock:
 3. **Rebase** the bead branch onto the integration branch. On
    textual conflict, `git rerere` replays any previously-recorded
    resolution (rerere is enabled in the loom workspace's gitconfig
-   at `loom init`; see [Commit signing](#commit-signing)); if
+   at `loom init`; see
+   [Repository Git isolation](#repository-git-isolation)); if
    conflicts remain, `git rebase --abort` returns the loom
    workspace to its pre-rebase state and routes the bead to
    recovery with cause `integration-conflict` carrying
@@ -786,8 +717,8 @@ atomic under the lock:
    `loom:clarify` — same `integration-conflict` cause, human-
    resolution required.
 4. **Verify signatures (pass 2)** on the rewritten commits the
-   rebase produced. Conditional on the same signing-key
-   resolution. Failure here routes to `loom:blocked` with cause
+   rebase produced under the same verification mode. Failure here routes
+   to `loom:blocked` with cause
    `signature-verification-failed` — meaning loom's own signing
    setup is broken (gitconfig-write skipped, key path wrong,
    allowed_signers missing). The recovery detail distinguishes
@@ -2875,72 +2806,49 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - `GitClient` is the only module that imports `gix` or invokes the
       `git` CLI; callers see typed Rust methods
   [check](cargo run -p loom-walk -- git_client_encapsulation)
-- `loom init` writes a local `.git/config` block in the loom
-      workspace declaring `gpg.format=ssh`, `user.signingkey`
-      pointing at the resolved wrix signing key,
-      `commit.gpgsign=true`, and `gpg.ssh.allowedSignersFile`
-      pointing at `<workspace>/.git/loom-allowed-signers`, when
-      `$WRIX_SIGNING_KEY` or the
-      `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
-      resolves
-  [test](loom_init_writes_signing_gitconfig)
-- `GitClient::create_worktree` writes **no** signing block into a
-      bead clone's local `.git/config`, even when the signing key
-      resolves: the clone is bind-mounted into the bead container,
-      where a local block carrying the host key path would shadow
-      wrix's `git-ssh-setup.sh` global config and break the
-      worker's in-container `git commit`. In-container commits sign
-      via that wrix global config; host-side clone commits fall
-      through to the operator's global gitconfig
-  [test](create_worktree_omits_signing_block_in_bead_clone)
+- Default `loom loop` startup requires both repository deploy and signing
+      keys and invokes `wrix init --offline --no-hooks --key <key-name>` in
+      `.loom/integration` with those exact paths before selecting beads
+  [test](loom_loop_startup_initializes_repository_git_policy)
+- If either repository key is unresolved, `loom loop` exits non-zero before
+      querying Beads or spawning an agent, and the error names `--host-key` as
+      the only ambient-host opt-in
+  [test](loom_loop_missing_repository_keys_fails_before_bead_selection)
+- Repository mode rejects ambient `GIT_SSH_COMMAND` / `GIT_SSH` overrides
+      that would outrank its repository deploy-key transport
+  [test](repository_mode_rejects_ambient_git_transport_override)
+- New and reused bead clones receive context-stable Wrix transport/signing
+      config before host-side preflight; no host private-key path is persisted,
+      and stale host signing config is repaired on redispatch
+  [test](create_worktree_applies_context_stable_wrix_git_policy)
+- Loom validates Wrix's expected local config and policy files after init and
+      rejects a successful no-op or partial policy rather than failing open
+  [test](repository_policy_rejects_success_without_wrix_config)
+- Repository mode treats a missing allowed-signers file as an error, never as
+      permission to skip signature verification
+  [test](repository_policy_does_not_skip_when_allowed_signers_disappears)
+- `loom loop --host-key` clears managed Wrix and legacy signing/transport
+      config from Loom-owned clones before permitting ambient host Git policy
+  [test](host_key_policy_clears_managed_repo_config)
 - The fallback keyname is derived as `<repo>-<host>` where `<repo>`
       is parsed from the origin URL (`github.com[:/]<user>/<repo>`)
-      and `<host>` is `hostname -s`, matching wrix's
-      `setup-deploy-key` derivation rule
+      and `<host>` is `hostname -s`, matching Wrix key provisioning
   [test](signing_key_fallback_uses_wrix_repo_host_derivation)
-- The allowed_signers file at
-      `<workspace>/.git/loom-allowed-signers` is derived via
-      `ssh-keygen -y -f <signing-key>` at gitconfig-write time and
-      contains the wrix signing identity
-  [test](allowed_signers_derived_from_signing_key)
 - Driver-side rebase in the loom workspace produces signed commits
       whose `gpgsig` header is present in the commit object, without
       prompting for a passphrase
   [test](driver_rebase_signs_with_wrix_key)
 - `git log --show-signature` against a driver-rebased commit in the
-      loom workspace prints `Good "git" signature` using the derived
-      allowed_signers file
+      loom workspace prints `Good "git" signature` using the configured
+      allowed-signers file
   [test](rebased_commits_verify_via_derived_allowed_signers)
-- `GitClient::push` refreshes the loom-workspace signing config
-      before invoking `git push`, replacing stale host/GPG config with
-      the resolved repo signing key
-  [test](push_refreshes_stale_signing_config_before_origin_push)
-- `$WRIX_SIGNING_KEY` set to a non-existent file aborts loom
-      startup with a non-zero exit and an error naming the missing
-      path
-  [test](wrix_signing_key_missing_file_fails_loud)
-- When neither `$WRIX_SIGNING_KEY` nor the
-      `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
-      resolves, no signing block is written and the operator's
-      global gitconfig governs signing in loom-materialized
-      workspaces
-  [test](no_wrix_keys_leaves_global_gitconfig_governing)
-- When the signing key resolves, the per-bead integration step
-      runs `git verify-commit` against the fetched commits
-      (pass 1) and against the rebased commits (pass 2); pass-1
-      failure routes the bead to `loom:blocked` with cause
-      `signature-verification-failed` (worker-side) and pass-2
-      failure routes to `loom:blocked` with the same cause but the
-      detail naming "driver-side"
+- In repository mode, the per-bead integration step runs
+      `git verify-commit` against fetched commits (pass 1) and rebased
+      commits (pass 2); failures distinguish worker-side from driver-side
   [test](integration_step_verifies_signatures_in_two_passes)
-- When the signing key does not resolve, signature verification is
-      skipped at both passes and the integration step proceeds
-  [test](signature_verification_skipped_when_no_key)
-- `GitClient::launcher_key_env` surfaces each resolved key as a
-      `WRIX_DEPLOY_KEY` / `WRIX_SIGNING_KEY` → HOST-path pair so
-      loom can hand them to the `wrix spawn` launcher; an
-      unresolved key is omitted rather than erroring
-  [test](launcher_key_env_exposes_signing_key_host_path)
+- `GitClient::launcher_key_env` surfaces both startup-resolved keys as
+      `WRIX_DEPLOY_KEY` / `WRIX_SIGNING_KEY` host-path pairs for `wrix spawn`
+  [test](loom_loop_startup_initializes_repository_git_policy)
 - Bead dispatch threads the resolved launcher keys onto
       `SpawnConfig.launcher_env` and keeps them out of the
       in-container `SpawnConfig.env` allowlist
@@ -3020,8 +2928,9 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `loom:active` work epic when no ids are provided. Positional ids
       may be task beads (run exactly that bead) or epics (run ready
       child work under that epic/molecule). Options may appear before,
-      between, or after ids; `--spec`, `--once`, and `--all-specs` are
-      not part of the loop surface
+      between, or after ids. `--host-key` explicitly opts into ambient host
+      Git credentials; `--spec`, `--once`, and `--all-specs` are not part of
+      the loop surface
   [test](loop_accepts_positional_work_roots_and_defaults_to_active_epic)
 - `loom loop --parallel N` (alias `-p N`) accepts a positive integer; non-
       positive or non-integer values fail with a clear error
@@ -3189,8 +3098,9 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       after every changed spec is represented
   [test](loom_todo_help_documents_multispec_fail_loud_behavior)
 - `loom loop --help` documents `[BEAD_OR_EPIC_ID ...]`, the default
-      `loom:active` work epic, interspersed options, and absence of
-      `--spec` / `--once` / `--all-specs`
+      `loom:active` work epic, interspersed options, explicit ambient-host
+      meaning of `--host-key`, and absence of `--spec` / `--once` /
+      `--all-specs`
   [test](loom_loop_help_documents_work_roots_and_removed_selectors)
 - Bare `loom inbox` / `loom inbox list` lists every outstanding non-closed
       bead carrying `loom:blocked`, `loom:clarify`, or `loom:infra` across all
@@ -3806,7 +3716,9 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
      no ids, runs the sole `loom:active` work epic. With ids, each
      positional may be a task bead (run exactly that bead) or an epic
      (run ready child work under that epic/molecule). Options may
-     appear before, between, or after ids. The loop pulls ready child
+     appear before, between, or after ids. Repository keys are mandatory
+     at startup unless `--host-key` explicitly opts into ambient host Git
+     policy. The loop pulls ready child
      beads filtered to exclude semantic `loom:blocked` / `loom:clarify`
      beads; `loom:infra` diagnostic beads are a driver-owned retry queue
      and are retried under the infra policy before a work root is

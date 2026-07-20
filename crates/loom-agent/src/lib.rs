@@ -124,7 +124,7 @@ fn strip_shell_quotes(token: &str) -> &str {
 /// deliberately **not** part of [`SpawnConfig::env`] (the in-container
 /// allowlist) and never reach the spawn-config JSON. Without this, loop
 /// agents boot with no git keys and cannot sign or push (`specs/harness.md`
-/// § Commit signing).
+/// § Repository Git isolation).
 ///
 /// [`SpawnConfig::launcher_env`]: loom_driver::agent::SpawnConfig::launcher_env
 /// [`SpawnConfig::env`]: loom_driver::agent::SpawnConfig::env

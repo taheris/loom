@@ -89,14 +89,10 @@ pub struct GitClient {
     /// Defaults to [`GIT_HOOK_TIMEOUT`]; production overrides it from
     /// `[loom] git_hook_timeout_secs` via [`Self::with_hook_timeout`].
     hook_timeout: Duration,
-    /// Test-only seam: when `Some`, loom-workspace signing refresh uses
-    /// this override instead of resolving from the env + deploy-key fallback.
-    /// `Some(key)` forces a key; `None` forces the no-key path. Production
-    /// resolves per [`super::signing::resolve_signing_key`]; the seam exists
-    /// because `std::env::set_var` is unsafe under edition 2024 and the
-    /// workspace forbids `unsafe_code`, so tests cannot drive
-    /// `$WRIX_SIGNING_KEY`. Gated behind `cfg(test)` / the `test-support`
-    /// feature so it is absent from production builds (RS-14).
+    /// Context-stable repository Git policy selected at `loom loop` startup.
+    repo_git_policy: Option<super::signing::RepoGitPolicy>,
+    /// Test-only seam for legacy host-only signing fixtures. Production loop
+    /// signing is exclusively configured by [`Self::repo_git_policy`].
     #[cfg(any(test, feature = "test-support"))]
     signing_key_override: Option<Option<PathBuf>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -152,6 +148,7 @@ impl GitClient {
             clock,
             integration_branch,
             hook_timeout: GIT_HOOK_TIMEOUT,
+            repo_git_policy: None,
             #[cfg(any(test, feature = "test-support"))]
             signing_key_override: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -168,8 +165,30 @@ impl GitClient {
         self
     }
 
-    /// Test-only: force loom-workspace signing refresh and launcher key
-    /// export to use `key` instead of resolving it from the environment.
+    /// Install the repository Git policy selected by the CLI startup preflight.
+    pub fn with_repo_git_policy(mut self, policy: super::signing::RepoGitPolicy) -> Self {
+        self.repo_git_policy = Some(policy);
+        self
+    }
+
+    /// Apply repository Git policy to the integration clone before any loop work.
+    pub fn preflight_repo_git_policy(&self) -> Result<(), GitError> {
+        let Some(policy) = &self.repo_git_policy else {
+            return Err(GitError::RepositoryPolicyIncomplete);
+        };
+        policy.apply(&self.loom_workspace())
+    }
+
+    async fn apply_repo_git_policy(&self, workspace: &Path) -> Result<(), GitError> {
+        let Some(policy) = self.repo_git_policy.clone() else {
+            return Ok(());
+        };
+        let workspace = workspace.to_path_buf();
+        spawn_blocking(move || policy.apply(&workspace)).await??;
+        Ok(())
+    }
+
+    /// Test-only: configure a host-only signing fixture and launcher key.
     /// Gated behind `cfg(test)` / the `test-support` feature (RS-14).
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
@@ -192,17 +211,13 @@ impl GitClient {
         self.prek_hooks_path_override = Some(path);
     }
 
-    /// The signing-key override set via [`Self::set_signing_key_override`]
-    /// or [`Self::disable_signing_key_resolution`]. Production builds (where
-    /// the seam is compiled out) always return `None`, so the signing key
-    /// resolves from the environment + deploy-key fallback.
+    /// Test-only signing-key resolver override.
     #[cfg(any(test, feature = "test-support"))]
     fn signing_override(&self) -> Option<Option<PathBuf>> {
         self.signing_key_override.clone()
     }
 
-    /// See the `cfg(test)` / `test-support` variant — production carries no
-    /// override seam, so this always resolves the key from the environment.
+    /// Production carries no resolver override.
     #[cfg(not(any(test, feature = "test-support")))]
     fn signing_override(&self) -> Option<Option<PathBuf>> {
         None
@@ -245,8 +260,17 @@ impl GitClient {
     }
 
     fn refresh_loom_signing_config(&self) -> Result<(), GitError> {
-        let signing_key = self.resolve_signing_key()?;
-        super::signing::reconcile_signing_config(&self.loom_workspace(), signing_key.as_deref())
+        if self.repo_git_policy.is_some() {
+            return Ok(());
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(signing_key) = self.signing_override() {
+            super::signing::reconcile_signing_config(
+                &self.loom_workspace(),
+                signing_key.as_deref(),
+            )?;
+        }
+        Ok(())
     }
 
     /// Name of the integration branch this client targets (the branch
@@ -394,6 +418,7 @@ impl GitClient {
         let rel = PathBuf::from(WORKTREE_BASE).join(bead_id.as_str());
         let path = self.workdir.join(&rel);
         if path.exists() {
+            self.apply_repo_git_policy(&path).await?;
             ensure_wrix_mount_dir(&path)?;
             self.repair_bead_hooks_path(&path).await?;
             return Ok(CreatedWorktree { path, branch });
@@ -451,24 +476,14 @@ impl GitClient {
         )
         .await?;
 
+        self.apply_repo_git_policy(&path).await?;
         ensure_wrix_mount_dir(&path)?;
         self.repair_bead_hooks_path(&path).await?;
 
-        // No signing block is written into the bead clone. The clone is the
-        // workspace wrix bind-mounts into the bead container, where the
-        // worker's commits are the load-bearing signed path. wrix's
-        // `git-ssh-setup.sh` entrypoint configures container signing in the
-        // GLOBAL `~/.gitconfig`, pointing `user.signingkey` at the
-        // in-container key copy (`/etc/wrix/keys/<id>-nix-signing`). A local
-        // `.git/config` block here would carry the HOST key path — which does
-        // not exist in-container — and local config beats global, so the block
-        // would shadow the entrypoint's correct container path and break the
-        // worker's `git commit` with "Couldn't load public key ...". Host-side
-        // operator debug/test commits in the clone instead fall through to the
-        // operator's global gitconfig. Only the host-only loom workspace
-        // (never container-mounted) carries loom's local signing block, so it
-        // is free of this host/container path conflict (`specs/harness.md`
-        // § Commit signing).
+        // `RepoGitPolicy` writes only Wrix context-stable helper tokens into
+        // the clone. The helpers resolve the repository key from the current
+        // process environment, so the same local config works for this
+        // host-side preflight and for the container's fixed key paths.
 
         Ok(CreatedWorktree { path, branch })
     }
@@ -478,21 +493,19 @@ impl GitClient {
     /// in-container [`SpawnConfig::env`] allowlist) so the wrapper can
     /// bind-mount the deploy + signing keys into the bead container.
     ///
-    /// Returns `(env var, host path)` pairs — `WRIX_DEPLOY_KEY` and
-    /// `WRIX_SIGNING_KEY` — for each key that resolves. Resolution runs
-    /// against the loom workspace (whose `origin` is GitHub), matching
-    /// loom-workspace signing refresh, and honors the signing-key override
-    /// test seam (when built with `test-support`). A key
-    /// that does not resolve is omitted rather than erroring: `wrix spawn`
-    /// fails loudly on its own when a key it needs is absent, and the
-    /// "wrix isn't set up on this host" path must stay non-fatal here.
+    /// In repository mode, startup has already required both keys and this
+    /// returns exact `WRIX_DEPLOY_KEY` / `WRIX_SIGNING_KEY` pairs. Generic
+    /// non-loop clients retain the optional resolver for compatibility.
     ///
     /// The host paths never cross the sandbox boundary; wrix copies the
     /// keys to `/etc/wrix/keys/<basename>` in-container and resets
     /// `$WRIX_DEPLOY_KEY` / `$WRIX_SIGNING_KEY` to those paths (wrix
     /// `specs/security.md` § Credential Surfaces). See `specs/harness.md`
-    /// § Commit signing.
+    /// § Repository Git isolation.
     pub fn launcher_key_env(&self) -> Result<Vec<(String, String)>, GitError> {
+        if let Some(policy) = &self.repo_git_policy {
+            return Ok(policy.launcher_env());
+        }
         let loom_workspace = self.loom_workspace();
         let mut env = Vec::new();
         let signing = self.resolve_signing_key()?;
@@ -1776,41 +1789,48 @@ impl GitClient {
             .collect())
     }
 
-    /// Path to the loom-workspace allowed_signers file the per-bead
-    /// integration step verifies commits against. Written by `loom init`
-    /// and refreshed before signing-sensitive git operations when a wrix
-    /// signing key resolves (see `specs/harness.md` § Commit signing).
-    /// Absent when no key is configured.
+    /// Path to the allowed-signers file used by per-bead integration.
+    /// Repository mode uses Wrix's context-stable policy file; legacy
+    /// non-loop clients retain the former Loom path.
     fn allowed_signers_path(&self) -> PathBuf {
-        self.loom_workspace()
-            .join(".git")
-            .join("loom-allowed-signers")
+        let workspace = self.loom_workspace();
+        self.repo_git_policy
+            .as_ref()
+            .and_then(|policy| policy.allowed_signers_path(&workspace))
+            .unwrap_or_else(|| workspace.join(".git/loom-allowed-signers"))
     }
 
-    /// Whether driver-side signature verification is active in the loom
-    /// workspace. True only when the allowed_signers file exists — i.e. a
-    /// wrix signing key resolved at `loom init` or the latest signing
-    /// refresh. When false the per-bead integration step skips both
-    /// verify-signature passes (the spec-sanctioned "no key" path —
-    /// `specs/harness.md` § Verdict Gate, phase 2).
+    /// Whether driver-side signature verification is active. Default loop
+    /// startup requires repository keys and Wrix creates this file; an absent
+    /// file is permitted only for legacy callers or explicit host-key mode.
     pub async fn signing_verification_enabled(&self) -> Result<bool, GitError> {
-        // `try_exists` already reports Ok(false) for an absent file (the
-        // spec-sanctioned "no key" path), so a genuine Err here is an
-        // anomalous IO failure (permission denied, symlink loop) on a path
-        // under our own `.git/`. Propagate it rather than swallowing to
-        // false — collapsing it to "no key" would fail open, silently
-        // skipping both verify-signature passes on a security control.
-        Ok(tokio::fs::try_exists(self.allowed_signers_path()).await?)
+        // Propagate anomalous IO failures rather than silently disabling a
+        // repository-mode security control.
+        let path = self.allowed_signers_path();
+        let exists = tokio::fs::try_exists(&path).await?;
+        let repository_mode = self
+            .repo_git_policy
+            .as_ref()
+            .and_then(|policy| policy.allowed_signers_path(&self.loom_workspace()))
+            .is_some();
+        if repository_mode && !exists {
+            return Err(GitError::WrixPolicyInvalid {
+                workdir: self.loom_workspace(),
+                detail: format!(
+                    "required allowed-signers file disappeared: {}",
+                    path.display()
+                ),
+            });
+        }
+        Ok(exists)
     }
 
     /// Verify every commit in `range` (e.g. `main..loom/<id>`) against the
     /// loom workspace's allowed_signers file with `git verify-commit`.
     ///
-    /// Returns [`SignatureCheck::Skipped`] when signing verification is
-    /// disabled (no allowed_signers file — no key configured), so the
-    /// per-bead integration step proceeds unchanged on hosts where wrix
-    /// signing is not set up. When enabled, walks the commits oldest-first
-    /// and returns [`SignatureCheck::Failed`] on the first commit
+    /// Returns [`SignatureCheck::Skipped`] only when verification is disabled
+    /// by a legacy caller or explicit host-key mode. When enabled, walks the
+    /// commits oldest-first and returns [`SignatureCheck::Failed`] on the first commit
     /// `git verify-commit` rejects, carrying the offending sha + stderr so
     /// the caller can route to `signature-verification-failed`.
     pub async fn verify_commit_range(&self, range: &str) -> Result<SignatureCheck, GitError> {
@@ -1978,8 +1998,7 @@ fn sync_rev_count(workspace: &Path, range: &str) -> Result<u32, GitError> {
 /// Outcome of [`GitClient::verify_commit_range`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignatureCheck {
-    /// No allowed_signers file resolved — verification skipped. The
-    /// per-bead integration step proceeds (spec-sanctioned "no key" path).
+    /// No allowed-signers file is active (legacy or explicit host-key mode).
     Skipped,
     /// Every commit in range carried a signature trusted by the loom
     /// workspace's allowed_signers file.

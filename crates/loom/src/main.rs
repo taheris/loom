@@ -20,7 +20,7 @@ use loom_driver::agent::{AgentKind, LOOM_INSIDE_ENV, ProtocolError, SessionOutco
 use loom_driver::bd::{BdClient, Bead, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
-use loom_driver::git::GitClient;
+use loom_driver::git::{GitClient, KeyMode, RepoGitPolicy};
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::logging::{LogSink, sweep_retention_at};
@@ -525,6 +525,9 @@ enum Command {
         /// Override the per-bead `profile:X` label resolution.
         #[arg(long, value_name = "PROFILE")]
         profile: Option<String>,
+        /// Explicitly allow ambient host Git credentials and signing config.
+        #[arg(long)]
+        host_key: bool,
         /// ASCII output, no color, no OSC 8. Pipe-safe. Implied when
         /// stdout is not a TTY or `NO_COLOR` is set. Mutually exclusive
         /// with `--json` and `--raw`.
@@ -825,6 +828,7 @@ fn main() -> ExitCode {
             work_roots,
             parallel,
             profile,
+            host_key,
             plain,
             json,
             raw,
@@ -836,6 +840,7 @@ fn main() -> ExitCode {
             parallel,
             profile,
             agent_override,
+            host_key,
             RenderFlags {
                 plain,
                 json,
@@ -2786,16 +2791,10 @@ fn run_loop_cmd(
     parallel: Parallelism,
     profile: Option<String>,
     agent_override: Option<AgentKind>,
+    host_key: bool,
     render_flags: RenderFlags,
 ) -> anyhow::Result<LoopOutcome> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
-    let runtime = tokio::runtime::Runtime::new()?;
-    let roots = runtime.block_on(async {
-        let bd = BdClient::new();
-        resolve_loop_work_roots(&bd, work_roots).await
-    })?;
-    let multi_root = roots.len() > 1;
-
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     sweep_retention_at(
         &workspace.join(".loom/logs"),
@@ -2812,6 +2811,26 @@ fn run_loop_cmd(
     let loom_bin = current_loom_bin()?;
     let shutdown_grace = resolve_shutdown_grace(&selection);
     let direct_output_limits = config.direct_output_limits();
+    let key_mode = if host_key {
+        KeyMode::Host
+    } else {
+        KeyMode::Repository
+    };
+    let wrix_bin = std::env::var_os("LOOM_WRIX_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("wrix"));
+    let repo_git_policy =
+        RepoGitPolicy::resolve(&workspace.join(".loom/integration"), wrix_bin, key_mode)?;
+    GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?
+        .with_repo_git_policy(repo_git_policy.clone())
+        .preflight_repo_git_policy()?;
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let roots = runtime.block_on(async {
+        let bd = BdClient::new();
+        resolve_loop_work_roots(&bd, work_roots).await
+    })?;
+    let multi_root = roots.len() > 1;
 
     let mut aggregate = LoopOutcomeAccumulator::default();
     if !parallel.is_one() {
@@ -2840,6 +2859,7 @@ fn run_loop_cmd(
                 &config,
                 render_mode,
                 startup_reconcile,
+                repo_git_policy.clone(),
             )?;
             startup_reconcile = StartupReconcile::AlreadyDone;
             print_parallel_loop_summary(multi_root, root, parallel_n, &outcome);
@@ -2873,6 +2893,7 @@ fn run_loop_cmd(
             loom_bin.clone(),
             render_flags,
             startup_reconcile,
+            repo_git_policy.clone(),
         )?;
         startup_reconcile = StartupReconcile::AlreadyDone;
         print_sequential_loop_summary(multi_root, root, &outcome);
@@ -2967,6 +2988,7 @@ fn run_parallel_loop_root(
     config: &LoomConfig,
     render_mode: loom_render::RenderMode,
     startup_reconcile: StartupReconcile,
+    repo_git_policy: RepoGitPolicy,
 ) -> anyhow::Result<LoopOutcome> {
     if matches!(&root.kind, LoopWorkRootKind::Task) {
         anyhow::bail!("loom loop --parallel does not accept task bead roots");
@@ -3003,6 +3025,7 @@ fn run_parallel_loop_root(
             render_mode,
             infra_policy,
             config.loop_.max_iterations,
+            repo_git_policy,
         )
         .await
     })
@@ -3024,6 +3047,7 @@ fn run_sequential_loop_root(
     loom_bin: PathBuf,
     render_flags: RenderFlags,
     startup_reconcile: StartupReconcile,
+    repo_git_policy: RepoGitPolicy,
 ) -> anyhow::Result<LoopOutcome> {
     let work_root_guard = acquire_work_root_lock(workspace, root.id.as_str())?;
     prepare_loop_root(runtime, workspace, root, &config.loom, startup_reconcile)?;
@@ -3058,7 +3082,8 @@ fn run_sequential_loop_root(
     let max_iterations = config.loop_.max_iterations;
     let git =
         GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?
-            .with_hook_timeout(config.loom.git_hook_timeout());
+            .with_hook_timeout(config.loom.git_hook_timeout())
+            .with_repo_git_policy(repo_git_policy);
     let outcome = runtime.block_on(async move {
         let bd = BdClient::new();
         let mut controller = ProductionAgentLoopController::new(
@@ -3315,6 +3340,7 @@ async fn run_parallel_loop(
     render_mode: loom_render::RenderMode,
     infra_policy: InfraRetryPolicy,
     max_iterations: u32,
+    repo_git_policy: RepoGitPolicy,
 ) -> anyhow::Result<LoopOutcome> {
     use loom_driver::bd::UpdateOpts;
     use loom_workflow::gate_clarify::ClarifyApplyOutcome;
@@ -3325,7 +3351,8 @@ async fn run_parallel_loop(
         workspace.clone(),
         loom_cfg.integration_branch.clone(),
     )?
-    .with_hook_timeout(loom_cfg.git_hook_timeout());
+    .with_hook_timeout(loom_cfg.git_hook_timeout())
+    .with_repo_git_policy(repo_git_policy);
     let launcher_env = git.launcher_key_env()?;
     let logs_root = workspace.join(".loom/logs");
     let batch_limit = parallel_n as usize;

@@ -191,6 +191,146 @@ fn loom_loop_removed_selectors_are_rejected() {
 }
 
 #[test]
+fn loom_loop_missing_repository_keys_fails_before_bead_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+
+    let manifest_path = workspace.join("profile-images.json");
+    std::fs::write(&manifest_path, "{}").unwrap();
+    let bin_dir = workspace.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let bd_marker = workspace.join("bd-invoked");
+    let bd = bin_dir.join("bd");
+    std::fs::write(
+        &bd,
+        format!(
+            "#!/bin/sh\nprintf invoked > {}\nexit 99\n",
+            bd_marker.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&bd).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&bd, permissions).unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = vec![bin_dir];
+    path_entries.extend(std::env::split_paths(&path));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("loop")
+        .env("PATH", std::env::join_paths(path_entries).unwrap())
+        .env("HOME", workspace.join("empty-home"))
+        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_INSIDE")
+        .env_remove("GIT_SSH_COMMAND")
+        .env_remove("GIT_SSH")
+        .env_remove("WRIX_DEPLOY_KEY")
+        .env_remove("WRIX_SIGNING_KEY")
+        .output()
+        .expect("spawn loom");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "missing keys must fail: {stderr}");
+    assert!(
+        stderr.contains("repository deploy key is unavailable"),
+        "startup error must name the missing repository key: {stderr}",
+    );
+    assert!(
+        stderr.contains("--host-key"),
+        "startup error must name the explicit opt-in: {stderr}",
+    );
+    assert!(
+        !bd_marker.exists(),
+        "repository-key preflight must run before bead selection",
+    );
+}
+
+#[test]
+fn loom_loop_startup_initializes_repository_git_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+
+    let manifest_path = workspace.join("profile-images.json");
+    std::fs::write(&manifest_path, "{}").unwrap();
+    let argv_log = workspace.join("bd-argv.log");
+    let bin_dir = install_bd_active_epic_stub(workspace, &argv_log);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = vec![bin_dir];
+    path_entries.extend(std::env::split_paths(&path));
+
+    let deploy_key = workspace.join("repo-key");
+    let signing_key = workspace.join("repo-key-signing");
+    std::fs::write(&deploy_key, "deploy").unwrap();
+    std::fs::write(&signing_key, "signing").unwrap();
+    let wrix_log = workspace.join("wrix-init.log");
+    let wrix = workspace.join("wrix");
+    std::fs::write(
+        &wrix,
+        format!(
+            r#"#!/bin/sh
+set -eu
+printf 'cwd=%s\nargs=%s\ndeploy=%s\nsigning=%s\n' "$PWD" "$*" "$WRIX_DEPLOY_KEY" "$WRIX_SIGNING_KEY" > {}
+git config --local gpg.format ssh
+git config --local gpg.ssh.program wrix-git-sign
+git config --local gpg.ssh.allowedSignersFile wrix/allowed_signers
+git config --local user.signingkey wrix/signing-key/repo-key-signing
+git config --local commit.gpgsign true
+git config --local core.sshCommand wrix/git-ssh
+mkdir -p .git/wrix
+printf allowed > .git/wrix/allowed_signers
+printf '#!/bin/sh\n' > .git/wrix/git-ssh
+chmod +x .git/wrix/git-ssh
+"#,
+            wrix_log.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&wrix).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&wrix, permissions).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("loop")
+        .env("PATH", std::env::join_paths(path_entries).unwrap())
+        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env("LOOM_WRIX_BIN", &wrix)
+        .env("WRIX_DEPLOY_KEY", &deploy_key)
+        .env("WRIX_SIGNING_KEY", &signing_key)
+        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env_remove("LOOM_INSIDE")
+        .env_remove("GIT_SSH_COMMAND")
+        .env_remove("GIT_SSH")
+        .output()
+        .expect("spawn loom");
+
+    let log = std::fs::read_to_string(&wrix_log).unwrap_or_else(|_| {
+        panic!(
+            "repository-key startup did not invoke wrix init: {}",
+            String::from_utf8_lossy(&output.stderr),
+        )
+    });
+    assert!(
+        log.contains(&format!(
+            "cwd={}",
+            workspace.join(".loom/integration").display()
+        )),
+        "wrix init must target the integration clone: {log}",
+    );
+    assert!(
+        log.contains("args=init --offline --no-hooks --key repo-key"),
+        "unexpected wrix init argv: {log}",
+    );
+    assert!(log.contains(&format!("deploy={}", deploy_key.display())));
+    assert!(log.contains(&format!("signing={}", signing_key.display())));
+}
+
+#[test]
 fn loom_loop_without_spec_uses_active_epic_in_multi_spec_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
@@ -215,6 +355,7 @@ fn loom_loop_without_spec_uses_active_epic_in_multi_spec_workspace() {
         .arg("--workspace")
         .arg(workspace)
         .arg("loop")
+        .arg("--host-key")
         .arg("--parallel")
         .arg("2")
         .env("PATH", new_path)
@@ -298,6 +439,7 @@ fn loom_loop_parallel_does_not_pass_exclude_label_to_bd_ready() {
         .arg("--workspace")
         .arg(workspace)
         .arg("loop")
+        .arg("--host-key")
         .arg("--parallel")
         .arg("2")
         .env("PATH", new_path)
@@ -372,6 +514,7 @@ fn parallel_codepath_returns_loop_outcome_with_gate_field() {
         .arg("--workspace")
         .arg(workspace)
         .arg("loop")
+        .arg("--host-key")
         .arg("--parallel")
         .arg("2")
         .env("PATH", new_path)
@@ -424,6 +567,7 @@ fn loom_loop_parallel_static_infra_parks_as_loom_infra() {
         .arg("--agent")
         .arg("pi")
         .arg("loop")
+        .arg("--host-key")
         .arg("--parallel")
         .arg("2")
         .env("PATH", new_path)

@@ -56,6 +56,41 @@ pub enum GitError {
     /// $WRIX_DEPLOY_KEY points at a non-existent file: {path}
     DeployKeyMissing { path: PathBuf },
 
+    /// repository deploy key is unavailable; set $WRIX_DEPLOY_KEY or provision the repository fallback before running loom loop (use --host-key only to opt into ambient host Git credentials)
+    RepositoryDeployKeyRequired,
+
+    /// repository signing key is unavailable; set $WRIX_SIGNING_KEY or provision the repository fallback before running loom loop (use --host-key only to opt into ambient host Git signing)
+    RepositorySigningKeyRequired,
+
+    /// ambient ${variable} would override the repository deploy-key transport; unset it before running loom loop (or use --host-key to opt into host Git policy)
+    AmbientGitTransportOverride { variable: String },
+
+    /// repository key path must be absolute so Wrix helpers remain valid across Git working directories: {path}
+    RepositoryKeyPathNotAbsolute { path: PathBuf },
+
+    /// repository deploy-key path has no valid UTF-8 file name: {path}
+    RepositoryKeyName { path: PathBuf },
+
+    /// repository Git policy is missing resolved key state
+    RepositoryPolicyIncomplete,
+
+    /// failed to spawn `{executable}` for repository Git policy: {source}
+    WrixSpawn {
+        executable: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    /// `wrix init --offline` failed in {workdir} with status {status}: {detail}
+    WrixInit {
+        workdir: PathBuf,
+        status: i32,
+        detail: String,
+    },
+
+    /// `wrix init --offline` left invalid repository Git policy in {workdir}: {detail}
+    WrixPolicyInvalid { workdir: PathBuf, detail: String },
+
     /// cannot resolve canonical wrix.prekHooks hooks directory — set $WRIX_PREK_HOOKS or enter a wrix devshell that configures core.hooksPath
     PrekHooksUnresolved,
 
