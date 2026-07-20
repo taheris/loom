@@ -348,6 +348,40 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
 }
 
 #[test]
+fn loop_template_renders_dependency_wait_marker() -> Result<()> {
+    let ctx = LoopContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("agent"),
+        spec_path: "specs/agent.md".to_string(),
+        companion_paths: vec![],
+        molecule_id: Some(MoleculeId::new("lm-agent")),
+        issue_id: Some(BeadId::new("lm-agent.1")?),
+        title: Some("wait for protocol generator".into()),
+        description: Some("Declare the generator as a blocker when needed.".into()),
+        previous_failure: None,
+        workspace_recovery: None,
+        review_notes: None,
+        attempt: 0,
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
+    };
+
+    let out = ctx.render()?;
+
+    assert!(out.contains("## Dependency-Wait Marker"));
+    assert!(out.contains("bd dep add <current-bead> <blocker-bead>"));
+    assert!(out.contains("Leave the current bead open"));
+    assert!(out.contains("LOOM_WAITING"));
+    assert!(out.contains("skips integration and per-bead gates"));
+    assert!(out.contains("invalid and enters recovery"));
+    assert!(
+        !out.contains("Need other beads done? → Add dep with `bd dep add`, output `LOOM_COMPLETE`")
+    );
+    Ok(())
+}
+
+#[test]
 fn run_template_omits_attempt_line_when_zero() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),

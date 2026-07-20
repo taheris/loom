@@ -465,6 +465,7 @@ pub enum GateOutcome {
 #[derive(Debug, Clone)]
 pub struct LoopOutcome {
     pub beads_processed: u32,
+    pub beads_waiting: u32,
     pub beads_clarified: u32,
     pub beads_blocked: u32,
     pub outer_iterations: u32,

@@ -18,5 +18,5 @@ mod runner;
 pub use client::{BdClient, CreateOpts, ListOpts, ReadyOpts, UpdateOpts};
 pub use error::BdError;
 pub use label::Label;
-pub use models::{Bead, MolProgress, Molecule};
+pub use models::{Bead, DependencySnapshot, MolProgress, Molecule};
 pub use runner::{CommandRunner, RunOutput, TokioRunner};

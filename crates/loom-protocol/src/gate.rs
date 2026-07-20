@@ -1025,6 +1025,10 @@ pub enum TerminalSurface {
     Complete,
     /// `LOOM_NOOP` on the final non-empty line.
     Noop,
+    /// Loop worker declared a dependency wait with `LOOM_WAITING` on the
+    /// final non-empty line. The workflow validates the Beads dependency
+    /// graph before accepting this terminal.
+    Waiting,
     /// `LOOM_BLOCKED` on the final non-empty line; `reason` is the
     /// non-empty adjacent prose read by the parser.
     Blocked { reason: String },
@@ -1053,6 +1057,7 @@ impl TerminalSurface {
         match self {
             Self::Complete => "LOOM_COMPLETE",
             Self::Noop => "LOOM_NOOP",
+            Self::Waiting => "LOOM_WAITING",
             Self::Blocked { .. } => "LOOM_BLOCKED",
             Self::Clarify { .. } => "LOOM_CLARIFY",
             Self::Retry { .. } => "LOOM_RETRY",
@@ -1069,6 +1074,7 @@ impl TerminalSurface {
         match self {
             Self::Complete => "LOOM_COMPLETE".to_owned(),
             Self::Noop => "LOOM_NOOP".to_owned(),
+            Self::Waiting => "LOOM_WAITING".to_owned(),
             Self::Blocked { .. } => "LOOM_BLOCKED".to_owned(),
             Self::Clarify { .. } => "LOOM_CLARIFY".to_owned(),
             Self::Retry { .. } => "LOOM_RETRY".to_owned(),
@@ -1097,6 +1103,12 @@ pub enum ExitSignal {
     /// empty diff — the work was already done. Without this signal an
     /// empty diff is treated as zero-progress.
     Noop,
+
+    /// Loop-only dependency wait request. The marker is bare because the
+    /// Beads graph is the durable authority; workflow code accepts it only
+    /// after proving the current bead is open and has an active blocking
+    /// dependency.
+    Waiting,
 
     /// Agent could not proceed; the driver surfaces the non-empty reason
     /// to the user without advancing state.
@@ -1145,6 +1157,7 @@ impl ExitSignal {
         match self {
             Self::Complete => "LOOM_COMPLETE",
             Self::Noop => "LOOM_NOOP",
+            Self::Waiting => "LOOM_WAITING",
             Self::Blocked { .. } => "LOOM_BLOCKED",
             Self::Clarify { .. } => "LOOM_CLARIFY",
             Self::Retry { .. } => "LOOM_RETRY",
@@ -1155,6 +1168,7 @@ impl ExitSignal {
 
 const COMPLETE: &str = "LOOM_COMPLETE";
 const NOOP: &str = "LOOM_NOOP";
+const WAITING: &str = "LOOM_WAITING";
 const BLOCKED: &str = "LOOM_BLOCKED";
 const CLARIFY: &str = "LOOM_CLARIFY";
 const RETRY: &str = "LOOM_RETRY";
@@ -1164,6 +1178,7 @@ const CONCERN: &str = "LOOM_CONCERN";
 enum TerminalMarker {
     Complete,
     Noop,
+    Waiting,
     Blocked,
     Clarify,
     Retry,
@@ -1171,9 +1186,10 @@ enum TerminalMarker {
 }
 
 impl TerminalMarker {
-    const ALL: [(Self, &'static str); 6] = [
+    const ALL: [(Self, &'static str); 7] = [
         (Self::Complete, COMPLETE),
         (Self::Noop, NOOP),
+        (Self::Waiting, WAITING),
         (Self::Blocked, BLOCKED),
         (Self::Clarify, CLARIFY),
         (Self::Retry, RETRY),
@@ -1197,8 +1213,9 @@ struct MarkerMatch {
 /// mutual-exclusivity rule in `specs/harness.md` § Marker definitions.
 /// Marker-shaped text inside a quoted JSON string is payload, not a terminal.
 ///
-/// `LOOM_BLOCKED` and `LOOM_CLARIFY` are bare markers — no trailing colon,
-/// no trailing payload. The reason / question is read from the text
+/// `LOOM_WAITING`, `LOOM_BLOCKED`, and `LOOM_CLARIFY` are bare markers — no
+/// trailing colon or payload. Waiting context comes from the Beads graph;
+/// blocked/clarify reason or question text is read from the text
 /// **before** the marker on the final line, falling back to the most recent
 /// non-empty line before the final line if the same-line prefix is empty.
 /// `LOOM_BLOCKED` is accepted only when that captured reason is non-empty.
@@ -1227,6 +1244,8 @@ pub fn parse_exit_signal(output: &str) -> Option<ExitSignal> {
     match terminal.marker {
         TerminalMarker::Complete => Some(ExitSignal::Complete),
         TerminalMarker::Noop => Some(ExitSignal::Noop),
+        TerminalMarker::Waiting if final_line.trim() == WAITING => Some(ExitSignal::Waiting),
+        TerminalMarker::Waiting => None,
         TerminalMarker::Blocked => required_reason_at(terminal.start, final_line, prior)
             .map(|reason| ExitSignal::Blocked { reason }),
         TerminalMarker::Clarify => Some(ExitSignal::Clarify {
@@ -1654,6 +1673,7 @@ fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
     match parse_exit_signal(output) {
         Some(ExitSignal::Complete) => TerminalSurface::Complete,
         Some(ExitSignal::Noop) => TerminalSurface::Noop,
+        Some(ExitSignal::Waiting) => TerminalSurface::Waiting,
         Some(ExitSignal::Blocked { reason }) => TerminalSurface::Blocked { reason },
         Some(ExitSignal::Clarify { question }) => TerminalSurface::Clarify { question },
         Some(ExitSignal::Retry { reason }) => TerminalSurface::Retry { reason },
@@ -1711,13 +1731,18 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
             },
         }),
         TerminalSurface::Noop => Err(WalkOutputError::InvalidTerminal { marker: NOOP }),
+        TerminalSurface::Waiting if walk.findings().is_empty() => {
+            Err(WalkOutputError::InvalidTerminal { marker: WAITING })
+        }
         TerminalSurface::Complete if !walk.findings().is_empty() => Err(WalkOutputError::BadWalk {
             bad_walk: BadWalk::FindingsWithoutConcern {
                 finding_count: walk.findings().len(),
                 findings: walk.findings().to_vec(),
             },
         }),
-        TerminalSurface::Blocked { .. } | TerminalSurface::Retry { .. }
+        TerminalSurface::Waiting
+        | TerminalSurface::Blocked { .. }
+        | TerminalSurface::Retry { .. }
             if !walk.findings().is_empty() =>
         {
             Err(WalkOutputError::BadWalk {
@@ -1726,6 +1751,9 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
                     findings: walk.findings().to_vec(),
                 },
             })
+        }
+        TerminalSurface::Missing if final_line_contains_marker(output, TerminalMarker::Waiting) => {
+            Err(WalkOutputError::InvalidTerminal { marker: WAITING })
         }
         TerminalSurface::Missing if final_line_contains_marker(output, TerminalMarker::Blocked) => {
             Err(WalkOutputError::InvalidTerminal { marker: BLOCKED })
@@ -1743,6 +1771,7 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
             marker: RETRY,
             reason: reason.clone(),
         }),
+        TerminalSurface::Waiting => Err(WalkOutputError::InvalidTerminal { marker: WAITING }),
         TerminalSurface::Missing | TerminalSurface::Complete => Ok(Vec::new()),
     }
 }
@@ -2003,6 +2032,22 @@ mod tests {
             parse_exit_signal("already done\nLOOM_NOOP\n"),
             Some(ExitSignal::Noop)
         );
+    }
+
+    #[test]
+    fn waiting_marker_parses_as_typed_exit_signal() {
+        assert_eq!(
+            parse_exit_signal("declared blocker in Beads\nLOOM_WAITING\n"),
+            Some(ExitSignal::Waiting),
+        );
+        assert_eq!(TerminalSurface::Waiting.identity(), "LOOM_WAITING");
+        assert_eq!(parse_exit_signal("LOOM_WAITING: later\n"), None);
+        assert!(matches!(
+            parse_walk_output("LOOM_WAITING: later\n", DispatchScope::Tree, &AlwaysValid,),
+            Err(WalkOutputError::InvalidTerminal {
+                marker: "LOOM_WAITING"
+            })
+        ));
     }
 
     #[test]

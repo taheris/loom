@@ -530,9 +530,9 @@ depends on.
   crate boundary
   [test](classify_review_phase_signature_requires_typed_walk_output)
 - The (stream-shape × terminal-shape) failure matrix is exhaustive:
-  every cell in the 4 × 6 cross-product (S0..S3 stream shapes × six
-  terminal shapes) has a parameterised test asserting the typed
-  outcome variant and the maximum-context invariant
+  every cell in the 4 × 7 cross-product (S0..S3 stream shapes × seven
+  terminal shapes, including wrong-phase `LOOM_WAITING`) has a parameterised
+  test asserting the typed outcome variant and the maximum-context invariant
   [test](walk_output_failure_matrix_routes_every_cell_with_typed_outcome_and_preserves_max_context)
 - Every constructible `Finding` (each `ConcernToken` × canonical
   `FindingTarget` combination) round-trips byte-equal through
@@ -582,6 +582,10 @@ the `parse_walk_output` / `WalkOutput::from_stdout` /
   findings }`) compile without changes. The original definitions are
   removed from `loom-templates`
   [test](loom_templates_re_exports_finding_contract_from_loom_protocol)
+- The loop-only bare `LOOM_WAITING` marker parses as
+  `ExitSignal::Waiting`; it carries no payload because workflow validation
+  resolves its blocker evidence from Beads
+  [test](waiting_marker_parses_as_typed_exit_signal)
 - `loom-workflow::review::finding` (the `WalkOutput` typed product +
   `parse_walk_output` parser) and `loom-workflow::todo::exit::ExitSignal`
   / `parse_exit_signal` move to `loom-protocol::gate`. Existing
@@ -1540,12 +1544,13 @@ state, not bd state.
 
 The wire format the rubric walk emits is shaped by one principle
 that governs every marker the driver consumes: **JSON-payload for
-markers the driver routes on, bare for markers reading adjacent
-prose.** `LOOM_FINDING:` and `LOOM_CONCERN:` carry JSON because the
+markers the driver routes on, bare for markers whose context comes from
+adjacent prose or durable workflow state.** `LOOM_FINDING:` and `LOOM_CONCERN:` carry JSON because the
 driver routes per-finding tokens and the terminal summary needs
 structured framing.
-`LOOM_COMPLETE` / `LOOM_NOOP` / `LOOM_RETRY` / `LOOM_BLOCKED` /
-`LOOM_CLARIFY` are bare because the parser reads context (reason /
+`LOOM_COMPLETE` / `LOOM_NOOP` / `LOOM_WAITING` / `LOOM_RETRY` /
+`LOOM_BLOCKED` / `LOOM_CLARIFY` are bare. `LOOM_WAITING` reads its durable
+state from the Beads dependency graph; the other bare markers read context (reason /
 question) from the prior non-empty line; LLM agents narrate the
 reason in prose and emit the marker as a yes/no terminator without
 having to compose a JSON object in the same turn. Mixing in either direction — JSON payload
@@ -1887,13 +1892,14 @@ invariant pinning the typed Finding's round-trip identity.
 - **Stream-shape axis (4 cells):** zero `LOOM_FINDING:` records; N
   well-formed findings; N well-formed + M malformed (mixed); all-
   malformed.
-- **Terminal-shape axis (6 cells):** `LOOM_COMPLETE`; `LOOM_NOOP`;
-  `LOOM_CONCERN:` with valid JSON; `LOOM_CONCERN:` with the legacy
+- **Terminal-shape axis (7 cells):** `LOOM_COMPLETE`; `LOOM_NOOP`;
+  wrong-phase `LOOM_WAITING`; `LOOM_CONCERN:` with valid JSON;
+  `LOOM_CONCERN:` with the legacy
   `<token> -- <reason>` shape; `LOOM_CONCERN:` with malformed JSON
   (missing field, empty `summary`, invalid JSON); no terminal on the
   final non-empty line.
 
-24 cells. Each cell asserts (a) the typed outcome variant, (b) the
+28 cells. Each cell asserts (a) the typed outcome variant, (b) the
 maximum-context preservation invariant (every parseable piece of the
 input appears in the outcome), (c) the
 `Display for PreviousFailure` rendering is non-empty and references

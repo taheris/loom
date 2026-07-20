@@ -14,6 +14,7 @@
 //! - `labels`       — one label per line (no trailing comma)
 //! - `notes`        — free-form text (absent = empty)
 //! - `metadata.json` — free-form JSON object (absent = empty)
+//! - `dependencies` — blocker bead ids, one per line (absent = none)
 //!
 //! Every invocation appends a debug line to `$BD_STATE_DIR/.invocations.log`
 //! so failing tests can show which calls landed where.
@@ -140,6 +141,7 @@ fn bead_to_json(state_dir: &Path, id: &str) -> serde_json::Value {
         "labels": read_labels(state_dir, id),
         "parent": parent_json(state_dir, id),
         "metadata": metadata_json(state_dir, id),
+        "dependencies": dependencies_json(state_dir, id),
     })
 }
 
@@ -162,6 +164,36 @@ fn metadata_json(state_dir: &Path, id: &str) -> serde_json::Value {
         serde_json::from_str(trimmed)
             .unwrap_or_else(|err| serde_json::json!({"bd_shim.metadata_error": err.to_string()}))
     }
+}
+
+fn dependency_ids(state_dir: &Path, id: &str) -> Vec<String> {
+    read_field(state_dir, id, "dependencies")
+        .lines()
+        .map(str::trim)
+        .filter(|dependency| !dependency.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+fn dependencies_json(state_dir: &Path, id: &str) -> serde_json::Value {
+    let dependencies = dependency_ids(state_dir, id)
+        .into_iter()
+        .map(|dependency| {
+            serde_json::json!({
+                "id": dependency,
+                "title": read_field(state_dir, &dependency, "title"),
+                "status": read_field(state_dir, &dependency, "status"),
+                "dependency_type": "blocks",
+            })
+        })
+        .collect();
+    serde_json::Value::Array(dependencies)
+}
+
+fn has_active_blocker(state_dir: &Path, id: &str) -> bool {
+    dependency_ids(state_dir, id)
+        .iter()
+        .any(|dependency| read_field(state_dir, dependency, "status").trim() != "closed")
 }
 
 fn extend_csv_filter(filters: &mut Vec<String>, raw: &str) {
@@ -277,10 +309,8 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
 
 fn cmd_ready(state_dir: &Path, args: &[String]) -> ExitCode {
     // `bd ready --json [--limit=N] [--label=<L>] [--exclude-label=<L> …]` —
-    // beads with status=open, carrying the named label (when given), and
-    // **not** carrying any of the excluded labels. The shim doesn't model
-    // blocker dependencies; status + label match is sufficient for the
-    // run-gate tests.
+    // beads with status=open, no active blocker, carrying the named label
+    // (when given), and **not** carrying any of the excluded labels.
     let mut limit: Option<usize> = None;
     let mut label_eq: Option<String> = None;
     let mut exclude_labels: Vec<String> = Vec::new();
@@ -320,7 +350,9 @@ fn cmd_ready(state_dir: &Path, args: &[String]) -> ExitCode {
     }
     let mut out = Vec::new();
     for id in list_bead_ids(state_dir) {
-        if read_field(state_dir, &id, "status").trim() != "open" {
+        if read_field(state_dir, &id, "status").trim() != "open"
+            || has_active_blocker(state_dir, &id)
+        {
             continue;
         }
         let labels = read_labels(state_dir, &id);

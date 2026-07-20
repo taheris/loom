@@ -59,6 +59,7 @@ use crate::spawn::container_workspace_path;
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
 use super::verify::{VerifyPass, verify_pass};
+use super::waiting::validate_waiting_outcome;
 use crate::review::{
     DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput, WorkspaceFindingValidator,
     decide,
@@ -829,7 +830,8 @@ where
             self.emit_to_log(DriverKind::WorkspaceRecovery, &event.summary, event.payload);
         }
 
-        let outcome = classify_session(session, marker);
+        let outcome =
+            validate_waiting_outcome(&self.bd, &bead.id, classify_session(session, marker)).await?;
         self.emit_to_log(
             DriverKind::MarkerRouted,
             &format!(
@@ -1830,6 +1832,7 @@ fn terminal_marker_json(marker: &ExitSignal) -> serde_json::Value {
     match marker {
         ExitSignal::Complete => serde_json::json!({ "kind": "complete" }),
         ExitSignal::Noop => serde_json::json!({ "kind": "noop" }),
+        ExitSignal::Waiting => serde_json::json!({ "kind": "waiting" }),
         ExitSignal::Blocked { reason } => {
             serde_json::json!({ "kind": "blocked", "reason": reason })
         }
@@ -1904,6 +1907,8 @@ pub(super) fn agent_outcome_route(outcome: &AgentOutcome) -> &'static str {
     match outcome {
         AgentOutcome::Success => "success",
         AgentOutcome::Noop => "noop",
+        AgentOutcome::WaitingRequested => "waiting-unvalidated",
+        AgentOutcome::Waiting { .. } => "waiting",
         AgentOutcome::Failure { .. } | AgentOutcome::ZeroProgress { .. } => "recovery",
         AgentOutcome::Retry { .. } => "retry",
         AgentOutcome::Blocked { .. } | AgentOutcome::SignatureVerificationFailed { .. } => {
@@ -1953,7 +1958,8 @@ pub fn classify_session(session: SessionResult, marker: Option<ExitSignal>) -> A
                     error: "wrong-phase-marker: LOOM_CONCERN is review-phase only".to_string(),
                 };
             }
-            if let Some(marker @ (ExitSignal::Complete | ExitSignal::Noop)) = marker.as_ref()
+            if let Some(marker @ (ExitSignal::Complete | ExitSignal::Noop | ExitSignal::Waiting)) =
+                marker.as_ref()
                 && outcome.exit_code != 0
             {
                 return AgentOutcome::Failure {
@@ -1991,14 +1997,15 @@ fn neutral_gate_inputs() -> GateInputs {
 fn verdict_to_outcome(verdict: PhaseVerdict, exit_code: i32) -> AgentOutcome {
     match verdict {
         PhaseVerdict::Done => AgentOutcome::Success,
+        PhaseVerdict::Waiting => AgentOutcome::WaitingRequested,
         PhaseVerdict::Blocked { reason } => AgentOutcome::Blocked { reason },
         PhaseVerdict::Clarify { question } => AgentOutcome::Clarify { question },
         PhaseVerdict::Recovery {
             cause: RecoveryCause::SwallowedMarker,
         } => AgentOutcome::Failure {
             error: if exit_code == 0 {
-                "agent exited 0 without LOOM_COMPLETE / LOOM_NOOP / LOOM_BLOCKED / \
-                 LOOM_CLARIFY marker (swallowed marker)"
+                "agent exited 0 without LOOM_COMPLETE / LOOM_NOOP / LOOM_WAITING / \
+                 LOOM_RETRY / LOOM_BLOCKED / LOOM_CLARIFY marker (swallowed marker)"
                     .to_string()
             } else {
                 format!("agent exited with code {exit_code}")

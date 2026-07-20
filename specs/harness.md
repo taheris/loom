@@ -187,6 +187,8 @@ produce the following result:
 | `LOOM_CLARIFY` with a persisted Options block | human clarification |
 | `LOOM_RETRY` with a preceding reason | bounded worker recovery |
 | no valid final marker | `swallowed-marker` recovery |
+| `LOOM_WAITING`, bead open, at least one active declared blocking dependency | typed dependency wait; preserve the bead workspace/branch and continue ready work |
+| `LOOM_WAITING` with a closed bead or no active declared blocker | `invalid-waiting` recovery |
 | `LOOM_COMPLETE` while the bead is open | `incomplete-signaling` recovery |
 | `LOOM_COMPLETE` with an empty diff | `zero-progress` recovery |
 | successful marker with a dirty tree | `tree-not-clean` recovery |
@@ -197,7 +199,13 @@ produce the following result:
 [Options Format Contract](gate.md#options-format-contract) block on the target.
 A missing or malformed block becomes `loom:blocked` with cause
 `clarify-without-options`. `LOOM_RETRY` consumes the in-session retry budget;
-`LOOM_BLOCKED` and valid clarification go directly to inbox.
+`LOOM_BLOCKED` and valid clarification go directly to inbox. `LOOM_WAITING` is
+a loop-only bare terminal whose durable payload is the Beads dependency graph:
+the current bead remains open and at least one direct `blocks` dependency must
+remain non-closed. A valid wait consumes no retry budget, performs no
+integration or per-bead gate, mutates no workflow label/status, and leaves the
+workspace for the blocker-aware ready queue to resurface after dependencies
+close.
 
 Per-bead integration verifies worker signatures, rebases, verifies rewritten
 signatures, fast-forwards, and runs `loom gate verify --diff
@@ -231,6 +239,8 @@ Marker ownership is phase-specific:
 
 - `LOOM_COMPLETE` is generic success for loop, clean review, plan, and inbox;
 - `LOOM_NOOP` is loop-only empty-diff success;
+- `LOOM_WAITING` is loop-only typed dependency waiting, valid only against an
+  open bead with an active declared blocker;
 - `LOOM_TODO: <json>` is todo-only typed success;
 - `LOOM_APPLY: {"proposals":[...]}` is inbox's trusted apply handoff;
 - `LOOM_RETRY`, `LOOM_BLOCKED`, and direct `LOOM_CLARIFY` are worker
@@ -245,8 +255,8 @@ alone does not authorize state transitions.
 
 `LoopOutcome` and `GateOutcome` are architecture-bearing types: a successful
 loop invocation cannot omit the push-gate result. `LoopOutcome` has no default,
-is `must_use`, records processing counts, and carries a non-optional
-`GateOutcome`.
+is `must_use`, records processed, waiting, clarified, and blocked counts, and
+carries a non-optional `GateOutcome`.
 
 `GateOutcome` has three shapes: `Success(GateSuccess)`, `Fail(GateFail)`, and
 `NoGate { beads_processed, reason }`. `GateSuccess` is sealed and constructed
@@ -1238,6 +1248,18 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [test](todo_clarify_marks_work_epic)
 - No marker emitted → recovery with cause `swallowed-marker`
   [test](missing_marker_routes_to_swallowed_marker_recovery)
+- `LOOM_WAITING` is accepted only when the production loop observes the current
+      bead still open with at least one active declared blocking dependency;
+      acceptance leaves the bead open, preserves its workspace/branch, applies
+      no workflow status/label, and runs no integration or per-bead gate
+  [test](waiting_marker_preserves_open_bead_without_labels_or_integration)
+- `LOOM_WAITING` without an active declared blocker is invalid, routes through
+      visible recovery as `invalid-waiting`, and never silently parks the bead
+  [test](waiting_marker_without_blocker_is_recovery_not_silent_parking)
+- Parallel loop handling preserves the same waiting semantics: the waiting
+      slot's workspace remains, its branch is not merged, and sibling ready
+      work continues
+  [test](parallel_waiting_outcome_preserves_workspace_without_merge)
 - `LOOM_COMPLETE` + bead not bd-closed → recovery with cause
       `incomplete-signaling`
   [test](complete_without_bd_closed_routes_to_incomplete_signaling)
@@ -1834,7 +1856,9 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
    from its bead workspace path into the loom workspace, then rebases +
    fast-forwards into the integration branch sequentially (per
    [Verdict Gate § Loom-workspace integration outcomes](#verdict-gate)).
-   Workers never push.
+   Workers never push. A valid `LOOM_WAITING` slot is not merged or gated and
+   its clone remains in place while blocker-aware `bd ready` schedules other
+   work.
 7. **Retry with context** — on in-session worker failure (or explicit
    agent self-report via `LOOM_RETRY`), retries with the prior error
    output injected as the `previous_failure` template variable.

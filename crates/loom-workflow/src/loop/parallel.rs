@@ -16,6 +16,7 @@ use super::runner::{
     UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, synthesize_integration_conflict_options,
 };
 use super::verify::{VerifyPass, verify_pass};
+use super::waiting::ActiveBlockers;
 
 /// Pairing of a bead with the worktree that was created for it. Built by
 /// [`create_worktrees`] and consumed by [`run_concurrent_spawns`].
@@ -87,6 +88,13 @@ pub enum BatchResult {
     /// branch without conflict. The worktree has been removed.
     Merged { bead: BeadId },
 
+    /// A validated dependency wait. The worktree and branch remain in place;
+    /// merge-back and per-bead verification are skipped.
+    Waiting {
+        bead: BeadId,
+        blockers: ActiveBlockers,
+    },
+
     /// The driver-side rebase onto the integration tip conflicted on the
     /// bead's **first** integration attempt (it did not yet carry the
     /// [`CONFLICT_RETRY_LABEL`] marker). The worktree is
@@ -142,6 +150,16 @@ impl BatchOutcome {
             .iter()
             .filter_map(|r| match r {
                 BatchResult::Merged { bead } => Some(bead.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn waiting_ids(&self) -> Vec<BeadId> {
+        self.results
+            .iter()
+            .filter_map(|result| match result {
+                BatchResult::Waiting { bead, .. } => Some(bead.clone()),
                 _ => None,
             })
             .collect()
@@ -404,6 +422,24 @@ async fn merge_back_one(
         );
     }
     match outcome {
+        AgentOutcome::Waiting { blockers } => {
+            info!(
+                bead = %bead.id,
+                blocker_count = blockers.count(),
+                path = %worktree.path.display(),
+                "dependency wait accepted — preserving bead workspace without merge",
+            );
+            Ok(BatchResult::Waiting {
+                bead: bead.id,
+                blockers,
+            })
+        }
+        AgentOutcome::WaitingRequested => Err(LoopError::Bug {
+            context: format!(
+                "unvalidated LOOM_WAITING reached parallel merge for bead {}",
+                bead.id,
+            ),
+        }),
         AgentOutcome::Success | AgentOutcome::Noop => {
             // A3: the worker never pushes; the driver fetches the bead
             // branch from the bead workspace path into the loom workspace,
@@ -690,6 +726,7 @@ fn inferred_terminal_marker(outcome: &AgentOutcome) -> Option<&'static str> {
     match outcome {
         AgentOutcome::Success => Some("LOOM_COMPLETE"),
         AgentOutcome::Noop => Some("LOOM_NOOP"),
+        AgentOutcome::WaitingRequested | AgentOutcome::Waiting { .. } => Some("LOOM_WAITING"),
         AgentOutcome::Retry { .. } => Some("LOOM_RETRY"),
         AgentOutcome::Blocked { .. } => Some("LOOM_BLOCKED"),
         AgentOutcome::Clarify { .. } => Some("LOOM_CLARIFY"),
@@ -845,5 +882,60 @@ mod tests {
         assert!(matches!(out[1].outcome, AgentOutcome::Success));
         assert_eq!(out[2].bead.id.as_str(), "lm-fail");
         assert!(matches!(out[2].outcome, AgentOutcome::Failure { .. }));
+    }
+
+    #[tokio::test]
+    async fn parallel_waiting_outcome_preserves_workspace_without_merge() {
+        let dir = tempfile::tempdir().expect("temporary repository");
+        let mut git = loom_driver::git::init_test_repo_with_integration(dir.path())
+            .expect("initialize integration repository");
+        git.disable_signing_key_resolution();
+        let before = git
+            .integration_commit_sha()
+            .await
+            .expect("read integration tip");
+        let label = SpecLabel::new("agent");
+        let waiting_bead = fake_bead("lm-wait");
+        let sibling_bead = fake_bead("lm-next");
+        let waiting_workspace = dir.path().join(".loom/beads/lm-wait");
+
+        let outcome = run_parallel_batch(
+            &git,
+            &label,
+            vec![waiting_bead, sibling_bead],
+            |slot| async move {
+                if slot.bead.id.as_str() == "lm-wait" {
+                    AgentOutcome::Waiting {
+                        blockers: ActiveBlockers::new(
+                            BeadId::new("lm-blocker").expect("valid blocker id"),
+                            Vec::new(),
+                        ),
+                    }
+                } else {
+                    AgentOutcome::Success
+                }
+            },
+        )
+        .await
+        .expect("parallel wait succeeds");
+
+        assert_eq!(
+            outcome.waiting_ids(),
+            vec![BeadId::new("lm-wait").expect("valid id")]
+        );
+        assert_eq!(
+            outcome.merged_ids(),
+            vec![BeadId::new("lm-next").expect("valid id")]
+        );
+        assert!(
+            waiting_workspace.exists(),
+            "waiting workspace must be preserved"
+        );
+        assert_eq!(
+            git.integration_commit_sha()
+                .await
+                .expect("read unchanged integration tip"),
+            before,
+        );
     }
 }

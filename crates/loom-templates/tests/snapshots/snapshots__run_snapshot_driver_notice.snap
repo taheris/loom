@@ -111,7 +111,7 @@ Previous attempt: Marker `LOOM_COMPLETE` emitted but bead `lm-3hhwq.10` was not 
        --parent="lm-3hhwq" --silent)
      ```
    - Set execution order if needed:
-     - **Blocks current task**: `bd dep add lm-3hhwq.10 $NEW_ID` (current waits for new)
+     - **Blocks current task**: `bd dep add lm-3hhwq.10 $NEW_ID` (current waits for new), then emit `LOOM_WAITING`
      - **Depends on current task**: `bd dep add $NEW_ID lm-3hhwq.10` (new waits for current)
      - **Independent**: No dep needed—`bd ready` will surface it when unblocked
    - Do NOT implement discovered tasks in this session—stay focused
@@ -122,7 +122,7 @@ Previous attempt: Marker `LOOM_COMPLETE` emitted but bead `lm-3hhwq.10` was not 
 6. **Blocked vs Waiting**: Distinguish dependency waits, clarify decisions, and true dead ends:
    - Need user input and can frame candidate options? → persist the Options block, then `LOOM_CLARIFY`
    - Semantic dead end with no safe options to enumerate? → write that no-options rationale on a prior line, then `LOOM_BLOCKED`
-   - Need other beads done? → Add dep with `bd dep add`, output `LOOM_COMPLETE`
+   - Need other beads done? → Add the blocking dependency with `bd dep add`, leave this bead open, then output `LOOM_WAITING`
 7. **Already Implemented**: If the task's work is already done in the codebase,
    verify correctness, run `bd close lm-3hhwq.10`,
    and emit `LOOM_NOOP` (empty diff means no-op, not zero-progress).
@@ -178,6 +178,30 @@ Post-step hooks verify compliance automatically.
 ## Land the Plane
 
 Before outputting LOOM_COMPLETE, follow the **Session Protocol** in `AGENTS.md`.
+
+## Dependency-Wait Marker
+
+`LOOM_WAITING` is the loop-only terminal for pausing this open bead on work
+owned by another bead. Before emitting it:
+
+1. Declare the blocking edge with `bd dep add <current-bead> <blocker-bead>`.
+2. Leave the current bead open; do **not** run `bd close`.
+3. Ensure at least one declared blocker is still active (not closed).
+
+Then end with the bare marker as the final non-empty line:
+
+```text
+LOOM_WAITING
+```
+
+The marker carries no JSON or prose payload because the Beads dependency graph
+is the durable authority. A valid wait preserves this bead's workspace and
+branch, skips integration and per-bead gates, consumes no retry budget, and
+adds no blocked/clarify/infra label or status. The scheduler continues other
+ready work; `bd ready` resurfaces this bead after its blockers close.
+
+A marker on a closed bead or without an active declared blocking dependency is
+invalid and enters recovery rather than silently parking the bead.
 
 ## Progress Markers
 

@@ -588,6 +588,9 @@ fn classify_review_phase_with_suppressions(
     }
     match phase_verdict_from_walk_with_suppressions(walk, suppressions) {
         PhaseVerdict::Done => ReviewOutcome::Complete,
+        PhaseVerdict::Waiting => ReviewOutcome::Incomplete {
+            detail: wrong_phase_marker_detail("LOOM_WAITING", "review"),
+        },
         PhaseVerdict::Blocked { reason } => ReviewOutcome::Incomplete {
             detail: format!("LOOM_BLOCKED: {reason}"),
         },
@@ -798,6 +801,7 @@ fn exit_signal_from_terminal(terminal: &TerminalSurface) -> Option<ExitSignal> {
     match terminal {
         TerminalSurface::Complete => Some(ExitSignal::Complete),
         TerminalSurface::Noop => Some(ExitSignal::Noop),
+        TerminalSurface::Waiting => Some(ExitSignal::Waiting),
         TerminalSurface::Blocked { reason } => Some(ExitSignal::Blocked {
             reason: reason.clone(),
         }),
@@ -1418,6 +1422,7 @@ mod tests {
         let stdout = match terminal {
             TerminalSurface::Complete => "LOOM_COMPLETE\n".to_string(),
             TerminalSurface::Noop => "LOOM_NOOP\n".to_string(),
+            TerminalSurface::Waiting => "LOOM_WAITING\n".to_string(),
             TerminalSurface::Blocked { reason } => format!("{reason}\nLOOM_BLOCKED\n"),
             TerminalSurface::Clarify { question } => format!("{question}\nLOOM_CLARIFY\n"),
             TerminalSurface::Retry { reason } => format!("{reason}\nLOOM_RETRY\n"),
@@ -1867,7 +1872,7 @@ mod tests {
     /// skips Display rendering for those cells.
     fn render_for_display_check(verdict: &PhaseVerdict) -> Option<String> {
         match verdict {
-            PhaseVerdict::Done => None,
+            PhaseVerdict::Done | PhaseVerdict::Waiting => None,
             PhaseVerdict::Blocked { reason } => Some(format!("LOOM_BLOCKED: {reason}")),
             PhaseVerdict::Clarify { question } => Some(format!("LOOM_CLARIFY: {question}")),
             PhaseVerdict::Recovery {
@@ -1903,6 +1908,7 @@ mod tests {
 
     const T_COMPLETE: &str = "LOOM_COMPLETE";
     const T_NOOP: &str = "LOOM_NOOP";
+    const T_WAITING: &str = "LOOM_WAITING";
     const T_CONCERN_OK_PAYLOAD: &str = r#"{"summary":"valid summary text"}"#;
     const T_CONCERN_LEGACY_PAYLOAD: &str = "verifier-bypass -- legacy free form";
     const T_CONCERN_MALFORMED_PAYLOAD: &str = r#"{"summary":""}"#;
@@ -1926,6 +1932,7 @@ mod tests {
         match name {
             "T_complete" => T_COMPLETE.to_string(),
             "T_noop" => T_NOOP.to_string(),
+            "T_waiting" => T_WAITING.to_string(),
             "T_concern_ok" => format!("LOOM_CONCERN: {T_CONCERN_OK_PAYLOAD}"),
             "T_concern_legacy" => format!("LOOM_CONCERN: {T_CONCERN_LEGACY_PAYLOAD}"),
             "T_concern_malformed" => format!("LOOM_CONCERN: {T_CONCERN_MALFORMED_PAYLOAD}"),
@@ -1950,7 +1957,7 @@ mod tests {
         use loom_templates::finding::ConcernToken;
         let f1 = ConcernToken::VerifierBypass;
         let f2 = ConcernToken::WeakAssertion;
-        let mut cells = Vec::with_capacity(24);
+        let mut cells = Vec::with_capacity(28);
 
         // --- S0: zero LOOM_FINDING lines. ---
         cells.push(MatrixCell {
@@ -1972,6 +1979,18 @@ mod tests {
                 phase_kind: "review",
             },
             display_contains: vec!["wrong-review-path".to_string(), "LOOM_NOOP".to_string()],
+            both_pieces_tokens: vec![],
+        });
+        cells.push(MatrixCell {
+            name: "S0×T_waiting",
+            stdout: make_stdout("S0", "T_waiting"),
+            expected_well_formed_findings: 0,
+            expected_malformed_findings: 0,
+            expect: CellExpect::WrongPhaseMarker {
+                marker_name: "LOOM_WAITING",
+                phase_kind: "review",
+            },
+            display_contains: vec!["wrong-review-path".to_string(), "LOOM_WAITING".to_string()],
             both_pieces_tokens: vec![],
         });
         cells.push(MatrixCell {
@@ -2044,6 +2063,18 @@ mod tests {
             both_pieces_tokens: vec![],
         });
         cells.push(MatrixCell {
+            name: "S1×T_waiting",
+            stdout: make_stdout("S1", "T_waiting"),
+            expected_well_formed_findings: 2,
+            expected_malformed_findings: 0,
+            expect: CellExpect::WrongPhaseMarker {
+                marker_name: "LOOM_WAITING",
+                phase_kind: "review",
+            },
+            display_contains: vec!["wrong-review-path".to_string(), "LOOM_WAITING".to_string()],
+            both_pieces_tokens: vec![],
+        });
+        cells.push(MatrixCell {
             name: "S1×T_concern_ok",
             stdout: make_stdout("S1", "T_concern_ok"),
             expected_well_formed_findings: 2,
@@ -2112,6 +2143,12 @@ mod tests {
                 vec!["LOOM_NOOP".to_string()],
             ),
             (
+                "T_waiting",
+                "LOOM_WAITING",
+                TerminalSurface::Waiting,
+                vec!["LOOM_WAITING".to_string()],
+            ),
+            (
                 "T_concern_ok",
                 "LOOM_CONCERN",
                 TerminalSurface::Concern {
@@ -2172,6 +2209,11 @@ mod tests {
                 vec!["LOOM_NOOP".to_string()],
             ),
             (
+                "T_waiting",
+                TerminalSurface::Waiting,
+                vec!["LOOM_WAITING".to_string()],
+            ),
+            (
                 "T_concern_ok",
                 TerminalSurface::Concern {
                     summary: "valid summary text".to_string(),
@@ -2210,7 +2252,7 @@ mod tests {
             });
         }
 
-        assert_eq!(cells.len(), 24, "matrix must cover all 24 cells");
+        assert_eq!(cells.len(), 28, "matrix must cover all 28 cells");
         cells
     }
 

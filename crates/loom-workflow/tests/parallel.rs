@@ -724,7 +724,7 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
         .results
         .iter()
         .map(|r| match r {
-            BatchResult::Merged { bead } => bead.as_str(),
+            BatchResult::Merged { bead } | BatchResult::Waiting { bead, .. } => bead.as_str(),
             BatchResult::Conflict { bead, .. } => bead.as_str(),
             BatchResult::AgentFailed { bead, .. } => bead.as_str(),
             BatchResult::AgentInfra { bead, .. } => bead.as_str(),

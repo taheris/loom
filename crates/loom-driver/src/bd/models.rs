@@ -5,6 +5,87 @@ use serde::{Deserialize, Serialize};
 use super::label::Label;
 use crate::identifier::{BeadId, MoleculeId};
 
+/// Dependency-relevant projection of `bd show --json`.
+///
+/// The workflow uses this separate shape only when validating a dependency
+/// wait. Keeping it separate from [`Bead`] avoids burdening ordinary list
+/// responses and fixtures with nested dependency records.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DependencySnapshot {
+    status: Status,
+    #[serde(default)]
+    dependencies: Vec<Dependency>,
+}
+
+impl DependencySnapshot {
+    /// True only while the waiting bead remains open.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.status == Status::Open
+    }
+
+    /// Stable status label for invalid-wait diagnostics.
+    #[must_use]
+    pub fn status_label(&self) -> &'static str {
+        self.status.as_str()
+    }
+
+    /// Active direct blockers declared through `bd dep add`.
+    #[must_use]
+    pub fn active_blockers(&self) -> Vec<BeadId> {
+        self.dependencies
+            .iter()
+            .filter(|dependency| {
+                dependency.kind == DependencyKind::Blocks && dependency.status != Status::Closed
+            })
+            .map(|dependency| dependency.id.clone())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct Dependency {
+    id: BeadId,
+    status: Status,
+    #[serde(rename = "dependency_type")]
+    kind: DependencyKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Status {
+    Open,
+    InProgress,
+    Blocked,
+    Deferred,
+    Closed,
+    #[serde(other)]
+    Other,
+}
+
+impl Status {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::InProgress => "in_progress",
+            Self::Blocked => "blocked",
+            Self::Deferred => "deferred",
+            Self::Closed => "closed",
+            Self::Other => "other",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+enum DependencyKind {
+    #[serde(rename = "blocks")]
+    Blocks,
+    #[serde(rename = "parent-child")]
+    ParentChild,
+    #[serde(other)]
+    Other,
+}
+
 /// One bead as produced by `bd show --json` and `bd list --json`.
 ///
 /// `bd` emits more fields than these (timestamps, owner, dependency lists);

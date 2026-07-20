@@ -23,6 +23,8 @@
 //! - `complete-marker` — emit `done\nLOOM_COMPLETE` and `agent_end`.
 //!   Used by the negative case in B6: the agent should also call
 //!   `bd close` itself, but the test asserts the *driver* doesn't.
+//! - `waiting-marker`  — emit `LOOM_WAITING` and `agent_end`; Beads state
+//!   seeded by the test decides whether the wait is valid.
 //! - `no-marker`       — emit a plain message and `agent_end` without
 //!   any `LOOM_*` line. Exercises the swallowed-marker recovery path.
 //! - `concern-marker`  — stamp a fix-up bead directory under
@@ -53,6 +55,7 @@ use std::process::ExitCode;
 const MODE_BLOCKED: &str = "blocked-marker";
 const MODE_CLARIFY: &str = "clarify-marker";
 const MODE_COMPLETE: &str = "complete-marker";
+const MODE_WAITING: &str = "waiting-marker";
 const MODE_NO_MARKER: &str = "no-marker";
 const MODE_CONCERN: &str = "concern-marker";
 const MODE_FINDING_CONCERN: &str = "finding-concern";
@@ -119,6 +122,9 @@ fn main() -> ExitCode {
         MODE_COMPLETE => {
             emit_message_delta(&mut stdout, "did the work");
             emit_message_delta(&mut stdout, "LOOM_COMPLETE");
+        }
+        MODE_WAITING => {
+            emit_message_delta(&mut stdout, "LOOM_WAITING");
         }
         MODE_NO_MARKER => {
             emit_message_delta(&mut stdout, "ran without emitting a verdict");

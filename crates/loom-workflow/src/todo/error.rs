@@ -42,7 +42,7 @@ pub enum TodoError {
     /// todo success was observed before deterministic preflight completed
     TodoSuccessWithoutPreflight,
 
-    /// `loom todo` success must be `LOOM_TODO: <json>`; generic LOOM_COMPLETE/LOOM_NOOP are wrong-phase markers
+    /// `loom todo` success must be `LOOM_TODO: <json>`; generic LOOM_COMPLETE/LOOM_NOOP and loop-only LOOM_WAITING are wrong-phase markers
     GenericTodoMarker,
 
     /// LOOM_TODO validation failed: {detail}

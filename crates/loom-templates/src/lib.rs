@@ -112,6 +112,10 @@ pub const PARTIAL_CONTEXT_PINNING: &str = include_str!("../templates/partial/con
 pub const PARTIAL_DECOMPOSITION_DISCIPLINE: &str =
     include_str!("../templates/partial/decomposition_discipline.md");
 
+/// `partial/dependency_wait.md` — loop-only `LOOM_WAITING` protocol for an
+/// open bead with an active declared blocker.
+pub const PARTIAL_DEPENDENCY_WAIT: &str = include_str!("../templates/partial/dependency_wait.md");
+
 /// `partial/chat_interview.md` — pin the chat discipline for planning
 /// interviews: questions and answers flow as prose, and the planning
 /// agent does not use Claude Code's structured option-picker tool

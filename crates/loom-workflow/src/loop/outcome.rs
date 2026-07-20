@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use loom_driver::agent::SessionOutcome;
 use loom_driver::git::GitOid;
 
+use super::waiting::ActiveBlockers;
+
 /// Result of one agent invocation against a bead. The driver translates
 /// session-level signals (JSONL `result/success`, non-zero process exit,
 /// `LOOM_BLOCKED` / `LOOM_CLARIFY` markers) into one of these.
@@ -13,6 +15,15 @@ pub enum AgentOutcome {
 
     /// Agent finished cleanly with an intentional empty-diff no-op.
     Noop,
+
+    /// Marker parser observed `LOOM_WAITING`, but authoritative Beads state
+    /// has not been checked yet. Production dispatch must pass this through
+    /// `validate_waiting_outcome` before the scheduler sees it.
+    WaitingRequested,
+
+    /// Valid dependency wait. The non-empty blocker set proves the bead is
+    /// open and currently excluded from `bd ready` by declared dependencies.
+    Waiting { blockers: ActiveBlockers },
 
     /// Agent exited with a non-zero `SessionComplete` code or surfaced a
     /// recoverable failure body. The string carries the body the driver
@@ -166,6 +177,10 @@ pub enum BeadResult {
     /// The bead is terminal for this pass, but there is no new molecule diff
     /// for the durable push gate to review.
     Noop,
+
+    /// Agent declared a validated dependency wait. The bead remains open;
+    /// the scheduler performs no Beads mutation, integration, or gate.
+    Waiting { blockers: ActiveBlockers },
 
     /// Agent self-reported `LOOM_CLARIFY` or retries exhausted — caller
     /// flags the bead with `loom:clarify` and writes `note` as

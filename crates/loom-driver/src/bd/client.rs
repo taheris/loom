@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::identifier::{BeadId, MoleculeId};
 
 use super::error::BdError;
-use super::models::{Bead, MolProgress};
+use super::models::{Bead, DependencySnapshot, MolProgress};
 use super::runner::{CommandRunner, RunOutput, TokioRunner, render_args};
 
 /// Default subprocess timeout. Configurable per [`BdClient`] instance via
@@ -75,6 +75,18 @@ impl<R: CommandRunner> BdClient<R> {
             return Err(BdError::ShowEmpty);
         }
         Ok(beads.remove(0))
+    }
+
+    /// Read the current status and direct dependency states from
+    /// `bd show <id> --json` for loop dependency-wait validation.
+    pub async fn dependency_snapshot(&self, id: &BeadId) -> Result<DependencySnapshot, BdError> {
+        let args = args(["show", id.as_str(), "--json"]);
+        let out = self.invoke(args).await?;
+        let mut snapshots: Vec<DependencySnapshot> = decode(&out.stdout, &out.args)?;
+        if snapshots.is_empty() {
+            return Err(BdError::ShowEmpty);
+        }
+        Ok(snapshots.remove(0))
     }
 
     /// `bd create --silent` → newly created bead id.
@@ -1112,6 +1124,34 @@ mod tests {
             .await?;
         let argv = argv_of(&client.runner, 0);
         assert_eq!(argv, vec!["dep", "add", "lm-a", "lm-b"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dependency_snapshot_returns_only_active_blocking_dependencies() -> Result<()> {
+        let json = br#"[{
+          "status":"open",
+          "dependencies":[
+            {"id":"lm-open","status":"open","dependency_type":"blocks"},
+            {"id":"lm-running","status":"in_progress","dependency_type":"blocks"},
+            {"id":"lm-closed","status":"closed","dependency_type":"blocks"},
+            {"id":"lm-parent","status":"open","dependency_type":"parent-child"}
+          ]
+        }]"#;
+        let runner = CapturingRunner::new([ok(json)]);
+        let client = BdClient::with_runner(runner);
+
+        let snapshot = client.dependency_snapshot(&BeadId::new("lm-wait")?).await?;
+
+        assert!(snapshot.is_open());
+        assert_eq!(
+            snapshot.active_blockers(),
+            vec![BeadId::new("lm-open")?, BeadId::new("lm-running")?],
+        );
+        assert_eq!(
+            argv_of(&client.runner, 0),
+            vec!["show", "lm-wait", "--json"],
+        );
         Ok(())
     }
 

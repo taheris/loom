@@ -1182,7 +1182,10 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         if let Some(ExitSignal::Blocked { reason }) = marker {
             return self.record_blocked(reason).await;
         }
-        if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop)) {
+        if matches!(
+            marker,
+            Some(ExitSignal::Complete | ExitSignal::Noop | ExitSignal::Waiting)
+        ) {
             return Err(TodoError::GenericTodoMarker);
         }
         if outcome.exit_code != 0 {
@@ -1214,7 +1217,12 @@ fn todo_outcome_route(
         Some(ExitSignal::Clarify { .. }) => "clarify",
         Some(ExitSignal::Blocked { .. }) => "blocked",
         Some(ExitSignal::Retry { .. }) => "retry",
-        Some(ExitSignal::Complete | ExitSignal::Noop | ExitSignal::Concern { .. })
+        Some(
+            ExitSignal::Complete
+            | ExitSignal::Noop
+            | ExitSignal::Waiting
+            | ExitSignal::Concern { .. },
+        )
         | Some(ExitSignal::BadWalk(_)) => "wrong-phase-marker",
         None if outcome.exit_code != 0 => "recovery",
         None if todo_success.is_some() => "success",

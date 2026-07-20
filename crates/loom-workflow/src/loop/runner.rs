@@ -102,6 +102,7 @@ enum ProcessOneResult {
 #[derive(Debug, Default, Clone)]
 struct LoopProgress {
     beads_processed: u32,
+    beads_waiting: u32,
     beads_clarified: u32,
     beads_blocked: u32,
     outer_iterations: u32,
@@ -476,6 +477,14 @@ pub async fn run_loop_with_infra_policy<C: AgentLoopController>(
                             handoff_this_pass = true;
                         }
                         BeadResult::Noop => {}
+                        BeadResult::Waiting { blockers } => {
+                            progress.beads_waiting += 1;
+                            info!(
+                                bead = %bead.id,
+                                blocker_count = blockers.count(),
+                                "loom loop: dependency wait accepted; preserving bead workspace",
+                            );
+                        }
                         BeadResult::Clarified { note } => {
                             controller.apply_clarify(&bead.id, &note).await?;
                             progress.beads_clarified += 1;
@@ -560,6 +569,7 @@ fn deferred_ids(queue: &VecDeque<Bead>) -> Vec<BeadId> {
 fn finalize(progress: LoopProgress, stalled_at_max_iterations: bool) -> LoopOutcome {
     let LoopProgress {
         beads_processed,
+        beads_waiting,
         beads_clarified,
         beads_blocked,
         outer_iterations,
@@ -588,6 +598,7 @@ fn finalize(progress: LoopProgress, stalled_at_max_iterations: bool) -> LoopOutc
 
     LoopOutcome {
         beads_processed,
+        beads_waiting,
         beads_clarified,
         beads_blocked,
         outer_iterations,
@@ -611,6 +622,17 @@ async fn process_one_bead<C: AgentLoopController>(
             .await?
         {
             AgentOutcome::Noop => return terminal(BeadResult::Noop),
+            AgentOutcome::WaitingRequested => {
+                return Err(LoopError::Bug {
+                    context: format!(
+                        "unvalidated LOOM_WAITING reached scheduler for bead {}",
+                        bead.id,
+                    ),
+                });
+            }
+            AgentOutcome::Waiting { blockers } => {
+                return terminal(BeadResult::Waiting { blockers });
+            }
             AgentOutcome::Success => match controller.exec_per_bead_gate(&bead.id).await? {
                 PerBeadGateOutcome::Clean => return terminal(BeadResult::Done),
                 PerBeadGateOutcome::StructuralViolation { detail } => {
@@ -1110,6 +1132,32 @@ mod tests {
         assert!(c.per_bead_gate_calls.is_empty());
         assert!(c.clarified.is_empty());
         assert!(c.blocked.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn valid_waiting_outcome_preserves_scheduler_progress_and_skips_gate()
+    -> Result<(), LoopError> {
+        let mut controller = FakeController::default();
+        controller.ready_queue.push_back(bead("lm-wait", &[]));
+        controller.ready_queue.push_back(bead("lm-next", &[]));
+        controller.agent_outcomes.push_back(AgentOutcome::Waiting {
+            blockers: crate::r#loop::ActiveBlockers::new(
+                BeadId::new("lm-blocker").expect("valid blocker id"),
+                Vec::new(),
+            ),
+        });
+        controller.agent_outcomes.push_back(AgentOutcome::Noop);
+
+        let summary = run_loop(&mut controller, RetryPolicy::default(), 10).await?;
+
+        assert_eq!(summary.beads_processed, 2);
+        assert_eq!(summary.beads_waiting, 1);
+        assert_eq!(controller.run_calls.len(), 2);
+        assert!(controller.per_bead_gate_calls.is_empty());
+        assert_eq!(controller.review_calls, 0);
+        assert!(controller.clarified.is_empty());
+        assert!(controller.blocked.is_empty());
         Ok(())
     }
 

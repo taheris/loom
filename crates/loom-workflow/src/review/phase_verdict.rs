@@ -191,13 +191,16 @@ impl RecoveryCause {
     }
 }
 
-/// One of the four post-gate branches. The driver maps `Recovery` onto
+/// One of the five post-gate branches. The driver maps `Recovery` onto
 /// `retry` (under `[loop] max_iterations`) or `blocked` (cap exhausted) one
 /// layer up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhaseVerdict {
     /// Phase passed every gate stage — caller advances state.
     Done,
+    /// Loop worker requested a dependency wait. The workflow must validate
+    /// open-bead and active-blocker state before accepting it.
+    Waiting,
     /// Agent emitted `LOOM_BLOCKED` with a non-empty reason — surface to
     /// user without retry.
     Blocked { reason: String },
@@ -281,6 +284,7 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
             decide_progress_marker(false, inputs)
         }
         Some(ExitSignal::Noop) => decide_progress_marker(true, inputs),
+        Some(ExitSignal::Waiting) => PhaseVerdict::Waiting,
         Some(ExitSignal::Retry { reason }) => PhaseVerdict::Recovery {
             cause: RecoveryCause::AgentRetry {
                 reason: reason.clone(),
@@ -295,8 +299,8 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
 
 /// Class of phase from the marker-admissibility perspective.
 ///
-/// Direct worker phases (`loop`, `todo_*`) admit direct
-/// `LOOM_CLARIFY`. Review is also single-shot, but remains
+/// Loop and todo workers admit direct self-report markers, but only loop
+/// admits the dependency-wait terminal. Review is single-shot and
 /// inspection-only: it admits `LOOM_RETRY` / `LOOM_BLOCKED` for
 /// cannot-complete self-reports and routes clarify-worthy decisions
 /// through `route="clarify"` findings instead of direct `LOOM_CLARIFY`.
@@ -305,9 +309,12 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
 /// its `LOOM_APPLY` handoff in `inbox::terminal` before this layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseKind {
-    /// `loop`, `todo_*` — single-shot worker phases that admit direct
-    /// self-report markers including `LOOM_CLARIFY`.
-    Worker,
+    /// `loom loop` — admits progress, self-report, and dependency-wait
+    /// terminals.
+    Loop,
+    /// `loom todo` — admits worker self-reports; typed `LOOM_TODO` success is
+    /// validated by the todo protocol outside this generic marker surface.
+    Todo,
     /// `loom gate review` — single-shot inspection phase with a
     /// review-specific terminal contract.
     Review,
@@ -319,22 +326,20 @@ pub enum PhaseKind {
 impl PhaseKind {
     fn label(self) -> &'static str {
         match self {
-            Self::Worker => "worker",
+            Self::Loop => "loop",
+            Self::Todo => "todo",
             Self::Review => "review",
             Self::Interactive => "interactive",
         }
     }
 }
 
-/// Phase-aware wrapper around [`decide`]. Defense-in-depth: rejects
-/// worker-phase-only markers (`LOOM_RETRY`, `LOOM_BLOCKED`,
-/// `LOOM_CLARIFY`) when emitted from an interactive phase as
-/// `RecoveryCause::WrongPhaseMarker` per `specs/harness.md`
-/// § Marker definitions. The template partial-pinning matrix is the
-/// primary enforcement (the worker-phase self-report partial is not
-/// pinned in interactive templates); this function is the mechanical
-/// backstop for any code path that does parse markers from an
-/// interactive session.
+/// Phase-aware wrapper around [`decide`]. Defense-in-depth: rejects every
+/// marker the selected phase does not own, including worker self-reports in
+/// interactive phases, generic progress in todo, and dependency waiting
+/// outside loop. The template partial-pinning matrix is the primary
+/// enforcement; this function is the mechanical backstop for code paths that
+/// parse markers from a phase-specific session.
 #[must_use]
 pub fn decide_for_phase(
     marker: Option<&ExitSignal>,
@@ -356,14 +361,27 @@ fn reject_marker_for_phase(marker: Option<&ExitSignal>, phase: PhaseKind) -> Opt
             "LOOM_CONCERN"
         }
         (PhaseKind::Review, ExitSignal::Noop) => "LOOM_NOOP",
-        (PhaseKind::Worker, ExitSignal::Concern { .. } | ExitSignal::BadWalk(_)) => "LOOM_CONCERN",
+        (PhaseKind::Todo, ExitSignal::Complete) => "LOOM_COMPLETE",
+        (PhaseKind::Todo, ExitSignal::Noop) => "LOOM_NOOP",
+        (PhaseKind::Todo | PhaseKind::Review | PhaseKind::Interactive, ExitSignal::Waiting) => {
+            "LOOM_WAITING"
+        }
         (
-            PhaseKind::Worker,
+            PhaseKind::Loop | PhaseKind::Todo,
+            ExitSignal::Concern { .. } | ExitSignal::BadWalk(_),
+        ) => "LOOM_CONCERN",
+        (
+            PhaseKind::Loop,
             ExitSignal::Complete
             | ExitSignal::Noop
+            | ExitSignal::Waiting
             | ExitSignal::Retry { .. }
             | ExitSignal::Blocked { .. }
             | ExitSignal::Clarify { .. },
+        )
+        | (
+            PhaseKind::Todo,
+            ExitSignal::Retry { .. } | ExitSignal::Blocked { .. } | ExitSignal::Clarify { .. },
         )
         | (
             PhaseKind::Review,
@@ -1131,33 +1149,55 @@ mod tests {
         }
     }
 
-    /// `decide_for_phase(_, _, PhaseKind::Worker)` delegates to `decide`
-    /// for loop/todo worker self-reports — every direct worker marker
-    /// (`LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`) routes through
-    /// unchanged.
+    /// Loop and todo both admit direct worker self-reports.
     #[test]
-    fn retry_marker_admitted_under_worker_phase() {
-        let m = ExitSignal::Retry {
+    fn retry_marker_admitted_under_loop_and_todo_phases() {
+        let marker = ExitSignal::Retry {
             reason: "transient io".into(),
         };
-        match decide_for_phase(Some(&m), GateInputs::default(), PhaseKind::Worker) {
-            PhaseVerdict::Recovery {
-                cause: RecoveryCause::AgentRetry { reason },
-            } => {
-                assert_eq!(reason, "transient io");
+        for phase in [PhaseKind::Loop, PhaseKind::Todo] {
+            match decide_for_phase(Some(&marker), GateInputs::default(), phase) {
+                PhaseVerdict::Recovery {
+                    cause: RecoveryCause::AgentRetry { reason },
+                } => assert_eq!(reason, "transient io"),
+                other => panic!("expected Recovery::AgentRetry, got {other:?}"),
             }
-            other => panic!("expected Recovery::AgentRetry under worker phase, got {other:?}"),
         }
     }
 
     #[test]
-    fn clarify_marker_admitted_under_worker_phase() {
-        let m = ExitSignal::Clarify {
+    fn clarify_marker_admitted_under_loop_and_todo_phases() {
+        let marker = ExitSignal::Clarify {
             question: "additive only?".into(),
         };
-        match decide_for_phase(Some(&m), GateInputs::default(), PhaseKind::Worker) {
-            PhaseVerdict::Clarify { question } => assert_eq!(question, "additive only?"),
-            other => panic!("expected Clarify under worker phase, got {other:?}"),
+        for phase in [PhaseKind::Loop, PhaseKind::Todo] {
+            match decide_for_phase(Some(&marker), GateInputs::default(), phase) {
+                PhaseVerdict::Clarify { question } => assert_eq!(question, "additive only?"),
+                other => panic!("expected Clarify, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn waiting_marker_is_loop_only() {
+        assert_eq!(
+            decide_for_phase(
+                Some(&ExitSignal::Waiting),
+                GateInputs::default(),
+                PhaseKind::Loop,
+            ),
+            PhaseVerdict::Waiting,
+        );
+        for phase in [PhaseKind::Todo, PhaseKind::Review, PhaseKind::Interactive] {
+            assert!(matches!(
+                decide_for_phase(Some(&ExitSignal::Waiting), GateInputs::default(), phase),
+                PhaseVerdict::Recovery {
+                    cause: RecoveryCause::WrongPhaseMarker {
+                        marker_name: "LOOM_WAITING",
+                        ..
+                    }
+                }
+            ));
         }
     }
 
@@ -1203,11 +1243,11 @@ mod tests {
     }
 
     #[test]
-    fn blocked_marker_without_reason_is_not_admitted_under_worker_or_review_phase() {
+    fn blocked_marker_without_reason_is_not_admitted_under_loop_or_review_phase() {
         let marker = ExitSignal::Blocked {
             reason: String::new(),
         };
-        for phase in [PhaseKind::Worker, PhaseKind::Review] {
+        for phase in [PhaseKind::Loop, PhaseKind::Review] {
             assert_eq!(
                 decide_for_phase(Some(&marker), GateInputs::default(), phase),
                 PhaseVerdict::Recovery {

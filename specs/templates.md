@@ -102,6 +102,7 @@ Current and target v1 set; pending additions are marked in the pinning matrix:
 | `interview_modes.md` | Describe the "one by one" / "polish the spec" interview sub-modes |
 | `chat_interview.md` | Interactive-session discipline for `plan` and `inbox`: conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and phase-authorized durable destinations for anything that needs to outlive the session — see *Chat Discipline* below |
 | `decomposition_discipline.md` | Pin the audit-before-fan-out and exact-roster rule on `todo`: every changed spec from driver preflight must be represented in `LOOM_TODO`, and every bead must correspond to evidence-confirmed missing work — see *Decomposition Discipline* below |
+| `dependency_wait.md` | Document the loop-only bare `LOOM_WAITING` terminal: declare an active blocker, leave the current bead open, and let the driver preserve its workspace without integration, gate, retry, or workflow-state mutation. |
 | `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit. Carries the pending-modifier discipline prominently — see *Planning-Rubric Pending Discipline* below. |
 | `invariant_clash.md` | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`) |
 | `review_rubric.md` | Finite-diff / push-range review rubric — see [gate.md](gate.md) |
@@ -162,6 +163,7 @@ walker input](gate.md#pending-support-in-structured-walker-input).
 | `interview_modes.md` | ✓ |  |  |  |  |
 | `chat_interview.md` | ✓ |  |  |  | ✓ |
 | `decomposition_discipline.md` |  | ✓ |  |  |  |
+| `dependency_wait.md` |  |  | ✓ |  |  |
 | `plan_stage_rubric.md` | ✓ |  |  |  |  |
 | `invariant_clash.md` | ✓ |  |  |  |  |
 | `review_rubric.md` |  |  |  | ✓ |  |
@@ -538,6 +540,7 @@ pub enum BadWalk {
 pub enum TerminalSurface {
     Complete,
     Noop,
+    Waiting,
     Concern { summary: String },
     Retry { reason: String },
     Blocked { reason: String },
@@ -596,7 +599,7 @@ routing is decided by `loom gate mint`.
 - `BadWalk(Concern { payload, parsed_findings })` → `"Your LOOM_CONCERN payload did not parse as {\"summary\": \"<non-empty>\"}. Literal payload: {payload}"`, followed (when `parsed_findings` is non-empty) by `"\n\n{N} finding(s) parsed cleanly before the malformed terminator:\n{per-finding digest: token + first line of evidence}"` so the agent's diagnosis from the streamed findings is not lost when only the terminal was malformed.
 - `BadWalk(ConcernWithoutFindings { summary })` → `"You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING records streamed. Either emit findings before the terminator or use LOOM_COMPLETE."`
 - `BadWalk(FindingsWithoutConcern { finding_count, findings })` → `"You streamed {finding_count} LOOM_FINDING record(s) but terminated with LOOM_COMPLETE. Use LOOM_CONCERN: {\"summary\": \"...\"} when findings are emitted."`, followed by `"\n\nFindings streamed:\n{per-finding digest}"` so the agent's next iteration sees the diagnosis it just emitted.
-- `BadWalk(MalformedFinding { errors, terminal })` → `"One or more LOOM_FINDING records failed strict validation. Re-emit each finding as a valid `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}` record; compact one-line JSON is preferred, while raw line breaks are allowed only inside JSON strings and are normalized before validation.\n{per-record: 'Record starting at line N: <reason> — raw: <record text>'}\n\nYour terminal was: {terminal-rendered}"`. The terminal rendering uses the typed `TerminalSurface` variant: `Complete` → `"LOOM_COMPLETE"`, `Concern { summary }` → `"LOOM_CONCERN: {summary}"`, `Malformed { payload }` → `"LOOM_CONCERN: <malformed: {payload}>"`, `Missing` → `"(no terminal on the final non-empty line)"`. Surfacing both pieces lets the agent fix malformed records (typically: add the missing `route` field or drop the surrounding markdown fence) without losing the well-formed context.
+- `BadWalk(MalformedFinding { errors, terminal })` → `"One or more LOOM_FINDING records failed strict validation. Re-emit each finding as a valid `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}` record; compact one-line JSON is preferred, while raw line breaks are allowed only inside JSON strings and are normalized before validation.\n{per-record: 'Record starting at line N: <reason> — raw: <record text>'}\n\nYour terminal was: {terminal-rendered}"`. The terminal rendering uses the typed `TerminalSurface` variant: `Complete` → `"LOOM_COMPLETE"`, `Waiting` → `"LOOM_WAITING"`, `Concern { summary }` → `"LOOM_CONCERN: {summary}"`, `Malformed { payload }` → `"LOOM_CONCERN: <malformed: {payload}>"`, `Missing` → `"(no terminal on the final non-empty line)"`. Surfacing both pieces lets the agent fix malformed records (typically: add the missing `route` field or drop the surrounding markdown fence) without losing the well-formed context.
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
 - `TreeNotClean` → `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."` with a `"+N more"` suffix line when the list is truncated to 30 entries
 - `PostIntegrateFail { failures, gate_log_path }` → `"After rebasing onto the integration branch, the post-integration verify failed.\n\nGate log: {gate_log_path}\n\n{N blocks: target + exit + stderr}\n\nReconcile the cross-bead interaction — your bead's verify passed at its own workspace; the failure is in the integrated tree."`
@@ -654,6 +657,17 @@ fit, and either fix the issue or emit the appropriate worker self-report
 marker. This is prompt-level feedback discipline; the driver-side trust
 boundary remains the post-integration verify and molecule push gate in
 [harness.md](harness.md).
+
+### Dependency-Wait Terminal
+
+`partial/dependency_wait.md` is included only by `loop.md`. It instructs the
+worker to declare `bd dep add <current> <blocker>`, keep the current bead open,
+and emit bare `LOOM_WAITING` on the final non-empty line. The marker has no JSON
+payload because Beads is authoritative. It also states the mechanical outcome:
+a valid wait preserves the worktree/branch, skips integration and per-bead
+gates, consumes no retry budget, adds no blocked/clarify/infra state, and lets
+blocker-aware `bd ready` resurface the bead. A closed bead or absent active
+blocker is invalid and enters recovery.
 
 ### Agent-Output Markers
 
@@ -1284,6 +1298,10 @@ documents in front of the agent with zero configuration.
   `LOOM_COMPLETE` (closed bead with non-empty diff) and keeps
   `LOOM_NOOP` loop-only
   [test](progress_markers_render_phase_specific_diff_rules)
+- `partial/dependency_wait.md` is included only by `loop.md`, renders the
+  loop-only bare `LOOM_WAITING` marker, and requires an open bead with an active
+  declared blocking dependency
+  [test](loop_template_renders_dependency_wait_marker)
 - `partial/self_report_markers.md` covers direct loop/todo self-report
   markers (`LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`) and contains
   no `LOOM_CONCERN:` or `LOOM_FINDING:` literal
@@ -1377,8 +1395,8 @@ documents in front of the agent with zero configuration.
   alongside the per-record errors. Construction of any variant
   without its max-context fields is a compile error
   [test](bad_walk_variants_preserve_max_context_invariant_by_struct_shape)
-- `TerminalSurface` enum mirrors `ExitSignal` with explicit
-  `Malformed { payload: String }` and `Missing` variants so
+- `TerminalSurface` enum mirrors `ExitSignal`, including loop-only `Waiting`,
+  with explicit `Malformed { payload: String }` and `Missing` variants so
   `BadWalk::MalformedFinding`'s `terminal` field can carry the
   terminal state regardless of whether the terminal itself parsed
   [test](terminal_surface_carries_malformed_and_missing_variants)
@@ -1756,7 +1774,14 @@ documents in front of the agent with zero configuration.
     markers — the human resolves friction in-turn. `inbox` may emit
     `LOOM_APPLY: {"proposals":[...]}` when it requests the trusted driver to
     apply accepted tune proposals.
-19. **Options-block requirement on clarify-bound findings.**
+19. **Dependency waiting in `loop`.** `partial/dependency_wait.md`, pinned only
+    in `loop`, defines bare `LOOM_WAITING` for an open bead blocked by at least
+    one active declared dependency. It directs the worker to add the Beads edge
+    before emitting, forbids closing the current bead, and states that valid
+    waiting preserves the workspace/branch while skipping integration, gate,
+    retry-budget use, and workflow-state mutation. Invalid waiting enters
+    recovery rather than parking.
+20. **Options-block requirement on clarify-bound findings.**
     `partial/findings_walk.md` requires every clarify-bound finding
     (any token whose mint would label the resulting bead
     `loom:clarify`, not only `invariant-clash`) to embed the
@@ -1773,7 +1798,7 @@ documents in front of the agent with zero configuration.
     `LOOM_BLOCKED` directly when it cannot articulate options, with a
     reason explaining why no options can be safely surfaced, rather
     than emitting a clarify-bound finding without them.
-20. **Workspace recovery in `loop`.** `partial/workspace_recovery.md`,
+21. **Workspace recovery in `loop`.** `partial/workspace_recovery.md`,
     pinned in `loop` only, renders the driver-created recovery stash
     context for dirty bead workspaces. It is separate from
     `PreviousFailure` and retry `attempt`, but may render in the same loop

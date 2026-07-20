@@ -51,7 +51,7 @@ Review notes:
        --parent="{% match molecule_id %}{% when Some with (id) %}{{ id }}{% when None %}<molecule>{% endmatch %}" --silent)
      ```
    - Set execution order if needed:
-     - **Blocks current task**: `bd dep add {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}<issue>{% endmatch %} $NEW_ID` (current waits for new)
+     - **Blocks current task**: `bd dep add {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}<issue>{% endmatch %} $NEW_ID` (current waits for new), then emit `LOOM_WAITING`
      - **Depends on current task**: `bd dep add $NEW_ID {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}<issue>{% endmatch %}` (new waits for current)
      - **Independent**: No dep needed—`bd ready` will surface it when unblocked
    - Do NOT implement discovered tasks in this session—stay focused
@@ -62,7 +62,7 @@ Review notes:
 6. **Blocked vs Waiting**: Distinguish dependency waits, clarify decisions, and true dead ends:
    - Need user input and can frame candidate options? → persist the Options block, then `LOOM_CLARIFY`
    - Semantic dead end with no safe options to enumerate? → write that no-options rationale on a prior line, then `LOOM_BLOCKED`
-   - Need other beads done? → Add dep with `bd dep add`, output `LOOM_COMPLETE`
+   - Need other beads done? → Add the blocking dependency with `bd dep add`, leave this bead open, then output `LOOM_WAITING`
 7. **Already Implemented**: If the task's work is already done in the codebase,
    verify correctness, run `bd close {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}<issue-id>{% endmatch %}`,
    and emit `LOOM_NOOP` (empty diff means no-op, not zero-progress).
@@ -118,6 +118,8 @@ Post-step hooks verify compliance automatically.
 ## Land the Plane
 
 Before outputting LOOM_COMPLETE, follow the **Session Protocol** in `AGENTS.md`.
+
+{% include "partial/dependency_wait.md" %}
 
 {% include "partial/progress_markers.md" %}
 

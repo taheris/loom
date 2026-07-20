@@ -2954,6 +2954,7 @@ fn run_loop_cmd(
 #[derive(Debug, Default)]
 struct LoopOutcomeAccumulator {
     beads_processed: u32,
+    beads_waiting: u32,
     beads_clarified: u32,
     beads_blocked: u32,
     outer_iterations: u32,
@@ -2969,12 +2970,14 @@ impl LoopOutcomeAccumulator {
     fn push(&mut self, outcome: LoopOutcome) {
         let LoopOutcome {
             beads_processed,
+            beads_waiting,
             beads_clarified,
             beads_blocked,
             outer_iterations,
             gate,
         } = outcome;
         self.beads_processed = self.beads_processed.saturating_add(beads_processed);
+        self.beads_waiting = self.beads_waiting.saturating_add(beads_waiting);
         self.beads_clarified = self.beads_clarified.saturating_add(beads_clarified);
         self.beads_blocked = self.beads_blocked.saturating_add(beads_blocked);
         self.outer_iterations = self.outer_iterations.saturating_add(outer_iterations);
@@ -2999,6 +3002,7 @@ impl LoopOutcomeAccumulator {
         };
         LoopOutcome {
             beads_processed: self.beads_processed,
+            beads_waiting: self.beads_waiting,
             beads_clarified: self.beads_clarified,
             beads_blocked: self.beads_blocked,
             outer_iterations: self.outer_iterations,
@@ -3302,8 +3306,9 @@ fn print_sequential_loop_summary(multi_root: bool, root: &LoopWorkRoot, summary:
 
 fn print_loop_summary(prefix: &str, summary: &LoopOutcome) {
     println!(
-        "{prefix} processed {} bead(s), clarified {}, blocked {}, outer_iterations={}, gate={}",
+        "{prefix} processed {} bead(s), waiting {}, clarified {}, blocked {}, outer_iterations={}, gate={}",
         summary.beads_processed,
+        summary.beads_waiting,
         summary.beads_clarified,
         summary.beads_blocked,
         summary.outer_iterations,
@@ -3319,9 +3324,10 @@ fn print_parallel_loop_summary(
 ) {
     if multi_root {
         println!(
-            "loom loop {} --parallel {parallel_n}: processed {}, gate={}",
+            "loom loop {} --parallel {parallel_n}: processed {}, waiting {}, gate={}",
             root.id,
             outcome.beads_processed,
+            outcome.beads_waiting,
             gate_label(&outcome.gate),
         );
     } else {
@@ -3331,8 +3337,9 @@ fn print_parallel_loop_summary(
 
 fn print_parallel_aggregate_summary(parallel_n: u32, outcome: &LoopOutcome) {
     println!(
-        "loom loop --parallel {parallel_n}: processed {}, gate={}",
+        "loom loop --parallel {parallel_n}: processed {}, waiting {}, gate={}",
         outcome.beads_processed,
+        outcome.beads_waiting,
         gate_label(&outcome.gate),
     );
 }
@@ -3405,6 +3412,7 @@ async fn run_parallel_loop(
     let mut infra_queue_loaded = false;
     let mut finished_ids: HashSet<BeadId> = HashSet::new();
     let mut processed = 0_u32;
+    let mut waiting = 0_u32;
     let mut clarified = 0_u32;
     let mut blocked = 0_u32;
     let mut outer_iterations = 0_u32;
@@ -3525,6 +3533,16 @@ async fn run_parallel_loop(
                         finished_ids.insert(bead);
                         processed = processed.saturating_add(1);
                         work_since_gate = true;
+                    }
+                    BatchResult::Waiting { bead, blockers } => {
+                        tracing::info!(
+                            bead = %bead,
+                            blocker_count = blockers.count(),
+                            "loom loop: dependency wait accepted; continuing parallel work",
+                        );
+                        infra_budget.clear(&bead);
+                        processed = processed.saturating_add(1);
+                        waiting = waiting.saturating_add(1);
                     }
                     BatchResult::Conflict { bead, .. } => {
                         tracing::warn!(
@@ -3786,6 +3804,7 @@ async fn run_parallel_loop(
     };
     Ok(LoopOutcome {
         beads_processed: processed,
+        beads_waiting: waiting,
         beads_clarified: clarified,
         beads_blocked: blocked,
         outer_iterations,
@@ -4172,7 +4191,11 @@ async fn dispatch_for_slot(
     .await;
     drop(scratch);
     let marker = parse_exit_signal(&output);
-    Ok(classify_session(result, marker))
+    let outcome = classify_session(result, marker);
+    Ok(
+        loom_workflow::r#loop::validate_waiting_outcome(&BdClient::new(), &slot.bead.id, outcome)
+            .await?,
+    )
 }
 
 /// Backend-agnostic dispatcher. The match is the only place in the binary
