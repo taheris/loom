@@ -111,6 +111,7 @@ fn plan_does_not_create_epic_or_touch_bd() {
     let output = Command::new(env!("CARGO_BIN_EXE_loom"))
         .arg("--workspace")
         .arg(&workspace)
+        .arg("--host-key")
         .args(["plan", "agent"])
         .env("LOOM_PROFILES_MANIFEST", manifest)
         .env("LOOM_WRIX_BIN", wrix)

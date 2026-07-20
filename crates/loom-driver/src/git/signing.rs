@@ -116,7 +116,11 @@ impl RepoGitPolicy {
     /// Install context-stable Wrix Git policy or explicitly restore host policy.
     pub fn apply(&self, workspace: &Path) -> Result<(), GitError> {
         if self.mode == KeyMode::Host {
-            return clear_managed_git_policy(workspace);
+            return if workspace.join(".git").exists() {
+                clear_managed_git_policy(workspace)
+            } else {
+                Ok(())
+            };
         }
         let (Some(key_name), Some(deploy_key), Some(signing_key)) = (
             self.key_name.as_deref(),
@@ -150,6 +154,11 @@ impl RepoGitPolicy {
             });
         }
         validate_wrix_policy(workspace, key_name)
+    }
+
+    /// Whether this policy explicitly permits ambient host Git authority.
+    pub fn uses_host_key(&self) -> bool {
+        self.mode == KeyMode::Host
     }
 
     /// Host key paths passed only to the Wrix launcher process.

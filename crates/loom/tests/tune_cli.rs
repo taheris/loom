@@ -180,6 +180,7 @@ fn run_loom_with_env(
     command
         .arg("--workspace")
         .arg(workspace)
+        .arg("--host-key")
         .args(args)
         .env("PATH", new_path)
         .env("BD_STATE_DIR", state_dir)

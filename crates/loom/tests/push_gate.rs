@@ -316,6 +316,7 @@ fn run_loom_gate_review(
     let mut cmd = Command::new(loom_bin);
     cmd.arg("--workspace")
         .arg(workspace)
+        .arg("--host-key")
         .arg("--agent")
         .arg("pi")
         .arg("gate")

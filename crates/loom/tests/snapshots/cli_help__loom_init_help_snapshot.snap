@@ -1,6 +1,5 @@
 ---
 source: crates/loom/tests/cli_help.rs
-assertion_line: 119
 expression: "loom_help(&[\"init\"])"
 ---
 Initialize the workspace (create `.loom/` config + cache DB)
@@ -10,5 +9,6 @@ Usage: loom init [OPTIONS]
 Options:
       --rebuild           Drop and repopulate the cache DB from `specs/*.md` and active beads
   -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+      --host-key          Explicitly allow ambient host Git credentials and signing config
   -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
   -h, --help              Print help

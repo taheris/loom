@@ -84,6 +84,7 @@ where
     let output = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
+        .arg("--host-key")
         .arg("--agent")
         .arg("pi")
         .args(args)

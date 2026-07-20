@@ -456,6 +456,7 @@ fn chat_command(env: &ChatRun, mode: &str, args: &[&str], extra_env: &[(&str, &s
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_loom"));
     cmd.arg("--workspace")
         .arg(&env.workspace)
+        .arg("--host-key")
         .arg("inbox")
         .arg("chat")
         .args(args)

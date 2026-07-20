@@ -73,20 +73,24 @@ directory is an additional mount. `SpawnConfig` owns these per-launch mounts;
 
 ### Repository Git Isolation
 
-`loom loop` defaults to repository-scoped Git authority. Before bead selection
-or integration work, startup resolves both deploy and signing keys using Wrix
-precedence: an explicit `WRIX_DEPLOY_KEY` or `WRIX_SIGNING_KEY` must be an
-absolute path to an existing file; otherwise each key falls back to
+Every Loom command that launches Wrix defaults to repository-scoped Git
+authority: `plan`, `loop`, `todo`, `inbox chat`, proposal tuning, and the review,
+audit, judge, rubric, and mint gate paths. Before selecting beads or launching
+`wrix run` / `wrix spawn`, each entry point resolves both deploy and signing
+keys using Wrix precedence: an explicit `WRIX_DEPLOY_KEY` or `WRIX_SIGNING_KEY`
+must be an absolute path to an existing file; otherwise each key falls back to
 `$HOME/.ssh/deploy_keys/<repo>-<host>` with the signing-key suffix. If either
 key remains unresolved, Loom fails before querying Beads or spawning an agent.
 Repository mode also rejects ambient `GIT_SSH_COMMAND` and `GIT_SSH` overrides.
 Diagnostics identify `--host-key` as the sole ambient-host opt-in.
 
 After resolution, Loom runs `wrix init --offline --no-hooks --key <key-name>` in
-`.loom/integration`, exposing key paths only to that child. Wrix installs
-context-stable repository-local transport and SSH-signing policy, including
-`.git/wrix/allowed_signers`; Loom validates the expected configuration and
-policy files and fails closed on a no-op or partial result.
+the selected checkout, exposing key paths only to that child. Loop startup
+selects `.loom/integration`; other Wrix-bearing commands select their active
+workflow checkout. Wrix installs context-stable repository-local transport and
+SSH-signing policy, including `.git/wrix/allowed_signers`; Loom validates the
+expected configuration and policy files and fails closed on a no-op or partial
+result.
 
 New and reused bead clones receive the same policy before dirty-work stashing,
 origin fetch, or host-side rebase. Context-stable helpers let the host and the
@@ -94,14 +98,16 @@ container use the repository key without persisting a host private-key path.
 Repository mode treats a missing allowed-signers file as an error and verifies
 both fetched and rebased commits.
 
-`--host-key` removes managed Wrix and legacy signing/transport configuration
-from Loom-owned clones and permits ambient host Git policy. Without that flag,
-Loom never falls back to the host GPG key.
+The global `--host-key` option removes managed Wrix and legacy
+signing/transport configuration from the selected checkout and permits ambient
+host Git policy for all Wrix-bearing commands. Without that flag, Loom never
+falls back to the host GPG key.
 
-Resolved host key paths travel to sandbox launch only through
-`SpawnConfig.launcher_env` as `WRIX_DEPLOY_KEY` and `WRIX_SIGNING_KEY`. That map
-is excluded from serialized spawn JSON; Wrix stages fixed in-container paths.
-Independently, `loom init` enables Git rerere for integration-conflict replay.
+Resolved host key paths are applied to every `wrix run` child and travel to
+`wrix spawn` only through `SpawnConfig.launcher_env` as `WRIX_DEPLOY_KEY` and
+`WRIX_SIGNING_KEY`. That map is excluded from serialized spawn JSON; Wrix
+stages fixed in-container paths. Independently, `loom init` enables Git rerere
+for integration-conflict replay.
 
 ### Profile-Image Manifest
 
@@ -783,9 +789,13 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - `GitClient` is the only module that imports `gix` or invokes the
       `git` CLI; callers see typed Rust methods
   [check](cargo run -p loom-walk -- git_client_encapsulation)
-- Default `loom loop` startup requires both repository deploy and signing
-      keys and invokes `wrix init --offline --no-hooks --key <key-name>` in
-      `.loom/integration` with those exact paths before selecting beads
+- Every non-loop Wrix-bearing command requires both repository deploy and
+      signing keys by default and invokes `wrix init --offline --no-hooks
+      --key <key-name>` in its active checkout before selecting beads or
+      launching Wrix
+  [test](all_non_loop_wrix_launch_surfaces_preflight_repository_policy)
+- Default `loom loop` startup applies that policy in `.loom/integration` with
+      the exact resolved paths before selecting beads
   [test](loom_loop_startup_initializes_repository_git_policy)
 - If either repository key is unresolved, `loom loop` exits non-zero before
       querying Beads or spawning an agent, and the error names `--host-key` as
@@ -824,8 +834,11 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       commits (pass 2); failures distinguish worker-side from driver-side
   [test](integration_step_verifies_signatures_in_two_passes)
 - `GitClient::launcher_key_env` surfaces both startup-resolved keys as
-      `WRIX_DEPLOY_KEY` / `WRIX_SIGNING_KEY` host-path pairs for `wrix spawn`
+      `WRIX_DEPLOY_KEY` / `WRIX_SIGNING_KEY` host-path pairs for Wrix launchers
   [test](loom_loop_startup_initializes_repository_git_policy)
+- Interactive `wrix run` dispatch applies both resolved key paths to the child
+      environment
+  [test](plan_threads_repository_keys_to_wrix_run)
 - Bead dispatch threads the resolved launcher keys onto
       `SpawnConfig.launcher_env` and keeps them out of the
       in-container `SpawnConfig.env` allowlist

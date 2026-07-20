@@ -1,6 +1,5 @@
 ---
 source: crates/loom/tests/cli_help.rs
-assertion_line: 173
 expression: "loom_help(&[\"loop\"])"
 ---
 Execute task beads from explicit work roots or the active work epic
@@ -13,9 +12,9 @@ Arguments:
 Options:
   -p, --parallel <PARALLEL>  Concurrent dispatch slots (`-p N` / `--parallel N`). Default 1 [default: 1]
   -w, --workspace <PATH>     Workspace root. Defaults to the current working directory
-  -A, --agent <BACKEND>      Override the agent backend for this invocation [possible values: claude, pi, direct]
-      --profile <PROFILE>    Override the per-bead `profile:X` label resolution
       --host-key             Explicitly allow ambient host Git credentials and signing config
+      --profile <PROFILE>    Override the per-bead `profile:X` label resolution
+  -A, --agent <BACKEND>      Override the agent backend for this invocation [possible values: claude, pi, direct]
       --plain                ASCII output, no color, no OSC 8. Pipe-safe. Implied when stdout is not a TTY or `NO_COLOR` is set. Mutually exclusive with `--json` and `--raw`
       --json                 Emit one pretty-printed JSON object per line on stdout. Mutually exclusive with `--plain` and `--raw`
       --raw                  Emit one compact JSON line per event on stdout — same as the on-disk JSONL shape. Mutually exclusive with `--plain`, `--json`, and `-v/--verbose`

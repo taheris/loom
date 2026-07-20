@@ -34,7 +34,7 @@ use crate::agent_input::redact_agent_input;
 use crate::r#loop::{dolt_socket_mount, sccache_mount};
 use crate::pi_tui;
 use crate::skill::{SkillError, SkillPlan};
-use crate::spawn::{container_workspace_path, launcher_key_env_for_checkout};
+use crate::spawn::container_workspace_path;
 
 use super::context::build_inbox_context;
 use super::list::{
@@ -81,6 +81,8 @@ pub struct ChatOpts {
     pub manifest: ProfileImageManifest,
     /// Explicit path to the `wrix` launcher.
     pub wrix_bin: Option<PathBuf>,
+    /// Repository key paths for Wrix launcher processes.
+    pub launcher_env: Vec<(String, String)>,
 }
 
 /// Outcome of one `loom inbox chat` session.
@@ -228,6 +230,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
             let mut command = Command::new(&bin);
             command
                 .args(&argv)
+                .envs(opts.launcher_env.iter().map(|(key, value)| (key, value)))
                 .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
                 .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
                 .env("WRIX_AGENT", selection.kind.as_str());
@@ -255,6 +258,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                 let mut command = Command::new(&bin);
                 command
                     .args(&launch.argv)
+                    .envs(opts.launcher_env.iter().map(|(key, value)| (key, value)))
                     .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
                     .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
                     .env("WRIX_AGENT", selection.kind.as_str());
@@ -267,6 +271,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                     prompt_body.clone(),
                     scratch.path().to_path_buf(),
                     &cfg,
+                    &opts.launcher_env,
                 )?;
                 spawn_config.skills = Some(restored_skills.registered);
                 info!(
@@ -332,6 +337,7 @@ fn build_pi_bridge_spawn_config(
     prompt_body: String,
     scratch_dir: PathBuf,
     cfg: &LoomConfig,
+    launcher_env: &[(String, String)],
 ) -> Result<SpawnConfig, ChatError> {
     let mut mounts: Vec<_> = dolt_socket_mount(workspace).into_iter().collect();
     if let Some(spec) = sccache_mount(&cfg.loom)? {
@@ -346,7 +352,7 @@ fn build_pi_bridge_spawn_config(
         cfg.loom.container_sccache_env(),
         vec![],
         mounts,
-        launcher_key_env_for_checkout(workspace)?,
+        launcher_env.to_vec(),
     );
     if let (Some(provider), Some(model_id)) = (&selection.provider, &selection.model_id) {
         spawn_config.model = Some(ModelSelection {

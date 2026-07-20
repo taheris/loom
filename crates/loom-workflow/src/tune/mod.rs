@@ -142,6 +142,11 @@ impl PreparedRun {
         &self.context.root_report
     }
 
+    pub fn with_launcher_env(mut self, launcher_env: Vec<(String, String)>) -> Self {
+        self.context.launcher_env = launcher_env;
+        self
+    }
+
     pub async fn execute(mut self, request: Request) -> Result<Response, TuneError> {
         match request {
             Request::List(surface) => Ok(Response::Listing(self.context.render_listing(surface)?)),
@@ -188,6 +193,7 @@ struct Context {
     split_salt: SplitSalt,
     evidence: EvidenceSnapshot,
     base_commit: String,
+    launcher_env: Vec<(String, String)>,
 }
 
 impl Context {
@@ -237,6 +243,7 @@ impl Context {
             split_salt,
             evidence,
             base_commit,
+            launcher_env: Vec::new(),
         })
     }
 
@@ -1543,7 +1550,7 @@ async fn run_replay_agent(
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        crate::spawn::launcher_key_env_for_checkout(&context.workspace)?,
+        context.launcher_env.clone(),
     );
     selection.apply_to_spawn_config(&mut spawn, context.loom_config.direct_output_limits());
     spawn.observers = context.loom_config.agent.clone();

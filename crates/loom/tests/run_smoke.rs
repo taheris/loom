@@ -191,6 +191,89 @@ fn loom_loop_removed_selectors_are_rejected() {
 }
 
 #[test]
+fn all_non_loop_wrix_launch_surfaces_preflight_repository_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+
+    let deploy_key = workspace.join("repo-key");
+    let signing_key = workspace.join("repo-key-signing");
+    std::fs::write(&deploy_key, "deploy").unwrap();
+    std::fs::write(&signing_key, "signing").unwrap();
+    let log = workspace.join("policy.log");
+    let wrix = workspace.join("wrix-policy");
+    std::fs::write(
+        &wrix,
+        loom_test_support::bash_script(&format!(
+            r#"set -euo pipefail
+printf '%s\n' "$*" >> {log:?}
+key_name=""
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "--key" ]]; then key_name="$arg"; break; fi
+    prev="$arg"
+done
+git config --local gpg.format ssh
+git config --local gpg.ssh.program wrix-git-sign
+git config --local gpg.ssh.allowedSignersFile wrix/allowed_signers
+git config --local user.signingkey "wrix/signing-key/${{key_name}}-signing"
+git config --local commit.gpgsign true
+git config --local core.sshCommand wrix/git-ssh
+mkdir -p .git/wrix
+printf allowed > .git/wrix/allowed_signers
+printf '#!/bin/sh\n' > .git/wrix/git-ssh
+chmod +x .git/wrix/git-ssh
+"#,
+            log = log,
+        )),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrix, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let missing_manifest = workspace.join("missing-profile-images.json");
+    let commands: &[&[&str]] = &[
+        &["plan"],
+        &["todo"],
+        &["gate", "review", "--tree"],
+        &["gate", "mint", "--tree"],
+        &["inbox", "chat"],
+        &["tune", "skill", "fast", "test-target"],
+    ];
+
+    for args in commands {
+        let output = Command::new(env!("CARGO_BIN_EXE_loom"))
+            .arg("--workspace")
+            .arg(workspace)
+            .args(*args)
+            .env("LOOM_WRIX_BIN", &wrix)
+            .env("WRIX_DEPLOY_KEY", &deploy_key)
+            .env("WRIX_SIGNING_KEY", &signing_key)
+            .env("LOOM_PROFILES_MANIFEST", &missing_manifest)
+            .env_remove("GIT_SSH_COMMAND")
+            .env_remove("GIT_SSH")
+            .env_remove("LOOM_INSIDE")
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "fixture must stop after policy preflight for {args:?}",
+        );
+    }
+
+    let invocations = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        invocations.lines().count(),
+        commands.len(),
+        "every Wrix-bearing command must initialize repository policy: {invocations}",
+    );
+    assert!(
+        invocations
+            .lines()
+            .all(|line| line == "init --offline --no-hooks --key repo-key"),
+        "unexpected policy invocation: {invocations}",
+    );
+}
+
+#[test]
 fn loom_loop_missing_repository_keys_fails_before_bead_selection() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();

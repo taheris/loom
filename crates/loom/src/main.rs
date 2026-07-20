@@ -65,6 +65,10 @@ struct Cli {
     #[arg(long, short = 'w', global = true, value_name = "PATH")]
     workspace: Option<PathBuf>,
 
+    /// Explicitly allow ambient host Git credentials and signing config.
+    #[arg(long, global = true)]
+    host_key: bool,
+
     /// Override the agent backend for this invocation.
     #[arg(long, short = 'A', global = true, value_enum, value_name = "BACKEND")]
     agent: Option<AgentBackendArg>,
@@ -525,9 +529,6 @@ enum Command {
         /// Override the per-bead `profile:X` label resolution.
         #[arg(long, value_name = "PROFILE")]
         profile: Option<String>,
-        /// Explicitly allow ambient host Git credentials and signing config.
-        #[arg(long)]
-        host_key: bool,
         /// ASCII output, no color, no OSC 8. Pipe-safe. Implied when
         /// stdout is not a TTY or `NO_COLOR` is set. Mutually exclusive
         /// with `--json` and `--raw`.
@@ -798,6 +799,7 @@ fn main() -> ExitCode {
         });
 
     let agent_override = cli.agent.map(AgentKind::from);
+    let host_key = cli.host_key;
 
     let result: anyhow::Result<ExitCode> = match cli.command {
         Command::Init { rebuild } => run_init(&workspace, rebuild).map(|()| ExitCode::SUCCESS),
@@ -821,14 +823,12 @@ fn main() -> ExitCode {
         Command::Plan {
             anchor_labels,
             profile,
-        } => {
-            run_plan(&workspace, anchor_labels, profile, agent_override).map(|()| ExitCode::SUCCESS)
-        }
+        } => run_plan(&workspace, anchor_labels, profile, agent_override, host_key)
+            .map(|()| ExitCode::SUCCESS),
         Command::Loop {
             work_roots,
             parallel,
             profile,
-            host_key,
             plain,
             json,
             raw,
@@ -850,13 +850,13 @@ fn main() -> ExitCode {
         )
         .map(|outcome| exit_code_for_gate(&outcome.gate)),
         Command::Gate { subcommand } => {
-            run_gate(&workspace, subcommand, agent_override).map(|()| ExitCode::SUCCESS)
+            run_gate(&workspace, subcommand, agent_override, host_key).map(|()| ExitCode::SUCCESS)
         }
         Command::Inbox(args) => {
-            run_inbox(&workspace, args, agent_override).map(|()| ExitCode::SUCCESS)
+            run_inbox(&workspace, args, agent_override, host_key).map(|()| ExitCode::SUCCESS)
         }
-        Command::Tune(args) => run_tune(&workspace, args).map(|()| ExitCode::SUCCESS),
-        Command::Todo => run_todo(&workspace, agent_override).map(|()| ExitCode::SUCCESS),
+        Command::Tune(args) => run_tune(&workspace, args, host_key).map(|()| ExitCode::SUCCESS),
+        Command::Todo => run_todo(&workspace, agent_override, host_key).map(|()| ExitCode::SUCCESS),
         Command::Note { action } => run_note(&workspace, action).map(|()| ExitCode::SUCCESS),
     };
 
@@ -880,14 +880,36 @@ fn exit_code_for_gate(gate: &GateOutcome) -> ExitCode {
     }
 }
 
-fn run_tune(workspace: &std::path::Path, args: TuneArgs) -> anyhow::Result<()> {
+fn prepare_wrix_git_policy(workspace: &Path, host_key: bool) -> anyhow::Result<RepoGitPolicy> {
+    let mode = if host_key {
+        KeyMode::Host
+    } else {
+        KeyMode::Repository
+    };
+    let wrix_bin = std::env::var_os("LOOM_WRIX_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("wrix"));
+    let policy = RepoGitPolicy::resolve(workspace, wrix_bin, mode)?;
+    policy.apply(workspace)?;
+    Ok(policy)
+}
+
+fn run_tune(workspace: &Path, args: TuneArgs, host_key: bool) -> anyhow::Result<()> {
     let Some(action) = args.action else {
         print_tune_help()?;
         return Ok(());
     };
     let request = tune_request(action);
+    let launcher_env = match &request {
+        loom_workflow::tune::Request::Propose(proposal) if !proposal.dry_run => {
+            prepare_wrix_git_policy(workspace, host_key)?.launcher_env()
+        }
+        _ => Vec::new(),
+    };
     let runtime = tokio::runtime::Runtime::new()?;
-    let prepared = runtime.block_on(loom_workflow::tune::prepare(workspace))?;
+    let prepared = runtime
+        .block_on(loom_workflow::tune::prepare(workspace))?
+        .with_launcher_env(launcher_env);
     if matches!(&request, loom_workflow::tune::Request::Propose(_)) {
         println!("evidence roots:");
         for line in prepared.evidence_roots().lines() {
@@ -1073,6 +1095,7 @@ fn run_gate(
     workspace: &Path,
     subcommand: Option<GateSubcommand>,
     agent_override: Option<AgentKind>,
+    host_key: bool,
 ) -> anyhow::Result<()> {
     match subcommand {
         None => {
@@ -1138,7 +1161,7 @@ fn run_gate(
             }
             validate_diff_or_tree_scope(&args, "audit")?;
             resolve_gate_scope(workspace, &mut args)?;
-            run_gate_audit(workspace, args, agent_override)
+            run_gate_audit(workspace, args, agent_override, host_key)
         }
         Some(GateSubcommand::Review(mut args)) => {
             if !has_scope(&args.scope) {
@@ -1152,6 +1175,7 @@ fn run_gate(
                 args.bead,
                 agent_override,
                 ReviewLane::Both,
+                host_key,
             )
         }
         Some(GateSubcommand::Judge(mut args)) => {
@@ -1160,7 +1184,14 @@ fn run_gate(
             }
             resolve_gate_scope(workspace, &mut args)?;
             validate_target_for_tier(workspace, &args, Tier::Judge)?;
-            run_gate_review(workspace, args, None, agent_override, ReviewLane::Judge)
+            run_gate_review(
+                workspace,
+                args,
+                None,
+                agent_override,
+                ReviewLane::Judge,
+                host_key,
+            )
         }
         Some(GateSubcommand::Rubric(mut args)) => {
             if !has_scope(&args) {
@@ -1168,13 +1199,20 @@ fn run_gate(
             }
             validate_diff_or_tree_scope(&args, "rubric")?;
             resolve_gate_scope(workspace, &mut args)?;
-            run_gate_review(workspace, args, None, agent_override, ReviewLane::Rubric)
+            run_gate_review(
+                workspace,
+                args,
+                None,
+                agent_override,
+                ReviewLane::Rubric,
+                host_key,
+            )
         }
         Some(GateSubcommand::Mint(args)) => {
             if !args.tree && args.molecule.is_none() {
                 return print_gate_subcommand_help("mint");
             }
-            run_gate_mint(workspace, args, agent_override)
+            run_gate_mint(workspace, args, agent_override, host_key)
         }
         Some(GateSubcommand::VerifyMarker(args)) => run_gate_verify_marker(workspace, args),
     }
@@ -2132,6 +2170,7 @@ fn run_gate_mint(
     workspace: &Path,
     args: GateMintArgs,
     agent_override: Option<AgentKind>,
+    host_key: bool,
 ) -> anyhow::Result<()> {
     let head_commit = current_commit(workspace).unwrap_or_default();
     let scope = resolve_mint_scope(workspace, &args)?;
@@ -2174,6 +2213,7 @@ fn run_gate_mint(
             })?
         }
         ResolvedMintScope::Tree => {
+            let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
             let manifest = Arc::new(ProfileImageManifest::from_env()?);
             let labels = resolve_tree_mint_labels(workspace, None)?;
             let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
@@ -2258,6 +2298,7 @@ fn run_gate_mint(
                     let selection_for_walker = selection.clone();
                     let style_rules_for_walker = style_rules.clone();
                     let renderer_id_for_walker = renderer_id.clone();
+                    let launcher_env_for_walker = launcher_env.clone();
                     let mut walker = loom_workflow::mint::ProductionMintWalker::new(
                         BdClient::new(),
                         label,
@@ -2271,6 +2312,7 @@ fn run_gate_mint(
                             let observer_config = observer_config_for_walker.clone();
                             let renderer_id = renderer_id_for_walker.clone();
                             let workspace = workspace_for_renderer.clone();
+                            let launcher_env = launcher_env_for_walker.clone();
                             async move {
                                 let renderer = build_stdout_renderer(
                                     render_mode,
@@ -2290,6 +2332,7 @@ fn run_gate_mint(
                                 })?;
                                 let mut output = String::new();
                                 let mut spawn_cfg = spawn_cfg;
+                                spawn_cfg.launcher_env = launcher_env;
                                 selection
                                     .apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
                                 spawn_cfg.observers = observer_config;
@@ -2598,9 +2641,17 @@ fn run_gate_audit(
     workspace: &Path,
     args: GateScopeArgs,
     agent_override: Option<AgentKind>,
+    host_key: bool,
 ) -> anyhow::Result<()> {
     let verify_result = run_gate_verify(workspace, &args);
-    let review_result = run_gate_review(workspace, args, None, agent_override, ReviewLane::Both);
+    let review_result = run_gate_review(
+        workspace,
+        args,
+        None,
+        agent_override,
+        ReviewLane::Both,
+        host_key,
+    );
     verify_result.and(review_result)
 }
 
@@ -2610,6 +2661,7 @@ fn run_gate_review(
     bead: Option<String>,
     agent_override: Option<AgentKind>,
     lane: ReviewLane,
+    host_key: bool,
 ) -> anyhow::Result<()> {
     run_review(
         workspace,
@@ -2621,6 +2673,7 @@ fn run_gate_review(
             tree: args.tree,
             lane,
         },
+        host_key,
     )
 }
 
@@ -2734,11 +2787,13 @@ fn resolve_replay_mode(raw: bool, verbose: bool) -> logs_cmd::ReplayMode {
 }
 
 fn run_plan(
-    workspace: &std::path::Path,
+    workspace: &Path,
     anchor_label_args: Vec<String>,
     profile: Option<String>,
     agent_override: Option<AgentKind>,
+    host_key: bool,
 ) -> anyhow::Result<()> {
+    let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
     let manifest = ProfileImageManifest::from_env()?;
     let anchor_labels = plan::parse_anchor_labels(anchor_label_args)?;
     let report = plan::run(
@@ -2749,6 +2804,7 @@ fn run_plan(
             cli_profile: profile.map(ProfileName::new),
             agent_override,
             manifest,
+            launcher_env,
         },
     )?;
     if report.anchor_labels.is_empty() {
@@ -2811,19 +2867,7 @@ fn run_loop_cmd(
     let loom_bin = current_loom_bin()?;
     let shutdown_grace = resolve_shutdown_grace(&selection);
     let direct_output_limits = config.direct_output_limits();
-    let key_mode = if host_key {
-        KeyMode::Host
-    } else {
-        KeyMode::Repository
-    };
-    let wrix_bin = std::env::var_os("LOOM_WRIX_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("wrix"));
-    let repo_git_policy =
-        RepoGitPolicy::resolve(&workspace.join(".loom/integration"), wrix_bin, key_mode)?;
-    GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?
-        .with_repo_git_policy(repo_git_policy.clone())
-        .preflight_repo_git_policy()?;
+    let repo_git_policy = prepare_wrix_git_policy(&workspace.join(".loom/integration"), host_key)?;
 
     let runtime = tokio::runtime::Runtime::new()?;
     let roots = runtime.block_on(async {
@@ -4886,7 +4930,9 @@ fn run_review(
     spec: Option<String>,
     agent_override: Option<AgentKind>,
     opts: ReviewOpts,
+    host_key: bool,
 ) -> anyhow::Result<()> {
+    let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_review_label(workspace, spec, opts.tree)?;
     let runtime = tokio::runtime::Runtime::new()?;
@@ -4987,6 +5033,7 @@ fn run_review(
         let mut controller = controller
             .with_phase_log(logs_root, phase_when)
             .with_agent_runtime(kind)
+            .with_launcher_env(launcher_env)
             .with_style_rules(style_rules_for_review)
             .with_integration_branch(integration_branch_for_review)
             .with_hook_timeout(hook_timeout_for_review)
@@ -5089,6 +5136,7 @@ fn run_inbox(
     workspace: &Path,
     args: InboxArgs,
     agent_override: Option<AgentKind>,
+    host_key: bool,
 ) -> anyhow::Result<()> {
     match args.action {
         None => print_inbox_help(),
@@ -5109,6 +5157,7 @@ fn run_inbox(
             chat.bead,
             chat.proposal,
             agent_override,
+            host_key,
         ),
     }
 }
@@ -5202,6 +5251,7 @@ fn run_inbox_chat(
     bead: Option<String>,
     proposal: Option<String>,
     agent_override: Option<AgentKind>,
+    host_key: bool,
 ) -> anyhow::Result<()> {
     let target = chat_target(number, bead, proposal)?;
     let _guard = match &target {
@@ -5211,6 +5261,7 @@ fn run_inbox_chat(
         }
         _ => None,
     };
+    let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
     let manifest = ProfileImageManifest::from_env()?;
     let opts = loom_workflow::inbox::chat::ChatOpts {
         spec_filter: filters.spec,
@@ -5220,6 +5271,7 @@ fn run_inbox_chat(
         agent_override,
         manifest,
         wrix_bin: None,
+        launcher_env,
     };
     let report = loom_workflow::inbox::chat::run(workspace, opts)?;
     if report.items_surfaced == 0 {
@@ -5424,7 +5476,12 @@ fn push_artifact(out: &mut String, label: &str, path: &Path) {
     push_line(out, format!("  {label}: {} ({state})", path.display()));
 }
 
-fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Result<()> {
+fn run_todo(
+    workspace: &Path,
+    agent_override: Option<AgentKind>,
+    host_key: bool,
+) -> anyhow::Result<()> {
+    let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_todo()?;
@@ -5473,9 +5530,11 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
         run_todo_workflow(&mut controller, |spawn_cfg: SpawnConfig| {
             let selection = selection.clone();
             let observer_config = observer_config.clone();
+            let launcher_env = launcher_env.clone();
             async move {
                 let mut output = String::new();
                 let mut spawn_cfg = spawn_cfg;
+                spawn_cfg.launcher_env = launcher_env;
                 selection.apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
                 spawn_cfg.observers = observer_config;
                 let renderer_id = todo_renderer_id(&spawn_cfg)?;

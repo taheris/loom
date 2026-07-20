@@ -50,6 +50,8 @@ pub struct PlanOpts {
     /// `WRIX_DEFAULT_IMAGE_SOURCE` env vars the launcher reads when no
     /// `--spawn-config` is supplied (see `lib/sandbox/linux/default.nix`).
     pub manifest: ProfileImageManifest,
+    /// Repository key paths for the `wrix run` launcher process.
+    pub launcher_env: Vec<(String, String)>,
 }
 
 /// Summary returned after the interactive plan session exits.
@@ -164,6 +166,7 @@ pub fn run_with_timeout(
     };
     let status = Command::new(&bin)
         .args(&argv)
+        .envs(opts.launcher_env)
         .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
         .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
         .env("WRIX_AGENT", selection.kind.as_str())
@@ -350,6 +353,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             cli_profile: None,
             agent_override: None,
             manifest,
+            launcher_env: Vec::new(),
         }
     }
 
@@ -409,6 +413,39 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             std::fs::read_to_string(dir.path().join("argv.log"))?,
             std::fs::read_to_string(dir.path().join("env.log"))?,
         ))
+    }
+
+    #[test]
+    fn plan_threads_repository_keys_to_wrix_run() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        seed_workspace(dir.path())?;
+        let manifest = three_profile_manifest(dir.path())?;
+        let env_log = dir.path().join("launcher-env.log");
+        let bin = dir.path().join("wrix-env");
+        std::fs::write(
+            &bin,
+            loom_test_support::bash_script(&format!(
+                "set -euo pipefail\nprintf 'deploy=%s\\nsigning=%s\\n' \"${{WRIX_DEPLOY_KEY:-}}\" \"${{WRIX_SIGNING_KEY:-}}\" > {:?}\n",
+                env_log.display().to_string(),
+            )),
+        )?;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+        let mut opts = plan_opts(vec![SpecLabel::new("harness")], bin, manifest);
+        opts.launcher_env = vec![
+            ("WRIX_DEPLOY_KEY".to_string(), "/keys/repo".to_string()),
+            (
+                "WRIX_SIGNING_KEY".to_string(),
+                "/keys/repo-signing".to_string(),
+            ),
+        ];
+
+        run_with_timeout(dir.path(), opts, Duration::from_secs(1))?;
+
+        assert_eq!(
+            std::fs::read_to_string(env_log)?,
+            "deploy=/keys/repo\nsigning=/keys/repo-signing\n",
+        );
+        Ok(())
     }
 
     #[test]

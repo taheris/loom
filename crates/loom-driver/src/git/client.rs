@@ -171,12 +171,11 @@ impl GitClient {
         self
     }
 
-    /// Apply repository Git policy to the integration clone before any loop work.
-    pub fn preflight_repo_git_policy(&self) -> Result<(), GitError> {
-        let Some(policy) = &self.repo_git_policy else {
-            return Err(GitError::RepositoryPolicyIncomplete);
-        };
-        policy.apply(&self.loom_workspace())
+    /// Whether this client explicitly permits ambient host Git authority.
+    pub fn uses_host_key(&self) -> bool {
+        self.repo_git_policy
+            .as_ref()
+            .is_some_and(super::signing::RepoGitPolicy::uses_host_key)
     }
 
     async fn apply_repo_git_policy(&self, workspace: &Path) -> Result<(), GitError> {

@@ -56,7 +56,7 @@ use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use super::verdict::PushGateRefuseCause;
 use super::workspace_validator::WorkspaceFindingValidator;
 use crate::skill::SkillPlan;
-use crate::spawn::{container_workspace_path, launcher_key_env_for_checkout};
+use crate::spawn::container_workspace_path;
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 use crate::todo::ExitSignal;
 
@@ -161,6 +161,7 @@ where
     /// Top-level `[[suppress]]` rubric-finding allowlist entries.
     suppressions: Vec<SuppressionConfig>,
     skills_cfg: SkillsConfig,
+    launcher_env: Vec<(String, String)>,
     effective_review_marker: Option<ExitSignal>,
     suppressed_review_concern: bool,
 }
@@ -251,6 +252,7 @@ where
             dispatch_scope: DispatchScope::PerBead,
             suppressions: Vec::new(),
             skills_cfg: SkillsConfig::default(),
+            launcher_env: Vec::new(),
             effective_review_marker: None,
             suppressed_review_concern: false,
         }
@@ -273,6 +275,11 @@ where
 
     pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
         self.runtime = runtime;
+        self
+    }
+
+    pub fn with_launcher_env(mut self, launcher_env: Vec<(String, String)>) -> Self {
+        self.launcher_env = launcher_env;
         self
     }
 
@@ -842,7 +849,7 @@ where
             vec![],
             vec![],
             vec![],
-            launcher_key_env_for_checkout(&self.workspace)?,
+            self.launcher_env.clone(),
         );
         let skill_session = built_prompt
             .skill_plan

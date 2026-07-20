@@ -111,6 +111,42 @@ fn install_wrix_shim(
     shim
 }
 
+fn install_policy_aware_wrix_shim(dir: &Path, delegate: &Path) -> PathBuf {
+    let shim = dir.join("wrix-policy");
+    let body = loom_test_support::bash_script(&format!(
+        r#"set -euo pipefail
+if [[ "${{1:-}}" != "init" ]]; then
+    exec {delegate:?} "$@"
+fi
+key_name=""
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "--key" ]]; then
+        key_name="$arg"
+        break
+    fi
+    prev="$arg"
+done
+git config --local gpg.format ssh
+git config --local gpg.ssh.program wrix-git-sign
+git config --local gpg.ssh.allowedSignersFile wrix/allowed_signers
+git config --local user.signingkey "wrix/signing-key/${{key_name}}-signing"
+git config --local commit.gpgsign true
+git config --local core.sshCommand wrix/git-ssh
+mkdir -p .git/wrix
+printf allowed > .git/wrix/allowed_signers
+printf '#!/bin/sh\n' > .git/wrix/git-ssh
+chmod +x .git/wrix/git-ssh
+"#,
+        delegate = delegate,
+    ));
+    std::fs::write(&shim, body).unwrap();
+    let mut permissions = std::fs::metadata(&shim).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&shim, permissions).unwrap();
+    shim
+}
+
 fn install_failing_wrix_shim(dir: &Path, marker: &Path) -> PathBuf {
     let shim = dir.join("profiled-wrix");
     let bash = find_bash();
@@ -312,6 +348,7 @@ fn drive_loom_todo_pi_with_spawn_bin_and_manifest_launcher(
     command
         .arg("--workspace")
         .arg(workspace)
+        .arg("--host-key")
         .arg("--agent")
         .arg("pi")
         .arg("todo")
@@ -454,8 +491,16 @@ fn install_loom_noop_stub(dir: &Path) -> PathBuf {
         &stub,
         loom_test_support::bash_script(
             "set -euo pipefail\n\
-         if [[ \"${2:-}\" == \"review\" ]]; then\n\
-             range=\"${4:?review range}\"\n\
+         is_review=0\n\
+         range=''\n\
+         prev=''\n\
+         for arg in \"$@\"; do\n\
+             if [[ \"$arg\" == 'review' ]]; then is_review=1; fi\n\
+             if [[ \"$prev\" == '--diff' ]]; then range=\"$arg\"; fi\n\
+             prev=\"$arg\"\n\
+         done\n\
+         if [[ \"$is_review\" == '1' ]]; then\n\
+             [[ -n \"$range\" ]] || exit 2\n\
              tree_oid=$(git rev-parse 'HEAD^{tree}')\n\
              verify_log=\"${LOOM_REVIEW_VERIFIED_LOG:?}\"\n\
              config_digest=$(grep '\"driver_kind\":\"gate_run_end\"' \"$verify_log\" | tail -n 1 | sed -E 's/.*\"config_digest\":\"([^\"]*)\".*/\\1/')\n\
@@ -1312,6 +1357,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         &mock_pi_path(),
         "happy-path",
     );
+    let policy_shim = install_policy_aware_wrix_shim(&shim_dir, &shim);
 
     let home = workspace.join("home");
     let deploy_key_dir = home.join(".ssh/deploy_keys");
@@ -1375,12 +1421,14 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         .arg("--diff")
         .arg("HEAD..HEAD")
         .env("PATH", new_path)
-        .env("LOOM_WRIX_BIN", &shim)
+        .env("LOOM_WRIX_BIN", &policy_shim)
         .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env("HOME", &home)
+        .env_remove("GIT_SSH_COMMAND")
+        .env_remove("GIT_SSH")
         .env_remove("WRIX_DEPLOY_KEY")
         .env_remove("WRIX_SIGNING_KEY")
         // Bypass the nested-loom guard so cargo test inside a loom container
@@ -1791,6 +1839,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
     let output = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
+        .arg("--host-key")
         .arg("--agent")
         .arg("claude")
         .arg("todo")
@@ -1876,6 +1925,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     let output = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
+        .arg("--host-key")
         .arg("--agent")
         .arg("pi")
         .arg("todo")
@@ -1958,6 +2008,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     let mut child = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
+        .arg("--host-key")
         .arg("--agent")
         .arg("pi")
         .arg("todo")

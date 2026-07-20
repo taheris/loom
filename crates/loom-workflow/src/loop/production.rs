@@ -1447,13 +1447,18 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
     let phase_when_millis = phase_when
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
-    let review_output = Command::new(loom_bin)
+    let mut review_command = Command::new(loom_bin);
+    review_command
         .current_dir(&gate_workspace)
         .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
         .env(REVIEW_EMIT_STDOUT_ENV, "1")
         .env(REVIEW_INSPECTION_ONLY_ENV, "1")
         .env(REVIEW_VERIFIED_LOG_ENV, &verify_log_path)
-        .env(REVIEW_SPEC_LABEL_ENV, label.as_str())
+        .env(REVIEW_SPEC_LABEL_ENV, label.as_str());
+    if git.uses_host_key() {
+        review_command.arg("--host-key");
+    }
+    let review_output = review_command
         .arg("gate")
         .arg("review")
         .arg("--diff")
