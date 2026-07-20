@@ -724,8 +724,8 @@ owns:
    - Claude `#[serde(other)]` catches unknown event types without error
    - Per-phase backend resolution (`[phase.todo].agent.backend` overrides
      `[phase.default].agent.backend`, `--agent` flag overrides all phases)
-   - Backend runtime name mapping for Wrix launcher env: Pi → `pi`,
-     Claude → `claude`, Direct → `direct`
+   - Backend launch tests execute the runtime-to-child-environment contract
+     owned by [agent.md § Container integration](agent.md#container-integration)
    - Malformed JSONL handling — specific test cases:
      - Truncated JSON (`{"type": "message_del`) → `ProtocolError::InvalidJson`
      - Valid JSON, wrong shape (`{"foo": 42}`) → `ProtocolError::UnknownMessageType`

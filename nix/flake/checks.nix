@@ -24,6 +24,7 @@ _:
         craneLib
         stagedSrc
         ;
+      inherit (pkgs.lib) makeBinPath;
       loomLib = import ../lib.nix;
       testsDeriv = import ../../tests/default.nix {
         inherit pkgs;
@@ -168,6 +169,7 @@ _:
             mkdir -p "$readonly_dir"
             touch "$readonly_dir/libfake.so"
             chmod -R a-w "$root/overlay/fake/diff/nix/store/fake-lib"
+            printf 'sandbox-hook-chain-ok\n'
             ;;
           *)
             printf 'unexpected podman args: %s\n' "$*" >&2
@@ -185,7 +187,7 @@ _:
             fakebin=$(mktemp -d)
             ln -s ${fakePodman} "$fakebin/podman"
             export PATH="$fakebin:${
-              pkgs.lib.makeBinPath [
+              makeBinPath [
                 pkgs.coreutils
                 pkgs.gnused
                 pkgs.bash
@@ -217,7 +219,7 @@ _:
             fakebin=$(mktemp -d)
             ln -s ${fakePodmanRunOciPermissionDenied} "$fakebin/podman"
             export PATH="$fakebin:${
-              pkgs.lib.makeBinPath [
+              makeBinPath [
                 pkgs.coreutils
                 pkgs.gnused
                 pkgs.bash
@@ -225,6 +227,10 @@ _:
             }"
             export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
             export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
+            export LOOM_TEST_SANDBOX_SOURCE="$TMPDIR/source"
+            export LOOM_TEST_SANDBOX_WORKSPACE="$LOOM_TEST_SANDBOX_SOURCE"
+            mkdir -p "$LOOM_TEST_SANDBOX_SOURCE/.git"
+            touch "$LOOM_TEST_SANDBOX_SOURCE/Cargo.toml"
             set +e
             script_output=$(bash ${../../scripts/test-sandbox.sh} 2>&1)
             rc=$?
@@ -251,7 +257,7 @@ _:
             fakebin=$(mktemp -d)
             ln -s ${fakePodmanCreatesReadOnlyStorage} "$fakebin/podman"
             export PATH="$fakebin:${
-              pkgs.lib.makeBinPath [
+              makeBinPath [
                 pkgs.coreutils
                 pkgs.gnused
                 pkgs.bash
@@ -259,6 +265,10 @@ _:
             }"
             export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
             export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
+            export LOOM_TEST_SANDBOX_SOURCE="$TMPDIR/source"
+            export LOOM_TEST_SANDBOX_WORKSPACE="$LOOM_TEST_SANDBOX_SOURCE"
+            mkdir -p "$LOOM_TEST_SANDBOX_SOURCE/.git"
+            touch "$LOOM_TEST_SANDBOX_SOURCE/Cargo.toml"
             set +e
             script_output=$(bash ${../../scripts/test-sandbox.sh} 2>&1)
             rc=$?

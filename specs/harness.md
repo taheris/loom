@@ -599,8 +599,6 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [check](cargo run -p loom-walk -- loom_skills_deps)
 - `loom-tune` depends on `loom-events` and `loom-skills`, but not `loom-driver` / `loom-agent` / `loom-workflow`
   [check](cargo run -p loom-walk -- loom_tune_deps)
-- `loom-render` depends on `loom-events` and does not depend on `loom-driver` or `loom-workflow`
-  [check](cargo run -p loom-walk -- loom_render_deps)
 - `loom-agent` depends on `loom-llm`, `loom-events`, and `loom-skills`; its `direct` backend wraps `loom-llm::Conversation`
   [check](cargo run -p loom-walk -- loom_agent_deps)
 

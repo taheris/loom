@@ -1162,8 +1162,9 @@ commit:
    checkable surface: a Success Criteria bullet with a `[check]`,
    `[test]`, `[system]`, or `[judge]` annotation, a lifecycle /
    decision / contract table row, or an explicit `## Out of Scope`
-   declaration. Implicit assumptions are surfaced; the agent either
-   makes them testable or marks them non-testable with a reason.
+   declaration. Implicit functional assumptions are surfaced and converted
+   into annotated, checkable claims; genuine non-goals move to `Out of Scope`
+   with their rationale rather than remaining as unverifiable contract text.
    Annotations whose targets will not resolve at commit time —
    typically newly-authored claims whose verifier implementation
    lands in a follow-on `loom loop` bead — carry the pending modifier

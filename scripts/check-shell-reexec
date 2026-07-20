@@ -1,4 +1,62 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-exit 0
+has_explicit_interpreter() {
+    local line="$1"
+    local command
+    local target
+    local index=0
+    local -a words
+
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line#exec}"
+    read -r -a words <<< "$line"
+    command="${words[$index]:-}"
+
+    if [[ "${command##*/}" == "env" ]]; then
+        index=$((index + 1))
+        while [[ "${words[$index]:-}" == -* || "${words[$index]:-}" == *=* ]]; do
+            index=$((index + 1))
+        done
+        command="${words[$index]:-}"
+    elif [[ "${command##*/}" == "stdbuf" ]]; then
+        index=$((index + 1))
+        while [[ "${words[$index]:-}" == -* ]]; do
+            index=$((index + 1))
+        done
+        command="${words[$index]:-}"
+    fi
+
+    case "${command##*/}" in
+        bash | sh | dash | zsh | ksh) ;;
+        *) return 1 ;;
+    esac
+
+    index=$((index + 1))
+    while [[ "${words[$index]:-}" == -* ]]; do
+        index=$((index + 1))
+    done
+    target="${words[$index]:-}"
+    target="${target//\"/}"
+    [[ "$target" == '$0' || "$target" == '${BASH_SOURCE[0]}' ]]
+}
+
+reexec_pattern='^[[:space:]]*exec[[:space:]].*(\$0|\$\{BASH_SOURCE\[0\]\})'
+status=0
+
+for file in "$@"; do
+    if [[ ! -f "$file" ]]; then
+        continue
+    fi
+
+    line_number=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_number=$((line_number + 1))
+        if [[ "$line" =~ $reexec_pattern ]] && ! has_explicit_interpreter "$line"; then
+            printf '%s:%s: self re-exec must name an explicit shell interpreter before $0 or ${BASH_SOURCE[0]}\n' "$file" "$line_number" >&2
+            status=1
+        fi
+    done < "$file"
+done
+
+exit "$status"

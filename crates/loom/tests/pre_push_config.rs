@@ -172,6 +172,23 @@ fn assert_success(output: &Output, operation: &str) {
     );
 }
 
+/// The checker is a process-level hook, so its exit status and diagnostic are
+/// observable only by invoking the shipped script against a real file.
+fn run_shell_reexec_check(source: &str) -> Output {
+    let fixture = tempfile::tempdir().expect("tempdir");
+    let script = fixture.path().join("fixture.sh");
+    std::fs::write(&script, source).expect("write shell fixture");
+    Command::new("bash")
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("scripts/check-shell-reexec"),
+        )
+        .arg(&script)
+        .output()
+        .expect("spawn shell re-exec checker")
+}
+
 #[test]
 fn pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers() {
     let fixture = Fixture::new();
@@ -238,5 +255,26 @@ fn pre_push_config_runs_verify_diff_for_pushed_range() {
             "loom\tgate\tverify\t--diff\t{pushed_base}..{pushed_head}\ttiers=<unset>"
         )],
         "the gate hook must use prek's pushed endpoints, not the branch upstream",
+    );
+}
+
+#[test]
+fn shell_reexec_check_accepts_explicit_interpreter() {
+    let output = run_shell_reexec_check(
+        "#!/usr/bin/env bash\nset -euo pipefail\nexec stdbuf -oL bash \"$0\" \"$@\"\n",
+    );
+    assert_success(&output, "check-shell-reexec explicit interpreter");
+}
+
+#[test]
+fn shell_reexec_check_rejects_implicit_self_exec() {
+    let output = run_shell_reexec_check(
+        "#!/usr/bin/env bash\nset -euo pipefail\nexec stdbuf -oL \"$0\" \"$@\"\n",
+    );
+    assert!(!output.status.success(), "implicit self-exec must fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("explicit shell interpreter"),
+        "checker must explain the interpreter requirement: {}",
+        String::from_utf8_lossy(&output.stderr),
     );
 }

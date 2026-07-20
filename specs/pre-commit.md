@@ -42,24 +42,23 @@ supported path, no `--no-verify` required.
 
 ### Stage composition
 
-| Stage      | Wall-time target          | Hooks |
-|------------|---------------------------|-------|
-| pre-commit | ~1s target; bounded by staged-file annotation selectivity | `repo: builtin` `trailing-whitespace`, `end-of-file-fixer` (excludes `.beads/config.yaml`), `check-merge-conflict`; `treefmt --fail-on-change`; `shell-reexec-explicit-interpreter`; `loom gate verify --files` (spec annotation lane only: affected `[check]` / `[test]` verifiers scoped to staged files per [gate.md § Verifier inputs](gate.md); `[system]` excluded) |
-| pre-push   | <10s fast tier + full required suite | repo-local `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix flake check` (fast derivations; no-ops in the bead container with no `nix`; marker-aware like the rest of the push path); `bin/pre-push-checks` wrapping `cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`); `bin/pre-push-checks` wrapping `loom gate verify --diff <push-range>` (scope-derived project pre-commit lane + affected `[check]` / `[test]`; `[system]` excluded unless added as an explicit hook); `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix run .#test` (suite composition owned by [tests.md](tests.md); always runs when not marker-covered) |
+The pre-commit stage provides fast feedback on the staged files: native
+whitespace/conflict sanitation, formatting drift, explicit-interpreter safety
+for shell self re-exec, and affected deterministic annotation checks. The
+pre-push stage composes the fast Nix tier, Rust linting when Rust files changed,
+exact pushed-range verification, and the full required suite. Nix-dependent
+entries no-op only when Nix is absent, while non-Nix checks continue.
 
-There is no standalone `loom gate verify-marker` hook; the marker is
-consulted by the `pre-push-checks` wrapper per-hook (see *Marker
-integration* for the lifecycle and the rationale).
+Every pre-push entry is independently marker-aware. There is no standalone
+marker gate: the wrapper either proves coverage for that entry or executes it.
+The exact hook ids, argv, file selectors, and ordering live only in
+`.pre-commit-config.yaml`; the configuration walk verifies that they realize
+this policy as one coherent stage graph.
 
-The pre-commit trio uses `repo: builtin` — prek's native Rust
-implementations of the standard pre-commit hooks. The upstream
-`pre-commit/pre-commit-hooks` Python repo is rejected because prek
-installs Python hooks via `uv`, and `uv` downloads a glibc-linked
-binary that fails ld validation on bare NixOS. `repo: builtin`
-sidesteps Python entirely.
-
-The `shell-reexec-explicit-interpreter` hook id wraps
-`scripts/check-shell-reexec` as a local `language: system` hook.
+Native prek sanitation avoids the Python bootstrap path, which is not portable
+to bare NixOS. The shell-reexec check rejects a shell script that re-executes
+itself through its shebang resolution rather than naming the interpreter; this
+keeps script fixtures runnable in Nix sandboxes where `/usr/bin/env` is absent.
 
 ### Pre-push hook budget and marker coverage
 
@@ -103,14 +102,11 @@ warm cache.
 
 ### Agent self-verify in the bead container
 
-The bead workspace is a `git clone --local` of the loom workspace, and
-the container's bind-mounted `/workspace` includes the cloned `.git/`.
-The driver configures the bead clone's `core.hooksPath` to the
-canonical `wrix.prekHooks` path before spawning the agent, so prek's
-pre-commit chain fires on every `git commit` the agent invokes. The
-agent is a developer using git; prek is the orchestrator of "what to
-verify when." Workers do not push to the loom workspace; final in-session trust feedback
-follows the loop completion self-check contract owned by
+Bead-workspace placement and canonical hook-path creation/repair are owned by
+[harness.md § Bead Dispatch](harness.md#bead-dispatch). This spec consumes that
+workspace guarantee: an agent's ordinary `git commit` traverses the same
+configured pre-commit policy as a host commit. Workers do not push; final
+in-session feedback follows the loop completion self-check contract owned by
 [templates.md — Loop completion self-check and self-review](templates.md#loop-completion-self-check-and-self-review).
 
 What this catches in-session:
@@ -181,21 +177,13 @@ this project's `nix develop` is entered. The marker-aware
 pre-push hook entries invoke it by that path rather than relying on
 ambient PATH. Loom owns that wrapper's hook-id, hook-entry, push-range,
 marker-validation, and fall-through policy; wrix owns the reusable hook
-shim, lock, install, stamp, and skip-if-missing plumbing around it. **The
-same packaged hooks are available inside the bead container**:
-bead-container entrypoints from profile images that build on `wrixLib`
-put the packaged wrappers on `PATH`, and Loom configures
-the bead clone's `core.hooksPath` before spawning the agent. The agent's
-`git commit` fires the prek pre-commit chain uniformly with the host;
-workers do not rely on `git push` for final self-verification. The
-downstream project maintains its repo-local marker wrapper, but does not
-maintain hook shims, lock scripts, or installation logic. Loom consumes
-the canonical installed path:
-`loom init` writes it into `.loom/integration`, the molecule push gate
-repairs stale `.loom/integration` store paths before verification, and
-bead workspace creation writes or repairs it in each `.loom/beads/<id>`
-clone before an agent is spawned. The operator checkout's current git
-config is not the source of truth.
+shim, lock, install, stamp, and skip-if-missing plumbing around it. The same
+packaged hooks are present in the worker image, while
+[harness.md § Bead Dispatch](harness.md#bead-dispatch) exclusively owns where
+Loom installs and repairs their `core.hooksPath`. Given that placement, an
+agent commit consumes this repo-local policy uniformly with a host commit.
+The downstream project maintains its marker wrapper and policy config, but not
+hook shims, lock scripts, or installation logic.
 
 `pre-push-checks` and `push-verified` are **complementary**, not
 successor and predecessor: the SHA stamp short-circuits the entire
@@ -279,56 +267,31 @@ declared as such.
 
 ### Configuration
 
-- `.pre-commit-config.yaml` declares the builtin trio via `repo: builtin`
-  [check](grep -q 'repo: builtin' .pre-commit-config.yaml)
-- `end-of-file-fixer` excludes `.beads/config.yaml`
-  [check](grep -q '\.beads/config\.yaml' .pre-commit-config.yaml)
-- `treefmt --fail-on-change` runs at the `pre-commit` stage
-  [check](grep -q 'treefmt --fail-on-change' .pre-commit-config.yaml)
-- The shell-reexec hook invokes `scripts/check-shell-reexec`
-  [check](grep -q 'scripts/check-shell-reexec' .pre-commit-config.yaml)
-- The pre-commit stage runs `loom gate verify --files` against staged
-  files
-  [check](grep -q 'loom gate verify --files' .pre-commit-config.yaml)
-- The pre-push stage's first hook is the `nix flake check` fast tier
+- The configured pre-commit stage binds native sanitation, formatter,
+  shell-reexec, and affected-file gate entries to their intended files and
+  stage; no isolated key can satisfy the verifier without its related entry
   [check](cargo run -p loom-walk -- pre_push_config_marker_wrapper_contract)
-- `.pre-commit-config.yaml` does not register `loom gate verify-marker`
-  as a prek hook (the marker is consulted by the `pre-push-checks`
-  wrapper per-hook; a standalone gating hook would block
-  operator-manual pushes that legitimately have no marker)
-  [check](awk 'BEGIN{found=0} /^[[:space:]]*-[[:space:]]*id:.*verify-marker/{found=1} END{exit found}' .pre-commit-config.yaml)
-- The pre-push stage includes a `nix flake check` hook with
-  `always_run: true`
-  [check](grep -q 'nix flake check' .pre-commit-config.yaml)
-- The pre-push stage includes `cargo clippy` file-gated on `\.rs$` and
-  targeted `loom gate verify --diff` without any `LOOM_VERIFY_TIERS`
-  environment override
-  [test](pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers)
-- Each pre-push hook entry routes through the repo-local
-  `bin/pre-push-checks` wrapper so marker coverage can be checked per
-  hook without relying on ambient PATH
+- The configured pre-push stage starts with the fast tier, preserves Rust-file
+  selectivity, appends prek's exact pushed range, keeps the full suite
+  always-on, wraps Nix for absent-tool environments, and routes every entry
+  through matching marker metadata
   [check](cargo run -p loom-walk -- pre_push_config_marker_wrapper_contract)
-- Nix workspace staging includes the repo-local `bin/pre-push-checks`
-  wrapper so flake checks and verifier builds can read the Loom-owned
-  marker policy
-  [check](grep -q '"bin/pre-push-checks"' nix/workspace.nix)
-- Hooks whose entry runs `nix` are wrapped with
-  `skip-if-missing nix --` so they no-op in the bead container
-  (which has no `nix`) while running normally on host devShell and
-  pre-push/full-suite contexts
-  [check](cargo run -p loom-walk -- pre_push_config_marker_wrapper_contract)
-- The pre-push stage runs `loom gate verify --diff` against the pushed
-  range; scope-derived gate policy excludes `[system]` by default and
-  project-specific hook selection stays in `.pre-commit-config.yaml`
+- The pre-push gate receives prek's concrete pushed endpoints rather than a
+  potentially stale branch upstream, and uses scope-derived tiers
   [test](pre_push_config_runs_verify_diff_for_pushed_range)
-- The pre-push stage includes an always-run full-suite hook that invokes
-  `nix run .#test`
-  [check](grep -q 'full-test-suite' .pre-commit-config.yaml)
+- Rust-file selection and pushed-range verification compose without a
+  `LOOM_VERIFY_TIERS` override
+  [test](pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers)
+- Nix workspace staging includes the repo-local marker-policy wrapper
+  [check](grep -q '"bin/pre-push-checks"' nix/workspace.nix)
 
 ### Shell re-exec discipline
 
-- `scripts/check-shell-reexec` exists and is executable
-  [check](test -x scripts/check-shell-reexec)
+- A shell self re-exec that names its interpreter is accepted
+  [test](shell_reexec_check_accepts_explicit_interpreter)
+- A shell self re-exec that relies on executing `$0` directly is rejected with
+  an actionable diagnostic
+  [test](shell_reexec_check_rejects_implicit_self_exec)
 
 ### Fast tier composition
 
@@ -338,31 +301,19 @@ declared as such.
 
 ### Agent self-verify
 
-- The bead container's workspace has `core.hooksPath` configured from
-  the canonical `wrix.prekHooks` installation so prek fires on agent
-  commits
-  [test](bead_workspace_configures_and_repairs_hooks_path)
-- Bead-container pre-commit hooks fire on the agent's `git commit`
-  invocations
-  [test](loom_workflow::tests::agent_commit_runs_pre_commit_chain)
-- The bead container has no `nix`, so `nix flake check` is skipped
-  inside the bead container's prek invocation (other hooks still fire)
-  [test](loom_workflow::tests::bead_container_skips_nix_flake_check)
+- The production Rust sandbox image, canonical Wrix hook installation, real
+  project config, and prek chain jointly cause an ordinary agent-style commit
+  to run the configured pre-commit checks
+  [system](nix run .#test-sandbox)
+- The same sandbox contains no Nix executable: Nix-dependent pre-push entries
+  skip through the packaged wrapper while a non-Nix gate entry still executes
+  [system](nix run .#test-sandbox)
 
 ### Marker integration
 
-- `loom gate verify-marker` exits 0 when the marker's tree OID matches
-  HEAD's tree OID and porcelain is clean
-  [test](marker::tests::verify_marker_exits_zero_on_match)
-- `loom gate verify-marker` exits non-zero when the marker file is
-  absent
-  [test](marker::tests::verify_marker_exits_nonzero_on_missing)
-- `loom gate verify-marker` exits non-zero when the marker's tree OID
-  does not match HEAD's tree OID
-  [test](marker::tests::verify_marker_exits_nonzero_on_tree_mismatch)
-- `loom gate verify-marker` exits non-zero when porcelain is non-empty
-  even if the tree OID matches
-  [test](marker::tests::verify_marker_exits_nonzero_on_dirty_tree)
+The marker schema and diagnostic CLI outcomes are owned and verified by
+[gate.md § Marker](gate.md#marker). This section verifies only pre-push
+consumption.
 - The `pre-push-checks` wrapper exits 0 without execing its argument
   command only when marker validation proves matching tree/config/range
   and hook coverage for the wrapped hook id/entry
@@ -382,24 +333,16 @@ declared as such.
 
 ### Functional
 
-1. **Stage composition.** Pre-commit runs the builtin trio
-   (`trailing-whitespace`, `end-of-file-fixer` with `.beads/config.yaml`
-   excluded, `check-merge-conflict`), `treefmt --fail-on-change`,
-   `shell-reexec-explicit-interpreter`, and `loom gate verify --files`
-   against staged files. Pre-push runs per-hook entries (`nix flake
-   check`, `cargo clippy`, `loom gate verify --diff <push-range>`,
-   `full-test-suite`), each routed through the `pre-push-checks`
-   wrapper. A valid marker short-circuits only hooks covered by typed
-   `GateSuccess` evidence for the same tree/config/range; on operator-
-   manual pushes (no marker present) the wrapper falls through and the
-   hooks run against the host's warm cache. `loom gate verify-marker`
-   is not itself a prek hook — it is a diagnostic marker-validation
-   subcommand, never a standalone gate in the push chain.
+1. **Stage composition.** Pre-commit provides staged-file sanitation,
+   formatting, shell self-reexec safety, and affected deterministic feedback.
+   Pre-push composes the fast tier, language-selective lint, exact pushed-range
+   verification, and full-suite coverage. Each pre-push entry routes through
+   marker-aware fallthrough; the exact configuration is authoritative in
+   `.pre-commit-config.yaml`.
 
-2. **Builtin trio over Python.** The trailing-whitespace,
-   end-of-file-fixer, and check-merge-conflict hooks use `repo: builtin`
-   so prek's native implementations run, not the
-   `pre-commit/pre-commit-hooks` Python repo.
+2. **Native sanitation.** Prek's built-in sanitation implementations avoid a
+   non-portable Python bootstrap while preserving the required staged-file
+   cleanup and conflict checks.
 
 3. **Single source of truth.** `.pre-commit-config.yaml` is the
    canonical SOT for deterministic project hooks, consumed uniformly by:
@@ -408,13 +351,12 @@ declared as such.
    <base> --to-ref <head>`), and any external CI that invokes the same
    hook chain.
 
-4. **Agent self-verify.** The bead container has `core.hooksPath`
-   configured to the canonical `wrix.prekHooks` path so prek fires on
-   agent commits. The loop prompt's final self-check command and range
-   conditions are owned and verified by
+4. **Agent self-verify.** The hook-path placement guarantee is owned by
+   [harness.md § Bead Dispatch](harness.md#bead-dispatch). Given that
+   placement, the assembled sandbox executes this spec's configured commit
+   policy. The final self-check command and range are owned by
    [templates.md — Loop completion self-check and self-review](templates.md#loop-completion-self-check-and-self-review).
-   This is the in-session feedback layer; it is **not** the trust source
-   for pre-push (see *Non-Functional #3*).
+   This is feedback, not the pre-push trust source.
 
 5. **Marker handoff.** `MarkerProof` is the content-addressed
    trust artifact defined in [gate.md § Marker](gate.md#marker). Mint

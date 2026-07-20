@@ -51,8 +51,22 @@ pub const MARKER_PATH: &str = ".loom/marker.json";
 /// Validated construction routes through [`MarkerProof::read_and_validate`];
 /// the deserialiser cannot yield a `MarkerProof` for a stale or
 /// mismatched state — it returns `Err`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MarkerProof {
+    version: u32,
+    commit_sha: GitOid,
+    tree_oid: GitOid,
+    pre_commit_config_digest: String,
+    push_range: String,
+    covered_hooks: Vec<HookCoverage>,
+    verified_scope_fingerprint: String,
+    reviewed_scope_fingerprint: String,
+    gate_log_paths: Vec<PathBuf>,
+    minted_at_ms: u128,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParsedMarkerProof {
     version: u32,
     commit_sha: GitOid,
     tree_oid: GitOid,
@@ -180,42 +194,12 @@ impl MarkerProof {
                 source,
             },
         })?;
-        let marker: MarkerProof =
+        let marker: ParsedMarkerProof =
             serde_json::from_slice(&bytes).map_err(|source| MarkerError::ParseMarker {
                 path: path.to_path_buf(),
                 source,
             })?;
-        if marker.version > CURRENT_VERSION {
-            return Err(MarkerError::UnsupportedSchema {
-                found: marker.version,
-                current: CURRENT_VERSION,
-            });
-        }
-        assert_porcelain_clean(workspace)?;
-        let current_tree = git_tree_oid_of_head(workspace)?;
-        if current_tree != marker.tree_oid {
-            return Err(MarkerError::FingerprintMismatch {
-                marker_tree: marker.tree_oid.clone(),
-                head_tree: current_tree,
-            });
-        }
-        let current_digest = pre_commit_config_digest(workspace)
-            .map_err(|source| MarkerError::ConfigDigestRead { source })?;
-        if current_digest != marker.pre_commit_config_digest {
-            return Err(MarkerError::ConfigDigestMismatch {
-                marker_digest: marker.pre_commit_config_digest.clone(),
-                current_digest,
-            });
-        }
-        if marker.covered_hooks.is_empty()
-            || marker.verified_scope_fingerprint.is_empty()
-            || marker.reviewed_scope_fingerprint.is_empty()
-            || marker.gate_log_paths.is_empty()
-        {
-            return Err(MarkerError::ScopeEvidenceMissing);
-        }
-        marker.validate_gate_log_evidence(workspace)?;
-        Ok(marker)
+        marker.validate(workspace)
     }
 
     pub fn read_and_validate_for_hook(
@@ -239,6 +223,81 @@ impl MarkerProof {
             });
         }
         Ok(marker)
+    }
+
+    /// Schema version this marker was minted under.
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// `HEAD` commit SHA recorded at mint time — informational only;
+    /// the trust-bearing field is `tree_oid`.
+    pub fn commit_sha(&self) -> &GitOid {
+        &self.commit_sha
+    }
+
+    /// Tree OID the marker binds to — the load-bearing fingerprint.
+    pub fn tree_oid(&self) -> &GitOid {
+        &self.tree_oid
+    }
+
+    pub fn pre_commit_config_digest(&self) -> &str {
+        &self.pre_commit_config_digest
+    }
+
+    pub fn push_range(&self) -> &str {
+        &self.push_range
+    }
+
+    pub fn covered_hooks(&self) -> &[HookCoverage] {
+        &self.covered_hooks
+    }
+}
+
+impl ParsedMarkerProof {
+    fn validate(self, workspace: &Path) -> Result<MarkerProof, MarkerError> {
+        if self.version > CURRENT_VERSION {
+            return Err(MarkerError::UnsupportedSchema {
+                found: self.version,
+                current: CURRENT_VERSION,
+            });
+        }
+        assert_porcelain_clean(workspace)?;
+        let current_tree = git_tree_oid_of_head(workspace)?;
+        if current_tree != self.tree_oid {
+            return Err(MarkerError::FingerprintMismatch {
+                marker_tree: self.tree_oid.clone(),
+                head_tree: current_tree,
+            });
+        }
+        let current_digest = pre_commit_config_digest(workspace)
+            .map_err(|source| MarkerError::ConfigDigestRead { source })?;
+        if current_digest != self.pre_commit_config_digest {
+            return Err(MarkerError::ConfigDigestMismatch {
+                marker_digest: self.pre_commit_config_digest.clone(),
+                current_digest,
+            });
+        }
+        if self.covered_hooks.is_empty()
+            || self.verified_scope_fingerprint.is_empty()
+            || self.reviewed_scope_fingerprint.is_empty()
+            || self.gate_log_paths.is_empty()
+        {
+            return Err(MarkerError::ScopeEvidenceMissing);
+        }
+        self.validate_gate_log_evidence(workspace)?;
+        Ok(MarkerProof {
+            version: self.version,
+            commit_sha: self.commit_sha,
+            tree_oid: self.tree_oid,
+            pre_commit_config_digest: self.pre_commit_config_digest,
+            push_range: self.push_range,
+            covered_hooks: self.covered_hooks,
+            verified_scope_fingerprint: self.verified_scope_fingerprint,
+            reviewed_scope_fingerprint: self.reviewed_scope_fingerprint,
+            gate_log_paths: self.gate_log_paths,
+            minted_at_ms: self.minted_at_ms,
+        })
     }
 
     fn validate_gate_log_evidence(&self, workspace: &Path) -> Result<(), MarkerError> {
@@ -294,34 +353,6 @@ impl MarkerProof {
             && run.tree_oid.as_str() == tree_oid
             && run.config_digest.as_str() == self.pre_commit_config_digest.as_str()
             && scope_fingerprint(run).as_str() == self.reviewed_scope_fingerprint.as_str()
-    }
-
-    /// Schema version this marker was minted under.
-    pub fn version(&self) -> u32 {
-        self.version
-    }
-
-    /// `HEAD` commit SHA recorded at mint time — informational only;
-    /// the trust-bearing field is `tree_oid`.
-    pub fn commit_sha(&self) -> &GitOid {
-        &self.commit_sha
-    }
-
-    /// Tree OID the marker binds to — the load-bearing fingerprint.
-    pub fn tree_oid(&self) -> &GitOid {
-        &self.tree_oid
-    }
-
-    pub fn pre_commit_config_digest(&self) -> &str {
-        &self.pre_commit_config_digest
-    }
-
-    pub fn push_range(&self) -> &str {
-        &self.push_range
-    }
-
-    pub fn covered_hooks(&self) -> &[HookCoverage] {
-        &self.covered_hooks
     }
 }
 
@@ -788,12 +819,21 @@ mod tests {
         format!("'{}'", raw.replace("'", "'\\''"))
     }
 
-    fn install_loom_stub(bin_dir: &Path, exit_code: u8) {
-        // These wrapper tests pin `pre-push-checks` control flow. The real
-        // marker validation semantics are covered by the `verify_marker_*`
-        // tests above; avoiding `cargo run` here keeps nextest/Nix runs
-        // deterministic instead of racing nested Cargo invocations.
-        install_executable(bin_dir, "loom", &format!("#!/bin/sh\nexit {exit_code}\n"));
+    /// The wrapper resolves `loom` through `PATH`, so its live CLI seam needs
+    /// a transparent launcher when Cargo does not expose the binary directly.
+    fn install_loom_cli_launcher(bin_dir: &Path) {
+        let exec = match std::env::var_os("CARGO_BIN_EXE_loom") {
+            Some(bin) => format!("exec {} \"$@\"", shell_single_quote(Path::new(&bin))),
+            None => format!(
+                "exec cargo run --quiet --manifest-path {} -p loom --bin loom -- \"$@\"",
+                shell_single_quote(&repo_root().join("Cargo.toml")),
+            ),
+        };
+        install_executable(
+            bin_dir,
+            "loom",
+            &format!("#!/usr/bin/env bash\nset -euo pipefail\n{exec}\n"),
+        );
     }
 
     fn install_sentinel(bin_dir: &Path, marker: &Path) {
@@ -872,7 +912,7 @@ mod tests {
         write_marker_at(workspace, &marker_for_workspace(workspace));
 
         let tools = tempfile::tempdir().expect("tools tempdir");
-        install_loom_stub(tools.path(), 0);
+        install_loom_cli_launcher(tools.path());
         let sentinel_marker = tools.path().join("sentinel.flag");
         install_sentinel(tools.path(), &sentinel_marker);
 
@@ -970,7 +1010,7 @@ mod tests {
         seed_marker(workspace);
 
         let tools = tempfile::tempdir().expect("tools tempdir");
-        install_loom_stub(tools.path(), 1);
+        install_loom_cli_launcher(tools.path());
         let sentinel_marker = tools.path().join("sentinel.flag");
         install_sentinel(tools.path(), &sentinel_marker);
 
@@ -1008,7 +1048,7 @@ mod tests {
         );
 
         let tools = tempfile::tempdir().expect("tools tempdir");
-        install_loom_stub(tools.path(), 0);
+        install_loom_cli_launcher(tools.path());
         let sentinel_marker = tools.path().join("sentinel.flag");
         install_sentinel(tools.path(), &sentinel_marker);
 
@@ -1090,8 +1130,10 @@ mod tests {
         let minted = MarkerProof::mint(success, workspace, &clock).expect("mint succeeds");
 
         let final_bytes = std::fs::read(workspace.join(MARKER_PATH)).expect("marker file readable");
-        let parsed: MarkerProof =
-            serde_json::from_slice(&final_bytes).expect("marker file is valid JSON");
+        serde_json::from_slice::<ParsedMarkerProof>(&final_bytes)
+            .expect("marker file is valid JSON");
+        let parsed = MarkerProof::read_and_validate(&workspace.join(MARKER_PATH), workspace)
+            .expect("marker file validates");
         assert_eq!(parsed, minted);
         assert!(
             !loom_dir.join("marker.json.tmp").exists(),

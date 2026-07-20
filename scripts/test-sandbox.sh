@@ -97,10 +97,70 @@ if [[ -z "$ref" ]]; then
     exit 1
 fi
 
-if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none --cgroups=disabled --entrypoint=/bin/bash "$ref" -lc 'set -euo pipefail; pi --version >/dev/null' 2>&1); then
+workspace_source="${LOOM_TEST_SANDBOX_SOURCE:-$(pwd -P)}"
+if [[ ! -f "$workspace_source/Cargo.toml" || ! -d "$workspace_source/.git" ]]; then
+    printf 'test-sandbox: run from the Loom repository root\n' >&2
+    exit 2
+fi
+
+bead_workspace="${LOOM_TEST_SANDBOX_WORKSPACE:-}"
+if [[ -z "$bead_workspace" ]]; then
+    bead_workspace="$tmpdir/bead-workspace"
+    git -c core.hooksPath=/dev/null clone --quiet --local "$workspace_source" "$bead_workspace"
+fi
+
+if ! run_out=$(podman "${podman_args[@]}" run --rm --network=pasta --cap-add=NET_ADMIN --cgroups=disabled \
+    --volume "$bead_workspace:/workspace:rw" "$ref" /bin/bash -lc '
+        set -euo pipefail
+        pi --version >/dev/null
+        cd /workspace
+        if command -v nix >/dev/null 2>&1; then
+            printf "nix unexpectedly present in the worker image\n" >&2
+            exit 1
+        fi
+        if [[ -z "${WRIX_PREK_HOOKS:-}" || ! -x "$WRIX_PREK_HOOKS/pre-commit" ]]; then
+            printf "canonical WRIX_PREK_HOOKS installation is unavailable\n" >&2
+            exit 1
+        fi
+        configured_hooks=$(git config --local --get core.hooksPath)
+        if [[ "$configured_hooks" != "$WRIX_PREK_HOOKS" ]]; then
+            printf "entrypoint configured core.hooksPath=%s, expected %s\n" "$configured_hooks" "$WRIX_PREK_HOOKS" >&2
+            exit 1
+        fi
+        git config user.email test@example.com
+        git config user.name "Sandbox Hook Test"
+        git config commit.gpgsign false
+        printf "agent change\n" > sandbox-hook-test.txt
+        git add sandbox-hook-test.txt
+        commit_output=$(git commit -m "Exercise sandbox hooks" 2>&1)
+        case "$commit_output" in
+            *"treefmt --fail-on-change"*"loom gate verify --files"*) ;;
+            *)
+                printf "agent commit did not traverse the real pre-commit chain:\n%s\n" "$commit_output" >&2
+                exit 1
+                ;;
+        esac
+        from_ref=$(git rev-parse HEAD^)
+        to_ref=$(git rev-parse HEAD)
+        pre_push_output=$(prek run nix-flake-check loom-gate-verify-diff \
+            --stage pre-push --from-ref "$from_ref" --to-ref "$to_ref" --verbose 2>&1)
+        case "$pre_push_output" in
+            *"nix flake check"*"loom gate verify --diff"*) ;;
+            *)
+                printf "sandbox pre-push did not skip Nix and execute the non-Nix gate hook:\n%s\n" "$pre_push_output" >&2
+                exit 1
+                ;;
+        esac
+        printf "sandbox-hook-chain-ok\n"
+    ' 2>&1); then
     if is_unsupported_container_runtime_error "$run_out"; then
         skip_unsupported_container_runtime "$run_out"
     fi
-    printf 'test-sandbox: pi --version failed:\n%s\n' "$run_out" >&2
+    printf 'test-sandbox: sandbox verification failed:\n%s\n' "$run_out" >&2
+    exit 1
+fi
+
+if [[ "$run_out" != *"sandbox-hook-chain-ok"* ]]; then
+    printf 'test-sandbox: sandbox hook-chain canary missing:\n%s\n' "$run_out" >&2
     exit 1
 fi

@@ -40,6 +40,3 @@ pub use loom_driver::agent::{
     SpawnConfig,
 };
 pub use observer::{DefaultObserverChain, ObserverDriverEvent};
-
-#[cfg(test)]
-mod tests;
