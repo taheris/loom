@@ -109,9 +109,9 @@ The driver configures the bead clone's `core.hooksPath` to the
 canonical `wrix.prekHooks` path before spawning the agent, so prek's
 pre-commit chain fires on every `git commit` the agent invokes. The
 agent is a developer using git; prek is the orchestrator of "what to
-verify when." Workers do not push to the loom workspace; final
-in-session trust feedback comes from the prompt-required
-`loom gate verify --diff <bead-base>..HEAD` self-check.
+verify when." Workers do not push to the loom workspace; final in-session trust feedback
+follows the loop completion self-check contract owned by
+[templates.md — Loop completion self-check and self-review](templates.md#loop-completion-self-check-and-self-review).
 
 What this catches in-session:
 
@@ -122,9 +122,10 @@ What this catches in-session:
 - `[check]`-tier verifier failures whose inputs intersect staged
   files (same pre-commit hook).
 - Project pre-commit failures and affected `[check]` / `[test]`
-  failures on the final self-check range
-  (`loom gate verify --diff <bead-base>..HEAD`), including hooks such
-  as clippy when the project config places them in the pre-commit lane.
+  failures on the final loop self-check range defined by
+  [templates.md — Loop completion self-check and self-review](templates.md#loop-completion-self-check-and-self-review),
+  including hooks such as clippy when the project config places them in
+  the pre-commit lane.
   Full workspace nextest and `[system]` verifiers are explicit
   pre-push/full-suite or operator-invoked responsibilities.
 
@@ -344,10 +345,6 @@ declared as such.
 - Bead-container pre-commit hooks fire on the agent's `git commit`
   invocations
   [test](loom_workflow::tests::agent_commit_runs_pre_commit_chain)
-- The loop prompt requires a final self-check using
-  `loom gate verify --diff <bead-base>..HEAD`; workers do not rely on a
-  bead-workspace push to trigger pre-push hooks
-  [test](run_template_uses_injected_self_check_range_not_head_shorthand)
 - The bead container has no `nix`, so `nix flake check` is skipped
   inside the bead container's prek invocation (other hooks still fire)
   [test](loom_workflow::tests::bead_container_skips_nix_flake_check)
@@ -413,10 +410,11 @@ declared as such.
 
 4. **Agent self-verify.** The bead container has `core.hooksPath`
    configured to the canonical `wrix.prekHooks` path so prek fires on
-   agent commits. The loop prompt also requires
-   `loom gate verify --diff <bead-base>..HEAD` before completion. This
-   is the in-session feedback layer; it is **not** the trust source for
-   pre-push (see *Non-Functional #3*).
+   agent commits. The loop prompt's final self-check command and range
+   conditions are owned and verified by
+   [templates.md — Loop completion self-check and self-review](templates.md#loop-completion-self-check-and-self-review).
+   This is the in-session feedback layer; it is **not** the trust source
+   for pre-push (see *Non-Functional #3*).
 
 5. **Marker handoff.** `MarkerProof` is the content-addressed
    trust artifact defined in [gate.md § Marker](gate.md#marker). Mint

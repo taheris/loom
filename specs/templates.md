@@ -870,9 +870,10 @@ partial cannot quietly drift:
      'pub enum NewVariant' crates/foo/src/existing_file.rs)` where
      the file exists but the new symbol hasn't been added).
 
-   Both shapes use the same `?` modifier; both silent-pass under
-   `loom gate verify` and fire `UnneededPendingMarker` once the
-   target newly resolves.
+   Both shapes use the same `?` modifier. For command tiers, a spawn
+   failure or non-zero exit silent-passes under `loom gate verify`; exit
+   0 fires `UnneededPendingMarker` because the pending condition has
+   resolved.
 
 2. **"Added" and "modified" annotations both count.** The partial
    names this explicitly, with a worked example: *"if you changed
@@ -1196,7 +1197,7 @@ documents in front of the agent with zero configuration.
   **assertion-pending** pending-modifier cases with worked
   examples, so a planning agent author understands both shapes
   warrant `?`
-  [check](grep -qi 'binary-pending\|assertion-pending' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+  [test](plan_stage_rubric_distinguishes_binary_from_assertion_pending_by_exit_status)
 - The partial body names the **"added and modified" rule**
   explicitly — pending discipline applies to annotations the
   session adds AND to annotations whose target the session

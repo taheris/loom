@@ -220,6 +220,32 @@ fn plan_template_renders_three_plan_stage_checks() -> Result<()> {
 }
 
 #[test]
+fn plan_stage_rubric_distinguishes_binary_from_assertion_pending_by_exit_status() -> Result<()> {
+    let out = plan_ctx().render()?;
+    let normalized = out.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        normalized.contains(
+            "Binary-pending means the full verifier command cannot complete because its executable or referenced path does not exist yet.",
+        ),
+        "plan rubric must describe binary-pending commands: {out}",
+    );
+    assert!(
+        normalized.contains(
+            "Assertion-pending means the full verifier command runs against existing inputs but exits non-zero because the asserted condition does not hold yet.",
+        ),
+        "plan rubric must describe assertion-pending command failures: {out}",
+    );
+    assert!(
+        normalized
+            .contains("fails to spawn or exits non-zero; exit 0 means the condition resolved")
+            && normalized.contains("UnneededPendingMarker"),
+        "plan rubric must tie pending markers to the full command's exit status: {out}",
+    );
+    Ok(())
+}
+
+#[test]
 fn plan_defers_spec_format_to_conventions_doc() -> Result<()> {
     let out = plan_ctx().render()?;
 

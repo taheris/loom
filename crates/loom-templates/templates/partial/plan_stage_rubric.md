@@ -41,10 +41,13 @@ an explicit acknowledgement that the implementation is on the way. Walk
 every annotation this session added or touched: if its target won't
 resolve until a follow-on bead lands, mark it pending before exiting.
 
-**Binary-pending vs assertion-pending.** Binary-pending means the
-verifier executable or referenced path does not exist yet. Assertion-
-pending means the verifier can run but the asserted condition does not
-hold yet. Both shapes use `[tier?](target)` until the target resolves.
+**Binary-pending vs assertion-pending.** Binary-pending means the full
+verifier command cannot complete because its executable or referenced path
+does not exist yet. Assertion-pending means the full verifier command runs
+against existing inputs but exits non-zero because the asserted condition
+does not hold yet. For `[check?]` and `[system?]`, both shapes keep the
+pending marker while the full command fails to spawn or exits non-zero; exit
+0 means the condition resolved and fires `UnneededPendingMarker`.
 
 **Added and modified annotations both count.** If this session adds an
 annotation or changes an existing annotation's command, file path,

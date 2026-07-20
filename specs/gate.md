@@ -2171,11 +2171,14 @@ resolve. Runs as part of `loom gate check`. Four directions:
    - `[judge](path)`: the path resolves to a file on disk.
 
    The pending modifier `?` (see [*Pending modifier*](#pending-modifier)
-   above) flips the per-annotation outcome: a `[tier?](target)` whose
-   target does not resolve passes silently; one whose target *does*
-   resolve emits an `UnneededPendingMarker` finding, naming the spec,
-   line, and target so the implementer can drop the `?` in the same
-   diff that lands the verifier.
+   above) flips the per-annotation outcome. For `[check?]` and
+   `[system?]`, pending resolution uses the full dispatcher command, not
+   the first-token / file lookup used by the non-pending forms above: a
+   spawn failure or non-zero exit remains pending, while exit 0 emits an
+   `UnneededPendingMarker`. `[test?]` and `[judge?]` retain their
+   tier-specific target-resolution checks. The finding names the spec,
+   line, and target so the implementer can drop the `?` in the same diff
+   that lands the verifier.
 
 2. **Stub-pointing — annotations whose verifier body invokes the
    `_pending_stub` sigil are flagged** (`StubTestFunction`). A stub
