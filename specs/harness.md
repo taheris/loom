@@ -1,2496 +1,473 @@
 # Loom Harness
 
-Rust workspace, build system, workspace lint config, process architecture,
-cache store, and command-set platform for the Loom agent driver.
+Platform contract for Loom's Rust workspace, host-side workflow orchestration,
+reconstructable cache, and command set.
 
 ## Problem Statement
 
-Loom is a Rust binary that owns a complete spec-driven workflow:
-spec interview (plan), spec-to-beads decomposition (todo), per-bead
-agent dispatch (loop), deterministic and LLM-judged review (gate),
-human clarification/proposal review (inbox), and manual artifact tuning
-(tune). The binary holds the workflow's state in typed domain objects,
-parses agent protocols against typed schemas, and renders templates with
-compile-time variable validation.
+Loom drives a spec-to-implementation workflow through `plan`, `todo`, `loop`,
+`gate`, `inbox`, and `tune`. The harness keeps orchestration trusted on the
+host, isolates agent work in per-session containers, and represents workflow
+state and outcomes with typed boundaries. This spec owns the platform and
+workflow composition. Repository-level orientation lives in
+[`docs/architecture.md`](../docs/architecture.md), and shared terminology lives
+in [`docs/README.md`](../docs/README.md).
 
-This spec covers the platform: crate structure, Rust conventions,
-Nix integration, SQLite cache store, beads CLI wrapper, process
-architecture, recovery mechanics, and workflow command semantics. The
-typed event stream, command-wide live/replay renderer, persisted JSONL event
-logs, `EventSink` contract, and diagnostic tracing boundary live in
-[events.md](events.md). The Askama template engine, partials inventory,
-per-phase pinning policy, the typed context structs Loom exposes for
-consumer template composition, and the snapshot-test contract live in
-[templates.md](templates.md). The agent abstraction layer (pi-mono,
-Claude Code, and Direct backends; container communication; backend
-selection) lives in [agent.md](agent.md). The gate (rubric,
-invariants, lanes, stages) lives in [gate.md](gate.md).
-Workflow semantics for `loom plan`, `loom todo`, `loom loop`, `loom gate`, and
-`loom inbox` are defined in this spec's Functional section, Inbox Modes, and
-Verdict Gate sections below. The `loom tune` command and proposal contract are
-owned by [skills.md](skills.md); this spec defines only their platform
-integration.
+Concern-specific contracts remain single-sourced: [events.md](events.md) owns
+the event stream, rendering, and logs; [templates.md](templates.md) owns Askama
+prompts and typed contexts; [agent.md](agent.md) owns backends and their wire
+protocols; [gate.md](gate.md) owns gate evidence and review policy;
+[skills.md](skills.md) owns skills and tuning; and [llm.md](llm.md) owns public
+LLM primitives.
 
 ## Architecture
 
 ### Process Architecture
 
-Loom is a host-side orchestrator. Every workflow phase that drives an agent
-spawns its own container per bead — no shared long-lived container, no
-in-container loom loop. The two motivations:
+Loom is a host-side orchestrator. Agent-bearing worker phases receive an
+isolated container for each dispatch, selected from the bead's workspace
+profile and the phase's agent runtime. Loom delegates sandbox construction to
+`wrix spawn`; it supplies typed launch configuration and consumes canonical
+agent events over piped JSONL. It does not construct containers directly.
 
-1. **Per-bead profile/runtime selection.** Beads carry `profile:rust` /
-   `profile:python` / `profile:base` labels, and each phase resolves an
-   agent runtime. Each bead must run in the matching composed image. A
-   long-lived parent container can't change profile/runtime mid-run;
-   per-bead spawn is the only clean way.
-2. **Trust boundary.** Loom (orchestrator, on host) is trusted; the agent
-   (claude, pi, or direct, in container) is the sandboxed execution layer.
-
-**Container spawn is delegated to `wrix spawn`** — a thin wrix
-subcommand that owns container construction (mounts, env passthrough, krun
-runtime selection on aarch64 microVM, network filtering, deploy key, beads
-dolt socket). Loom never invokes `podman run` directly. Nix remains the source
-of truth for container layout; loom owns only the typed `SpawnConfig` it
-hands to the wrapper.
-
-```
-loom (host)
-    │
-    ├─ build SpawnConfig (image_ref, image_source, image_source_kind, env allowlist, mounts, scratch_dir)
-    ├─ serialize to /tmp/loom-<id>.json
-    │
-    ├─ spawn: agent-owned `wrix spawn` invocation (see agent.md)
-    │   │
-    │   └─ exec podman run [no -t, stdio piped] <image> <entrypoint>
-    │       │
-    │       └─ entrypoint.sh → agent (claude / pi --mode rpc / direct)
-    │           ↑              ↓
-    │           └── JSONL over stdin/stdout ─→ loom (parses events)
-    │
-    └─ on bead completion: container exits, next bead → next spawn
-```
-
-`wrix spawn --stdio` is the non-TTY counterpart of today's interactive
-`wrix run` (which uses `podman run -it`). Both modes share container
-construction; they differ only in stdio attachment. The
-`--spawn-config <file>` flag accepts a JSON file that mirrors loom's typed
-`SpawnConfig` — avoiding a fat argv interface and giving loom a single
-serialization boundary.
-
-**`loom plan` is the exception.** It is an interactive spec interview
-(human-in-the-loop terminal session), so it shells out to interactive
-`wrix run` rather than driving a JSONL session. Loom prepares the
-template-rendered prompt, sets environment, exec's `wrix run`, and lets
-the selected interactive agent attach to the user's terminal. No subprocess
-capture, no JSONL.
-
-**Trade-off accepted:** parallelism is straightforward (N concurrent
-`wrix spawn` invocations) and per-bead container spawn cost (~1-2s
-on podman) is dominated by agent runtime for typical bead sizes
-(minutes of agent work). The alternative — one long-lived container
-sharing one agent across beads — was rejected because it conflicts
-with per-bead profile/runtime selection and with the trust-boundary split
-between host orchestrator and sandboxed agent.
+The trust boundary is stable: Loom, Git integration, gate decisions, and pushes
+run on the host; agent tools run in the sandbox. Interactive `plan` and `inbox
+chat` sessions use `wrix run` with inherited terminal IO, while non-interactive
+worker sessions use `wrix spawn --stdio`. Backend-specific launch and protocol
+details are owned by [agent.md](agent.md).
 
 ### Bead Dispatch
 
-Loom owns its own git workspace, separate from the operator's
-checkout. The operator's `/workspace` and loom's
-`.loom/integration/` are independent clones of the same
-origin — they sync through origin, like any pair of dev workstations.
-Loom never reads, writes, or rebases the operator's working tree;
-the operator never edits loom's. Bead workspaces derive from the
-loom workspace, not from `/workspace`.
+Loom operates from a dedicated integration clone rather than the operator's
+checkout:
 
-**Layout.**
-
-```
-/workspace/                   operator's checkout, untouched by loom
-/workspace/.loom/integration/ loom's clone, integration branch checked out
-/workspace/.loom/beads/<id>/  bead workspaces, flat by globally-unique bead id
+```text
+<workspace>/                    operator checkout
+<workspace>/.loom/integration/  host-side integration clone
+<workspace>/.loom/beads/<id>/   persistent per-bead clone
 ```
 
-Each bead workspace is a `git clone --local` of the loom workspace.
-`<id>` is the bead id (`lm-9ehh.42`-style); ids are globally unique
-within the beads database so no spec partition is needed in the path.
-The integration branch name is `[loom] integration_branch` in
-`loom.toml` (default `main`); the loom workspace has that branch
-checked out and never switches. `loom init` materializes the loom
-workspace via `git clone <origin> .loom/integration` on a
-fresh install; existing operator workspaces run it once after
-upgrading to this layout. Lock files remain outside the workspace under
-`$XDG_STATE_HOME/loom/locks/<workspace-basename>/`, keyed by phase or
-work root.
+Each bead clone has a self-contained Git directory and branch `loom/<id>`, so
+its `/workspace` container mount remains usable without exposing the integration
+clone. A clone persists across retries and loop invocations until its bead is
+closed. Startup and post-close cleanup remove closed-bead clones owned by the
+selected molecule.
 
-**Why the layering.**
+Before dispatch, Loom applies the selected repository Git policy, then saves
+dirty tracked, staged, and non-ignored untracked work in a named recovery stash.
+It aligns committed bead work with the current integration tip when possible.
+The next worker receives typed `workspace_recovery` context describing any stash
+or conflict; cleanup never silently discards preserved work.
 
-- **Operator and loom as peer clones of origin.** The operator's
-  edits cannot break loom's rebases (a dirty operator working tree
-  is irrelevant to loom's machinery); loom's pushes go to origin,
-  so the operator's working tree changes only when they `git pull`.
-  Sync flows through `git push` / `git pull` against origin.
-- **Bead workspace as a child of the loom workspace.** Same fractal
-  pattern at every level: bead is to loom-workspace what
-  loom-workspace is to origin. The bead workspace has a
-  self-contained `.git/` inside the bind-mounted path so the wrix
-  container's `/workspace` mount resolves git operations without
-  external `.git/`-mount wiring. Linked worktrees are unsuitable:
-  their `.git` pointer file references a host-absolute path
-  outside the container's bind mount, so workers inside cannot
-  resolve the gitdir.
+Workers commit but do not push. After a successful worker verdict, the host
+fetches the bead branch, verifies signatures under the selected Git policy,
+rebases it onto the integration branch, verifies rewritten commits, and
+fast-forwards under Git's integration lock. The transient integration-clone
+`loom/<id>` ref is removed on every exit path. Integration conflicts receive
+one worker recovery attempt before clarification.
 
-**Per-bead-close lifecycle.** A bead workspace is created on
-first dispatch and persists across attempts, recovery iterations,
-and `loom loop` invocations. It is reaped when the bead transitions
-to `closed` (via the agent's `bd close` on success, the operator's
-`loom inbox` resolution, or a direct `bd close`). Within that lifetime
-every fresh dispatch attempt first runs a non-destructive workspace
-preflight. If the bead workspace has tracked modifications, staged
-changes, or untracked files outside the ignore set, the driver saves
-that work to a named recovery stash before any reset, clean, rebase,
-or checkout. After stashing — or immediately when the workspace was
-already clean — the driver rebases any local bead commits onto the current
-integration-branch tip (or fast-forwards when there are no local bead commits)
-and runs the normal reset/clean path only when no rebase conflict remains.
-`target/` survives so cargo + sccache start warm; `.git/` and `.wrix/`
-(extra-mount staging) survive.
-`create_worktree` is idempotent at the directory level: directory
-exists → reuse; missing → clone fresh from the loom workspace.
+A bead container mounts its clone at `/workspace` and the authoritative Beads
+Dolt socket at `/workspace/.wrix/dolt.sock`. A configured shared sccache
+directory is an additional mount. `SpawnConfig` owns these per-launch mounts;
+[agent.md § SpawnConfig](agent.md#spawnconfig) owns their wire shape.
 
-**Workspace recovery stashes.** The pre-dispatch dirty-work check is
-specific to `loom loop` bead workspaces. Dirty means tracked
-modifications, staged changes, or untracked files outside the ignore
-set. The driver saves dirty work with
-`git stash push --include-untracked -m "loom workspace-recovery <bead-id> <timestamp>"`,
-records the pre-stash `git status --short --branch`, stash selector,
-stash commit, stash message, and target integration tip, then leaves
-the stash unapplied. Ignored build/cache paths are not stashed. The
-loop prompt receives this as `workspace_recovery` context, separate from
-`previous_failure`; it does not consume retry counters. The worker must
-inspect the stash before normal work and decide whether to apply,
-cherry-pick, ignore, or ask for clarification.
+### Repository Git Isolation
 
-After the stash is created, the driver rebases local bead commits onto the
-configured integration branch tip, or fast-forwards when the bead branch has no
-local commits. If the rebase conflicts, the driver does not discard the stash
-and does not route directly to human resolution; it dispatches the worker in
-the conflict state with `workspace_recovery` naming the stash and conflict
-files. A simple merge conflict is agent work. If the worker cannot resolve it,
-it emits `LOOM_CLARIFY` with options. If stash creation itself fails, the
-driver aborts before destructive cleanup, pauses the bead as `status=blocked`,
-labels it `loom:infra` with cause `workspace-recovery-failed`, and never falls
-back to reset/clean that would lose work.
+`loom loop` defaults to repository-scoped Git authority. Before bead selection
+or integration work, startup resolves both deploy and signing keys using Wrix
+precedence: an explicit `WRIX_DEPLOY_KEY` or `WRIX_SIGNING_KEY` must be an
+absolute path to an existing file; otherwise each key falls back to
+`$HOME/.ssh/deploy_keys/<repo>-<host>` with the signing-key suffix. If either
+key remains unresolved, Loom fails before querying Beads or spawning an agent.
+Repository mode also rejects ambient `GIT_SSH_COMMAND` and `GIT_SSH` overrides.
+Diagnostics identify `--host-key` as the sole ambient-host opt-in.
 
-Every recovery-stash preflight emits a `DriverKind::WorkspaceRecovery`
-event with the bead id, pre-stash status, stash selector/message, stash
-commit, integration tip, alignment outcome, and conflict files when any.
-Recovery stashes are preservation context, not a typed success handoff.
-The driver does not reject `LOOM_COMPLETE` solely because a recovery
-stash still exists; the review gate may judge an ignored relevant stash
-as a quality concern from the recovery event and final summary.
+After resolution, Loom runs `wrix init --offline --no-hooks --key <key-name>` in
+`.loom/integration`, exposing key paths only to that child. Wrix installs
+context-stable repository-local transport and SSH-signing policy, including
+`.git/wrix/allowed_signers`; Loom validates the expected configuration and
+policy files and fails closed on a no-op or partial result.
 
-**Garbage collection.** At `loom loop` startup, under the spec
-advisory lock, loom enumerates `.loom/beads/` and drops closed bead
-workspaces only when the bead is parented by the molecule this loop
-owns. Closed workspaces from other molecules may still be in use by a
-concurrently running loop, so they are left for that molecule's own
-startup sweep or inline cleanup. In-loop, every bead the current loom
-dispatches owns its own removal: on the bead transitioning to
-`closed` the dispatch path reaps the workspace inline as part of
-post-session cleanup. The startup sweep catches orphans from crashed
-prior runs, not the happy path. No timer threshold; no
-operator-explicit GC. A `loom gc` command is an additive follow-up if
-hoarding ever materializes.
+New and reused bead clones receive the same policy before dirty-work stashing,
+origin fetch, or host-side rebase. Context-stable helpers let the host and the
+container use the repository key without persisting a host private-key path.
+Repository mode treats a missing allowed-signers file as an error and verifies
+both fetched and rebased commits.
 
-**Bead branch flow.** Bead branch `loom/<id>` is created in the
-bead workspace at first dispatch via `git checkout -b`. The agent
-commits to it; the worker never pushes. On a successful exit
-(`LOOM_COMPLETE` clearing the bead-exit verdict-gate signals),
-the driver — running on the host in the loom workspace, holding
-`index.lock` — fetches the bead branch from the bead workspace
-path, verifies signatures, rebases onto the integration branch,
-verifies the rewritten commits, fast-forward-merges, and deletes
-the transient `loom/<id>` ref:
+`--host-key` removes managed Wrix and legacy signing/transport configuration
+from Loom-owned clones and permits ambient host Git policy. Without that flag,
+Loom never falls back to the host GPG key.
 
-```
-# in loom workspace, inside index.lock
-git fetch .loom/beads/<id> loom/<id>:loom/<id>
-# signature verification pass 1 (worker commits)
-git rebase <integration-branch> loom/<id>
-# signature verification pass 2 (rewritten commits)
-git checkout <integration-branch>
-git merge --ff-only loom/<id>
-git branch -D loom/<id>
-```
-
-The verification and rebase-conflict mechanics are defined in
-[Verdict Gate](#verdict-gate). Linear history, no merge commits.
-The `loom/<id>` ref in the loom workspace is transient — deleted
-unconditionally at end of the critical section, whether the path
-exited cleanly, rolled back from audit-fail, or aborted from
-rebase conflict. The bead clone retains its branch until the
-bead transitions to `closed` and the clone is reaped; the operator
-can `cd .loom/beads/<id>` to inspect.
-
-The bead clone's `origin` remote remains pointing at the loom
-workspace path; the worker never invokes it but this preserves
-host-side ahead/behind tracking when the operator `cd`s into the
-bead clone (e.g., starship prompt). `create_worktree` sets the bead
-branch's upstream to `origin/<integration-branch>`, so the starship
-ahead/behind count is correct. The pre-push hook takes its exact range
-from prek's pushed-ref endpoints rather than from `@{u}`, so an unrelated
-or stale upstream cannot change the verified range. The bead
-container has no path mount to the loom workspace and cannot push
-from inside; manual host-side pushes are harmless because the
-integration step still owns rebase + verify + ff. The driver's
-fetch is against a filesystem path (always present through the
-bead's lifetime), not over a network or daemon.
-
-After every bead in the molecule has integrated, the
-molecule-completion push gate pushes the integration branch to
-`origin/<integration-branch>`. A non-fast-forward error at origin
-(operator pushed first, or another loom landed cross-spec work)
-retries by fetching + rebasing the integration branch onto
-`origin/<integration-branch>` + re-pushing.
-
-**Preserve-on-failure.** Rebase-conflict abort, audit-fail
-rollback, signature-verification failure, and post-integration push
-failure all route the bead to `Blocked` or `Clarify` per the
-verdict gate; the bead workspace persists on disk. Under the
-per-bead-close lifecycle "preserve" is the default — the workspace
-persists until `bd close` regardless of why it stopped progressing.
-The operator unblocks via `loom inbox` resolution; the bd-close-driven
-reap drops the bead workspace.
-
-**Concurrency.** Concurrent `loom loop --parallel N` and concurrent
-loops across specs share one loom workspace. Serialization points:
-
-- N concurrent `git clone --local` from the loom workspace into
-  bead workspaces: git's atomic-rename + per-ref lock semantics
-  make concurrent clone-from-loom safe.
-- Concurrent driver-side fetches from N bead workspaces into the
-  loom workspace: each fetch lands a uniquely-named ref
-  (`loom/<bead-id>`), so the fetches themselves don't contend on
-  the same ref. The fetch nevertheless runs inside the per-bead
-  critical section's `index.lock` because the subsequent rebase
-  and ff-merge mutate the integration branch.
-- Cross-spec rebase + ff into the integration branch in the loom
-  workspace: serialized by git's `index.lock`. The losing process
-  surfaces the error and retries the rebase + ff from its current
-  view of the integration branch.
-- Origin push: serialized by origin's non-fast-forward + retry-with-
-  fetch loop.
-
-The phase/work-root advisory locks (see [Concurrency & Locking](#concurrency--locking))
-serialize planning, workspace-wide todo decomposition, and per-work-root
-loop / gate / targeted inbox-chat actions without using an active-spec pointer.
-
-**Mounts.** Bead containers see two mandatory bind mounts plus an
-optional sccache mount, all via `SpawnConfig`:
-
-- **Mandatory: the bead workspace** at `/workspace`.
-- **Mandatory: the host `wrix-beads` dolt socket** at
-  `/workspace/.wrix/dolt.sock` via `SpawnConfig.mounts`
-  (see [agent.md § SpawnConfig](agent.md#spawnconfig)). This
-  replaces the historical host-side hardlink shim and survives
-  changes to the bead-workspace path. Linux passes the socket
-  through directly; on Darwin the wrix sandbox rejects
-  Unix-socket `host_path` entries at launch (VirtioFS cannot
-  forward socket operations across the VM boundary), so dolt-over-
-  socket on Darwin requires a TCP fallback rather than this mount —
-  out of scope for the present Linux-only loom target.
-- **Optional: a shared sccache directory** at the configured
-  container path (default `/sccache`; see
-  [Configuration](#configuration)), gated on `[loom] sccache_dir`
-  being set. When configured, bead and plan/todo container spawns
-  receive the directory as a bind mount with `SCCACHE_DIR` and
-  `RUSTC_WRAPPER=sccache` set in container env. Host-side cargo
-  invocations (loom's `cargo nextest` against the loom workspace
-  during gate verify; the operator's `nix develop` cargo if opted
-  in via devshell config) read the same host directory directly
-  with the same env vars exported — no bind mount, because there
-  is no container boundary to cross. One cache, all clients;
-  sccache's content-addressed scheme makes the cache safe to
-  share across workspaces whose absolute paths differ.
-
-**Darwin compatibility.** Clones on a single host filesystem
-hardlink objects within that filesystem — no VM-boundary crossing.
-Bind-mounting plain directories and the dolt socket file through
-virtiofs is the standard wrix pattern. The clone-over-worktree
-choice eliminates the host-absolute `.git`-pointer failure mode
-that would also bite on Darwin. Outstanding Darwin work for the
-broader runtime layer is tracked in
-[agent.md § Out of Scope](agent.md#out-of-scope).
-
-**Git operations: hybrid `gix` + `git` CLI.** Workspace, branch,
-status, and integration operations go through a typed `GitClient`
-in `loom-driver`. The implementation is hybrid, encapsulated inside
-the module; callers see only typed Rust methods.
-
-| Operation | Backend | Reason |
-|-----------|---------|--------|
-| `status` (working tree vs HEAD) | [`gix`](https://docs.rs/gix) `Repository::status()` | mature |
-| `diff` (HEAD vs HEAD~) | `gix::diff` (`blob-diff` feature) | mature |
-| List refs / branches | `gix::Repository::references()` | mature |
-| Read commit graph / HEAD | `gix` | mature |
-| **Create loom workspace** (`loom init`) | `git clone <origin> .loom/integration` (CLI) | one-shot, infrequent; `gix-clone` is unchecked |
-| **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>`, `git checkout -b loom/<id>`, then `git branch --set-upstream-to origin/<integration-branch>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount; upstream preserves host-side ahead/behind tracking |
-| **Pre-attempt prepare of bead clone** | `git status --short --branch`; if dirty, `git stash push --include-untracked -m "loom workspace-recovery <bead-id> <timestamp>"`; then rebase local bead commits onto the integration tip (or fast-forward when there are no local commits); finally `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix` when no conflict remains (CLI) | preserves uncommitted/staged/untracked work as an unapplied recovery stash, preserves committed bead work by rebasing it onto the integration tip, and gives clean starts except intentional conflict-recovery dispatches |
-| **Fetch bead branch from bead workspace** | `git fetch <bead-workspace-path> loom/<id>:loom/<id>` (CLI) | filesystem path as ad-hoc URL; runs in loom workspace inside `index.lock` |
-| **Verify commit signatures** | `git verify-commit <commits>` (CLI) | gates repository-key-mode integration on signatures trusted by `.git/wrix/allowed_signers` (see [Repository Git isolation](#repository-git-isolation)) |
-| **Rebase + ff into integration branch** | `git rebase` + `git merge --ff-only` (CLI) | `gix-merge` cannot persist `MERGE_HEAD`/`MERGE_MSG`; avoids index dance |
-| **Delete bead-branch ref in loom workspace** | `git branch -D loom/<id>` (CLI) | end of per-bead critical section, unconditional |
-| **Push integration to origin** | `git push origin <integration-branch>` (CLI) | with non-ff retry |
-| **Remove bead clone** | `std::fs::remove_dir_all` | standalone tree; not a registered worktree |
-
-`gix` 0.83+ is pinned with features `["status", "blob-diff",
-"revision", "parallel", "sha1"]` (the `sha1` feature is required
-for gix-hash to compile; without it the `Kind` enum has no
-variants). `gix::Repository` is `!Sync`; loom holds a
-`ThreadSafeRepository` and clones a thread-local handle inside
-`spawn_blocking` per call. CLI shell-outs use
-`tokio::process::Command` with arguments passed via `.arg()` —
-never shell interpolation — and a 60-second timeout (10 minutes
-for pushes that drive pre-push CI hooks).
-
-The hybrid line is reviewed each loom release; gix operations
-migrate inward as the corresponding `crate-status.md` items become
-checked.
-
-### Repository Git isolation
-
-`loom loop` defaults to repository-scoped Git authority. Before bead
-selection or any integration fetch/rebase, startup resolves **both** the
-deploy and signing keys using Wrix precedence:
-
-1. `$WRIX_DEPLOY_KEY` / `$WRIX_SIGNING_KEY`, when set, must be absolute
-   paths to existing files; a relative or missing target is a hard error.
-2. Otherwise the keys resolve from
-   `$HOME/.ssh/deploy_keys/<repo>-<host>` and
-   `$HOME/.ssh/deploy_keys/<repo>-<host>-signing`, where `<repo>` comes
-   from the integration clone's GitHub origin and `<host>` is the short
-   hostname.
-3. If either key remains unresolved, startup exits non-zero with an
-   actionable error before querying Beads or spawning an agent. There is
-   no implicit ambient-host fallback.
-
-Repository mode also rejects ambient `$GIT_SSH_COMMAND` or `$GIT_SSH`, which
-would otherwise outrank repository-local `core.sshCommand`; the diagnostic
-requires unsetting the override or explicitly selecting `--host-key`.
-
-After resolution, Loom runs `wrix init --offline --no-hooks --key
-<key-name>` in `.loom/integration`, with the resolved key paths supplied
-only to that child process. Wrix writes context-stable repository-local
-transport and SSH-signing policy: helper tokens resolve the deploy/signing
-key in the current execution context instead of storing a host private-key
-path. The resulting policy uses the repository deploy key for Git transport,
-the repository signing key for commits, and
-`.git/wrix/allowed_signers` for verification. Loom validates the expected
-local config and policy files after Wrix exits; a successful no-op or
-partial policy fails closed. Loom's canonical hook-path reconciliation
-remains separate.
-
-A bead clone receives the same Wrix policy when it is first created and
-again whenever it is reused, before dirty-work stashing, origin fetch, or
-the host-side pre-dispatch rebase. This is load-bearing: the pre-dispatch
-rebase can rewrite commits on the host, while the same clone is later mounted
-at `/workspace` and commits inside the container. Context-stable helper tokens
-allow both paths to use the repository key; an absolute host key path would
-break in-container, while omitting local policy would let the host-side rebase
-fall through to the operator's GPG key.
-
-`--host-key` is the sole opt-in exception. In that mode Loom removes managed
-Wrix/legacy signing and transport config from its integration and bead clones
-and permits ambient host Git credentials and signing configuration. Without
-that flag, Loom never consults the host GPG key as a signing fallback.
-
-**Launcher key environment.** In repository mode the already-resolved host
-paths are carried on `SpawnConfig.launcher_env` as `WRIX_DEPLOY_KEY` and
-`WRIX_SIGNING_KEY`. They are `#[serde(skip)]`-excluded from spawn-config JSON.
-Wrix stages them at fixed `/etc/wrix/keys/...` paths and rewrites the child env,
-so private host paths never enter container configuration. The in-container
-env allowlist does not carry host paths.
-
-**rerere configuration.** Independently of repository Git policy, `loom init`
-writes `[rerere] enabled = true` and `[rerere] autoupdate = true`
-into the loom workspace's local `.git/config`. The driver-side
-rebase in the per-bead integration step relies on rerere to replay
-previously-recorded conflict resolutions before falling through to
-`integration-conflict` recovery (see
-[Verdict Gate](#verdict-gate)). Recorded resolutions accumulate
-only in the loom workspace's `.git/rr-cache/`, where the driver-
-side rebase consults them across bead lifetimes. Bead clones don't
-need rerere — even when the integration-conflict retry path asks
-an agent to rebase its bead-workspace branch onto the new tip, the
-bead clone is reaped on `bd close` and any rerere cache it
-accumulated wouldn't transfer to the loom workspace.
+Resolved host key paths travel to sandbox launch only through
+`SpawnConfig.launcher_env` as `WRIX_DEPLOY_KEY` and `WRIX_SIGNING_KEY`. That map
+is excluded from serialized spawn JSON; Wrix stages fixed in-container paths.
+Independently, `loom init` enables Git rerere for integration-conflict replay.
 
 ### Profile-Image Manifest
 
-The *profile-image manifest* is a JSON file produced by Nix at flake-build
-time that maps each workspace profile and agent runtime to the podman ref,
-Nix store path, source kind, optional raw wrix launcher path, optional wrix
-ProfileConfig path, and optional content-digest path needed to spawn its image.
-Loom reads it at startup and, for each container spawn, looks up the resolved
-profile/runtime pair to populate `SpawnConfig.image_ref` (the podman ref),
-`SpawnConfig.image_source` (the store path handed to the launcher install
-step), `SpawnConfig.image_source_kind` (the explicit wrix install-path
-selector), the host-only `SpawnConfig.wrix_launcher` path used as the raw
-spawn executable, and the host-only `SpawnConfig.profile_config` path passed as
-`wrix --profile-config`. The image digest is not a `SpawnConfig` field; wrix
-reads it from the matching ProfileConfig image and rejects per-launch digest
-overrides.
+The Nix-produced profile-image manifest maps `(ProfileName, AgentRuntime)` to an
+image entry. Each entry carries the podman reference, immutable image source,
+source kind, and optional host-only launcher, wrix profile configuration, and
+digest paths. Loom parses the manifest once from `LOOM_PROFILES_MANIFEST` and
+has no implicit search fallback.
 
-The file is a JSON object keyed first by profile name and then by agent
-runtime. Each runtime entry has three required string fields (`ref`, `source`,
-`source_kind`), a `launcher` string in current Loom-built manifests pointing at
-`mkSandbox { ... }.launcher/bin/wrix`, a `profile_config` string in current wrix
-manifests, and an optional `digest` string. An abbreviated example:
-
-```json
-{
-  "base": {
-    "claude": {
-      "ref": "localhost/wrix-base-claude:abc123",
-      "source": "/nix/store/...-image-base-claude",
-      "source_kind": "nix-descriptor",
-      "launcher": "/nix/store/...-wrix/bin/wrix",
-      "profile_config": "/nix/store/...-wrix-base-claude-profile-config.json",
-      "digest": "/nix/store/...-image-base-claude-digest"
-    },
-    "pi": {
-      "ref": "localhost/wrix-base-pi:def456",
-      "source": "/nix/store/...-image-base-pi",
-      "source_kind": "nix-descriptor",
-      "launcher": "/nix/store/...-wrix/bin/wrix",
-      "profile_config": "/nix/store/...-wrix-base-pi-profile-config.json",
-      "digest": "/nix/store/...-image-base-pi-digest"
-    },
-    "direct": {
-      "ref": "localhost/wrix-base-direct:ghi789",
-      "source": "/nix/store/...-image-base-direct",
-      "source_kind": "nix-descriptor",
-      "launcher": "/nix/store/...-wrix/bin/wrix",
-      "profile_config": "/nix/store/...-wrix-base-direct-profile-config.json",
-      "digest": "/nix/store/...-image-base-direct-digest"
-    }
-  },
-  "rust": {
-    "pi": {
-      "ref": "localhost/wrix-rust-pi:jkl012",
-      "source": "/nix/store/...-image-rust-pi",
-      "source_kind": "nix-descriptor",
-      "launcher": "/nix/store/...-wrix/bin/wrix",
-      "profile_config": "/nix/store/...-wrix-rust-pi-profile-config.json",
-      "digest": "/nix/store/...-image-rust-pi-digest"
-    }
-  }
-}
-```
-
-Built by Loom's `lib.mkProfileManifest` around wrix `mkSandbox` /
-`mkProfileImages`; the bundled flake output is `packages.profile-images`.
-External flakes that add custom profiles call `lib.mkProfileManifest` (or emit
-the same JSON shape) to produce a manifest covering their full profile/runtime
-set.
-
-Loom reads the manifest path from the `LOOM_PROFILES_MANIFEST` environment
-variable. The bundled devshell sets it to `${self'.packages.profile-images}`;
-consumers integrating loom into their own flake set it the same way. If the
-variable is unset or the file is missing, loom errors at startup before any
-container spawn — there is no implicit search path or fallback default. The
-manifest is parsed once at startup and held as a
-`BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>` in
-`loom-driver`.
-
-Per-bead dispatch is:
-
-1. Parse the bead's labels; pick the highest-precedence `profile:X` (or the
-   value of `--profile` if set on the CLI).
-2. Resolve the phase backend to an `AgentRuntime` (`claude`, `pi`, or
-   `direct`).
-3. Look up `(X, AgentRuntime)` in the parsed manifest. Missing profile or
-   runtime is a static infra diagnostic, not a semantic worker blocker: the
-   bead is paused with `status=blocked`, labelled `loom:infra` (not
-   `loom:blocked`), and surfaced in `loom inbox` as kind `infra` without
-   transport retries. The note names the requested profile/runtime and the
-   manifest's declared set so the operator can relabel or rebuild the
-   manifest. Same routing as static infra diagnostics in
-   [Verdict Gate](#verdict-gate).
-4. Build `SpawnConfig` with `image_ref = entry.ref`, `image_source =
-   entry.source`, `image_source_kind = entry.source_kind`, host-only
-   `wrix_launcher = entry.launcher` when present, and host-only
-   `profile_config = entry.profile_config` when present. Hand it to
-   `wrix spawn`; `entry.launcher`, `entry.profile_config`, and `entry.digest`
-   are not serialized into the per-launch JSON because launcher selection is
-   host-only and the matching ProfileConfig supplies the image digest.
-
-Backend-derived launcher and container agent selection for a resolved image
-entry is owned by [agent.md — SpawnConfig](agent.md#spawnconfig) and
-[Entrypoint Agent Selection](agent.md#entrypoint-agent-selection). This
-manifest section does not define a second environment-selection contract.
-
-Interactive shell-outs that bypass `SpawnConfig` still use the same
-manifest lookup; the per-backend plan/chat launch shapes are owned by
-[agent.md § Interactive Shell-Out](agent.md#interactive-shell-out). This
-section owns only the image-selection hand-off: those shell-outs look up
-their profile/runtime pair (per [Configuration](#configuration); default
-`base`) in the manifest and export
-`WRIX_DEFAULT_IMAGE_REF=<entry.ref>` and
-`WRIX_DEFAULT_IMAGE_SOURCE=<entry.source>` before exec'ing `wrix run`;
-the backend launcher environment remains agent-owned. The launcher reads the
-image-selection env vars when no `--spawn-config` is supplied. `wrix run` has
-no `--profile` argv parser; any extra tokens
-between the workspace positional and the in-container command are
-forwarded into the container as the command vector, so the env-var
-hand-off is the sole image-selection contract on this path.
+Dispatch resolves the CLI profile override or bead `profile:X` label together
+with the phase backend, then looks up the pair. Missing profiles or runtimes are
+static `loom:infra` diagnostics that name the requested and available values.
+Non-interactive launches place the selected values in `SpawnConfig`;
+interactive launches hand the same selected image to `wrix run` through
+`WRIX_DEFAULT_IMAGE_REF` and `WRIX_DEFAULT_IMAGE_SOURCE`.
 
 ### Concurrency & Locking
 
-Multiple `loom` invocations on the same workspace are explicitly allowed.
-The lock model is **phase/work-root advisory locks** plus a single
-workspace-exclusive lock used only during destructive cache rebuild.
+Independent work roots may run concurrently. Host-only advisory lock files live
+under `$XDG_STATE_HOME/loom/locks/<workspace-basename>/`, outside every
+container mount:
 
-**Lock files** live **outside the workspace**, under
-`$XDG_STATE_HOME/loom/locks/<workspace-basename>/` (default
-`~/.local/state/loom/locks/<workspace-basename>/`):
+- `plan.lock` serializes planning;
+- `todo.lock` serializes changed-spec decomposition;
+- `<bead-or-epic-id>.lock` serializes a mutating work root;
+- `tune.lock` serializes tune proposal allocation; and
+- `workspace.lock` protects initialization and cache rebuild.
 
-- `plan.lock` — serializes interactive planning edits
-- `todo.lock` — serializes workspace-wide changed-spec decomposition
-- `<bead-or-epic-id>.lock` — serializes loop/gate/targeted-inbox-chat work roots
-- `tune.lock` — serializes tune proposal creation under `.loom/tune/`
-- `workspace.lock` — held by `loom init` and `loom init --rebuild`
-
-`<workspace-basename>` is the final path component of the canonicalized
-workspace root (e.g. `/workspace` → `workspace`, `~/work/myrepo` →
-`myrepo`). Two workspaces with the same basename share a lock namespace;
-this is accepted as a known limitation in exchange for human-readable,
-greppable lock paths.
-
-Lock files **must not** live inside any bind-mounted workspace
-(operator's `/workspace`, the loom workspace, or any bead
-workspace): the bead container has its workspace bind-mounted
-read-write and could `rm` a lock file inside it out from under the
-host driver, silently breaking mutual exclusion. Putting locks
-under `$XDG_STATE_HOME` keeps them on the host filesystem only,
-outside every bind mount.
-
-All locks are POSIX advisory locks acquired via `flock(2)` through the
-`fd-lock` crate. The kernel releases them on process exit or crash, so
-there are no stale locks to clean up.
-
-**Lock matrix:**
-
-| Class | Commands | Lock acquired |
-|-------|----------|---------------|
-| Read-only | `status`, `logs` (incl. `-f` follow), `spec`, `inbox list`, `inbox view`, bare `tune` | none |
-| Planning | `plan` | exclusive on `plan.lock` |
-| Todo decomposition | `todo` | exclusive on `todo.lock` (workspace-wide changed-spec preflight + one pending work epic) |
-| Work-root mutating | `loop`, `gate`, targeted `inbox chat`, post-chat tune apply | exclusive on each addressed bead/work-epic id as applicable; default `loop` resolves `loom:active` before locking. Tune apply relies on git/index serialization like loop integration rather than a separate integration lock. |
-| Tune proposal | `tune skill fast|run|full`, `tune phase fast|run|full`, `tune partial fast|run|full`, `tune all fast|run|full` | exclusive on `tune.lock` while allocating the proposal id/worktree; proposal work continues in its isolated worktree |
-| Workspace-exclusive | `init`, `init --rebuild` | exclusive on `workspace.lock` |
-
-A mutating command waits up to 5 seconds for its lock, then errors naming
-the held plan/todo/work root (no busy-loop, no silent stalls). `init` and
-`init --rebuild` error immediately if any plan, todo, or work-root lock is
-held.
-
-**Why git is the second-order serialization point.** Two `loom loop`
-invocations on different work epics share the loom workspace's
-integration branch. They collide briefly at integration and at
-origin push:
-
-- Concurrent rebase + ff into the integration branch is serialized
-  by git's own `index.lock` in the loom workspace; the losing
-  process surfaces a clear error and retries.
-- Concurrent driver push gates pushing to `origin/<integration-branch>`
-  produce non-fast-forward on the second push; the losing push gate
-  re-fetches, rebases, reruns verification/review for the new actual
-  push range, and retries.
-
-These are accepted, recoverable failure modes — not silent corruption —
-which is why a workspace-wide lock is *not* required for `loop` /
-`gate verify`.
+Read-only inspection takes no lock. A mutating command waits at most five
+seconds before reporting the held root. The kernel releases locks on process
+exit. Git's `index.lock` separately serializes short integration critical
+sections, while non-fast-forward push races trigger fetch, rebase, re-gate, and
+retry against the new concrete push range.
 
 ### Nested-Loom Guard
 
-The driver sets `LOOM_INSIDE=1` in every bead container's environment
-(passed through the `SpawnConfig.env` allowlist — see
-[agent.md](agent.md)). On startup, `loom` checks this env var
-and, if set, refuses to run **container-spawning or workspace-mutating**
-subcommands with a clear error:
-
-```
-error: loom cannot run inside a loom-managed container
-  this command spawns containers or mutates workspace state, which
-  would create a nested driver. read-only commands (status, logs,
-  spec) are still available.
-```
-
-**Refused inside container:** driver/workspace-mutating or managed-
-session-spawning surfaces: `loop`, `init`, `plan`, `todo`, `inbox`, `tune`,
-`use`, `loom gate mint`, and LLM-spawning gate subcommands (`review`,
-`judge`, `rubric`, `audit`).
-
-**Allowed inside container:** `status`, `logs`, `spec`, and deterministic
-gate inspection subcommands (`loom gate verify`, `check`, `test`,
-`system`, `status`, `verify-marker`). The bead workspace is the agent's
-worktree, so self-check commands such as
-`loom gate verify --diff <base>..HEAD` are part of normal
-implementation feedback; driver-spawning, LLM-spawning, and bd-mutating
-surfaces are banned.
-
-The guard is mechanical, not advisory: a single env-var check at CLI
-entry, before any subcommand dispatch.
+Every managed container receives `LOOM_INSIDE=1`. Under that marker, Loom
+rejects container-spawning, workspace-mutating, LLM-review, mint, inbox, and
+tune commands before dispatch. Read-only `status`, `logs`, and `spec` commands,
+plus deterministic gate inspection such as `loom gate verify`, remain available
+for worker feedback.
 
 ### Events and Rendering
 
-The typed event stream, command-wide live/replay renderer, persisted JSONL
-event logs, `loom logs` replay surface, `EventSink` composition contract, and
-diagnostic tracing boundary are owned by [events.md](events.md). This spec
-references those surfaces only where they affect platform workflow semantics.
+[events.md](events.md) owns canonical events, rendering, persisted JSONL logs,
+`EventSink`, and replay. Harness workflow code consumes that public surface and
+emits driver events for routing, recovery, integration, and push decisions.
 
 ### Logs UX
 
-Authoritative event-log and rendering semantics live in [events.md](events.md).
-Harness keeps this CLI flag index so command-surface conformance can compare the
-binary's `loom logs` flags against documented command surface.
+[events.md](events.md) owns log semantics. This table is the harness-owned CLI
+index consumed by the surface-conformance verifier:
 
 | Flag | Behavior |
 |------|----------|
-| default | Render the most recent log across bead and phase log roots and exit at EOF. |
-| `-f` / `--follow` | Continue rendering the selected log as it grows; no automatic switch to newer files. |
+| default | Render the most recent log and exit at EOF. |
+| `-f` / `--follow` | Continue rendering the selected log. |
 | `-b` / `--bead <id>` | Select the latest log for a bead. |
-| `-v` / `--verbose` | Use diagnostic human rendering with event metadata. |
-| `--raw` | Emit raw JSONL bytes; composes with `--follow`. |
+| `-v` / `--verbose` | Include diagnostic event metadata. |
+| `--raw` | Emit raw JSONL bytes. |
 | `--path` | Print the selected log path and exit. |
 
 ### Verdict Gate
 
-After every worker agent phase ends, the verdict gate classifies the
-agent's terminal marker and mechanical state before the bead's state can
-advance. Implementation beads then pass a deterministic post-integration
-`loom gate verify --diff <pre-integration-head>..HEAD` at the loom
-workspace before their integration is durable. LLM review is the
-molecule-completion push-range step, not a default per-bead pass. The
-review rubric, inputs, and concerns are defined in [gate.md](gate.md);
-this section retains the execution layer — the decision table, recovery
-mechanics, markers, labels, and infra-failure handling.
+Worker terminal output is untrusted until reconciled with mechanical state.
+Interactive `plan` and `inbox chat` sessions are human-authoritative and bypass
+worker reconciliation; they accept only their phase-valid completion or apply
+handoff. Review sessions use the finding/terminator protocol in
+[gate.md](gate.md).
 
-**Where the gate runs — two stages at the loom workspace.**
+For a loop worker, the final marker, bead closure, branch diff, and tree state
+produce the following result:
 
-Per-bead integration runs at the **loom workspace**, inside the
-`index.lock` critical section. The step has six phases, all
-atomic under the lock:
+| Marker and state | Result |
+|------------------|--------|
+| `LOOM_BLOCKED` with no safe options | semantic block |
+| `LOOM_CLARIFY` with a persisted Options block | human clarification |
+| `LOOM_RETRY` with a preceding reason | bounded worker recovery |
+| no valid final marker | `swallowed-marker` recovery |
+| `LOOM_COMPLETE` while the bead is open | `incomplete-signaling` recovery |
+| `LOOM_COMPLETE` with an empty diff | `zero-progress` recovery |
+| successful marker with a dirty tree | `tree-not-clean` recovery |
+| `LOOM_COMPLETE`, closed bead, non-empty diff, clean tree | integrate and verify |
+| `LOOM_NOOP`, closed bead, empty diff, clean tree | intentional no-work success |
 
-1. **Fetch** the bead branch from the bead workspace path into the
-   loom workspace as `loom/<id>`. The fetch is against a filesystem
-   path (`git fetch .loom/beads/<id> loom/<id>:loom/<id>`), not the
-   network — workers never push (see [Bead Dispatch § Bead branch
-   flow](#bead-dispatch)).
-2. **Verify signatures (pass 1)** on the fetched commits using
-   `git verify-commit` against
-   `<workspace>/.git/wrix/allowed_signers` (see
-   [Repository Git isolation](#repository-git-isolation)). Repository
-   mode always verifies because missing keys fail at startup; explicit
-   `--host-key` mode verifies only when it has an allowed-signers file.
-   Verification failure routes the bead to `loom:blocked` with cause
-   `signature-verification-failed` — agent-retry cannot fix a
-   signature on existing commits, so this is operator
-   investigation territory (likely a misconfigured wrix
-   container or missing key bind-mount).
-3. **Rebase** the bead branch onto the integration branch. On
-   textual conflict, `git rerere` replays any previously-recorded
-   resolution (rerere is enabled in the loom workspace's gitconfig
-   at `loom init`; see
-   [Repository Git isolation](#repository-git-isolation)); if
-   conflicts remain, `git rebase --abort` returns the loom
-   workspace to its pre-rebase state and routes the bead to
-   recovery with cause `integration-conflict` carrying
-   `{ files, new_base_sha }`. The
-   recovery budget is **one** agent-retry pass (not the full
-   `[loop] max_retries`); the agent's next dispatch sees the
-   conflict files in `previous_failure` and is expected to rebase
-   its work onto the new tip in its bead workspace, resolve, and
-   re-commit. A second rebase-conflict on the retry escalates to
-   `loom:clarify` — same `integration-conflict` cause, human-
-   resolution required.
-4. **Verify signatures (pass 2)** on the rewritten commits the
-   rebase produced under the same verification mode. Failure here routes
-   to `loom:blocked` with cause
-   `signature-verification-failed` — meaning loom's own signing
-   setup is broken (gitconfig-write skipped, key path wrong,
-   allowed_signers missing). The recovery detail distinguishes
-   "pass 1" (worker-side signing broken) from "pass 2"
-   (driver-side signing broken) so the operator knows where to
-   look.
-5. **FF-merge** the bead branch into the integration branch and run
-   deterministic post-integration verification:
-   `loom gate verify --diff <pre-integration-head>..HEAD`. The run
-   executes the project pre-commit lane via prek plus affected
-   `[check]` / `[test]` annotations. On failure, roll back the
-   integration branch and retry/reopen the same bead with the gate log
-   path in `previous_failure`. No per-bead focused LLM review, no
-   per-bead `loom gate mint`, no marker mint, no push.
-6. **Delete the transient `loom/<id>` ref** with `git branch -D`,
-   unconditionally — whether the path exited cleanly, rolled
-   back from audit-fail, or aborted from rebase conflict. The
-   bead clone keeps its copy of the branch until the bead's
-   workspace is reaped on `bd close`.
+`LOOM_CLARIFY` is valid only after the worker persists a well-formed
+[Options Format Contract](gate.md#options-format-contract) block on the target.
+A missing or malformed block becomes `loom:blocked` with cause
+`clarify-without-options`. `LOOM_RETRY` consumes the in-session retry budget;
+`LOOM_BLOCKED` and valid clarification go directly to inbox.
 
-On deterministic verify failure, the integration is rolled back to the
-pre-integration head and the bead routes to recovery with cause
-`post-integrate-fail`. On verify-pass, the bead's integration is
-durable and the lock is released. Stage-2 failures discovered later at
-molecule completion create or reuse same-molecule remediation beads;
-they do not reopen already-integrated original beads. When attribution
-is possible, the remediation detail records whether the failure appears
-stage1-eligible, push-only, or unknown.
+Per-bead integration verifies worker signatures, rebases, verifies rewritten
+signatures, fast-forwards, and runs `loom gate verify --diff
+<pre-integration-head>..HEAD`. A deterministic failure rolls back the
+integration head, writes a durable gate log, and returns typed failure evidence
+to the same bead's recovery prompt. Per-bead integration does not run LLM
+review or mint a push marker.
 
-Molecule-completion push gate runs at the **loom workspace** after all
-beads in the molecule have integrated and deferred remediation has
-stabilized. The driver fetches origin, rebases local integration commits
-when `origin/<integration-branch>` advanced, resolves that remote tip and
-`HEAD` to the concrete OID pair for the actual push range, runs the actual
-prek pre-push chain for that range, runs
-`loom gate review --diff <actual-push-range>`
-only after deterministic pre-push success, mints `MarkerProof`, then
-`git push origin <integration-branch>`. The critical section spans
-**fetch/rebase + pre-push verify + review + mint + push** atomically —
-releasing the lock between mint and push would let another verdict
-gate's rebase mutate HEAD, invalidating the just-minted marker. If
-origin advances again and push becomes non-fast-forward, the old gate
-evidence is invalid and the driver fetches/rebases/reruns the gate.
-prek's pre-push hook chain fires on the push; the `pre-push-checks`
-wrapper around each hook reads the just-minted marker and short-
-circuits only hooks covered by the marker.
+After all molecule work and promoted remediation drain, the push gate fetches
+origin, resolves the actual push range, runs pre-push deterministic checks, runs
+LLM review, constructs the gate-owned `GateSuccess` receipt, mints the marker,
+and pushes inside one critical section. Any changed range invalidates prior
+evidence and reruns the gate. Successful Git and Beads publication is followed
+by inside-out closure of ancestor epics whose direct children are closed.
 
-Both stages at the loom workspace are load-bearing for
-parallel-agent correctness: the marker bound to HEAD's tree OID
-must match the state being pushed, and rebasing bead A onto
-integration that already includes bead B mutates A's commit SHA
-(and tree). Auditing at the bead workspace pre-integration would
-mint a marker that becomes stale the moment another bead lands
-first. The two stages also separate concerns: per-bead catches
-cross-bead deterministic interactions (compile/lint/test
-breakage) at the bead that introduced them; per-molecule catches
-review-level concerns once over the cumulative diff, after deferred
-molecule remediation has had a chance to drain.
+Infrastructure failures remain distinct from semantic worker outcomes. Static
+configuration/dispatch faults pause the bead as `loom:infra` without transport
+retry. Spawn, handshake, transport, framing, or premature-stream failures use a
+separate per-loop infra attempt budget and round-robin behind other ready work.
+Exhaustion pauses the bead as `loom:infra`; a later loop invocation gets a fresh
+budget. `first_event_seen` distinguishes pre-stream from interrupted sessions.
 
-**Cost and queue depth.** Parallel beads complete in their bead
-containers concurrently, but their loom-workspace integration
-steps serialize. Each per-bead pass pays deterministic verify only;
-broad LLM review and remediation are amortized in the molecule
-stabilization/push step instead of reminting tiny per-bead work. The
-per-molecule push gate adds the pre-push deterministic chain plus one
-review LLM call. At high parallelism (N beads landing simultaneously),
-queue depth × per-pass time is the integration tail. For typical
-workloads (N ≤ 4) this is sub-5min; for higher N, the queue is
-the bottleneck and the throughput gain from per-bead-container
-parallelism caps.
+Every driver-detected recovery carries a typed `PreviousFailure`, bounded
+attempt count, and durable evidence such as dirty paths, verifier failures,
+conflict files, gate log path, or agent retry reason. Recovery exhaustion
+preserves the cause in Beads. Remediation work is bonded to its originating
+molecule before becoming dispatchable so molecule progress and push refusal see
+all unresolved blocked, clarify, deferred, and infra state.
 
-**Bead-container self-verify is feedback only.** The driver configures
-the bead workspace's `core.hooksPath` to the canonical
-`wrix.prekHooks` installation (see [pre-commit.md § Agent self-verify
-in the bead container](pre-commit.md)), so prek fires on the agent's
-commits, catching treefmt drift, integrity findings, and project hook
-failures in-session. It is **not** the trust source for the marker. The
-driver's verdict gate at the loom
-workspace runs its own independent deterministic integration gate and
-push-range review; the agent cannot mint a `MarkerProof` and cannot
-bypass driver verification by emitting a structured "I verified" report.
-The agent's hook chain is a feedback layer that reduces wasted recovery
-iterations, not an authorization mechanism.
+Marker ownership is phase-specific:
 
-**Marker mint at the molecule-completion push gate.** Per
-[gate.md § Marker](gate.md#marker), the mint trigger is the
-molecule-completion push gate's typed `GateSuccess`: the gate verifies
-and reviews the actual push range, constructs `GateSuccess`, calls
-`MarkerProof::from_gate_success(success, loom_workspace)`, writes the
-sealed marker atomically to `.loom/marker.json`, then runs the
-integration push — all inside the same critical section. prek's
-pre-push hook chain fires on the push; the `pre-push-checks` wrapper
-around each hook reads the just-minted marker and short-circuits only
-when that hook is covered by the marker (per
-[pre-commit.md § Marker integration](pre-commit.md#marker-integration)).
-There is no standalone `loom gate verify-marker` hook gating the chain;
-the wrapper is the marker's only push-time consumer, and marker absence
-is a fall-through condition (operator-manual push), not a push failure.
-Per-bead integration steps do not mint markers (they do not push); the
-marker is one per push-range gate, covering the cumulative integrated
-state and the exact origin range being pushed. The marker's
-content-addressed
-validation is what makes the push fast in the warm-driver-loop
-case without trusting an unverified stamp.
+- `LOOM_COMPLETE` is generic success for loop, clean review, plan, and inbox;
+- `LOOM_NOOP` is loop-only empty-diff success;
+- `LOOM_TODO: <json>` is todo-only typed success;
+- `LOOM_APPLY: {"proposals":[...]}` is inbox's trusted apply handoff;
+- `LOOM_RETRY`, `LOOM_BLOCKED`, and direct `LOOM_CLARIFY` are worker
+  self-reports subject to their phase restrictions; and
+- `LOOM_CONCERN: {"summary":"..."}` terminates a review that streamed one or
+  more `LOOM_FINDING:` records.
 
-Driver-detected failures enter a bounded recovery loop; agent
-self-reports go straight to human resolution via `loom inbox`.
-
-**Interactive vs worker sessions.** The verdict gate's reconciliation
-applies to **worker sessions only** — single-shot agent dispatches
-against a bead, work epic, or review scope (`loom loop`'s per-bead
-worker, `loom todo`, `loom gate review`). **Interactive sessions** —
-multi-turn chats with a human in the loop (`loom plan`, `loom inbox chat`;
-identifiable in the template layer by inclusion of
-`chat_marker_final_turn_only.md`) — are agent-and-human authoritative:
-the driver does **not** mutate bd state as a consequence of an
-interactive session. Whatever bd state exists at session end IS the
-state. The chat agent has full bd-write authority on the beads it
-operates against (close, status change, label add/remove, notes
-write); the human authorizes each turn, so the chokepoint reasoning
-that justifies driver-side mint for worker sessions (replay-safety,
-cross-finding dedup, deterministic per-spec routing) does not apply.
-
-Concretely, the driver does not run worker-session reconciliation after an
-interactive session. It parses the terminal marker for log/exit-code and, for
-phases that register an apply handler, may execute the typed apply handoff.
-`plan` emits `LOOM_COMPLETE` only. `inbox` emits `LOOM_COMPLETE` when no
-driver-side apply is requested, or `LOOM_APPLY: {"proposals":[...]}` when the
-trusted driver should apply accepted tune proposals. `LOOM_RETRY` /
-`LOOM_BLOCKED` / `LOOM_CLARIFY` / `LOOM_NOOP` / `LOOM_CONCERN` are
-wrong-phase-marker errors from interactive sessions and exit non-zero.
-
-The driver-side reconciliation paths that fire for worker sessions
-are uniformly suppressed: no `loom:blocked` / `loom:clarify` label
-application, no bead-status changes, no `loom gate verify` /
-`loom gate review` against the session's effects, no remediation bead
-minting. On mid-session failure (container OOM, observer abort,
-marker swallowed) the driver exits non-zero with a diagnostic
-without auto-retry — the `[loop.infra].max_attempts` round-robin
-infra budget applies to expensive worker dispatches; an interactive
-session re-invocation is cheap and the user is right there to
-redispatch.
-
-The decision table below therefore documents the per-bead `loop`
-worker-session success path. Interactive sessions short-circuit before
-the table is consulted, and review has its own terminal handling.
-
-**Decision table** (per-bead `loop` worker sessions only —
-interactive sessions short-circuit before this table is consulted,
-`loom todo` uses the typed `LOOM_TODO` success protocol in
-[Spec and Work Epic Lifecycle](#spec-and-work-epic-lifecycle), and
-review-specific terminal handling is documented under *Choosing a marker
-in the review phase* below). The
-gate inspects four signals — the agent's exit marker, whether the bead
-was bd-closed, whether the bead-branch diff is empty (no commits since
-dispatch), and whether the working tree is clean (`git status
---porcelain` empty). It produces `blocked`, `clarify`, `recovery` with
-a cause, or a clean worker result that may then enter
-post-integration verification:
-
-| Marker | bd-closed | Diff | Tree clean | Outcome |
-|--------|-----------|------|------------|---------|
-| `LOOM_BLOCKED` | — | — | — | `blocked` |
-| `LOOM_CLARIFY` | — | — | — | `clarify` |
-| `LOOM_RETRY` | — | — | — | recovery (`agent-retry`) |
-| (none) | — | — | — | recovery (`swallowed-marker` OR `observer-abort`; see below) |
-| `LOOM_COMPLETE` | no | — | — | recovery (`incomplete-signaling`) |
-| `LOOM_COMPLETE` | yes | empty | — | recovery (`zero-progress`) |
-| `LOOM_COMPLETE` | yes | non-empty | no | recovery (`tree-not-clean`) |
-| `LOOM_COMPLETE` | yes | non-empty | yes | clean worker result; proceed to post-integration verify |
-| `LOOM_NOOP` | no | — | — | recovery (`incomplete-signaling`) |
-| `LOOM_NOOP` | yes | * | no | recovery (`tree-not-clean`) |
-| `LOOM_NOOP` | yes | empty | yes | `done` (intentional no-work result) |
-
-In the table above, `—` means the signal isn't inspected because an
-earlier signal already determined the outcome; `*` means any value is
-accepted.
-
-**Loom-workspace integration outcomes.** The decision table covers
-the per-bead exit signals. Independently, the per-bead integration
-step in the loom workspace can fail in four distinct ways even
-when the bead's own exit signals were clean:
-
-| Failure phase | Cause | Detail | Recovery |
-|---------------|-------|--------|----------|
-| Signature verification pass 1 (fetched commits) | `signature-verification-failed` | side = `worker` | `loom:blocked` — operator investigates wrix container signing setup |
-| Rebase | `integration-conflict` | `{ files, new_base_sha }` | one agent-retry pass; second failure escalates to `loom:clarify` (same cause) |
-| Signature verification pass 2 (rewritten commits) | `signature-verification-failed` | side = `driver` | `loom:blocked` — operator investigates loom-workspace gitconfig + key resolution |
-| Audit (`prek run --hook-stage pre-push` + verify) | `post-integrate-fail` | `{ failures: Vec<VerifierFailure>, gate_log_path }` | rollback via `git reset --hard HEAD~1`; route to recovery so next iteration sees the cross-bead breakage |
-
-`post-integrate-fail` covers cross-bead interactions (bead A's API
-change breaks tests bead B introduced earlier in the molecule),
-rebase-induced breakage, and integration-tree state that no
-bead-workspace verify could anticipate. The recovery prompt includes
-the audit's specific verifier failures so the next iteration can
-address the cross-bead interaction.
-Other beads in the molecule that haven't integrated yet continue to
-be dispatched; their integrations queue at `index.lock` after
-recovery resolves.
-
-**Durable post-integrate gate logs.** Every post-integration gate
-invocation that can fail after the bead branch was ff-merged writes a
-durable gate log before rollback or cleanup. The log is preserved
-under `.loom/logs/gate/` (or an equivalent gate-log root) and records:
-command argv, scope flag, exit code, stdout, stderr, parsed terminal
-marker when applicable, integration SHA, bead id, retry attempt,
-rollback state, and the log path. The corresponding `driver_event`
-payload and rendered summary name the log path so `loom inbox` and
-operators can inspect the exact failing verifier output without
-reconstructing the rolled-back integration state. Retry attempts use
-distinct log files.
-
-`integration-conflict` carries the conflict file list and the new
-integration tip SHA so the agent's next dispatch can rebase its
-bead-workspace branch onto the new tip and resolve. The single-
-retry cap reflects the empirical reality that agents are uneven
-at textual git conflict resolution; one honest attempt is more
-useful than burning the full `[loop] max_retries` budget on a
-structural problem. Permanent escalation lands as `loom:clarify`
-with the same cause so the operator sees the conflict files and
-the SHAs in the bead's notes.
-
-`signature-verification-failed` cannot be addressed by agent retry
-— signatures are bound to existing commits and the cause is
-environmental (wrix container misconfiguration on pass 1,
-loom-workspace gitconfig drift or missing allowed_signers on
-pass 2). The bead routes to `loom:blocked` immediately; the
-operator investigates per the `side` discriminator in the cause
-detail (`worker` → check the bead container's
-`git-ssh-setup.sh`-rendered `~/.gitconfig`; `driver` → check
-loom's workspace gitconfig writes and the resolver's signing-key
-resolution).
-
-**Tree-clean check.** After the agent emits `LOOM_COMPLETE` or
-`LOOM_NOOP` and the bead is bd-closed, the driver runs `git status
---porcelain` against the bead's workspace. The pre-attempt prepare described
-in [Bead Dispatch](#bead-dispatch) stashes dirty work before cleanup and
-re-establishes the empty-starting-tree guarantee for normal dispatches. The
-bead workspace persists across attempts under the per-bead-close lifecycle, so
-freshness from `create_worktree` is *not* what the gate relies on. A dispatch
-may intentionally begin with a rebase conflict only when `workspace_recovery`
-names the preserved stash and conflict files; even then, `LOOM_COMPLETE` /
-`LOOM_NOOP` require the worker to leave a clean tree. A non-empty porcelain
-output post-bead is therefore either the agent's own intra-session leftover, an
-unresolved recovery conflict, or a pre-attempt-prepare bug — all are surfaced as
-`tree-not-clean` so the failure mode lands in recovery rather than masquerading
-as dispatch success. The operator's `/workspace` is a separate clone and cannot
-leak edits into a bead workspace. A non-empty result — tracked files
-modified-but-not-staged,
-staged-but-not-committed, or untracked files outside the ignore
-set — routes to `recovery` with cause `tree-not-clean`, taking
-precedence over the verify / review steps (running verifiers
-against a half-staged tree would conflate the agent's intended diff
-with its leftover scratch). The recovery detail names the dirty
-paths so the next iteration's agent can stage them into a follow-up
-commit or revert them. This catches the failure mode where a worker
-runs a formatter (or other tree-touching tool), stages only its own
-paths, and leaves unrelated tracked files dirty — pre-commit hooks
-structurally cannot see this because their stash/restore
-architecture hides unstaged changes (see
-[pre-commit.md — Out of Scope](pre-commit.md)).
-
-**Disambiguating "no marker"** (`observer-abort` vs
-`swallowed-marker`): when an `EventSink`'s `react()` returns
-`SessionCommand::Abort` and the driver terminates the session
-before the agent emits any marker, the cause is
-`observer-abort` — not `swallowed-marker`. The driver knows
-because it issued the cancel; the recovery cause's detail names
-the responsible observer + the reason it gave. Without this
-disambiguation, doom-loop kills would mis-classify as agent
-sloppiness instead of legitimate driver-detected failure.
-
-**Closure is the agent's responsibility.** The driver never calls
-`bd close` on a bead it dispatched. The `bd-closed` column is an
-*observable* — the agent invokes `bd close <id>` itself per the loop-phase
-prompt contract — not a driver action. A driver that auto-closes on
-`exit_code == 0` collapses every marker into `done` and silently masks
-`LOOM_BLOCKED` / `LOOM_CLARIFY` self-reports, which is why marker
-parsing (not exit_code) must be the primary outcome signal for every
-phase that spawns an agent.
-
-`recovery` resolves to `retry` if the work epic's iteration counter is
-below `[loop] max_iterations` (default 10), otherwise `blocked` with
-the cause preserved in `bd update --notes`. The iteration counter is
-**work-epic-level** state — cached in `work_epics.iteration_count` (see
-the schema in *SQLite Cache Store* below) — and survives
-`retry → [running]` round-trips. Per FR1, the same counter bounds
-`loom loop`'s stabilization passes: every full work-epic pass (initial
-implementation pass + each promoted deferred remediation pass)
-consumes one slot. This is the same knob as the per-bead recovery loop
-because a promoted remediation bead getting picked up *is* a work-epic
-pass — the two concepts collapse onto one work-epic-level counter,
-with in-session retry left to `[loop] max_retries` (default 2).
-
-**Mechanical integration gate.** Marker parsing, bd-closed lookup,
-diff inspection, and tree cleanliness are deterministic. After the bead
-rebases and fast-forwards into `.loom/integration`, the driver runs
-`loom gate verify --diff <pre-integration-head>..HEAD` against the
-integrated tree. That verify run executes the project pre-commit lane
-through prek and the affected `[check]` / `[test]` annotation lane per
-[gate.md](gate.md); `[system]` is not part of the finite diff default.
-Per verifier/hook, the gate captures pass/fail, stderr tail, and gate
-log path.
-
-Mechanical failure is sufficient grounds for same-bead recovery. The
-integration branch is rolled back to `<pre-integration-head>`, the
-worker's provisional `bd close` is reopened/retried according to the
-existing recovery policy, and `PreviousFailure::PostIntegrateFail`
-carries the durable gate log path. The default per-bead hot path does
-not spawn a focused LLM reviewer session; the implementation prompt
-requires worker self-review before `LOOM_COMPLETE`, and authoritative
-LLM review runs once at molecule completion over the actual push range.
-
-A `LOOM_CONCERN` marker from a review phase carries the parsed
-`{"summary": "..."}` payload plus the buffered `LOOM_FINDING:` records
-the walk streamed. Per-finding routing is decided by each finding's
-`route`: `blocking` refuses the push and creates or reuses same-
-molecule remediation work, `deferred` merges into a `status=deferred` /
-`loom:deferred` molecule remediation bead, and `clarify` raises one
-`loom:clarify` bead per finding hash with the `## Options — …` block
-extracted from `evidence`. A clarify-route finding whose evidence lacks
-a well-formed options block falls back to `loom:blocked` with cause
-`clarify-without-options` so no stranded clarify bead is created.
-
-A malformed `LOOM_CONCERN` payload, or a stream/terminator
-mismatch (findings streamed with `LOOM_COMPLETE`, or `LOOM_CONCERN`
-emitted with zero findings), surfaces as `recovery` with cause
-`bad-walk`, carrying the typed `BadWalk` variant per the recovery
-table below. These are distinct from `swallowed-marker`: the agent
-*did* attempt a terminal signal but the shape was wrong, and the
-recovery prompt can quote the malformed payload back to the agent
-on the next iteration.
-
-**Self-reports route by intent.** Worker-phase self-report markers route
-distinctly:
-
-- `LOOM_BLOCKED` and direct `LOOM_CLARIFY` are agent self-reports that
-  re-running the same prompt cannot resolve — the agent has already
-  judged that the obstacle is human-resolvable, not retry-resolvable.
-  The gate exits straight to `[blocked]` / `[clarify]` for human
-  resolution, skipping the recovery loop. Review does not use direct
-  `LOOM_CLARIFY`; clarify-worthy review decisions route through
-  `LOOM_FINDING` evidence. (For direct `LOOM_CLARIFY`, the gate first
-  validates the bead/work-epic options block per the marker
-  definition above; a missing or malformed block downgrades to
-  `[blocked]` with cause `clarify-without-options` rather than
-  stranding a clarify the chat-drafter cannot resolve.)
-- `LOOM_RETRY` is an agent self-report that re-running *can* resolve
-  — the obstacle is environmental or approach-specific, not
-  judgment-requiring. The gate enters the recovery loop with cause
-  `agent-retry`, consuming one `[loop] max_retries` slot. Exhaustion
-  routes to `loom:blocked` with cause `retry-exhausted`; the agent
-  is instructed in the recovery prompt to escalate to `LOOM_BLOCKED` or
-  the phase's clarify path if the same problem persists rather than
-  re-emitting `LOOM_RETRY`.
-
-**Driver-detected causes flow through the stage's recovery surface.**
-Worker-session causes (swallowed marker, incomplete signaling, zero-
-progress, tree-not-clean, verify-fail, observer-abort, agent-retry, and
-post-integrate-fail) enter same-bead recovery. Push-range review
-concerns or bad walks refuse the push and route through same-molecule
-remediation or human-resolution paths; already-integrated original
-beads are not reopened solely because molecule review failed. Deferred
-review findings do not create ready work immediately; they merge into
-deferred remediation beads.
-
-**Remediation beads bond to the originating molecule.** Every deferred,
-promoted, tree-sweep, or clarify remediation bead created by the gate is
-bonded to the originating molecule via `bd mol bond <molecule-id>
-<remediation-bead-id>` before it can become eligible for dispatch. The
-bond is mandatory and atomic with creation — a remediation bead that is
-not bonded to a molecule by the time it leaves the gate is a bug.
-
-Bonding is load-bearing in two places:
-
-1. The **push gate** refuses to push while any bead in the molecule
-   carries `loom:blocked`, `loom:clarify`, `loom:deferred`, or
-   `loom:infra`. Orphan remediation beads are invisible to that check,
-   so a molecule could push with unresolved work attached to a shadow bead
-   the gate never saw.
-2. **Auto-iteration** (Push gate, Functional #9) walks `bd mol
-   progress <id>` to decide whether the molecule is clean. Orphan
-   remediation beads are absent from that walk; the molecule looks done
-   even when its remediation work is pending.
-
-The originating molecule is resolved by reading the failing bead's
-existing molecule bond — `bd show <id> --json` returns the molecule
-ID. If the failing bead is itself unbonded (which is itself a bug
-upstream), the verdict gate refuses to create remediation state and
-escalates to `loom:blocked` with cause `unbonded-origin` so the
-inconsistency surfaces immediately rather than propagating.
-
-**Recovery context (`previous_failure`).** On `retry → [running]`, the next
-session's prompt is rendered with a **typed** `PreviousFailure` value
-plus optional `review_notes` and an `attempt` counter — the shape lives
-in [templates.md](templates.md). The template renders each
-variant with distinct framing. Detail content per cause (each variant
-capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
-
-| Cause | `PreviousFailure` variant | Detail content |
-|-------|----|----|
-| `swallowed-marker` | `DriverNotice` | "Last phase ended without a `LOOM_*` exit marker." |
-| `incomplete-signaling` | `DriverNotice` | "Marker `LOOM_COMPLETE` emitted but bead `<id>` was not bd-closed." |
-| `zero-progress` | `DriverNotice` | "Marker `LOOM_COMPLETE` emitted with empty diff. Use `LOOM_NOOP` if no work was needed." |
-| `tree-not-clean` | `TreeNotClean { dirty_paths: Vec<String> }` | "Working tree was not clean after the bead committed: <N> uncommitted path(s). Stage them into a follow-up commit or revert them." Path list is capped at 30 entries; the truncation suffix names the overflow count. |
-| `observer-abort` | `DriverNotice` | "Session aborted by `<observer name>`: `<reason>`." |
-| `verify-fail` | `VerifyFailures(Vec<VerifierFailure>)` | One `VerifierFailure { target, exit_code, stderr_tail }` per failing project hook or spec verifier in the relevant gate scope. Diff-scope per-bead verification includes project pre-commit plus affected `[check]` / `[test]`; tree/system scopes may include `[system]`. All failing verifiers are included; the budget is split across them with later failures truncated first; each `stderr_tail` is capped at ~1500 chars before split. If a separate review phase also raised a concern, its reasoning is set as `review_notes` (separate ~1000-char budget) rendered under a `Review notes:` heading. |
-| `review-concern` | `ReviewConcern { summary: String, findings: Vec<Finding> }` | Summary is the parsed `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}` marker. `findings` is the buffered list of unsuppressed `LOOM_FINDING:` records after rubric suppression filtering (per the typed `Finding` record in [gate.md § Findings and Minting](gate.md#findings-and-minting)); a well-formed concern whose findings are all suppressed becomes a clean effective review, not this cause. Per-finding tokens drive `mint`'s routing: clarify-route findings mint as single-finding clarify beads (one per finding), all other findings bundle into per-spec remediation batches (one batch per lead-spec). The recovery prompt renders the summary plus a one-line-per-finding `evidence` digest. The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
-| `bad-walk` (concern-malformed) | `BadWalk(BadWalk::Concern { payload: String, parsed_findings: Vec<Finding> })` | "Your `LOOM_CONCERN:` payload did not parse as `{"summary": "<non-empty>"}`. Literal payload after the marker: `<payload>`." When `parsed_findings` is non-empty, append a per-finding digest so the agent's diagnosis from the well-formed streamed findings is not lost. Wrapped-enum pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)`. |
-| `bad-walk` (concern-without-findings) | `BadWalk(BadWalk::ConcernWithoutFindings { summary: String })` | "You emitted `LOOM_CONCERN` with summary `<summary>` but no `LOOM_FINDING:` records streamed. Either emit findings before the terminator or terminate with `LOOM_COMPLETE`." |
-| `bad-walk` (findings-without-concern) | `BadWalk(BadWalk::FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> })` | "You streamed `<finding_count>` `LOOM_FINDING:` record(s) but terminated with `LOOM_COMPLETE`. Use `LOOM_CONCERN: {"summary": "..."}` when findings are emitted." Per-finding digest of `findings` is appended so the agent's next iteration sees the diagnosis it just emitted. |
-| `bad-walk` (malformed-finding) | `BadWalk(BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface })` | "One or more `LOOM_FINDING:` records failed parse." Per-record errors are enumerated; the well-formed terminal is rendered alongside so the agent fixes the malformation (typically: drop the surrounding markdown fence) without losing the surrounding well-formed context. This is the variant that fires on backtick-wrapped finding records whose JSON otherwise would have parsed. |
-| `integration-conflict` | `IntegrationConflict { files: Vec<PathBuf>, new_base_sha: GitOid }` | "Your bead branch could not be rebased onto integration — files conflict: <files>. The new integration tip is <new_base_sha>. Rebase your bead workspace onto the new tip, resolve, and re-commit." Single-retry cap (not full `[loop] max_retries`); a second rebase-conflict escalates the bead to `loom:clarify` with the same cause. The `signature-verification-failed` cause does **not** appear in this table because it routes to `loom:blocked` immediately without an agent-retry pass — there is no next dispatch and thus no `PreviousFailure` context. |
-| `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure>, gate_log_path: PathBuf }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Gate log: <path>. Specific failure: <verifier-failure blocks>." Used for cross-bead deterministic breakage where the bead-workspace self-check may have passed but the integrated tree's verify failed. The default per-bead hot path has no focused review session, so review-style findings route at molecule completion via `review-concern` / `bad-walk` rather than `post-integrate-fail`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget; the path is outside the truncation budget. |
-| `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the target bead is marked `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (with a reason explaining why no candidate options can be enumerated) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
-
-When `previous_failure.is_some() && attempt > 0`, the `loop.md`
-template prepends a first-instruction reframe: *"Re-read the
-previous failure block above and address its specific concern
-before re-implementing."* The `attempt` counter is per-bead
-in-session (bounded by `[loop] max_retries`), resetting when a
-fresh bead is dispatched; work-epic-level iteration is opaque to the
-agent because each remediation bead is a different prompt context.
-
-Transcript excerpts are deliberately not included — the agent can re-read
-its own session log if it needs prior tool-call context.
-
-**Labels.**
-
-- `loom:blocked` is a semantic human-resolution label for genuine dead
-  ends, not a generic failure tag. Agent-applied `LOOM_BLOCKED` reasons
-  must explain why candidate options cannot be safely enumerated. It is
-  applied by either: (a) the `LOOM_BLOCKED` agent marker, or (b) driver-detected
-  work/gate failure with semantic recovery exhausted, or (c)
-  `loom gate mint` refusing to apply `loom:clarify` to a
-  clarify-route finding whose `evidence` lacks a well-formed
-  `## Options — …` block (cause `clarify-without-options` — the
-  agent should have emitted `LOOM_BLOCKED` directly, but the driver
-  falls back to blocked rather than minting a stranded clarify bead
-  the chat-drafter cannot resolve). All meanings are uniform from
-  the human's perspective — the worker or gate reached a semantic
-  judgement and `loom inbox` resolves it as kind `blocked`.
-- `loom:infra` is an infrastructure/operator diagnostic label. It is
-  paired with `status=blocked` to pause scheduler selection after a
-  static infra diagnostic or exhausted retryable infra budget, but it
-  is never paired with `loom:blocked` for the same cause. It surfaces in
-  `loom inbox` as kind `infra`, with framing that says the worker did
-  not reach semantic judgement.
-- `loom:clarify` is applied by either: (a) the direct `LOOM_CLARIFY`
-  agent marker from `loop` / `todo`, (b) `loom gate mint` lifting a
-  clarify-route finding whose `evidence` carries a well-formed
-  `## Options — …` block —
-  the agent has a specific question with structured options for the
-  human, persisted to bead state per the Options Format Contract,
-  or (c) the per-bead integration step escalating
-  `integration-conflict` after one agent-retry pass failed to
-  resolve the rebase conflict. Driver-applied `integration-conflict`
-  clarify beads carry the conflict files and the new integration
-  tip SHA in the bead's notes, plus a synthesized `## Options — …`
-  block satisfying the Options Format Contract with two
-  `### Option N — …` subsections (resolve-in-bead-clone and
-  abandon-the-bead). Synthesizing the block keeps the
-  Options-Format invariant universal — no exemption case for
-  driver-applied clarify.
-- `loom:conflict` is the non-terminal marker the parallel
-  (`--parallel N`) verdict gate applies to a bead whose first
-  driver-side rebase conflicted. It is the parallel-shaped home for
-  the single `integration-conflict` retry budget the serial path
-  holds in driver memory: a one-shot batch has no in-process agent
-  left to re-dispatch once merge-back runs, so the budget rides on
-  the bead instead. Unlike `loom:blocked` / `loom:clarify` it is
-  *not* paired with a `status=blocked` transition, so `bd ready`
-  keeps surfacing the bead for its one retry against the moved
-  integration tip on the next `loom loop` pass. A second conflict —
-  detected by the merge-back step re-reading this label off the
-  re-fetched bead — escalates to `loom:clarify` with cause
-  `integration-conflict` and the synthesized `## Options — …` block,
-  exactly as the serial path's second rebase-conflict does.
-- `LOOM_RETRY` does NOT apply a terminal label; it routes the bead
-  into the recovery loop with cause `agent-retry`. On recovery
-  exhaustion the cause becomes `retry-exhausted` and `loom:blocked`
-  is applied at that point.
-- The cause of a driver-applied `loom:blocked` (`swallowed-marker`,
-  `incomplete-signaling`, `zero-progress`, `tree-not-clean`, `verify-fail`,
-  `review-concern`, `bad-walk`, `observer-abort`, `retry-exhausted`,
-  `post-integrate-fail`, `signature-verification-failed`,
-  `clarify-without-options`) is preserved in the bead's notes.
-  Per-cause sub-labels can be stacked on top later if filtering
-  becomes important; the gate's terminal label stays `loom:blocked`.
-- The cause of `loom:infra` (`infra-preflight`, `infra-interrupted`,
-  `unknown-profile`, `unknown-agent-runtime-for-profile`, or another
-  static infra diagnostic) is preserved in the bead's notes with the
-  latest attempt summary and log path.
-- Closing a bead does not automatically remove stale `loom:blocked`,
-  `loom:clarify`, or `loom:infra` labels. `loom inbox` filters out
-  closed beads regardless of labels, so label cleanup is not a
-  prerequisite for hiding resolved work from the human queue.
-
-**Routing observability.** Every terminal-marker/finding route emits a
-`DriverKind::MarkerRouted` event. A clarify-bound route that falls back
-to blocked because its options block is missing or malformed emits
-`DriverKind::ClarifyDowngraded` with the source route, marker/finding
-identity, options parse result, evidence/reason hash + excerpt, gate log
-path, and event sequence. Each bd mutation the driver applies emits
-`DriverKind::BdStateTransition`, and clarify downgrades also write a
-compact bd-note breadcrumb carrying cause `clarify-without-options` so
-operators can diagnose the downgrade without replaying the whole log.
-
-**Marker definitions.** The agent ends every phase by emitting exactly
-**one** marker on its own line, as the final output of the session.
-Markers are **mutually exclusive** — a session emits one and only one.
-Todo has a typed success marker; other worker phases use the generic
-success/self-report markers below.
-
-- `LOOM_COMPLETE` — the phase completed successfully with no typed handoff.
-  For a bead worker, the agent has implemented the bead's criteria and
-  `bd close`d the bead; normal loop completion expects a non-empty diff. Valid
-  in `loop`, zero-finding `review`, `plan`, and `inbox` when no apply handoff is
-  needed; wrong phase for `loom todo`.
-- `LOOM_NOOP` — loop work was already done in tree; the loop worker
-  intentionally produced an empty diff and closed the bead. Without
-  `LOOM_NOOP`, an empty loop diff is treated as `zero-progress` (a recovery
-  cause). `LOOM_NOOP` is valid only in loop worker phases, requires a clean tree
-  and empty diff, and is invalid in `todo`, `review`, `plan`, and `inbox`.
-- `LOOM_APPLY: {"proposals":[...]}` — typed apply handoff. The phase completed
-  and asks the trusted driver to run a phase-registered apply handler. In v1,
-  only `inbox` registers an apply handler, and `proposals` names accepted tune
-  proposal bead ids. The driver validates the ids/state/artifacts, applies the
-  batch through integration, gates the actual combined range, pushes once, and
-  marks proposals `applied` only after push succeeds.
-- `LOOM_TODO: <json>` — todo-specific success marker. The JSON payload
-  parses as `loom-protocol::todo::TodoSuccess` and is validated against
-  the deterministic preflight roster before any cursor or active-epic
-  state changes. It is the only successful terminal marker for
-  `loom todo`; `LOOM_COMPLETE` and `LOOM_NOOP` are wrong-phase success
-  markers there.
-- `LOOM_RETRY` — the agent self-reports that this attempt cannot
-  finish but a fresh dispatch is likely to succeed. Two failure
-  shapes warrant `LOOM_RETRY`:
-  - **Environmental.** Tools failing mid-session (cwd unlinked,
-    sandbox/IO errors, dependency missing), where the failure is
-    bound to this attempt's container/process and not to the work
-    itself.
-  - **Agent self-reset.** Prompt-context exhausted, the agent is
-    stuck-but-not-blocked on its current approach and judges a
-    fresh dispatch with prior-failure context will fare better.
-
-  Write the reason on the line preceding the marker; the gate
-  routes to recovery with cause `agent-retry`, populating
-  `PreviousFailure::AgentRetry { reason }` (per [templates.md § Typed
-  `PreviousFailure`](templates.md#typed-previousfailure)) for the
-  next attempt. Consumes one `[loop] max_retries` slot; exhaustion
-  routes to `loom:blocked` with cause `retry-exhausted` (same as the
-  existing retry-exhaustion path). Valid in worker phases only
-  (`loop`, `todo`, `review`); invalid in interactive sessions
-  (`plan`, `inbox`).
-- `LOOM_BLOCKED` — the agent cannot proceed and is self-reporting a
-  **genuine dead end** — no candidate resolutions to enumerate, no
-  retry path the agent expects to succeed. The reason before the marker
-  must explain why the agent cannot safely enumerate options. Use
-  `LOOM_RETRY` for environmental failures or stuck-on-this-approach
-  cases; in `loop` / `todo`, use `LOOM_CLARIFY` when the agent can
-  frame the decision-point as a structured `## Options — …` block. In
-  `review`, frame that decision as a `route="clarify"` finding instead.
-  Write the reason on prior lines before the marker; the gate applies
-  `loom:blocked` to the target bead/work epic (the bead under dispatch
-  for `loop` / `review`, the `loom:todo` work epic for `todo`) and exits
-  the verdict evaluation without entering recovery. Other beads in the
-  molecule continue running; the labelled bead or work epic waits for human
-  resolution via `loom inbox` (where `loom inbox chat` walks the human through
-  candidate enumeration in-session). Valid in worker phases only — invalid in
-  interactive sessions (`plan`, `inbox`).
-- `LOOM_CLARIFY` — a `loop` or `todo` agent has a specific question
-  with structured options for the human (per the [Options Format
-  Contract](gate.md#options-format-contract)). The discriminator
-  against `LOOM_BLOCKED`: clarify means *I can enumerate the
-  candidate resolutions*; blocked means *I cannot*. The target is
-  **the bead under dispatch** for `loop`, and **the `loom:todo` work
-  epic** for `loom todo` (per [templates.md — Decomposition
-  Discipline](templates.md#decomposition-discipline)). Write the
-  question + options block to the target's state (notes or
-  description) before emitting the marker. **The gate validates the
-  options block before applying the label**: it inspects the target's
-  notes ∪ description for a well-formed `## Options — <summary>`
-  heading with at least one `### Option <N> — <title>` subsection
-  (same shape mint validates on a finding's `evidence`). If absent or
-  malformed, the gate falls back to `loom:blocked` with cause
-  `clarify-without-options` rather than applying `loom:clarify` —
-  symmetric with the mint path's enforcement for finding-routed
-  clarifies, so a forgetful agent cannot produce a stranded clarify
-  bead the chat-drafter cannot resolve. On a well-formed options block
-  the gate applies `loom:clarify` to the target and exits the verdict
-  evaluation without entering recovery. Other beads in the molecule
-  continue running; the labelled bead or work epic waits for
-  `loom inbox` resolution. Valid in `loop` and `todo`; review routes
-  clarify-worthy decisions through `route="clarify"` findings, and
-  interactive sessions (`plan`, `inbox`) reject this marker.
-- `LOOM_CONCERN` — the review phase found a quality issue with the
-  molecule's work; push must not fire. Carries a JSON payload:
-  `LOOM_CONCERN: {"summary": "<one-sentence summary>"}`. The
-  payload is **terminator-shaped**, not routing-shaped — `summary`
-  is a verdict-log entry, nothing else. Per-finding routing
-  (concern token → remediation bead, `invariant-clash` → clarify,
-  per-spec bonding) is decided by `loom gate mint` on each
-  `LOOM_FINDING:` record the walk streamed before the terminator.
-  The walk must satisfy the streaming + terminator **pairing
-  rule** defined in [gate.md § Findings and
-  Minting](gate.md#findings-and-minting): `LOOM_CONCERN` iff
-  ≥1 findings streamed, `LOOM_COMPLETE` iff zero findings. A
-  mismatch routes to `RecoveryCause::BadWalk(BadWalk)` with the
-  specific variant matching the malformation. **Review-phase-only**
-  — emitting `LOOM_CONCERN` from any other phase is a
-  `wrong-phase-marker` error in the verdict gate.
-
-**Choosing a marker in the review phase.** Four terminal shapes are valid:
-
-- `LOOM_COMPLETE` — clean review, no concerns.
-- `LOOM_CONCERN: {"summary": "..."}` — review found one or more
-  quality issues (each emitted as a streaming `LOOM_FINDING:` record
-  during the walk); push refused, molecule re-enters recovery.
-- `LOOM_RETRY` — review *itself* cannot run for an environmental
-  reason (logs corrupt, workspace inaccessible, transient IO,
-  missing prerequisite that should be present); a fresh dispatch
-  should retry the walk. Consumes one `[loop] max_retries` slot.
-  This is the appropriate marker for "I couldn't review for
-  environmental reasons" — distinct from `LOOM_BLOCKED` (genuine
-  dead end) and from `LOOM_CONCERN` (I reviewed and found a problem).
-- `LOOM_BLOCKED` — review cannot run and the reviewer has no
-  candidate resolution to enumerate. The reason must explain why no
-  options can be safely surfaced. Reserve for genuine dead ends; prefer
-  `LOOM_RETRY` for transient infrastructure failures.
-
-Direct `LOOM_CLARIFY` is not a review terminal. When review surfaces a
-spec ambiguity the reviewer can frame as a `## Options — …` block, it
-emits a `route="clarify"` finding with that block in `evidence` and
-terminates with `LOOM_CONCERN`; when it cannot articulate options, it
-uses `LOOM_BLOCKED`.
-
-The four terminal shapes are mutually exclusive — exactly one per session. The
-common case is `LOOM_COMPLETE` xor `LOOM_CONCERN`. Multiple
-concerns are emitted as multiple `LOOM_FINDING:` records during the
-walk — each carries its own structured detail; the terminal
-`LOOM_CONCERN` summary names the strongest only as a verdict-log
-entry. The streamed findings are buffered into `previous_failure`
-for recovery in addition to the summary.
-
-The gate distinguishes markers by parsing **the final line of the
-agent's final assistant message**. Because markers are mutually
-exclusive, exactly one valid marker is expected on that line.
-`exit_code` alone is insufficient because backend errors,
-swallowed-marker turns, and successful self-reports all exit 0.
-
-**Infra failures bypass the semantic verdict gate.** A worker reaches
-semantic judgement only after the driver observes a usable agent event
-stream and a terminal marker. Spawn, handshake, transport, framing,
-container, and event-stream failures before that point are infrastructure
-incidents: the driver retries and diagnoses them, but it does not apply
-`loom:blocked` unless the worker explicitly emitted `LOOM_BLOCKED`.
-
-The session driver classifies infra failures with a `first_event_seen`
-bit. `first_event_seen` means at least one canonical `AgentEvent` with
-`source = "agent"` was observed from the backend/session stream. Events emitted
-by the driver, such as `container_spawn`, `retry_dispatch`, `stall_watchdog`, or
-`infra_failure`, do not set the bit.
-
-- **Static dispatch diagnostics** — unknown profile/runtime after the
-  profile-image manifest has parsed, invalid spawn config, missing agent
-  binary, or `workspace-recovery-failed` — skip transport retry because
-  re-running the same dispatch cannot repair them safely. The bead is paused
-  with `status=blocked`, labelled `loom:infra`, and surfaced in `loom inbox` as
-  kind `infra`. A missing or malformed `LOOM_PROFILES_MANIFEST` remains a
-  startup/global error before bead selection, not bead-scoped `loom:infra`.
-- **Pre-stream infra** — spawn failure that may be transient, handshake
-  timeout, EOF, non-zero process exit, container OOM, malformed first
-  frame, or IO/sink failure before the first such agent event — is
-  retryable as `infra-preflight`.
-- **Interrupted infra** — EOF, IO error, non-zero process exit,
-  container OOM, malformed framing, or sink failure after at least one
-  such agent event but before `session_complete` — is retryable as
-  `infra-interrupted`.
-- **Semantic worker blocked** — the session reaches terminal output and
-  the worker emits `LOOM_BLOCKED` — remains `loom:blocked` / kind
-  `blocked`; infra classification never rewrites that marker.
-
-Retryable infra uses a per-bead, per-`loom loop` attempt budget from
-`[loop.infra] max_attempts` (default 3). The budget is independent of
-`[loop] max_retries` and `[loop] max_iterations`. There is no wall-clock
-cooldown/backoff in v1: an infra-failed bead moves to the tail of an
-in-memory infra retry queue, other ready beads continue, and the driver
-retries infra beads again when selected and attempts remain. A fresh
-`loom loop` invocation gets a fresh infra budget.
-
-When a retryable infra class exhausts its per-run budget, the driver
-pauses the bead with `status=blocked`, applies `loom:infra` (not
-`loom:blocked`), writes a durable diagnostic note, emits an
-`infra_failure` driver event, and exits the overall loop non-zero after
-all dispatchable work for the selected work root has drained. The next
-`loom loop` for the same work root proactively picks up `loom:infra`
-beads, clears stale infra state when redispatching, and tries again with
-a fresh budget.
-
-A later infra failure cannot overwrite a prior meaningful worker result.
-If an earlier attempt reached `session_complete` and the driver scheduled
-a retry because of verifier/recovery state, a subsequent pre-stream EOF is
-recorded as infra on the retry path; it does not convert the bead into a
-semantic blocked item or erase the earlier session's outcome.
-
-Every `DriverKind::InfraFailure` event carries a payload with `phase`,
-`first_event_seen`, `attempt`, `max_attempts`, the infra class/cause,
-agent/container exit status when known, and either `stderr_tail` or
-`spawn_error` when available. The rendered infra summary distinguishes
-pre-stream EOF, interrupted stream EOF, and spawn failure; marker-routed
-logs separately identify worker-declared blocked.
+Exactly one phase-valid marker appears on the final non-empty line. Exit status
+alone does not authorize state transitions.
 
 ### Loop Outcome Types
 
-Architecture-bearing types per
-[spec-conventions.md](../docs/spec-conventions.md) *In scope #4* —
-the shape of these types is how Invariant 4 of [gate.md](gate.md)
-("a divergence sits in the working tree undetected") becomes
-structurally unrepresentable. A code path that yields a clean
-`loom loop` exit *without* invoking the gate cannot compile.
+`LoopOutcome` and `GateOutcome` are architecture-bearing types: a successful
+loop invocation cannot omit the push-gate result. `LoopOutcome` has no default,
+is `must_use`, records processing counts, and carries a non-optional
+`GateOutcome`.
 
-**`LoopOutcome`** — the typed return of every successful `loom loop`
-invocation, sequential and parallel. `LoopError` (`Result::Err`)
-covers paths that never reached a clean outcome. `LoopOutcome` has
-no `Default` and carries `#[must_use]` so the binary cannot drop
-it on the floor:
-
-```rust
-#[must_use = "every loom loop produces a gate outcome — the binary must \
-              inspect it before exiting"]
-pub struct LoopOutcome {
-    pub beads_processed: u32,
-    pub beads_clarified: u32,
-    pub beads_blocked: u32,
-    pub outer_iterations: u32,
-    pub gate: GateOutcome,   // not Option, no default
-}
-```
-
-**`GateOutcome`** — three terminal variants. `Success` and `Fail`
-both require typed gate evidence constructed only by gate-invocation
-code; `NoGate` is the only legitimate "gate did not fire" terminal and
-carries the reason so the human-readable summary names it:
-
-```rust
-#[must_use]
-pub enum GateOutcome {
-    Success(GateSuccess),                              // clean ship
-    Fail(GateFail),                                    // gate ran, found problems
-    NoGate { beads_processed: u32, reason: NoGateReason },
-}
-
-pub enum NoGateReason {
-    NoBeadsReady,       // selected work roots had no ready child work
-    SelectionPartial,   // explicit bead/root selection processed work but its epic is not complete
-}
-```
-
-**`GateSuccess`** — the gate-owned push-authorizing receipt carried by
-the harness-owned `GateOutcome::Success` variant. Its evidence types,
-sealed shape, and sole construction contract are defined once in
-[gate.md § Gate success receipt](gate.md#gate-success-receipt). Harness
-workflow code collects the gate evidence and can produce a clean
-`LoopOutcome` only by passing that evidence through the gate-owned
-constructor; it does not define a second receipt contract.
-
-**`GateFail`** — carries the failure reason explicitly so CLI/log
-summaries and the next outer-loop iteration consume it directly,
-without reverse-engineering from exit codes:
-
-```rust
-pub struct GateFail {
-    pub reason: GateFailReason,
-    pub gate_runs: Vec<GateRun>,
-    pub review_marker: Option<ExitSignal>,
-    pub review_log_path: Option<PathBuf>,
-    pub total_handoffs: u32,
-    pub stalled_at_max_iterations: bool,
-    _private: (),
-}
-
-pub enum GateFailReason {
-    MoleculeStateUnresolved,                 // blocked/clarify/deferred/infra work remains
-    VerifierFailed,                          // deterministic GateRun failed
-    PrePushHookFailed,                       // pre-push stage failed before review
-    ReviewConcern { summary, finding_count },// marker is LOOM_CONCERN; per-finding detail in mint output
-    BadWalk(BadWalk),                        // review walk terminator malformed or mismatched
-    EmptyDiffNoop,                           // marker is LOOM_NOOP — no reviewable work
-    StalledMaxIterations,                    // outer-loop counter exhausted
-    SignalKilled,                            // child terminated by signal
-    ReviewEvidenceMissing,                   // log file absent / empty / mismatched marker
-    MarkerCoverageMissing,                   // marker would not cover one or more hooks
-    IntegrityFinding,                        // unresolved annotation / stub test / unneeded pending marker — cap-exhausted; recoverable cases land via mint pipeline, not as a GateFail
-}
-
-pub enum BadWalk {
-    Concern { payload: String, parsed_findings: Vec<Finding> },          // terminal malformed; well-formed findings preserved
-    ConcernWithoutFindings { summary: String },                          // LOOM_CONCERN emitted with zero LOOM_FINDING streamed
-    FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> }, // findings streamed but LOOM_COMPLETE emitted; findings preserved
-    MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }, // >=1 finding-line failed parse; terminal preserved
-}
-```
-
-**CLI exit-code mapping.** The binary's exit code is a pure
-function of `outcome.gate`:
-
-| `GateOutcome` variant | Exit |
-|---|---|
-| `Success(_)` | 0 |
-| `Fail(_)` | non-zero (1) |
-| `NoGate { .. }` | 0 |
-
-Plus `Err(LoopError)` paths exit non-zero. This is a behaviour
-contract: any `loom loop` invocation whose outcome was not
-`GateOutcome::Success(_)` or `NoGate { .. }` surfaces a non-zero
-exit. Wrapper scripts must consume this signal.
+`GateOutcome` has three shapes: `Success(GateSuccess)`, `Fail(GateFail)`, and
+`NoGate { beads_processed, reason }`. `GateSuccess` is sealed and constructed
+only from the evidence defined in
+[gate.md § Gate success receipt](gate.md#gate-success-receipt). `NoGate` is
+limited to no ready work or an explicitly partial selection. The CLI exits zero
+for `Success` and `NoGate`, non-zero for `Fail` or `LoopError`.
 
 ### Inbox Modes
 
-`loom inbox` is the human decision and operator diagnostic queue for
-outstanding `loom:blocked` beads, `loom:clarify` beads, `loom:infra`
-diagnostics, and tune proposals. `loom msg` is removed; there is no
-compatibility alias.
+`loom inbox` is the cross-spec human queue for non-closed `loom:clarify`,
+`loom:blocked`, and `loom:infra` beads plus pending, blocked, and apply-failed
+tune proposals. List and view run on the host without mutation; chat launches an
+interactive backend.
 
-Clarify beads carry their options in the *Options Format Contract* defined in
-[gate.md](gate.md#options-format-contract). Infra beads carry diagnostic notes
-and event-log breadcrumbs explaining why the worker did not get a fair chance
-to produce a semantic marker. Tune proposals use a tune bead as the canonical
-durable report/state and `.loom/tune/<bead-id>/` as a local execution cache.
-`loom inbox` consumes these shapes through list / view / chat. There is no
-host-side pick/reply/resolve/apply mutation surface in v1.
+| Mode | Invocation |
+|------|------------|
+| List | `loom inbox` / `loom inbox list` |
+| View by number | `loom inbox view <N>` |
+| View by bead | `loom inbox view -b <id>` |
+| View by proposal | `loom inbox view -p <proposal-id>` |
+| Chat queue | `loom inbox chat` |
+| Chat by number | `loom inbox chat <N>` |
+| Chat by bead | `loom inbox chat -b <id>` |
+| Chat by proposal | `loom inbox chat -p <proposal-id>` |
 
-**Modes:**
+| Flag | Purpose |
+|------|---------|
+| `-s` / `--spec <label>` | Filter to a spec. |
+| `-k` / `--kind clarify\|blocked\|infra\|tune` | Filter to one item kind. |
+| `-b` / `--bead <id>` | Address a bead-backed item. |
+| `-p` / `--proposal <id>` | Address a tune proposal. |
 
-| Mode | Invocation | Where it runs |
-|------|------------|---------------|
-| List (default) | `loom inbox` / `loom inbox list` | host, no container |
-| View by list number | `loom inbox view <N>` | host, no container |
-| View by bead | `loom inbox view -b <id>` | host, no container |
-| View by proposal | `loom inbox view -p <proposal-id>` | host, no container |
-| Chat queue | `loom inbox chat` | container, interactive backend (`inbox.md` template) |
-| Chat by list number | `loom inbox chat <N>` | container, interactive backend |
-| Chat by bead | `loom inbox chat -b <id>` | container, interactive backend |
-| Chat by proposal | `loom inbox chat -p <proposal-id>` | container, interactive backend |
+Filters apply before stable kind/FIFO ordering. View renders durable options,
+diagnostics, and repair paths.
 
-**Filters and addressing:**
+Inbox chat has human-authorized Beads write access to queued items and may
+repair tune artifacts only in the proposal checkout. The driver does not
+reconcile those interactive Beads changes afterward. `LOOM_COMPLETE` ends chat
+without host apply; `LOOM_APPLY` requests one validated all-or-nothing tune
+proposal batch through integration, gate, and push. A failed batch publishes
+nothing and leaves every proposal in `apply_failed` for explicit later review.
 
-| Flag | Argument | Purpose |
-|------|----------|---------|
-| `-s`, `--spec` | `<label>` | Filter queue entries to `spec:<label>` |
-| `-k`, `--kind` | `clarify\|blocked\|infra\|tune` | Filter queue entries by kind; absence means all kinds |
-| `-b`, `--bead` | `<bead-id>` | Address a bead-backed item for `view` / `chat` |
-| `-p`, `--proposal` | `<proposal-id>` | Address a tune proposal for `view` / `chat` |
-
-There is no `-c/--chat` flag; chat is a subcommand. There is no
-`-d/--dismiss`, no `--option`, no `--text`, and no standalone
-`loom inbox apply` in v1. Options blocks are structured context for view/chat,
-not a host-executable menu.
-
-**Cross-spec by default.** Bare `loom inbox` lists every outstanding non-closed
-bead carrying `loom:blocked`, `loom:clarify`, or `loom:infra` across all specs,
-plus pending/blocked/apply-failed tune proposal beads. Closed beads are excluded
-even if their labels remain on the bead. No active-spec cache or work-epic
-selection is consulted for any inbox mode. Filters narrow the queue before
-positional numbering. Default ordering is kind-group first, then FIFO within
-each group: `clarify` oldest→newest, then `blocked` oldest→newest, then `infra`
-oldest→newest, then `tune` oldest→newest. A corrupt or unavailable tune proposal
-remains `kind = tune` with blocked status/framing; it appears in the default and
-`-k tune` queues, not as a generic blocked bead.
-
-**View semantics.** `loom inbox view` renders the canonical bead/proposal body,
-structured options when present, durable ids, infra diagnostic fields (phase,
-first-event-seen, attempt/max, exit status, stderr/spawn error tail, and log
-path) when present, proposal branch/head commits, and local artifact paths. If
-no chat-capable backend is available, view output gives manual escape-hatch
-surfaces (`bd`, local proposal paths, and repair/drop instructions) rather than
-mutating state.
-
-**Chat session shape.** `loom inbox chat` launches the resolved
-profile/runtime with the `inbox.md` template and normally works through the
-visible queue one item at a time. The backend-specific launch mechanics are
-owned by [agent.md § Interactive Shell-Out](agent.md#interactive-shell-out);
-this section owns queue targeting and inbox-state authority. Targeted chat
-forms focus a single item. The chat-capable backend/profile comes from
-`[phase.inbox]` or normal phase defaults; backend capability and rejection
-rules are delegated to the agent spec's launch matrix.
-
-The session has **full bd-write authority** on bead-backed items in its queue:
-notes via `bd update --notes`, label add/remove via `bd update --add-label` /
-`--remove-label`, status changes, and bead closure via `bd close`. It may repair
-tune proposal artifacts only in `.loom/tune/<id>/repo/` and update tune beads;
-it must not push and must not leave `.loom/integration` dirty. The chokepoint
-reasoning that gates worker-session bd writes does not apply to chat because the
-human is present and authorizes each turn.
-
-Per [Verdict Gate § Interactive vs worker sessions](#verdict-gate), the driver
-does **not** reconcile bead state as a consequence of an interactive session.
-Whatever bd/proposal state the chat agent (with human authorization) established
-at session end is the state, except for the explicit tune apply handoff below.
-Unresolved items remain visible in the next `loom inbox` list.
-
-**Inbox terminal markers.** Inbox chat emits exactly one terminal marker:
-
-- `LOOM_COMPLETE` — chat is done and no driver-side apply handoff is requested.
-- `LOOM_APPLY: {"proposals":["<bead-id>", ...]}` — chat is done and requests
-  the trusted driver to apply the listed accepted tune proposals.
-
-`LOOM_APPLY` is a phase apply-handoff marker. It is valid only for phases that
-register an apply handler; in v1 only inbox registers one, and `proposals` names
-tune proposal bead ids. `LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`,
-`LOOM_NOOP`, and `LOOM_CONCERN` are wrong-phase-marker errors from inbox.
-
-**Tune apply handoff.** Tune proposals accepted during chat are queued for a
-single end-of-chat apply batch. After `LOOM_APPLY`, the driver validates that
-each id is a tune bead in accepted state with a local proposal artifact, applies
-those proposal branches through the same integration/push-gate machinery used by
-`loom loop`, runs deterministic verify plus LLM review over the actual combined
-range, and pushes `origin/<integration_branch>` once at the end. `applied` means
-pushed, not merely cherry-picked locally.
-
-The apply batch is all-or-nothing in v1. A `cherry_pick_conflict`,
-`verify_failed`, `review_failed`, or `push_failed` cause aborts the attempt,
-pushes nothing, leaves `.loom/integration` clean, and moves every proposal in the
-accepted batch to `apply_failed` with a shared diagnostic/log. `apply_failed`
-tune items appear in the next inbox and are not retried automatically; a later
-chat must explicitly repair/reauthorize a subset or drop/regenerate them.
-
-**Chat queue framing.** The chat session queue includes `loom:clarify` beads,
-`loom:blocked` beads, `loom:infra` diagnostics, and tune proposals, with
-separate rendered framing:
-
-- **`loom:clarify`** beads carry options under the *Options Format Contract*.
-  The drafter helps the user discuss and choose among existing options; it does
-  not re-generate them as a host-side menu.
-- **`loom:blocked`** beads do not necessarily carry options. The drafter walks
-  the user through enumerating candidate resolutions first, then helps them
-  pick or update bead state.
-- **`loom:infra`** beads are explicitly framed as infrastructure diagnostics,
-  not worker judgement. The drafter shows the captured phase, first-event-seen
-  flag, attempts, exit status, stderr/spawn error tail, and log path, then helps
-  the user retry/requeue, leave paused, or repair environment/config state.
-- **Tune proposals** present the tune bead body, changed files, local
-  `evidence.md` appendix when present, checker results, and candidate commits.
-  Chat may mark proposals accepted/rejected/blocked/apply_failed only with
-  human authorization.
-- **Options in notes.** Per [gate.md](gate.md#options-format-contract), a
-  reviewer that promotes a previously-blocked bead writes the `## Options` block
-  into the bead's `--notes`. The inbox reads options from notes ∪ description so
-  notes-carried options are surfaced alongside description-carried ones.
-- **Epic exclusion.** Epic beads (`issue_type == "epic"`) are filtered out of
-  the chat queue: workers target leaf beads, and an epic carrying a terminal
-  inbox label (`loom:blocked`, `loom:clarify`, or `loom:infra`) would surface
-  as a non-actionable container.
+There is no host-side pick, reply, resolve, dismiss, or apply mutation surface.
+Options are discussion context for chat rather than executable menu entries.
 
 ### Tune Modes
 
-The `loom tune` command surface and proposal creation/isolation contract are
-owned by
-[skills.md § Tune Command Surface](skills.md#tune-command-surface) and
-[skills.md § Tune Proposal Worktrees and Beads](skills.md#tune-proposal-worktrees-and-beads).
-This harness spec owns only platform integration around that surface:
-`tune.lock` serializes allocation, and resulting proposals route through `loom
-inbox` for human review and apply handoff.
+[skills.md § Tune Command Surface](skills.md#tune-command-surface) and its
+proposal-worktree section own tuning. Harness supplies `tune.lock`, workflow
+placement, inbox routing, and the trusted post-chat apply path.
 
 ### Crate Layout
 
-The target v1 workspace layout has a fixed member-crate set. Five are
-**public-contract** crates (downstream consumers import them as Rust
-dependencies); the other crates are internal organization. The root
-`Cargo.toml` workspace members must match this set exactly.
+The fixed workspace separates public contracts from internal orchestration:
 
-| Crate | Tier | Role |
-|-------|------|------|
-| `loom` | internal | CLI binary — arg parsing, entry point, dispatch. |
-| `loom-driver` | internal | Host-side runtime — `AgentBackend` trait, `CacheDb`, `Config`, `BdClient`, `Clock`, profile manifest, skill registry wiring, lock files, scratch dir, git ops, workflow-layer driver-event emission (verdict-gate, push-gate, container-spawn). |
-| `loom-events` | **public** | `AgentEvent` enum, ID newtypes (`BeadId`, `MoleculeId`, `ToolCallId`, `SpecLabel`, `ProfileName`, `SessionId`, `RequestId`), `DriverKind`, `Session` trait, `EventSink` trait, `SessionCommand`. Frontends, SSE bridges, and external log tools depend only on this. |
-| `loom-llm` | **public** | Typed wrapper over a multi-provider LLM crate. Object-safe `LlmClient` trait, `LlmClientExt::complete_structured::<T>` (provider-agnostic), `Conversation` with built-in tool-use loop, `ModelId`, `CacheControl`, `TokenUsage`. Hosts the agent-loop observers (`DoomLoopObserver`, `DuplicateResultObserver`) so consumers driving via `Conversation` get the same safety nets Loom's binary uses. See [llm.md](llm.md). |
-| `loom-skills` | **public** | Agent skill artifact model, typed discovery/diagnostics, duplicate/override resolution, phase/profile filtering, and materialization for backend registration. The tuning engine is internal in v1. See [skills.md](skills.md). |
-| `loom-tune` | internal | SkillOpt-style tuning internals — typed checker registry, `loom-case` schemas/validation, evidence indexing/splits, scoring summaries, tune metadata structs, and proposal manifest types. Orchestration stays in `loom-workflow`; apply stays in the driver. |
-| `loom-render` | internal | `Renderer` trait + `Pretty` / `Plain` / `Json` / `Raw` impls; `LogSink` (impl `EventSink`) driving disk JSONL from the same event stream the renderer consumes. |
-| `loom-agent` | internal | `AgentBackend` implementations (pi, claude, direct). Pi/Claude drive subprocess agents; `direct` composes `loom-llm` with Loom's six sandbox-aware tools behind the Direct runner. Adapters flatten backend wire schemas into `loom-events` variants. |
-| `loom-direct-runner` | internal | Container entrypoint binary for the Direct backend; constructs the in-container `loom-llm::Conversation`, registers Direct tools, and emits canonical events. See [agent.md](agent.md). |
-| `loom-gate` | internal | Quality-gate implementation: annotation dispatch, deterministic lanes, judge/rubric lanes, status cache, marker validation, and finding minting. See [gate.md](gate.md). |
-| `loom-protocol` | **public** | Cross-crate wire protocol types (`gate`, `todo`, and future protocol modules) that external consumers use to parse Loom subprocess output without depending on workflow internals. See [gate.md](gate.md). |
-| `loom-workflow` | internal | Workflow engine — plan, todo, loop, gate, inbox, tune. Selects concrete backends per phase and drives the shared session lifecycle. Owns orchestration loop, bead lifecycle, retry logic, push gate, verdict gate, tune proposal staging, and inbox resolution. |
-| `loom-templates` | **public** | Askama templates + typed context structs. Consumers compose their own templates from the exposed typed building blocks (`PinnedContext`, `PreviousFailure`, `LoopContext`, partial strings). Loom's workflow templates themselves stay internal. See [templates.md](templates.md). |
-| `loom-test-support` | internal | Shared fixtures, fakes, and helpers used by Loom's Rust tests; not part of the runtime or public API. |
-| `loom-walk` | internal | `[check]`-tier source/spec walk binary used by `loom gate verify`; each named walk is a deterministic verifier wired from spec annotations. |
+- `loom` — CLI parsing and dispatch (internal).
+- `loom-driver` — host configuration, state, locking, Git, Beads, and session
+  support (internal).
+- `loom-events` — canonical events, identifiers, `Session`, and `EventSink`
+  (public contract).
+- `loom-llm` — provider-neutral LLM and conversation primitives (public
+  contract).
+- `loom-skills` — skill artifacts, discovery, resolution, and materialization
+  (public contract).
+- `loom-tune` — tuning cases, evidence, scoring, and proposal metadata
+  (internal).
+- `loom-render` — event renderers and log sink (internal).
+- `loom-agent` — Pi, Claude, and Direct backend adapters (internal).
+- `loom-direct-runner` — sandboxed Direct conversation entrypoint (internal).
+- `loom-gate` — verifier, review, marker, and finding implementation
+  (internal).
+- `loom-protocol` — shared subprocess wire protocols (public contract).
+- `loom-workflow` — phase orchestration and lifecycle state machines
+  (internal).
+- `loom-templates` — typed contexts, partials, and compiled prompts (public
+  contract).
+- `loom-test-support` — shared test fixtures (internal, test-only).
+- `loom-walk` — deterministic source/spec conformance walks (internal).
 
 ### Dependency Graph
 
-Load-bearing constraints on the dep graph:
+Public contracts stay at the bottom of the graph. `loom-events` is the base
+contract and imports no internal crate. `loom-protocol`, `loom-llm`, and
+`loom-skills` build only on their documented public-contract dependencies;
+`loom-templates` builds on `loom-events` and `loom-protocol`. They do not import
+runtime orchestration.
 
-- `loom-events` is a **leaf** — no internal-crate imports. The
-  contract crate's dep footprint is `serde + serde_json +
-  thiserror + futures-core` only (`futures-core` carries the
-  `Stream` trait referenced by `Session::Events`).
-- `loom-protocol` is a **leaf** public-contract crate for wire
-  protocols. It depends on `loom-events` for shared IDs plus its
-  closed parser/JSON/error/hash deps; it imports no `loom-templates`,
-  `loom-workflow`, `loom-gate`, `loom-driver`, or `loom-agent` crate.
-- `loom-llm` depends on `loom-events` only (no `loom-driver`,
-  `loom-agent`, or `loom-workflow` import). Its dep footprint is
-  the public-contract floor plus the underlying multi-provider
-  LLM crate and `schemars`. The crate is independently versionable
-  for the same reason `loom-events` is.
-- `loom-templates` depends on `loom-events` for shared identifiers and on
-  `loom-protocol` for the typed gate/todo values carried or re-exported by its
-  public contexts. It imports no internal runtime or orchestration crate. The
-  Askama compile machinery is a build-time concern, not a runtime dep.
-- `loom-skills` depends on `loom-events` for shared newtypes and on
-  parsing/diagnostic libraries only; it does not depend on `loom-driver`,
-  `loom-agent`, `loom-templates`, `loom-tune`, or `loom-workflow`.
-- `loom-tune` depends on `loom-events`, `loom-skills`, and parsing/scoring
-  libraries for registry/case/evidence/metadata types; it does not depend on
-  `loom-driver`, `loom-agent`, or `loom-workflow`.
-- `loom-render` depends on `loom-events` for the event contract and may use
-  rendering/support crates, but it imports neither `loom-driver` nor
-  `loom-workflow`. A renderer regression must be local to `loom-render`.
-- `loom-agent` depends on `loom-llm` (its `direct` backend wraps
-  `Conversation`), `loom-events` (the `Session` trait, `AgentEvent`), and
-  `loom-skills` for materialized registry/disclosure types consumed during
-  backend setup.
-- `loom-direct-runner` depends on `loom-agent` for Direct tools, on
-  `loom-llm` for `Conversation`, and on `loom-events` for event emission.
-- `loom-gate` depends on `loom-events` and `loom-protocol` for typed
-  gate output, plus parser/runner support crates; it does not import
-  workflow orchestration.
-- `loom-workflow` depends on the internal orchestration crates, on
-  `loom-skills` because it resolves the effective skill registry before
-  rendering prompts/spawning backends, and on `loom-tune` for tuning registry,
-  case, evidence, scoring, and metadata types. `loom-events` is the bottom of
-  the internal-crate stack and `loom-workflow` is the top.
-- `loom-test-support` is test-only support code; production crates do not
-  depend on it.
-- `loom-walk` is a verifier binary and may parse workspace source/spec files;
-  runtime crates do not depend on it.
-
-`loom-events`'s, `loom-protocol`'s, `loom-llm`'s, `loom-templates`'s, and
-`loom-skills`'s leaf-or-near-leaf status is what makes each contract
-version-able in isolation — a public-API change shows up as a single-crate
-bump, not as accidental coupling through a deeper crate.
+`loom-render` consumes events. `loom-agent` consumes events, LLM primitives,
+and materialized skills; `loom-direct-runner` composes agent tools with the LLM
+conversation. `loom-tune` consumes events and skills. `loom-gate` consumes
+events and protocol values. `loom-workflow` is the orchestration top and may
+compose the internal crates. Runtime crates do not depend on `loom-test-support`
+or `loom-walk`.
 
 ### Workspace Dependencies
 
-All third-party crates are pinned once under
-`[workspace.dependencies]`; every member crate uses
-`foo = { workspace = true }`. Specific version pins live in
-`Cargo.toml`; the workspace-deps-pattern is a team-wide convention
-per [`docs/style-rules.md`](../docs/style-rules.md) RS-3.
-
-`loom-events` is the contract-crate dependency-floor: its dep
-footprint is `serde + serde_json + thiserror + futures-core` only —
-no internal crates, no timestamps crate, no `ulid`, no `uuid`. The
-contract stays small. `loom-protocol`, `loom-llm`, `loom-templates`, and
-`loom-skills` carry their own small public-surface dep sets
-(parser/JSON/error/hash deps for `loom-protocol`; LLM crate + `schemars` for
-`loom-llm`; `loom-protocol` + Askama for `loom-templates`;
-Markdown/frontmatter parsing and diagnostics for `loom-skills`).
+Third-party versions are pinned once at workspace scope and inherited by member
+crates. Public-contract crates retain narrow dependency floors so they can
+version without importing host orchestration.
 
 ### Workspace Lints
 
-Lints are declared at workspace scope (`[workspace.lints.*]` in the
-root `Cargo.toml`); every member crate carries `[lints] workspace =
-true`. No crate-root `#![warn(...)]` / `#![deny(...)]`. Test
-exemptions live in `clippy.toml`'s native `allow-*-in-tests` flags.
-The specific lint denials and per-site override rules are defined
-in [`docs/style-rules.md`](../docs/style-rules.md) (RS-3 et seq.);
-this spec only commits to the workspace-scope enforcement
-architecture, not the rule list.
+Lint policy is workspace-owned and inherited by every crate. The enforceable
+rule set and override policy live only in
+[`docs/style-rules.md`](../docs/style-rules.md).
 
 ### Parse, Don't Validate
 
-Raw data enters typed domain representations at the boundary and stays typed
-everywhere downstream. No internal function re-checks or re-parses.
+Raw CLI values, manifest JSON, Beads JSON, cache rows, and backend protocol
+frames are parsed once at their boundaries. Downstream workflow code receives
+typed domain values and canonical events rather than re-parsing strings.
 
-**Boundary layers (outside → inside):**
-
-1. **JSONL framing** — `BufReader::read_line` splits the byte stream into
-   lines. Each line is one JSON object.
-2. **Protocol parsing** — `serde_json::from_str` deserializes each line into a
-   backend-specific message type (`PiMessage` or `ClaudeMessage`).
-3. **Event normalization** — backend-specific messages map to `AgentEvent`.
-   After this point, no code knows which backend is running.
-4. **Domain newtypes** — identifiers (`BeadId`, `SpecLabel`, etc.) are parsed
-   from strings at construction. Downstream code receives `BeadId`, never
-   `String`.
-5. **State queries** — SQLite rows map to typed Rust structs via `rusqlite`.
-   No intermediate untyped step.
-6. **CLI output parsing** — `bd --json` output deserializes into typed structs
-   (`Bead`, `Molecule`).
-7. **Profile-image manifest** — the JSON produced by `mkProfileManifest`
-   deserializes into `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry { ref, source, source_kind, launcher?, profile_config?, digest? }>>`
-   once at loom startup. Downstream code receives typed profile/runtime keys
-   and `&ImageEntry`, never raw JSON.
-
-**Newtype IDs:**
-
-Each identifier in `loom-events::identifier` is hand-written (no shared macro)
-so per-type parse rules can be enforced at construction. Every newtype wraps
-a single `String`, exposes `as_str() -> &str`, implements `Display` as the
-inner string, and derives the standard value traits (`Debug`, `Clone`,
-`PartialEq`, `Eq`, `Hash`) plus `#[serde(transparent)]` so it serializes as
-a plain string — no wrapper object.
-
-`BeadId` additionally validates the canonical
-`<prefix>-<base32>(.<digits>)?` shape at every construction path: `new`
-returns `Result<Self, ParseBeadIdError>`, and `Deserialize` is hand-written
-to reject malformed input rather than constructing an invalid wrapper.
-Other newtypes (`SessionId`, `ToolCallId`, `RequestId`, `SpecLabel`,
-`MoleculeId`, `ProfileName`) keep a permissive `new(impl Into<String>)`.
-
-`derive(From)` and `derive(Into)` are banned (RS-8) to prevent accidental
-bypass of the newtype boundary.
+`BeadId`, `SpecLabel`, `MoleculeId`, `ProfileName`, `SessionId`, `ToolCallId`,
+and `RequestId` are transparent newtypes. `BeadId` validates its canonical
+shape on construction and deserialization. `AgentRuntime` is a closed enum.
+Typestate for subprocess sessions and the non-optional loop/gate outcome shapes
+make invalid lifecycle transitions unrepresentable.
 
 ### Askama Template System
 
-See [templates.md](templates.md) — engine choice,
-per-template typed context structs, partials inventory, per-phase
-pinning policy, typed `PreviousFailure`, attempt counter,
-agent-output markers, public-contract building blocks for consumer
-template composition, and the snapshot-test contract all live there.
-`loom-templates` is the crate (public-contract);
-[templates.md](templates.md) is the spec.
+[templates.md](templates.md) owns the template engine, typed contexts,
+partials, pinning policy, and public composition surface.
 
 ### Beads CLI Wrapper
 
-`loom-driver` provides `BdClient`, a typed wrapper around the `bd` CLI:
-
-- Invokes `bd` via `tokio::process::Command` with each argument passed via
-  `.arg()`. No shell interpolation — values from agent output (bead titles,
-  error messages, labels) must never be passed through `sh -c` or string
-  interpolation into a shell command. This prevents injection of shell
-  metacharacters from agent-controlled content.
-- Uses `--json` flag where available
-- Parses output into typed structs (`Bead`, `Molecule`, `MolProgress`).
-  Bead labels deserialize into a `Label` newtype that pre-parses the
-  `spec:`/`profile:`/`loom:spec`/`loom:todo`/`loom:active`/
-  `loom:clarify`/`loom:blocked`/`loom:infra` prefix families once at the
-  boundary, so call sites read through typed accessors (`spec_label()`,
-  `profile_name()`, `is_spec_epic()`, `is_todo_stage()`,
-  `is_active()`, `is_clarify()`, `is_blocked()`, `is_infra()`) rather than
-  re-doing `strip_prefix` walks. `loom:active` is an execution bookmark for the
-  default work epic, never a spec-discovery filter.
-- Maps CLI errors to typed error variants
-- All subprocess calls have a 60-second timeout (configurable). Prevents
-  unbounded hangs from a stuck `bd` process.
-- Key operations: `show`, `create`, `close`, `update`, `list`, `dep_add`,
-  `mol_bond`, `mol_progress`. No `dolt_push` / `dolt_pull` wrappers — loom
-  relies on the bind-mounted Dolt socket so every `bd` call is already
-  authoritative.
+The host interacts with Beads through a typed subprocess boundary. JSON output
+is parsed into typed beads, molecules, labels, and progress; arguments are
+passed without shell interpolation; errors and timeouts remain typed. The
+workflow uses create, show, close, update, list, dependency, bond, and progress
+operations against the shared Dolt service.
 
 ### SQLite Cache Store
 
-Workflow cache lives in `.loom/cache.db`. The filename is deliberate:
-this database is local, optional, reconstructable cache state, not a
-source of truth. Git (code + specs), Beads/Dolt (beads, epics,
-labels, metadata), and the current `docs/README.md` spec index are the
-durable shared sources. A missing, stale, or corrupt cache may make Loom
-slower or lose transient hints; it must never make Loom conclude that
-changed spec work is clean.
+`.loom/cache.db` is disposable, reconstructable workflow cache. Git, Beads
+metadata, specs, and the current spec index are durable authority; missing or
+corrupt cache data cannot establish that changed work is clean.
 
-The previous `.loom/state.db` name is retired. Existing installations
-migrate by moving compatible rows into `.loom/cache.db` or rebuilding
-from durable sources; correctness paths must not require either file
-to exist before they run.
+The schema caches indexed specs, spec-epic ids/cursors, work-epic metadata and
+iteration counts, companion paths, typed notes, criterion evidence, and schema
+metadata. Criterion evidence joins on typed `(SpecLabel, CriterionId)` and
+exposes missing or stale values rather than treating them as success. Cache APIs
+own SQL access.
 
-```sql
-CREATE TABLE specs (
-    label TEXT PRIMARY KEY,
-    spec_path TEXT NOT NULL
-);
+`loom init --rebuild` recreates this state from the spec index, spec files,
+Beads spec/work epics, and companion declarations. It rejects structural
+inconsistencies such as missing or duplicate indexed specs/epics. Criterion
+results and notes are transient and are not reconstructed; iteration counters
+restart at zero.
 
-CREATE TABLE spec_epics (
-    spec_label  TEXT PRIMARY KEY REFERENCES specs(label),
-    epic_id     TEXT NOT NULL,
-    todo_cursor TEXT                         -- cache of spec-epic metadata `loom.todo_cursor`
-);
-
-CREATE TABLE work_epics (
-    epic_id          TEXT PRIMARY KEY,
-    todo_head        TEXT,
-    todo_fingerprint TEXT,
-    is_active        INTEGER NOT NULL DEFAULT 0,
-    iteration_count  INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE companions (
-    spec_label     TEXT NOT NULL REFERENCES specs(label),
-    companion_path TEXT NOT NULL,
-    PRIMARY KEY (spec_label, companion_path)
-);
-
-CREATE TABLE notes (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    spec_label TEXT NOT NULL REFERENCES specs(label) ON DELETE CASCADE,
-    kind       TEXT NOT NULL,
-    text       TEXT NOT NULL,
-    created_at INTEGER NOT NULL  -- unix millis
-);
-CREATE INDEX idx_notes_spec_kind ON notes(spec_label, kind);
-
-CREATE TABLE criterion_status (
-    spec_label        TEXT NOT NULL REFERENCES specs(label),
-    criterion_id      TEXT NOT NULL,
-    annotation_json   TEXT NOT NULL,
-    result            TEXT NOT NULL,
-    last_timestamp_ms INTEGER,
-    last_commit       TEXT,
-    evidence          TEXT,
-    PRIMARY KEY (spec_label, criterion_id)
-);
-
-CREATE TABLE meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
--- meta rows: schema_version and cache-only implementation details.
--- There is no current_spec/current_molecule pointer.
-```
-
-The gate's criterion-status cache is folded into `.loom/cache.db`;
-there is no separate `.loom/gate-cache.sqlite`. Gate runs write
-`criterion_status` rows keyed by the typed join `(SpecLabel,
-CriterionId)`. Todo preflight parses current spec criteria and joins
-against this cache after parsing cached strings back into typed
-`CriterionId`, `CriterionAnnotation`, and `GitSha` values. Cache parse
-failures are cache corruption diagnostics, not reasons to skip a spec.
-
-Typed Rust API — no raw SQL outside `loom-driver`. The cache handle
-opens `.loom/cache.db`, rebuilds cache rows from durable sources,
-manages transient notes, records criterion evidence from gate runs,
-and caches active work-epic iteration counts. Durable workflow
-answers (which specs changed, which spec epic owns a cursor, which
-work epic is active) are re-derived from Git + Beads before use; cache
-rows are advisory mirrors.
-
-**Rebuild (`loom init --rebuild`):** Drops and recreates all cache
-tables, then repopulates from durable sources:
-
-1. Parse `docs/README.md`'s spec index and cross-check `specs/*.md`.
-   The index is authoritative for discoverable specs. An indexed row
-   whose file is missing, an unindexed `specs/*.md` file, duplicate
-   rows/files for one label, or a label/path mismatch is a structural
-   diagnostic. Planned spec rename/delete work is allowed only when a
-   planning session left durable evidence (spec/index diff plus, when
-   needed, implementation notes); otherwise todo blocks with an
-   Options-format diagnostic rather than guessing.
-2. Query Beads for spec epics: exactly one bead labelled
-   `loom:spec` and `spec:<label>` per indexed spec. Status is ignored;
-   spec epics may be open or closed. The cache records the epic id and
-   its `loom.todo_cursor` metadata when present. More than one spec
-   epic for a label is a hard invariant violation naming the
-   conflicting ids.
-3. Query Beads for work epics: epics labelled `loom:todo` (pending
-   decomposition) and the sole `loom:active` epic (default loop
-   target). At most one open `loom:todo` epic and at most one
-   `loom:active` epic may exist in a workspace; violations fail loud.
-4. Parse each spec markdown for `## Companions` and populate
-   `companions` rows.
-
-Criterion evidence rows are not durable and are not reconstructed by
-rebuild. Missing rows become `EvidenceState::Missing` when a prompt is
-rendered.
-
-Iteration counters reset to 0 on rebuild. **Notes are lost on
-rebuild** — they live only in the cache and have no filesystem source
-to reconstruct from. This can lose implementation hints but cannot
-lose correctness: `loom todo` must still derive changed specs from
-Git + Beads and fail loud when evidence is unknown.
-
-**Companion declaration in specs.** Specs declare their companion paths
-in a single, parseable section so rebuild is lossless:
-
-```markdown
 ## Companions
 
-- `lib/sandbox/`
-- `crates/loom-templates/`
-```
+## Spec and Work Epic Lifecycle
 
-Parser rules:
+A spec epic is the durable metadata carrier for one indexed spec, labelled
+`loom:spec` and `spec:<label>`. Exactly one exists per indexed spec. Its
+`loom.todo_cursor` records the Git commit through which decomposition was
+finalized; status does not affect lookup, and implementation beads are not
+parented beneath it.
 
-- Heading must be exactly `## Companions` (case-sensitive, level 2).
-- Body is a flat bullet list of `- ` lines. Each path is a single
-  backtick-delimited token; anything outside the backticks is ignored.
-- Paths are normalized to repo-relative POSIX form (no leading `/`,
-  trailing slash preserved if present).
-- Missing section → zero companions for this spec (not an error).
-- Malformed lines (no backticks, multiple paths) are skipped with a
-  `warn!`, not an abort.
+A work epic is an execution batch. `loom todo` creates or reuses one pending
+`loom:todo` epic for the deterministic changed-spec roster. A validated
+`LOOM_TODO` handoff applies its final title, advances every roster spec's cursor
+atomically, removes `loom:todo`, and makes it the sole `loom:active` epic.
+Standing tree remediation similarly creates a non-empty active work epic only
+after actionable findings exist. `loom:active` selects the default loop root;
+it does not select changed specs for todo.
 
-### Spec and Work Epic Lifecycle
+Todo preflight derives changed specs from the current index, spec blobs, Git
+ancestry, and each spec epic's cursor. It ensures one spec epic per indexed
+spec, surfaces missing or invalid durable metadata, parses every changed spec's
+criteria, and represents absent cache evidence as missing. No changed specs
+means no agent, no work epic, and no cursor movement.
 
-Loom uses two distinct epic kinds.
+Todo success is the public `loom-protocol::todo::TodoSuccess` wire value. It
+binds the preflight head and fingerprint, pending work epic, final non-empty
+title, and exactly one outcome for each changed spec. A decomposed outcome names
+non-empty child beads under the work epic; a no-work outcome gives a non-empty
+reason. Validation failure leaves pending state and every cursor unchanged.
 
-**Spec epic.** A spec epic is the durable per-spec metadata carrier.
-It has labels `loom:spec` and `spec:<label>`, exactly one exists per
-indexed spec, and its status does not affect cursor lookup. It carries
-`loom.todo_cursor=<full git sha>`, meaning: `loom todo` has
-successfully finalized decomposition coverage for this spec through
-that commit. When a driver creates a missing spec epic, it closes the
-epic immediately as a metadata carrier; open/closed status remains
-ignored for lookup and repair. Normal implementation and remediation
-beads are never parented under a spec epic.
+Implementation notes are typed, transient cache hints. Planning may merge them;
+validated todo finalization renders and consumes notes for the changed specs.
+Failed or non-finalized decomposition leaves them intact. Rebuild drops them
+without changing durable workflow truth.
 
-**Work epic.** A work epic is a loopable execution batch. Two creation
-surfaces exist:
+## Compaction Recovery
 
-- `loom todo` creates a pending decomposition work epic for one
-  deterministic changed-spec set. The driver creates it before the todo
-  agent runs, labels it `loom:todo`, and writes
-  `loom.todo_head=<sha>`, `loom.todo_fingerprint=<TodoFingerprint>`,
-  and the changed spec labels as metadata. While `loom:todo` is present,
-  the epic is still in the decomposition stage and is not a default loop
-  target.
-- `loom gate mint --tree` creates a standing remediation work epic only
-  when it has at least one actionable child bead to parent. The driver
-  parents every tree-scope fix-up / blocked-clarify / clarify bead from
-  that mint run under the one remediation epic, labels it `loom:active`,
-  removes `loom:active` from any previous work epic, and prints the epic
-  id plus the follow-up `loom loop` command.
+Each agent-bearing session starts with a private
+`.loom/scratch/<key>/` containing the full rendered `prompt.txt`, an empty
+append-only `scratch.md`, a compact-session re-pin script, and any materialized
+built-in skills. Direct may lazily add its output-offload directory. The key is
+the phase's concurrency unit, so parallel beads do not share recovery state.
 
-After a validated `LOOM_TODO` handoff, finalization removes
-`loom:todo`, adds `loom:active`, advances every changed spec epic's
-`loom.todo_cursor` to the preflight head, and removes `loom:active`
-from any previous work epic. At most one open work epic may carry
-`loom:todo`, and at most one epic may carry `loom:active`.
+The initial prompt remains active instruction context after compaction. Backend
+delivery reintroduces the full prompt before the live scratchpad, and
+post-compaction output is not trusted until that pin is effective. Ordinary
+conversation history yields before pinned protocol and mode instructions when a
+backend limit forces a choice. [agent.md § Compaction
+Handling](agent.md#compaction-handling) owns delivery mechanics.
 
-`loom:active` is an execution bookmark only: `loom loop` with no
-positional ids runs the sole active work epic. It is never consulted by
-`loom todo` changed-spec discovery.
+The scratch tree is removed on every session exit and recreated empty on the
+next session. It is a recovery aid, not durable workflow state.
 
-**No empty remediation epics.** A work epic may be temporarily childless
-only while it carries `loom:todo` and is awaiting the todo agent's
-validated handoff. Remediation work epics created by `loom gate mint
---tree` must not remain open with zero child beads: no actionable
-findings means no epic is created, and a failure after epic allocation
-but before the first child bead is created closes or otherwise
-neutralizes that epic and restores the `loom:active` bookmark to its
-pre-run state before the command returns.
+## Loom-LLM
 
-**Lifecycle events:**
-
-- **`loom plan [SPEC_LABEL ...]`** — interactive spec interview.
-  Positional labels are initial context anchors only; zero labels
-  starts from the project overview/spec index, an existing label pins
-  that spec body, and a missing label is a proposed new spec. Plan
-  may edit any spec and the index as the interview discovers
-  cross-cutting scope. It does not write bd state, create epics, or
-  record a touched-set manifest; Git records the touched set.
-- **`loom todo` preflight** — deterministic, before any LLM prompt:
-  1. Parse the current `docs/README.md` spec index and spec files; any
-     inconsistency blocks.
-  2. Ensure exactly one spec epic per indexed spec. Missing spec epic
-     is created and immediately closed by the driver, and marks that
-     spec uninitialized for this preflight. More than one blocks.
-  3. Read each spec epic's `loom.todo_cursor`. Missing cursor on a
-     newly-created spec epic is expected and makes the spec changed;
-     missing cursor on an existing spec epic blocks with an exact
-     repair diagnostic. Malformed cursor, unknown commit, or cursor
-     not an ancestor of `HEAD` blocks.
-  4. Compute changed specs from Git using the durable cursor, current
-     `HEAD`, the spec file blob, and the spec-index row. New indexed
-     specs, index-row changes, and spec-file changes are changed.
-     Missing local criterion evidence is not part of discovery.
-  5. Parse Success Criteria for every changed spec and build typed
-     `CriterionStatus` rows by joining against `.loom/cache.db`.
-     Missing evidence becomes `EvidenceState::Missing`; malformed
-     criteria (no annotation, multiple annotations, malformed syntax)
-     block preflight.
-  6. If no specs changed, no todo agent runs, no work epic is created,
-     no cursor changes, and `loom:active` is unchanged.
-  7. If an open `loom:todo` epic exists with matching
-     `loom.todo_head` and `loom.todo_fingerprint`, reuse it so the
-     agent repairs/completes the pending decomposition. Multiple
-     matching epics, or any non-matching open `loom:todo` epic, block
-     with an Options-format diagnostic; Loom never silently ignores
-     pending decomposition state.
-  8. Otherwise create one new `loom:todo` work epic for the changed
-     set with a placeholder title. The work epic is not active.
-- **`loom todo` agent handoff** — the prompt contains the preflight
-  roster, the work epic id, spec epic ids, diffs, implementation
-  notes, and typed criterion evidence. The agent may create child
-  implementation beads only under the named work epic. The only
-  successful terminal marker for a todo session is
-  `LOOM_TODO: <json>` (typed in `loom-protocol::todo`); generic
-  `LOOM_COMPLETE` / `LOOM_NOOP` are wrong-phase success markers for
-  todo. Decision-needed or dead-end exits use `LOOM_CLARIFY` /
-  `LOOM_BLOCKED` with the Options Format Contract when applicable.
-- **`loom todo` validation/finalization** — the driver parses
-  `LOOM_TODO`, validates `head`, `TodoFingerprint`, non-empty final
-  work-epic title, exact changed-spec coverage, bead existence, bead
-  parentage under the work epic, and per-spec outcomes. `Decomposed`
-  outcomes must name a non-empty bead list; `NoWork` outcomes must
-  carry a non-empty reason. Any mismatch
-  leaves the work epic labelled `loom:todo`, records diagnostics on it,
-  advances no cursor, and does not change `loom:active`. A validated
-  handoff applies the `LOOM_TODO.title` to the work epic and finalizes
-  atomically as described above. Cursor advancement
-  is all-or-nothing across the changed set and applies to both
-  `Decomposed` and `NoWork` outcomes. Every todo run prints a
-  driver-authored summary that lists each changed spec and its outcome
-  (`decomposed`, `no-work`, or blocked/diagnostic before success), plus
-  the work epic id when one exists; a spec absent from the summary is a
-  validation failure, not a successful skip.
-- **`loom loop`** — executes work. With no positional ids it runs the
-  sole `loom:active` work epic. With one or more positional ids, each
-  id may be an epic (run ready child work under that epic/molecule) or
-  a task bead (run exactly that bead). Loop never narrows by spec.
-- **`loom gate mint --tree`** — creates standing safety-net remediation
-  work under one active work epic for the run, after suppression/dedup
-  proves at least one actionable child bead remains. Spec epics remain
-  metadata carriers and never receive normal implementation children. If
-  no child bead is actionable, no work epic is created and `loom:active`
-  is unchanged. See [gate.md — Findings and
-  Minting](gate.md#findings-and-minting).
-
-**Todo success protocol.** The final non-empty line of a successful
-todo agent session is exactly one JSON payload prefixed by
-`LOOM_TODO:`. The Rust contract lives in `loom-protocol::todo`:
-
-```rust
-pub struct TodoSuccess {
-    pub head: GitSha,
-    pub fingerprint: TodoFingerprint,
-    pub work_epic: BeadId,
-    pub title: NonEmptyString,
-    pub specs: Vec<TodoSpecSuccess>,
-}
-
-pub struct TodoSpecSuccess {
-    pub label: SpecLabel,
-    pub outcome: TodoSpecOutcome,
-}
-
-#[serde(tag = "outcome", rename_all = "kebab-case")]
-pub enum TodoSpecOutcome {
-    Decomposed { beads: NonEmptyVec<BeadId> },
-    NoWork { reason: NonEmptyString },
-}
-```
-
-`TodoSuccess.title` is the final work-epic title the decomposition
-agent judged from the bead set; the driver-created preflight title is a
-placeholder and is not durable. `TodoSuccess.specs` contains exactly the
-preflight changed-spec set — no omissions, no extras, no unchanged specs.
-Initialization is driver
-preflight state, not an agent-reported outcome; the driver summary may
-render "initialized + decomposed" when it created a spec epic and the
-agent reported `Decomposed`.
-
-`TodoFingerprint` is an opaque newtype constructed by the driver from
-canonical JSON containing the preflight head, sorted changed spec
-labels, each changed spec's path, spec-file blob SHA, spec epic id,
-current cursor-or-null, initialized flag, and the `docs/README.md`
-blob SHA. The canonical bytes are hashed and encoded by the driver;
-callers compare typed values, not raw strings.
-
-**Notes lifecycle.** Notes are transient hints attached to a spec —
-bug-or-gotcha context, file paths to touch, design trade-offs left to
-the implementer's judgement, decisions captured during a review, etc.
-They are never canonical: the spec markdown and Beads metadata hold
-durable design/cursor state, while the cache holds in-flight scratch.
-Notes are discriminated by `kind`, with `implementation` consumed by
-`loom todo` to seed bead bodies.
-
-The note CLI remains:
-
-```
-loom note set   <label> [--kind implementation] --json '["note 1", …]'
-loom note add   <label> [--kind implementation] --text "single note"
-loom note clear <label> [--kind implementation | --all-kinds]
-loom note list  [<label>] [--kind implementation | --all-kinds]
-loom note rm    <id>
-```
-
-Lifecycle for `kind = implementation`:
-
-| Event | Effect on notes rows where `kind = 'implementation'` |
-|-------|------------------------------------------------------|
-| `loom plan [labels...]` | Interview reads notes for anchor specs and any sibling it touches, then writes a merged array back via `loom note set` for each affected spec. Plan does not touch bd. |
-| `loom todo` with no changed specs | Notes untouched. |
-| Validated `LOOM_TODO` finalization | Notes for every changed spec are rendered into the created work beads as applicable, then deleted when the corresponding spec cursor advances. |
-| Any non-finalized todo terminal (`LOOM_BLOCKED`, `LOOM_CLARIFY`, malformed/missing `LOOM_TODO`, validation failure, nonzero exit) | Notes untouched and all spec cursors untouched; the next invocation reprocesses the same changed set. |
-| `loom init --rebuild` | All notes drop with the cache — no filesystem source reconstructs them. |
-
-**Container exposure:** `.loom/cache.db` is inside the workspace
-bind-mounted into containers. A malicious agent could modify it
-directly. This is accepted because the cache is reconstructable and
-non-authoritative: durable correctness comes from Git, Beads metadata,
-and spec files. Cache tampering can lose hints or stale evidence; it
-cannot make `loom todo` skip a changed spec because preflight treats
-absent/invalid local evidence as unknown or blocking, never as clean.
-
-### Compaction Recovery
-
-Compaction summarizes conversation history; anything that lived only in
-conversation is lost. Recovery uses two pieces — the original phase prompt
-(re-pinned verbatim) and a live scratchpad the agent writes to during the
-session — joined by a hook script that re-injects both after compaction.
-
-**Pinned-context invariant.** `prompt.txt` is active instruction context,
-not summarizable chat history. After compaction, Loom reintroduces the
-full initial rendered prompt before the scratchpad so phase protocol,
-project pins, and mode definitions such as `Interview Modes` survive
-resume. A compacted LLM summary is never the sole carrier for pinned
-context. Token pressure in the initial prompt is handled as a separate
-prompt-size issue; it does not justify silently omitting or summarizing
-instruction/mode sections. The normal required path is full-prompt
-re-pinning. If any resumed-context assembly faces a backend-specific
-hard limit and must choose between compacted history and pinned
-instructions, it drops or summarizes ordinary history first; any
-exceptional fallback preserves instruction, protocol, and mode sections
-verbatim.
-
-**Effective re-pin invariant.** Re-pinning is complete only when those
-instructions are active for future model turns, not merely when bytes are
-written to disk or a hook/steer command is queued. Operational shorthand
-defined by the pinned prompt (for example, `do a polish`) must continue to
-drive behavior after compaction. If Loom cannot assemble or deliver the full
-pin before accepting or using post-compaction workflow output, it blocks,
-restarts, or fails loudly rather than proceeding with summary-only context.
-Every agent-bearing phase path, including interactive `loom plan` and
-`loom inbox chat` shell-outs, installs its backend delivery mechanism before
-the initial prompt can produce user-visible output; an interactive path is not
-exempt merely because it bypasses `SpawnConfig`.
-
-**Behavioral canary.** Byte-level tests that inspect `prompt.txt`,
-`repin.sh`, or a queued steer are necessary but not sufficient proof of the
-effective invariant. The verifier set includes a post-compaction turn canary:
-seed the initial prompt with an instruction/mode definition and a test-only
-nonce that are both absent from the compacted summary, force or simulate
-compaction through the production phase path, ask a follow-up whose correct
-answer requires that definition and nonce, and fail unless the answer reflects
-both. `do a polish` is the canonical semantics probe because the required
-answer is specific — report-only review, propose edits/findings, and do not
-edit files unless explicitly asked — but the nonce is what prevents a model
-from passing via priors or a vague summary.
-
-**Per-session scratch directory.** At session start the driver creates
-`.loom/scratch/<key>/`:
-
-- `prompt.txt` — the initial prompt sent to the agent at session start.
-- `scratch.md` — empty scratchpad. The agent appends decisions, open
-  questions, and TODOs as the session progresses, per
-  `partial/scratchpad.md`.
-- `repin.sh` — small bash that emits the `SessionStart[compact]` JSON
-  envelope: a short fixed preamble identifying this as a post-compaction
-  re-pin, then `cat prompt.txt`, then `cat scratch.md`.
-- `skills/` — materialized built-in skill packages selected for the resolved
-  profile/phase. Repo/configured skills remain at their source paths; built-ins
-  are copied here so prompt disclosure and native backends have readable files.
-- `offload/` — Direct-backend sessions only: a subdirectory the Direct
-  runner creates lazily to hold tool output that exceeded the inline cap.
-  Semantics are owned by [agent.md § Direct Output
-  Bounding](agent.md#direct-output-bounding); the directory is removed by
-  the same session-end cleanup below.
-
-`<key>` is the session concurrency unit, matching the existing locks:
-the joined anchor-label set (or `plan`) for `loom plan`, the work epic
-id for `loom todo`, the bead id for `loom loop` / `loom gate`, and the
-addressed item/filter key for `loom inbox chat`. Two parallel loop workers on
-different beads of the same work epic get independent scratch directories.
-
-**Per-backend delivery.** How each backend re-pins the recovery
-content at compaction time — including any hook fragments the
-driver writes alongside the scratch directory at session start —
-is owned by [agent.md § Compaction Handling](agent.md#compaction-handling).
-
-**Cleanup.** The driver removes the per-key scratch directory at session
-end on every exit path. A new session for the same key starts
-empty — no carry-over from a prior crashed session.
-
-### Loom-LLM
-
-See [llm.md](llm.md) — the `LlmClient` trait, typed
-`CompletionRequest` / `ModelId` / `CacheControl`, structured
-output, `TokenUsage`, `Conversation` with built-in tool-use loop,
-the `Tool` trait, and the two agent-loop observers
-(`DoomLoopObserver`, `DuplicateResultObserver`) all live there.
-`loom-llm` is the crate (public-contract);
-[llm.md](llm.md) is the spec.
-
-The observers are configured CLI-side via the
-`[agent.doom_loop]` and `[agent.duplicate_result]` blocks described in
-[llm.md § Configuration](llm.md#configuration); their behaviour and the
-`observer-abort` recovery-cause flow into the verdict gate are owned by
-[llm.md](llm.md) and [Verdict Gate](#verdict-gate) respectively.
+[llm.md](llm.md) owns `LlmClient`, typed completion and cache controls,
+`Conversation`, tools, usage, and observers. Harness owns only crate placement,
+configuration composition, and routing observer aborts into typed recovery.
 
 ## Configuration
 
-Loom reads `<workspace>/loom.toml` by default; setting the
-`LOOM_CONFIG` env var overrides the path (absolute or cwd-relative).
-TOML, parsed natively via the `toml` crate into a typed `LoomConfig`
-struct with `#[serde(default)]` on all fields so the file can be
-empty or absent (defaults apply).
+Loom reads `<workspace>/loom.toml`; `LOOM_CONFIG` may select another path.
+Missing files and fields use typed defaults. The root file is the sole
+configuration source, including gate runner blocks; `.loom/` contains runtime
+state rather than hidden configuration.
 
-```toml
-# Project overview — pinned in every phase via partial/context_pinning.md
-pinned_context = "docs/README.md"
+Harness-owned settings include Beads creation defaults; integration branch,
+sccache paths, and Git timeout; loop iteration/retry/infra budgets; event-log
+retention; phase profile/backend defaults and overrides; skill registration;
+and runner dispatch. Backend, LLM-observer, gate, skill, and tuning field
+semantics are owned by their respective specs.
 
-# Rust / project style rules — pinned in run + check via partial/style_rules.md
-# (see templates.md for the partial inventory and pinning policy)
-style_rules = "docs/style-rules.md"
-
-[beads]
-priority = 2
-default_type = "task"
-
-[loom]
-# Name of the branch the loom workspace (`.loom/integration/`)
-# has checked out and into which bead branches rebase + fast-forward.
-# Loom pushes this branch to `origin/<integration_branch>` from the
-# gate. Default `main`.
-integration_branch = "main"
-# Setting `sccache_dir` enables shared sccache. For bead and
-# plan/todo container spawns, the directory is bind-mounted at
-# `sccache_container_path` and `SCCACHE_DIR` + `RUSTC_WRAPPER=sccache`
-# are set in container env. For host-side cargo invocations (loom's
-# gate-verify against the loom workspace; optionally the operator's
-# `nix develop`), the same env vars are exported and cargo reads
-# the host directory directly — no mount, because there is no
-# container boundary. Leaving `sccache_dir` unset disables the
-# feature entirely; every cargo invocation pays full cold-build
-# cost. `sccache_container_path` defaults to `/sccache` and is
-# consulted only when `sccache_dir` is set.
-# sccache_dir = "~/.cache/loom-sccache"
-# sccache_container_path = "/sccache"
-# Timeout (seconds) for git operations whose hooks legitimately run for
-# minutes — notably the gate's `git push`, which fires the workspace's
-# pre-push CI stage (nextest + nix build). Surfaces true hangs without
-# aborting legitimate CI. Default 600 (10 minutes).
-# git_hook_timeout_secs = 600
-
-[loop]
-# Work-epic-level: bounds `loom loop`'s outer loop on promoted deferred
-# remediation beads (each full work-epic pass — initial pass + every
-# promoted remediation pass — consumes one slot). Cached as
-# `work_epics.iteration_count` in `.loom/cache.db` and surfaced in
-# `previous_failure` context on each retry.
-max_iterations = 10
-# In-session: bounds the per-bead retry-with-`previous_failure` budget
-# inside one `process_one_bead` call. Independent of
-# `max_iterations`; the two counters never share slots.
-max_retries = 2
-
-[loop.infra]
-# Per-bead infrastructure attempt budget for one `loom loop` invocation.
-# Retryable spawn / handshake / transport / container failures use this
-# round-robin budget and do not consume `[loop] max_retries`. There is no
-# wall-clock cooldown/backoff in v1: an infra-failed bead moves to the tail
-# of the retry queue while other ready work proceeds, then retries again when
-# selected and attempts remain. A fresh `loom loop` gets a fresh budget.
-max_attempts = 3
-
-[logs]
-# Event-log retention; see specs/events.md. 0 disables sweeping.
-retention_days = 14
-
-[skills]
-# Skill registration policy. `auto` registers natively when the resolved
-# backend supports native skills and fails loud on registration failure;
-# `prompt` disables native registration globally and exposes readable paths
-# in the prompt skill index.
-registration = "auto" # auto | prompt
-# Show paths only when prompt disclosure needs them, or always include paths
-# for audit/debugging.
-show_paths = "needed" # needed | always
-# Explicit non-standard skill files or directories. Auto-discovery still finds
-# git-tracked skill.md packages matched case-insensitively; no globs in v1.
-# paths = ["docs/review-skill.md", "team/agent-skills/"]
-
-[tune.evidence]
-# Stable fraction of mined evidence withheld for selection/gating. Must be >0
-# and <1. Workspace evidence is always eligible; external roots are never
-# implicit.
-selection_fraction = 0.34
-# Every configured external root is printed before harvesting.
-external_roots = []
-
-[tune.checks]
-# Hard caps for budgeted behavioral checker planning. `full` runs all applicable
-# declared regression cases before sampling mined selection evidence, but still
-# honors wall/judge caps.
-max_behavior_cases = 3
-max_wall_time_secs = 1800
-max_llm_judge_calls = 10
-# Disable optional built-in checker ids for this workspace. Mandatory preflight
-# validators cannot be disabled.
-# disabled = ["behavior.review.finding-recall"]
-
-# Per-phase config. Resolution for any field: [phase.<name>] →
-# [phase.default] → built-in. `loom loop` reads its profile from the
-# bead's `profile:X` label first, then [phase.loop] / [phase.default];
-# the `--profile` CLI flag overrides everything.
-[phase.default]
-profile = "base"
-agent.backend = "claude"
-
-# [phase.todo]
-# profile = "rust"
-# agent.backend = "pi"
-# agent.provider = "deepseek"
-# agent.model_id = "deepseek-v3"
-#
-# [phase.gate.review]
-# agent.backend = "claude"
-
-[claude]
-# Agent-runtime settings, applied wherever claude is selected. Seconds to
-# wait for clean exit after `result` before SIGTERM (shutdown watchdog).
-post_result_grace_secs = 5
-
-# Backend-agnostic liveness knobs. `handshake_timeout_secs` bounds the pi
-# startup probe + optional set_model response — a non-responsive launcher
-# fails fast with `HandshakeTimeout` instead of hanging. `stall_warn_secs`
-# emits a `warn!` every N seconds of agent silence on the agent event loop
-# without aborting; claude can legitimately think for minutes, so this is a
-# heartbeat, not a deadline. Defaults: 30s / 60s.
-# handshake_timeout_secs = 30
-# stall_warn_secs = 60
-
-[security]
-# Tool names to deny when claude sends control_request. Claude-only —
-# pi has no host-side permission flow (tools execute internally, no
-# control_request analog). Empty by default; the container sandbox is
-# the trust boundary.
-# denied_tools = ["SomeNewHostTool"]
-
-# Observer blocks `[agent.doom_loop]` and `[agent.duplicate_result]`
-# are part of the LoomConfig schema; their fields and defaults are owned
-# by specs/llm.md § Configuration.
-
-# Gate runners — per-tier batched dispatch with per-runner cwd. Full
-# schema (match patterns, target templates, parsers) is owned by
-# gate.md. The blocks below are loom-the-repo's own values; other
-# consumers declare their own.
-[runner.test]
-command = "cargo nextest run --manifest-path loom/Cargo.toml -E '{filter}' --message-format=libtest-json"
-target  = "test({name})"
-join    = " + "
-parse   = "libtest-json"
-cwd     = "."  # nextest's --manifest-path makes this cwd-agnostic
-
-[runner.check]
-# Per-tier default cwd for [check] annotations whose specific runner
-# does not override. Loom-the-repo's Rust workspace lives at `loom/`.
-cwd = "loom"
-
-[runner.system.nix]
-match   = '^nix (build|run) \.#(\S+)$'
-command = "nix build {targets}"
-target  = ".#{capture_2}"
-join    = " "
-parse   = "nix-build-status"
-cwd     = "."  # nix commands always run from repo root
-```
-
-Defaults are chosen so the file can be absent on a fresh install and
-loom still works. Concerns that don't appear as config fields (output
-display, hook integration, watch behaviour, failure-pattern handling)
-are handled in Rust code rather than exposed as user-tunable
-parameters.
-
-**Single config file.** All loom configuration — including every
-`[runner.<tier>.<name>]` block — lives in `<workspace>/loom.toml` at
-the workspace root. There is no auxiliary config file inside
-`.loom/`, so the entire `.loom/` state tree can be gitignored
-without carve-outs. Set `LOOM_CONFIG` to relocate.
+Phase values resolve from `[phase.<name>]`, then `[phase.default]`, then built-in
+defaults. A loop bead's `profile:X` label precedes phase profile defaults, while
+the CLI profile override has highest precedence. Default configuration selects
+the base profile, Claude backend, ten work-epic iterations, two worker retries,
+and three infra attempts.
 
 ## Success Criteria
 
