@@ -23,7 +23,8 @@ use serde::Serialize;
 use walkdir::WalkDir;
 
 use super::util::{
-    all_rs_files, immediate_children, rel, rs_files_recursive, src_files, workspace_root,
+    all_rs_files, all_rs_files_including_verifiers, immediate_children, rel, rs_files_recursive,
+    src_files, workspace_root,
 };
 
 /// Single-walk `--print-inputs` document: `{"inputs": ["path", ...]}`. The
@@ -105,14 +106,16 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         | "no_derive_from_on_newtypes"
         | "no_inline_suppression_comment_contract"
         | "no_panics_in_production"
-        | "no_real_clock_outside_system_clock"
-        | "no_thread_sleep"
-        | "no_tokio_sleep_outside_clock"
-        | "no_tokio_timeout_outside_clock"
         | "observers_in_loom_llm" => src_files(root),
 
         // Production source + tests: `narrow_to_loom_files(all_rs_files(..))`.
         "finding_no_duplicate_definitions" | "no_hardcoded_tmp_paths" => all_rs_files(root),
+
+        // Clock audits parse AST calls, so verifier fixture strings are safe inputs.
+        "no_real_clock_outside_system_clock"
+        | "no_thread_sleep"
+        | "no_tokio_sleep_outside_clock"
+        | "no_tokio_timeout_outside_clock" => all_rs_files_including_verifiers(root),
 
         // Single-crate recursive `src/` scans.
         "loom_llm_multimodal_no_provider_wire_types"

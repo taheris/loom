@@ -83,8 +83,9 @@ implementation); the mechanism lives in gate.md.
 
 Time-dependent components — lock acquisition timeout, shutdown
 watchdog grace, JSONL read-line timeout, log retention sweep, bd /
-git subprocess timeouts — make tests flaky when they touch real wall
-time on a loaded CI runner. The design eliminates real-time waits.
+git subprocess timeouts — make tests flaky when ordinary logic tests touch real
+wall time on a loaded CI runner. The design routes their timer logic through an
+injected clock.
 
 **`Clock` trait in `loom-driver`** with `now()`, `sleep(Duration)`,
 `timeout(Duration, Future)` async surface. Two implementations:
@@ -99,23 +100,32 @@ comparing against filesystem mtime) take `now: Instant` as a
 parameter. Tests pass synthetic `now` values to age files; production
 passes `clock.now()`.
 
-**Filesystem mtime in tests** is set via the `filetime` crate. Real
-wall time stays zero; tests can express "this file is 15 days old"
-without sleeping.
+**Filesystem mtime in tests** is set via the `filetime` crate. Real wall time
+stays zero for tests of time-dependent logic: tests can express "this file is
+15 days old" without sleeping.
 
-**Production-source bans** (enforced by walks in `loom-walk`):
+**Clock-use audit** is enforced by walks in `loom-walk` over both production and
+test Rust sources:
 
-- `std::thread::sleep` in production Rust sources.
-- `tokio::time::sleep` outside `SystemClock::sleep`'s implementation.
-- `tokio::time::timeout` outside `SystemClock::timeout`'s
-  implementation.
-- `Instant::now()` / `SystemTime::now()` outside clock implementations.
+- `std::thread::sleep` is absent from production and from unenumerated tests.
+- `tokio::time::sleep` appears only in clock implementations, tests using
+  `#[tokio::test(start_paused = true)]`, and enumerated exceptions.
+- `tokio::time::timeout` follows the same rule.
+- `Instant::now()` / `SystemTime::now()` appears only in clock implementations
+  and enumerated exceptions.
 
 Unit tests for time-dependent components construct a `MockClock` and pass it
-through the production clock boundary. Process-lifecycle and hard performance
-integration tests may use bounded host deadlines when the operating-system
-process boundary or elapsed time is the behavior under test; those sites remain
-exceptional under Non-Functional #8.
+through the production clock boundary. Tokio paused time is synthetic and does
+not consume a real-time exception.
+
+A real-time exception qualifies only when an operating-system process or kernel
+lock lifecycle, or actual elapsed performance, is itself the behavior under
+test. The audit registry names the exact file, function, operation, and call-site
+count, plus its boundary justification, finite upper deadline, cleanup strategy,
+and deterministic companion coverage for underlying timer logic. Durations stay
+at the smallest practical value. Every unenumerated call and every extra call in
+an enumerated function fails the audit; there is no directory-wide test
+exemption.
 
 ### Style Enforcement
 
@@ -364,8 +374,10 @@ Pi handshake timeout and workflow stall-heartbeat coverage depend on a
 pending real pipe plus the outer timeout or watchdog. They use separate,
 no-selector scripts under `tests/fixtures/agent/` rather than modes in the
 general mock-pi table. Each script encodes only the pending lifecycle needed by
-one integration test. Malformed output does not require process lifecycle
-coverage and remains a Pi parser unit test.
+one integration test. A host-side upper deadline kills the process group, reaps
+the child, and joins pipe readers if the production deadline regresses.
+Malformed output does not require process lifecycle coverage and remains a Pi
+parser unit test.
 
 ### Inbox Bridge Fixture
 
@@ -541,13 +553,18 @@ owns:
 
 ### Determinism
 
-- No `std::thread::sleep` in production Rust sources
+- `std::thread::sleep` is absent from production and unenumerated tests; each
+      test exception is an exact bounded process-lifecycle or elapsed-performance
+      registry entry
   [check](cargo run -p loom-walk -- no_thread_sleep)
-- No `tokio::time::sleep` in production Rust sources outside `SystemClock::sleep`
+- `tokio::time::sleep` appears only in clock implementations, synthetic paused
+      tests, and exact bounded registry entries across production and test sources
   [check](cargo run -p loom-walk -- no_tokio_sleep_outside_clock)
-- No `tokio::time::timeout` in production Rust sources outside `SystemClock::timeout`
+- `tokio::time::timeout` appears only in clock implementations, synthetic paused
+      tests, and exact bounded registry entries across production and test sources
   [check](cargo run -p loom-walk -- no_tokio_timeout_outside_clock)
-- No real-clock reads in production Rust sources outside clock implementations
+- Real-clock reads appear only in clock implementations and exact bounded
+      registry entries across production and test sources
   [check](cargo run -p loom-walk -- no_real_clock_outside_system_clock)
 - `#[ignore]` never hides flaky, optional, or otherwise omitted coverage;
       each exception is an enumerated child-process entry point invoked by a
@@ -941,12 +958,13 @@ owns:
 
 ### Non-Functional
 
-1. **Deterministic** — no real LLM API calls; no real wall-clock waits.
-   The packaged-agent exception in Functional #10 is an offline,
+1. **Deterministic** — no real LLM API calls and no ordinary real wall-clock
+   waits. The packaged-agent exception in Functional #10 is an offline,
    non-conversational process-health check. Mock agents return canned responses.
-   Time-dependent components take
-   an injectable `Clock` trait; tests use a `MockClock` with controllable
-   advance (see *Architecture / Determinism Through Clock Injection*).
+   Time-dependent components take an injectable `Clock` trait; tests of their
+   timer logic use a `MockClock` with controllable advance. Exact audited
+   process-lifecycle and elapsed-performance exceptions use bounded host time as
+   defined in *Architecture / Determinism Through Clock Injection*.
 2. **Fast** — soft targets per gate command, warm cache:
    - `loom gate` (status, no verifiers): <100 ms (and a hard <500 ms
      ceiling, asserted by a self-test on the cache implementation).
@@ -960,8 +978,8 @@ owns:
      concurrency.
 
    All except the `loom gate` status ceiling are *soft* — they guide
-   design (no real sleeps, subprocess tests need justification,
-   proptest case count bounded) but the gate doesn't fail when a
+   design (host waits require audited boundaries, subprocess tests need
+   justification, proptest case count bounded) but the gate doesn't fail when a
    budget is exceeded; humans review timing in PRs.
 3. **Isolated** — each test uses its own temp directory and beads database
    prefix. No shared mutable state between tests.
@@ -1000,9 +1018,12 @@ owns:
    follow-up.
 8. **Subprocess-spawning tests are exceptional** — each subprocess test
    (mock-pi, mock-claude, real `git`) costs 50-200ms; ten of them blow
-   the 5s soft target alone. A test that spawns a subprocess must
-   include a short comment or doc string explaining why an in-process
-   equivalent (via `LineParse` + `tokio::io::duplex`) isn't feasible.
+   the 5s soft target alone. A test that spawns a subprocess includes a short
+   comment or doc string explaining why an in-process equivalent (via
+   `LineParse` + `tokio::io::duplex`) is not feasible. Any direct host-clock
+   read or sleep also appears in the exact audited exception registry with a
+   finite upper deadline, reliable child cleanup, the smallest practical
+   duration, and deterministic companion coverage for timer logic.
 9. **Upstream protocol versioning** — Pi Coding Agent and Claude Code
    versions are pinned by the repo's nixpkgs input. Bumps are deliberate PRs
    accompanied by a protocol-bump checklist (re-run parser tests, scan

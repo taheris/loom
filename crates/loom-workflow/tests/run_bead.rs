@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use loom_driver::agent::{AgentRuntime, ImageSourceKind, SessionOutcome, SpawnConfig};
@@ -998,7 +998,7 @@ async fn bead_branch_ref_deleted_on_every_exit_path() -> Result<()> {
 /// terminal renderer, which is irrelevant for the driver-event
 /// channel.
 fn open_bead_sink_for_test(logs_root: &Path, label: &SpecLabel, bead_id: &BeadId) -> LogSink {
-    LogSink::open_in_at(logs_root, label, bead_id, None, SystemTime::now()).expect("open bead sink")
+    LogSink::open_in_at(logs_root, label, bead_id, None, UNIX_EPOCH).expect("open bead sink")
 }
 
 /// Read every JSONL event from the bead's per-attempt log file and

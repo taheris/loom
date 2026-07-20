@@ -16,6 +16,7 @@ pub use inputs::render_print_inputs;
 mod agent_backend_trait_contract;
 mod audit_makes_no_bd_writes_outside_mint_module;
 mod cli_surface;
+mod clock_audit;
 mod crate_structure;
 mod direct_tools_net_new;
 mod event_sink_in_loom_events;

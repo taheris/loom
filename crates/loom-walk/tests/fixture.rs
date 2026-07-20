@@ -531,6 +531,54 @@ fn no_thread_sleep_fail() {
     assert_fail(&out, "thread::sleep");
 }
 
+#[test]
+fn no_thread_sleep_passes_exact_bounded_process_exception() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom/tests/spawn_dispatch.rs",
+        "fn bounded_output() { std::thread::sleep(std::time::Duration::from_millis(10)); }\n",
+    );
+    let out = invoke(
+        &["no_thread_sleep"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn no_thread_sleep_rejects_unenumerated_test_exception() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom-driver/tests/new_exception.rs",
+        "#[test]\nfn waits_on_host() { std::thread::sleep(std::time::Duration::from_millis(1)); }\n",
+    );
+    let out = invoke(
+        &["no_thread_sleep"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_fail(&out, "not an exact audited clock boundary");
+}
+
+#[test]
+fn no_thread_sleep_rejects_extra_call_in_enumerated_function() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom/tests/spawn_dispatch.rs",
+        "fn bounded_output() {\n    std::thread::sleep(std::time::Duration::from_millis(10));\n    std::thread::sleep(std::time::Duration::from_millis(10));\n}\n",
+    );
+    let out = invoke(
+        &["no_thread_sleep"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_fail(&out, "not an exact audited clock boundary");
+}
+
 // ---------------------------------------------------------------------------
 // no_tokio_sleep_outside_clock
 // ---------------------------------------------------------------------------
@@ -567,6 +615,38 @@ fn no_tokio_sleep_outside_clock_fail() {
     assert_fail(&out, "tokio::time::sleep");
 }
 
+#[test]
+fn no_tokio_sleep_outside_clock_passes_paused_test_time() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom-driver/tests/paused.rs",
+        "#[tokio::test(start_paused = true)]\nasync fn synthetic_wait() { tokio::time::sleep(std::time::Duration::ZERO).await; }\n",
+    );
+    let out = invoke(
+        &["no_tokio_sleep_outside_clock"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn no_tokio_sleep_outside_clock_rejects_unpaused_test_time() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom-driver/tests/unpaused.rs",
+        "#[tokio::test]\nasync fn host_wait() { tokio::time::sleep(std::time::Duration::ZERO).await; }\n",
+    );
+    let out = invoke(
+        &["no_tokio_sleep_outside_clock"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_fail(&out, "not an exact audited clock boundary");
+}
+
 // ---------------------------------------------------------------------------
 // no_tokio_timeout_outside_clock
 // ---------------------------------------------------------------------------
@@ -601,6 +681,38 @@ fn no_tokio_timeout_outside_clock_fail() {
         Some(&target.to_string_lossy()),
     );
     assert_fail(&out, "tokio::time::timeout");
+}
+
+#[test]
+fn no_tokio_timeout_outside_clock_passes_paused_test_time() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom-driver/tests/paused_timeout.rs",
+        "#[tokio::test(start_paused = true)]\nasync fn synthetic_timeout() { let _ = tokio::time::timeout(std::time::Duration::ZERO, async {}).await; }\n",
+    );
+    let out = invoke(
+        &["no_tokio_timeout_outside_clock"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn no_tokio_timeout_outside_clock_rejects_unpaused_test_time() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom-driver/tests/unpaused_timeout.rs",
+        "#[tokio::test]\nasync fn host_timeout() { let _ = tokio::time::timeout(std::time::Duration::ZERO, async {}).await; }\n",
+    );
+    let out = invoke(
+        &["no_tokio_timeout_outside_clock"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_fail(&out, "not an exact audited clock boundary");
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +834,54 @@ fn no_real_clock_outside_system_clock_fail() {
         Some(&target.to_string_lossy()),
     );
     assert_fail(&out, "Instant::now");
+}
+
+#[test]
+fn no_real_clock_outside_system_clock_passes_exact_performance_exception() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom-gate/tests/cache.rs",
+        "fn render_under_500ms_on_2000_row_corpus() { let _ = std::time::Instant::now(); }\n",
+    );
+    let out = invoke(
+        &["no_real_clock_outside_system_clock"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn no_real_clock_outside_system_clock_rejects_unenumerated_test_exception() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom-driver/tests/new_clock.rs",
+        "#[test]\nfn host_time() { let _ = std::time::Instant::now(); }\n",
+    );
+    let out = invoke(
+        &["no_real_clock_outside_system_clock"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_fail(&out, "not an exact audited clock boundary");
+}
+
+#[test]
+fn no_real_clock_outside_system_clock_rejects_extra_call_in_enumerated_function() {
+    let ws = make_workspace();
+    let target = seed(
+        ws.path(),
+        "crates/loom-gate/tests/cache.rs",
+        "fn render_under_500ms_on_2000_row_corpus() {\n    let _ = std::time::Instant::now();\n    let _ = std::time::Instant::now();\n}\n",
+    );
+    let out = invoke(
+        &["no_real_clock_outside_system_clock"],
+        Some(ws.path()),
+        Some(&target.to_string_lossy()),
+    );
+    assert_fail(&out, "not an exact audited clock boundary");
 }
 
 // ---------------------------------------------------------------------------

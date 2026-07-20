@@ -99,6 +99,20 @@ pub fn all_rs_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Production and test Rust files, including verifier fixtures.
+pub fn all_rs_files_including_verifiers(root: &Path) -> Vec<PathBuf> {
+    let mut out = all_rs_files(root);
+    for path in [
+        root.join("crates/loom-walk/tests/fixture.rs"),
+        root.join("crates/loom/tests/style.rs"),
+    ] {
+        if path.is_file() {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// Take the walk's chosen scope (e.g. [`src_files`]) and narrow it to
 /// the `LOOM_FILES` set when one is present. Caller-supplied paths
 /// outside the scope are silently dropped — the gate decides what to

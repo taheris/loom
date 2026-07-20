@@ -657,9 +657,8 @@ async fn rollback_integration_resets_integration_branch_by_one_commit() -> Resul
 /// `rebase_onto_integration` must treat git's "Unable to create
 /// '…/index.lock': File exists" refusal as *recoverable contention* — retry
 /// from its current view of the integration tip — not as a spurious
-/// conflict. Modelled deterministically: a pre-created `index.lock` stands
-/// in for a peer's held lock, and a concurrent task releases it mid-flight
-/// so the retry loop observes the lock clear and the rebase lands.
+/// conflict. A pre-created `index.lock` stands in for a peer's held lock, and
+/// a bounded concurrent task releases it while the real git process retries.
 #[tokio::test]
 async fn rebase_onto_integration_retries_through_index_lock_contention() -> Result<()> {
     let repo = init_repo()?;
@@ -705,8 +704,8 @@ async fn rebase_onto_integration_retries_through_index_lock_contention() -> Resu
 /// The ff-merge half of the same critical section: `ff_merge_integration`
 /// also takes the loom-workspace `index.lock` (checkout + `merge --ff-only`)
 /// and must retry through a peer's held lock rather than surfacing a
-/// spurious failure (specs/harness.md § Concurrency). Same deterministic
-/// stand-in lock + concurrent release as the rebase case.
+/// spurious failure (specs/harness.md § Concurrency). It uses the same bounded
+/// stand-in lock and concurrent release as the rebase case.
 #[tokio::test]
 async fn ff_merge_integration_retries_through_index_lock_contention() -> Result<()> {
     let repo = init_repo()?;

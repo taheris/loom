@@ -19,11 +19,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -35,6 +35,58 @@ fn git_command() -> Command {
     let mut command = Command::new("git");
     loom_test_support::scrub_git_local_env(&mut command);
     command
+}
+
+/// Runs a process group to completion or kills and reaps it at the deadline.
+fn bounded_output(command: &mut Command, deadline: Duration) -> Output {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let mut child = command.spawn().expect("spawn bounded child");
+    let pgid = Pid::from_raw(-(child.id() as i32));
+    let mut stdout = child.stdout.take().expect("child stdout piped");
+    let mut stderr = child.stderr.take().expect("child stderr piped");
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).expect("read child stdout");
+        bytes
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).expect("read child stderr");
+        bytes
+    });
+
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll bounded child") {
+            break status;
+        }
+        if started.elapsed() >= deadline {
+            if kill(pgid, Signal::SIGKILL).is_err() {
+                child
+                    .kill()
+                    .expect("kill bounded child after group kill failed");
+            }
+            let status = child.wait().expect("reap bounded child after deadline");
+            let stdout = stdout_reader.join().expect("join child stdout reader");
+            let stderr = stderr_reader.join().expect("join child stderr reader");
+            panic!(
+                "child exceeded {deadline:?} deadline and was reaped with {status}; stdout={} stderr={}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr),
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    Output {
+        status,
+        stdout: stdout_reader.join().expect("join child stdout reader"),
+        stderr: stderr_reader.join().expect("join child stderr reader"),
+    }
 }
 
 /// Resolve the absolute path to `bash` from `PATH`. Used so the shim's
@@ -1835,8 +1887,9 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     seed_active_spec(workspace, loom_bin, "agent");
     let new_path = bd_stub_path(workspace, "[]");
-    let started = std::time::Instant::now();
-    let output = Command::new(loom_bin)
+    let started = Instant::now();
+    let mut command = Command::new(loom_bin);
+    command
         .arg("--workspace")
         .arg(workspace)
         .arg("--host-key")
@@ -1852,9 +1905,8 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the todo dispatch path under test.
-        .env_remove("LOOM_INSIDE")
-        .output()
-        .expect("spawn loom");
+        .env_remove("LOOM_INSIDE");
+    let output = bounded_output(&mut command, Duration::from_secs(10));
     let elapsed = started.elapsed();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1922,7 +1974,8 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     seed_active_spec(workspace, loom_bin, "agent");
     let new_path = bd_stub_path(workspace, "[]");
     let started = Instant::now();
-    let output = Command::new(loom_bin)
+    let mut command = Command::new(loom_bin);
+    command
         .arg("--workspace")
         .arg(workspace)
         .arg("--host-key")
@@ -1939,9 +1992,8 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the todo dispatch path under test.
-        .env_remove("LOOM_INSIDE")
-        .output()
-        .expect("spawn loom");
+        .env_remove("LOOM_INSIDE");
+    let output = bounded_output(&mut command, Duration::from_secs(10));
     let elapsed = started.elapsed();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2053,9 +2105,9 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         thread::sleep(Duration::from_millis(50));
     }
 
-    let _ = kill(pgid, Signal::SIGKILL);
-    let _ = child.wait();
-    let _ = reader.join();
+    kill(pgid, Signal::SIGKILL).expect("kill stalled process group");
+    child.wait().expect("reap stalled loom child");
+    reader.join().expect("join stalled stderr reader");
 
     let body = buf.lock().unwrap().clone();
     assert!(

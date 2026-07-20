@@ -69,6 +69,11 @@ fn second_acquire_times_out_with_work_root_busy() -> Result<()> {
             "second acquire returned early ({waited:?}) — should wait the full timeout"
         ));
     }
+    if waited > Duration::from_secs(2) {
+        return Err(anyhow!(
+            "second acquire exceeded its bounded test deadline: {waited:?}"
+        ));
+    }
     Ok(())
 }
 
@@ -214,7 +219,7 @@ fn crash_releases_work_root_lock() -> Result<()> {
     let root = BeadId::new("lm-crash")?;
 
     let exe = std::env::current_exe()?;
-    let status = Command::new(&exe)
+    let mut child = Command::new(&exe)
         .env("LOOM_LOCK_TEST_DIR", &workspace)
         .env("LOOM_LOCK_TEST_STATE_HOME", state_home.path())
         .env("LOOM_LOCK_TEST_ROOT", root.as_str())
@@ -224,7 +229,21 @@ fn crash_releases_work_root_lock() -> Result<()> {
             "crash_helper_take_lock_then_exit",
             "--nocapture",
         ])
-        .status()?;
+        .spawn()?;
+    let helper_deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= helper_deadline {
+            child.kill()?;
+            let killed = child.wait()?;
+            return Err(anyhow!(
+                "crash helper exceeded five-second deadline and was reaped: {killed:?}"
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
     if !status.success() {
         return Err(anyhow!("crash helper exited non-zero: {status:?}"));
     }
