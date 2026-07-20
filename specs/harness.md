@@ -24,11 +24,12 @@ consumer template composition, and the snapshot-test contract live in
 [templates.md](templates.md). The agent abstraction layer (pi-mono,
 Claude Code, and Direct backends; container communication; backend
 selection) lives in [agent.md](agent.md). The gate (rubric,
-invariants, lanes, stages) lives in [gate.md](gate.md). Workflow
-semantics — what each `loom plan` / `loom todo` / `loom loop` /
-`loom gate` / `loom inbox` / `loom tune` command does — are defined in
-this spec's Functional section and the Inbox Modes / Tune Modes /
-Verdict Gate sections below.
+invariants, lanes, stages) lives in [gate.md](gate.md).
+Workflow semantics for `loom plan`, `loom todo`, `loom loop`, `loom gate`, and
+`loom inbox` are defined in this spec's Functional section, Inbox Modes, and
+Verdict Gate sections below. The `loom tune` command and proposal contract are
+owned by [skills.md](skills.md); this spec defines only their platform
+integration.
 
 ## Architecture
 
@@ -1778,13 +1779,13 @@ separate rendered framing:
 
 ### Tune Modes
 
-The `loom tune` command surface, levels, target names, and common proposal flags
-are owned by [skills.md § Tune Command Surface](skills.md#tune-command-surface).
-This harness spec owns only platform effects around that surface: proposal
-allocation is serialized by `tune.lock`, proposal work happens in an isolated
-`.loom/tune/<bead-id>/` checkout, the invoking checkout is not modified, and
-resulting tune proposals route through `loom inbox` for human review and apply
-handoff.
+The `loom tune` command surface and proposal creation/isolation contract are
+owned by
+[skills.md § Tune Command Surface](skills.md#tune-command-surface) and
+[skills.md § Tune Proposal Worktrees and Beads](skills.md#tune-proposal-worktrees-and-beads).
+This harness spec owns only platform integration around that surface:
+`tune.lock` serializes allocation, and resulting proposals route through `loom
+inbox` for human review and apply handoff.
 
 ### Crate Layout
 
@@ -3301,11 +3302,6 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       wired into the binary, and read-only tune invocations do not allocate tune
       proposal envelopes
   [test](loom_tune_bare_prints_help_without_proposal)
-- Proposal-creating tune invocations allocate one tune bead plus one isolated
-      `.loom/tune/<bead-id>/` envelope with `repo/`, `manifest.json`,
-      `evidence.md`, logs/evidence caches, and no changes to the invoking
-      checkout
-  [test](loom_tune_subcommands_create_isolated_proposals)
 - Tune dry-runs exercise the same planning path as proposal creation and stop
       before candidate generation, preserving deterministic checker-plan output
   [test](loom_tune_level_seed_dry_run_shape_plan)
@@ -3885,11 +3881,12 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
      `loom inbox view` renders a numbered, bead-addressed, or proposal-addressed
      item; and `loom inbox chat` launches the interactive resolution agent.
      There is no host-side pick/reply/resolve/apply path in v1.
-   - `loom tune` — manual SkillOpt-style tuning surface. The detailed command
-     table is owned by [skills.md § Tune Command Surface](skills.md#tune-command-surface);
-     this harness spec owns the platform contract that proposal-creating tune
-     invocations allocate one local `.loom/tune/<bead-id>/` proposal envelope
-     for later review through `loom inbox`.
+   - `loom tune` — manual SkillOpt-style tuning surface. The command and
+     proposal creation/isolation contracts are owned by
+     [skills.md § Tune Command Surface](skills.md#tune-command-surface) and
+     [skills.md § Tune Proposal Worktrees and
+     Beads](skills.md#tune-proposal-worktrees-and-beads); this harness spec owns
+     its workflow placement and integration with `loom inbox`.
 
    **Inspection** — read-only views over cache, bd state, and logs:
    - `loom status` — print the active work epic, any pending
