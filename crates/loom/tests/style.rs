@@ -702,19 +702,17 @@ fn no_envelope_default_outside_parser() {
 }
 
 // ---------------------------------------------------------------------------
-// Rule: no `#[ignore]` outside the container smoke runner. `#[ignore]` for
-// "this flakes sometimes" is forbidden; the only legitimate use is opt-in
-// child-process helpers that the parent invokes directly via the test
-// binary's exe path.
+// Rule: `#[ignore]` cannot hide flaky, optional, or omitted coverage. The only
+// exceptions are child-process entry points invoked by a non-ignored parent
+// during the ordinary suite because process isolation is part of the behavior.
 //
-// Allowlist below names each legitimate `#[ignore]` site. Adding a new entry
-// requires a comment explaining why the test is opt-in (not flake mitigation).
+// The allowlist names every exception. Each entry requires a process-boundary
+// justification; every unenumerated marker fails the audit.
 // ---------------------------------------------------------------------------
 
 const IGNORE_ALLOWLIST: &[(&str, &str)] = &[
-    // Opt-in: parent test launches this fn via the test binary's exe path
-    // and the parent reads the child's exit state. Running it in the
-    // normal suite would deadlock against the same lock the parent holds.
+    // Process boundary: the parent must outlive this re-executed child to
+    // observe the kernel releasing its flock when the child exits.
     (
         "crates/loom-driver/tests/lock_manager.rs",
         "crash_helper_take_lock_then_exit",
@@ -735,8 +733,8 @@ fn no_ignore_for_flake() {
         visitor.visit_file(&parsed);
     }
     assert_violations(
-        "no `#[ignore]` outside the container smoke runner (specs/tests.md \
-         NFR #10: fix or delete; do not silence flakes)",
+        "no unaudited `#[ignore]` markers (specs/tests.md §Determinism: \
+         fix or delete skipped coverage; enumerate process helpers)",
         &violations,
     );
 }

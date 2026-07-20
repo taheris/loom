@@ -549,7 +549,10 @@ owns:
   [check](cargo run -p loom-walk -- no_tokio_timeout_outside_clock)
 - No real-clock reads in production Rust sources outside clock implementations
   [check](cargo run -p loom-walk -- no_real_clock_outside_system_clock)
-- No `#[ignore]` outside the container smoke runner
+- `#[ignore]` never hides flaky, optional, or otherwise omitted coverage;
+      each exception is an enumerated child-process entry point invoked by a
+      non-ignored parent during the ordinary test suite and carries a
+      process-boundary justification
   [test](no_ignore_for_flake)
 
 ### Annotation gate
@@ -1012,12 +1015,15 @@ owns:
    bumped. Fields not exercised by any test could still drift silently
    — parser tests must therefore touch every field of every documented
    message type for the pinned version, not just every type.
-10. **No `#[ignore]` for flake mitigation** — a test marked `#[ignore]`
-    because "it flakes sometimes" is forbidden. Either fix the root
-    cause or delete the test. `#[ignore]` is reserved for tests that
-    require explicit opt-in (e.g., the container smoke needing podman).
-    A CI flake opens a `loom-flake` P1 bead naming the failing test;
-    the test is fixed before any further work on the affected crate.
+10. **No `#[ignore]` for skipped coverage** — `#[ignore]` cannot hide a
+    flaky, optional, or otherwise omitted test; fix the root cause or delete
+    the test. The only exceptions are enumerated child-process entry points
+    that a non-ignored parent invokes during the ordinary test suite because
+    process isolation is itself part of the behavior under test. Each exception
+    carries a process-boundary justification in the audited allowlist, and
+    every unenumerated marker fails the audit. A CI flake opens a `loom-flake`
+    P1 bead naming the failing test; the test is fixed before any further work
+    on the affected crate.
 
 ## Out of Scope
 
