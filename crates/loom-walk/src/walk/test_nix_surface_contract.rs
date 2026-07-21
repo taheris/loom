@@ -76,7 +76,7 @@ const CONTRACTS: &[FileContract] = &[
         required: &[
             "LOOM_TEST_PROFILE_CONFIG",
             "unset WRIX_AGENT",
-            "--agent pi loop \"$BEAD_ID\"",
+            "--host-key --agent pi loop \"$BEAD_ID\"",
             "if [[ \"$ELAPSED\" -gt 30 ]]",
         ],
     },

@@ -108,7 +108,8 @@ if [[ -z "$bead_workspace" ]]; then
     git -c core.hooksPath=/dev/null clone --quiet --local "$workspace_source" "$bead_workspace"
 fi
 
-if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none --cap-add=NET_ADMIN --cgroups=disabled \
+if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none --env WRIX_AGENT=pi \
+    --cap-add=NET_ADMIN --cgroups=disabled \
     --volume "$bead_workspace:/workspace:rw" "$ref" /bin/bash -lc '
         set -euo pipefail
         pi --version >/dev/null

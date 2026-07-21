@@ -4574,7 +4574,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "tests/run-tests.sh",
-        "LOOM_TEST_PROFILE_CONFIG\nunset WRIX_AGENT\nloom --agent pi loop \"$BEAD_ID\"\nif [[ \"$ELAPSED\" -gt 30 ]]; then\n",
+        "LOOM_TEST_PROFILE_CONFIG\nunset WRIX_AGENT\nloom --host-key --agent pi loop \"$BEAD_ID\"\nif [[ \"$ELAPSED\" -gt 30 ]]; then\n",
     );
 }
 

@@ -151,7 +151,7 @@ log "seeded bead: $BEAD_ID"
 unset WRIX_AGENT
 set +e
 LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
-"$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID"
+"$LOOM_BIN" --workspace "$WORKSPACE" --host-key --agent pi loop "$BEAD_ID"
 RC=$?
 set -e
 

@@ -307,8 +307,8 @@ _:
             mkdir -p "$LOOM_TEST_SANDBOX_SOURCE/.git"
             touch "$LOOM_TEST_SANDBOX_SOURCE/Cargo.toml"
             bash ${../../scripts/test-sandbox.sh}
-            if [[ $(<"$LOOM_TEST_PODMAN_ARGS_LOG") != *'<run><--rm><--network=none>'* ]]; then
-              printf 'expected test-sandbox podman run to disable networking; observed:\n%s\n' "$(<"$LOOM_TEST_PODMAN_ARGS_LOG")" >&2
+            if [[ $(<"$LOOM_TEST_PODMAN_ARGS_LOG") != *'<run><--rm><--network=none><--env><WRIX_AGENT=pi>'* ]]; then
+              printf 'expected test-sandbox podman run to disable networking and select Pi; observed:\n%s\n' "$(<"$LOOM_TEST_PODMAN_ARGS_LOG")" >&2
               exit 1
             fi
             touch "$out"
