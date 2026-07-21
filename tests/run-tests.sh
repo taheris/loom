@@ -135,6 +135,7 @@ mkdir -p .beads/dolt
 )
 "$LOOM_WRIX_SERVICE_BIN" service start >/dev/null
 DOLT_SERVICE_STARTED=1
+"$LOOM_WRIX_SERVICE_BIN" service dolt wait >/dev/null
 DOLT_SOCKET=$("$LOOM_WRIX_SERVICE_BIN" service dolt socket)
 unset BEADS_DOLT_SERVER_HOST BEADS_DOLT_SERVER_PORT
 export BEADS_DOLT_SERVER_SOCKET="$DOLT_SOCKET"

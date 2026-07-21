@@ -582,7 +582,8 @@ mod tests {
 
     #[test]
     fn completion_request_requires_model_at_construction() {
-        let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+        let constructor: fn(ModelId) -> CompletionRequest = CompletionRequest::new;
+        let req = constructor(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .system("prefix")
             .user("question")
             .user_cached("doc", CacheControl::Ephemeral(CacheTtl::Hours1))
@@ -608,41 +609,6 @@ mod tests {
             req.messages[1].content[0].cache(),
             CacheControl::Ephemeral(CacheTtl::Hours1),
         ));
-
-        let temp = tempfile::tempdir().expect("tempdir created");
-        std::fs::create_dir(temp.path().join("src")).expect("src dir created");
-        std::fs::write(
-            temp.path().join("Cargo.toml"),
-            format!(
-                "[package]\nname = \"missing-model-check\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nloom-llm = {{ path = {:?} }}\n",
-                env!("CARGO_MANIFEST_DIR"),
-            ),
-        )
-        .expect("manifest written");
-        std::fs::write(
-            temp.path().join("src/main.rs"),
-            "use loom_llm::CompletionRequest;\nfn main() { let _ = CompletionRequest::new(); }\n",
-        )
-        .expect("source written");
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let output = std::process::Command::new(cargo)
-            .arg("check")
-            .arg("--quiet")
-            .arg("--manifest-path")
-            .arg(temp.path().join("Cargo.toml"))
-            .arg("--target-dir")
-            .arg(temp.path().join("target"))
-            .output()
-            .expect("cargo check ran");
-        assert!(
-            !output.status.success(),
-            "CompletionRequest::new() without a ModelId unexpectedly compiled",
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("this function takes 1 argument") && stderr.contains("ModelId"),
-            "compile error must name the missing ModelId argument, got:\n{stderr}",
-        );
     }
 
     #[test]

@@ -87,6 +87,15 @@ _:
         touch "$out"
       '';
 
+      sandbox-profile-env-omits-nix = pkgs.runCommand "sandbox-profile-env-omits-nix" { } ''
+        set -euo pipefail
+        if [[ -e ${sandboxProfileEnv}/bin/nix ]]; then
+          printf 'worker sandbox profile PATH unexpectedly includes nix at %s/bin/nix\n' ${sandboxProfileEnv} >&2
+          exit 1
+        fi
+        touch "$out"
+      '';
+
       fakePodman = pkgs.writeShellScript "podman" ''
         set -euo pipefail
         printf 'Error: opening /dev/net/tun: no such file\n' >&2
@@ -467,6 +476,7 @@ _:
           profile-manifest-keeps-runtime-path-context
           sandbox-profile-env-has-loom
           sandbox-profile-env-has-wrix
+          sandbox-profile-env-omits-nix
           smoke-preflight-skips-runtime-build
           test-app-ignores-host-git-signing
           test-sandbox-disables-container-network

@@ -3,6 +3,7 @@
 let
   loomLib = import ../lib.nix;
   loomSrc = ../..;
+  workerProfile = import ../worker-profile.nix;
 in
 {
   flake.lib = loomLib // {
@@ -128,6 +129,7 @@ in
         toolchain = rustToolchainFile;
         sha256 = rustToolchainSha256;
       };
+      workerRustProfile = workerProfile rustProfile;
 
       loom = loomLib.mkLoom {
         inherit pkgs;
@@ -137,14 +139,14 @@ in
       };
 
       sandbox = wrixLib.mkSandbox {
-        profile = rustProfile;
+        profile = workerRustProfile;
         agent = "pi";
         agentPkg = piCodingAgent;
         packages = [ loom.bin ];
       };
 
       debugSandbox = wrixLib.mkSandbox {
-        profile = rustProfile;
+        profile = workerRustProfile;
         agent = "pi";
         agentPkg = piCodingAgent;
         packages = [
@@ -154,7 +156,7 @@ in
       };
 
       smokeSandbox = wrixLib.mkSandbox {
-        profile = wrixLib.profiles.base;
+        profile = workerProfile wrixLib.profiles.base;
         agent = "pi";
         agentPkg = smokeMockPi;
         packages = [ loom.bin ];

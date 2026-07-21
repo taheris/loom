@@ -3,6 +3,7 @@
 
 let
   inherit (builtins) attrNames mapAttrs;
+  workerProfile = import ./worker-profile.nix;
   workspaceBuilder = import ./workspace.nix;
 in
 {
@@ -55,7 +56,7 @@ in
         in
         wrixLib.mkSandbox (
           {
-            inherit profile;
+            profile = workerProfile profile;
             agent = runtime;
             packages = [ loomBin ] ++ extraPackages;
           }
