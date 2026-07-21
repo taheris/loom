@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use loom_driver::identifier::SpecLabel;
+use loom_driver::{config::LoomConfig, identifier::SpecLabel};
 use loom_gate::{
     CommandResolver, FsCommandResolver, RustWorkspaceTestResolver, TestPathResolver, Tier,
     annotation,
+    integrity::runner_owns_target,
+    runner::{RunnerSpec, integrity_runner_specs},
 };
 use tracing::warn;
 
@@ -12,6 +14,7 @@ use super::finding::FindingValidator;
 pub struct WorkspaceFindingValidator {
     workspace: PathBuf,
     annotations: Vec<annotation::Annotation>,
+    runner_specs: Vec<RunnerSpec>,
     command_resolver: FsCommandResolver,
     test_resolver: Option<RustWorkspaceTestResolver>,
 }
@@ -21,11 +24,13 @@ impl WorkspaceFindingValidator {
     pub fn new(workspace: &Path) -> Self {
         let workspace = workspace.to_path_buf();
         let annotations = load_annotations(&workspace);
+        let runner_specs = load_runner_specs(&workspace);
         let test_resolver = load_test_resolver(&workspace);
         let command_resolver = FsCommandResolver::new(&workspace);
         Self {
             workspace,
             annotations,
+            runner_specs,
             command_resolver,
             test_resolver,
         }
@@ -63,7 +68,10 @@ impl WorkspaceFindingValidator {
 
     fn annotation_record_resolves(&self, ann: &annotation::Annotation) -> bool {
         match ann.tier {
-            Tier::Check | Tier::System => self.command_target_resolves(&ann.target),
+            Tier::Check | Tier::System => {
+                runner_owns_target(&self.runner_specs, ann.tier, &ann.target)
+                    || self.command_target_resolves(&ann.target)
+            }
             Tier::Test => self
                 .test_resolver
                 .as_ref()
@@ -152,6 +160,24 @@ fn load_annotations(workspace: &Path) -> Vec<annotation::Annotation> {
         Ok(parsed) => parsed.annotations,
         Err(err) => {
             warn!(path = %specs_dir.display(), error = ?err, "failed to parse spec annotations for finding validation");
+            Vec::new()
+        }
+    }
+}
+
+fn load_runner_specs(workspace: &Path) -> Vec<RunnerSpec> {
+    let config_path = LoomConfig::resolve_path(workspace);
+    let config = match LoomConfig::load(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            warn!(path = %config_path.display(), error = ?err, "failed to load runner config for finding validation");
+            return Vec::new();
+        }
+    };
+    match integrity_runner_specs(&config) {
+        Ok(specs) => specs,
+        Err(err) => {
+            warn!(path = %config_path.display(), error = ?err, "failed to compile runners for finding validation");
             Vec::new()
         }
     }
@@ -259,6 +285,10 @@ fn markdown_slug(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use loom_gate::{DispatchOptions, TierCwds, run_check, run_system};
+
     use super::*;
 
     #[test]
@@ -310,6 +340,155 @@ mod tests {
         assert!(validator.annotation_resolves("malformed_json_returns_invalid_json_error"));
         assert!(!validator.annotation_resolves("declared_but_missing_test"));
         assert!(!validator.annotation_resolves("undeclared_bare_test_name"));
+    }
+
+    #[test]
+    fn runner_owned_logical_targets_dispatch_and_survive_tree_finding_validation() {
+        use super::super::finding::{DispatchScope, FindingTarget, parse_walk_output};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
+        std::fs::create_dir_all(tmp.path().join("bin")).expect("bin dir");
+        std::fs::write(
+            tmp.path().join("specs/gate.md"),
+            concat!(
+                "# Gate\n\n## Success Criteria\n\n",
+                "- Check verify [check](verify:example.target)\n",
+                "- Check CI [check](test-ci:example)\n",
+                "- System verify [system](verify:example.target)\n",
+                "- System CI [system](test-ci:example)\n",
+            ),
+        )
+        .expect("write spec");
+        std::fs::write(
+            tmp.path().join("loom.toml"),
+            concat!(
+                "[runner.check.verify]\nmatch = '^verify:(.+)$'\ncommand = \"bin/logical-runner {targets}\"\ntarget = \"{capture_1}\"\njoin = \" \"\nparse = \"json-lines\"\n\n",
+                "[runner.check.test-ci]\nmatch = '^test-ci:(.+)$'\ncommand = \"bin/logical-runner {targets}\"\ntarget = \"{capture_1}\"\njoin = \" \"\nparse = \"json-lines\"\n\n",
+                "[runner.system.verify]\nmatch = '^verify:(.+)$'\ncommand = \"bin/logical-runner {targets}\"\ntarget = \"{capture_1}\"\njoin = \" \"\nparse = \"json-lines\"\n\n",
+                "[runner.system.test-ci]\nmatch = '^test-ci:(.+)$'\ncommand = \"bin/logical-runner {targets}\"\ntarget = \"{capture_1}\"\njoin = \" \"\nparse = \"json-lines\"\n",
+            ),
+        )
+        .expect("write config");
+        let runner_path = tmp.path().join("bin/logical-runner");
+        std::fs::write(
+            &runner_path,
+            "#!/bin/sh\nfor target in \"$@\"; do printf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"ok\"}\\n' \"$target\"; done\n",
+        )
+        .expect("write runner");
+        std::fs::set_permissions(&runner_path, std::fs::Permissions::from_mode(0o755))
+            .expect("runner permissions");
+
+        let parsed = annotation::parse(&tmp.path().join("specs")).expect("parse annotations");
+        let config = LoomConfig::load(LoomConfig::resolve_path(tmp.path())).expect("load config");
+        let runners = integrity_runner_specs(&config).expect("compile runners");
+        let options = DispatchOptions::default();
+        let tier_cwds = TierCwds::default();
+        let outcomes = run_check(
+            &parsed.annotations,
+            &runners,
+            &options,
+            tmp.path(),
+            &tier_cwds,
+        )
+        .into_iter()
+        .chain(run_system(
+            &parsed.annotations,
+            &runners,
+            &options,
+            tmp.path(),
+            &tier_cwds,
+        ))
+        .map(|result| result.expect("logical target dispatches through its runner"))
+        .collect::<Vec<_>>();
+        assert_eq!(outcomes.len(), 4);
+        assert!(outcomes.iter().all(|outcome| outcome.verdict.pass));
+
+        let mut output = String::new();
+        for target in [
+            "verify:example.target",
+            "test-ci:example",
+            "verify:example.target",
+            "test-ci:example",
+        ] {
+            let payload = serde_json::json!({
+                "token": "verifier-bypass",
+                "route": "deferred",
+                "bonds": ["gate"],
+                "target": {"kind": "Annotation", "target_string": target},
+                "evidence": "configured verifier completed before review",
+            });
+            output.push_str(&format!("LOOM_FINDING: {payload}\n"));
+        }
+        output.push_str("LOOM_CONCERN: {\"summary\":\"Logical runner targets remain valid\"}\n");
+        let validator = WorkspaceFindingValidator::new(tmp.path());
+        let findings = parse_walk_output(&output, DispatchScope::Tree, &validator)
+            .expect("runner-owned targets remain valid during finding parsing");
+
+        assert_eq!(findings.len(), 4);
+        assert!(
+            findings
+                .iter()
+                .all(|finding| matches!(&finding.target, FindingTarget::Annotation { .. }))
+        );
+    }
+
+    #[test]
+    fn runner_ownership_is_exact_to_annotation_tier() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
+        std::fs::write(
+            tmp.path().join("specs/gate.md"),
+            concat!(
+                "# Gate\n\n## Success Criteria\n\n",
+                "- Check target [check](verify:check-wrong-tier)\n",
+                "- System target [system](verify:system-wrong-tier)\n",
+            ),
+        )
+        .expect("write spec");
+        std::fs::write(
+            tmp.path().join("loom.toml"),
+            concat!(
+                "[runner.system.check-only]\nmatch = '^verify:check-wrong-tier$'\ncommand = \"true\"\nparse = \"exit-code\"\n\n",
+                "[runner.check.system-only]\nmatch = '^verify:system-wrong-tier$'\ncommand = \"true\"\nparse = \"exit-code\"\n",
+            ),
+        )
+        .expect("write config");
+        let validator = WorkspaceFindingValidator::new(tmp.path());
+
+        assert!(!validator.annotation_resolves("verify:check-wrong-tier"));
+        assert!(!validator.annotation_resolves("verify:system-wrong-tier"));
+    }
+
+    #[test]
+    fn unowned_missing_command_keeps_actionable_finding_error() {
+        use super::super::finding::{DispatchScope, FindingParseError, WalkOutput};
+
+        const TARGET: &str = "loom-missing-ad-hoc-command-7c3a --verify";
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
+        std::fs::write(
+            tmp.path().join("specs/gate.md"),
+            format!("# Gate\n\n## Success Criteria\n\n- Ad hoc check [check]({TARGET})\n"),
+        )
+        .expect("write spec");
+        let output = format!(
+            "LOOM_FINDING: {{\"token\":\"verifier-bypass\",\"route\":\"deferred\",\"bonds\":[\"gate\"],\"target\":{{\"kind\":\"Annotation\",\"target_string\":\"{TARGET}\"}},\"evidence\":\"missing command\"}}\nLOOM_CONCERN: {{\"summary\":\"Missing command\"}}\n"
+        );
+        let walk = WalkOutput::from_stdout(
+            &output,
+            DispatchScope::Tree,
+            &WorkspaceFindingValidator::new(tmp.path()),
+        );
+
+        assert_eq!(walk.finding_errors().len(), 1);
+        match &walk.finding_errors()[0] {
+            FindingParseError::UnresolvedTarget { detail, .. } => assert_eq!(
+                detail,
+                "annotation target `loom-missing-ad-hoc-command-7c3a --verify` does not resolve"
+            ),
+            other => panic!("expected unresolved annotation target, got {other:?}"),
+        }
     }
 
     #[test]

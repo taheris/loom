@@ -673,8 +673,8 @@ pub trait FindingValidator {
 
     /// Layer 5 — `Annotation { target_string }` resolves when the
     /// integrity gate's forward-resolution would accept the same string
-    /// as a valid annotation target (command on PATH, test name in
-    /// scope, judge file on disk).
+    /// as a valid annotation target (tier-matched runner ownership or an
+    /// ad hoc command on PATH, test name in scope, judge file on disk).
     fn annotation_resolves(&self, target_string: &str) -> bool;
 
     /// Layer 5 — `TestPath { path }` / `Template { path }` /

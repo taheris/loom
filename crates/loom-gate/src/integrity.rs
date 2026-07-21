@@ -1246,7 +1246,7 @@ pub fn check_atomic_acceptance(annotations: &[Annotation]) -> Vec<IntegrityFindi
 /// on ownership. An unmatched target falls
 /// through to the [`resolves_command`] `tokens[0]`-on-PATH check per
 /// `specs/gate.md` § Runners — *Runner-owned resolution*.
-fn runner_owns_target(specs: &[RunnerSpec], tier: Tier, target: &str) -> bool {
+pub fn runner_owns_target(specs: &[RunnerSpec], tier: Tier, target: &str) -> bool {
     specs
         .iter()
         .any(|spec| spec.applies_to(tier) && spec.matches(target))
