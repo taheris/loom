@@ -381,9 +381,11 @@ _:
         PY
         bash ${../../scripts/test-sandbox.sh}
         observed=$(<"$LOOM_TEST_PODMAN_ARGS_LOG")
-        expected="<--volume><$LOOM_TEST_SANDBOX_SOURCE/.wrix/dolt.sock:/workspace/.wrix/dolt.sock>"
-        if [[ "$observed" != *"$expected"* ]]; then
-          printf 'expected test-sandbox to mount the host Dolt socket; observed:\n%s\n' "$observed" >&2
+        expected_mount="<--volume><$LOOM_TEST_SANDBOX_SOURCE/.wrix/dolt.sock:/workspace/.wrix/dolt.sock>"
+        expected_socket_env="<--env><BEADS_DOLT_SERVER_SOCKET=/workspace/.wrix/dolt.sock>"
+        expected_auto_start_env="<--env><BEADS_DOLT_AUTO_START=0>"
+        if [[ "$observed" != *"$expected_mount"* || "$observed" != *"$expected_socket_env"* || "$observed" != *"$expected_auto_start_env"* ]]; then
+          printf 'expected test-sandbox to configure the host Dolt socket; observed:\n%s\n' "$observed" >&2
           exit 1
         fi
         touch "$out"
