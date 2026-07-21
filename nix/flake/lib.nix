@@ -189,6 +189,7 @@ in
           smokeSandbox
           wrixLib
           ;
+        smokeServiceImage = wrixLib.serviceImage;
       };
     };
 }

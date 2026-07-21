@@ -18,6 +18,7 @@ _:
       loom,
       smokeProfileManifest,
       smokeSandbox,
+      smokeServiceImage,
       ...
     }:
     let
@@ -28,6 +29,7 @@ _:
           pkgs
           smokeProfileManifest
           smokeSandbox
+          smokeServiceImage
           ;
         loomPackage = loom;
       };
@@ -65,6 +67,7 @@ _:
         name = "test-sandbox";
         runtimeInputs = [
           pkgs.git
+          pkgs.jq
           pkgs.nix
           pkgs.podman
         ];

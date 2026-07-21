@@ -108,9 +108,30 @@ if [[ -z "$bead_workspace" ]]; then
     git -c core.hooksPath=/dev/null clone --quiet --local "$workspace_source" "$bead_workspace"
 fi
 
+dolt_mount_args=()
+if [[ -f "$bead_workspace/.beads/metadata.json" ]]; then
+    if ! beads_backend=$(jq -er '.backend // "sqlite"' "$bead_workspace/.beads/metadata.json"); then
+        printf 'test-sandbox: could not parse Beads backend metadata\n' >&2
+        exit 2
+    fi
+    if [[ "$beads_backend" == "dolt" ]]; then
+        host_dolt_socket="$workspace_source/.wrix/dolt.sock"
+        if [[ ! -S "$host_dolt_socket" && -S "${BEADS_DOLT_SERVER_SOCKET:-}" ]]; then
+            host_dolt_socket="$BEADS_DOLT_SERVER_SOCKET"
+        fi
+        if [[ ! -S "$host_dolt_socket" ]]; then
+            printf 'test-sandbox: host Dolt socket is unavailable; start the workspace Wrix service\n' >&2
+            exit 1
+        fi
+        mkdir -p "$bead_workspace/.wrix"
+        dolt_mount_args=(--volume "$host_dolt_socket:/workspace/.wrix/dolt.sock")
+    fi
+fi
+
 if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none --env WRIX_AGENT=pi \
     --cap-add=NET_ADMIN --cgroups=disabled \
-    --volume "$bead_workspace:/workspace:rw" "$ref" /bin/bash -lc '
+    --volume "$bead_workspace:/workspace:rw" "${dolt_mount_args[@]}" \
+    "$ref" /bin/bash -lc '
         set -euo pipefail
         pi --version >/dev/null
         cd /workspace

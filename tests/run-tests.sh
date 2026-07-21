@@ -21,6 +21,8 @@ set -euo pipefail
 #   LOOM_TEST_IMAGE_REF      — image ref tag (e.g. localhost/wrix-test:smoke)
 #   LOOM_TEST_IMAGE_SOURCE_KIND — wrix image source kind (default: nix-descriptor)
 #   LOOM_TEST_PROFILE_CONFIG — immutable wrix ProfileConfig for the mock image
+#   LOOM_WRIX_SERVICE_BIN    — profiled wrix launcher used for service setup
+#   LOOM_WRIX_SPAWN_BIN      — raw wrix launcher used by SpawnConfig
 #   LOOM_TEST_MOCK_PI_PATH   — host path to tests/mock-pi/pi.sh; sourced for
 #                              the container build step when the image is
 #                              produced inline rather than from a Nix archive.
@@ -35,6 +37,9 @@ log() {
 
 cleanup() {
     local ec=$?
+    if [[ "${DOLT_SERVICE_STARTED:-0}" == "1" && -n "${WORKSPACE:-}" && -d "$WORKSPACE" ]]; then
+        (cd "$WORKSPACE" && "$LOOM_WRIX_SERVICE_BIN" service stop >/dev/null 2>&1) || true # best-effort: cleanup must not mask the test result.
+    fi
     if [[ -n "${SMOKE_ROOT:-}" && -d "$SMOKE_ROOT" ]]; then
         rm -rf "$SMOKE_ROOT"
     fi
@@ -51,6 +56,7 @@ require() {
 }
 
 require bd
+require dolt
 require git
 require jq
 require podman
@@ -79,6 +85,14 @@ fi
 
 if [[ -z "${LOOM_TEST_IMAGE:-}" || -z "${LOOM_TEST_IMAGE_REF:-}" || -z "${LOOM_TEST_PROFILE_CONFIG:-}" ]]; then
     log "error: the Nix smoke wrapper did not supply its image and ProfileConfig"
+    exit 1
+fi
+if [[ -z "${LOOM_WRIX_SERVICE_BIN:-}" || ! -x "$LOOM_WRIX_SERVICE_BIN" ]]; then
+    log "error: the Nix smoke wrapper did not supply an executable Wrix service launcher"
+    exit 1
+fi
+if [[ -z "${LOOM_WRIX_SPAWN_BIN:-}" || ! -x "$LOOM_WRIX_SPAWN_BIN" ]]; then
+    log "error: the Nix smoke wrapper did not supply an executable Wrix spawn launcher"
     exit 1
 fi
 LOOM_TEST_IMAGE_SOURCE_KIND="${LOOM_TEST_IMAGE_SOURCE_KIND:-nix-descriptor}"
@@ -114,7 +128,31 @@ git commit -q -m "Initialize smoke workspace"
 git remote add origin "$ORIGIN"
 git push -q -u origin main
 
-bd init --prefix=smoke >/dev/null
+mkdir -p .beads/dolt
+(
+    cd .beads/dolt
+    dolt init --name "Loom Smoke" --email smoke@example.com >/dev/null
+)
+"$LOOM_WRIX_SERVICE_BIN" service start >/dev/null
+DOLT_SERVICE_STARTED=1
+DOLT_SOCKET=$("$LOOM_WRIX_SERVICE_BIN" service dolt socket)
+unset BEADS_DOLT_SERVER_HOST BEADS_DOLT_SERVER_PORT
+export BEADS_DOLT_SERVER_SOCKET="$DOLT_SOCKET"
+export BEADS_DOLT_AUTO_START=0
+bd init --prefix=smoke \
+    --skip-hooks \
+    --skip-agents \
+    --non-interactive \
+    --server \
+    --server-socket "$DOLT_SOCKET" \
+    --database smoke \
+    >/dev/null
+chmod 700 .beads
+bd config set export.auto false >/dev/null
+git add .beads/config.yaml
+git commit -q -m "Configure smoke beads"
+git push -q origin main
+
 BASE_COMMIT=$(git rev-parse HEAD)
 MOLECULE_ID=$(bd create "smoke molecule" \
     --description "container smoke molecule" \

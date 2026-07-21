@@ -11,6 +11,7 @@
   loomPackage,
   smokeProfileManifest ? null,
   smokeSandbox ? null,
+  smokeServiceImage ? null,
   ...
 }:
 
@@ -21,6 +22,7 @@ let
       loomPackage
       smokeProfileManifest
       smokeSandbox
+      smokeServiceImage
       ;
   };
 in
