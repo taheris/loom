@@ -186,6 +186,40 @@ _:
 
       test-app-ignores-host-git-signing = testsDeriv.test-app-ignores-host-git-signing;
 
+      fakeSmokeNix = pkgs.writeShellScriptBin "nix" ''
+        set -euo pipefail
+        touch "$SMOKE_NIX_CALLED"
+        exit 1
+      '';
+
+      smoke-preflight-skips-runtime-build = pkgs.runCommand "smoke-preflight-skips-runtime-build" { } ''
+        set -euo pipefail
+        export PATH="${fakeSmokeNix}/bin:$PATH"
+        export SMOKE_NIX_CALLED="$TMPDIR/nix-called"
+        set +e
+        script_output=$(${pkgs.bash}/bin/bash ${../../scripts/run-smoke.sh} \
+          "$TMPDIR/missing-fuse" "$TMPDIR/missing-tun" .#smoke-runtime 2>&1)
+        rc=$?
+        set -e
+        if [[ "$rc" -ne 77 ]]; then
+          printf 'expected smoke preflight skip exit 77, got %s\n%s\n' "$rc" "$script_output" >&2
+          exit 1
+        fi
+        if [[ -e "$SMOKE_NIX_CALLED" ]]; then
+          printf 'smoke preflight realized the runtime before checking devices\n' >&2
+          exit 1
+        fi
+        case "$script_output" in
+          *"skip: container runtime devices"*)
+            ;;
+          *)
+            printf 'expected smoke preflight skip output, got:\n%s\n' "$script_output" >&2
+            exit 1
+            ;;
+        esac
+        touch "$out"
+      '';
+
       test-sandbox-skips-unsupported-runtime =
         pkgs.runCommand "test-sandbox-skips-unsupported-runtime" { }
           ''
@@ -431,6 +465,7 @@ _:
           profile-manifest-keeps-runtime-path-context
           sandbox-profile-env-has-loom
           sandbox-profile-env-has-wrix
+          smoke-preflight-skips-runtime-build
           test-app-ignores-host-git-signing
           test-sandbox-disables-container-network
           test-sandbox-ignores-read-only-podman-storage-cleanup

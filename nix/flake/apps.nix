@@ -2,7 +2,8 @@
 #
 # - `.#test`: full required suite for pre-push and manual verification.
 # - `.#smoke`: container smoke harness.
-#   Linux runs `tests/run-tests.sh`; Darwin returns a no-op stub.
+#   Linux checks runtime devices before realizing the image-backed runner;
+#   Darwin returns a no-op stub.
 # - `.#test-sandbox`: boots `.#sandbox` and checks Pi plus agent hook assembly.
 #   Skips with exit 77 when the platform cannot run the container runtime.
 # - `.#fuzz-loom`: on-demand `cargo fuzz` driver.
@@ -34,7 +35,18 @@ _:
         loomPackage = loom;
       };
 
-      smokeApp = testsDeriv.loom-smoke;
+      smokeRuntime = testsDeriv.loom-smoke;
+
+      smokePreflight = pkgs.writeShellApplication {
+        name = "smoke";
+        runtimeInputs = [ pkgs.nix ];
+        text = ''
+          exec ${pkgs.bash}/bin/bash ${../../scripts/run-smoke.sh} \
+            /dev/fuse /dev/net/tun .#smoke-runtime "$@"
+        '';
+      };
+
+      smokeApp = if isLinux then smokePreflight else smokeRuntime;
 
       testApp = pkgs.writeShellApplication {
         name = "test";
@@ -88,6 +100,8 @@ _:
       sandboxSmokeApp = if isLinux then sandboxSmokeLinux else sandboxSmokeDarwin;
     in
     {
+      packages.smoke-runtime = smokeRuntime;
+
       apps = {
         test = {
           type = "app";
