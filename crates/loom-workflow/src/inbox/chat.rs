@@ -244,8 +244,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         }
         AgentKind::Pi => {
             if should_use_pi_tui_shell_out() {
-                let launch =
-                    prepare_pi_tui_launch(workspace, &selection, &prompt_body, scratch.path())?;
+                let launch = prepare_pi_tui_launch(workspace, &selection, scratch.path())?;
                 info!(
                     wrix_bin = %bin.display(),
                     items_surfaced,
@@ -612,11 +611,9 @@ type PiTuiLaunch = pi_tui::Launch;
 fn prepare_pi_tui_launch(
     workspace: &Path,
     selection: &AgentSelection,
-    prompt_body: &str,
     scratch_dir: &Path,
 ) -> Result<PiTuiLaunch, ChatError> {
-    pi_tui::prepare_launch(workspace, selection, prompt_body, scratch_dir)
-        .map_err(ChatError::Scratch)
+    pi_tui::prepare_launch(workspace, selection, scratch_dir).map_err(ChatError::Scratch)
 }
 
 fn run_pi_tui_shell_out(mut command: Command, session_dir: &Path) -> Result<String, ChatError> {
@@ -951,10 +948,10 @@ mod tests {
         };
         let argv = pi_tui::build_wrix_argv(
             &PathBuf::from("/work"),
-            "PROMPT BODY",
+            &PathBuf::from("/workspace/.loom/scratch/inbox/prompt.txt"),
             &selection,
-            &PathBuf::from("/work/.loom/scratch/inbox/pi-sessions"),
-            &PathBuf::from("/work/.loom/scratch/inbox/loom-pi-repin-extension.js"),
+            &PathBuf::from("/workspace/.loom/scratch/inbox/pi-sessions"),
+            &PathBuf::from("/workspace/.loom/scratch/inbox/loom-pi-repin-extension.js"),
         );
         assert_eq!(argv[0], "run");
         assert_eq!(argv[1], "/work");
@@ -973,7 +970,10 @@ mod tests {
         );
         assert!(argv.iter().any(|a| a == "-e"));
         assert!(argv.iter().any(|a| a == "--session-dir"));
-        assert_eq!(argv.last().map(String::as_str), Some("PROMPT BODY"));
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("@/workspace/.loom/scratch/inbox/prompt.txt")
+        );
         assert!(!argv.iter().any(|a| a == "spawn"));
         assert!(!argv.iter().any(|a| a == "--stdio"));
     }

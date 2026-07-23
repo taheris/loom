@@ -65,8 +65,9 @@ pub struct PlanReport {
 ///
 /// 1. Acquire `plan.lock` for the duration of the call.
 /// 2. Render the Askama template into a prompt body.
-/// 3. Spawn `wrix run <workspace> <agent command> ... <prompt>` with stdio
-///    inherited and wait for it to exit.
+/// 3. Spawn `wrix run` with inherited stdio; native Pi receives the existing
+///    scratch `prompt.txt` by file reference, while Claude receives the body.
+/// 4. Wait for the interactive child to exit.
 pub fn run(workspace: &Path, opts: PlanOpts) -> Result<PlanReport, PlanError> {
     run_with_timeout(workspace, opts, DEFAULT_LOCK_TIMEOUT)
 }
@@ -146,9 +147,8 @@ pub fn run_with_timeout(
             )
         }
         AgentKind::Pi => {
-            let launch =
-                crate::pi_tui::prepare_launch(workspace, &selection, &prompt_body, scratch.path())
-                    .map_err(|source| PlanError::Spawn { source })?;
+            let launch = crate::pi_tui::prepare_launch(workspace, &selection, scratch.path())
+                .map_err(|source| PlanError::Spawn { source })?;
             info!(
                 anchors = %key,
                 profile = %selection.profile,
@@ -661,8 +661,10 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             .ok_or_else(|| anyhow::anyhow!("pi extension missing: {pi_argv_log}"))?;
         let pi_prompt = pi_args
             .iter()
-            .position(|arg| *arg == "# Specification Interview")
-            .ok_or_else(|| anyhow::anyhow!("pi prompt missing: {pi_argv_log}"))?;
+            .position(|arg| {
+                arg.starts_with("@/workspace/.loom/scratch/") && arg.ends_with("/prompt.txt")
+            })
+            .ok_or_else(|| anyhow::anyhow!("pi prompt file reference missing: {pi_argv_log}"))?;
         assert!(pi_delivery < pi_prompt);
         Ok(())
     }
@@ -678,6 +680,12 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             "session dir missing: {argv_log}"
         );
         assert!(argv.contains(&"-e"), "extension flag missing: {argv_log}");
+        assert!(
+            argv.iter().any(|arg| {
+                arg.starts_with("@/workspace/.loom/scratch/") && arg.ends_with("/prompt.txt")
+            }),
+            "prompt file reference missing: {argv_log}"
+        );
         assert!(
             argv.iter()
                 .any(|arg| arg.ends_with("loom-pi-repin-extension.js")),

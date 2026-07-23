@@ -101,7 +101,10 @@ controlled RPC bridge over `wrix spawn --stdio`, where Loom can observe
 post-compaction output. Pi-backed `loom plan` uses the same native Pi TUI
 launch contract as the TTY chat path: `wrix run ... pi` with a scratch-local
 session directory and re-pin extension installed before the prompt is
-accepted. Direct has no interactive REPL command; selecting
+accepted. Both native Pi paths supply the initial prompt through Pi's
+`@/workspace/.loom/scratch/<key>/prompt.txt` file-reference argument rather
+than embedding the rendered body in a single argv element. Direct has no
+interactive REPL command; selecting
 `agent.backend = "direct"` for `plan` or `inbox chat` is a configuration
 error before any Wrix child process is spawned.
 
@@ -753,13 +756,14 @@ interactive session whose compaction path would be summary-only.
 
 **Pi interactive sessions:**
 - `loom plan` launches the native `pi` TUI with inherited stdio, a
-  scratch-local `--session-dir`, and `-e <loom-pi-repin-extension.js>` so
-  post-compaction context rebuilds include the full `prompt.txt` plus live
+  scratch-local `--session-dir`, `-e <loom-pi-repin-extension.js>`, and the
+  existing rendered prompt as `@/workspace/.loom/scratch/<key>/prompt.txt`.
+  Post-compaction context rebuilds include the full `prompt.txt` plus live
   `scratch.md` whenever the original prompt has fallen out of Pi's retained
   messages.
 - When `loom inbox chat` has a real terminal, it uses the same native-TUI
-  session-directory and re-pin extension path so the user gets Pi's normal
-  editor, message queue, footer, and tool rendering.
+  session-directory, re-pin extension, and `@prompt.txt` initial delivery so
+  the user gets Pi's normal editor, message queue, footer, and tool rendering.
 - When `loom inbox chat` is not attached to a TTY, it uses the Pi RPC bridge.
   The bridge observes `compaction_start`, sends the same full-prompt re-pin
   from the scratch directory, and treats overflow auto-retry output with the
@@ -1193,7 +1197,8 @@ the entrypoint run the wrong runtime.
 - Pi-backed `loom inbox chat` uses native `wrix run ... pi` plus a scratch-dir
       session and re-pin extension on its TTY path; the extension is loaded
       with `-e`, reads scratch-dir `prompt.txt`/`scratch.md`, registers Pi's
-      `context` hook, and preserves Pi's normal TUI with inherited stdio
+      `context` hook, supplies the initial prompt as an `@prompt.txt` file
+      reference, and preserves Pi's normal TUI with inherited stdio
   [test](inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio)
 - Pi-backed `loom inbox chat` runs through a controlled RPC bridge in
       non-TTY execution, so compaction events remain observable before
@@ -1210,8 +1215,13 @@ the entrypoint run the wrong runtime.
       bridge observes `compaction_start`
   [test](inbox_chat_pi_bridge_repins_on_compaction_start)
 - Pi-backed `loom plan` uses native `wrix run ... pi` plus a scratch-dir
-      session and re-pin extension before accepting the prompt
+      session and re-pin extension, and supplies the initial prompt through the
+      scratch `prompt.txt` file reference before accepting it
   [test](interactive_pi_shell_out_installs_repin_extension)
+- A native Pi TUI inbox prompt larger than Linux's 128 KiB per-argument limit
+      reaches Pi through the scratch `@prompt.txt` file reference while the
+      rendered prompt body remains absent from the spawned Wrix argv
+  [test](interactive_pi_large_prompt_uses_scratch_file_reference)
 
 ### Container integration
 

@@ -13,7 +13,6 @@ pub(crate) struct Launch {
 pub(crate) fn prepare_launch(
     workspace: &Path,
     selection: &AgentSelection,
-    prompt_body: &str,
     scratch_dir: &Path,
 ) -> std::io::Result<Launch> {
     let session_dir = scratch_dir.join("pi-sessions");
@@ -31,7 +30,7 @@ pub(crate) fn prepare_launch(
     let container_extension_path = container_workspace_path(workspace, &extension_path);
     let argv = build_wrix_argv(
         workspace,
-        prompt_body,
+        &prompt_path,
         selection,
         &container_session_dir,
         &container_extension_path,
@@ -112,7 +111,7 @@ export default function(pi) {{
 
 pub(crate) fn build_wrix_argv(
     workspace: &Path,
-    prompt_body: &str,
+    prompt_path: &Path,
     selection: &AgentSelection,
     session_dir: &Path,
     extension_path: &Path,
@@ -138,7 +137,7 @@ pub(crate) fn build_wrix_argv(
         argv.push("--thinking".to_string());
         argv.push(level.as_str().to_string());
     }
-    argv.push(prompt_body.to_string());
+    argv.push(format!("@{}", prompt_path.to_string_lossy()));
     argv
 }
 
@@ -152,22 +151,25 @@ mod tests {
     use loom_driver::agent::{AgentKind, ThinkingLevel};
     use loom_driver::identifier::ProfileName;
 
-    #[test]
-    fn argv_uses_wrix_run_with_session_extension_and_model_args() {
-        let selection = AgentSelection {
+    fn pi_selection() -> AgentSelection {
+        AgentSelection {
             profile: ProfileName::new("base"),
             kind: AgentKind::Pi,
             provider: Some("openai".to_string()),
             model_id: Some("gpt-4o".to_string()),
             thinking_level: Some(ThinkingLevel::High),
             claude_settings: None,
-        };
+        }
+    }
+
+    #[test]
+    fn argv_uses_wrix_run_with_session_extension_model_and_prompt_reference() {
         let argv = build_wrix_argv(
             &PathBuf::from("/work"),
-            "PROMPT BODY",
-            &selection,
-            &PathBuf::from("/work/.loom/scratch/inbox/pi-sessions"),
-            &PathBuf::from("/work/.loom/scratch/inbox/loom-pi-repin-extension.js"),
+            &PathBuf::from("/workspace/.loom/scratch/inbox/prompt.txt"),
+            &pi_selection(),
+            &PathBuf::from("/workspace/.loom/scratch/inbox/pi-sessions"),
+            &PathBuf::from("/workspace/.loom/scratch/inbox/loom-pi-repin-extension.js"),
         );
         assert_eq!(argv[0], "run");
         assert_eq!(argv[1], "/work");
@@ -186,7 +188,10 @@ mod tests {
         );
         assert!(argv.iter().any(|a| a == "-e"));
         assert!(argv.iter().any(|a| a == "--session-dir"));
-        assert_eq!(argv.last().map(String::as_str), Some("PROMPT BODY"));
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("@/workspace/.loom/scratch/inbox/prompt.txt")
+        );
         assert!(!argv.iter().any(|a| a == "spawn"));
         assert!(!argv.iter().any(|a| a == "--stdio"));
     }

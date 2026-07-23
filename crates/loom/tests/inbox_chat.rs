@@ -134,8 +134,6 @@ if [[ "${{1:-}}" == "spawn" || "${{2:-}}" == "spawn" ]]; then
     esac
 fi
 
-prompt="${{!#}}"
-
 map_workspace_path() {{
     local path="$1"
     local workspace="$2"
@@ -145,6 +143,15 @@ map_workspace_path() {{
         printf '%s' "$path"
     fi
 }}
+
+prompt_argument="${{!#}}"
+prompt="$prompt_argument"
+if [[ "${{3:-}}" == "pi" && "$prompt_argument" == @/* ]]; then
+    workspace="${{2:?}}"
+    prompt_path="${{prompt_argument#@}}"
+    host_prompt_path="$(map_workspace_path "$prompt_path" "$workspace")"
+    prompt="$(cat "$host_prompt_path")"
+fi
 
 if [[ -n "${{WRIX_STUB_PROMPT_DUMP:-}}" ]]; then
     printf '%s' "$prompt" > "$WRIX_STUB_PROMPT_DUMP"
@@ -765,6 +772,12 @@ fn inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio() {
     assert!(lines.contains(&"--session-dir"), "{argv}");
     assert!(lines.contains(&"-e"), "{argv}");
     assert!(
+        lines.iter().any(
+            |arg| arg.starts_with("@/workspace/.loom/scratch/") && arg.ends_with("/prompt.txt")
+        ),
+        "native pi TUI prompt must use its scratch file reference: {argv}"
+    );
+    assert!(
         !lines.contains(&"spawn"),
         "native pi TUI must not use spawn: {argv}"
     );
@@ -791,6 +804,60 @@ fn inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio() {
         env_log.contains("WRIX_PI_EXTENSION_SCRATCHPAD_READ=1"),
         "{env_log}"
     );
+}
+
+/// Exercises the real process boundary because Linux rejects oversized argv before Wrix starts.
+#[test]
+fn interactive_pi_large_prompt_uses_scratch_file_reference() {
+    const LINUX_MAX_ARG_BYTES: usize = 128 * 1024;
+
+    let env = setup_chat();
+    std::fs::write(
+        env.workspace.join("loom.toml"),
+        "[phase.inbox]\nagent.backend = \"pi\"\n",
+    )
+    .expect("write config");
+    let large_body = "x".repeat(LINUX_MAX_ARG_BYTES + 1);
+    seed_bead(
+        &env.state_dir,
+        "lm-pilarge",
+        "large pi tui prompt",
+        &large_body,
+        "open",
+        &["loom:blocked"],
+    );
+    let prompt_dump = env.workspace.join("delivered-prompt.txt");
+    let prompt_dump_arg = prompt_dump.to_string_lossy().into_owned();
+
+    let output = run_chat_in_pty(
+        &env,
+        "resolve-none",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", ""),
+            ("WRIX_STUB_PROMPT_DUMP", &prompt_dump_arg),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let argv = std::fs::read_to_string(&env.argv_log).expect("argv log");
+    assert!(
+        argv.lines().all(|arg| arg.len() < LINUX_MAX_ARG_BYTES),
+        "rendered prompt leaked into argv"
+    );
+    assert!(
+        argv.lines().any(|arg| {
+            arg.starts_with("@/workspace/.loom/scratch/") && arg.ends_with("/prompt.txt")
+        }),
+        "scratch prompt file reference missing: {argv}"
+    );
+    let delivered = std::fs::read_to_string(prompt_dump).expect("delivered prompt");
+    assert!(delivered.contains(&large_body));
 }
 
 #[test]
