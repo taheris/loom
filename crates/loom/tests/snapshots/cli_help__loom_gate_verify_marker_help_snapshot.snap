@@ -1,0 +1,16 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"gate\", \"verify-marker\"])"
+---
+Validate the current gate marker.
+
+Usage: loom gate verify-marker [OPTIONS]
+
+Options:
+      --hook-id <HOOK_ID>        Pre-push hook id for coverage validation
+  -w, --workspace <PATH>         Workspace root. Defaults to the current working directory
+      --hook-entry <HOOK_ENTRY>  Pre-push hook entry command for coverage validation
+      --host-key                 Explicitly allow ambient host Git credentials and signing config
+  -A, --agent <BACKEND>          Override the agent backend for this invocation [possible values: claude, pi, direct]
+      --push-range <PUSH_RANGE>  Resolved push range for coverage validation
+  -h, --help                     Print help

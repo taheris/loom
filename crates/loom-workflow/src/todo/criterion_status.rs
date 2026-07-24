@@ -139,7 +139,7 @@ fn parse_cache_commit(raw: &str, row: &CacheRow) -> Option<GitSha> {
             warn!(
                 spec_label = %row.spec_label,
                 criterion_id = %row.criterion_anchor,
-                error = %err,
+                error = ?err,
                 "loom todo: criterion evidence cache row has invalid commit; rendering missing evidence",
             );
             None
@@ -151,7 +151,7 @@ async fn commits_since(git: &GitClient, commit: &str) -> u32 {
     match git.commits_since(commit).await {
         Ok(n) => n,
         Err(err) => {
-            warn!(commit, error = %err, "loom todo: failed to compute criterion evidence recency");
+            warn!(commit, error = ?err, "loom todo: failed to compute criterion evidence recency");
             0
         }
     }
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn criterion_id_ignores_annotation_text_changes() {
-        let label = SpecLabel::new("templates");
+        let label = SpecLabel::new("templates").unwrap();
         let a = criterion_id_for(&label, "A criterion");
         let b = criterion_id_for(&label, "A   criterion");
         assert_eq!(a, b);
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn criterion_id_matches_gate_cache_key_algorithm() {
-        let label = SpecLabel::new("templates");
+        let label = SpecLabel::new("templates").unwrap();
         let id = criterion_id_for(&label, "A criterion");
         assert_eq!(
             id.as_str(),

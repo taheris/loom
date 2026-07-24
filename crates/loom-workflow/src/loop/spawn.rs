@@ -150,7 +150,10 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: labels.iter().map(|s| Label::new(*s)).collect(),
+            labels: labels
+                .iter()
+                .map(|s| Label::new(*s).expect("valid Label"))
+                .collect(),
             parent: None,
             metadata: Default::default(),
             notes: None,
@@ -169,7 +172,7 @@ mod tests {
     }
 
     fn base() -> ProfileName {
-        ProfileName::new("base")
+        ProfileName::new("base").unwrap()
     }
 
     /// Per-bead dispatch: two beads with different `profile:X` labels
@@ -260,7 +263,7 @@ mod tests {
         let overridden = build_spawn_config_from_manifest(
             &manifest,
             &bead,
-            Some(&ProfileName::new("python")),
+            Some(&ProfileName::new("python").unwrap()),
             &base(),
             AgentRuntime::Pi,
             PathBuf::from("/work/lm-1"),
@@ -700,7 +703,7 @@ mod tests {
                 reason,
                 ..
             } => {
-                assert_eq!(profile, ProfileName::new("base"));
+                assert_eq!(profile, ProfileName::new("base").unwrap());
                 assert_eq!(runtime, AgentRuntime::Pi);
                 assert!(reason.contains("image ref"), "{reason}");
             }
@@ -733,7 +736,7 @@ mod tests {
         .expect_err("expected unknown profile");
         match err {
             ProfileError::UnknownProfile { name, .. } => {
-                assert_eq!(name, ProfileName::new("ruby"));
+                assert_eq!(name, ProfileName::new("ruby").unwrap());
             }
             other => panic!("expected UnknownProfile, got {other:?}"),
         }

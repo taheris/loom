@@ -1,0 +1,19 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"tune\", \"skill\"])"
+---
+List or tune skills.
+
+Usage: loom tune skill [OPTIONS] [fast|run|full] [NAME]...
+
+Arguments:
+  [fast|run|full]  Proposal level [possible values: fast, run, full]
+  [NAME]...        Target names to tune after the level
+
+Options:
+      --dry-run           Print the frozen tune plan without creating a proposal
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+      --host-key          Explicitly allow ambient host Git credentials and signing config
+      --seed <N>          Deterministic checker-plan seed
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
+  -h, --help              Print help

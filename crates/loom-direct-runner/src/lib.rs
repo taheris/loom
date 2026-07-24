@@ -27,7 +27,6 @@ use loom_agent::direct::tools::{
 };
 use loom_driver::agent::SpawnConfig;
 use loom_events::DriverEventPayload;
-use loom_events::identifier::ToolCallId;
 use loom_llm::api_key::ApiKey;
 use loom_llm::cache::{CacheControl, CacheTtl};
 use loom_llm::client::{
@@ -333,7 +332,7 @@ where
                 abort_requested = true;
             }
             PendingInput::Malformed { line, error } => {
-                warn!(error = %error, line = %line, "malformed command frame");
+                warn!(error = ?error, line = %line, "malformed command frame");
                 emitter
                     .emit(&DirectEvent::Error {
                         message: format!("invalid command frame: {error}"),
@@ -405,7 +404,7 @@ where
     };
 
     for message in conv.history_since(history_pivot) {
-        for event in events_from_history(message) {
+        for event in events_from_history(message)? {
             emitter.emit(&event).await?;
         }
     }
@@ -507,29 +506,36 @@ impl<C: LlmClient + Sync> LlmClient for UsageRecordingClient<C> {
     }
 }
 
-fn events_from_history(message: &Message) -> Vec<DirectEvent> {
+fn events_from_history(message: &Message) -> Result<Vec<DirectEvent>, RunnerError> {
     match message.role {
-        Role::User => Vec::new(),
+        Role::User => Ok(Vec::new()),
         Role::Assistant => message
             .tool_calls
             .iter()
-            .map(|call| DirectEvent::ToolCall {
-                id: ToolCallId::new(call.call_id.as_str()),
-                tool: call.name.clone(),
-                params: call.args.clone(),
-                parent_tool_call_id: None,
+            .map(|call| {
+                Ok(DirectEvent::ToolCall {
+                    id: call
+                        .call_id
+                        .as_str()
+                        .parse()
+                        .map_err(|source| RunnerError::ToolCallId { source })?,
+                    tool: call.name.clone(),
+                    params: call.args.clone(),
+                    parent_tool_call_id: None,
+                })
             })
             .collect(),
-        Role::Tool => message
-            .tool_call_id
-            .as_ref()
-            .map_or_else(Vec::new, |call_id| {
-                vec![DirectEvent::ToolResult {
-                    id: ToolCallId::new(call_id.as_str()),
-                    output: tool_result_payload(&message.text_content()),
-                    is_error: message.tool_is_error,
-                }]
-            }),
+        Role::Tool => match message.tool_call_id.as_ref() {
+            Some(call_id) => Ok(vec![DirectEvent::ToolResult {
+                id: call_id
+                    .as_str()
+                    .parse()
+                    .map_err(|source| RunnerError::ToolCallId { source })?,
+                output: tool_result_payload(&message.text_content()),
+                is_error: message.tool_is_error,
+            }]),
+            None => Ok(Vec::new()),
+        },
     }
 }
 
@@ -576,6 +582,11 @@ pub enum RunnerError {
     Llm(String),
     /// Direct tool context failure
     ToolContext(#[source] ToolContextError),
+    /// conversation history carried an invalid tool-call id
+    ToolCallId {
+        #[source]
+        source: loom_events::identifier::ParseToolCallIdError,
+    },
     /// failed to read API key env var {var}
     ApiKeyEnv {
         /// Name of the env var the runner read.
@@ -1692,7 +1703,7 @@ mod tests {
 
         let mut builder = EnvelopeBuilder::new(
             SessionScope::bead(
-                SessionId::new("sess-test"),
+                SessionId::new("sess-test").unwrap(),
                 BeadId::new("lm-test").expect("valid id"),
                 None,
                 0,

@@ -892,7 +892,7 @@ mod tests {
             workspace.to_path_buf(),
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             spawn,
         );
 
@@ -950,7 +950,7 @@ mod tests {
             workspace.to_path_buf(),
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig| async move {
                 Ok((
                     SessionOutcome {
@@ -1494,11 +1494,11 @@ cwd = "verifier-cwd"
 
         let mut walker = ProductionMintWalker::new(
             bd,
-            SpecLabel::new("test-mint"),
+            SpecLabel::new("test-mint").unwrap(),
             workspace.clone(),
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             spawn,
         );
 
@@ -1621,11 +1621,11 @@ cwd = "verifier-cwd"
 
         let mut walker = ProductionMintWalker::new(
             bd,
-            SpecLabel::new("test-mint"),
+            SpecLabel::new("test-mint").unwrap(),
             workspace.clone(),
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             spawn,
         );
 

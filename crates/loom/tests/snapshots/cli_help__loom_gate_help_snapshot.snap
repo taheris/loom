@@ -7,17 +7,17 @@ Quality gate — annotation-dispatched verifiers and LLM rubric
 Usage: loom gate [OPTIONS] [COMMAND]
 
 Commands:
-  status         Read cached gate results for an explicit scope
-  audit          Run deterministic verification followed by LLM review
-  verify         Run scope-derived deterministic verifier lanes
-  check          Run only `[check]`-tier annotations
-  test           Run only `[test]`-tier annotations
-  system         Run only `[system]`-tier annotations
-  review         Run criterion-attached judges and the LLM rubric
-  judge          Run only criterion-attached `[judge]` verifiers
-  rubric         Run only the rubric walk
-  mint           Materialize gate findings into remediation work
-  verify-marker  Validate `.loom/marker.json` against the workspace's HEAD tree and porcelain — prek's pre-push short-circuit
+  status         Read cached gate results for an explicit scope.
+  audit          Run deterministic verification followed by LLM review.
+  verify         Run scope-derived deterministic verifier lanes.
+  check          Run only `[check]`-tier annotations.
+  test           Run only `[test]`-tier annotations.
+  system         Run only `[system]`-tier annotations.
+  review         Run criterion-attached judges and the LLM rubric.
+  judge          Run only criterion-attached `[judge]` verifiers.
+  rubric         Run only the rubric walk.
+  mint           Materialize gate findings into remediation work.
+  verify-marker  Validate the current gate marker.
   help           Print this message or the help of the given subcommand(s)
 
 Options:

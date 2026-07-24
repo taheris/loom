@@ -9,9 +9,6 @@ use crate::identity::SkillName;
 use crate::registry::{NamedSkill, SkillSet};
 use crate::source::SkillProvenance;
 
-const BASE_PROFILE: &str = "base";
-const RUST_PROFILE: &str = "rust";
-
 /// Built-in profile bundle shipped with Loom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bundle {
@@ -22,8 +19,8 @@ pub enum Bundle {
 impl Bundle {
     pub fn profile_name(self) -> ProfileName {
         match self {
-            Self::Base => ProfileName::new(BASE_PROFILE),
-            Self::Rust => ProfileName::new(RUST_PROFILE),
+            Self::Base => ProfileName::base(),
+            Self::Rust => ProfileName::rust(),
         }
     }
 }

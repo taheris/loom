@@ -122,9 +122,9 @@ fn expected_finding() -> Finding {
     Finding {
         token: ConcernToken::SpecCoherenceFail,
         route: loom_workflow::review::FindingRoute::Deferred,
-        bonds: vec![SpecLabel::new(SPEC_LABEL)],
+        bonds: vec![SpecLabel::new(SPEC_LABEL).unwrap()],
         target: FindingTarget::Criterion {
-            spec: SpecLabel::new(SPEC_LABEL),
+            spec: SpecLabel::new(SPEC_LABEL).unwrap(),
             anchor: "finding-status-output".to_owned(),
         },
         evidence: "status output fixture".to_owned(),

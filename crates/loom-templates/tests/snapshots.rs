@@ -90,7 +90,7 @@ fn todo_ctx() -> Result<TodoContext> {
         spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
             .to_string(),
         changed_specs: vec![TodoChangedSpec {
-            label: SpecLabel::new("harness"),
+            label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".to_string(),
             diff: Some("=== specs/harness.md ===\n+ new requirement".to_string()),
         }],
@@ -98,13 +98,13 @@ fn todo_ctx() -> Result<TodoContext> {
         todo_head: git_sha(TEST_SHA),
         todo_fingerprint: TodoFingerprint::new(TEST_FINGERPRINT).unwrap(),
         spec_epics: vec![SpecEpicContext {
-            label: SpecLabel::new("harness"),
-            epic_id: Some(MoleculeId::new("lm-spec")),
+            label: SpecLabel::new("harness").unwrap(),
+            epic_id: Some(MoleculeId::new("lm-spec").unwrap()),
             todo_cursor: Some(TEST_SHA.to_string()),
         }],
         companion_paths: vec!["lib/sandbox/".into()],
         implementation_notes: vec![SpecImplementationNotes {
-            label: SpecLabel::new("harness"),
+            label: SpecLabel::new("harness").unwrap(),
             notes: vec!["Carry the unified todo protocol into snapshots.".into()],
         }],
         criterion_status: snapshot_criterion_status()?,
@@ -116,7 +116,7 @@ fn todo_ctx() -> Result<TodoContext> {
 fn snapshot_criterion_status() -> Result<Vec<CriterionStatus>> {
     Ok(vec![
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000001")?,
             criterion_text: "All workflow templates compile under Askama.".into(),
             annotation: ann(AnnotationTier::Check, "cargo build -p loom-templates"),
@@ -128,7 +128,7 @@ fn snapshot_criterion_status() -> Result<Vec<CriterionStatus>> {
             },
         },
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000002")?,
             criterion_text: "Rendered output is stable across runs.".into(),
             annotation: ann(
@@ -143,7 +143,7 @@ fn snapshot_criterion_status() -> Result<Vec<CriterionStatus>> {
             },
         },
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000003")?,
             criterion_text: "Todo prompts render typed criterion status rows.".into(),
             annotation: ann(
@@ -153,7 +153,7 @@ fn snapshot_criterion_status() -> Result<Vec<CriterionStatus>> {
             evidence: EvidenceState::Missing,
         },
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000004")?,
             criterion_text: "Every non-pending pinning cell matches the include graph.".into(),
             annotation: ann(
@@ -181,7 +181,7 @@ fn ann(tier: AnnotationTier, target: &str) -> CriterionAnnotation {
 fn plan_snapshot() -> Result<()> {
     let ctx = PlanContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        anchor_labels: vec![SpecLabel::new("harness"), SpecLabel::new("future-spec")],
+        anchor_labels: vec![SpecLabel::new("harness")?, SpecLabel::new("future-spec")?],
         spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
             .to_string(),
         companion_paths: vec![
@@ -204,10 +204,10 @@ fn todo_snapshot() -> Result<()> {
 fn run_snapshot() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness")?,
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")?),
         issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
@@ -233,10 +233,10 @@ fn run_snapshot() -> Result<()> {
 fn run_snapshot_no_failure() {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
         issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
@@ -255,10 +255,10 @@ fn run_snapshot_no_failure() {
 fn run_snapshot_workspace_recovery() {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
         issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
@@ -284,10 +284,10 @@ fn run_snapshot_workspace_recovery() {
 fn run_snapshot_driver_notice() {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
         issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
@@ -312,10 +312,10 @@ fn run_snapshot_driver_notice() {
 fn run_snapshot_verify_failures() {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
         issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
@@ -340,10 +340,10 @@ fn run_snapshot_verify_failures() {
 fn run_snapshot_review_concern() {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
         issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
@@ -352,7 +352,7 @@ fn run_snapshot_review_concern() {
             findings: vec![Finding {
                 token: ConcernToken::VerifierBypass,
                 route: loom_protocol::gate::FindingRoute::Deferred,
-                bonds: vec![SpecLabel::new("harness")],
+                bonds: vec![SpecLabel::new("harness").unwrap()],
                 target: FindingTarget::Annotation {
                     target_string: "cargo test --lib parse_walks_all_md_files".into(),
                 },
@@ -377,10 +377,10 @@ fn run_snapshot_review_concern() {
 fn run_snapshot_build_failure() {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
         issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
@@ -401,12 +401,12 @@ fn run_snapshot_build_failure() {
 fn review_snapshot() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness")?,
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
         beads_summary: Some("- lm-3hhwq.10: closed".into()),
         base_commit: Some("abc1234".into()),
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")?),
         test_sources: vec![ReviewSource {
             path: "tests/run-tests.sh".into(),
             body: "test_review_inputs() { :; }\n".into(),
@@ -418,7 +418,7 @@ fn review_snapshot() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        default_profile: ProfileName::new("rust"),
+        default_profile: ProfileName::new("rust")?,
         skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render()?);

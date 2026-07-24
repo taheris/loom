@@ -40,6 +40,9 @@ pub enum CacheError {
     /// bead-metadata write inside productive-completion gate failed
     BdUpdate(#[from] BdError),
 
+    /// cache contained an invalid {kind} identifier `{value}`
+    InvalidIdentifier { kind: &'static str, value: String },
+
     /// cache rebuild found an invalid spec index: {detail}
     SpecIndexMismatch { detail: String },
 

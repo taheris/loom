@@ -92,7 +92,11 @@ async fn resolve_one<R: CommandRunner>(
         }),
         1 => {
             let epic = &beads[0];
-            let molecule_id = epic.parent.as_ref().map(|p| MoleculeId::new(p.as_str()));
+            let molecule_id = epic
+                .parent
+                .as_ref()
+                .map(|parent| parent.as_str().parse())
+                .transpose()?;
             Ok(SpecResolution {
                 label: label.clone(),
                 epic_id: Some(epic.id.clone()),
@@ -131,8 +135,10 @@ fn classify(resolutions: Vec<SpecResolution>) -> FanoutOutcome {
         // the molecule key so existing single-spec bonded flows keep
         // working without a `bd mol bond` parent. `epic_id` is `Some` by
         // construction (`any_some` was true and `len == 1`).
-        if let Some(epic) = only.epic_id.clone() {
-            return FanoutOutcome::Bond(MoleculeId::new(epic.as_str()));
+        if let Some(epic) = only.epic_id.clone()
+            && let Ok(molecule) = epic.as_str().parse()
+        {
+            return FanoutOutcome::Bond(molecule);
         }
     }
     let any_none = resolutions.iter().any(|r| r.epic_id.is_none());
@@ -221,9 +227,9 @@ mod tests {
 
     fn res(label: &str, epic: Option<&str>, molecule: Option<&str>) -> SpecResolution {
         SpecResolution {
-            label: SpecLabel::new(label),
+            label: SpecLabel::new(label).unwrap(),
             epic_id: epic.map(|s| BeadId::new(s).unwrap()),
-            molecule_id: molecule.map(MoleculeId::new),
+            molecule_id: molecule.map(|id| id.parse().expect("valid fixture molecule")),
         }
     }
 
@@ -239,7 +245,10 @@ mod tests {
             res("alpha", Some("lm-a"), Some("lm-mol")),
             res("beta", Some("lm-b"), Some("lm-mol")),
         ]);
-        assert_eq!(outcome, FanoutOutcome::Bond(MoleculeId::new("lm-mol")));
+        assert_eq!(
+            outcome,
+            FanoutOutcome::Bond(MoleculeId::new("lm-mol").unwrap())
+        );
     }
 
     #[test]

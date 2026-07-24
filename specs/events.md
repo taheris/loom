@@ -322,7 +322,7 @@ not abort the run.
 - `AgentEvent` serialization carries the common flat envelope fields on every variant, including `session_id` plus optional work-routing fields such as `bead_id` and `iteration`
   [test](common_envelope_fields_present_on_every_variant)
 - Event JSON is flat tagged by `kind`, with no nested event envelope
-  [check](cargo test -p loom-events --lib flat_variant_shape_has_no_nested_envelopes)
+  [test](flat_variant_shape_has_no_nested_envelopes)
 - `AgentEvent` payload fields match this spec's variant payload table, including `agent_input`
   [test](agent_event_payload_fields_match_spec)
 - `agent_input` events are emitted before initial prompt, follow-up, steer, and re-pin text is sent to the backend, carrying the full rendered text after required redaction

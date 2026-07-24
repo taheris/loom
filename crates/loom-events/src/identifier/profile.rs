@@ -9,8 +9,16 @@ use thiserror::Error;
 pub struct ProfileName(String);
 
 impl ProfileName {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+    pub fn new(s: impl AsRef<str>) -> Result<Self, ParseProfileNameError> {
+        s.as_ref().parse()
+    }
+
+    pub fn base() -> Self {
+        Self("base".to_string())
+    }
+
+    pub fn rust() -> Self {
+        Self("rust".to_string())
     }
 
     pub fn as_str(&self) -> &str {
@@ -61,8 +69,8 @@ impl<'de> Deserialize<'de> for ProfileName {
     }
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error("invalid profile name `{0}`: expected lowercase ASCII kebab-case")]
+#[derive(Debug, displaydoc::Display, Error, PartialEq, Eq)]
+/// invalid profile name `{0}`: expected lowercase ASCII kebab-case
 pub struct ParseProfileNameError(pub String);
 
 #[cfg(test)]
@@ -71,15 +79,16 @@ mod tests {
     use anyhow::Result;
 
     #[test]
-    fn display_round_trips_with_as_str() {
-        let p = ProfileName::new("rust");
+    fn display_round_trips_with_as_str() -> Result<()> {
+        let p = ProfileName::new("rust")?;
         assert_eq!(p.as_str(), "rust");
         assert_eq!(p.to_string(), "rust");
+        Ok(())
     }
 
     #[test]
     fn serde_round_trips_as_plain_string() -> Result<()> {
-        let p = ProfileName::new("python");
+        let p = ProfileName::new("python")?;
         let json = serde_json::to_string(&p)?;
         assert_eq!(json, "\"python\"");
         let back: ProfileName = serde_json::from_str(&json)?;
@@ -115,7 +124,7 @@ mod tests {
             "with_underscore",
         ];
         for input in cases {
-            let err = input.parse::<ProfileName>().expect_err(input);
+            let err = ProfileName::new(input).expect_err(input);
             assert_eq!(err, ParseProfileNameError(input.to_owned()));
         }
     }

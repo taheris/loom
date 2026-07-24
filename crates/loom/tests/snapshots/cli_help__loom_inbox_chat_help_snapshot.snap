@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"inbox\", \"chat\"])"
 ---
-Launch interactive agent-assisted resolution
+Launch interactive agent-assisted resolution.
 
 Usage: loom inbox chat [OPTIONS] [N]
 

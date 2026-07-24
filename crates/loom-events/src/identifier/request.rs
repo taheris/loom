@@ -9,8 +9,8 @@ use thiserror::Error;
 pub struct RequestId(String);
 
 impl RequestId {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+    pub fn new(s: impl AsRef<str>) -> Result<Self, ParseRequestIdError> {
+        s.as_ref().parse()
     }
 
     pub fn as_str(&self) -> &str {
@@ -52,8 +52,8 @@ impl<'de> Deserialize<'de> for RequestId {
     }
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error("invalid request id `{0}`: expected ASCII alphanumerics with `_`/`-`")]
+#[derive(Debug, displaydoc::Display, Error, PartialEq, Eq)]
+/// invalid request id `{0}`: expected ASCII alphanumerics with `_`/`-`
 pub struct ParseRequestIdError(pub String);
 
 #[cfg(test)]
@@ -62,15 +62,16 @@ mod tests {
     use anyhow::Result;
 
     #[test]
-    fn display_round_trips_with_as_str() {
-        let id = RequestId::new("req-1");
+    fn display_round_trips_with_as_str() -> Result<()> {
+        let id = RequestId::new("req-1")?;
         assert_eq!(id.as_str(), "req-1");
         assert_eq!(id.to_string(), "req-1");
+        Ok(())
     }
 
     #[test]
     fn serde_round_trips_as_plain_string() -> Result<()> {
-        let id = RequestId::new("req-42");
+        let id = RequestId::new("req-42")?;
         let json = serde_json::to_string(&id)?;
         assert_eq!(json, "\"req-42\"");
         let back: RequestId = serde_json::from_str(&json)?;
@@ -97,7 +98,7 @@ mod tests {
     fn parse_rejects_malformed_inputs() {
         let cases = ["", "req 1", "req\t1", "req.1", "req/1", "req\"1", "req;1"];
         for input in cases {
-            let err = input.parse::<RequestId>().expect_err(input);
+            let err = RequestId::new(input).expect_err(input);
             assert_eq!(err, ParseRequestIdError(input.to_owned()));
         }
     }

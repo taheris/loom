@@ -30,7 +30,10 @@ mod tests {
             parse_anchor_labels(vec!["harness".into(), "templates".into()]).expect("labels");
         assert_eq!(
             labels,
-            vec![SpecLabel::new("harness"), SpecLabel::new("templates")]
+            vec![
+                SpecLabel::new("harness").unwrap(),
+                SpecLabel::new("templates").unwrap()
+            ]
         );
     }
 

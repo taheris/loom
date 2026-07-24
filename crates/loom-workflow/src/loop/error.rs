@@ -5,6 +5,7 @@ use loom_driver::agent::ProtocolError;
 use loom_driver::bd::BdError;
 use loom_driver::config::LoomConfigError;
 use loom_driver::git::GitError;
+use loom_driver::identifier::ParseMoleculeIdError;
 use loom_driver::logging::LogError;
 use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::CacheError;
@@ -17,6 +18,9 @@ pub enum LoopError {
 
     /// bd CLI failure during `loom loop`
     Bd(#[from] BdError),
+
+    /// loop bead carried an invalid molecule id
+    InvalidMoleculeId(#[from] ParseMoleculeIdError),
 
     /// rendering the loop.md template failed
     Render(#[from] askama::Error),

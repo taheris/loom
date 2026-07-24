@@ -1,0 +1,17 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"gate\", \"status\"])"
+---
+Read cached gate results for an explicit scope.
+
+Usage: loom gate status [OPTIONS]
+
+Options:
+      --files <PATH>...   Scope to verifiers whose declared inputs intersect this file set
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+      --host-key          Explicitly allow ambient host Git credentials and signing config
+      --target <TARGET>   Run annotations whose target exactly matches this string
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
+      --diff <RANGE>      Scope to a git diff range
+      --tree              Scope to every file in the workspace
+  -h, --help              Print help

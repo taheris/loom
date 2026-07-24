@@ -41,7 +41,6 @@ use displaydoc::Display;
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use loom_events::identifier::SpecLabel;
 use loom_protocol::gate::{ConcernToken, Finding, FindingRoute, FindingTarget};
 
 use crate::annotation::{Annotation, Tier};
@@ -170,10 +169,11 @@ impl IntegrityFinding {
             }
         };
         let label = spec.file_stem().and_then(|s| s.to_str())?;
+        let spec_label = label.parse().ok()?;
         Some(Finding {
             token,
             route: FindingRoute::Deferred,
-            bonds: vec![SpecLabel::new(label)],
+            bonds: vec![spec_label],
             target: FindingTarget::Annotation {
                 target_string: target.clone(),
             },

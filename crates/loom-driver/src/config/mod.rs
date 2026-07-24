@@ -61,7 +61,6 @@ pub const CONFIG_PATH_ENV: &str = "LOOM_CONFIG";
 pub const DEFAULT_CONFIG_FILENAME: &str = "loom.toml";
 
 use crate::agent::{AgentKind, OutputLimits};
-use crate::identifier::ProfileName;
 use agent::lookup_phase_field;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -259,7 +258,9 @@ impl LoomConfig {
             AgentKind::Pi | AgentKind::Direct => None,
         };
         Ok(AgentSelection {
-            profile: ProfileName::new(profile_str),
+            profile: profile_str
+                .parse()
+                .map_err(|source| AgentSelectionError::InvalidProfile { source })?,
             kind,
             provider,
             model_id,

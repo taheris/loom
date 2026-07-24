@@ -120,7 +120,7 @@ pub async fn spawn_fixup_bead<C: FixupContext>(
             origin: origin.clone(),
         });
     };
-    let molecule = MoleculeId::new(molecule_parent.as_str());
+    let molecule = molecule_parent.as_str().parse()?;
     let fixup_id = ctx.create_and_bond(&molecule, request).await?;
     Ok(FixupOutcome::Spawned { fixup_id, molecule })
 }
@@ -186,7 +186,7 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: vec![Label::new("spec:harness")],
+            labels: vec![Label::new("spec:harness").expect("valid Label")],
             parent: parent.map(|p| BeadId::new(p).expect("valid parent")),
             metadata: Default::default(),
             notes: None,
@@ -215,14 +215,14 @@ mod tests {
         match outcome {
             FixupOutcome::Spawned { fixup_id, molecule } => {
                 assert_eq!(fixup_id, BeadId::new("lm-fix.1").expect("id"));
-                assert_eq!(molecule, MoleculeId::new("lm-mola"));
+                assert_eq!(molecule, MoleculeId::new("lm-mola").unwrap());
             }
             other => panic!("expected Spawned, got {other:?}"),
         }
 
         assert_eq!(ctx.create_calls.len(), 1, "create_and_bond called once");
         let (mol, req) = &ctx.create_calls[0];
-        assert_eq!(*mol, MoleculeId::new("lm-mola"));
+        assert_eq!(*mol, MoleculeId::new("lm-mola").unwrap());
         assert_eq!(req.title, "fix the leak");
         assert_eq!(req.description, "verify-fail recovery follow-up");
 

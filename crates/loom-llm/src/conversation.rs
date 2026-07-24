@@ -18,7 +18,7 @@ use displaydoc::Display;
 #[cfg(test)]
 use loom_events::DriverKind;
 use loom_events::event::Source;
-use loom_events::identifier::{SessionId, ToolCallId as EventToolCallId};
+use loom_events::identifier::SessionId;
 use loom_events::{
     AgentEvent, DriverEventPayload, EnvelopeBuilder, EventSink, SessionCommand, SessionScope,
 };
@@ -102,6 +102,11 @@ pub enum ConversationError {
     SerializeToolResult(#[from] serde_json::Error),
     /// failed to canonicalize tool data as RFC 8785 JSON
     CanonicalizeToolData(#[from] crate::observer::result_hasher::Error),
+    /// validated provider tool-call id was incompatible with the event schema
+    EventToolCallId {
+        #[source]
+        source: loom_events::identifier::ParseToolCallIdError,
+    },
 }
 
 /// Multi-turn conversation with built-in tool-use loop.
@@ -323,7 +328,7 @@ impl Conversation {
             ));
 
             for call in &response.tool_calls {
-                self.observe_tool_call(&call.call_id, &call.name, &call.args);
+                self.observe_tool_call(&call.call_id, &call.name, &call.args)?;
                 if let Some(reason) = self.process_observer_updates(client) {
                     return Err(ConversationError::ObserverAbort { reason });
                 }
@@ -370,13 +375,16 @@ impl Conversation {
         call_id: &LlmToolCallId,
         tool: &str,
         params: &serde_json::Value,
-    ) {
+    ) -> Result<(), ConversationError> {
         let Some(envelope) = self.next_observer_envelope() else {
-            return;
+            return Ok(());
         };
         let event = AgentEvent::ToolCall {
             envelope,
-            id: EventToolCallId::new(call_id.as_str()),
+            id: call_id
+                .as_str()
+                .parse()
+                .map_err(|source| ConversationError::EventToolCallId { source })?,
             tool: tool.to_owned(),
             params: params.clone(),
             parent_tool_call_id: None,
@@ -387,17 +395,21 @@ impl Conversation {
         if let Some(observer) = self.duplicate_result.as_mut() {
             observer.emit(&event);
         }
+        Ok(())
     }
 
     fn observe_tool_result(
         &mut self,
         call_id: &LlmToolCallId,
         fingerprint: ResultFingerprint,
-    ) -> Result<(), crate::observer::result_hasher::Error> {
+    ) -> Result<(), ConversationError> {
         if self.doom_loop.is_none() && self.duplicate_result.is_none() {
             return Ok(());
         }
-        let event_id = EventToolCallId::new(call_id.as_str());
+        let event_id = call_id
+            .as_str()
+            .parse()
+            .map_err(|source| ConversationError::EventToolCallId { source })?;
         if let Some(observer) = self.doom_loop.as_mut() {
             observer.observe_tool_result(&event_id, fingerprint)?;
         }
@@ -674,7 +686,7 @@ fn estimate_tool_def_bytes(tool: &ToolDef) -> usize {
 /// builder via [`Conversation::with_envelope_builder`].
 fn default_envelope_builder() -> EnvelopeBuilder {
     EnvelopeBuilder::new(
-        SessionScope::phase(SessionId::new("conv-default"), None),
+        SessionScope::phase(SessionId::generated("conv-default"), None),
         Source::Agent,
         || 0,
     )
@@ -786,7 +798,7 @@ mod tests {
         fn emit_driver_event(&self, event: DriverEventPayload) {
             let mut guard = self.events.lock().unwrap_or_else(|p| p.into_inner());
             let envelope = loom_events::EventEnvelope {
-                session_id: SessionId::new("scripted-client"),
+                session_id: SessionId::new("scripted-client").unwrap(),
                 bead_id: None,
                 molecule_id: None,
                 iteration: None,

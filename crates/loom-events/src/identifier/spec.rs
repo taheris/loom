@@ -9,8 +9,16 @@ use thiserror::Error;
 pub struct SpecLabel(String);
 
 impl SpecLabel {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+    pub fn new(s: impl AsRef<str>) -> Result<Self, ParseSpecLabelError> {
+        s.as_ref().parse()
+    }
+
+    pub fn inbox_chat() -> Self {
+        Self("inbox-chat".to_string())
+    }
+
+    pub fn todo() -> Self {
+        Self("todo".to_string())
     }
 
     pub fn as_str(&self) -> &str {
@@ -63,8 +71,8 @@ impl<'de> Deserialize<'de> for SpecLabel {
     }
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error("invalid spec label `{0}`: expected lowercase ASCII kebab-case")]
+#[derive(Debug, displaydoc::Display, Error, PartialEq, Eq)]
+/// invalid spec label `{0}`: expected lowercase ASCII kebab-case
 pub struct ParseSpecLabelError(pub String);
 
 #[cfg(test)]
@@ -73,15 +81,16 @@ mod tests {
     use anyhow::Result;
 
     #[test]
-    fn display_round_trips_with_as_str() {
-        let label = SpecLabel::new("harness");
+    fn display_round_trips_with_as_str() -> Result<()> {
+        let label = SpecLabel::new("harness")?;
         assert_eq!(label.as_str(), "harness");
         assert_eq!(label.to_string(), "harness");
+        Ok(())
     }
 
     #[test]
     fn serde_round_trips_as_plain_string() -> Result<()> {
-        let label = SpecLabel::new("gate");
+        let label = SpecLabel::new("gate")?;
         let json = serde_json::to_string(&label)?;
         assert_eq!(json, "\"gate\"");
         let back: SpecLabel = serde_json::from_str(&json)?;
@@ -118,7 +127,7 @@ mod tests {
             "with/slash",
         ];
         for input in cases {
-            let err = input.parse::<SpecLabel>().expect_err(input);
+            let err = SpecLabel::new(input).expect_err(input);
             assert_eq!(err, ParseSpecLabelError(input.to_owned()));
         }
     }

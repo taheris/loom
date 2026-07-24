@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"gate\", \"system\"])"
 ---
-Run only `[system]`-tier annotations
+Run only `[system]`-tier annotations.
 
 Usage: loom gate system [OPTIONS]
 

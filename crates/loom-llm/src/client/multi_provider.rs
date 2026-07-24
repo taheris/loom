@@ -495,7 +495,7 @@ impl LlmClient for GeminiClient {
 
 pub(super) fn default_envelope_builder() -> EnvelopeBuilder {
     EnvelopeBuilder::new(
-        SessionScope::phase(SessionId::new("llm-client-default"), None),
+        SessionScope::phase(SessionId::generated("llm-client-default"), None),
         Source::Driver,
         || 0,
     )

@@ -100,7 +100,7 @@ fn cache_row(label: &str, id: String, target: &str, commit: String) -> CacheRow 
 async fn empty_cache_yields_missing_evidence_for_every_criterion() {
     let dir = init_git_repo();
     let workspace = dir.path();
-    let label = SpecLabel::new("alpha");
+    let label = SpecLabel::new("alpha").unwrap();
     let body = "\
 ## Success Criteria
 
@@ -134,7 +134,7 @@ async fn empty_cache_yields_missing_evidence_for_every_criterion() {
 async fn cache_hit_with_stale_commit_renders_non_zero_commits_since() {
     let dir = init_git_repo();
     let workspace = dir.path();
-    let label = SpecLabel::new("alpha");
+    let label = SpecLabel::new("alpha").unwrap();
     let body = "\
 ## Success Criteria
 
@@ -179,7 +179,7 @@ async fn cache_hit_with_stale_commit_renders_non_zero_commits_since() {
 async fn todo_populates_criterion_status_from_cache_db() {
     let dir = init_git_repo();
     let workspace = dir.path();
-    let label = SpecLabel::new("alpha");
+    let label = SpecLabel::new("alpha").unwrap();
     let body = "\
 ## Success Criteria
 
@@ -211,7 +211,7 @@ async fn todo_populates_criterion_status_from_cache_db() {
 async fn stale_annotation_detected_when_cached_binding_differs() {
     let dir = init_git_repo();
     let workspace = dir.path();
-    let label = SpecLabel::new("alpha");
+    let label = SpecLabel::new("alpha").unwrap();
     let body = "\
 ## Success Criteria
 
@@ -250,7 +250,7 @@ async fn stale_annotation_detected_when_cached_binding_differs() {
 async fn legacy_gate_cache_file_is_not_a_live_input() {
     let dir = init_git_repo();
     let workspace = dir.path();
-    let label = SpecLabel::new("alpha");
+    let label = SpecLabel::new("alpha").unwrap();
     let body = "\
 ## Success Criteria
 
@@ -287,7 +287,7 @@ async fn legacy_gate_cache_file_is_not_a_live_input() {
 async fn criterion_status_commits_since_computed_from_git_rev_list() {
     let dir = init_git_repo();
     let workspace = dir.path();
-    let label = SpecLabel::new("alpha");
+    let label = SpecLabel::new("alpha").unwrap();
     let body = "\
 ## Success Criteria
 
@@ -321,7 +321,7 @@ async fn criterion_status_commits_since_computed_from_git_rev_list() {
 async fn criterion_status_commits_since_is_missing_when_no_cache_row() {
     let dir = init_git_repo();
     let workspace = dir.path();
-    let label = SpecLabel::new("alpha");
+    let label = SpecLabel::new("alpha").unwrap();
     let body = "\
 ## Success Criteria
 
@@ -339,7 +339,7 @@ async fn criterion_status_commits_since_is_missing_when_no_cache_row() {
 async fn todo_missing_criterion_cache_rows_are_missing_evidence() {
     let dir = init_git_repo();
     let workspace = dir.path();
-    let label = SpecLabel::new("alpha");
+    let label = SpecLabel::new("alpha").unwrap();
     let body = "\
 ## Success Criteria
 
@@ -379,7 +379,7 @@ async fn todo_missing_criterion_cache_rows_are_missing_evidence() {
 async fn missing_spec_file_returns_empty_vec() {
     let dir = init_git_repo();
     let workspace = dir.path();
-    let label = SpecLabel::new("ghost");
+    let label = SpecLabel::new("ghost").unwrap();
     let spec_rel = PathBuf::from("specs/ghost.md");
     let git = GitClient::open(workspace).unwrap();
     let cache_path = workspace.join(".loom/cache.db");

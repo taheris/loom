@@ -153,7 +153,7 @@ mod tests {
 
     fn pi_selection() -> AgentSelection {
         AgentSelection {
-            profile: ProfileName::new("base"),
+            profile: ProfileName::new("base").unwrap(),
             kind: AgentKind::Pi,
             provider: Some("openai".to_string()),
             model_id: Some("gpt-4o".to_string()),

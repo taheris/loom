@@ -15,10 +15,6 @@ set -euo pipefail
 #                    close so the test exercises the SIGTERM → SIGKILL
 #                    escalation in the shutdown watchdog.
 #
-#   happy-path     — system → assistant → result/success. Used by the
-#                    container smoke runner; covers the minimum
-#                    single-turn lifecycle.
-#
 #   interactive-compaction-canary
 #                  — verify interactive `claude --settings <file>` loads
 #                    the compact SessionStart hook before emitting output.
@@ -38,10 +34,6 @@ exec 1> >(stdbuf -oL cat)
 
 emit() {
     printf '%s\n' "$1"
-}
-
-emit_system_init() {
-    emit '{"type":"system","subtype":"init","session_id":"mock-claude-session"}'
 }
 
 emit_assistant_text() {
@@ -208,15 +200,6 @@ case "$MODE" in
         while true; do
             sleep 0.1
         done
-        ;;
-    happy-path)
-        emit_system_init
-        # Read the prompt so the smoke runner's stdin write doesn't block
-        # when the driver pipe stays open longer than the agent loop.
-        IFS= read -r _initial
-        emit_assistant_text "ack"
-        emit_result_success
-        exit 0
         ;;
     interactive-compaction-canary)
         run_interactive_compaction_canary "${@:2}"

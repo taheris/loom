@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"gate\", \"judge\"])"
 ---
-Run only criterion-attached `[judge]` verifiers
+Run only criterion-attached `[judge]` verifiers.
 
 Usage: loom gate judge [OPTIONS]
 

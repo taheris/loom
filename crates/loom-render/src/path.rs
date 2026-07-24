@@ -23,7 +23,7 @@ pub use super::time::format_utc_timestamp;
 ///
 /// let path = bead_log_path(
 ///     Path::new("/ws/.loom/logs"),
-///     &SpecLabel::new("harness"),
+///     &SpecLabel::new("harness").unwrap(),
 ///     &BeadId::new("lm-3hhwq.9").unwrap(),
 ///     UNIX_EPOCH + Duration::from_secs(1777811445),
 /// );
@@ -64,7 +64,7 @@ mod tests {
     fn nests_under_spec_label_and_includes_utc_stamp() {
         let path = bead_log_path(
             Path::new("/x/.loom/logs"),
-            &SpecLabel::new("alpha"),
+            &SpecLabel::new("alpha").unwrap(),
             &BeadId::new("lm-1").expect("valid bead id"),
             UNIX_EPOCH + Duration::from_secs(0),
         );
@@ -79,8 +79,8 @@ mod tests {
         let root = Path::new("/r");
         let when = UNIX_EPOCH + Duration::from_secs(1777811445);
         let bead = BeadId::new("lm-1").expect("valid bead id");
-        let p_a = bead_log_path(root, &SpecLabel::new("a"), &bead, when);
-        let p_b = bead_log_path(root, &SpecLabel::new("b"), &bead, when);
+        let p_a = bead_log_path(root, &SpecLabel::new("a").unwrap(), &bead, when);
+        let p_b = bead_log_path(root, &SpecLabel::new("b").unwrap(), &bead, when);
         assert_ne!(p_a.parent(), p_b.parent());
     }
 
@@ -88,7 +88,7 @@ mod tests {
     fn distinct_beads_in_same_spec_yield_distinct_files() {
         let root = Path::new("/r");
         let when = UNIX_EPOCH + Duration::from_secs(1777811445);
-        let label = SpecLabel::new("a");
+        let label = SpecLabel::new("a").unwrap();
         let bead_a = BeadId::new("lm-1").expect("valid bead id");
         let bead_b = BeadId::new("lm-2").expect("valid bead id");
         let p_a = bead_log_path(root, &label, &bead_a, when);

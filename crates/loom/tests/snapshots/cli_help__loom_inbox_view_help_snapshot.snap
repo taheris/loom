@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"inbox\", \"view\"])"
 ---
-Render one item host-side
+Render one item host-side.
 
 Usage: loom inbox view [OPTIONS] [N]
 

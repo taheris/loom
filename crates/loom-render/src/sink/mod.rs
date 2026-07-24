@@ -255,7 +255,7 @@ impl EventSink for LogSink {
         if let Err(err) = LogSink::emit(self, event) {
             warn!(
                 target: "loom_render::sink",
-                error = %err,
+                error = ?err,
                 log_path = %self.log_path.display(),
                 "log sink emit failed under EventSink trait",
             );
@@ -321,7 +321,7 @@ mod tests {
     /// trivially comparable.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
-            session_id: SessionId::new("sess-render-sink"),
+            session_id: SessionId::new("sess-render-sink").unwrap(),
             bead_id: Some(BeadId::new("lm-test").expect("valid bead id")),
             molecule_id: None,
             iteration: Some(0),
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn emit_writes_jsonl_line_per_event_and_drives_renderer() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let bead = BeadId::new("lm-1").expect("valid bead id");
         let when = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(0);
         let (mut sink, term_buf) =
@@ -347,7 +347,7 @@ mod tests {
 
         sink.emit(&AgentEvent::ToolCall {
             envelope: sample_envelope(),
-            id: ToolCallId::new("t1"),
+            id: ToolCallId::new("t1").unwrap(),
             tool: "Read".to_string(),
             params: json!({"file_path": "src/lib.rs"}),
             parent_tool_call_id: None,
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn emit_persists_compaction_events() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let bead = BeadId::new("lm-1").expect("valid bead id");
         let (mut sink, _term) = open_sink_with_sink_writer(
             dir.path(),
@@ -405,7 +405,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (sink, _term) = open_sink_with_sink_writer(
             dir.path(),
-            &SpecLabel::new("alpha"),
+            &SpecLabel::new("alpha").unwrap(),
             &BeadId::new("lm-1").expect("valid bead id"),
             SystemTime::UNIX_EPOCH,
         )
@@ -420,7 +420,7 @@ mod tests {
         let logs = dir.path().join(".loom/logs");
         let (sink, _) = open_sink_with_sink_writer(
             &logs,
-            &SpecLabel::new("nested"),
+            &SpecLabel::new("nested").unwrap(),
             &BeadId::new("lm-1").expect("valid bead id"),
             SystemTime::UNIX_EPOCH,
         )
@@ -432,7 +432,7 @@ mod tests {
     fn same_second_bead_spawns_allocate_distinct_log_files() {
         let dir = tempfile::tempdir().expect("tempdir");
         let logs = dir.path().join(".loom/logs");
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let bead = BeadId::new("lm-1").expect("valid bead id");
         let when = SystemTime::UNIX_EPOCH;
         let (mut first, _) =
@@ -480,7 +480,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (mut sink, _term) = open_sink_with_sink_writer(
             dir.path(),
-            &SpecLabel::new("alpha"),
+            &SpecLabel::new("alpha").unwrap(),
             &BeadId::new("lm-1").expect("valid bead id"),
             SystemTime::UNIX_EPOCH,
         )
@@ -492,7 +492,7 @@ mod tests {
             &mut sink,
             &AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: "Read".to_string(),
                 params: json!({"file_path": "first.rs"}),
                 parent_tool_call_id: None,
@@ -537,7 +537,7 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let bead = BeadId::new("lm-1").expect("valid bead id");
         let sink = LogSink::open_in_at(dir.path(), &label, &bead, None, SystemTime::UNIX_EPOCH)
             .expect("open");

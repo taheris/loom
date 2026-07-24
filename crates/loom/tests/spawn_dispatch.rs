@@ -507,7 +507,7 @@ fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
     let state_dir = workspace.join(".loom");
     std::fs::create_dir_all(&state_dir).expect("mkdir .loom");
     let db = CacheDb::open(state_dir.join("cache.db")).expect("open state db");
-    let spec = SpecLabel::new(label);
+    let spec = SpecLabel::new(label).unwrap();
     // `replace_companions` is the canonical insert-or-ignore on `specs`
     // (no companions seeded here — we just need the row to exist).
     db.replace_companions(&spec, &[]).expect("seed spec row");
@@ -1436,7 +1436,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         use loom_driver::identifier::SpecLabel;
         use loom_driver::state::CacheDb;
         let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache db");
-        db.upsert_spec(&SpecLabel::new("agent"), "specs/agent.md")
+        db.upsert_spec(&SpecLabel::new("agent").unwrap(), "specs/agent.md")
             .expect("seed spec");
     }
 

@@ -179,6 +179,11 @@ fn loom_gate_help_snapshot() {
 }
 
 #[test]
+fn loom_gate_status_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["gate", "status"]));
+}
+
+#[test]
 fn loom_gate_verify_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["gate", "verify"]));
 }
@@ -216,6 +221,16 @@ fn loom_gate_judge_help_snapshot() {
 #[test]
 fn loom_gate_rubric_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["gate", "rubric"]));
+}
+
+#[test]
+fn loom_gate_mint_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["gate", "mint"]));
+}
+
+#[test]
+fn loom_gate_verify_marker_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["gate", "verify-marker"]));
 }
 
 #[test]
@@ -368,6 +383,11 @@ fn loom_inbox_help_snapshot() {
 }
 
 #[test]
+fn loom_inbox_list_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["inbox", "list"]));
+}
+
+#[test]
 fn loom_inbox_view_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["inbox", "view"]));
 }
@@ -380,6 +400,31 @@ fn loom_inbox_chat_help_snapshot() {
 #[test]
 fn loom_tune_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["tune"]));
+}
+
+#[test]
+fn loom_tune_skill_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["tune", "skill"]));
+}
+
+#[test]
+fn loom_tune_phase_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["tune", "phase"]));
+}
+
+#[test]
+fn loom_tune_partial_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["tune", "partial"]));
+}
+
+#[test]
+fn loom_tune_checker_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["tune", "checker"]));
+}
+
+#[test]
+fn loom_tune_all_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["tune", "all"]));
 }
 
 #[test]
@@ -460,84 +505,69 @@ fn loom_note_rm_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["note", "rm"]));
 }
 
+fn child_commands(help: &str) -> Vec<String> {
+    let mut in_commands = false;
+    let mut children = Vec::new();
+    for line in help.lines() {
+        if matches!(line, "Commands:" | "Workflow:" | "Inspection:" | "State:") {
+            in_commands = true;
+            continue;
+        }
+        if line.ends_with(':') {
+            in_commands = false;
+            continue;
+        }
+        if !in_commands {
+            continue;
+        }
+        let Some(row) = line.strip_prefix("  ") else {
+            continue;
+        };
+        if row.starts_with(' ') || row.starts_with('-') {
+            continue;
+        }
+        let Some(name) = row.split_whitespace().next() else {
+            continue;
+        };
+        if name != "help" {
+            children.push(name.to_string());
+        }
+    }
+    children
+}
+
+fn cli_command_paths() -> Vec<Vec<String>> {
+    let mut paths = vec![Vec::new()];
+    let mut index = 0;
+    while index < paths.len() {
+        let path = paths[index].clone();
+        let args = path.iter().map(String::as_str).collect::<Vec<_>>();
+        for child in child_commands(&loom_help(&args)) {
+            let mut child_path = path.clone();
+            child_path.push(child);
+            paths.push(child_path);
+        }
+        index += 1;
+    }
+    paths
+}
+
+fn snapshot_name(path: &[String]) -> String {
+    if path.is_empty() {
+        return "cli_help__loom_help_snapshot.snap".to_string();
+    }
+    format!(
+        "cli_help__loom_{}_help_snapshot.snap",
+        path.join("_").replace('-', "_")
+    )
+}
+
 #[test]
 fn all_cli_help_snapshots() {
-    const CASES: &[(&[&str], &str)] = &[
-        (&[], "cli_help__loom_help_snapshot.snap"),
-        (&["init"], "cli_help__loom_init_help_snapshot.snap"),
-        (&["status"], "cli_help__loom_status_help_snapshot.snap"),
-        (&["use"], "cli_help__loom_use_help_snapshot.snap"),
-        (&["logs"], "cli_help__loom_logs_help_snapshot.snap"),
-        (&["spec"], "cli_help__loom_spec_help_snapshot.snap"),
-        (&["plan"], "cli_help__loom_plan_help_snapshot.snap"),
-        (&["loop"], "cli_help__loom_loop_help_snapshot.snap"),
-        (&["gate"], "cli_help__loom_gate_help_snapshot.snap"),
-        (
-            &["gate", "verify"],
-            "cli_help__loom_gate_verify_help_snapshot.snap",
-        ),
-        (
-            &["gate", "check"],
-            "cli_help__loom_gate_check_help_snapshot.snap",
-        ),
-        (
-            &["gate", "test"],
-            "cli_help__loom_gate_test_help_snapshot.snap",
-        ),
-        (
-            &["gate", "system"],
-            "cli_help__loom_gate_system_help_snapshot.snap",
-        ),
-        (
-            &["gate", "review"],
-            "cli_help__loom_gate_review_help_snapshot.snap",
-        ),
-        (
-            &["gate", "audit"],
-            "cli_help__loom_gate_audit_help_snapshot.snap",
-        ),
-        (
-            &["gate", "judge"],
-            "cli_help__loom_gate_judge_help_snapshot.snap",
-        ),
-        (
-            &["gate", "rubric"],
-            "cli_help__loom_gate_rubric_help_snapshot.snap",
-        ),
-        (&["inbox"], "cli_help__loom_inbox_help_snapshot.snap"),
-        (
-            &["inbox", "view"],
-            "cli_help__loom_inbox_view_help_snapshot.snap",
-        ),
-        (
-            &["inbox", "chat"],
-            "cli_help__loom_inbox_chat_help_snapshot.snap",
-        ),
-        (&["tune"], "cli_help__loom_tune_help_snapshot.snap"),
-        (&["todo"], "cli_help__loom_todo_help_snapshot.snap"),
-        (&["note"], "cli_help__loom_note_help_snapshot.snap"),
-        (
-            &["note", "set"],
-            "cli_help__loom_note_set_help_snapshot.snap",
-        ),
-        (
-            &["note", "add"],
-            "cli_help__loom_note_add_help_snapshot.snap",
-        ),
-        (
-            &["note", "clear"],
-            "cli_help__loom_note_clear_help_snapshot.snap",
-        ),
-        (
-            &["note", "list"],
-            "cli_help__loom_note_list_help_snapshot.snap",
-        ),
-        (&["note", "rm"], "cli_help__loom_note_rm_help_snapshot.snap"),
-    ];
-
     let snapshot_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
-    for (args, snapshot_name) in CASES {
-        let snapshot = std::fs::read_to_string(snapshot_dir.join(snapshot_name))
+    for path in cli_command_paths() {
+        let snapshot_name = snapshot_name(&path);
+        let snapshot = std::fs::read_to_string(snapshot_dir.join(&snapshot_name))
             .unwrap_or_else(|error| panic!("read {snapshot_name}: {error}"));
         let remainder = snapshot
             .strip_prefix("---\n")
@@ -545,6 +575,7 @@ fn all_cli_help_snapshots() {
         let (_, expected) = remainder
             .split_once("---\n")
             .unwrap_or_else(|| panic!("snapshot {snapshot_name} has no body separator"));
-        assert_eq!(loom_help(args), expected, "snapshot {snapshot_name}");
+        let args = path.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(loom_help(&args), expected, "snapshot {snapshot_name}");
     }
 }

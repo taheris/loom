@@ -101,14 +101,14 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let db = fresh_db(dir.path())?;
         db.upsert_work_epic(&loom_driver::state::WorkEpicRow {
-            epic_id: MoleculeId::new("lm-active"),
+            epic_id: MoleculeId::new("lm-active").unwrap(),
             todo_head: Some("abc".to_string()),
             todo_fingerprint: Some("fp".to_string()),
             is_active: true,
             iteration_count: 3,
         })?;
         db.upsert_work_epic(&loom_driver::state::WorkEpicRow {
-            epic_id: MoleculeId::new("lm-todo"),
+            epic_id: MoleculeId::new("lm-todo").unwrap(),
             todo_head: Some("def".to_string()),
             todo_fingerprint: Some("fp2".to_string()),
             is_active: false,

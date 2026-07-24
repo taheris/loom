@@ -120,7 +120,7 @@ fn gen_signing_key(dir: &Path) -> Result<Option<std::path::PathBuf>> {
 async fn bead_dispatch_creates_worktree() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = fake_bead("lm-solo");
 
     // Step 1: dispatching a single bead through the `create_worktrees`
@@ -187,7 +187,7 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
 async fn parallel_worktree_creation_isolated_per_bead() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let beads = vec![fake_bead("lm-1"), fake_bead("lm-2"), fake_bead("lm-3")];
 
     let slots = create_worktrees(&client, &label, beads.clone()).await?;
@@ -224,7 +224,7 @@ async fn parallel_worktree_creation_isolated_per_bead() -> Result<()> {
 async fn parallel_merge_back() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let beads = vec![fake_bead("lm-mergea"), fake_bead("lm-mergeb")];
 
     let slots = create_worktrees(&client, &label, beads.clone()).await?;
@@ -292,7 +292,7 @@ async fn parallel_merge_back() -> Result<()> {
 async fn parallel_failure_preserves_worktree() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let beads = vec![fake_bead("lm-faila"), fake_bead("lm-failb")];
     let slots = create_worktrees(&client, &label, beads.clone()).await?;
 
@@ -395,7 +395,7 @@ async fn parallel_failure_preserves_worktree() -> Result<()> {
 async fn workspace_persists_on_all_failure_paths() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let beads = vec![
         fake_bead("lm-fail"),
         fake_bead("lm-retry"),
@@ -490,7 +490,7 @@ async fn workspace_persists_on_all_failure_paths() -> Result<()> {
 async fn parallel_infra_outcomes_surface_as_batch_infra() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let beads = vec![
         fake_bead("lm-preflight"),
         fake_bead("lm-interrupted"),
@@ -555,7 +555,7 @@ async fn parallel_infra_outcomes_surface_as_batch_infra() -> Result<()> {
 async fn parallel_conflict_preserves_worktree() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = fake_bead("lm-conflict");
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
     let slot = slots.into_iter().next().expect("one slot");
@@ -625,10 +625,10 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
 async fn parallel_second_conflict_escalates_to_clarify_with_options() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let mut bead = fake_bead("lm-conflict2");
     // The marker the first-conflict pass would have applied via the caller.
-    bead.labels = vec![Label::new(CONFLICT_RETRY_LABEL)];
+    bead.labels = vec![Label::new(CONFLICT_RETRY_LABEL).expect("valid Label")];
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
     let slot = slots.into_iter().next().expect("one slot");
 
@@ -686,7 +686,7 @@ async fn parallel_second_conflict_escalates_to_clarify_with_options() -> Result<
 async fn merge_back_preserves_input_slot_order() -> Result<()> {
     let repo = init_repo()?;
     let client = unsigned_client(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     // Use bead ids that sort differently lexically and numerically so a
     // scrambling re-order would be observable on either axis.
     let beads = vec![
@@ -778,7 +778,7 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
         "precondition: verification must be enabled once allowed_signers resolves",
     );
 
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = fake_bead("lm-unsigned.1");
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
     let slot = slots.into_iter().next().expect("one slot");

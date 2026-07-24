@@ -64,7 +64,7 @@ mod tests {
              - c [system](nix run .#x)\n\
              - d [judge](rubrics/api.md)\n",
         )?;
-        let rows = list_for_label(dir.path(), &SpecLabel::new("alpha"))?;
+        let rows = list_for_label(dir.path(), &SpecLabel::new("alpha").unwrap())?;
         let tiers: Vec<Tier> = rows.iter().map(|a| a.tier).collect();
         assert_eq!(
             tiers,
@@ -89,7 +89,7 @@ mod tests {
              - b [judge](tests/b.sh#test_b)\n\
              - c [check](rg pattern files)\n",
         )?;
-        let pkgs = deps_for_label(dir.path(), &SpecLabel::new("alpha"))?;
+        let pkgs = deps_for_label(dir.path(), &SpecLabel::new("alpha").unwrap())?;
         assert!(pkgs.contains("curl"), "file-shaped [test] target scanned");
         assert!(pkgs.contains("jq"), "file-shaped [judge] target scanned");
         assert!(

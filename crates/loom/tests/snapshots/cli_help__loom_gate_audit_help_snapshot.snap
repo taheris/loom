@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"gate\", \"audit\"])"
 ---
-Run deterministic verification followed by LLM review
+Run deterministic verification followed by LLM review.
 
 Usage: loom gate audit [OPTIONS]
 

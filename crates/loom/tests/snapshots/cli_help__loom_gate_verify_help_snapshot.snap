@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"gate\", \"verify\"])"
 ---
-Run scope-derived deterministic verifier lanes
+Run scope-derived deterministic verifier lanes.
 
 Usage: loom gate verify [OPTIONS]
 

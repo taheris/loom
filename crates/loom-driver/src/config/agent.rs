@@ -6,7 +6,7 @@ use thiserror::Error;
 use tracing::{info, warn};
 
 use crate::agent::{AgentKind, ModelSelection, OutputLimits, SpawnConfig, ThinkingLevel};
-use crate::identifier::ProfileName;
+use crate::identifier::{ParseProfileNameError, ProfileName};
 
 /// `[phase.<name>]` table from `<workspace>/loom.toml`. Each per-phase
 /// block deserializes into one of these; `[phase.default]` is the fallback
@@ -272,6 +272,11 @@ fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: String) {
 
 #[derive(Debug, Display, Error, PartialEq, Eq)]
 pub enum AgentSelectionError {
+    /// invalid profile name in phase configuration
+    InvalidProfile {
+        #[source]
+        source: ParseProfileNameError,
+    },
     /// unknown agent backend `{name}` in config (expected `claude`, `pi`, or `direct`)
     UnknownBackend { name: String },
     /// unknown agent.thinking_level `{name}` in config (expected one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`)
@@ -335,7 +340,7 @@ mod tests {
         model_id: Option<&str>,
     ) -> AgentSelection {
         AgentSelection {
-            profile: ProfileName::new("base"),
+            profile: ProfileName::new("base").unwrap(),
             kind,
             provider: provider.map(str::to_string),
             model_id: model_id.map(str::to_string),

@@ -7,6 +7,7 @@ use thiserror::Error;
 use loom_driver::bd::BdError;
 use loom_driver::config::LoomConfigError;
 use loom_driver::git::GitError;
+use loom_driver::identifier::ParseMoleculeIdError;
 use loom_driver::lock::LockError;
 use loom_driver::state::CacheError;
 
@@ -41,6 +42,12 @@ pub enum InitError {
 
     /// failed to load `<workspace>/loom.toml` while resolving the integration branch
     Config(#[from] LoomConfigError),
+
+    /// active molecule id is malformed
+    InvalidMoleculeId {
+        #[source]
+        source: ParseMoleculeIdError,
+    },
 
     /// active molecule {id} carries no `spec:<label>` label
     MissingSpecLabel { id: String },

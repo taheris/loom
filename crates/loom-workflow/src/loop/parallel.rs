@@ -620,35 +620,35 @@ async fn merge_back_one(
         // (`specs/harness.md` § Verdict Gate — workspace persists on all
         // failure paths).
         AgentOutcome::Failure { error } | AgentOutcome::ZeroProgress { detail: error } => {
-            warn!(bead = %bead.id, %error, "agent failed — worktree preserved for recovery");
+            warn!(bead = %bead.id, ?error, "agent failed — worktree preserved for recovery");
             Ok(BatchResult::AgentFailed {
                 bead: bead.id,
                 error,
             })
         }
         AgentOutcome::InfraPreflight { error } => {
-            warn!(bead = %bead.id, %error, "agent hit preflight infra — worktree preserved for retry");
+            warn!(bead = %bead.id, ?error, "agent hit preflight infra — worktree preserved for retry");
             Ok(BatchResult::AgentInfra {
                 bead: bead.id,
                 failure: BatchInfraFailure::Preflight { error },
             })
         }
         AgentOutcome::InfraMidSession { error } => {
-            warn!(bead = %bead.id, %error, "agent hit interrupted infra — worktree preserved for retry");
+            warn!(bead = %bead.id, ?error, "agent hit interrupted infra — worktree preserved for retry");
             Ok(BatchResult::AgentInfra {
                 bead: bead.id,
                 failure: BatchInfraFailure::Interrupted { error },
             })
         }
         AgentOutcome::StaticInfra { cause, error } => {
-            warn!(bead = %bead.id, %cause, %error, "agent hit static infra — worktree preserved for diagnostic");
+            warn!(bead = %bead.id, %cause, ?error, "agent hit static infra — worktree preserved for diagnostic");
             Ok(BatchResult::AgentInfra {
                 bead: bead.id,
                 failure: BatchInfraFailure::Static { cause, error },
             })
         }
         AgentOutcome::UnknownProfile { error } => {
-            warn!(bead = %bead.id, %error, "unknown profile — worktree preserved for diagnostic");
+            warn!(bead = %bead.id, ?error, "unknown profile — worktree preserved for diagnostic");
             Ok(BatchResult::AgentInfra {
                 bead: bead.id,
                 failure: BatchInfraFailure::Static {
@@ -658,7 +658,7 @@ async fn merge_back_one(
             })
         }
         AgentOutcome::UnknownRuntimeForProfile { error } => {
-            warn!(bead = %bead.id, %error, "unknown runtime for profile — worktree preserved for diagnostic");
+            warn!(bead = %bead.id, ?error, "unknown runtime for profile — worktree preserved for diagnostic");
             Ok(BatchResult::AgentInfra {
                 bead: bead.id,
                 failure: BatchInfraFailure::Static {
@@ -894,7 +894,7 @@ mod tests {
             .integration_commit_sha()
             .await
             .expect("read integration tip");
-        let label = SpecLabel::new("agent");
+        let label = SpecLabel::new("agent").unwrap();
         let waiting_bead = fake_bead("lm-wait");
         let sibling_bead = fake_bead("lm-next");
         let waiting_workspace = dir.path().join(".loom/beads/lm-wait");

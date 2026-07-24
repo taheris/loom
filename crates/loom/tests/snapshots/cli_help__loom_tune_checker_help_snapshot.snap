@@ -1,0 +1,13 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"tune\", \"checker\"])"
+---
+List registered tuning checkers.
+
+Usage: loom tune checker [OPTIONS]
+
+Options:
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+      --host-key          Explicitly allow ambient host Git credentials and signing config
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
+  -h, --help              Print help

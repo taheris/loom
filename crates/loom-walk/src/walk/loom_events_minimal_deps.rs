@@ -1,7 +1,7 @@
 //! `loom-events` is the public-contract leaf crate that frontends, SSE
 //! bridges, and log analyzers depend on. Its `[dependencies]` table is
 //! kept tight to control the dependency surface every consumer ships:
-//! exactly `futures-core`, `serde`, `serde_json`, and `thiserror`.
+//! exactly `displaydoc`, `futures-core`, `serde`, `serde_json`, and `thiserror`.
 //! `futures-core` carries the `Stream` trait referenced by
 //! `Session::Events`. The forbidden trio (`chrono`, `ulid`, `uuid`) flag
 //! past temptations to expand the surface; future additions require a
@@ -10,9 +10,15 @@
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "loom_events_minimal_deps — runtime deps are exactly { futures-core, serde, serde_json, thiserror }";
+const RULE: &str = "loom_events_minimal_deps — runtime deps are exactly { displaydoc, futures-core, serde, serde_json, thiserror }";
 
-const REQUIRED: &[&str] = &["futures-core", "serde", "serde_json", "thiserror"];
+const REQUIRED: &[&str] = &[
+    "displaydoc",
+    "futures-core",
+    "serde",
+    "serde_json",
+    "thiserror",
+];
 const FORBIDDEN: &[&str] = &["chrono", "ulid", "uuid"];
 
 pub fn run(_input: &WalkInput) -> Verdict {
@@ -42,7 +48,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
     for key in &keys {
         if !REQUIRED.iter().any(|r| r == key) {
             violations.push(format!(
-                "crates/loom-events/Cargo.toml:1 unexpected dependency `{key}` — runtime deps must be exactly {{ futures-core, serde, serde_json, thiserror }}",
+                "crates/loom-events/Cargo.toml:1 unexpected dependency `{key}` — runtime deps must be exactly {{ displaydoc, futures-core, serde, serde_json, thiserror }}",
             ));
         }
     }

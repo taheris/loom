@@ -4,7 +4,7 @@ use displaydoc::Display;
 use loom_driver::agent::ProtocolError;
 use loom_driver::bd::BdError;
 use loom_driver::git::GitError;
-use loom_driver::identifier::ParseBeadIdError;
+use loom_driver::identifier::{ParseBeadIdError, ParseMoleculeIdError, ParseSpecLabelError};
 use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::CacheError;
 use thiserror::Error;
@@ -93,6 +93,12 @@ pub enum TodoError {
 
     /// git operation failed during `loom todo`
     Git(#[from] GitError),
+
+    /// invalid molecule id returned during `loom todo`
+    InvalidMoleculeId(#[from] ParseMoleculeIdError),
+
+    /// invalid spec label discovered during `loom todo`
+    InvalidSpecLabel(#[from] ParseSpecLabelError),
 
     /// invalid work epic id `{id}` returned during `loom todo`
     InvalidWorkEpic {

@@ -892,7 +892,10 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: labels.iter().map(|s| Label::new(*s)).collect(),
+            labels: labels
+                .iter()
+                .map(|s| Label::new(*s).expect("valid Label"))
+                .collect(),
             parent: None,
             metadata: Default::default(),
             notes: None,
@@ -986,7 +989,7 @@ mod tests {
     /// standalone side effect).
     #[tokio::test]
     async fn review_loop_emits_suppression_summary_event() -> Result<(), ReviewError> {
-        let spec = SpecLabel::new("gate");
+        let spec = SpecLabel::new("gate").unwrap();
         let finding = Finding {
             token: ConcernToken::SpecCoherenceFail,
             route: crate::review::FindingRoute::Deferred,
@@ -1536,6 +1539,7 @@ mod tests {
             match err {
                 ReviewError::Protocol(_)
                 | ReviewError::Bd(_)
+                | ReviewError::InvalidMoleculeId(_)
                 | ReviewError::Render(_)
                 | ReviewError::Log(_)
                 | ReviewError::Io(_)
@@ -1918,17 +1922,17 @@ mod tests {
     async fn epic_does_not_auto_close_on_non_clean_review_verdict() -> Result<(), ReviewError> {
         let leaf_clarify = {
             let mut b = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
-            b.labels = vec![Label::new("loom:clarify")];
+            b.labels = vec![Label::new("loom:clarify").expect("valid Label")];
             b
         };
         let leaf_blocked = {
             let mut b = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
-            b.labels = vec![Label::new("loom:blocked")];
+            b.labels = vec![Label::new("loom:blocked").expect("valid Label")];
             b
         };
         let leaf_infra = {
             let mut b = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
-            b.labels = vec![Label::new("loom:infra")];
+            b.labels = vec![Label::new("loom:infra").expect("valid Label")];
             b
         };
         let leaf_clean = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));

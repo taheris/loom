@@ -1089,7 +1089,10 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: labels.iter().map(|s| Label::new(*s)).collect(),
+            labels: labels
+                .iter()
+                .map(|s| Label::new(*s).expect("valid Label"))
+                .collect(),
             parent: None,
             metadata: Default::default(),
             notes: None,

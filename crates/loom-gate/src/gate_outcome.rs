@@ -695,7 +695,7 @@ fn gate_log_session_id(path: &Path) -> SessionId {
             id.push(char::from(byte).to_ascii_lowercase());
         }
     }
-    SessionId::new(id)
+    SessionId::generated(id)
 }
 
 fn next_seq_in_log(path: &Path) -> u64 {

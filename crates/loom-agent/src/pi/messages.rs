@@ -485,7 +485,7 @@ mod tests {
     /// silently hangs waiting for a reply.
     #[test]
     fn extension_ui_response_serializes_with_all_fields() {
-        let id = RequestId::new("u-42");
+        let id = RequestId::new("u-42").unwrap();
         let payload = ExtensionUiResponse {
             kind: "extension_ui_response",
             id: &id,

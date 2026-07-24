@@ -482,7 +482,10 @@ mod tests {
         assert_eq!(bead.issue_type, "task");
         assert_eq!(
             bead.labels,
-            vec![Label::new("profile:rust"), Label::new("spec:harness")]
+            vec![
+                Label::new("profile:rust").expect("valid Label"),
+                Label::new("spec:harness").expect("valid Label")
+            ]
         );
         let argv = argv_of(&client.runner, 0);
         assert_eq!(argv, vec!["show", "lm-3hhwq.5", "--json"]);
@@ -1168,8 +1171,10 @@ mod tests {
         }"#;
         let runner = CapturingRunner::new([ok(json)]);
         let client = BdClient::with_runner(runner);
-        let progress = client.mol_progress(&MoleculeId::new("lm-3hhwq")).await?;
-        assert_eq!(progress.molecule_id, MoleculeId::new("lm-3hhwq"));
+        let progress = client
+            .mol_progress(&MoleculeId::new("lm-3hhwq").unwrap())
+            .await?;
+        assert_eq!(progress.molecule_id, MoleculeId::new("lm-3hhwq").unwrap());
         assert_eq!(progress.completed, 8);
         assert_eq!(progress.total, 19);
         assert_eq!(progress.current_step_id.as_deref(), Some("lm-3hhwq.5"));

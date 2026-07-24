@@ -102,7 +102,7 @@ fn option_field(s: String) -> Option<String> {
 mod tests {
     use super::*;
     use loom_driver::bd::{Bead, Label};
-    use loom_driver::identifier::{BeadId, SpecLabel};
+    use loom_driver::identifier::BeadId;
     use serde_json::json;
 
     fn bead(id: &str, title: &str, desc: &str, labels: &[&str]) -> Bead {
@@ -113,7 +113,10 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: labels.iter().map(|s| Label::new(*s)).collect(),
+            labels: labels
+                .iter()
+                .map(|s| Label::new(*s).expect("valid Label"))
+                .collect(),
             parent: None,
             metadata: Default::default(),
             notes: None,
@@ -224,9 +227,8 @@ mod tests {
     #[test]
     fn missing_spec_label_renders_em_dash() {
         let beads = [bead("lm-2", "t", "", &["loom:clarify"])];
-        let mut items = super::super::list::build_queue(&beads, None, None, true);
-        items[0].spec = Some(SpecLabel::new(""));
+        let items = super::super::list::build_queue(&beads, None, None, true);
         let rendered = to_template_item(Path::new("/work"), &items[0]);
-        assert_eq!(rendered.spec_label, "");
+        assert_eq!(rendered.spec_label, "—");
     }
 }

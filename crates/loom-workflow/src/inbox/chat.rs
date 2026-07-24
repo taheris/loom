@@ -21,7 +21,7 @@ use loom_driver::bd::{BdClient, ListOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentSelection, LoomConfig, Phase};
 use loom_driver::git::GitError;
-use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
+use loom_driver::identifier::{BeadId, ParseSpecLabelError, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::CacheDb;
@@ -102,6 +102,8 @@ pub enum ChatError {
     Profile(#[from] ProfileError),
     /// config load failed: {0}
     Config(String),
+    /// inbox data carried an invalid spec label
+    InvalidSpecLabel(#[from] ParseSpecLabelError),
     /// bd list failed: {0}
     BdList(String),
     /// render inbox.md template: {0}
@@ -165,7 +167,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         .spec_filter
         .clone()
         .or_else(|| visible.iter().find_map(|item| item.spec.clone()))
-        .unwrap_or_else(|| SpecLabel::new("inbox-chat"));
+        .unwrap_or_else(SpecLabel::inbox_chat);
     let key = resolve_scratch_key(
         Phase::Inbox,
         std::slice::from_ref(&scope_label),
@@ -437,7 +439,7 @@ fn pi_bridge_envelope_builder() -> EnvelopeBuilder {
     let started_ms = unix_timestamp_millis(&clock);
     EnvelopeBuilder::new(
         SessionScope::phase(
-            SessionId::new(format!("inbox-pi-{}-{started_ms}", std::process::id())),
+            SessionId::generated(format!("inbox-pi-{}-{started_ms}", std::process::id())),
             None,
         ),
         Source::Agent,
@@ -839,7 +841,7 @@ fn load_companion_paths(
     }
     let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for label in &labels {
-        let spec_label = SpecLabel::new(label);
+        let spec_label: SpecLabel = label.parse()?;
         for path in db.companions(&spec_label)? {
             paths.insert(path);
         }
@@ -883,7 +885,10 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: labels.iter().map(|label| Label::new(*label)).collect(),
+            labels: labels
+                .iter()
+                .map(|label| Label::new(*label).expect("valid Label"))
+                .collect(),
             parent: None,
             metadata: Default::default(),
             notes: None,
@@ -939,7 +944,7 @@ mod tests {
     #[test]
     fn pi_tui_argv_uses_wrix_run_with_session_extension_and_model_args() {
         let selection = AgentSelection {
-            profile: ProfileName::new("base"),
+            profile: ProfileName::new("base").unwrap(),
             kind: AgentKind::Pi,
             provider: Some("openai".to_string()),
             model_id: Some("gpt-4o".to_string()),

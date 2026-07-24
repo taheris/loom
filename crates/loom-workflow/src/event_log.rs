@@ -60,7 +60,7 @@ pub(crate) fn resume_phase_driver_envelope(
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
     let session_id = session_id.unwrap_or_else(|| {
-        SessionId::new(format!("{phase_name}-{}-{started_ms}", std::process::id()))
+        SessionId::generated(format!("{phase_name}-{}-{started_ms}", std::process::id()))
     });
     let clock = SystemClock::new();
     EnvelopeBuilder::with_seq_start(

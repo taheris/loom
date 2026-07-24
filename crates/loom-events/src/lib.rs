@@ -233,7 +233,7 @@ mod tests {
     fn sample_event() -> AgentEvent {
         AgentEvent::TextDelta {
             envelope: EventEnvelope {
-                session_id: SessionId::new("sess-sample"),
+                session_id: SessionId::new("sess-sample").unwrap(),
                 bead_id: Some(BeadId::new("sample-1").expect("valid bead id")),
                 molecule_id: None,
                 iteration: Some(1),

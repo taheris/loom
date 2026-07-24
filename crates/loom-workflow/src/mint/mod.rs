@@ -1096,7 +1096,15 @@ async fn create_molecule_batch<R: CommandRunner>(
             };
         }
     };
-    let molecule = MoleculeId::new(parent.as_str());
+    let molecule = match parent.as_str().parse::<MoleculeId>() {
+        Ok(molecule) => molecule,
+        Err(error) => {
+            return BatchOutcome::Errored {
+                fingerprint,
+                message: error.to_string(),
+            };
+        }
+    };
     if let Err(err) = bd.mol_bond(molecule.as_str(), bead_id.as_str()).await {
         return BatchOutcome::Errored {
             fingerprint,
@@ -2660,7 +2668,7 @@ mod tests {
                 status: "open".to_string(),
                 priority: 2,
                 issue_type: "epic".to_string(),
-                labels: vec![Label::new("spec:agent")],
+                labels: vec![Label::new("spec:agent").expect("valid Label")],
                 parent: None,
                 metadata: BTreeMap::new(),
                 notes: None,
@@ -2726,7 +2734,12 @@ mod tests {
                     let id = BeadId::new(&format!("lm-mol.{}", state.next_child))?;
                     state.next_child += 1;
                     let labels = stateful_flag(&argv, "--labels")
-                        .map(|value| value.split(',').map(Label::new).collect())
+                        .map(|value| {
+                            value
+                                .split(',')
+                                .map(|label| Label::new(label).expect("valid fixture label"))
+                                .collect()
+                        })
                         .unwrap_or_default();
                     let parent = stateful_flag(&argv, "--parent")
                         .map(BeadId::new)
@@ -2762,7 +2775,8 @@ mod tests {
                 }
                 Some("mol") if argv.get(1).is_some_and(|arg| arg == "bond") => {
                     let molecule =
-                        MoleculeId::new(argv.get(2).map(String::as_str).unwrap_or_default());
+                        MoleculeId::new(argv.get(2).map(String::as_str).unwrap_or_default())
+                            .unwrap();
                     let bead = BeadId::new(argv.get(3).map(String::as_str).unwrap_or_default())?;
                     state.bonds.push((molecule, bead));
                     Ok(ok_stdout(""))
@@ -2793,7 +2807,7 @@ mod tests {
                     MoleculeBatchState::Ready,
                 )
                 .into_iter()
-                .map(Label::new)
+                .map(|label| Label::new(label).expect("valid fixture label"))
                 .collect(),
                 parent: Some(BeadId::new("lm-mol").expect("molecule id")),
                 metadata: BTreeMap::new(),
@@ -2841,7 +2855,7 @@ mod tests {
             match argv[index].as_str() {
                 "--status" => bead.status = argv[index + 1].clone(),
                 "--add-label" => {
-                    let label = Label::new(&argv[index + 1]);
+                    let label = Label::new(&argv[index + 1]).expect("valid Label");
                     if !bead.labels.contains(&label) {
                         bead.labels.push(label);
                     }
@@ -3047,7 +3061,10 @@ mod tests {
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].id, child);
         assert!(ready.is_empty());
-        assert_eq!(state.bonds(), vec![(MoleculeId::new("lm-mol"), child)]);
+        assert_eq!(
+            state.bonds(),
+            vec![(MoleculeId::new("lm-mol").unwrap(), child)]
+        );
     }
 
     #[tokio::test]
@@ -3065,7 +3082,7 @@ mod tests {
 
         let summary = route_molecule_findings(
             &bd,
-            &MoleculeId::new("lm-mol"),
+            &MoleculeId::new("lm-mol").unwrap(),
             std::slice::from_ref(&clarify),
             &MintOptions::default(),
         )
@@ -3096,7 +3113,7 @@ mod tests {
 
         let summary = route_molecule_findings(
             &bd,
-            &MoleculeId::new("lm-mol"),
+            &MoleculeId::new("lm-mol").unwrap(),
             std::slice::from_ref(&finding),
             &MintOptions::default(),
         )
@@ -3123,7 +3140,7 @@ mod tests {
         assert!(!remediation.labels.iter().any(Label::is_deferred));
         assert_eq!(
             state.bonds(),
-            vec![(MoleculeId::new("lm-mol"), remediation.id)],
+            vec![(MoleculeId::new("lm-mol").unwrap(), remediation.id)],
         );
     }
 
@@ -3140,7 +3157,7 @@ mod tests {
 
         let summary = route_molecule_findings(
             &bd,
-            &MoleculeId::new("lm-mol"),
+            &MoleculeId::new("lm-mol").unwrap(),
             std::slice::from_ref(&finding),
             &MintOptions::default(),
         )
@@ -3168,7 +3185,7 @@ mod tests {
         );
         assert_eq!(
             state.bonds(),
-            vec![(MoleculeId::new("lm-mol"), remediation.id)],
+            vec![(MoleculeId::new("lm-mol").unwrap(), remediation.id)],
         );
     }
 
@@ -3186,7 +3203,7 @@ mod tests {
 
         let summary = route_molecule_findings(
             &bd,
-            &MoleculeId::new("lm-mol"),
+            &MoleculeId::new("lm-mol").unwrap(),
             std::slice::from_ref(&finding),
             &MintOptions::default(),
         )
@@ -3259,7 +3276,7 @@ mod tests {
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
 
-        let summary = promote_deferred(&bd, &MoleculeId::new("lm-mol"), false).await;
+        let summary = promote_deferred(&bd, &MoleculeId::new("lm-mol").unwrap(), false).await;
 
         assert_eq!(summary.promoted_deferred, 1);
         assert_eq!(
@@ -3313,7 +3330,8 @@ mod tests {
             )),
         ]);
         let duplicate_bd = BdClient::with_runner(duplicate_runner);
-        let duplicate = promote_deferred(&duplicate_bd, &MoleculeId::new("lm-mol"), false).await;
+        let duplicate =
+            promote_deferred(&duplicate_bd, &MoleculeId::new("lm-mol").unwrap(), false).await;
         assert_eq!(duplicate.refused, 1);
         assert!(
             duplicate.render().contains("duplicate live finding hash"),
@@ -3330,7 +3348,7 @@ mod tests {
             err_stderr("permission denied"),
         ]);
         let write_bd = BdClient::with_runner(write_runner);
-        let write = promote_deferred(&write_bd, &MoleculeId::new("lm-mol"), false).await;
+        let write = promote_deferred(&write_bd, &MoleculeId::new("lm-mol").unwrap(), false).await;
         assert_eq!(write.errors, 1);
         assert!(
             write.render().contains("bd update failed"),

@@ -1,0 +1,18 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"tune\", \"all\"])"
+---
+List or tune every tuneable surface.
+
+Usage: loom tune all [OPTIONS] [fast|run|full]
+
+Arguments:
+  [fast|run|full]  Proposal level [possible values: fast, run, full]
+
+Options:
+      --dry-run           Print the frozen tune plan without creating a proposal
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+      --host-key          Explicitly allow ambient host Git credentials and signing config
+      --seed <N>          Deterministic checker-plan seed
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
+  -h, --help              Print help

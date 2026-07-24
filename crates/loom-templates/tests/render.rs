@@ -91,6 +91,7 @@ fn workspace_recovery(alignment: WorkspaceAlignment) -> WorkspaceRecovery {
 
 #[expect(
     clippy::expect_used,
+    clippy::unwrap_used,
     reason = "fixture identifiers are parsed once so rendered contexts use production newtypes"
 )]
 fn todo_context(notes: Vec<String>, criterion_status: Vec<CriterionStatus>) -> TodoContext {
@@ -98,7 +99,7 @@ fn todo_context(notes: Vec<String>, criterion_status: Vec<CriterionStatus>) -> T
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         spec_index: "# Loom Docs\n| Spec | Purpose |".to_string(),
         changed_specs: vec![TodoChangedSpec {
-            label: SpecLabel::new("harness"),
+            label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".to_string(),
             diff: Some("=== specs/harness.md ===\n+ new requirement".to_string()),
         }],
@@ -106,13 +107,13 @@ fn todo_context(notes: Vec<String>, criterion_status: Vec<CriterionStatus>) -> T
         todo_head: git_sha(TEST_SHA),
         todo_fingerprint: TodoFingerprint::new(TEST_FINGERPRINT).expect("valid fingerprint"),
         spec_epics: vec![SpecEpicContext {
-            label: SpecLabel::new("harness"),
-            epic_id: Some(MoleculeId::new("lm-spec")),
+            label: SpecLabel::new("harness").unwrap(),
+            epic_id: Some(MoleculeId::new("lm-spec").unwrap()),
             todo_cursor: Some(TEST_SHA.to_string()),
         }],
         companion_paths: vec!["lib/sandbox/".into()],
         implementation_notes: vec![SpecImplementationNotes {
-            label: SpecLabel::new("harness"),
+            label: SpecLabel::new("harness").unwrap(),
             notes,
         }],
         criterion_status,
@@ -121,10 +122,14 @@ fn todo_context(notes: Vec<String>, criterion_status: Vec<CriterionStatus>) -> T
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "fixture labels are valid literals parsed into production newtypes"
+)]
 fn plan_ctx() -> PlanContext {
     PlanContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        anchor_labels: vec![SpecLabel::new("harness")],
+        anchor_labels: vec![SpecLabel::new("harness").unwrap()],
         spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
             .to_string(),
         companion_paths: vec![
@@ -156,7 +161,7 @@ fn plan_renders_partials_index_anchors_and_companions() -> Result<()> {
 fn skill_index_partial_renders_precomputed_markdown() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("agent"),
+        label: SpecLabel::new("agent").unwrap(),
         spec_path: "specs/agent.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -313,10 +318,10 @@ fn todo_template_rejects_generic_success_markers() -> Result<()> {
 fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
         issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
@@ -351,10 +356,10 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
 fn loop_template_renders_dependency_wait_marker() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("agent"),
+        label: SpecLabel::new("agent").unwrap(),
         spec_path: "specs/agent.md".to_string(),
         companion_paths: vec![],
-        molecule_id: Some(MoleculeId::new("lm-agent")),
+        molecule_id: Some(MoleculeId::new("lm-agent").unwrap()),
         issue_id: Some(BeadId::new("lm-agent.1")?),
         title: Some("wait for protocol generator".into()),
         description: Some("Declare the generator as a blocker when needed.".into()),
@@ -385,7 +390,7 @@ fn loop_template_renders_dependency_wait_marker() -> Result<()> {
 fn run_template_omits_attempt_line_when_zero() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -412,7 +417,7 @@ fn run_template_omits_attempt_line_when_zero() -> Result<()> {
 fn run_template_renders_attempt_line_on_retry() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -447,7 +452,7 @@ fn run_template_renders_attempt_line_on_retry() -> Result<()> {
 fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -489,7 +494,7 @@ fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
 fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -521,7 +526,7 @@ fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()
 fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -551,7 +556,7 @@ fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()
 fn run_template_renders_review_notes_block_when_set() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -583,7 +588,7 @@ fn run_template_renders_review_notes_block_when_set() -> Result<()> {
 fn loop_context_renders_workspace_recovery_without_retry_attempt() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -631,7 +636,7 @@ fn loop_context_renders_workspace_recovery_without_retry_attempt() -> Result<()>
 fn loop_template_renders_previous_failure_before_workspace_recovery() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -675,7 +680,7 @@ fn loop_template_renders_previous_failure_before_workspace_recovery() -> Result<
 fn workspace_recovery_summary_prompt_is_non_authoritative() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
@@ -738,7 +743,7 @@ fn previous_failure_renders_review_concern_with_summary_and_findings() {
         findings: vec![Finding {
             token: ConcernToken::MockDiscipline,
             route: loom_protocol::gate::FindingRoute::Deferred,
-            bonds: vec![SpecLabel::new("harness")],
+            bonds: vec![SpecLabel::new("harness").unwrap()],
             target: FindingTarget::TestPath {
                 path: "tests/example.rs".into(),
             },
@@ -769,12 +774,12 @@ fn review_renders_review_context_fields() -> Result<()> {
 
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
         beads_summary: Some("- lm-3hhwq.10: closed".into()),
         base_commit: Some("abc1234".into()),
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
         test_sources: vec![ReviewSource {
             path: test_path.into(),
             body: test_body.into(),
@@ -786,7 +791,7 @@ fn review_renders_review_context_fields() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
@@ -820,7 +825,7 @@ fn review_renders_review_context_fields() -> Result<()> {
 fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         beads_summary: None,
@@ -834,7 +839,7 @@ fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Res
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Judge,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
@@ -875,7 +880,7 @@ fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Res
 fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         beads_summary: None,
@@ -889,7 +894,7 @@ fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Re
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Rubric,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
@@ -931,7 +936,7 @@ fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Re
 fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         beads_summary: None,
@@ -942,7 +947,7 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
@@ -996,7 +1001,7 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
 fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         beads_summary: None,
@@ -1007,7 +1012,7 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
@@ -1043,7 +1048,7 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
 fn review_renders_options_format_contract_embedded_in_evidence() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         beads_summary: None,
@@ -1054,7 +1059,7 @@ fn review_renders_options_format_contract_embedded_in_evidence() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
@@ -1106,7 +1111,7 @@ fn review_renders_options_format_contract_embedded_in_evidence() -> Result<()> {
 fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("alpha"),
+        label: SpecLabel::new("alpha").unwrap(),
         spec_path: "specs/alpha.md".to_string(),
         companion_paths: vec![],
         beads_summary: None,
@@ -1117,7 +1122,7 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
@@ -1203,7 +1208,7 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
 fn review_self_report_markers_do_not_authorize_bd_writes() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("alpha"),
+        label: SpecLabel::new("alpha").unwrap(),
         spec_path: "specs/alpha.md".to_string(),
         companion_paths: vec![],
         beads_summary: None,
@@ -1214,7 +1219,7 @@ fn review_self_report_markers_do_not_authorize_bd_writes() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
@@ -1420,10 +1425,10 @@ fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
 fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
     let run_out = LoopContext {
         pinned_context: "PIN".into(),
-        label: SpecLabel::new("demo"),
+        label: SpecLabel::new("demo").unwrap(),
         spec_path: "specs/demo.md".into(),
         companion_paths: vec![],
-        molecule_id: Some(MoleculeId::new("lm-mol")),
+        molecule_id: Some(MoleculeId::new("lm-mol").unwrap()),
         issue_id: Some(BeadId::new("lm-mol.1")?),
         title: Some("the title".into()),
         description: Some("the description".into()),
@@ -1441,7 +1446,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
 
     let review_out = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         beads_summary: None,
@@ -1452,7 +1457,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     }
     .render()?;
@@ -1478,7 +1483,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
 fn progress_markers_render_phase_specific_diff_rules() -> Result<()> {
     let review_out = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         beads_summary: None,
@@ -1489,7 +1494,7 @@ fn progress_markers_render_phase_specific_diff_rules() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        default_profile: ProfileName::new("base"),
+        default_profile: ProfileName::new("base").unwrap(),
         skill_index: SkillIndexMarkdown::empty(),
     }
     .render()?;
@@ -1521,10 +1526,10 @@ fn progress_markers_render_phase_specific_diff_rules() -> Result<()> {
 fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: "PIN".into(),
-        label: SpecLabel::new("demo"),
+        label: SpecLabel::new("demo").unwrap(),
         spec_path: "specs/demo.md".into(),
         companion_paths: vec!["lib/demo/".into()],
-        molecule_id: Some(MoleculeId::new("lm-mol")),
+        molecule_id: Some(MoleculeId::new("lm-mol").unwrap()),
         issue_id: Some(BeadId::new("lm-mol.1")?),
         title: Some("the title".into()),
         description: Some("the description".into()),
@@ -1574,10 +1579,10 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
 fn run_template_uses_injected_self_check_range_not_head_shorthand() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: "PIN".into(),
-        label: SpecLabel::new("demo"),
+        label: SpecLabel::new("demo").unwrap(),
         spec_path: "specs/demo.md".into(),
         companion_paths: vec![],
-        molecule_id: Some(MoleculeId::new("lm-mol")),
+        molecule_id: Some(MoleculeId::new("lm-mol").unwrap()),
         issue_id: Some(BeadId::new("lm-mol.1")?),
         title: Some("the title".into()),
         description: Some("the description".into()),
@@ -1620,10 +1625,10 @@ fn run_template_uses_injected_self_check_range_not_head_shorthand() -> Result<()
 fn run_template_requires_self_check_rerun_after_post_check_changes() -> Result<()> {
     let ctx = LoopContext {
         pinned_context: "PIN".into(),
-        label: SpecLabel::new("demo"),
+        label: SpecLabel::new("demo").unwrap(),
         spec_path: "specs/demo.md".into(),
         companion_paths: vec![],
-        molecule_id: Some(MoleculeId::new("lm-mol")),
+        molecule_id: Some(MoleculeId::new("lm-mol").unwrap()),
         issue_id: Some(BeadId::new("lm-mol.1")?),
         title: Some("the title".into()),
         description: Some("the description".into()),
@@ -1681,10 +1686,10 @@ fn contained_within_agent_output(haystack: &str, needle: &str) -> bool {
 fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
     let run = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
+        label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
         issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("AGENTOUT_TITLE_TOKEN".into()),
         description: Some("AGENTOUT_DESC_TOKEN".into()),
@@ -1738,10 +1743,10 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
         "run",
         LoopContext {
             pinned_context: PINNED_CONTEXT_BODY.to_string(),
-            label: SpecLabel::new("harness"),
+            label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".to_string(),
             companion_paths: vec!["lib/sandbox/".into()],
-            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+            molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
             issue_id: Some(BeadId::new("lm-3hhwq.10")?),
             title: Some("port templates".into()),
             description: Some("Port templates to Askama.".into()),
@@ -1760,12 +1765,12 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
         "review",
         ReviewContext {
             pinned_context: PINNED_CONTEXT_BODY.to_string(),
-            label: SpecLabel::new("harness"),
+            label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".to_string(),
             companion_paths: vec!["lib/sandbox/".into()],
             beads_summary: Some("- lm-3hhwq.10: closed".into()),
             base_commit: Some("abc1234".into()),
-            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+            molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
             test_sources: vec![ReviewSource {
                 path: "tests/run-tests.sh".into(),
                 body: "test_review_inputs() { :; }\n".into(),
@@ -1777,7 +1782,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
             style_rules: "docs/style-rules.md".to_string(),
             lane: ReviewLane::Both,
-            default_profile: ProfileName::new("rust"),
+            default_profile: ProfileName::new("rust").unwrap(),
             skill_index: SkillIndexMarkdown::empty(),
         },
     )?;
@@ -1810,7 +1815,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
 fn representative_criterion_status() -> Result<Vec<CriterionStatus>> {
     Ok(vec![
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000001")?,
             criterion_text: "All workflow templates compile under Askama.".into(),
             annotation: ann(AnnotationTier::Check, "cargo build -p loom-templates"),
@@ -1822,7 +1827,7 @@ fn representative_criterion_status() -> Result<Vec<CriterionStatus>> {
             },
         },
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000002")?,
             criterion_text: "Every non-pending pinning cell matches the include graph.".into(),
             annotation: ann(
@@ -1837,7 +1842,7 @@ fn representative_criterion_status() -> Result<Vec<CriterionStatus>> {
             },
         },
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000003")?,
             criterion_text: "Rendered output is stable across runs.".into(),
             annotation: ann(
@@ -1852,7 +1857,7 @@ fn representative_criterion_status() -> Result<Vec<CriterionStatus>> {
             },
         },
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000004")?,
             criterion_text: "Snapshot tests run under clippy test exemptions.".into(),
             annotation: ann(
@@ -1867,7 +1872,7 @@ fn representative_criterion_status() -> Result<Vec<CriterionStatus>> {
             },
         },
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000005")?,
             criterion_text: "Todo prompts render typed criterion status rows.".into(),
             annotation: ann(
@@ -1877,7 +1882,7 @@ fn representative_criterion_status() -> Result<Vec<CriterionStatus>> {
             evidence: EvidenceState::Missing,
         },
         CriterionStatus {
-            spec_label: SpecLabel::new("templates"),
+            spec_label: SpecLabel::new("templates")?,
             criterion_id: criterion_id("criterion-0000000000000006")?,
             criterion_text: "Stale annotations are explicit evidence states.".into(),
             annotation: ann(AnnotationTier::Test, "new_target"),

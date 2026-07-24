@@ -160,8 +160,10 @@ state-transition logic are redundant when the type system already
 enforces them. Parsers and codecs without proptest coverage are
 flagged at `loom gate review`.
 
-**CI configuration**: `PROPTEST_CASES=32` for `nix flake check`,
-overridable via env var to `2048+` for local exhaustive runs.
+**Suite configuration**: property tests use 32 cases in the explicit full test
+suite, overridable via `PROPTEST_CASES` to `2048+` for local exhaustive runs.
+The full property suite is outside `nix flake check` and runs through the
+workspace test app.
 
 **Discoverability.** The CI cap is a single named constant in a
 shared test-support module, not a scattered `with_cases(32)` literal:
@@ -176,10 +178,10 @@ one place to grep; no chance of drift between blocks. The env-var
 override behaviour is documented next to the constant — single
 source of truth.
 
-Property tests live in `crates/<crate>/tests/properties.rs` —
-each crate owns the invariants for the types it defines. The binary
-crate's `crates/loom/tests/properties.rs` is reserved for
-cross-crate invariants if any arise.
+Each crate owns the property invariants for the types it defines. Exact
+integration-test file and module organization remains an implementation choice;
+cross-crate invariants belong to the narrowest test target that can exercise the
+public seam.
 
 **No `cargo fuzz` under `nix flake check`.** If a fuzz target later
 proves valuable for byte-level edge cases proptest misses (e.g.,
@@ -511,10 +513,10 @@ narrow process-lifecycle boundaries that parser unit tests cannot exercise.
 - Startup probe malformed-state guard: mock pi with malformed `get_state`
       data → loom fails fast with a version-mismatch error
   [test](pi_startup_probe_fails_with_bad_get_state_shape)
-- A dedicated no-selector Pi fixture leaves the startup probe unanswered so
-      the assembled todo path surfaces its handshake timeout without adding a
-      timeout mode to the general mock-pi table
-  [test](loom_todo_pi_hang_probe_surfaces_handshake_timeout)
+The dedicated no-selector timeout fixture backs the agent-owned assembled
+handshake criterion in [agent.md § Pi backend](agent.md#pi-backend); this spec
+owns only its integration-tier and fixture-isolation placement.
+
 - A dedicated no-selector Pi fixture stalls after one prompt event so the
       assembled todo path emits its workflow stall warning without adding a
       stall mode to the general mock-pi table
@@ -570,7 +572,7 @@ owns:
       each exception is an enumerated child-process entry point invoked by a
       non-ignored parent during the ordinary test suite and carries a
       process-boundary justification
-  [test](no_ignore_for_flake)
+  [check](cargo run -p loom-walk -- no_ignore_for_flake)
 
 ### Annotation gate
 
@@ -608,8 +610,12 @@ owns:
   [test](recreate_recovers_from_arbitrary_bytes)
 - Cache rebuild round-trips generated durable source shapes
   [test](rebuild_round_trips_known_shapes)
-- `PROPTEST_CASES=32` for CI; overridable via env var
-  [check](grep -q 'pub const CI_PROPTEST_CASES: u32 = 32' crates/loom-test-support/src/lib.rs)
+- Every property block consumes the shared property-test configuration rather
+      than declaring a local case-count literal
+  [check](cargo run -p loom-walk -- shared_proptest_config)
+- The shared property-test configuration defaults to 32 cases and honors the
+      `PROPTEST_CASES` environment override
+  [test](proptest_case_configuration_honours_default_and_env_override)
 
 ### Snapshot testing
 
@@ -883,8 +889,9 @@ owns:
    - Status cache schema: per-criterion row with annotation target,
      last-run timestamp, commit hash, verdict (pass / fail / skipped),
      evidence string
-   - Status cache writes on every verifier invocation; reads on plain
-     `loom gate` for the report
+   - Status cache writes on every verifier invocation; `loom gate status`
+     reads it for the report. Bare `loom gate` follows the command contract in
+     [gate.md § Commands](gate.md#commands) and prints help without a cache read
    - Integrity gate forward direction: every annotation's target is
      valid for its tier (resolves on PATH for `[check]` / `[system]`;
      resolves to a `#[test]` function via cargo metadata for `[test]`;
@@ -966,8 +973,8 @@ owns:
    process-lifecycle and elapsed-performance exceptions use bounded host time as
    defined in *Architecture / Determinism Through Clock Injection*.
 2. **Fast** — soft targets per gate command, warm cache:
-   - `loom gate` (status, no verifiers): <100 ms (and a hard <500 ms
-     ceiling, asserted by a self-test on the cache implementation).
+   - `loom gate status` (cached status, no verifiers): <100 ms (and a hard
+     <500 ms ceiling, asserted by a self-test on the cache implementation).
    - `loom gate check`: <5 s aggregate across all `[check]` walks.
    - `loom gate test`: <30 s aggregate (one batched cargo-nextest
      invocation; nextest's internal parallelism does the heavy

@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 /// the JSONL writer.
 fn sample_envelope() -> EventEnvelope {
     EventEnvelope {
-        session_id: SessionId::new("sess-driver-log"),
+        session_id: SessionId::new("sess-driver-log").unwrap(),
         bead_id: Some(BeadId::new("lm-test").expect("valid bead id")),
         molecule_id: None,
         iteration: Some(0),
@@ -71,7 +71,7 @@ fn open_sink(
     mode: RenderMode,
     parallel: bool,
 ) -> Result<(LogSink, Arc<Mutex<Vec<u8>>>)> {
-    let label = SpecLabel::new(spec);
+    let label = SpecLabel::new(spec).unwrap();
     let id = BeadId::new(bead)?;
     let (buf, sink) = captured();
     let renderer: Box<dyn loom_render::Renderer> = Box::new(TerminalRenderer::new(
@@ -97,7 +97,7 @@ fn open_sink_with_indicator(
     when_secs: u64,
     mode: RenderMode,
 ) -> Result<(LogSink, Arc<Mutex<Vec<u8>>>)> {
-    let label = SpecLabel::new(spec);
+    let label = SpecLabel::new(spec).unwrap();
     let id = BeadId::new(bead)?;
     let (buf, sink) = captured();
     let renderer: Box<dyn loom_render::Renderer> =
@@ -141,7 +141,7 @@ fn run_default_output_shape() -> Result<()> {
 
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("t1"),
+        id: ToolCallId::new("t1").unwrap(),
         tool: "Read".to_string(),
         params: json!({"file_path": "src/lib.rs"}),
         parent_tool_call_id: None,
@@ -152,7 +152,7 @@ fn run_default_output_shape() -> Result<()> {
     })?;
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("t2"),
+        id: ToolCallId::new("t2").unwrap(),
         tool: "Bash".to_string(),
         params: json!({"command": "cargo build"}),
         parent_tool_call_id: None,
@@ -235,7 +235,7 @@ fn run_writes_per_bead_jsonl_log() -> Result<()> {
 
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("t1"),
+        id: ToolCallId::new("t1").unwrap(),
         tool: "Read".to_string(),
         params: json!({"file_path": "a"}),
         parent_tool_call_id: None,
@@ -431,14 +431,14 @@ fn parallel_logs_are_per_bead() -> Result<()> {
     // Interleave emits and verify each file only carries its own bead's events.
     a.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("ta"),
+        id: ToolCallId::new("ta").unwrap(),
         tool: "Read".to_string(),
         params: json!({"file_path": "a-only"}),
         parent_tool_call_id: None,
     })?;
     b.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("tb"),
+        id: ToolCallId::new("tb").unwrap(),
         tool: "Read".to_string(),
         params: json!({"file_path": "b-only"}),
         parent_tool_call_id: None,
@@ -491,27 +491,27 @@ fn parallel_live_log_sink_renders_prefixed_output() -> Result<()> {
     })?;
     a.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("ta"),
+        id: ToolCallId::new("ta").unwrap(),
         tool: "Bash".to_string(),
         params: json!({"command": "echo a-only"}),
         parent_tool_call_id: None,
     })?;
     b.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("tb"),
+        id: ToolCallId::new("tb").unwrap(),
         tool: "Bash".to_string(),
         params: json!({"command": "echo b-only"}),
         parent_tool_call_id: None,
     })?;
     a.emit(&AgentEvent::ToolResult {
         envelope: sample_envelope(),
-        id: ToolCallId::new("ta"),
+        id: ToolCallId::new("ta").unwrap(),
         output: "a-only-output".to_string(),
         is_error: false,
     })?;
     b.emit(&AgentEvent::ToolResult {
         envelope: sample_envelope(),
-        id: ToolCallId::new("tb"),
+        id: ToolCallId::new("tb").unwrap(),
         output: "b-only-output".to_string(),
         is_error: false,
     })?;
@@ -670,7 +670,7 @@ fn log_sink_per_event_flush() -> Result<()> {
 
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("t1"),
+        id: ToolCallId::new("t1").unwrap(),
         tool: "Read".to_string(),
         params: json!({"file_path": "first.rs"}),
         parent_tool_call_id: None,
@@ -737,14 +737,14 @@ fn run_single_event_sink_property() -> Result<()> {
     let events = [
         AgentEvent::ToolCall {
             envelope: sample_envelope(),
-            id: ToolCallId::new("t1"),
+            id: ToolCallId::new("t1").unwrap(),
             tool: "Read".to_string(),
             params: json!({"file_path": "src/a.rs"}),
             parent_tool_call_id: None,
         },
         AgentEvent::ToolCall {
             envelope: sample_envelope(),
-            id: ToolCallId::new("t2"),
+            id: ToolCallId::new("t2").unwrap(),
             tool: "Edit".to_string(),
             params: json!({"file_path": "src/b.rs"}),
             parent_tool_call_id: None,
@@ -805,7 +805,7 @@ fn run_default_renders_per_tool_summary_cells() -> Result<()> {
 
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("r1"),
+        id: ToolCallId::new("r1").unwrap(),
         tool: "Read".to_string(),
         params: json!({
             "file_path": "src/lib.rs",
@@ -816,7 +816,7 @@ fn run_default_renders_per_tool_summary_cells() -> Result<()> {
     })?;
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("e1"),
+        id: ToolCallId::new("e1").unwrap(),
         tool: "Edit".to_string(),
         params: json!({
             "file_path": "src/lib.rs",
@@ -827,7 +827,7 @@ fn run_default_renders_per_tool_summary_cells() -> Result<()> {
     })?;
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("b1"),
+        id: ToolCallId::new("b1").unwrap(),
         tool: "Bash".to_string(),
         params: json!({"command": "cargo build --release --all-features"}),
         parent_tool_call_id: None,
@@ -877,14 +877,14 @@ fn run_default_indicator_emits_overwrite_pattern_on_tool_result() -> Result<()> 
 
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("b1"),
+        id: ToolCallId::new("b1").unwrap(),
         tool: "Bash".to_string(),
         params: json!({"command": "cargo test"}),
         parent_tool_call_id: None,
     })?;
     sink.emit(&AgentEvent::ToolResult {
         envelope: sample_envelope(),
-        id: ToolCallId::new("b1"),
+        id: ToolCallId::new("b1").unwrap(),
         output: "ok".to_string(),
         is_error: false,
     })?;
@@ -936,7 +936,7 @@ fn run_finish_finalizes_dangling_running_indicator() -> Result<()> {
 
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("b1"),
+        id: ToolCallId::new("b1").unwrap(),
         tool: "Bash".to_string(),
         params: json!({"command": "sleep 60"}),
         parent_tool_call_id: None,
@@ -986,7 +986,7 @@ fn run_verbose_uses_normal_tool_result_body_byte_cap() -> Result<()> {
 
     sink.emit(&AgentEvent::ToolCall {
         envelope: sample_envelope(),
-        id: ToolCallId::new("b1"),
+        id: ToolCallId::new("b1").unwrap(),
         tool: "Bash".to_string(),
         params: json!({"command": "ls -la"}),
         parent_tool_call_id: None,
@@ -994,7 +994,7 @@ fn run_verbose_uses_normal_tool_result_body_byte_cap() -> Result<()> {
     let big_output = "v".repeat(BODY_CAP_BYTES + 7);
     sink.emit(&AgentEvent::ToolResult {
         envelope: sample_envelope(),
-        id: ToolCallId::new("b1"),
+        id: ToolCallId::new("b1").unwrap(),
         output: big_output,
         is_error: false,
     })?;

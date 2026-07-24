@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"gate\", \"review\"])"
 ---
-Run criterion-attached judges and the LLM rubric
+Run criterion-attached judges and the LLM rubric.
 
 Usage: loom gate review [OPTIONS]
 

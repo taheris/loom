@@ -210,7 +210,7 @@ mod tests {
 
     fn envelope(seq: u64) -> EventEnvelope {
         EventEnvelope {
-            session_id: SessionId::new("sess-observer"),
+            session_id: SessionId::new("sess-observer").unwrap(),
             bead_id: Some(BeadId::new("lm-test").expect("valid bead id")),
             molecule_id: None,
             iteration: Some(0),
@@ -223,7 +223,7 @@ mod tests {
     fn tool_call(seq: u64, id: &str, tool: &str, params: serde_json::Value) -> AgentEvent {
         AgentEvent::ToolCall {
             envelope: envelope(seq),
-            id: ToolCallId::new(id),
+            id: ToolCallId::new(id).unwrap(),
             tool: tool.to_owned(),
             params,
             parent_tool_call_id: None,
@@ -233,7 +233,7 @@ mod tests {
     fn tool_result(seq: u64, id: &str, output: &str) -> AgentEvent {
         AgentEvent::ToolResult {
             envelope: envelope(seq),
-            id: ToolCallId::new(id),
+            id: ToolCallId::new(id).unwrap(),
             output: output.to_owned(),
             is_error: false,
         }

@@ -85,7 +85,7 @@ mod tests {
         let applicable = ApplicableRegistry::filter(
             registry,
             &PhaseName::new("loop").expect("phase"),
-            &ProfileName::new("base"),
+            &ProfileName::new("base").unwrap(),
         );
         let materialized = MaterializedRegistry::materialize(
             applicable,
@@ -326,7 +326,7 @@ mod tests {
         let applicable = ApplicableRegistry::filter(
             registry,
             &PhaseName::new("loop").expect("phase"),
-            &ProfileName::new("rust"),
+            &ProfileName::new("rust").unwrap(),
         );
         let scratch = tempfile::tempdir().expect("scratch");
         let materialized = MaterializedRegistry::materialize(applicable, scratch.path())
@@ -384,7 +384,7 @@ mod tests {
         let applicable = ApplicableRegistry::filter(
             registry,
             &PhaseName::new("loop").expect("phase"),
-            &ProfileName::new("rust"),
+            &ProfileName::new("rust").unwrap(),
         );
         let names = applicable
             .skills()

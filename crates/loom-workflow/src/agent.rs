@@ -134,7 +134,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
             session
         }
         Err(err) => {
-            warn!(error = %err, "agent spawn failed before session became live");
+            warn!(error = ?err, "agent spawn failed before session became live");
             let error_str = err.to_string();
             emit_spawn_failure_event(sink.as_mut(), envelope_builder.as_mut(), &err, &error_str);
             finish_sink(sink, BeadOutcome::Failed);
@@ -600,7 +600,7 @@ fn phase_envelope_builder() -> EnvelopeBuilder {
         .map_or(0, |duration| duration.as_millis());
     EnvelopeBuilder::new(
         SessionScope::phase(
-            SessionId::new(format!("phase-{}-{started_ms}", std::process::id())),
+            SessionId::generated(format!("phase-{}-{started_ms}", std::process::id())),
             None,
         ),
         Source::Agent,
@@ -1220,7 +1220,7 @@ mod tests {
         let bead = BeadId::new("lm-emit").expect("bead id");
         let mut clock = 0_i64;
         EnvelopeBuilder::new(
-            SessionScope::bead(SessionId::new("sess-emit"), bead, None, 0),
+            SessionScope::bead(SessionId::new("sess-emit").unwrap(), bead, None, 0),
             Source::Agent,
             move || {
                 clock += 1;
@@ -1237,7 +1237,7 @@ mod tests {
     }
 
     fn open_test_sink(dir: &std::path::Path) -> (LogSink, std::path::PathBuf) {
-        let label = SpecLabel::new("emit-test");
+        let label = SpecLabel::new("emit-test").unwrap();
         let bead = BeadId::new("lm-emit").expect("bead id");
         let sink = LogSink::open_in_at(dir, &label, &bead, None, SystemTime::UNIX_EPOCH)
             .expect("open sink");
@@ -1249,7 +1249,7 @@ mod tests {
         dir: &std::path::Path,
         renderer: Box<dyn loom_render::Renderer>,
     ) -> (LogSink, std::path::PathBuf) {
-        let label = SpecLabel::new("emit-test");
+        let label = SpecLabel::new("emit-test").unwrap();
         let bead = BeadId::new("lm-emit").expect("bead id");
         let sink = LogSink::open_in_at(dir, &label, &bead, Some(renderer), SystemTime::UNIX_EPOCH)
             .expect("open sink");
@@ -1277,8 +1277,8 @@ mod tests {
             skills: None,
             event_metadata: Some(loom_events::AgentStartMetadata {
                 title: "test agent session".to_string(),
-                profile: loom_events::identifier::ProfileName::new("test"),
-                spec_label: SpecLabel::new("agent"),
+                profile: loom_events::identifier::ProfileName::new("test").unwrap(),
+                spec_label: SpecLabel::new("agent").unwrap(),
                 parent_tool_call_id: None,
             }),
             scratch_dir: scratch.join("scratch"),
@@ -1398,7 +1398,7 @@ mod tests {
     fn tool_call_line(id: &str) -> ParsedLine {
         ParsedLine {
             events: vec![ParsedAgentEvent::ToolCall {
-                id: loom_events::identifier::ToolCallId::new(id),
+                id: loom_events::identifier::ToolCallId::new(id).unwrap(),
                 tool: "read_file".to_string(),
                 params: serde_json::json!({"path": "/tmp/same"}),
                 parent_tool_call_id: None,
@@ -1410,7 +1410,7 @@ mod tests {
     fn tool_result_line(id: &str) -> ParsedLine {
         ParsedLine {
             events: vec![ParsedAgentEvent::ToolResult {
-                id: loom_events::identifier::ToolCallId::new(id),
+                id: loom_events::identifier::ToolCallId::new(id).unwrap(),
                 output: serde_json::json!({
                     "content": "x".repeat(512),
                 })
@@ -1869,7 +1869,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
 
     fn sample_envelope() -> loom_events::EventEnvelope {
         loom_events::EventEnvelope {
-            session_id: SessionId::new("sess-react"),
+            session_id: SessionId::new("sess-react").unwrap(),
             bead_id: Some(BeadId::new("lm-react").expect("bead id")),
             molecule_id: None,
             iteration: Some(1),
@@ -1882,7 +1882,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
     fn tool_call_event() -> AgentEvent {
         AgentEvent::ToolCall {
             envelope: sample_envelope(),
-            id: loom_events::identifier::ToolCallId::new("tc-1"),
+            id: loom_events::identifier::ToolCallId::new("tc-1").unwrap(),
             tool: "bash".to_string(),
             params: serde_json::json!({}),
             parent_tool_call_id: None,
@@ -1933,13 +1933,13 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         }));
         assert!(!is_non_streaming(&AgentEvent::ToolcallDelta {
             envelope: sample_envelope(),
-            id: loom_events::identifier::ToolCallId::new("tc-1"),
+            id: loom_events::identifier::ToolCallId::new("tc-1").unwrap(),
             delta: "x".into(),
         }));
         assert!(is_non_streaming(&tool_call_event()));
         assert!(is_non_streaming(&AgentEvent::ToolResult {
             envelope: sample_envelope(),
-            id: loom_events::identifier::ToolCallId::new("tc-1"),
+            id: loom_events::identifier::ToolCallId::new("tc-1").unwrap(),
             output: "ok".into(),
             is_error: false,
         }));
@@ -1986,7 +1986,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
     #[test]
     fn stall_watchdog_renders_coalesced_warning_row() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let label = SpecLabel::new("emit-test");
+        let label = SpecLabel::new("emit-test").unwrap();
         let bead = BeadId::new("lm-emit").expect("bead id");
         let render_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let renderer = Box::new(loom_driver::logging::TerminalRenderer::new(

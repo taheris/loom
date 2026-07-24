@@ -1614,7 +1614,7 @@ mod tests {
     /// across every test that does not need to vary the envelope.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
-            session_id: SessionId::new("sess-render"),
+            session_id: SessionId::new("sess-render").unwrap(),
             bead_id: Some(BeadId::new("lm-test").expect("valid bead id")),
             molecule_id: None,
             iteration: Some(0),
@@ -1708,7 +1708,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: "Read".to_string(),
                 params: json!({"file_path": "src/lib.rs"}),
                 parent_tool_call_id: None,
@@ -1725,7 +1725,7 @@ mod tests {
         let out = capture(RenderMode::Default, true, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: "Bash".to_string(),
                 params: json!({"command": "cargo build"}),
                 parent_tool_call_id: None,
@@ -1739,7 +1739,7 @@ mod tests {
     #[test]
     fn header_line_includes_id_title_profile() {
         let out = capture(RenderMode::Default, false, false, |r| {
-            r.header("Implement parser", &ProfileName::new("rust"))
+            r.header("Implement parser", &ProfileName::new("rust").unwrap())
                 .expect("header");
         });
         assert!(out.contains("lm-1"), "{out:?}");
@@ -1753,7 +1753,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: "Read".to_string(),
                 params: json!({"file_path": "a"}),
                 parent_tool_call_id: None,
@@ -1761,7 +1761,7 @@ mod tests {
             .expect("render");
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t2"),
+                id: ToolCallId::new("t2").unwrap(),
                 tool: "Edit".to_string(),
                 params: json!({"file_path": "b"}),
                 parent_tool_call_id: None,
@@ -1827,7 +1827,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("e1"),
+                id: ToolCallId::new("e1").unwrap(),
                 tool: "Edit".into(),
                 params: json!({
                     "file_path": "src/lib.rs",
@@ -1858,7 +1858,7 @@ mod tests {
                 renderer
                     .render_event(&AgentEvent::ToolCall {
                         envelope: sample_envelope(),
-                        id: ToolCallId::new("configured-cap"),
+                        id: ToolCallId::new("configured-cap").unwrap(),
                         tool: "Bash".into(),
                         params: json!({"command": "emit bytes"}),
                         parent_tool_call_id: None,
@@ -1867,7 +1867,7 @@ mod tests {
                 renderer
                     .render_event(&AgentEvent::ToolResult {
                         envelope: sample_envelope(),
-                        id: ToolCallId::new("configured-cap"),
+                        id: ToolCallId::new("configured-cap").unwrap(),
                         output: body,
                         is_error: false,
                     })
@@ -1886,7 +1886,7 @@ mod tests {
         let out = capture(RenderMode::Verbose, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "echo hi"}),
                 parent_tool_call_id: None,
@@ -1894,7 +1894,7 @@ mod tests {
             .expect("render call");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 output: big_body,
                 is_error: false,
             })
@@ -1916,7 +1916,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "echo hi"}),
                 parent_tool_call_id: None,
@@ -1924,7 +1924,7 @@ mod tests {
             .expect("render call");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 output: "result body".into(),
                 is_error: false,
             })
@@ -1943,7 +1943,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "false"}),
                 parent_tool_call_id: None,
@@ -1951,7 +1951,7 @@ mod tests {
             .expect("render call");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 output: big_body,
                 is_error: true,
             })
@@ -1977,7 +1977,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "false"}),
                 parent_tool_call_id: None,
@@ -1985,7 +1985,7 @@ mod tests {
             .expect("render call");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 output: body.into(),
                 is_error: true,
             })
@@ -2006,7 +2006,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("r1"),
+                id: ToolCallId::new("r1").unwrap(),
                 tool: "Read".into(),
                 params: json!({"file_path": "src/lib.rs"}),
                 parent_tool_call_id: None,
@@ -2014,7 +2014,7 @@ mod tests {
             .expect("render call");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("r1"),
+                id: ToolCallId::new("r1").unwrap(),
                 output: "file-contents".into(),
                 is_error: true,
             })
@@ -2061,7 +2061,7 @@ mod tests {
         )));
         r.render_event(&AgentEvent::ToolCall {
             envelope: sample_envelope(),
-            id: ToolCallId::new("e1"),
+            id: ToolCallId::new("e1").unwrap(),
             tool: "Edit".into(),
             params: json!({
                 "file_path": "src/lib.rs",
@@ -2089,7 +2089,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("e1"),
+                id: ToolCallId::new("e1").unwrap(),
                 tool: "Edit".into(),
                 params: json!({
                     "file_path": "src/lib.rs",
@@ -2112,7 +2112,7 @@ mod tests {
         let out = capture(RenderMode::Verbose, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "false"}),
                 parent_tool_call_id: None,
@@ -2120,7 +2120,7 @@ mod tests {
             .expect("render call");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 output: "exit 1".into(),
                 is_error: true,
             })
@@ -2171,7 +2171,7 @@ mod tests {
     fn sample_tool_call() -> AgentEvent {
         AgentEvent::ToolCall {
             envelope: sample_envelope(),
-            id: ToolCallId::new("t1"),
+            id: ToolCallId::new("t1").unwrap(),
             tool: "Read".into(),
             params: json!({"file_path": "src/lib.rs"}),
             parent_tool_call_id: None,
@@ -2270,7 +2270,7 @@ mod tests {
             // Top-level Task call — no parent, depth 0.
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("task1"),
+                id: ToolCallId::new("task1").unwrap(),
                 tool: "Task".into(),
                 params: json!({}),
                 parent_tool_call_id: None,
@@ -2280,10 +2280,10 @@ mod tests {
             // extra spaces.
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("read1"),
+                id: ToolCallId::new("read1").unwrap(),
                 tool: "Read".into(),
                 params: json!({"file_path": "a"}),
-                parent_tool_call_id: Some(ToolCallId::new("task1")),
+                parent_tool_call_id: Some(ToolCallId::new("task1").unwrap()),
             })
             .expect("render nested");
         });
@@ -2336,14 +2336,14 @@ mod tests {
         (
             AgentEvent::ToolCall {
                 envelope: call_env,
-                id: ToolCallId::new(id),
+                id: ToolCallId::new(id).unwrap(),
                 tool: tool.to_string(),
                 params,
                 parent_tool_call_id: None,
             },
             AgentEvent::ToolResult {
                 envelope: result_env,
-                id: ToolCallId::new(id),
+                id: ToolCallId::new(id).unwrap(),
                 output: String::new(),
                 is_error: false,
             },
@@ -2521,7 +2521,7 @@ mod tests {
             .expect("thinking end");
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "printf transcript"}),
                 parent_tool_call_id: None,
@@ -2529,7 +2529,7 @@ mod tests {
             .expect("tool call");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 output: "inline tool output".into(),
                 is_error: false,
             })
@@ -2562,7 +2562,7 @@ mod tests {
             r.render_event(&call).expect("call");
             r.render_event(&AgentEvent::ToolProgress {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 text: "running unit tests".into(),
             })
             .expect("progress");
@@ -2604,7 +2604,7 @@ mod tests {
             r.render_event(&call).expect("call");
             r.render_event(&AgentEvent::ToolProgress {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 text: "running unit tests".into(),
             })
             .expect("progress");
@@ -2631,7 +2631,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("r1"),
+                id: ToolCallId::new("r1").unwrap(),
                 tool: "read".into(),
                 params: json!({"path": "crates/wrix-sandbox/Cargo.toml"}),
                 parent_tool_call_id: None,
@@ -2639,7 +2639,7 @@ mod tests {
             .expect("call");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("r1"),
+                id: ToolCallId::new("r1").unwrap(),
                 output: "[package]\nname = \"wrix-sandbox\"".into(),
                 is_error: false,
             })
@@ -2659,7 +2659,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, true, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "nix build"}),
                 parent_tool_call_id: None,
@@ -2667,19 +2667,19 @@ mod tests {
             .expect("tool call");
             r.render_event(&AgentEvent::ToolProgress {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 text: first.into(),
             })
             .expect("first progress");
             r.render_event(&AgentEvent::ToolProgress {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 text: second,
             })
             .expect("second progress");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 output: final_output,
                 is_error: false,
             })
@@ -2704,7 +2704,7 @@ mod tests {
         let out = capture(RenderMode::Default, false, true, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "nix build"}),
                 parent_tool_call_id: None,
@@ -2712,13 +2712,13 @@ mod tests {
             .expect("tool call");
             r.render_event(&AgentEvent::ToolProgress {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 text: first,
             })
             .expect("first progress");
             r.render_event(&AgentEvent::ToolProgress {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 text: second,
             })
             .expect("second progress");
@@ -2755,7 +2755,7 @@ mod tests {
                     ts_ms: 1234,
                     ..sample_envelope()
                 },
-                id: ToolCallId::new("r1"),
+                id: ToolCallId::new("r1").unwrap(),
                 tool: "Read".into(),
                 params: json!({"file_path": "src/lib.rs", "api_key": "secret"}),
                 parent_tool_call_id: None,
@@ -2766,7 +2766,7 @@ mod tests {
                     ts_ms: 2234,
                     ..sample_envelope()
                 },
-                id: ToolCallId::new("r1"),
+                id: ToolCallId::new("r1").unwrap(),
                 output: body,
                 is_error: false,
             },
@@ -2949,7 +2949,7 @@ mod tests {
             .expect("thinking end");
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "cargo test"}),
                 parent_tool_call_id: None,
@@ -2957,7 +2957,7 @@ mod tests {
             .expect("tool call");
             r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("b1"),
+                id: ToolCallId::new("b1").unwrap(),
                 output: "body one\nbody two".into(),
                 is_error: false,
             })
@@ -3188,14 +3188,14 @@ mod tests {
             env_b.ts_ms = 1_000;
             let call = AgentEvent::ToolCall {
                 envelope: env_a,
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: tool.to_string(),
                 params,
                 parent_tool_call_id: None,
             };
             let result = AgentEvent::ToolResult {
                 envelope: env_b,
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 output: String::new(),
                 is_error: false,
             };
@@ -3243,7 +3243,7 @@ mod tests {
         let out = capture_with_width(false, true, 40, true, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: "Bash".to_string(),
                 params: json!({"command": "echo hi"}),
                 parent_tool_call_id: None,
@@ -3270,7 +3270,7 @@ mod tests {
             // First call: long Bash → buffered.
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: "Bash".to_string(),
                 params: json!({"command": "echo this command is far too long for 40 cols"}),
                 parent_tool_call_id: None,
@@ -3279,7 +3279,7 @@ mod tests {
             // Second call: short, fits — preempts the first.
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                id: ToolCallId::new("t2"),
+                id: ToolCallId::new("t2").unwrap(),
                 tool: "Read".to_string(),
                 params: json!({"file_path": "a"}),
                 parent_tool_call_id: None,

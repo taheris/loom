@@ -301,7 +301,7 @@ mod tests {
         )
         .expect("write spec");
         let validator = WorkspaceFindingValidator::new(tmp.path());
-        let beads = SpecLabel::new("beads");
+        let beads = SpecLabel::new("beads").unwrap();
 
         assert!(validator.criterion_anchor_resolves(&beads, "test_beadspush_pushes_before_pulls"));
     }
@@ -313,7 +313,7 @@ mod tests {
         let body = "# Gate\n\n## Success Criteria\n\n- A thing must hold [check](true)\n";
         std::fs::write(tmp.path().join("specs/gate.md"), body).expect("write spec");
         let parsed = annotation::parse_content(&PathBuf::from("specs/gate.md"), body);
-        let gate = SpecLabel::new("gate");
+        let gate = SpecLabel::new("gate").unwrap();
         let criterion_id = annotation::criterion_id_for(&gate, &parsed.criteria[0].text);
         let validator = WorkspaceFindingValidator::new(tmp.path());
 

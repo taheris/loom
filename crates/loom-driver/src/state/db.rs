@@ -736,8 +736,11 @@ fn write_schema_version(conn: &Connection, version: &str) -> Result<(), CacheErr
 fn row_to_spec(row: &rusqlite::Row<'_>) -> rusqlite::Result<SpecRow> {
     let label: String = row.get(0)?;
     let spec_path: String = row.get(1)?;
+    let parsed = label.parse().map_err(|source| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(source))
+    })?;
     Ok(SpecRow {
-        label: SpecLabel::new(label),
+        label: parsed,
         spec_path,
     })
 }
@@ -746,11 +749,13 @@ fn row_to_spec_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<SpecEpic
     let spec_label: String = row.get(0)?;
     let epic_id: String = row.get(1)?;
     let todo_cursor: Option<String> = row.get(2)?;
-    Ok(Ok(SpecEpicRow {
-        spec_label: SpecLabel::new(spec_label),
-        epic_id: MoleculeId::new(epic_id),
-        todo_cursor,
-    }))
+    Ok((|| {
+        Ok(SpecEpicRow {
+            spec_label: parse_spec_label(spec_label)?,
+            epic_id: parse_molecule_id(epic_id)?,
+            todo_cursor,
+        })
+    })())
 }
 
 fn row_to_work_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<WorkEpicRow, CacheError>> {
@@ -759,8 +764,8 @@ fn row_to_work_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<WorkEpic
     let todo_fingerprint: Option<String> = row.get(2)?;
     let is_active: i64 = row.get(3)?;
     let iteration_count: i64 = row.get(4)?;
-    Ok(Ok(WorkEpicRow {
-        epic_id: MoleculeId::new(epic_id),
+    Ok(parse_molecule_id(epic_id).map(|epic_id| WorkEpicRow {
+        epic_id,
         todo_head,
         todo_fingerprint,
         is_active: is_active != 0,
@@ -772,15 +777,23 @@ fn row_to_criterion_evidence(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<Result<CriterionEvidenceRow, CacheError>> {
     let spec_label: String = row.get(0)?;
-    Ok(Ok(CriterionEvidenceRow {
-        spec_label: SpecLabel::new(spec_label),
-        criterion_id: row.get(1)?,
-        annotation_json: row.get(2)?,
-        result: row.get(3)?,
-        last_timestamp_ms: row.get(4)?,
-        last_commit: row.get(5)?,
-        evidence: row.get(6)?,
-    }))
+    let criterion_id = row.get(1)?;
+    let annotation_json = row.get(2)?;
+    let result = row.get(3)?;
+    let last_timestamp_ms = row.get(4)?;
+    let last_commit = row.get(5)?;
+    let evidence = row.get(6)?;
+    Ok(
+        parse_spec_label(spec_label).map(|spec_label| CriterionEvidenceRow {
+            spec_label,
+            criterion_id,
+            annotation_json,
+            result,
+            last_timestamp_ms,
+            last_commit,
+            evidence,
+        }),
+    )
 }
 
 fn row_to_molecule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MoleculeRow, CacheError>> {
@@ -788,12 +801,28 @@ fn row_to_molecule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MoleculeR
     let spec_label: String = row.get(1)?;
     let base_commit: Option<String> = row.get(2)?;
     let iteration_count: i64 = row.get(3)?;
-    Ok(Ok(MoleculeRow {
-        id: MoleculeId::new(id),
-        spec_label: SpecLabel::new(spec_label),
-        base_commit,
-        iteration_count: iteration_count.max(0) as u32,
-    }))
+    Ok((|| {
+        Ok(MoleculeRow {
+            id: parse_molecule_id(id)?,
+            spec_label: parse_spec_label(spec_label)?,
+            base_commit,
+            iteration_count: iteration_count.max(0) as u32,
+        })
+    })())
+}
+
+fn parse_spec_label(value: String) -> Result<SpecLabel, CacheError> {
+    value.parse().map_err(|_| CacheError::InvalidIdentifier {
+        kind: "spec label",
+        value,
+    })
+}
+
+fn parse_molecule_id(value: String) -> Result<MoleculeId, CacheError> {
+    value.parse().map_err(|_| CacheError::InvalidIdentifier {
+        kind: "molecule",
+        value,
+    })
 }
 
 fn default_spec_path(label: &SpecLabel) -> String {

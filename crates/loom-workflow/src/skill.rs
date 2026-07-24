@@ -282,7 +282,7 @@ mod tests {
         let scratch = tempfile::tempdir().expect("scratch");
         let calls = workspace.path().join("calls");
         let wrix = install_probe_wrix(workspace.path(), &calls);
-        let profile = ProfileName::new("rust");
+        let profile = ProfileName::new("rust").unwrap();
 
         let auto_plan = SkillPlan::resolve(
             workspace.path(),
@@ -441,7 +441,7 @@ mod tests {
         let plan = SkillPlan::resolve_from_workspace_sync(
             workspace.path(),
             "inbox",
-            &ProfileName::new("rust"),
+            &ProfileName::new("rust").unwrap(),
             AgentRuntime::Direct,
             &SkillsConfig::default(),
         )

@@ -366,11 +366,10 @@ and conservative fall-through for unowned queries.
   is "agent processed the batch", not "every finding individually
   resolved"
   [judge](../tests/judges/loom.sh#judge_remediation_batch_acceptance)
-- The per-bead hot path runs deterministic
-  `loom gate verify --diff <pre-integration-head>..HEAD` after
-  integration and does not invoke focused LLM review or `mint` by
-  default
-  [test](exec_per_bead_gate_invokes_post_integration_verify_only)
+Per-bead integration execution mechanics are owned by
+[harness.md § Verdict Gate](harness.md#verdict-gate); this spec owns the gate
+receipt consumed at that boundary.
+
 - `mint --tree` walks both the deterministic verifiers and the LLM
   rubric, normalizing findings from either source into the same typed
   mint flow
@@ -430,12 +429,9 @@ and conservative fall-through for unowned queries.
   `gate_run_end`; a start without an end is treated as incomplete
   evidence, not success
   [test](gate_invocations_emit_jsonl_lifecycle_events)
-- `DriverKind` is a typed enum with an `Other(String)` fallback; gate
-  lifecycle kinds (`GateRunStart`, `GateRunScope`, `GateRunLane`,
-  `GateRunEnd`, `GateRunSkipped`) serialize through the existing
-  `driver_event.driver_kind` string field rather than new top-level
-  `AgentEvent` variants
-  [test](driver_kind_typed_enum_carries_gate_lifecycle_values)
+Gate lifecycle events use the canonical event schema owned by
+[events.md § Driver Events](events.md#driver-events).
+
 - `VerifiedScope` is constructible only from a successful deterministic
   `GateRun`; `ReviewedScope` is constructible only from a successful
   review run; `GateSuccess` is constructible only from matching
@@ -455,39 +451,26 @@ and conservative fall-through for unowned queries.
   same range; otherwise `pre-push-checks` falls through
   [test](marker_short_circuit_requires_hook_coverage_for_same_tree_config_and_range)
 
-### Wire-format wiring and dead-code excision
+### Review finding wire contract
 
-The production wiring obligation — every caller that constructs
-`GateInputs` for the review-phase verdict gate must populate
-`streamed_findings` from a real `parse_walk_output` invocation
-rather than leaving it at default — is owned by
-[harness.md § Verdict gate](harness.md#verdict-gate). This
-subsection covers the wire-format-side dead-code excision and the
-ReviewConcern display-vocabulary retirement that the wiring change
-depends on.
+Review verdict construction from parsed findings is owned by
+[harness.md § Verdict Gate](harness.md#verdict-gate). The gate owns the typed
+finding and recovery semantics at that boundary.
 
-- `ReviewError::ConcernWithoutBeadDeltas` is removed from
-  `crates/loom-workflow/src/review/error.rs` and the raise site at
-  `review/runner.rs` is removed in the same diff; no production code
-  path constructs this error variant
+- Review concerns are represented only by parsed `LOOM_FINDING:` records plus
+  their terminal summary; no second concern-without-findings error path is
+  available to production callers
   [test](no_path_constructs_concern_without_bead_deltas_in_production)
-- `parse_review_flag` (the legacy `<token> -- <reason>` whole-stdout
-  hunter) is removed from `crates/loom-workflow/src/review/phase_verdict.rs`;
-  the function and all its callers are deleted
+- Review classification accepts typed finding records rather than parsing a
+  free-form token-and-reason line from whole stdout
   [test](parse_review_flag_is_not_defined_or_called_in_production)
-- `decide_concern` no longer parses the terminal `summary` field as a
-  `ReviewConcern` token; the legacy fallback path
-  (`ReviewConcern::parse(summary)`) is removed. An unrecognized
-  summary with at least one streamed finding routes to
-  `RecoveryCause::ReviewConcern { summary, findings }`, not
+- An unrecognized terminal summary accompanied by at least one typed finding
+  routes to `RecoveryCause::ReviewConcern { summary, findings }`, not
   `SwallowedMarker`
   [test](decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed)
-- The `ReviewConcern` 12-variant enum stays as a display vocabulary
-  for `bd update --notes` and verdict-log human-readable cause
-  labels, but `ReviewConcern::parse` has no production caller. The
-  per-finding render in `PreviousFailure::ReviewConcern` derives the
-  human-readable label from `findings[0].token` (or a "multiple"
-  label when heterogeneous)
+- `ReviewConcern` is display vocabulary for human-readable notes and verdict
+  logs. `PreviousFailure::ReviewConcern` derives its label from the finding
+  tokens, using a multiple-findings label when the tokens differ
   [test](previous_failure_review_concern_renders_human_label_from_findings_not_summary)
 
 ### Wire-format strict validation and max-context preservation
@@ -642,20 +625,9 @@ deferred bd findings and does not fabricate a new `Vec<Finding>`.
   deferred-promotion path and never constructs a placeholder empty
   findings vector
   [test](run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion)
-- `loom loop`'s per-bead path routes a loop-phase `Success` outcome
-  through exactly one post-integration deterministic gate result; a
-  clean result makes the bead's integration durable (neither clarified
-  nor blocked). The bullet below pins the subprocess shape that the
-  per-bead gate resolves to; deferred remediation beads are not made
-  ready until the molecule stabilization step promotes them
-  [test](loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate)
-- The production per-bead gate implementation spawns exactly one
-  deterministic subprocess against `loom_bin` after integration — argv
-  shape `gate verify --diff <pre-integration-head>..HEAD`. A regression
-  that invokes `gate mint`, passes `--bead` / `--spec`, invokes
-  `--verify-exit`, or starts a focused review session on the per-bead
-  hot path is caught at the production controller
-  [test](exec_per_bead_gate_invokes_post_integration_verify_only)
+Per-bead routing and subprocess policy are owned by
+[harness.md § Verdict Gate](harness.md#verdict-gate). This spec receives the
+resulting deterministic gate evidence and owns its trust semantics.
 
 ### Molecule mint summary semantics
 
@@ -895,7 +867,11 @@ promotion errors or blocking on structural bd state — is owned by
   target in the group
   [test](run_with_runners_exit_code_parser_shares_verdict_across_group)
 
-## Invariants — what must never happen
+## Requirements
+
+### Functional
+
+#### Invariants — what must never happen
 
 The five failure classes the gate guarantees against. These are the
 gate's reason for existing; everything below them is mechanism.
@@ -937,7 +913,7 @@ gate's reason for existing; everything below them is mechanism.
    in code or in a sibling spec — must surface, never slip. *Not* a
    hard reject — clashes require human judgement (see Lanes, below).
 
-## Dimensions
+#### Dimensions
 
 The gate evaluates code on three dimensions, all together. Failure on
 any one is a flag.
@@ -962,7 +938,7 @@ of the same binary question: *is the code good enough to ship?* They
 live in one gate by design — fragmenting them produced the failure
 pattern this spec exists to prevent.
 
-## Lanes
+#### Lanes
 
 The gate has two response paths. The choice is dictated by the kind of
 failure detected, not by stage or scope.
@@ -996,7 +972,7 @@ failure detected, not by stage or scope.
   (defined in [Options Format Contract](#options-format-contract)
   below) and waits for `loom inbox` resolution.
 
-## Commands
+#### Commands
 
 The gate is one umbrella command, `loom gate`, with subcommands
 selecting what kind of inspection or act path runs:
@@ -1021,7 +997,7 @@ Spec-specific target discovery is outside the gate command tree:
 optionally narrowed with `--tier <tier>`; `--plain` prints exact target
 strings one per line for piping into `loom gate <tier> --target`.
 
-### Scope flags
+##### Scope flags
 
 Gate subcommands do not infer a default verification scope. An
 inspection subcommand invoked without an explicit scope or exact
@@ -1074,7 +1050,7 @@ range that matches no files is a legitimate empty scope; a shorthand
 like `--diff HEAD` remains a diagnostic working-tree-vs-HEAD mode but
 is never marker-eligible.
 
-### Deterministic verify lanes
+##### Deterministic verify lanes
 
 `loom gate verify` has one deterministic contract across all callers:
 
@@ -1115,7 +1091,7 @@ inspection paths; `audit` produces no bd writes. The act path is
 `loom gate mint`, which walks and writes; see [*Findings and
 Minting*](#findings-and-minting).
 
-## Stages
+#### Stages
 
 Same gate, four review points plus one stabilization act. Scope and
 cost-of-failure differ; the underlying trust surfaces are explicit.
@@ -1159,7 +1135,7 @@ unrepresentable. The standing safety net is scheduled, not
 load-bearing for any individual push — its job is to catch verifier-
 input under-reporting over time, not to replace the push gate.
 
-### Plan-stage checks
+##### Plan-stage checks
 
 The plan stage is first-class: errors caught before code exists
 are cheapest. The stage runs inside the planning interview — the
@@ -1168,11 +1144,13 @@ commit:
 
 1. **Completeness check.** Every requirement the user expressed has a
    checkable surface: a Success Criteria bullet with a `[check]`,
-   `[test]`, `[system]`, or `[judge]` annotation, a lifecycle /
-   decision / contract table row, or an explicit `## Out of Scope`
-   declaration. Implicit functional assumptions are surfaced and converted
-   into annotated, checkable claims; genuine non-goals move to `Out of Scope`
-   with their rationale rather than remaining as unverifiable contract text.
+   `[test]`, `[system]`, or `[judge]` annotation, or an explicit
+   `## Out of Scope` declaration. Lifecycle, decision, and contract table rows
+   elaborate those criteria; every behavioral row maps to an annotated
+   criterion in the same section rather than standing as an unverified
+   contract. Implicit functional assumptions are surfaced and converted into
+   annotated, checkable claims; genuine non-goals move to `Out of Scope` with
+   their rationale rather than remaining as unverifiable contract text.
    Annotations whose targets will not resolve at commit time —
    typically newly-authored claims whose verifier implementation
    lands in a follow-on `loom loop` bead — carry the pending modifier
@@ -1202,7 +1180,7 @@ contradiction as a user question. This isn't a structured rubric item
 at the plan stage — it's expected awareness. Mechanical detection of
 template-vs-spec drift happens at the standing safety net instead.)
 
-### Worker and per-bead integration checks
+##### Worker and per-bead integration checks
 
 **Agent self-check before marker emit.** In `loom loop`'s bead
 container, the worker runs the injected exact self-check range before
@@ -1269,7 +1247,7 @@ well-formed options block falls back to `loom:blocked` with cause
 `clarify-without-options` rather than a stranded clarify. Push is held
 until clarify beads in the molecule are resolved via `loom inbox`.
 
-### Standing-safety-net checks
+##### Standing-safety-net checks
 
 `loom gate verify --tree`, `loom gate review --tree`, and `loom gate
 mint --tree` form the standing-safety-net triad. The first two are
@@ -1361,7 +1339,7 @@ narrowing or parent-epic selection.
 Invariant clashes surfaced at the standing safety net raise
 `loom:clarify` under the same standing remediation work epic.
 
-### Surface-conformance audit
+##### Surface-conformance audit
 
 A deterministic audit (no LLM call) that diffs the consumer's
 spec-declared user-facing surface against the compiled binary.
@@ -1381,14 +1359,14 @@ can be polished without churning a deterministic gate. The surface
 audit checks that commands and flags exist with the right names and
 grouping — nothing about how they describe themselves.
 
-## Findings and Minting
+#### Findings and Minting
 
 `loom gate mint` is the gate's sole driver-side mint surface — the
 one command that walks the rubric and produces remediation beads. Every
 other gate subcommand is inspection-only (no bd writes). Mint is
 what makes the rubric's concerns actionable.
 
-### Canonical contract location
+##### Canonical contract location
 
 The Rust contract for the gate's wire format is owned by
 `loom-protocol::gate` — a leaf crate carrying the `Finding` record
@@ -1505,7 +1483,7 @@ the retired terminal-token contract (per the review rubric's
 (derived from `findings[0].token` or a "multiple" label when
 heterogeneous); it has no routing role.
 
-### Inspection vs. act partition
+##### Inspection vs. act partition
 
 Every gate subcommand except `loom gate mint` is **inspection-only**
 — it walks rules and emits findings to stdout but performs no `bd`
@@ -1540,7 +1518,7 @@ writes a single content-addressed JSON file to
 writes" remains true through that path; the marker is filesystem
 state, not bd state.
 
-### Wire-format mixed-shape principle
+##### Wire-format mixed-shape principle
 
 The wire format the rubric walk emits is shaped by one principle
 that governs every marker the driver consumes: **JSON-payload for
@@ -1560,7 +1538,7 @@ wire-format violation and is rejected by the typed parser
 `loom-workflow::review::finding::parse_walk_output` for the streaming
 finding lines).
 
-### Scope-dependent walk
+##### Scope-dependent walk
 
 `mint` is the act surface, so its scopes are intentionally narrower
 than inspection commands:
@@ -1576,7 +1554,7 @@ deterministic-only (`verify`). Bare `loom gate mint` prints subcommand
 help and runs nothing; callers choose `--tree` or `-m/--molecule`
 explicitly.
 
-### LOOM_INSIDE guard
+##### LOOM_INSIDE guard
 
 `loom gate mint` refuses to run when `LOOM_INSIDE=1`. Deterministic
 gate inspection subcommands may run inside a bead container for
@@ -1587,7 +1565,7 @@ gate subcommands follow the harness-level `LOOM_INSIDE` guard. The
 check is a deterministic precondition; no walk runs and no exit code 2
 path fires.
 
-### Concern tokens and target variants
+##### Concern tokens and target variants
 
 Every finding carries a typed `target` whose variant is determined
 by the `token`. The driver canonicalizes the variant when computing
@@ -1641,7 +1619,7 @@ makes "every finding carries a target appropriate to its token"
 structurally unrepresentable as a mismatch. See [`spec-conventions.md`
 *In scope #4*](../docs/spec-conventions.md).
 
-### Emit shape
+##### Emit shape
 
 The LLM rubric walk emits findings as streaming records on stdout
 from the agent's subprocess. Each record starts with a `LOOM_FINDING:`
@@ -1854,7 +1832,7 @@ than `partial/findings_walk.md`. Templates that violate this fail
 `loom gate check` via the [`check`]-tier dispatcher's non-zero
 exit code.
 
-### Structural enforcement
+##### Structural enforcement
 
 The review-phase classifier signature (`classify_review_phase` in
 `loom-workflow::review::production`) consumes a typed `WalkOutput`
@@ -1880,7 +1858,7 @@ pipeline. This mirrors the sealed-`MarkerProof` pattern
 (`## Marker` below): validated construction through a single
 entry point is the type-shape contract for trust handoff.
 
-### Verification surface
+##### Verification surface
 
 The runtime contract is verified at two layers — a behavioral
 matrix walking every cell of the failure surface, and a property
@@ -1921,7 +1899,7 @@ byte-equal to the input `Finding` and finding id / hash identical.
 Extends `loom-protocol::gate::tests::finding_identity_is_stable_across_runs`
 from "identity stable" to "full struct round-trip."
 
-### Finding id, finding hash, suppression, and dedup
+##### Finding id, finding hash, suppression, and dedup
 
 Dedup identity is **per finding**, not per batch. Batches are a
 presentation and work-queue convenience; changing which sibling
@@ -2010,7 +1988,7 @@ criterion anchor, command surface, or similar target-specific
 identifier), normalized by the same lower-kebab canonicalizer used
 for the finding id. A line number alone is not a stable subject.
 
-#### Rubric suppression registry
+###### Rubric suppression registry
 
 Operators can suppress unwanted LLM-rubric noise in the workspace's
 `loom.toml` using a top-level TOML array:
@@ -2051,7 +2029,7 @@ language-specific, some target files have no comments, and many
 rubric findings target specs, templates, commands, or seams rather
 than one source line.
 
-#### Finding status output
+###### Finding status output
 
 `LOOM_FINDING:` remains the agent-to-driver wire format. The driver
 enriches parsed findings after validation and emits parseable status
@@ -2079,7 +2057,7 @@ actions. Human summaries may render the same data as prose, but the
 JSON line is the machine-readable surface for suppression ergonomics
 and tooling.
 
-#### Stale and partially-stale reporting
+###### Stale and partially-stale reporting
 
 At `--tree` scope, mint has the whole current finding set for the
 selected spec(s), so it reports existing live remediation beads in scope
@@ -2102,7 +2080,7 @@ or split them. The reporting pass does not run for molecule promotion
 or finite inspection scopes because those scopes cannot prove a missing
 finding is absent from the whole tree.
 
-### Deferred remediation processing
+##### Deferred remediation processing
 
 Molecule-final review and tree sweep produce the same typed Finding
 records, but they materialize differently depending on route and scope.
@@ -2209,7 +2187,7 @@ possible. A stabilization bead that produces new deferred findings
 merges them back into the same molecule's deferred set rather than
 spawning tiny child beads.
 
-### Multi-spec findings
+##### Multi-spec findings
 
 A finding can name more than one spec in `bonds` when the concern
 spans seams (e.g., an `orphan-integration` contract spanning two
@@ -2251,7 +2229,7 @@ invariant in spec X while bonding only to spec Y. Validation
 failure rejects the finding with a typed parse error and refuses
 the mint run (per *Deferred remediation processing* step 1).
 
-## Gate evidence and marker
+#### Gate evidence and marker
 
 Gate trust is represented as typed evidence in the normal JSONL event
 stream, not as ad-hoc sidecar receipts. Every `loom gate` invocation
@@ -2260,7 +2238,7 @@ that runs work writes a gate log under `.loom/logs/gate/` and emits
 replay/audit source; sqlite status and lookup indexes are caches over
 that stream.
 
-### GateRun lifecycle
+##### GateRun lifecycle
 
 `GateRun` is the typed record of one gate invocation, whether it
 succeeds, fails, skips, or aborts. A run emits lifecycle events:
@@ -2280,7 +2258,7 @@ identity (tier/target/runner or hook id, duration, exit), full failure
 and skip details, scope digests, relevant config digests, and log path;
 it does not store large successful stdout bodies.
 
-### Gate success receipt
+##### Gate success receipt
 
 `VerifiedScope` is a sealed deterministic-success value derived from a
 passing `GateRun`; `ReviewedScope` is the corresponding sealed value
@@ -2309,7 +2287,7 @@ changed-file digest, no gate-narrowing filters, required lanes present,
 and matching relevant config digests (`.pre-commit-config.yaml`,
 `loom.toml`, and the spec annotation digest).
 
-### Marker
+##### Marker
 
 `MarkerProof` is the content-addressed trust-bearing artifact the
 driver-side push gate mints on `GateSuccess` and prek's pre-push hook
@@ -2343,7 +2321,7 @@ The `commit_sha`, `tree_oid`, and range OIDs carry validated OID
 newtypes. Malformed OIDs are rejected at deserialize time as typed
 parse errors rather than reaching fingerprint comparison.
 
-### Marker validation and hook coverage
+##### Marker validation and hook coverage
 
 Marker validation is two-layered:
 
@@ -2364,7 +2342,7 @@ log evidence, hook not covered, failed lane, or missing review success
 — the wrapper falls through and executes the underlying hook. Marker
 validation is an optimization, never a trust bypass.
 
-### File location and lifecycle
+##### File location and lifecycle
 
 Marker lives at `.loom/marker.json` in the loom workspace — a single
 file, overwritten on each mint. Atomic write uses `<path>.tmp` +
@@ -2374,7 +2352,7 @@ active marker are evidence; retention should preserve them while the
 marker is active when possible. If evidence is missing, validation
 fails and hooks run.
 
-### Mint trigger
+##### Mint trigger
 
 The driver-side molecule-completion push gate at the loom workspace
 (per [harness.md § Verdict Gate](harness.md#verdict-gate)) is the sole
@@ -2403,7 +2381,7 @@ verify but release without minting. The push gate waits for any
 in-flight integration to release before starting its own critical
 section.
 
-### Consumer contract
+##### Consumer contract
 
 `loom gate verify-marker` is a diagnostic marker-validation
 subcommand. It reads `.loom/marker.json`, checks the current workspace
@@ -2422,7 +2400,7 @@ command on marker absence or mismatch. `loom gate verify-marker` is not
 registered as a standalone prek hook; missing marker is the normal
 operator-manual condition and must fall through, not abort.
 
-### Forgery resistance and workspace boundary
+##### Forgery resistance and workspace boundary
 
 The marker is forgery-resistant against tree-state forgery, stale
 markers after edit, hook-coverage forgery, and agent verifier-execution
@@ -2438,7 +2416,7 @@ is the driver-side push gate in the loom workspace; operator and bead
 workspaces fall through to the full pre-push hook chain. CI never reads
 the marker; CI re-derives checks in its own sandbox.
 
-## Mechanisms
+#### Mechanisms
 
 How conformance / style / test-quality are evaluated:
 
@@ -2454,7 +2432,7 @@ How conformance / style / test-quality are evaluated:
 
 If both paths are available, both run. Failure on either → flag.
 
-## Annotation resolution
+#### Annotation resolution
 
 Each criterion's annotation is resolved per its tier:
 
@@ -2465,7 +2443,7 @@ Each criterion's annotation is resolved per its tier:
 | `[system]` | `[system](target)` — a runner identifier (matched by a `[runner.system.<name>]` block in `loom.toml`) or an argv string | One subprocess per `[system]` annotation — never batched. A runner match resolves the target's *inputs* (see *Runners*), but execution stays per-annotation: system verifiers are inherently slow and self-contained, so batching doesn't help. |
 | `[judge]` | `[judge](path)` — file path or criterion id whose content is the LLM rubric | The gate collects all `[judge]` targets and issues concurrent LLM calls (API-level parallelism). |
 
-### Command tokenisation
+##### Command tokenisation
 
 `[check]` and `[system]` targets are **argv strings, not shell
 commands**. The dispatcher runs `shlex::split(command)` and treats
@@ -2510,7 +2488,7 @@ and faster (no shell-startup overhead per invocation). Reach for
 `bash -c` when the natural shell-encoding is materially clearer
 than any single-tool equivalent.
 
-### Pending modifier
+##### Pending modifier
 
 A `?` between the tier name and the closing `]` marks an annotation
 as **pending** — its target is expected not to resolve yet because
@@ -2639,7 +2617,7 @@ clicks the link. Two requirements compose to keep that click working:
 `::fn` selectors are accepted during migration; new annotations use
 `#fn` so the click works.
 
-#### Pending support in structured walker input
+###### Pending support in structured walker input
 
 The per-annotation pending modifier above handles the common case:
 one SC, one verifier target, dispatch-side skip when `?` is set.
@@ -2711,7 +2689,7 @@ the first case) is a walker-implementation change tracked as an
 ordinary `loom loop` bead per the planning session that surfaces
 the need.
 
-### Runners — per-language batched dispatch
+##### Runners — per-language batched dispatch
 
 **Runners, not verifiers, are the dispatch unit.** A runner executes
 one batch of annotations in a single subprocess. Per-language
@@ -2824,7 +2802,7 @@ resolution, heuristic input extraction, conservative always-run, no
 protocol enforcement. The runner-owned path is the opt-in to
 precision; the literal path is the floor.
 
-#### Verifier inputs
+###### Verifier inputs
 
 A verifier's inputs are the **files it examines** — the gate
 intersects them with a scope's input set to decide whether to run
@@ -2950,7 +2928,7 @@ sync. The reporting mechanism lives in the verifier's own definition
 (test metadata, `--print-inputs`, command arguments), never beside
 the annotation and never as a parallel declaration.
 
-### Verifier-runner contract
+##### Verifier-runner contract
 
 Every verifier — whether `[check]` command, `[system]` command, or
 the runner invoked by batched dispatch — is a subprocess that
@@ -2998,7 +2976,7 @@ violation site — but the exit-code fallback keeps simple
 presence/absence checks viable without wrapping each one in a Rust
 walk.
 
-### `--files` scope handling
+##### `--files` scope handling
 
 For file-filterable batched execution paths, the gate filters
 annotations to those whose scope intersects `--files` before issuing
@@ -3019,7 +2997,7 @@ the batched invocation:
   way regardless); walks that benefit from scope filtering read the env
   var.
 
-### Test-tier silent-zero-match
+##### Test-tier silent-zero-match
 
 `cargo test -- some_name` and equivalents in other runners exit 0
 silently when no test matches the filter. The gate sniffs known
@@ -3028,7 +3006,7 @@ output to detect zero-match cases, failing the run with a clear
 error. Consumers using unrecognised runners must ensure their
 runner fails on zero-match.
 
-## Integrity gate
+#### Integrity gate
 
 The deterministic gate that verifies the annotations themselves
 resolve. Runs as part of `loom gate check`. Four directions:
@@ -3192,7 +3170,7 @@ spec criterion annotates back to its implementation), so every
 `loom gate check` run includes a self-test of the gate's resolution
 logic.
 
-## Status cache
+#### Status cache
 
 `loom gate status` reads criterion evidence from the unified
 `.loom/cache.db` cache and prints a fast report. (Bare `loom gate`
@@ -3227,7 +3205,7 @@ from the cached annotation for the same criterion id, todo renders
 size. A self-test asserts this — the cache implementation, not the
 corpus, is what determines the latency.
 
-## Options Format Contract
+#### Options Format Contract
 
 Whenever the gate (or, in practice, the reviewing agent acting on
 behalf of the gate) raises `loom:clarify` — for an invariant clash,
@@ -3298,7 +3276,7 @@ notes/description for loop/todo direct-emit and existing-bead paths.
 Review clarifications use the mint-from-finding path; review prompts do
 not direct agents to mutate bd state.
 
-### Resolution lifecycle
+##### Resolution lifecycle
 
 The `## Options — <summary>` block lives on the target bead (in
 notes or description, per the path table above) only from emit to
@@ -3321,7 +3299,7 @@ with it. The lifecycle contract is load-bearing for the
 **existing-bead promotion** path where the bead survives the
 resolution.
 
-## Output
+#### Output
 
 The gate's output is a verdict (pass / hard-fail / clarify) plus any
 flagged actions. Gate invocations also write JSONL evidence logs under
@@ -3362,7 +3340,7 @@ grant immunity from re-evaluation*. Conformance is a property of the
 current code-spec pair, tree, config, and push range, not a historical
 fact.
 
-## Recovery
+#### Recovery
 
 Per-stage flag handling:
 
@@ -3394,7 +3372,7 @@ Per-stage flag handling:
   [*Findings and Minting*](#findings-and-minting) for the deferred
   remediation processing flow.
 
-### Post-hoc recovery — when the push gate was skipped
+##### Post-hoc recovery — when the push gate was skipped
 
 **Use case.** A molecule's beads closed without `GateSuccess` being
 constructed — e.g., a legacy run from before the type-shape
@@ -3430,6 +3408,15 @@ unrepresentable (see [harness.md Loop Outcome Types](harness.md#loop-outcome-typ
 The worker-queue filter (harness.md FR1) prevents the agent from
 receiving an epic as a worker task. Together, the conditions for
 the original gate-skip class are structurally unreachable.
+
+### Non-Functional
+
+1. Gate evidence stays bound to the current tree, configuration, and resolved
+   scope; stale evidence cannot authorize a push.
+2. Cached status reporting retains its hard latency target independently of
+   corpus size.
+3. Verifier dispatch remains repository-agnostic and conservative when an
+   input set cannot be derived.
 
 ## Out of Scope
 

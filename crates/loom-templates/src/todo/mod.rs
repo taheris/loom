@@ -69,7 +69,7 @@ mod tests {
             pinned_context: PINNED.to_string(),
             spec_index: "| Spec | Beads |\n|---|---|".to_string(),
             changed_specs: vec![TodoChangedSpec {
-                label: SpecLabel::new("harness"),
+                label: SpecLabel::new("harness").unwrap(),
                 spec_path: "specs/harness.md".to_string(),
                 diff: None,
             }],
@@ -79,7 +79,7 @@ mod tests {
             spec_epics: vec![],
             companion_paths: vec![],
             implementation_notes: vec![SpecImplementationNotes {
-                label: SpecLabel::new("harness"),
+                label: SpecLabel::new("harness").unwrap(),
                 notes,
             }],
             criterion_status: vec![],

@@ -586,7 +586,7 @@ Criteria.
 - Removing the lock file from inside the bead container does not
       break mutual exclusion on the host (locks live outside the
       bind-mount; agent has no path to them)
-  [check](cargo test -p loom-driver --test lock_manager container_cannot_rm_host_lock)
+  [test](container_cannot_rm_host_lock)
 - Driver sets `LOOM_INSIDE=1` in every bead container's env via the
       `SpawnConfig.env` allowlist
   [test](spawn_config_env_includes_loom_inside_marker)
@@ -857,10 +857,10 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       reviewer `wrix spawn` child process so host deploy/signing keys are
       available before container setup resolves git auth and SSH signing
   [test](loom_gate_review_threads_launcher_keys_to_wrix_spawn)
-- `SpawnConfig.launcher_env` is `#[serde(skip)]`-excluded from the
-      spawn-config JSON so host key paths never leak into the
-      world-readable file the wrapper reads
-  [test](launcher_env_is_never_serialized)
+The host-only serialization boundary for `SpawnConfig.launcher_env` is owned by
+[agent.md § SpawnConfig](agent.md#spawnconfig). This spec owns how dispatch
+populates that validated host-only state:
+
 - Each backend applies `SpawnConfig.launcher_env` to the `wrix
       spawn` child process environment before exec
   [test](apply_launcher_env_sets_child_process_env)
@@ -1324,32 +1324,16 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       detail names which concern triggered (live-path / mock / scope /
       judge / style-rule)
   [test](concern_marker_with_streamed_findings_routes_to_review_concern_recovery)
-- Production wiring obligation: the review-phase verdict-gate caller
-      that constructs `GateInputs` must populate `streamed_findings`
-      from the parsed walk output rather than relying on
-      `..GateInputs::default()` (which leaves it empty).
-      `classify_review_phase` at
-      `crates/loom-workflow/src/review/production.rs` invokes
-      `parse_walk_output` against the agent's combined stdout before
-      constructing `GateInputs`. A well-formed `LOOM_CONCERN` with `≥1`
+- Review-phase verdict classification populates `GateInputs.streamed_findings`
+      from the parsed walk output. A well-formed `LOOM_CONCERN` with one or more
       streamed `LOOM_FINDING:` records routes to
-      `RecoveryCause::ReviewConcern { summary, findings }`, never
-      collapses to `BadWalk::ConcernWithoutFindings` because the
-      findings were left at default. The loop classifier
-      (`neutral_gate_inputs` in `crates/loom-workflow/src/loop/production.rs`)
-      is deliberately exempt: it passes an empty findings vec because
-      worker phases have no findings stream, and `classify_session`
-      rejects `LOOM_CONCERN`/`BadWalk` markers as review-phase-only
-      before `decide` is reached, so populated findings could not affect
-      routing — wiring it would
-      instead risk mis-routing a loop-phase `LOOM_COMPLETE` to
-      `FindingsWithoutConcern`
+      `RecoveryCause::ReviewConcern { summary, findings }`; worker phases,
+      which have no review findings stream, reject review-only markers before
+      verdict classification
   [test](classify_review_phase_invokes_parse_walk_output_and_threads_findings_through_gate_inputs)
-- Wire-format dead-code excision: no production code path
-      constructs `ReviewError::ConcernWithoutBeadDeltas`; the variant
-      is removed from `review/error.rs` and its raise site at
-      `review/runner.rs` is deleted. Concern handling routes through
-      `decide_concern` + `RecoveryCause::ReviewConcern` exclusively
+- Concern handling has one production route through typed findings and
+      `RecoveryCause::ReviewConcern`; no alternate review-error route can
+      bypass that classification
   [test](no_path_constructs_concern_without_bead_deltas_in_production_harness_lane)
 - Recovery iter < `[loop] max_iterations` (default 10) → promotes
       deferred remediation OR retries the bead with prior failure context
@@ -1541,7 +1525,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
 - Failed todo validation leaves the work epic labelled `loom:todo`,
       writes diagnostics to it, advances no spec cursor, and does not
       change `loom:active`
-  [test](todo_validation_failure_leaves_pending_without_advancing)
+  [test](todo_success_missing_changed_spec_fails_without_advancing)
 - Validated or blocked `loom todo` output prints a driver-authored
       per-spec summary covering every changed spec and its outcome; a
       changed spec missing from the summary is a validation failure
@@ -1663,9 +1647,9 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       compaction re-pin after observing `compaction_start`; merely queuing an
       unused steer payload does not satisfy this criterion
   [test](inbox_chat_pi_bridge_repins_on_compaction_start)
-- `claude-settings.json` registers `repin.sh` under
-      `SessionStart[matcher: compact]`
-  [test](claude_settings_registers_repin_under_session_start_compact)
+Backend-specific re-pin delivery, including Claude's compact hook shape, is
+owned by [agent.md § Compaction Handling](agent.md#compaction-handling).
+
 - On session end (success or failure), the per-key scratch directory
       is removed
   [test](close_removes_dir_and_is_idempotent_with_drop)

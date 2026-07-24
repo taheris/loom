@@ -918,7 +918,7 @@ mod tests {
         let mut clock = 0_i64;
         EnvelopeBuilder::new(
             SessionScope::bead(
-                SessionId::new("sess-test"),
+                SessionId::new("sess-test").unwrap(),
                 BeadId::new("lm-test").expect("valid id"),
                 None,
                 0,
@@ -942,8 +942,8 @@ mod tests {
                 envelope: b.build(),
                 schema_version: 1,
                 title: "smoke".into(),
-                profile: ProfileName::new("base"),
-                spec_label: SpecLabel::new("harness"),
+                profile: ProfileName::new("base").unwrap(),
+                spec_label: SpecLabel::new("harness").unwrap(),
                 started_at_ms: 1_700_000_000_000,
                 parent_tool_call_id: None,
             },
@@ -975,25 +975,25 @@ mod tests {
             },
             AgentEvent::ToolcallDelta {
                 envelope: b.build(),
-                id: ToolCallId::new("tc-1"),
+                id: ToolCallId::new("tc-1").unwrap(),
                 delta: "{".into(),
             },
             AgentEvent::ToolCall {
                 envelope: b.build(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: "Read".into(),
                 params: serde_json::Value::Null,
                 parent_tool_call_id: None,
             },
             AgentEvent::ToolResult {
                 envelope: b.build(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 output: String::new(),
                 is_error: false,
             },
             AgentEvent::ToolProgress {
                 envelope: b.build(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 text: "running".into(),
             },
             AgentEvent::TurnEnd {
@@ -1055,7 +1055,7 @@ mod tests {
     #[test]
     fn non_bead_session_serializes_without_synthetic_bead_id() {
         let mut builder = EnvelopeBuilder::new(
-            SessionScope::phase(SessionId::new("phase-todo-1"), None),
+            SessionScope::phase(SessionId::new("phase-todo-1").unwrap(), None),
             Source::Agent,
             || 0,
         );
@@ -1083,8 +1083,8 @@ mod tests {
             envelope: b.build(),
             schema_version: 1,
             title: "smoke".into(),
-            profile: ProfileName::new("base"),
-            spec_label: SpecLabel::new("harness"),
+            profile: ProfileName::new("base").unwrap(),
+            spec_label: SpecLabel::new("harness").unwrap(),
             started_at_ms: 1_700_000_000_000,
             parent_tool_call_id: None,
         };
@@ -1115,8 +1115,8 @@ mod tests {
                 envelope: b.build(),
                 schema_version: 1,
                 title: "smoke".into(),
-                profile: ProfileName::new("base"),
-                spec_label: SpecLabel::new("harness"),
+                profile: ProfileName::new("base").unwrap(),
+                spec_label: SpecLabel::new("harness").unwrap(),
                 started_at_ms: 1_700_000_000_000,
                 parent_tool_call_id: None,
             },
@@ -1135,14 +1135,14 @@ mod tests {
             },
             AgentEvent::ToolCall {
                 envelope: b.build(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: "Read".into(),
                 params: serde_json::json!({"file_path": "src/lib.rs"}),
                 parent_tool_call_id: None,
             },
             AgentEvent::ToolResult {
                 envelope: b.build(),
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 output: "ok".into(),
                 is_error: false,
             },
@@ -1185,7 +1185,7 @@ mod tests {
         let mut b = builder();
         let event = AgentEvent::ToolCall {
             envelope: b.build(),
-            id: ToolCallId::new("t1"),
+            id: ToolCallId::new("t1").unwrap(),
             tool: "Read".into(),
             params: serde_json::json!({"file_path": "src/lib.rs"}),
             parent_tool_call_id: None,
@@ -1231,8 +1231,8 @@ mod tests {
                     envelope: b.build(),
                     schema_version: 1,
                     title: "smoke".into(),
-                    profile: ProfileName::new("base"),
-                    spec_label: SpecLabel::new("harness"),
+                    profile: ProfileName::new("base").unwrap(),
+                    spec_label: SpecLabel::new("harness").unwrap(),
                     started_at_ms: 1_700_000_000_000,
                     parent_tool_call_id: None,
                 },
@@ -1306,7 +1306,7 @@ mod tests {
                 "toolcall_delta",
                 AgentEvent::ToolcallDelta {
                     envelope: b.build(),
-                    id: ToolCallId::new("tc-1"),
+                    id: ToolCallId::new("tc-1").unwrap(),
                     delta: "{".into(),
                 },
                 &["id", "delta"],
@@ -1315,7 +1315,7 @@ mod tests {
                 "tool_call",
                 AgentEvent::ToolCall {
                     envelope: b.build(),
-                    id: ToolCallId::new("tc-1"),
+                    id: ToolCallId::new("tc-1").unwrap(),
                     tool: "Read".into(),
                     params: serde_json::json!({"path": "Cargo.toml"}),
                     parent_tool_call_id: None,
@@ -1326,7 +1326,7 @@ mod tests {
                 "tool_result",
                 AgentEvent::ToolResult {
                     envelope: b.build(),
-                    id: ToolCallId::new("tc-1"),
+                    id: ToolCallId::new("tc-1").unwrap(),
                     output: "ok".into(),
                     is_error: false,
                 },
@@ -1336,7 +1336,7 @@ mod tests {
                 "tool_progress",
                 AgentEvent::ToolProgress {
                     envelope: b.build(),
-                    id: ToolCallId::new("tc-1"),
+                    id: ToolCallId::new("tc-1").unwrap(),
                     text: "running".into(),
                 },
                 &["id", "text"],
@@ -1707,7 +1707,7 @@ mod tests {
         let mut b = builder();
         let env = b.build();
         let parsed = ParsedAgentEvent::ToolCall {
-            id: ToolCallId::new("t1"),
+            id: ToolCallId::new("t1").unwrap(),
             tool: "Bash".into(),
             params: serde_json::json!({"command": "ls"}),
             parent_tool_call_id: None,

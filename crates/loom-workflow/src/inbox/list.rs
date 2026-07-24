@@ -385,7 +385,7 @@ fn metadata_spec_label(metadata: &BTreeMap<String, serde_json::Value>) -> Option
     metadata_specs(metadata)
         .into_iter()
         .next()
-        .map(SpecLabel::new)
+        .and_then(|label| label.parse().ok())
 }
 
 fn metadata_specs(metadata: &BTreeMap<String, serde_json::Value>) -> Vec<String> {
@@ -462,7 +462,10 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: labels.iter().map(|s| Label::new(*s)).collect(),
+            labels: labels
+                .iter()
+                .map(|s| Label::new(*s).expect("valid Label"))
+                .collect(),
             parent: None,
             metadata: Default::default(),
             notes: None,
@@ -522,10 +525,10 @@ mod tests {
             bead("lm-1", "harness", "", &["loom:clarify", "spec:harness"]),
             tune,
         ];
-        let queue = build_queue(&beads, Some(&SpecLabel::new("skills")), None, true);
+        let queue = build_queue(&beads, Some(&SpecLabel::new("skills").unwrap()), None, true);
         assert_eq!(queue.len(), 1);
         assert_eq!(queue[0].kind, InboxKind::Tune);
-        assert_eq!(queue[0].spec, Some(SpecLabel::new("skills")));
+        assert_eq!(queue[0].spec, Some(SpecLabel::new("skills").unwrap()));
     }
 
     #[test]
@@ -597,7 +600,7 @@ mod tests {
     #[test]
     fn rows_drop_spec_column_under_filter() {
         let beads = vec![bead("lm-2", "title", "", &["spec:harness", "loom:clarify"])];
-        let label = SpecLabel::new("harness");
+        let label = SpecLabel::new("harness").unwrap();
         let queue = build_queue(&beads, Some(&label), None, true);
         let rows = build_rows(&queue, Some(&label));
         assert_eq!(rows.len(), 1);

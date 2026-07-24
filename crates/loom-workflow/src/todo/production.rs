@@ -13,7 +13,7 @@ use loom_driver::bd::{
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomTopConfig, SkillsConfig};
 use loom_driver::git::GitClient;
-use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
+use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::logging::{BeadOutcome, LogSink, phase_log_path};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::{CacheDb, SpecEpicRow, WorkEpicRow};
@@ -352,7 +352,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 (id, None, true)
             }
         };
-        let molecule_id = MoleculeId::new(spec_epic.as_str().to_owned());
+        let molecule_id = spec_epic.as_str().parse()?;
         self.state.upsert_spec_epic(&SpecEpicRow {
             spec_label: spec.label.clone(),
             epic_id: molecule_id,
@@ -532,7 +532,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             })
             .await?;
         self.state.upsert_work_epic(&WorkEpicRow {
-            epic_id: MoleculeId::new(work_epic.as_str().to_owned()),
+            epic_id: work_epic.as_str().parse()?,
             todo_head: Some(head.to_string()),
             todo_fingerprint: Some(fingerprint.to_string()),
             is_active: false,
@@ -583,7 +583,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             companion_paths.extend(self.state.companions(&spec.label)?);
             spec_epics.push(spec_epic_context(
                 spec.label.clone(),
-                Some(MoleculeId::new(spec.spec_epic.as_str().to_owned())),
+                Some(spec.spec_epic.as_str().parse()?),
                 spec.todo_cursor.clone(),
             ));
             let diff = match spec.todo_cursor.as_deref() {
@@ -971,14 +971,16 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let spec_epics = preflight
             .changed_specs
             .iter()
-            .map(|spec| SpecEpicRow {
-                spec_label: spec.label.clone(),
-                epic_id: MoleculeId::new(spec.spec_epic.as_str().to_owned()),
-                todo_cursor: Some(preflight.head.to_string()),
+            .map(|spec| {
+                Ok(SpecEpicRow {
+                    spec_label: spec.label.clone(),
+                    epic_id: spec.spec_epic.as_str().parse()?,
+                    todo_cursor: Some(preflight.head.to_string()),
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, TodoError>>()?;
         let work_epic = WorkEpicRow {
-            epic_id: MoleculeId::new(preflight.work_epic.as_str().to_owned()),
+            epic_id: preflight.work_epic.as_str().parse()?,
             todo_head: Some(preflight.head.to_string()),
             todo_fingerprint: Some(preflight.fingerprint.to_string()),
             is_active: true,
@@ -1129,7 +1131,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         config.event_metadata = Some(AgentStartMetadata {
             title: banner,
             profile: self.phase_default.clone(),
-            spec_label: SpecLabel::new("todo"),
+            spec_label: SpecLabel::todo(),
             parent_tool_call_id: None,
         });
         Ok(TodoSession { config, scratch })
@@ -1395,7 +1397,7 @@ mod tests {
             "- [Harness](../specs/harness.md)\n- [Templates](../specs/templates.md)\n",
         )
         .expect("index parses");
-        assert_eq!(rows[0].label, SpecLabel::new("harness"));
+        assert_eq!(rows[0].label, SpecLabel::new("harness").unwrap());
         assert_eq!(rows[1].spec_path, "specs/templates.md");
     }
 

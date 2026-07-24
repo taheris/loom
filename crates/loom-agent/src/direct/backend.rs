@@ -683,7 +683,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         let parsed = DirectParser.parse_line(line).expect("parse");
         let mut builder = loom_events::EnvelopeBuilder::new(
             loom_events::SessionScope::phase(
-                loom_events::identifier::SessionId::new("direct-test"),
+                loom_events::identifier::SessionId::new("direct-test").unwrap(),
                 None,
             ),
             loom_events::Source::Agent,

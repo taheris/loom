@@ -459,8 +459,8 @@ mod tests {
 
     #[test]
     fn resolve_scratch_key_uses_plan_anchors_work_epic_or_bead() {
-        let harness = SpecLabel::new("harness");
-        let templates = SpecLabel::new("templates");
+        let harness = SpecLabel::new("harness").unwrap();
+        let templates = SpecLabel::new("templates").unwrap();
         let anchors = vec![harness.clone(), templates];
         let bead = BeadId::new("lm-3hhwq.15").unwrap();
         assert_eq!(resolve_scratch_key(Phase::Plan, &[], Some(&bead)), "plan");
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn resolve_scratch_key_falls_back_to_label_when_bead_missing() {
-        let label = SpecLabel::new("harness");
+        let label = SpecLabel::new("harness").unwrap();
         assert_eq!(
             resolve_scratch_key(Phase::Review, std::slice::from_ref(&label), None),
             "harness",

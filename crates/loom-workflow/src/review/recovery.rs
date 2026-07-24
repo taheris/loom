@@ -227,7 +227,7 @@ mod tests {
         Finding {
             token,
             route: FindingRoute::Deferred,
-            bonds: vec![SpecLabel::new("gate")],
+            bonds: vec![SpecLabel::new("gate").unwrap()],
             target: FindingTarget::Annotation {
                 target_string: "cargo test --lib sample".into(),
             },

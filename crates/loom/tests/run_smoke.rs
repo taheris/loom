@@ -501,7 +501,7 @@ fn loom_loop_parallel_does_not_pass_exclude_label_to_bd_ready() {
 
     let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
     db.upsert_spec(
-        &loom_driver::identifier::SpecLabel::new("harness"),
+        &loom_driver::identifier::SpecLabel::new("harness").unwrap(),
         "specs/harness.md",
     )
     .unwrap();
@@ -576,7 +576,7 @@ fn parallel_codepath_returns_loop_outcome_with_gate_field() {
 
     let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
     db.upsert_spec(
-        &loom_driver::identifier::SpecLabel::new("harness"),
+        &loom_driver::identifier::SpecLabel::new("harness").unwrap(),
         "specs/harness.md",
     )
     .unwrap();

@@ -109,7 +109,10 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         | "observers_in_loom_llm" => src_files(root),
 
         // Production source + tests: `narrow_to_loom_files(all_rs_files(..))`.
-        "finding_no_duplicate_definitions" | "no_hardcoded_tmp_paths" => all_rs_files(root),
+        "finding_no_duplicate_definitions"
+        | "no_hardcoded_tmp_paths"
+        | "no_ignore_for_flake"
+        | "shared_proptest_config" => all_rs_files(root),
 
         // Clock audits parse AST calls, so verifier fixture strings are safe inputs.
         "no_real_clock_outside_system_clock"

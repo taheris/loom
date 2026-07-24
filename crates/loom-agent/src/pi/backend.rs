@@ -628,7 +628,7 @@ fn validate_state_probe(resp: &PiResponse) -> Result<(), ProtocolError> {
     })?;
     let state: StateProbeData = serde_json::from_value(data.clone()).map_err(|err| {
         error!(
-            error = %err,
+            error = ?err,
             required = ?REQUIRED_STATE_FIELDS,
             data = %data,
             "pi get_state probe has unexpected shape — version mismatch",

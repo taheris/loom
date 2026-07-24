@@ -65,7 +65,11 @@ mod tests {
     fn use_existing_spec_validates_without_persisting_selection() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let _seed = seed_spec(dir.path(), "harness")?;
-        run(dir.path(), &SpecLabel::new("harness"), &db_path(dir.path()))?;
+        run(
+            dir.path(),
+            &SpecLabel::new("harness").unwrap(),
+            &db_path(dir.path()),
+        )?;
         Ok(())
     }
 
@@ -78,7 +82,7 @@ mod tests {
 
         match run_with_timeout(
             dir.path(),
-            &SpecLabel::new("alpha"),
+            &SpecLabel::new("alpha").unwrap(),
             &db_path(dir.path()),
             Duration::from_millis(100),
         ) {
@@ -94,7 +98,11 @@ mod tests {
     fn use_unknown_spec_errors_with_spec_not_found() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let _seed = CacheDb::open(db_path(dir.path()))?;
-        match run(dir.path(), &SpecLabel::new("ghost"), &db_path(dir.path())) {
+        match run(
+            dir.path(),
+            &SpecLabel::new("ghost").unwrap(),
+            &db_path(dir.path()),
+        ) {
             Err(UseError::State(CacheError::SpecNotFound { label })) => {
                 assert_eq!(label, "ghost");
             }

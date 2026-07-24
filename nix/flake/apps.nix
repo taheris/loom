@@ -4,7 +4,7 @@
 # - `.#smoke`: container smoke harness.
 #   Linux checks runtime devices before realizing the image-backed runner;
 #   Darwin returns a no-op stub.
-# - `.#test-sandbox`: boots `.#sandbox` and checks Pi plus agent hook assembly.
+# - `.#test-sandbox`: boots `.#sandbox` and checks the packaged Pi binary offline.
 #   Skips with exit 77 when the platform cannot run the container runtime.
 # - `.#fuzz-loom`: on-demand `cargo fuzz` driver.
 #   This is intentionally not gated by `nix flake check`.
@@ -78,8 +78,6 @@ _:
       sandboxSmokeLinux = pkgs.writeShellApplication {
         name = "test-sandbox";
         runtimeInputs = [
-          pkgs.git
-          pkgs.jq
           pkgs.nix
           pkgs.podman
         ];
@@ -116,7 +114,7 @@ _:
         test-sandbox = {
           type = "app";
           program = "${sandboxSmokeApp}/bin/test-sandbox";
-          meta.description = "Runtime and agent-hook assembly check for the Rust sandbox image (Linux only; Darwin stub)";
+          meta.description = "Offline packaged-agent check for the Rust sandbox image (Linux only; Darwin stub)";
         };
 
         fuzz-loom = {

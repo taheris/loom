@@ -4,6 +4,7 @@ use thiserror::Error;
 use loom_driver::agent::ProtocolError;
 use loom_driver::bd::BdError;
 use loom_driver::git::GitError;
+use loom_driver::identifier::ParseMoleculeIdError;
 use loom_driver::logging::LogError;
 use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::CacheError;
@@ -18,6 +19,9 @@ pub enum ReviewError {
 
     /// bd CLI failure during `loom review`
     Bd(#[from] BdError),
+
+    /// review bead carried an invalid molecule id
+    InvalidMoleculeId(#[from] ParseMoleculeIdError),
 
     /// rendering the review.md template failed
     Render(#[from] askama::Error),

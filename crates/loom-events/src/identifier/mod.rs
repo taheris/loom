@@ -5,8 +5,8 @@
 //!
 //! Each newtype is hand-written (no shared macro) so per-identifier parse
 //! rules can be enforced at construction. `From` / `Into` are intentionally
-//! NOT derived (NF-8) — values must enter the newtype through `new()` so
-//! parsing logic cannot be bypassed.
+//! NOT derived (NF-8) — values enter through fallible construction so parsing
+//! logic cannot be bypassed.
 
 mod bead;
 mod molecule;
@@ -17,9 +17,9 @@ mod spec;
 mod tool_call;
 
 pub use bead::{BeadId, ParseBeadIdError};
-pub use molecule::MoleculeId;
-pub use profile::ProfileName;
-pub use request::RequestId;
-pub use session::SessionId;
-pub use spec::SpecLabel;
-pub use tool_call::ToolCallId;
+pub use molecule::{MoleculeId, ParseMoleculeIdError};
+pub use profile::{ParseProfileNameError, ProfileName};
+pub use request::{ParseRequestIdError, RequestId};
+pub use session::{ParseSessionIdError, SessionId};
+pub use spec::{ParseSpecLabelError, SpecLabel};
+pub use tool_call::{ParseToolCallIdError, ToolCallId};

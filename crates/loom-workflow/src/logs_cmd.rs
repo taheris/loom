@@ -336,7 +336,7 @@ mod tests {
     /// the expected on-disk shape.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
-            session_id: SessionId::new("sess-logs"),
+            session_id: SessionId::new("sess-logs").unwrap(),
             bead_id: Some(BeadId::new("lm-1").expect("valid bead id")),
             molecule_id: None,
             iteration: Some(0),
@@ -475,14 +475,14 @@ mod tests {
         vec![
             AgentEvent::ToolCall {
                 envelope: call_env,
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 tool: "Bash".into(),
                 params: json!({"command": "echo hi"}),
                 parent_tool_call_id: None,
             },
             AgentEvent::ToolResult {
                 envelope: result_env,
-                id: ToolCallId::new("t1"),
+                id: ToolCallId::new("t1").unwrap(),
                 output: "hi".into(),
                 is_error: false,
             },

@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn criterion_id_for_spec_text_normalizes_whitespace() {
-        let label = SpecLabel::new("templates");
+        let label = SpecLabel::new("templates").unwrap();
         let a = CriterionId::for_spec_text(&label, "A criterion");
         let b = CriterionId::for_spec_text(&label, "A   criterion");
         assert_eq!(a, b);

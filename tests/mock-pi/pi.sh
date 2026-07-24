@@ -7,10 +7,6 @@ set -euo pipefail
 # The first argument selects a behavior mode used by the unit tests in
 # loom-agent/src/pi/backend.rs and the container smoke runner:
 #
-#   probe-ok                  — respond to get_state with a valid state
-#                               object, then exit. The session-handshake
-#                               test asserts loom proceeds past the probe;
-#                               nothing more is exchanged.
 #   probe-bad-state           — respond to get_state with malformed data
 #                               so the driver fails fast.
 #   echo-prompt               — probe ok, then echo the prompt payload
@@ -208,10 +204,6 @@ handle_probe() {
     emit_response_ok "$probe_id" "get_state" "$data"
 }
 
-run_probe_ok() {
-    handle_probe 0
-}
-
 run_happy_path() {
     handle_probe 0
     local prompt_line payload bead_id
@@ -358,9 +350,6 @@ run_set_thinking_level_reject() {
 }
 
 case "$MODE" in
-    probe-ok)
-        run_probe_ok
-        ;;
     probe-bad-state)
         handle_probe 1
         ;;

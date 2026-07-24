@@ -44,7 +44,7 @@ impl BeadEmit {
         let log_path = find_latest_bead_log(logs_root, label, bead_id)?;
         let resume_seq = max_seq_in_log(&log_path).map_or(0, |s| s + 1);
         let session_id = session_id_in_log(&log_path).unwrap_or_else(|| {
-            SessionId::new(format!("{}-append", bead_id.as_str().replace('.', "-")))
+            SessionId::generated(format!("{}-append", bead_id.as_str().replace('.', "-")))
         });
         let clock = SystemClock::new();
         let builder = EnvelopeBuilder::with_seq_start(
@@ -173,7 +173,7 @@ mod tests {
     fn find_latest_picks_most_recently_modified_matching_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let logs_root = dir.path();
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let bead = BeadId::new("lm-1").expect("bead id");
         let spec_dir = logs_root.join("alpha");
         fs::create_dir_all(&spec_dir).expect("mkdir");
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn find_latest_returns_none_when_no_match() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let bead = BeadId::new("lm-x").expect("bead id");
         let spec_dir = dir.path().join("alpha");
         fs::create_dir_all(&spec_dir).expect("mkdir");

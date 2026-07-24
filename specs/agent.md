@@ -1017,7 +1017,7 @@ the entrypoint run the wrong runtime.
 - Agent backends emit only canonical `AgentEvent` variants owned by [events.md](events.md)
   [test](agent_event_payload_fields_match_spec)
 - `SpawnConfig` struct captures image_ref, image_source, image_source_kind, workspace, env, initial_prompt, agent_args, scratch_dir, and omits launcher/ProfileConfig-only host fields from JSON
-  [check](cargo test -p loom-workflow --lib spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
+  [test](spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
 - `SpawnConfig` defaults absent Direct observer config to enabled
   [test](spawn_config_with_default_observers_omits_field)
 - `SpawnConfig` serializes non-default Direct observer config

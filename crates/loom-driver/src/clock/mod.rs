@@ -26,10 +26,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant, SystemTime};
 
-/// Returned by [`Clock::timeout`] when the deadline elapses before the
-/// inner future resolves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("operation timed out")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, displaydoc::Display, thiserror::Error)]
+/// operation timed out
 pub struct Elapsed;
 
 /// Boxed-future alias used by [`Clock::sleep`] and [`Clock::timeout`] so

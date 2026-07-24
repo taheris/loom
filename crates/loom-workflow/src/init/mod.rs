@@ -24,6 +24,7 @@ use loom_driver::git::{
     clone_loom_workspace, enable_rerere, fast_forward_loom_workspace_to_origin, read_origin_url,
     resolve_prek_hooks_path_for_workspace, write_hooks_config,
 };
+#[cfg(test)]
 use loom_driver::identifier::MoleculeId;
 use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::state::{ActiveMolecule, CacheDb, RebuildReport};
@@ -240,7 +241,11 @@ pub async fn fetch_active_molecules<R: CommandRunner>(
         let detail = bd.show(&bead.id).await?;
         let base_commit = resolve_base_commit(bd, &detail).await?;
         out.push(ActiveMolecule {
-            id: MoleculeId::new(bead.id.as_str()),
+            id: bead
+                .id
+                .as_str()
+                .parse()
+                .map_err(|source| InitError::InvalidMoleculeId { source })?,
             spec_label,
             base_commit: Some(base_commit),
         });
@@ -616,13 +621,13 @@ mod tests {
         // rebuild wiped it.
         run(dir.path(), InitOpts::default(), &[])?;
         let molecules = vec![ActiveMolecule {
-            id: MoleculeId::new("lm-mol.1"),
-            spec_label: SpecLabel::new("alpha"),
+            id: MoleculeId::new("lm-mol1").unwrap(),
+            spec_label: SpecLabel::new("alpha").unwrap(),
             base_commit: None,
         }];
         let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
         db.rebuild(dir.path(), &molecules)?;
-        let post = db.increment_iteration(&MoleculeId::new("lm-mol.1"))?;
+        let post = db.increment_iteration(&MoleculeId::new("lm-mol1").unwrap())?;
         assert_eq!(post, 1);
         drop(db);
 
@@ -630,8 +635,8 @@ mod tests {
             dir.path(),
             InitOpts { rebuild: true },
             &[ActiveMolecule {
-                id: MoleculeId::new("lm-mol.1"),
-                spec_label: SpecLabel::new("alpha"),
+                id: MoleculeId::new("lm-mol1").unwrap(),
+                spec_label: SpecLabel::new("alpha").unwrap(),
                 base_commit: None,
             }],
         )?;
@@ -644,7 +649,7 @@ mod tests {
         // Iteration counter reset to 0 after rebuild.
         let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
         let row = db
-            .molecule_for_spec(&SpecLabel::new("alpha"))?
+            .molecule_for_spec(&SpecLabel::new("alpha").unwrap())?
             .ok_or_else(|| anyhow::anyhow!("active molecule must exist"))?;
         assert_eq!(row.iteration_count, 0);
         Ok(())
@@ -660,7 +665,7 @@ mod tests {
         let dir = temp_workspace()?;
         let report = run(dir.path(), InitOpts::default(), &[])?;
         let db = CacheDb::open(&report.cache_db_path)?;
-        let probe = SpecLabel::new("probe");
+        let probe = SpecLabel::new("probe").unwrap();
 
         match db.spec(&probe) {
             Err(loom_driver::state::CacheError::SpecNotFound { .. }) => {}
@@ -690,12 +695,12 @@ mod tests {
         db.rebuild(
             dir.path(),
             &[ActiveMolecule {
-                id: MoleculeId::new("lm-mol.1"),
-                spec_label: SpecLabel::new("alpha"),
+                id: MoleculeId::new("lm-mol1").unwrap(),
+                spec_label: SpecLabel::new("alpha").unwrap(),
                 base_commit: Some("deadbeef".into()),
             }],
         )?;
-        let bumped = db.increment_iteration(&MoleculeId::new("lm-mol.1"))?;
+        let bumped = db.increment_iteration(&MoleculeId::new("lm-mol1").unwrap())?;
         assert_eq!(bumped, 1);
         drop(db);
 
@@ -703,9 +708,9 @@ mod tests {
         assert!(report.rebuild.is_none(), "plain init must not run rebuild");
         let db = CacheDb::open(&db_path)?;
         let row = db
-            .molecule_for_spec(&SpecLabel::new("alpha"))?
+            .molecule_for_spec(&SpecLabel::new("alpha").unwrap())?
             .ok_or_else(|| anyhow!("molecule row was clobbered"))?;
-        assert_eq!(row.id.as_str(), "lm-mol.1");
+        assert_eq!(row.id.as_str(), "lm-mol1");
         assert_eq!(
             row.iteration_count, 1,
             "iteration counter must survive a plain init"
@@ -738,7 +743,7 @@ mod tests {
     async fn rebuild_reads_base_commit_from_bead_metadata() -> Result<()> {
         let list_json = br#"[
             {
-                "id": "lm-mol.1",
+                "id": "lm-mol1",
                 "title": "loom-harness: pending decomposition",
                 "status": "open",
                 "priority": 2,
@@ -748,7 +753,7 @@ mod tests {
         ]"#;
         let show_json = br#"[
             {
-                "id": "lm-mol.1",
+                "id": "lm-mol1",
                 "title": "loom-harness: pending decomposition",
                 "status": "open",
                 "priority": 2,
@@ -762,7 +767,7 @@ mod tests {
         let client = BdClient::with_runner(runner);
         let molecules = fetch_active_molecules(&client).await?;
         assert_eq!(molecules.len(), 1);
-        assert_eq!(molecules[0].id.as_str(), "lm-mol.1");
+        assert_eq!(molecules[0].id.as_str(), "lm-mol1");
         assert_eq!(molecules[0].spec_label.as_str(), "harness");
         assert_eq!(molecules[0].base_commit.as_deref(), Some("7c226fef"));
 
@@ -772,7 +777,7 @@ mod tests {
         assert!(calls[0].contains(&"--type=epic".to_string()));
         assert!(calls[0].contains(&"--status=open".to_string()));
         assert_eq!(calls[1][0], "show");
-        assert_eq!(calls[1][1], "lm-mol.1");
+        assert_eq!(calls[1][1], "lm-mol1");
         assert!(calls[1].contains(&"--json".to_string()));
         Ok(())
     }
@@ -781,7 +786,7 @@ mod tests {
     async fn rebuild_errors_when_active_molecule_lacks_base_commit_metadata() -> Result<()> {
         let list_json = br#"[
             {
-                "id": "lm-mol.2",
+                "id": "lm-mol2",
                 "title": "loom-harness: pending decomposition",
                 "status": "open",
                 "priority": 2,
@@ -791,7 +796,7 @@ mod tests {
         ]"#;
         let show_json = br#"[
             {
-                "id": "lm-mol.2",
+                "id": "lm-mol2",
                 "title": "loom-harness: pending decomposition",
                 "status": "open",
                 "priority": 2,
@@ -807,11 +812,11 @@ mod tests {
             .ok_or_else(|| anyhow!("expected MoleculeMissingBaseCommit"))?;
         let msg = err.to_string();
         assert!(
-            msg.contains("bd update lm-mol.2 --set-metadata loom.base_commit="),
+            msg.contains("bd update lm-mol2 --set-metadata loom.base_commit="),
             "error must surface the fix command: {msg}",
         );
         match err {
-            InitError::MoleculeMissingBaseCommit { id } => assert_eq!(id, "lm-mol.2"),
+            InitError::MoleculeMissingBaseCommit { id } => assert_eq!(id, "lm-mol2"),
             other => return Err(anyhow!("expected MoleculeMissingBaseCommit, got {other:?}")),
         }
         Ok(())
@@ -827,7 +832,7 @@ mod tests {
     async fn rebuild_inherits_base_commit_from_parent_when_missing() -> Result<()> {
         let list_json = br#"[
             {
-                "id": "lm-child.1",
+                "id": "lm-child1",
                 "title": "follow-up",
                 "status": "open",
                 "priority": 2,
@@ -837,7 +842,7 @@ mod tests {
         ]"#;
         let child_show = br#"[
             {
-                "id": "lm-child.1",
+                "id": "lm-child1",
                 "title": "follow-up",
                 "status": "open",
                 "priority": 2,
@@ -869,7 +874,7 @@ mod tests {
         let molecules = fetch_active_molecules(&client).await?;
 
         assert_eq!(molecules.len(), 1);
-        assert_eq!(molecules[0].id.as_str(), "lm-child.1");
+        assert_eq!(molecules[0].id.as_str(), "lm-child1");
         assert_eq!(molecules[0].base_commit.as_deref(), Some("40d21b79"));
 
         let calls = handle.calls();
@@ -879,11 +884,11 @@ mod tests {
             "expected list + show(child) + show(parent) + update(child) calls: {calls:?}",
         );
         assert_eq!(calls[1][0], "show");
-        assert_eq!(calls[1][1], "lm-child.1");
+        assert_eq!(calls[1][1], "lm-child1");
         assert_eq!(calls[2][0], "show");
         assert_eq!(calls[2][1], "lm-epic");
         assert_eq!(calls[3][0], "update");
-        assert_eq!(calls[3][1], "lm-child.1");
+        assert_eq!(calls[3][1], "lm-child1");
         assert!(
             calls[3].contains(&"--set-metadata".to_string()),
             "inherited value must be persisted back to the child: {:?}",
@@ -901,7 +906,7 @@ mod tests {
     async fn rebuild_errors_when_parent_also_lacks_base_commit_metadata() -> Result<()> {
         let list_json = br#"[
             {
-                "id": "lm-child.2",
+                "id": "lm-child2",
                 "title": "follow-up",
                 "status": "open",
                 "priority": 2,
@@ -911,7 +916,7 @@ mod tests {
         ]"#;
         let child_show = br#"[
             {
-                "id": "lm-child.2",
+                "id": "lm-child2",
                 "title": "follow-up",
                 "status": "open",
                 "priority": 2,
@@ -939,12 +944,12 @@ mod tests {
             .ok_or_else(|| anyhow!("expected MoleculeMissingBaseCommitNoParentMetadata"))?;
         let msg = err.to_string();
         assert!(
-            msg.contains("bd update lm-child.2 --set-metadata loom.base_commit="),
+            msg.contains("bd update lm-child2 --set-metadata loom.base_commit="),
             "error must surface the fix command: {msg}",
         );
         match err {
             InitError::MoleculeMissingBaseCommitNoParentMetadata { id, parent } => {
-                assert_eq!(id, "lm-child.2");
+                assert_eq!(id, "lm-child2");
                 assert_eq!(parent, "lm-epic2");
             }
             other => {

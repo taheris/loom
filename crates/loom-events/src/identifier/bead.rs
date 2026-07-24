@@ -70,8 +70,8 @@ impl<'de> Deserialize<'de> for BeadId {
     }
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error("invalid bead id `{0}`: expected `<prefix>-<base32>(.<digits>)?`")]
+#[derive(Debug, displaydoc::Display, Error, PartialEq, Eq)]
+/// invalid bead id `{0}`: expected `<prefix>-<base32>(.<digits>)?`
 pub struct ParseBeadIdError(pub String);
 
 #[cfg(test)]

@@ -6,14 +6,14 @@
 //! Claude stream-json parser. Each gets a `proptest!` block whose
 //! invariants are stated as comments above the test.
 //!
-//! `PROPTEST_CASES=32` under `nix flake check`; local exhaustive runs
-//! override via env var (`PROPTEST_CASES=2048+`).
+//! The full test suite defaults to 32 cases; local exhaustive runs override
+//! via `PROPTEST_CASES` (`2048+`).
 
 use loom_agent::claude::messages::ClaudeMessage;
 use loom_agent::claude::parser::ClaudeParser;
 use loom_agent::pi::parser::PiParser;
 use loom_driver::agent::{LineParse, MAX_LINE_BYTES, ProtocolError};
-use loom_test_support::CI_PROPTEST_CASES;
+use loom_test_support::proptest_config;
 use proptest::prelude::*;
 
 fn pi_parser() -> PiParser {
@@ -41,8 +41,18 @@ fn max_line_bytes_is_ten_megabytes() {
 // generator catches divergence between the backend contracts.
 // ----------------------------------------------------------------------------
 
+fn malformed_jsonl() -> impl Strategy<Value = String> {
+    prop_oneof![
+        "[^{].{0,256}",
+        ".{0,255}".prop_map(|tail| format!("{{{tail}")),
+    ]
+    .prop_filter("input must be malformed JSON", |input| {
+        serde_json::from_str::<serde_json::Value>(input).is_err()
+    })
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(CI_PROPTEST_CASES))]
+    #![proptest_config(proptest_config())]
 
     #[test]
     fn jsonl_arbitrary_bytes_never_panic(input in ".{0,512}") {
@@ -53,10 +63,7 @@ proptest! {
     }
 
     #[test]
-    fn jsonl_malformed_line_emits_no_events(input in "[^{].{0,256}") {
-        // A line that does not start with `{` is never valid JSONL for these
-        // parsers. Pi skips defensively; Claude errors. Neither may smuggle
-        // events out from malformed bytes.
+    fn jsonl_malformed_line_emits_no_events(input in malformed_jsonl()) {
         let pi_res = pi_parser().parse_line(&input);
         if let Ok(parsed) = pi_res {
             prop_assert!(parsed.events.is_empty(), "pi parser emitted events for non-JSON line");
@@ -88,7 +95,7 @@ fn pi_unknown_type() -> impl Strategy<Value = String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(CI_PROPTEST_CASES))]
+    #![proptest_config(proptest_config())]
 
     #[test]
     fn pi_encode_prompt_round_trips(msg in ".{0,128}") {
@@ -156,7 +163,7 @@ fn claude_unknown_type() -> impl Strategy<Value = String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(CI_PROPTEST_CASES))]
+    #![proptest_config(proptest_config())]
 
     #[test]
     fn claude_system_round_trips(

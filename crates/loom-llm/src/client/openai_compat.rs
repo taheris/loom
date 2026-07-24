@@ -411,7 +411,7 @@ mod tests {
         let mut clock = 0_i64;
         EnvelopeBuilder::new(
             SessionScope::bead(
-                SessionId::new("sess-test"),
+                SessionId::new("sess-test").unwrap(),
                 BeadId::new("lm-test").expect("valid bead id"),
                 None,
                 0,

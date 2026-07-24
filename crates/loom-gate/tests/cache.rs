@@ -256,7 +256,7 @@ fn broken_annotations_in_report_come_from_integrity_findings() {
 fn stale_annotations_join_typed_criterion_ids_against_current_snapshot() {
     let dir = tempdir().unwrap();
     let cache = StatusCache::open(&cache_path(&dir)).unwrap();
-    let spec_label = SpecLabel::new("gate");
+    let spec_label = SpecLabel::new("gate").unwrap();
     let criterion_text = "Verifier evidence is cached";
     let criterion_id = criterion_id_for(&spec_label, criterion_text);
     cache

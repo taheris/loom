@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"gate\", \"check\"])"
 ---
-Run only `[check]`-tier annotations
+Run only `[check]`-tier annotations.
 
 Usage: loom gate check [OPTIONS]
 

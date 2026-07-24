@@ -80,7 +80,7 @@ fn fake_bead(id: &str) -> Bead {
         status: "open".into(),
         priority: 2,
         issue_type: "task".into(),
-        labels: vec![Label::new("profile:base")],
+        labels: vec![Label::new("profile:base").expect("valid Label")],
         parent: None,
         metadata: Default::default(),
         notes: None,
@@ -184,13 +184,13 @@ async fn per_bead_profile_runtime_dispatch_produces_distinct_image_refs() -> Res
     let rust_observed = Arc::clone(&observed);
     let mut rust_controller = ProductionAgentLoopController::new(
         BdClient::new(),
-        SpecLabel::new("harness"),
+        SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
         git_client,
         Arc::clone(&manifest),
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
             rust_observed.lock().expect("observed configs").push(cfg);
             async { retry_session("preserve rust workspace") }
@@ -198,7 +198,7 @@ async fn per_bead_profile_runtime_dispatch_produces_distinct_image_refs() -> Res
     )
     .with_agent_runtime(AgentRuntime::Pi);
     let mut rust_bead = fake_bead("lm-rustpi");
-    rust_bead.labels = vec![Label::new("profile:rust")];
+    rust_bead.labels = vec![Label::new("profile:rust").expect("valid Label")];
     assert!(matches!(
         rust_controller.run_bead(&rust_bead, None).await?,
         AgentOutcome::Retry { .. }
@@ -207,13 +207,13 @@ async fn per_bead_profile_runtime_dispatch_produces_distinct_image_refs() -> Res
     let python_observed = Arc::clone(&observed);
     let mut python_controller = ProductionAgentLoopController::new(
         BdClient::new(),
-        SpecLabel::new("harness"),
+        SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
         GitClient::open(&workspace)?,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
             python_observed.lock().expect("observed configs").push(cfg);
             async { retry_session("preserve python workspace") }
@@ -221,7 +221,7 @@ async fn per_bead_profile_runtime_dispatch_produces_distinct_image_refs() -> Res
     )
     .with_agent_runtime(AgentRuntime::Claude);
     let mut python_bead = fake_bead("lm-pyclaude");
-    python_bead.labels = vec![Label::new("profile:python")];
+    python_bead.labels = vec![Label::new("profile:python").expect("valid Label")];
     assert!(matches!(
         python_controller.run_bead(&python_bead, None).await?,
         AgentOutcome::Retry { .. }
@@ -270,13 +270,13 @@ async fn loom_loop_does_not_touch_operator_workspace() -> Result<()> {
 
     let mut controller = ProductionAgentLoopController::new(
         BdClient::new(),
-        SpecLabel::new("harness"),
+        SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
             assert_eq!(cfg.workspace, expected_bead_workspace);
             async { retry_session("operator checkout remains isolated") }
@@ -314,13 +314,13 @@ async fn bead_workspace_survives_retry_until_close() -> Result<()> {
 
     let mut first_invocation = ProductionAgentLoopController::new(
         BdClient::new(),
-        SpecLabel::new("harness"),
+        SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
         git_client,
         Arc::clone(&manifest),
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
             assert_eq!(cfg.workspace, expected);
             std::fs::create_dir_all(first_marker.parent().expect("marker parent"))
@@ -340,13 +340,13 @@ async fn bead_workspace_survives_retry_until_close() -> Result<()> {
     let expected = workspace.join(".loom/beads/lm-retrypersist");
     let mut second_invocation = ProductionAgentLoopController::new(
         BdClient::new(),
-        SpecLabel::new("harness"),
+        SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
         GitClient::open(&workspace)?,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
             assert_eq!(cfg.workspace, expected);
             assert_eq!(
@@ -394,13 +394,13 @@ async fn bead_workspace_reaped_on_bd_close() -> Result<()> {
 
     let mut controller = ProductionAgentLoopController::new(
         BdClient::with_runner(runner.clone()),
-        SpecLabel::new("harness"),
+        SpecLabel::new("harness").unwrap(),
         gate,
         workspace,
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, bead_id: BeadId| {
             let bd = BdClient::with_runner(agent_runner.clone());
             async move {
@@ -451,7 +451,7 @@ async fn bead_workspace_reaped_on_bd_close() -> Result<()> {
 #[tokio::test]
 async fn run_bead_dispatches_into_per_bead_worktree_and_preserves_after_success() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = fake_bead("lm-1");
     let expected_worktree = workspace.join(".loom/beads/lm-1");
 
@@ -467,7 +467,7 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_preserves_after_success(
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
             let observed = Arc::clone(&observed_clone);
             let expected = expected_worktree_clone.clone();
@@ -536,7 +536,7 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_preserves_after_success(
 #[tokio::test]
 async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = fake_bead("lm-dirty");
     let expected_worktree = workspace.join(".loom/beads/lm-dirty");
 
@@ -554,7 +554,7 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
             let captured = Arc::clone(&captured_clone);
             let expected = expected_clone.clone();
@@ -653,7 +653,7 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
 #[tokio::test]
 async fn run_bead_resets_dirty_bead_workspace_before_dispatch() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = fake_bead("lm-resetdispatch");
     let expected_worktree = workspace.join(".loom/beads/lm-resetdispatch");
 
@@ -708,7 +708,7 @@ async fn run_bead_resets_dirty_bead_workspace_before_dispatch() -> Result<()> {
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, bead_id: BeadId| {
             let observed = Arc::clone(&observed_clone);
             async move {
@@ -763,7 +763,7 @@ async fn run_bead_resets_dirty_bead_workspace_before_dispatch() -> Result<()> {
 #[tokio::test]
 async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let expected_worktree = workspace.join(".loom/beads/lm-conflict.1");
     let workspace_for_closure = workspace.clone();
 
@@ -775,7 +775,7 @@ async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
             let loom_ws = workspace_for_closure.join(".loom/integration");
             async move {
@@ -849,7 +849,7 @@ async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
 #[tokio::test]
 async fn workspace_persists_on_all_failure_paths() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let expected_worktree = workspace.join(".loom/beads/lm-persist.1");
     let workspace_for_closure = workspace.clone();
 
@@ -861,7 +861,7 @@ async fn workspace_persists_on_all_failure_paths() -> Result<()> {
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
             let loom_ws = workspace_for_closure.join(".loom/integration");
             async move {
@@ -910,7 +910,7 @@ async fn bead_branch_ref_deleted_on_every_exit_path() -> Result<()> {
     // loom-workspace ref is deleted as part of cleanup.
     {
         let (_dir, workspace, manifest, git_client) = setup();
-        let label = SpecLabel::new("harness");
+        let label = SpecLabel::new("harness").unwrap();
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
             label.clone(),
@@ -919,7 +919,7 @@ async fn bead_branch_ref_deleted_on_every_exit_path() -> Result<()> {
             git_client,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |cfg: SpawnConfig, _bead_id: BeadId| async move {
                 std::fs::write(cfg.workspace.join("from-bead.txt"), "from-bead\n")
                     .expect("write file");
@@ -947,7 +947,7 @@ async fn bead_branch_ref_deleted_on_every_exit_path() -> Result<()> {
     // Conflict exit path: a rebase-conflict abort deletes the ref too.
     {
         let (_dir, workspace, manifest, git_client) = setup();
-        let label = SpecLabel::new("harness");
+        let label = SpecLabel::new("harness").unwrap();
         let workspace_for_closure = workspace.clone();
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
@@ -957,7 +957,7 @@ async fn bead_branch_ref_deleted_on_every_exit_path() -> Result<()> {
             git_client,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |cfg: SpawnConfig, _bead_id: BeadId| {
                 let loom_ws = workspace_for_closure.join(".loom/integration");
                 async move {
@@ -1074,7 +1074,7 @@ fn merge_window_events(events: &[serde_json::Value]) -> Vec<(String, u64)> {
 #[tokio::test]
 async fn run_bead_emits_preserved_workspace_event_for_happy_path_in_seq_order() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let logs_root = workspace.join(".loom/logs");
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
@@ -1087,7 +1087,7 @@ async fn run_bead_emits_preserved_workspace_event_for_happy_path_in_seq_order() 
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, bead_id: BeadId| {
             let logs_root = logs_root_for_closure.clone();
             let label = label_for_closure.clone();
@@ -1135,7 +1135,7 @@ async fn run_bead_emits_preserved_workspace_event_for_happy_path_in_seq_order() 
 #[tokio::test]
 async fn run_bead_noop_empty_branch_is_done_not_zero_progress() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let logs_root = workspace.join(".loom/logs");
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
@@ -1150,7 +1150,7 @@ async fn run_bead_noop_empty_branch_is_done_not_zero_progress() -> Result<()> {
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |_cfg: SpawnConfig, bead_id: BeadId| {
             let logs_root = logs_root_for_closure.clone();
             let label = label_for_closure.clone();
@@ -1196,7 +1196,7 @@ async fn run_bead_noop_empty_branch_is_done_not_zero_progress() -> Result<()> {
 #[tokio::test]
 async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let logs_root = workspace.join(".loom/logs");
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
@@ -1210,7 +1210,7 @@ async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |cfg: SpawnConfig, bead_id: BeadId| {
             let logs_root = logs_root_for_closure.clone();
             let label = label_for_closure.clone();
@@ -1263,7 +1263,7 @@ async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
 #[tokio::test]
 async fn run_bead_emits_tree_not_clean_when_porcelain_is_dirty() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let logs_root = workspace.join(".loom/logs");
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
@@ -1277,7 +1277,7 @@ async fn run_bead_emits_tree_not_clean_when_porcelain_is_dirty() -> Result<()> {
         git_client,
         manifest,
         None,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         move |_cfg: SpawnConfig, bead_id: BeadId| {
             let logs_root = logs_root_for_closure.clone();
             let label = label_for_closure.clone();

@@ -62,11 +62,14 @@ mod tests {
     use std::path::PathBuf;
 
     fn labels(items: &[&str]) -> Vec<Label> {
-        items.iter().map(|s| Label::new(*s)).collect()
+        items
+            .iter()
+            .map(|s| Label::new(*s).expect("valid Label"))
+            .collect()
     }
 
     fn base() -> ProfileName {
-        ProfileName::new(DEFAULT_PROFILE)
+        ProfileName::new(DEFAULT_PROFILE).unwrap()
     }
 
     fn write_manifest(dir: &std::path::Path, body: &str) -> PathBuf {
@@ -89,29 +92,29 @@ mod tests {
     fn resolve_profile_reads_label() {
         let labels = labels(&["spec:harness", "profile:rust"]);
         let p = resolve_profile(&labels, None, &base());
-        assert_eq!(p, ProfileName::new("rust"));
+        assert_eq!(p, ProfileName::new("rust").unwrap());
     }
 
     #[test]
     fn resolve_profile_falls_back_to_phase_default_without_label() {
         let labels = labels(&["spec:harness"]);
-        let p = resolve_profile(&labels, None, &ProfileName::new("python"));
-        assert_eq!(p, ProfileName::new("python"));
+        let p = resolve_profile(&labels, None, &ProfileName::new("python").unwrap());
+        assert_eq!(p, ProfileName::new("python").unwrap());
     }
 
     #[test]
     fn resolve_profile_uses_override() {
         let labels = labels(&["profile:rust"]);
-        let override_ = ProfileName::new("python");
+        let override_ = ProfileName::new("python").unwrap();
         let p = resolve_profile(&labels, Some(&override_), &base());
-        assert_eq!(p, ProfileName::new("python"));
+        assert_eq!(p, ProfileName::new("python").unwrap());
     }
 
     #[test]
     fn resolve_profile_first_matching_label_wins() {
         let labels = labels(&["profile:rust", "profile:python"]);
         let p = resolve_profile(&labels, None, &base());
-        assert_eq!(p, ProfileName::new("rust"));
+        assert_eq!(p, ProfileName::new("rust").unwrap());
     }
 
     #[test]
@@ -141,7 +144,7 @@ mod tests {
         let with_override = resolve_profile_image(
             &manifest,
             &labels,
-            Some(&ProfileName::new("python")),
+            Some(&ProfileName::new("python").unwrap()),
             &base(),
             AgentRuntime::Pi,
         )
@@ -169,7 +172,7 @@ mod tests {
                 name,
                 manifest_path,
             } => {
-                assert_eq!(name, ProfileName::new("rust"));
+                assert_eq!(name, ProfileName::new("rust").unwrap());
                 assert_eq!(manifest_path, path);
             }
             other => panic!("expected UnknownProfile, got {other:?}"),

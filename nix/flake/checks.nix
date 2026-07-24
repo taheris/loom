@@ -184,7 +184,7 @@ _:
             mkdir -p "$readonly_dir"
             touch "$readonly_dir/libfake.so"
             chmod -R a-w "$root/overlay/fake/diff/nix/store/fake-lib"
-            printf 'sandbox-hook-chain-ok\n'
+            printf 'sandbox-agent-health-ok\n'
             ;;
           *)
             printf 'unexpected podman args: %s\n' "$*" >&2
@@ -350,14 +350,14 @@ _:
             mkdir -p "$LOOM_TEST_SANDBOX_SOURCE/.git"
             touch "$LOOM_TEST_SANDBOX_SOURCE/Cargo.toml"
             bash ${../../scripts/test-sandbox.sh}
-            if [[ $(<"$LOOM_TEST_PODMAN_ARGS_LOG") != *'<run><--rm><--network=none><--env><WRIX_AGENT=pi>'* ]]; then
-              printf 'expected test-sandbox podman run to disable networking and select Pi; observed:\n%s\n' "$(<"$LOOM_TEST_PODMAN_ARGS_LOG")" >&2
+            if [[ $(<"$LOOM_TEST_PODMAN_ARGS_LOG") != *'<run><--rm><--network=none><--entrypoint></bin/bash>'* ]]; then
+              printf 'expected test-sandbox podman run to disable networking and select the health-check entrypoint; observed:\n%s\n' "$(<"$LOOM_TEST_PODMAN_ARGS_LOG")" >&2
               exit 1
             fi
             touch "$out"
           '';
 
-      test-sandbox-mounts-host-dolt-socket = pkgs.runCommand "test-sandbox-mounts-host-dolt-socket" { } ''
+      test-sandbox-needs-no-dolt-socket = pkgs.runCommand "test-sandbox-needs-no-dolt-socket" { } ''
         set -euo pipefail
         fakebin=$(mktemp -d)
         ln -s ${fakePodmanCreatesReadOnlyStorage} "$fakebin/podman"
@@ -366,35 +366,15 @@ _:
             pkgs.bash
             pkgs.coreutils
             pkgs.gnused
-            pkgs.jq
           ]
         }"
         export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
         export LOOM_TEST_PODMAN_ARGS_LOG="$TMPDIR/podman-args"
         export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-        export LOOM_TEST_SANDBOX_SOURCE="$TMPDIR/source"
-        export LOOM_TEST_SANDBOX_WORKSPACE="$LOOM_TEST_SANDBOX_SOURCE"
-        mkdir -p \
-          "$LOOM_TEST_SANDBOX_SOURCE/.beads" \
-          "$LOOM_TEST_SANDBOX_SOURCE/.git" \
-          "$LOOM_TEST_SANDBOX_SOURCE/.wrix"
-        touch "$LOOM_TEST_SANDBOX_SOURCE/Cargo.toml"
-        printf '%s\n' '{"backend":"dolt"}' > "$LOOM_TEST_SANDBOX_SOURCE/.beads/metadata.json"
-        ${pkgs.python3}/bin/python3 - "$LOOM_TEST_SANDBOX_SOURCE/.wrix/dolt.sock" <<'PY'
-        import socket
-        import sys
-
-        sock = socket.socket(socket.AF_UNIX)
-        sock.bind(sys.argv[1])
-        sock.close()
-        PY
         bash ${../../scripts/test-sandbox.sh}
         observed=$(<"$LOOM_TEST_PODMAN_ARGS_LOG")
-        expected_mount="<--volume><$LOOM_TEST_SANDBOX_SOURCE/.wrix/dolt.sock:/workspace/.wrix/dolt.sock>"
-        expected_socket_env="<--env><BEADS_DOLT_SERVER_SOCKET=/workspace/.wrix/dolt.sock>"
-        expected_auto_start_env="<--env><BEADS_DOLT_AUTO_START=0>"
-        if [[ "$observed" != *"$expected_mount"* || "$observed" != *"$expected_socket_env"* || "$observed" != *"$expected_auto_start_env"* ]]; then
-          printf 'expected test-sandbox to configure the host Dolt socket; observed:\n%s\n' "$observed" >&2
+        if [[ "$observed" == *'BEADS_DOLT_SERVER_SOCKET'* || "$observed" == *'.wrix/dolt.sock'* ]]; then
+          printf 'packaged-agent health check unexpectedly depends on Dolt:\n%s\n' "$observed" >&2
           exit 1
         fi
         touch "$out"
@@ -481,7 +461,7 @@ _:
           test-app-ignores-host-git-signing
           test-sandbox-disables-container-network
           test-sandbox-ignores-read-only-podman-storage-cleanup
-          test-sandbox-mounts-host-dolt-socket
+          test-sandbox-needs-no-dolt-socket
           test-sandbox-skips-oci-permission-denied
           test-sandbox-skips-unsupported-runtime
           ;

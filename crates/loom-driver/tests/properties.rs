@@ -6,14 +6,14 @@
 //! schema, a corrupted DB always recovers via `recreate`, and round-trips
 //! through known shapes are stable.
 //!
-//! `PROPTEST_CASES=32` under `nix flake check`; local exhaustive runs
-//! override via env var (`PROPTEST_CASES=2048+`).
+//! The full test suite defaults to 32 cases; local exhaustive runs override
+//! via `PROPTEST_CASES` (`2048+`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_driver::state::{ActiveMolecule, CacheDb};
-use loom_test_support::CI_PROPTEST_CASES;
+use loom_driver::state::{ActiveMolecule, CacheDb, CacheError};
+use loom_test_support::proptest_config;
 use proptest::prelude::*;
 
 /// Acceptable label characters: ASCII letters, digits, dash, underscore.
@@ -21,7 +21,7 @@ use proptest::prelude::*;
 /// every platform — arbitrary unicode would explode the case count without
 /// adding signal.
 fn label_strategy() -> impl Strategy<Value = String> {
-    "[a-z][a-z0-9_-]{0,15}".prop_filter("non-empty", |s| !s.is_empty())
+    "[a-z][a-z0-9]{0,15}"
 }
 
 /// Spec-file body — arbitrary printable bytes, with `## Companions` headings
@@ -38,6 +38,18 @@ fn spec_body_strategy() -> impl Strategy<Value = String> {
         // Mixed garbage that may include the heading at unexpected
         // positions — stresses the parser without crashing rebuild.
         ".{0,400}",
+    ]
+}
+
+fn index_body_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        ".{0,300}",
+        label_strategy().prop_map(|label| format!(
+            "| [{label}.md](../specs/{label}.md) | crate | epic | purpose |\n"
+        )),
+        label_strategy().prop_map(|label| format!(
+            "prefix garbage\n| [{label}.md](../specs/mismatched.md) | x | y | z |\n"
+        )),
     ]
 }
 
@@ -58,6 +70,7 @@ fn schema_intact(db_path: &std::path::Path) -> bool {
         "companions",
         "criterion_status",
         "meta",
+        "notes",
         "spec_epics",
         "specs",
         "work_epics",
@@ -67,7 +80,7 @@ fn schema_intact(db_path: &std::path::Path) -> bool {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(CI_PROPTEST_CASES))]
+    #![proptest_config(proptest_config())]
 
     /// Arbitrary spec-file content never panics rebuild and never corrupts
     /// the schema: after `rebuild`, every required table still exists and
@@ -76,11 +89,14 @@ proptest! {
     fn rebuild_never_corrupts_schema(
         labels in proptest::collection::vec(label_strategy(), 0..4),
         bodies in proptest::collection::vec(spec_body_strategy(), 0..4),
+        index_body in index_body_strategy(),
     ) {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
         let specs_dir = workspace.join("specs");
         std::fs::create_dir_all(&specs_dir).unwrap();
+        std::fs::create_dir_all(workspace.join("docs")).unwrap();
+        std::fs::write(workspace.join("docs/README.md"), index_body).unwrap();
 
         // Pair labels with bodies; duplicate labels collapse via filename.
         let pairs: Vec<(String, String)> = labels
@@ -95,15 +111,17 @@ proptest! {
         let db_path = workspace.join(".loom/cache.db");
         let db = CacheDb::open(&db_path).unwrap();
 
-        // Rebuild with no molecules — exercises the spec-walking codepath
-        // most likely to hit the parser on arbitrary bodies.
-        let report = db.rebuild(workspace, &[]).unwrap();
-        prop_assert!(report.specs <= pairs.len());
+        let result = db.rebuild(workspace, &[]);
+        match result {
+            Ok(report) => prop_assert!(report.specs <= pairs.len()),
+            Err(CacheError::SpecIndexMismatch { .. }) => {}
+            Err(other) => prop_assert!(false, "unexpected rebuild error: {other:?}"),
+        }
         prop_assert!(schema_intact(&db_path));
 
         // Connection is still queryable after rebuild.
         for (label, _) in &pairs {
-            let _ = db.spec(&SpecLabel::new(label.clone()));
+            let _ = db.spec(&SpecLabel::new(label.clone()).unwrap());
         }
     }
 
@@ -153,8 +171,8 @@ proptest! {
             .iter()
             .enumerate()
             .map(|(i, label)| ActiveMolecule {
-                id: MoleculeId::new(format!("lm-{i}")),
-                spec_label: SpecLabel::new(label.clone()),
+                id: MoleculeId::new(format!("lm-{i}")).unwrap(),
+                spec_label: SpecLabel::new(label.clone()).unwrap(),
                 base_commit: Some(format!("commit-{i}")),
             })
             .collect();

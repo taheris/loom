@@ -1207,7 +1207,7 @@ where
                 "marker minted: .loom/marker.json",
             ),
             Err(error) => warn!(
-                %error,
+                ?error,
                 label = %self.label,
                 "marker mint failed — prek pre-push falls through to slow tier",
             ),
@@ -2284,8 +2284,8 @@ mod tests {
         db.rebuild(
             workspace,
             &[ActiveMolecule {
-                id: MoleculeId::new(mol),
-                spec_label: SpecLabel::new(label),
+                id: MoleculeId::new(mol).unwrap(),
+                spec_label: SpecLabel::new(label).unwrap(),
                 base_commit: None,
             }],
         )
@@ -2324,12 +2324,12 @@ mod tests {
         let manifest = stub_manifest(&workspace);
         ProductionReviewController::new(
             BdClient::with_runner(ScriptedBd::new(responses.into_iter().map(ok_stdout))),
-            SpecLabel::new(label),
+            SpecLabel::new(label).unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         )
     }
@@ -2339,12 +2339,12 @@ mod tests {
         let manifest = stub_manifest(&workspace);
         ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new("harness"),
+            SpecLabel::new("harness").unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         )
     }
@@ -2493,8 +2493,8 @@ mod tests {
         db.rebuild(
             &workspace,
             &[ActiveMolecule {
-                id: MoleculeId::new("lm-alpha"),
-                spec_label: SpecLabel::new("alpha"),
+                id: MoleculeId::new("lm-alpha").unwrap(),
+                spec_label: SpecLabel::new("alpha").unwrap(),
                 base_commit: Some(base),
             }],
         )
@@ -2563,12 +2563,12 @@ mod tests {
         let manifest = stub_manifest(&workspace);
         let mut ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new("harness"),
+            SpecLabel::new("harness").unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         )
         .with_push_range(Some("base..different".to_owned()))
@@ -2589,12 +2589,12 @@ mod tests {
         let manifest = stub_manifest(&workspace);
         let mut ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new("harness"),
+            SpecLabel::new("harness").unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig| async move {
                 Ok((
                     SessionOutcome {
@@ -2629,7 +2629,7 @@ mod tests {
         seed_empty_spec(&workspace, "gate");
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
-        let gate = SpecLabel::new("gate");
+        let gate = SpecLabel::new("gate").unwrap();
         let findings = [
             Finding {
                 token: ConcernToken::TemplateSpecDrift,
@@ -2674,12 +2674,12 @@ mod tests {
         let stdout = format!("{finding_lines}\nLOOM_CONCERN: {{\"summary\":\"tree drift\"}}\n");
         let mut ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |_cfg: SpawnConfig| {
                 let stdout = stdout.clone();
                 async move {
@@ -2732,7 +2732,7 @@ mod tests {
         seed_empty_spec(&workspace, "gate");
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
-        let gate = SpecLabel::new("gate");
+        let gate = SpecLabel::new("gate").unwrap();
         let finding = Finding {
             token: ConcernToken::SpecCoherenceFail,
             route: crate::review::FindingRoute::Deferred,
@@ -2762,12 +2762,12 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut ctrl = ProductionReviewController::new(
             bd,
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |_cfg: SpawnConfig| {
                 let stdout = stdout.clone();
                 async move {
@@ -2815,12 +2815,12 @@ mod tests {
         let manifest = stub_manifest(&workspace);
         let mut ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new("harness"),
+            SpecLabel::new("harness").unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig| async move {
                 // No marker + non-zero exit: the gate routes via
                 // SwallowedMarker, and the review classifier folds the exit
@@ -2868,12 +2868,12 @@ mod tests {
         let manifest = stub_manifest(workspace);
         let ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new(label),
+            SpecLabel::new(label).unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         );
         let prompt = match ctrl.build_review_prompt().await {
@@ -2923,12 +2923,12 @@ mod tests {
 
         let diff_ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new(label),
+            SpecLabel::new(label).unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
             empty_state(workspace),
             stub_manifest(workspace),
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         )
         .with_push_range(Some("abc123..def456".to_owned()));
@@ -2948,12 +2948,12 @@ mod tests {
 
         let tree_ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new(label),
+            SpecLabel::new(label).unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
             empty_state(workspace),
             stub_manifest(workspace),
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         )
         .with_dispatch_scope(DispatchScope::Tree)
@@ -3002,12 +3002,12 @@ mod tests {
         let manifest = stub_manifest(workspace);
         let ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new(label),
+            SpecLabel::new(label).unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         );
         let prompt = match ctrl.build_review_prompt().await {
@@ -3048,12 +3048,12 @@ mod tests {
 
         let judge_ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new(label),
+            SpecLabel::new(label).unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
             empty_state(workspace),
             stub_manifest(workspace),
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         )
         .with_lane(ReviewLane::Judge);
@@ -3077,12 +3077,12 @@ mod tests {
 
         let rubric_ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new(label),
+            SpecLabel::new(label).unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
             empty_state(workspace),
             stub_manifest(workspace),
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         )
         .with_lane(ReviewLane::Rubric);
@@ -3124,12 +3124,12 @@ mod tests {
         let manifest = stub_manifest(workspace);
         let ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new(label),
+            SpecLabel::new(label).unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         );
         let prompt = match ctrl.build_review_prompt().await {
@@ -3173,12 +3173,12 @@ mod tests {
         let prompt_seen_inner = Arc::clone(&prompt_seen);
         let mut ctrl = ProductionReviewController::new(
             no_beads_bd(),
-            SpecLabel::new(label),
+            SpecLabel::new(label).unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |cfg: SpawnConfig| {
                 let captured = Arc::clone(&captured_for_closure);
                 let prompt_seen = Arc::clone(&prompt_seen_inner);
@@ -3251,7 +3251,7 @@ mod tests {
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
         let mgr = LockManager::with_state_home(&workspace, state_home.path()).unwrap();
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let root = BeadId::new("lm-review").unwrap();
         let clock = SystemClock::new();
         let guard = mgr.acquire_work_root_async(&root, &clock).await.unwrap();
@@ -3268,7 +3268,7 @@ mod tests {
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig| async move {
                 Ok((
                     SessionOutcome {
@@ -3367,12 +3367,12 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut ctrl = ProductionReviewController::new(
             bd,
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         );
         let bead_id = BeadId::new("lm-clarify.2").expect("bead id");
@@ -3425,11 +3425,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().to_path_buf();
         seed_empty_spec(&workspace, "gate");
-        let state = seeded_state(&workspace, "gate", "lm-mol.1");
+        let state = seeded_state(&workspace, "gate", "lm-mol1");
         let manifest = stub_manifest(&workspace);
 
         let show_body = br#"[{
-            "id": "lm-mol.1",
+            "id": "lm-mol1",
             "title": "epic",
             "status": "open",
             "priority": 2,
@@ -3457,12 +3457,12 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut ctrl = ProductionReviewController::new(
             bd,
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/usr/bin/loom"),
             workspace,
             state,
             manifest,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             noop_spawn,
         );
         let findings = vec![IntegrityFinding::UnresolvedAnnotation {

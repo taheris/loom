@@ -193,7 +193,7 @@ mod tests {
         let manifest = ProfileImageManifest::from_path(&path)?;
         assert_eq!(manifest.len(), 2);
         assert_eq!(manifest.manifest_path(), path.as_path());
-        let base_pi = manifest.lookup(&ProfileName::new("base"), AgentRuntime::Pi)?;
+        let base_pi = manifest.lookup(&ProfileName::new("base").unwrap(), AgentRuntime::Pi)?;
         assert_eq!(base_pi.r#ref, "localhost/wrix-base-pi:def");
         assert_eq!(
             base_pi.source,
@@ -203,7 +203,8 @@ mod tests {
         assert_eq!(base_pi.launcher, None);
         assert_eq!(base_pi.digest, None);
         assert_eq!(base_pi.runtime, None);
-        let rust_direct = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Direct)?;
+        let rust_direct =
+            manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Direct)?;
         assert_eq!(rust_direct.r#ref, "localhost/wrix-rust-direct:ghi");
         assert_eq!(rust_direct.profile_config, None);
         Ok(())
@@ -223,7 +224,7 @@ mod tests {
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let rust = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi)?;
+        let rust = manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Pi)?;
         assert_eq!(
             rust.launcher,
             Some(PathBuf::from("/nix/store/lll-wrix/bin/wrix"))
@@ -245,7 +246,7 @@ mod tests {
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let rust = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi)?;
+        let rust = manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Pi)?;
         assert_eq!(
             rust.profile_config,
             Some(PathBuf::from(
@@ -269,7 +270,7 @@ mod tests {
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let rust = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi)?;
+        let rust = manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Pi)?;
         assert_eq!(
             rust.digest,
             Some(PathBuf::from("/nix/store/ddd-image-digest"))
@@ -313,7 +314,7 @@ mod tests {
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let rust = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi)?;
+        let rust = manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Pi)?;
         assert_eq!(rust.runtime, Some(AgentRuntime::Pi));
         Ok(())
     }
@@ -342,7 +343,7 @@ mod tests {
             manifest_path,
         } = err
         {
-            assert_eq!(profile, ProfileName::new("rust"));
+            assert_eq!(profile, ProfileName::new("rust").unwrap());
             assert_eq!(runtime_key, AgentRuntime::Pi);
             assert_eq!(entry_runtime, AgentRuntime::Claude);
             assert_eq!(manifest_path, path);
@@ -432,7 +433,7 @@ mod tests {
         let body = r#"{ "base": { "pi": { "ref": "r", "source": "/s", "source_kind": "nix-descriptor" } } }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let err = match manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi) {
+        let err = match manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Pi) {
             Err(e) => e,
             Ok(_) => return Err(anyhow!("expected unknown-profile error")),
         };
@@ -460,7 +461,7 @@ mod tests {
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let err = match manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Direct) {
+        let err = match manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Direct) {
             Err(e) => e,
             Ok(_) => return Err(anyhow!("expected unknown-runtime error")),
         };

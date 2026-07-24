@@ -208,7 +208,11 @@ fn collect_indexed_specs(workspace: &Path) -> Result<Vec<(SpecLabel, String)>, C
                 detail: format!("duplicate index row for spec `{label}`"),
             });
         }
-        out.push((SpecLabel::new(label), spec_path.to_string()));
+        let parsed = label.parse().map_err(|_| CacheError::InvalidIdentifier {
+            kind: "spec label",
+            value: label.to_string(),
+        })?;
+        out.push((parsed, spec_path.to_string()));
     }
     Ok(out)
 }
@@ -231,7 +235,10 @@ fn collect_spec_files(specs_dir: &Path) -> Result<Vec<(SpecLabel, String)>, Cach
             continue;
         };
         let content = std::fs::read_to_string(&path)?;
-        let label = SpecLabel::new(stem.to_string());
+        let label = stem.parse().map_err(|_| CacheError::InvalidIdentifier {
+            kind: "spec label",
+            value: stem.to_string(),
+        })?;
         if out
             .iter()
             .any(|(existing, _): &(SpecLabel, String)| existing == &label)

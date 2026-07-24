@@ -9,8 +9,8 @@ use thiserror::Error;
 pub struct ToolCallId(String);
 
 impl ToolCallId {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+    pub fn new(s: impl AsRef<str>) -> Result<Self, ParseToolCallIdError> {
+        s.as_ref().parse()
     }
 
     pub fn as_str(&self) -> &str {
@@ -52,8 +52,8 @@ impl<'de> Deserialize<'de> for ToolCallId {
     }
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error("invalid tool call id `{0}`: expected ASCII alphanumerics with `_`/`-`/`|`")]
+#[derive(Debug, displaydoc::Display, Error, PartialEq, Eq)]
+/// invalid tool call id `{0}`: expected ASCII alphanumerics with `_`/`-`/`|`
 pub struct ParseToolCallIdError(pub String);
 
 #[cfg(test)]
@@ -62,15 +62,16 @@ mod tests {
     use anyhow::Result;
 
     #[test]
-    fn display_round_trips_with_as_str() {
-        let id = ToolCallId::new("toolu_01");
+    fn display_round_trips_with_as_str() -> Result<()> {
+        let id = ToolCallId::new("toolu_01")?;
         assert_eq!(id.as_str(), "toolu_01");
         assert_eq!(id.to_string(), "toolu_01");
+        Ok(())
     }
 
     #[test]
     fn serde_round_trips_as_plain_string() -> Result<()> {
-        let id = ToolCallId::new("toolu_42");
+        let id = ToolCallId::new("toolu_42")?;
         let json = serde_json::to_string(&id)?;
         assert_eq!(json, "\"toolu_42\"");
         let back: ToolCallId = serde_json::from_str(&json)?;
@@ -112,7 +113,7 @@ mod tests {
             "tool;call",
         ];
         for input in cases {
-            let err = input.parse::<ToolCallId>().expect_err(input);
+            let err = ToolCallId::new(input).expect_err(input);
             assert_eq!(err, ParseToolCallIdError(input.to_owned()));
         }
     }

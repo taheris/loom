@@ -1,0 +1,16 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"gate\", \"mint\"])"
+---
+Materialize gate findings into remediation work.
+
+Usage: loom gate mint [OPTIONS]
+
+Options:
+  -m, --molecule <ID>     Promote deferred remediation beads for one molecule
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+      --host-key          Explicitly allow ambient host Git credentials and signing config
+      --tree              Run the standing safety-net sweep across the workspace
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
+      --dry-run           Preview proposed mint writes without changing bd state
+  -h, --help              Print help

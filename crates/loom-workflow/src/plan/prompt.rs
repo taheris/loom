@@ -43,7 +43,10 @@ mod tests {
 
     fn inputs() -> PlanPromptInputs {
         PlanPromptInputs {
-            anchor_labels: vec![SpecLabel::new("harness"), SpecLabel::new("future-spec")],
+            anchor_labels: vec![
+                SpecLabel::new("harness").unwrap(),
+                SpecLabel::new("future-spec").unwrap(),
+            ],
             pinned_context: "PIN".into(),
             spec_index: "| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |".into(),
             companion_paths: vec!["lib/sandbox/".into()],

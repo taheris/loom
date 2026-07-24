@@ -658,7 +658,9 @@ fn current_annotation_snapshots(
     let mut criteria_by_line: BTreeMap<(String, u32), String> = BTreeMap::new();
     for criterion in &parsed.criteria {
         let label = spec_label_from_path(&criterion.source_spec);
-        let spec_label = loom_driver::identifier::SpecLabel::new(label.clone());
+        let Ok(spec_label) = label.parse() else {
+            continue;
+        };
         let id = crate::annotation::criterion_id_for(&spec_label, &criterion.text);
         criteria_by_line.insert((label, criterion.line), id);
     }

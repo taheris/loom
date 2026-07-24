@@ -1,5 +1,10 @@
 //! Integration coverage for deterministic `loom todo` preflight.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "validated identifier literals are fixed integration-test fixtures"
+)]
+
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::path::Path;
@@ -563,7 +568,7 @@ fn controller(
         workspace.to_path_buf(),
         Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?),
         manifest(workspace)?,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         Arc::new(GitClient::open(workspace)?),
         Arc::new(BdClient::with_runner(runner)),
     ))
@@ -907,11 +912,6 @@ async fn assert_todo_validation_failure_leaves_pending_without_advancing() -> Re
 }
 
 #[tokio::test]
-async fn todo_validation_failure_leaves_pending_without_advancing() -> Result<()> {
-    assert_todo_validation_failure_leaves_pending_without_advancing().await
-}
-
-#[tokio::test]
 async fn todo_success_missing_changed_spec_fails_without_advancing() -> Result<()> {
     assert_todo_validation_failure_leaves_pending_without_advancing().await
 }
@@ -1078,7 +1078,7 @@ async fn assert_atomic_finalization_failure(
     let runner = StatefulRunner::new(&base, fail_update);
     let state = Arc::new(CacheDb::open(dir.path().join(".loom/cache.db"))?);
     state.upsert_work_epic(&WorkEpicRow {
-        epic_id: MoleculeId::new("lm-oldactive"),
+        epic_id: MoleculeId::new("lm-oldactive").unwrap(),
         todo_head: Some(base.clone()),
         todo_fingerprint: None,
         is_active: true,
@@ -1088,7 +1088,7 @@ async fn assert_atomic_finalization_failure(
         dir.path().to_path_buf(),
         Arc::clone(&state),
         manifest(dir.path())?,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         Arc::new(GitClient::open(dir.path())?),
         Arc::new(BdClient::with_runner(runner.clone())),
     );
@@ -1143,17 +1143,20 @@ async fn assert_atomic_finalization_failure(
     );
     assert_eq!(pending.title, "Pending todo decomposition");
 
-    for label in [SpecLabel::new("alpha"), SpecLabel::new("beta")] {
+    for label in [
+        SpecLabel::new("alpha").unwrap(),
+        SpecLabel::new("beta").unwrap(),
+    ] {
         let row = state
             .spec_epic(&label)?
             .ok_or_else(|| anyhow!("cache row missing for {label}"))?;
         assert_eq!(row.todo_cursor.as_deref(), Some(base.as_str()));
     }
     let old_cached = state
-        .work_epic(&MoleculeId::new("lm-oldactive"))?
+        .work_epic(&MoleculeId::new("lm-oldactive").unwrap())?
         .ok_or_else(|| anyhow!("old active cache row missing"))?;
     let pending_cached = state
-        .work_epic(&MoleculeId::new("lm-work"))?
+        .work_epic(&MoleculeId::new("lm-work").unwrap())?
         .ok_or_else(|| anyhow!("pending cache row missing"))?;
     assert!(old_cached.is_active);
     assert!(!pending_cached.is_active);
@@ -1305,7 +1308,8 @@ async fn todo_no_work_outcome_advances_cursor_with_reason() -> Result<()> {
         record
             .spec_outcomes
             .iter()
-            .any(|row| row.label == SpecLabel::new("alpha") && row.outcome == "no-work: audited")
+            .any(|row| row.label == SpecLabel::new("alpha").unwrap()
+                && row.outcome == "no-work: audited")
     );
     let calls = calls.calls()?;
     assert!(calls.iter().any(|argv| {
@@ -1472,7 +1476,7 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
     let (base, head) = init_workspace(dir.path())?;
     let state = Arc::new(CacheDb::open(dir.path().join(".loom/cache.db"))?);
     state.notes_add(
-        &SpecLabel::new("alpha"),
+        &SpecLabel::new("alpha").unwrap(),
         "implementation",
         "carry this hint",
         1,
@@ -1487,7 +1491,7 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
         dir.path().to_path_buf(),
         Arc::clone(&state),
         manifest(dir.path())?,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         Arc::new(GitClient::open(dir.path())?),
         Arc::new(BdClient::with_runner(runner)),
     );
@@ -1509,7 +1513,10 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
 
     assert!(
         state
-            .notes_list(Some(&SpecLabel::new("alpha")), Some("implementation"))?
+            .notes_list(
+                Some(&SpecLabel::new("alpha").unwrap()),
+                Some("implementation")
+            )?
             .is_empty()
     );
     let calls = calls.calls()?;
@@ -1521,13 +1528,18 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
     let invalid_dir = tempfile::tempdir()?;
     let (invalid_base, invalid_head) = init_workspace(invalid_dir.path())?;
     let invalid_state = Arc::new(CacheDb::open(invalid_dir.path().join(".loom/cache.db"))?);
-    invalid_state.notes_add(&SpecLabel::new("alpha"), "implementation", "preserve", 1)?;
+    invalid_state.notes_add(
+        &SpecLabel::new("alpha").unwrap(),
+        "implementation",
+        "preserve",
+        1,
+    )?;
     let invalid_runner = CapturingRunner::new(preflight_responses(&invalid_base, &invalid_head));
     let mut invalid_ctrl = ProductionTodoController::for_workspace(
         invalid_dir.path().to_path_buf(),
         Arc::clone(&invalid_state),
         manifest(invalid_dir.path())?,
-        ProfileName::new("base"),
+        ProfileName::new("base").unwrap(),
         Arc::new(GitClient::open(invalid_dir.path())?),
         Arc::new(BdClient::with_runner(invalid_runner)),
     );
@@ -1545,7 +1557,11 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
         .await;
     assert!(matches!(result, Err(TodoError::TodoValidation { .. })));
     assert_eq!(
-        invalid_state.notes_list(Some(&SpecLabel::new("alpha")), Some("implementation"))?[0].text,
+        invalid_state.notes_list(
+            Some(&SpecLabel::new("alpha").unwrap()),
+            Some("implementation")
+        )?[0]
+            .text,
         "preserve",
     );
     Ok(())

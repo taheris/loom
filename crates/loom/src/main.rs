@@ -100,28 +100,27 @@ impl From<AgentBackendArg> for AgentKind {
 
 #[derive(Debug, Subcommand)]
 enum GateSubcommand {
-    /// Read cached gate results for an explicit scope.
+    #[command(about = "Read cached gate results for an explicit scope.")]
     Status(GateScopeArgs),
-    /// Run deterministic verification followed by LLM review.
+    #[command(about = "Run deterministic verification followed by LLM review.")]
     Audit(GateScopeArgs),
-    /// Run scope-derived deterministic verifier lanes.
+    #[command(about = "Run scope-derived deterministic verifier lanes.")]
     Verify(GateScopeArgs),
-    /// Run only `[check]`-tier annotations.
+    #[command(about = "Run only `[check]`-tier annotations.")]
     Check(GateScopeArgs),
-    /// Run only `[test]`-tier annotations.
+    #[command(about = "Run only `[test]`-tier annotations.")]
     Test(GateScopeArgs),
-    /// Run only `[system]`-tier annotations.
+    #[command(about = "Run only `[system]`-tier annotations.")]
     System(GateScopeArgs),
-    /// Run criterion-attached judges and the LLM rubric.
+    #[command(about = "Run criterion-attached judges and the LLM rubric.")]
     Review(GateReviewArgs),
-    /// Run only criterion-attached `[judge]` verifiers.
+    #[command(about = "Run only criterion-attached `[judge]` verifiers.")]
     Judge(GateScopeArgs),
-    /// Run only the rubric walk.
+    #[command(about = "Run only the rubric walk.")]
     Rubric(GateScopeArgs),
-    /// Materialize gate findings into remediation work.
+    #[command(about = "Materialize gate findings into remediation work.")]
     Mint(GateMintArgs),
-    /// Validate `.loom/marker.json` against the workspace's HEAD tree
-    /// and porcelain — prek's pre-push short-circuit.
+    #[command(about = "Validate the current gate marker.")]
     VerifyMarker(GateVerifyMarkerArgs),
 }
 
@@ -290,11 +289,11 @@ impl InboxArgs {
 
 #[derive(Debug, Subcommand)]
 enum InboxAction {
-    /// List pending human-decision and diagnostic items.
+    #[command(about = "List pending human-decision and diagnostic items.")]
     List(InboxListArgs),
-    /// Render one item host-side.
+    #[command(about = "Render one item host-side.")]
     View(InboxViewArgs),
-    /// Launch interactive agent-assisted resolution.
+    #[command(about = "Launch interactive agent-assisted resolution.")]
     Chat(InboxChatArgs),
 }
 
@@ -360,15 +359,15 @@ impl TuneArgs {
 
 #[derive(Debug, Subcommand)]
 enum TuneAction {
-    /// List or tune skills.
+    #[command(about = "List or tune skills.")]
     Skill(TuneSurfaceArgs),
-    /// List or tune phase templates.
+    #[command(about = "List or tune phase templates.")]
     Phase(TuneSurfaceArgs),
-    /// List or tune partial templates.
+    #[command(about = "List or tune partial templates.")]
     Partial(TuneSurfaceArgs),
-    /// List registered tuning checkers.
+    #[command(about = "List registered tuning checkers.")]
     Checker,
-    /// List or tune every tuneable surface.
+    #[command(about = "List or tune every tuneable surface.")]
     All(TuneAllArgs),
 }
 
@@ -1024,7 +1023,7 @@ fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<(
         .as_millis() as i64;
     match action {
         NoteAction::Set { label, json, kind } => {
-            let label = SpecLabel::new(&label);
+            let label: SpecLabel = label.parse()?;
             let notes: Vec<String> = serde_json::from_str(&json)
                 .map_err(|e| anyhow::anyhow!("--json must be a JSON array of strings: {e}"))?;
             db.notes_set(&label, &kind, &notes, now_ms)?;
@@ -1035,7 +1034,7 @@ fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<(
             );
         }
         NoteAction::Add { label, text, kind } => {
-            let label = SpecLabel::new(&label);
+            let label: SpecLabel = label.parse()?;
             let id = db.notes_add(&label, &kind, &text, now_ms)?;
             println!(
                 "loom note add: id={id} spec={label} kind={kind}",
@@ -1047,7 +1046,7 @@ fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<(
             kind,
             all_kinds,
         } => {
-            let label = SpecLabel::new(&label);
+            let label: SpecLabel = label.parse()?;
             let kind_arg = if all_kinds { None } else { Some(kind.as_str()) };
             db.notes_clear(&label, kind_arg)?;
             println!(
@@ -1061,7 +1060,7 @@ fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<(
             kind,
             all_kinds,
         } => {
-            let label_obj = label.as_deref().map(SpecLabel::new);
+            let label_obj = label.as_deref().map(str::parse::<SpecLabel>).transpose()?;
             let kind_arg = if all_kinds { None } else { Some(kind.as_str()) };
             let rows = db.notes_list(label_obj.as_ref(), kind_arg)?;
             for row in rows {
@@ -2138,7 +2137,7 @@ fn criterion_id_for_annotation(
         .min();
     let criterion_text =
         loom_workflow::todo::criterion_text_for_line(&content, ann.criterion_line, next_line);
-    let label = SpecLabel::new(spec_label_from_path(&ann.source_spec));
+    let label: SpecLabel = spec_label_from_path(&ann.source_spec).parse()?;
     Ok(
         loom_workflow::todo::criterion_id_for(&label, &criterion_text)
             .as_str()
@@ -2686,7 +2685,7 @@ fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
 }
 
 fn run_use(workspace: &std::path::Path, label: &str) -> anyhow::Result<()> {
-    let label = SpecLabel::new(label);
+    let label: SpecLabel = label.parse()?;
     let db_path = workspace.join(".loom/cache.db");
     use_spec::run(workspace, &label, &db_path)?;
     println!("spec exists: {label}");
@@ -2801,7 +2800,7 @@ fn run_plan(
         plan::PlanOpts {
             anchor_labels,
             wrix_bin: std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from),
-            cli_profile: profile.map(ProfileName::new),
+            cli_profile: profile.map(|profile| profile.parse()).transpose()?,
             agent_override,
             manifest,
             launcher_env,
@@ -2863,7 +2862,7 @@ fn run_loop_cmd(
     // closure handed to the parallel batch driver below is what consumes it.
     let selection = resolved_agent_for(&config, agent_override, Phase::Loop)?;
     let phase_default = selection.profile.clone();
-    let cli_profile = profile.map(ProfileName::new);
+    let cli_profile = profile.map(|profile| profile.parse()).transpose()?;
     let loom_bin = current_loom_bin()?;
     let shutdown_grace = resolve_shutdown_grace(&selection);
     let direct_output_limits = config.direct_output_limits();
@@ -3104,12 +3103,13 @@ fn run_sequential_loop_root(
     let fixed_bead = matches!(&root.kind, LoopWorkRootKind::Task).then(|| root.bead.clone());
     let ready_parent = root.ready_parent.clone();
     let handoff_molecule = match &root.kind {
-        LoopWorkRootKind::Epic => Some(MoleculeId::new(root.id.as_str())),
+        LoopWorkRootKind::Epic => Some(root.id.as_str().parse::<MoleculeId>()?),
         LoopWorkRootKind::Task => root
             .bead
             .parent
             .as_ref()
-            .map(|parent| MoleculeId::new(parent.as_str())),
+            .map(|parent| parent.as_str().parse::<MoleculeId>())
+            .transpose()?,
     };
     let workspace_buf = workspace.to_path_buf();
     let workspace_for_renderer = workspace.to_path_buf();
@@ -3258,7 +3258,7 @@ fn prepare_loop_root(
         })?;
     }
 
-    let Some(gc_molecule) = gc_molecule_for_root(root) else {
+    let Some(gc_molecule) = gc_molecule_for_root(root)? else {
         return Ok(());
     };
     let gc_git = GitClient::open(workspace)?;
@@ -3274,7 +3274,7 @@ fn prepare_loop_root(
             ),
             Ok(_) => {}
             Err(error) => tracing::warn!(
-                %error,
+                ?error,
                 workspace = %gc_workspace.display(),
                 molecule = %gc_molecule.as_str(),
                 "loom loop startup: orphan-clone sweep failed — continuing",
@@ -3284,14 +3284,16 @@ fn prepare_loop_root(
     Ok(())
 }
 
-fn gc_molecule_for_root(root: &LoopWorkRoot) -> Option<MoleculeId> {
+fn gc_molecule_for_root(root: &LoopWorkRoot) -> anyhow::Result<Option<MoleculeId>> {
     match &root.kind {
-        LoopWorkRootKind::Epic => Some(MoleculeId::new(root.id.as_str())),
+        LoopWorkRootKind::Epic => Ok(Some(root.id.as_str().parse()?)),
         LoopWorkRootKind::Task => root
             .bead
             .parent
             .as_ref()
-            .map(|parent| MoleculeId::new(parent.as_str())),
+            .map(|parent| parent.as_str().parse())
+            .transpose()
+            .map_err(Into::into),
     }
 }
 
@@ -3714,7 +3716,7 @@ async fn run_parallel_loop(
         }
 
         let molecule = match ready_parent.as_ref() {
-            Some(parent) => Some(MoleculeId::new(parent.as_str())),
+            Some(parent) => Some(parent.as_str().parse::<MoleculeId>()?),
             None => loom_workflow::resolve::resolve_open_epic(&bd, &label).await?,
         };
         if let Some(molecule) = molecule.as_ref() {
@@ -4369,7 +4371,7 @@ fn build_envelope_builder(bead_id: BeadId) -> loom_events::EnvelopeBuilder {
         .wall_now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
-    let session_id = loom_events::identifier::SessionId::new(format!(
+    let session_id = loom_events::identifier::SessionId::generated(format!(
         "{}-{}-{started_ms}",
         bead_id.as_str().replace('.', "-"),
         std::process::id(),
@@ -4393,7 +4395,7 @@ fn build_phase_envelope_builder(phase: Phase) -> loom_events::EnvelopeBuilder {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
     let phase_name = phase.as_str();
-    let session_id = loom_events::identifier::SessionId::new(format!(
+    let session_id = loom_events::identifier::SessionId::generated(format!(
         "{phase_name}-{}-{started_ms}",
         std::process::id(),
     ));
@@ -4478,7 +4480,7 @@ fn build_gate_mint_envelope_builder(when: std::time::SystemTime) -> loom_events:
     let started_ms = when
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
-    let session_id = loom_events::identifier::SessionId::new(format!(
+    let session_id = loom_events::identifier::SessionId::generated(format!(
         "gate-mint-{}-{started_ms}",
         std::process::id(),
     ));
@@ -5210,7 +5212,7 @@ fn merge_inbox_filters(
 ) -> anyhow::Result<ResolvedInboxFilters> {
     let spec = match (parent.spec, child.spec) {
         (Some(a), Some(b)) if a != b => anyhow::bail!("conflicting --spec filters: {a} and {b}"),
-        (Some(a), _) | (_, Some(a)) => Some(SpecLabel::new(a)),
+        (Some(a), _) | (_, Some(a)) => Some(a.parse()?),
         (None, None) => None,
     };
     let kind = match (parent.kind, child.kind) {
@@ -5759,7 +5761,7 @@ fn resolve_review_label(
     tree: bool,
 ) -> anyhow::Result<SpecLabel> {
     if let Some(s) = spec {
-        return Ok(SpecLabel::new(s));
+        return Ok(s.parse()?);
     }
     match std::env::var(REVIEW_SPEC_LABEL_ENV) {
         Ok(s) => return Ok(s.parse()?),
@@ -5799,11 +5801,11 @@ fn resolve_tree_mint_labels(
     spec: Option<&str>,
 ) -> anyhow::Result<Vec<SpecLabel>> {
     if let Some(label) = spec {
-        return Ok(vec![SpecLabel::new(label)]);
+        return Ok(vec![label.parse()?]);
     }
 
     let specs_dir = workspace.join("specs");
-    let mut labels = Vec::new();
+    let mut labels: Vec<SpecLabel> = Vec::new();
     for entry in std::fs::read_dir(&specs_dir)
         .with_context(|| format!("read specs directory `{}`", specs_dir.display()))?
     {
@@ -5815,7 +5817,7 @@ fn resolve_tree_mint_labels(
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        labels.push(SpecLabel::new(stem));
+        labels.push(stem.parse()?);
     }
     labels.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     if labels.is_empty() {
@@ -5842,7 +5844,7 @@ fn run_spec(
     tier: Option<SpecTierArg>,
     plain: bool,
 ) -> anyhow::Result<()> {
-    let label = SpecLabel::new(label);
+    let label: SpecLabel = label.parse()?;
     if deps {
         let pkgs = spec::deps_for_label(workspace, &label)?;
         for pkg in pkgs {
@@ -5966,7 +5968,7 @@ mod tests {
             max_inline_bytes,
         )?;
         let mut builder = build_phase_envelope_builder(Phase::Review);
-        let tool_id = loom_events::identifier::ToolCallId::new("configured-cap");
+        let tool_id = loom_events::identifier::ToolCallId::new("configured-cap").unwrap();
         sink.emit(&loom_events::AgentEvent::ToolCall {
             envelope: builder.build(),
             id: tool_id.clone(),
@@ -6003,7 +6005,7 @@ mod tests {
         assert_eq!(default_roots.len(), 1);
         let default_root = &default_roots[0];
         assert_eq!(default_root.id, BeadId::new("lm-active")?);
-        assert_eq!(default_root.label, SpecLabel::new("agent"));
+        assert_eq!(default_root.label, SpecLabel::new("agent").unwrap());
         assert_eq!(default_root.kind, LoopWorkRootKind::Epic);
         assert_eq!(default_root.ready_parent, Some(BeadId::new("lm-active")?));
 
@@ -6013,13 +6015,13 @@ mod tests {
 
         let task_root = &explicit_roots[0];
         assert_eq!(task_root.id, BeadId::new("lm-task")?);
-        assert_eq!(task_root.label, SpecLabel::new("gate"));
+        assert_eq!(task_root.label, SpecLabel::new("gate").unwrap());
         assert_eq!(task_root.kind, LoopWorkRootKind::Task);
         assert_eq!(task_root.ready_parent, None);
 
         let epic_root = &explicit_roots[1];
         assert_eq!(epic_root.id, BeadId::new("lm-epic")?);
-        assert_eq!(epic_root.label, SpecLabel::new("skills"));
+        assert_eq!(epic_root.label, SpecLabel::new("skills").unwrap());
         assert_eq!(epic_root.kind, LoopWorkRootKind::Epic);
         assert_eq!(epic_root.ready_parent, Some(BeadId::new("lm-epic")?));
         Ok(())
@@ -6143,8 +6145,8 @@ mod tests {
             priority: 2,
             issue_type: "task".into(),
             labels: vec![
-                loom_driver::bd::Label::new("spec:harness"),
-                loom_driver::bd::Label::new("loom:infra"),
+                loom_driver::bd::Label::new("spec:harness").expect("valid Label"),
+                loom_driver::bd::Label::new("loom:infra").expect("valid Label"),
             ],
             parent: None,
             metadata: Default::default(),
@@ -6211,7 +6213,10 @@ mod tests {
         let labels = resolve_tree_mint_labels(tmp.path(), None).expect("resolve labels");
         assert_eq!(
             labels,
-            vec![SpecLabel::new("gate"), SpecLabel::new("harness")],
+            vec![
+                SpecLabel::new("gate").unwrap(),
+                SpecLabel::new("harness").unwrap()
+            ],
             "tree-scope mint must enumerate every markdown spec in lexical order",
         );
     }
@@ -6230,7 +6235,7 @@ mod tests {
 
         let label = resolve_tree_review_label(tmp.path()).expect("resolve tree review anchor");
 
-        assert_eq!(label, SpecLabel::new("gate"));
+        assert_eq!(label, SpecLabel::new("gate").unwrap());
         assert!(
             resolve_spec_label_from_tree(tmp.path()).is_err(),
             "finite review still rejects an ambiguous workspace without explicit context",
@@ -6482,9 +6487,9 @@ mod tests {
         let reported = loom_workflow::review::Finding {
             token: loom_workflow::review::ConcernToken::SpecCoherenceFail,
             route: loom_workflow::review::FindingRoute::Deferred,
-            bonds: vec![SpecLabel::new("gate")],
+            bonds: vec![SpecLabel::new("gate").unwrap()],
             target: loom_workflow::review::FindingTarget::Criterion {
-                spec: SpecLabel::new("gate"),
+                spec: SpecLabel::new("gate").unwrap(),
                 anchor: "finding-status-output".to_owned(),
             },
             evidence: "live finding".to_owned(),
@@ -6492,7 +6497,7 @@ mod tests {
         let suppressed = loom_workflow::review::Finding {
             token: loom_workflow::review::ConcernToken::VerifierBypass,
             route: loom_workflow::review::FindingRoute::Deferred,
-            bonds: vec![SpecLabel::new("gate")],
+            bonds: vec![SpecLabel::new("gate").unwrap()],
             target: loom_workflow::review::FindingTarget::Annotation {
                 target_string: "cargo test --lib sample".to_owned(),
             },
@@ -6524,9 +6529,9 @@ mod tests {
         let finding = loom_workflow::review::Finding {
             token: loom_workflow::review::ConcernToken::CrossSpecClash,
             route: loom_workflow::review::FindingRoute::Deferred,
-            bonds: vec![SpecLabel::new("gate")],
+            bonds: vec![SpecLabel::new("gate").unwrap()],
             target: loom_workflow::review::FindingTarget::Criterion {
-                spec: SpecLabel::new("gate"),
+                spec: SpecLabel::new("gate").unwrap(),
                 anchor: "standing-safety-net-checks".to_owned(),
             },
             evidence: "tree-scope cross-spec clash".to_owned(),
@@ -6756,14 +6761,14 @@ mod tests {
         std::fs::write(tmp.path().join("tests/gate.rs"), "#[test] fn live() {}\n")
             .expect("write test");
         let validator = WorkspaceFindingValidator::new(tmp.path());
-        let gate = SpecLabel::new("gate");
+        let gate = SpecLabel::new("gate").unwrap();
 
         assert!(validator.spec_label_is_known(&gate));
         assert!(validator.criterion_anchor_resolves(&gate, "findings-and-minting"));
         assert!(validator.file_exists("tests/gate.rs::live"));
         assert!(validator.invariant_resolves(&gate, "Out of Scope", "loom-runs-podman"));
         assert!(validator.invariant_resolves(&gate, "Architecture", "workspace-service-identity"));
-        assert!(!validator.spec_label_is_known(&SpecLabel::new("harness")));
+        assert!(!validator.spec_label_is_known(&SpecLabel::new("harness").unwrap()));
         assert!(!validator.criterion_anchor_resolves(&gate, "missing-anchor"));
         assert!(!validator.invariant_resolves(&gate, "Architecture", "workspace-service-missing"));
         assert!(!validator.file_exists("tests/missing.rs::live"));
@@ -6837,9 +6842,9 @@ mod tests {
         let finding = loom_workflow::review::Finding {
             token: loom_workflow::review::ConcernToken::SpecCoherenceFail,
             route: loom_workflow::review::FindingRoute::Deferred,
-            bonds: vec![SpecLabel::new("gate")],
+            bonds: vec![SpecLabel::new("gate").unwrap()],
             target: loom_workflow::review::FindingTarget::Criterion {
-                spec: SpecLabel::new("gate"),
+                spec: SpecLabel::new("gate").unwrap(),
                 anchor: "missing-anchor".to_owned(),
             },
             evidence: "missing anchor".to_owned(),

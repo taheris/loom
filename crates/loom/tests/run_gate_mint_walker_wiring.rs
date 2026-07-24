@@ -23,7 +23,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const SPEC_LABEL: &str = "walker_pin";
+const SPEC_LABEL: &str = "walker-pin";
 
 fn git_command() -> Command {
     let mut command = Command::new("git");
@@ -156,13 +156,13 @@ fn run_gate_mint_molecule_subprocess(workspace: &Path) -> (std::process::Output,
     let bin_dir = install_bd_shim(workspace);
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir bd-state");
-    write_bead(&state_dir, "lm-mol", "open", "epic", &["spec:walker_pin"]);
+    write_bead(&state_dir, "lm-mol", "open", "epic", &["spec:walker-pin"]);
     write_bead(
         &state_dir,
         "lm-mol.1",
         "deferred",
         "task",
-        &["loom:deferred", "finding:hash-a", "spec:walker_pin"],
+        &["loom:deferred", "finding:hash-a", "spec:walker-pin"],
     );
     write_child_parent(&state_dir, "lm-mol.1", "lm-mol");
 

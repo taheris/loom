@@ -10,6 +10,10 @@ publish.workspace = true
 # depend on this crate exclusively via `[dev-dependencies]`; production
 # code never reaches the items it exposes.
 [dependencies]
+proptest = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
 
 [lints]
 workspace = true

@@ -12,6 +12,11 @@
 //! real merge-resolution machinery. A duplex-pipe stand-in would skip the
 //! state mutations the tests exist to pin.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "validated identifier literals are fixed integration-test fixtures"
+)]
+
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -152,7 +157,7 @@ async fn bead_workspace_configures_and_repairs_hooks_path() -> Result<()> {
     let mut client = GitClient::open(repo.path())?;
     client.set_prek_hooks_path_override(hooks.clone());
 
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-hooks.1")?;
     let created = client.create_worktree(&label, &bead).await?;
     assert_eq!(
@@ -215,7 +220,7 @@ async fn create_and_remove_worktree_round_trip() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
 
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-3hhwq.6")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -928,7 +933,7 @@ async fn bead_dispatch_creates_clone_under_loom_beads() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
 
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-bead.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -967,7 +972,7 @@ async fn bead_dispatch_creates_clone_under_loom_beads() -> Result<()> {
 async fn pre_dispatch_dirty_workspace_creates_recovery_stash() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-prepare.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -1034,7 +1039,7 @@ async fn workspace_recovery_stash_left_unapplied_and_context_injected() -> Resul
     let repo = init_repo()?;
     let loom = loom_path(repo.path());
     let client = GitClient::open(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-stash.1")?;
     let created = client.create_worktree(&label, &bead).await?;
     git(&created.path, &["config", "commit.gpgsign", "false"])?;
@@ -1083,7 +1088,7 @@ async fn workspace_recovery_stash_left_unapplied_and_context_injected() -> Resul
 async fn bead_workspace_prepare_preserves_target_and_dotwrix() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-preserve.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -1119,7 +1124,7 @@ async fn workspace_recovery_rebase_conflict_dispatches_agent_with_context() -> R
     let repo = init_repo()?;
     let loom = loom_path(repo.path());
     let client = GitClient::open(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-conflict.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -1175,7 +1180,7 @@ async fn bead_worktree_post_reset_porcelain_is_empty() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
 
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-clean.1")?;
     let created = client.create_worktree(&label, &bead).await?;
     client.reset_bead_clone(&created.path).await?;
@@ -1202,7 +1207,7 @@ async fn bead_workspace_reset_preserves_target_and_dotwrix() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
 
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-reset.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -1309,7 +1314,7 @@ async fn create_worktree_does_not_disable_signing() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
 
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-sign.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -1369,7 +1374,7 @@ async fn driver_fetches_bead_branch_from_workspace_path() -> Result<()> {
     let repo = init_repo()?;
     let loom = loom_path(repo.path());
     let client = GitClient::open(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-fetch.1")?;
     let created = client.create_worktree(&label, &bead).await?;
     agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
@@ -1431,7 +1436,7 @@ async fn host_key_policy_skips_repository_signature_verification() -> Result<()>
     let loom = loom_path(repo.path());
     let policy = RepoGitPolicy::resolve(&loom, "unused-wrix".into(), KeyMode::Host)?;
     let client = GitClient::open(repo.path())?.with_repo_git_policy(policy);
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-nosig.1")?;
     let created = client.create_worktree(&label, &bead).await?;
     agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
@@ -1490,7 +1495,7 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
     // fixture; production clones use Wrix context-stable helper tokens.
     let mut client = GitClient::open(repo.path())?;
     client.set_signing_key_override(key.clone());
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-sig.1")?;
     let created = client.create_worktree(&label, &bead).await?;
     std::fs::write(created.path.join("agent-change.txt"), "agent work\n")?;
@@ -1647,7 +1652,7 @@ async fn rebased_commits_verify_via_derived_allowed_signers() -> Result<()> {
 async fn bead_clone_origin_unchanged_under_a3() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-origin.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -1670,7 +1675,7 @@ async fn bead_clone_origin_unchanged_under_a3() -> Result<()> {
 async fn bead_branch_tracks_integration_branch_for_ahead_behind() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-upstream.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -2041,7 +2046,7 @@ async fn loop_startup_gc_drops_closed_bead_workspaces_for_current_molecule() -> 
     let repo = init_repo()?;
     let path = repo.path();
     let client = GitClient::open(path)?;
-    let molecule = MoleculeId::new("lm-current");
+    let molecule = MoleculeId::new("lm-current").unwrap();
     let bd = BdClient::with_runner(ScriptedBd::new([("lm-current.1", "closed")]));
 
     let dir = make_bead_clone_dir(path, "lm-current.1")?;
@@ -2064,7 +2069,7 @@ async fn loop_startup_gc_skips_closed_bead_workspaces_from_other_molecules() -> 
     let repo = init_repo()?;
     let path = repo.path();
     let client = GitClient::open(path)?;
-    let molecule = MoleculeId::new("lm-current");
+    let molecule = MoleculeId::new("lm-current").unwrap();
     let bd = BdClient::with_runner(ScriptedBd::new([
         ("lm-current.1", "closed"),
         ("lm-other.1", "closed"),
@@ -2095,7 +2100,7 @@ async fn loop_startup_gc_skips_open_bead_workspaces() -> Result<()> {
     let repo = init_repo()?;
     let path = repo.path();
     let client = GitClient::open(path)?;
-    let molecule = MoleculeId::new("lm-current");
+    let molecule = MoleculeId::new("lm-current").unwrap();
     let bd = BdClient::with_runner(ScriptedBd::new([
         ("lm-current.1", "open"),
         ("lm-current.2", "in_progress"),
@@ -2136,7 +2141,7 @@ async fn loop_startup_gc_logs_and_skips_corrupt_orphans() -> Result<()> {
     let client = GitClient::open(path)?;
     // `lm-current.1` is closed; `lm-unknown.1` has no bd record (lookup
     // fails); `not a bead id` does not parse as a `BeadId` at all.
-    let molecule = MoleculeId::new("lm-current");
+    let molecule = MoleculeId::new("lm-current").unwrap();
     let bd = BdClient::with_runner(ScriptedBd::new([("lm-current.1", "closed")]));
 
     let invalid = make_bead_clone_dir(path, "not a bead id")?;
@@ -2168,7 +2173,7 @@ async fn loop_startup_gc_logs_and_skips_corrupt_orphans() -> Result<()> {
 async fn loop_startup_gc_no_op_when_base_dir_missing() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
-    let molecule = MoleculeId::new("lm-current");
+    let molecule = MoleculeId::new("lm-current").unwrap();
     let bd = BdClient::with_runner(ScriptedBd::new([]));
 
     let removed = client.sweep_orphan_bead_clones(&bd, &molecule).await?;
@@ -2250,7 +2255,7 @@ async fn create_worktree_applies_context_stable_wrix_git_policy() -> Result<()> 
     );
     let client = GitClient::open(repo.path())?.with_repo_git_policy(policy);
 
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-sign.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
@@ -2437,7 +2442,7 @@ async fn bead_clone_branches_off_published_head_not_stale_base() -> Result<()> {
     let client = GitClient::open(path)?;
     client.fast_forward_integration_to_origin().await?;
 
-    let label = SpecLabel::new("harness");
+    let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-ff.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 

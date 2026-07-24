@@ -69,8 +69,8 @@ pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
 /// rather than silently regressing into the old `profile:base` recurrence.
 pub fn default_profile_for_spec(spec: &SpecLabel) -> ProfileName {
     match spec.as_str() {
-        "harness" | "templates" | "agent" | "gate" | "llm" | "tests" => ProfileName::new("rust"),
-        _ => ProfileName::new("base"),
+        "harness" | "templates" | "agent" | "gate" | "llm" | "tests" => ProfileName::rust(),
+        _ => ProfileName::base(),
     }
 }
 
@@ -240,11 +240,11 @@ mod tests {
 
     fn inputs() -> ReviewContextInputs {
         ReviewContextInputs {
-            label: SpecLabel::new("harness"),
+            label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".into(),
             pinned_context: "PIN".into(),
             companion_paths: vec![],
-            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+            molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
             base_commit: Some("abc123".into()),
             beads_summary: Some("- lm-1: First [open]".into()),
             test_sources: vec![],
@@ -252,7 +252,7 @@ mod tests {
             scratchpad_path: "/workspace/.loom/scratch/harness/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
             lane: ReviewLane::Both,
-            default_profile: default_profile_for_spec(&SpecLabel::new("harness")),
+            default_profile: default_profile_for_spec(&SpecLabel::new("harness").unwrap()),
             skill_index: SkillIndexMarkdown::empty(),
         }
     }
@@ -480,7 +480,7 @@ mod tests {
     fn default_profile_for_spec_returns_rust_for_cargo_bound_specs() {
         for label in ["harness", "templates", "agent", "gate", "llm", "tests"] {
             assert_eq!(
-                default_profile_for_spec(&SpecLabel::new(label)).as_str(),
+                default_profile_for_spec(&SpecLabel::new(label).unwrap()).as_str(),
                 "rust",
                 "{label} should default to profile:rust",
             );
@@ -490,11 +490,11 @@ mod tests {
     #[test]
     fn default_profile_for_spec_returns_base_for_nix_only_specs() {
         assert_eq!(
-            default_profile_for_spec(&SpecLabel::new("pre-commit")).as_str(),
+            default_profile_for_spec(&SpecLabel::new("pre-commit").unwrap()).as_str(),
             "base",
         );
         assert_eq!(
-            default_profile_for_spec(&SpecLabel::new("unknown-spec")).as_str(),
+            default_profile_for_spec(&SpecLabel::new("unknown-spec").unwrap()).as_str(),
             "base",
         );
     }
@@ -509,8 +509,8 @@ mod tests {
     fn rendered_template_omits_bd_mutation_instructions_and_default_profile() {
         for label in ["harness", "pre-commit"] {
             let mut i = inputs();
-            i.label = SpecLabel::new(label);
-            i.default_profile = default_profile_for_spec(&SpecLabel::new(label));
+            i.label = SpecLabel::new(label).unwrap();
+            i.default_profile = default_profile_for_spec(&SpecLabel::new(label).unwrap());
             let body = build_review_context(i).render().expect("render");
             // Negative prose references like "do NOT invoke `bd create`"
             // are fine — what must be absent is *instruction* shapes

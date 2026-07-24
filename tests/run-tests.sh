@@ -129,6 +129,7 @@ git remote add origin "$ORIGIN"
 git push -q -u origin main
 
 mkdir -p .beads/dolt
+chmod 700 .beads
 (
     cd .beads/dolt
     dolt init --name "Loom Smoke" --email smoke@example.com >/dev/null

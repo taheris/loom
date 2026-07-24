@@ -277,14 +277,17 @@ fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &
     db.rebuild(
         workspace,
         &[ActiveMolecule {
-            id: MoleculeId::new(mol_id),
-            spec_label: SpecLabel::new(label),
+            id: MoleculeId::new(mol_id).unwrap(),
+            spec_label: SpecLabel::new(label).unwrap(),
             base_commit: Some(base_sha.to_string()),
         }],
     )
     .expect("rebuild cache.db");
-    db.upsert_spec(&SpecLabel::new(label), &format!("specs/{label}.md"))
-        .expect("seed spec");
+    db.upsert_spec(
+        &SpecLabel::new(label).unwrap(),
+        &format!("specs/{label}.md"),
+    )
+    .expect("seed spec");
     drop(db);
 }
 
@@ -300,7 +303,7 @@ fn run_loom_gate_review(
 ) -> std::process::Output {
     let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open state db");
     let base = db
-        .molecule_for_spec(&SpecLabel::new(spec_label))
+        .molecule_for_spec(&SpecLabel::new(spec_label).unwrap())
         .expect("molecule lookup")
         .and_then(|row| row.base_commit)
         .expect("base commit");
@@ -619,7 +622,7 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
 /// fallback instead of recovering through the mint pipeline.
 fn seed_iteration_at_cap(workspace: &Path, mol_id: &str) {
     let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache.db");
-    db.set_iteration(&MoleculeId::new(mol_id), DEFAULT_MAX_ITERATIONS)
+    db.set_iteration(&MoleculeId::new(mol_id).unwrap(), DEFAULT_MAX_ITERATIONS)
         .expect("set iteration to cap");
     drop(db);
 }

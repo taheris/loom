@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"gate\", \"rubric\"])"
 ---
-Run only the rubric walk
+Run only the rubric walk.
 
 Usage: loom gate rubric [OPTIONS]
 

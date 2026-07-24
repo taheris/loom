@@ -75,11 +75,11 @@ mod tests {
 
     fn inputs() -> LoopContextInputs {
         LoopContextInputs {
-            label: SpecLabel::new("harness"),
+            label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".into(),
             pinned_context: "PIN".into(),
             companion_paths: vec![],
-            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+            molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
             issue_id: BeadId::new("lm-3hhwq.15").expect("valid bead id"),
             title: "Implement loom loop".into(),
             description: "Per-bead loop".into(),

@@ -2527,6 +2527,7 @@ name = "loom-events"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "displaydoc",
  "futures-core",
  "serde",
  "serde_json",
@@ -2643,6 +2644,10 @@ dependencies = [
 [[package]]
 name = "loom-test-support"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "proptest",
+]
 
 [[package]]
 name = "loom-tune"
@@ -2663,6 +2668,7 @@ dependencies = [
 name = "loom-walk"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "displaydoc",
  "proc-macro2",
  "serde",

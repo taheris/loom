@@ -47,7 +47,7 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            error!(error = %err, "runner exited with error");
+            error!(error = ?err, "runner exited with error");
             ExitCode::from(1)
         }
     }

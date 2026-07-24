@@ -50,6 +50,7 @@ mod newtype_identifiers;
 mod no_allow_dead_code;
 mod no_derive_from_on_newtypes;
 mod no_hardcoded_tmp_paths;
+mod no_ignore_for_flake;
 mod no_inline_suppression_comment_contract;
 mod no_panics_in_production;
 mod no_real_clock_outside_system_clock;
@@ -65,6 +66,7 @@ mod renderer_no_insta_dependency;
 mod result_hasher_single_call_site;
 mod session_trait_does_not_expose_typestate;
 mod session_trait_in_loom_events;
+mod shared_proptest_config;
 mod single_event_channel;
 mod surface_conformance;
 mod template_context_structs;
@@ -277,6 +279,10 @@ pub static REGISTRY: &[Walk] = &[
         run: no_hardcoded_tmp_paths::run,
     },
     Walk {
+        name: "no_ignore_for_flake",
+        run: no_ignore_for_flake::run,
+    },
+    Walk {
         name: "no_inline_suppression_comment_contract",
         run: no_inline_suppression_comment_contract::run,
     },
@@ -335,6 +341,10 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "session_trait_in_loom_events",
         run: session_trait_in_loom_events::run,
+    },
+    Walk {
+        name: "shared_proptest_config",
+        run: shared_proptest_config::run,
     },
     Walk {
         name: "single_event_channel",

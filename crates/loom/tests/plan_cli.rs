@@ -1,5 +1,9 @@
 //! Process-level contracts for the interactive `loom plan` boundary.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "validated identifier literals are fixed integration-test fixtures"
+)]
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -39,7 +43,7 @@ fn seed_workspace(root: &Path) -> PathBuf {
 
     let db = CacheDb::open(root.join(".loom/cache.db")).expect("open cache");
     db.notes_set(
-        &SpecLabel::new("agent"),
+        &SpecLabel::new("agent").unwrap(),
         "implementation",
         &["old implementation note".to_owned()],
         1,
@@ -144,7 +148,10 @@ fn plan_does_not_create_epic_or_touch_bd() {
     );
     let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("reopen cache");
     let notes = db
-        .notes_list(Some(&SpecLabel::new("agent")), Some("implementation"))
+        .notes_list(
+            Some(&SpecLabel::new("agent").unwrap()),
+            Some("implementation"),
+        )
         .expect("list implementation notes");
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].text, "merged implementation note");

@@ -129,7 +129,7 @@ verifies the claim*:
 |------------|------------------------|--------------|
 | **`[check]`** | Static analysis of source (presence, absence, structural property across files) | `[check](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that runs a walk / lint / AST analysis. Runner-matched targets batch and self-report inputs (see gate.md § Runners); an unmatched command invokes its own process. |
 | **`[test]`** | Runs the code in isolation and asserts behaviour | `[test](path)` — a language-native test path (e.g. `crate::module::test_name` for Rust, `tests/test_foo.py::test_bar` for Python). The gate batches all `[test]` targets in a single `loom gate test` invocation into one runner subprocess. |
-| **`[system]`** | Runs the assembled system (containers, packaging, end-to-end) | `[system](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that exercises the full system. Runner-matched targets batch (see gate.md § Runners); an unmatched command invokes its own process. |
+| **`[system]`** | Runs the assembled system (containers, packaging, end-to-end) | `[system](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that exercises the full system. Runner matches own resolution and input discovery; execution remains one process per system annotation as defined by [gate.md § Runners](../specs/gate.md#runners--per-language-batched-dispatch). |
 
 ### Stochastic annotation
 

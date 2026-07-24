@@ -4,6 +4,11 @@
 //! composes its own template prompt from Loom's exposed building blocks
 //! without touching any workflow-template internals.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "validated identifier literals are fixed integration-test fixtures"
+)]
+
 use anyhow::Result;
 use loom_templates::{
     AnnotationTarget, AnnotationTier, BadWalk, ConcernToken, CriterionAnnotation, CriterionId,
@@ -125,7 +130,7 @@ fn workspace_recovery_context_is_publicly_constructible_from_crate_root() {
 
 #[test]
 fn criterion_status_public_shape_carries_annotation_and_evidence_states() -> Result<()> {
-    let spec_label = loom_events::identifier::SpecLabel::new("templates");
+    let spec_label = loom_events::identifier::SpecLabel::new("templates").unwrap();
     let criterion_id = CriterionId::new("criterion-0123456789abcdef")?;
     let annotation = CriterionAnnotation {
         tier: AnnotationTier::Check,
@@ -174,7 +179,7 @@ fn criterion_status_public_shape_carries_annotation_and_evidence_states() -> Res
 
 #[test]
 fn previous_failure_public_variant_contract_is_constructible() {
-    let spec = loom_events::identifier::SpecLabel::new("templates");
+    let spec = loom_events::identifier::SpecLabel::new("templates").unwrap();
     let finding = Finding {
         token: ConcernToken::SpecCoherenceFail,
         route: loom_protocol::gate::FindingRoute::Deferred,
@@ -239,9 +244,9 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
         findings: vec![Finding {
             token: ConcernToken::SpecCoherenceFail,
             route: loom_protocol::gate::FindingRoute::Deferred,
-            bonds: vec![loom_events::identifier::SpecLabel::new("gate")],
+            bonds: vec![loom_events::identifier::SpecLabel::new("gate").unwrap()],
             target: FindingTarget::Criterion {
-                spec: loom_events::identifier::SpecLabel::new("gate"),
+                spec: loom_events::identifier::SpecLabel::new("gate").unwrap(),
                 anchor: "verifier-honesty".into(),
             },
             evidence: "annotation does not exercise the contract".into(),
@@ -276,7 +281,7 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
 fn plan_context_is_publicly_constructible_from_crate_root() {
     let _ctx = PlanContext {
         pinned_context: String::new(),
-        anchor_labels: vec![loom_events::identifier::SpecLabel::new("demo")],
+        anchor_labels: vec![loom_events::identifier::SpecLabel::new("demo").unwrap()],
         spec_index: String::new(),
         companion_paths: vec![],
         scratchpad_path: String::new(),
@@ -294,7 +299,7 @@ fn todo_context_is_publicly_constructible_from_crate_root() {
         pinned_context: String::new(),
         spec_index: String::new(),
         changed_specs: vec![TodoChangedSpec {
-            label: loom_events::identifier::SpecLabel::new("demo"),
+            label: loom_events::identifier::SpecLabel::new("demo").unwrap(),
             spec_path: "specs/demo.md".to_string(),
             diff: None,
         }],
@@ -307,7 +312,7 @@ fn todo_context_is_publicly_constructible_from_crate_root() {
         spec_epics: vec![],
         companion_paths: vec![],
         implementation_notes: vec![SpecImplementationNotes {
-            label: loom_events::identifier::SpecLabel::new("demo"),
+            label: loom_events::identifier::SpecLabel::new("demo").unwrap(),
             notes: vec![],
         }],
         criterion_status: vec![],
@@ -322,10 +327,10 @@ fn run_context_is_publicly_constructible_from_crate_root() {
 
     let _ctx = LoopContext {
         pinned_context: String::new(),
-        label: SpecLabel::new("demo"),
+        label: SpecLabel::new("demo").unwrap(),
         spec_path: String::new(),
         companion_paths: vec![],
-        molecule_id: Some(MoleculeId::new("lm-demo")),
+        molecule_id: Some(MoleculeId::new("lm-demo").unwrap()),
         issue_id: BeadId::new("lm-demo.1").ok(),
         title: None,
         description: None,

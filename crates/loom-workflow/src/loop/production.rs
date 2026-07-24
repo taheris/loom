@@ -1327,7 +1327,7 @@ where
         let molecule = if let Some(molecule) = self.handoff_molecule.as_ref() {
             Some(molecule.clone())
         } else if let Some(parent) = self.ready_parent.as_ref() {
-            Some(MoleculeId::new(parent.as_str()))
+            Some(parent.as_str().parse()?)
         } else {
             crate::resolve::resolve_open_epic(&self.bd, &self.label).await?
         };
@@ -2402,7 +2402,7 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: vec![Label::new("profile:base")],
+            labels: vec![Label::new("profile:base").expect("valid Label")],
             parent: None,
             metadata: Default::default(),
             notes: None,
@@ -2445,7 +2445,7 @@ mod tests {
                 .expect("origin tip before");
             let handoff = execute_molecule_push_gate(
                 &bd,
-                &SpecLabel::new("alpha"),
+                &SpecLabel::new("alpha").unwrap(),
                 None,
                 Path::new("must-not-run-review"),
                 Path::new("must-not-run-beads-push"),
@@ -2480,7 +2480,7 @@ mod tests {
             ok_stdout(b"[]"),
         ]));
 
-        let state = molecule_state(&bd, &MoleculeId::new("lm-parked"))
+        let state = molecule_state(&bd, &MoleculeId::new("lm-parked").unwrap())
             .await
             .expect("read molecule state");
 
@@ -2490,11 +2490,15 @@ mod tests {
     #[test]
     fn parked_state_includes_semantic_deferred_and_infra_labels() {
         let mut deferred = bead("lm-deferred");
-        deferred.labels.push(Label::new("loom:deferred"));
+        deferred
+            .labels
+            .push(Label::new("loom:deferred").expect("valid Label"));
         assert!(bead_has_parked_state(&deferred));
 
         let mut infra = bead("lm-infra");
-        infra.labels.push(Label::new("loom:infra"));
+        infra
+            .labels
+            .push(Label::new("loom:infra").expect("valid Label"));
         assert!(bead_has_parked_state(&infra));
     }
 
@@ -2517,13 +2521,13 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut controller = ProductionAgentLoopController::new(
             bd,
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -2565,13 +2569,13 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut controller = ProductionAgentLoopController::new(
             bd,
-            SpecLabel::new("spec-x"),
+            SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |cfg: SpawnConfig, _bead_id: BeadId| async move {
                 std::fs::write(cfg.workspace.join("spawn.txt"), "spawned\n")
                     .expect("write spawn file");
@@ -2588,7 +2592,9 @@ mod tests {
         );
         let mut infra_bead = bead("lm-infra");
         infra_bead.status = "blocked".to_string();
-        infra_bead.labels.push(Label::new("loom:infra"));
+        infra_bead
+            .labels
+            .push(Label::new("loom:infra").expect("valid Label"));
 
         let outcome = controller
             .run_bead(&infra_bead, None)
@@ -2627,13 +2633,13 @@ mod tests {
         let captured_prompts_inner = Arc::clone(&captured_prompts);
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("templates"),
+            SpecLabel::new("templates").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |cfg: SpawnConfig, _bead_id: BeadId| {
                 let captured_prompts = Arc::clone(&captured_prompts_inner);
                 async move {
@@ -2703,13 +2709,13 @@ mod tests {
         let bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(ready), ok_stdout(parent)]));
         let mut controller = ProductionAgentLoopController::new(
             bd,
-            SpecLabel::new("harness"),
+            SpecLabel::new("harness").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -2738,13 +2744,13 @@ mod tests {
         let captured_for_closure = Arc::clone(&captured);
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("spec-x"),
+            SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |cfg: SpawnConfig, _bead_id: BeadId| {
                 let captured = Arc::clone(&captured_for_closure);
                 async move {
@@ -2781,13 +2787,13 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("spec-x"),
+            SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace.clone(),
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -2832,13 +2838,13 @@ mod tests {
         let prompt_seen_inner = Arc::clone(&prompt_seen);
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("harness"),
+            SpecLabel::new("harness").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace.clone(),
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |cfg: SpawnConfig, _bead_id: BeadId| {
                 let captured = Arc::clone(&captured_for_closure);
                 let prompt_seen = Arc::clone(&prompt_seen_inner);
@@ -2866,7 +2872,7 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: vec![Label::new("profile:base")],
+            labels: vec![Label::new("profile:base").expect("valid Label")],
             parent: None,
             metadata: Default::default(),
             notes: None,
@@ -2905,7 +2911,7 @@ mod tests {
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("harness");
+        let label = SpecLabel::new("harness").unwrap();
         let bead_id = BeadId::new("lm-stashok").expect("valid bead id");
         let created = git
             .create_worktree(&label, &bead_id)
@@ -2923,7 +2929,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |cfg: SpawnConfig, _bead_id: BeadId| {
                 let captured_prompt = Arc::clone(&captured_prompt_inner);
                 async move {
@@ -2980,7 +2986,7 @@ mod tests {
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("harness");
+        let label = SpecLabel::new("harness").unwrap();
         let bead_id = BeadId::new("lm-conflict").expect("valid bead id");
         let created = git
             .create_worktree(&label, &bead_id)
@@ -3007,7 +3013,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |cfg: SpawnConfig, _bead_id: BeadId| {
                 let captured_prompt = Arc::clone(&captured_prompt_inner);
                 let conflict_body = Arc::clone(&conflict_body_inner);
@@ -3072,7 +3078,7 @@ mod tests {
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("harness");
+        let label = SpecLabel::new("harness").unwrap();
         let bead_id = BeadId::new("lm-event").expect("valid bead id");
         let created = git
             .create_worktree(&label, &bead_id)
@@ -3098,7 +3104,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |_cfg: SpawnConfig, bead_id: BeadId| {
                 let logs_root = logs_root_for_closure.clone();
                 let label = label_for_closure.clone();
@@ -3185,7 +3191,7 @@ mod tests {
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("harness");
+        let label = SpecLabel::new("harness").unwrap();
         let bead_id = BeadId::new("lm-stashfail").expect("valid bead id");
         let created = git
             .create_worktree(&label, &bead_id)
@@ -3224,7 +3230,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 panic!("spawn closure must not run after recovery stash failure");
             },
@@ -3261,13 +3267,13 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("spec-x"),
+            SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 // Nonzero exit + no marker = swallowed marker; we want to
                 // verify the exit_code path. Pass None marker so the
@@ -3307,13 +3313,13 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("spec-x"),
+            SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::PreflightFailed {
@@ -3349,13 +3355,13 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("spec-x"),
+            SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::MidSessionFailed {
@@ -3397,13 +3403,13 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("spec-x"),
+            SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 panic!("spawn closure must not be invoked when profile resolution fails");
             },
@@ -3415,7 +3421,7 @@ mod tests {
             status: "open".into(),
             priority: 2,
             issue_type: "task".into(),
-            labels: vec![Label::new("profile:nonexistent")],
+            labels: vec![Label::new("profile:nonexistent").expect("valid Label")],
             parent: None,
             metadata: Default::default(),
             notes: None,
@@ -3455,13 +3461,13 @@ mod tests {
         let manifest = Arc::new(ProfileImageManifest::from_path(&path).expect("parse manifest"));
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("spec-x"),
+            SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 panic!("spawn closure must not run for invalid spawn config");
             },
@@ -3490,7 +3496,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let mgr = LockManager::new(dir.path()).expect("lock manager");
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let root = BeadId::new("lm-lock").expect("valid bead id");
         let clock = SystemClock::new();
         let guard = mgr
@@ -3507,7 +3513,7 @@ mod tests {
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
             "alpha",
-            "lm-mol.1",
+            "lm-mol1",
             "deadbeef",
         ));
         let git = git_workspace(dir.path());
@@ -3519,7 +3525,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -3556,7 +3562,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
 
         // Recording stub: appends every invocation's argv (one per line,
         // tab-separated) to argv.log so the test can replay the call order.
@@ -3572,7 +3578,7 @@ mod tests {
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
             "alpha",
-            "lm-mol.1",
+            "lm-mol1",
             "deadbeef",
         ));
         let git = git_workspace(dir.path());
@@ -3584,7 +3590,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -3621,7 +3627,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
@@ -3633,7 +3639,7 @@ mod tests {
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
             "alpha",
-            "lm-mol.1",
+            "lm-mol1",
             "deadbeef",
         ));
         let git = git_workspace(dir.path());
@@ -3645,7 +3651,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -3683,7 +3689,7 @@ mod tests {
     async fn clean_push_fixture() -> (tempfile::TempDir, HandoffEvidence, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("gamma");
+        let label = SpecLabel::new("gamma").unwrap();
         let workspace = dir.path().to_path_buf();
         let git = git_workspace(&workspace);
         let gate_workspace = git.loom_workspace();
@@ -3711,7 +3717,7 @@ mod tests {
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
             "gamma",
-            "lm-mol.9",
+            "lm-mol9",
             "abc12345",
         ));
         let beads_push = dir.path().join("beads-push.sh");
@@ -3725,7 +3731,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -3797,7 +3803,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let workspace = dir.path().to_path_buf();
         seed_spec(&workspace, "alpha");
         let suppressed = crate::review::Finding {
@@ -3850,7 +3856,7 @@ mod tests {
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
             "alpha",
-            "lm-mol.1",
+            "lm-mol1",
             "deadbeef",
         ));
         let git = git_workspace(&workspace);
@@ -3886,7 +3892,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -3926,7 +3932,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let workspace = dir.path().to_path_buf();
         seed_spec(&workspace, "alpha");
 
@@ -3956,7 +3962,7 @@ mod tests {
         std::fs::write(&stub, stub_body).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let bd_runner = molecule_lookup_script(dir.path(), "alpha", "lm-mol.1", "deadbeef");
+        let bd_runner = molecule_lookup_script(dir.path(), "alpha", "lm-mol1", "deadbeef");
         let bd_calls = bd_runner.calls_handle();
         let bd = BdClient::with_runner(bd_runner);
         let git = git_workspace(&workspace);
@@ -3978,7 +3984,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             move |cfg: SpawnConfig, _bead_id: BeadId| {
                 let captured = Arc::clone(&captured_inner);
                 async move {
@@ -4016,13 +4022,13 @@ mod tests {
             assert!(
                 create
                     .windows(2)
-                    .any(|pair| pair[0] == "--parent" && pair[1] == "lm-mol.1")
+                    .any(|pair| pair[0] == "--parent" && pair[1] == "lm-mol1")
             );
             assert!(create.iter().any(|arg| arg.contains("loom:deferred")));
             assert!(
                 calls
                     .iter()
-                    .any(|call| { call == &["mol", "bond", "lm-mol.1", "lm-routed.1"] })
+                    .any(|call| { call == &["mol", "bond", "lm-mol1", "lm-routed.1"] })
             );
             assert!(calls.iter().any(|call| {
                 call.windows(2)
@@ -4115,13 +4121,13 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut controller = ProductionAgentLoopController::new(
             bd,
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -4193,13 +4199,13 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut controller = ProductionAgentLoopController::new(
             bd,
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -4250,13 +4256,13 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut controller = ProductionAgentLoopController::new(
             bd,
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -4327,13 +4333,13 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut controller = ProductionAgentLoopController::new(
             bd,
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -4373,13 +4379,13 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut controller = ProductionAgentLoopController::new(
             bd,
-            SpecLabel::new("agent"),
+            SpecLabel::new("agent").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -4431,13 +4437,13 @@ mod tests {
         let bd = BdClient::with_runner(scripted);
         let mut controller = ProductionAgentLoopController::new(
             bd,
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -4483,13 +4489,13 @@ mod tests {
 
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             stub.clone(),
             workspace.clone(),
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 panic!("spawn closure must not fire during exec_per_bead_gate");
             },
@@ -4531,7 +4537,7 @@ mod tests {
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("gate");
+        let label = SpecLabel::new("gate").unwrap();
         let root = BeadId::new("lm-gate").expect("valid bead id");
         let mgr = loom_driver::lock::LockManager::with_state_home(&workspace, dir.path())
             .expect("lock manager");
@@ -4565,7 +4571,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 panic!("spawn closure must not fire during exec_per_bead_gate");
             },
@@ -4620,13 +4626,13 @@ mod tests {
 
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             stub.clone(),
             workspace.clone(),
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 panic!("spawn closure must not fire during exec_per_bead_gate");
             },
@@ -4761,7 +4767,7 @@ mod tests {
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("gate");
+        let label = SpecLabel::new("gate").unwrap();
         let bead_id = BeadId::new("lm-1").expect("valid bead id");
         let logs_root = dir.path().join("logs");
         let mut sink = loom_driver::logging::LogSink::open_in_at(
@@ -4795,7 +4801,7 @@ mod tests {
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 panic!("spawn closure must not fire during exec_per_bead_gate");
             },
@@ -4910,13 +4916,13 @@ mod tests {
 
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
-            SpecLabel::new("gate"),
+            SpecLabel::new("gate").unwrap(),
             stub.clone(),
             workspace.clone(),
             git,
             manifest,
             None,
-            ProfileName::new("base"),
+            ProfileName::new("base").unwrap(),
             |_cfg: SpawnConfig, _bead_id: BeadId| async move {
                 panic!("spawn closure must not fire during exec_per_bead_gate");
             },

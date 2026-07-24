@@ -45,7 +45,7 @@ pub async fn touched_specs(git: &GitClient) -> Result<Vec<TouchedSpec>, TodoErro
             continue;
         }
         out.push(TouchedSpec {
-            label: SpecLabel::new(stem.to_string()),
+            label: stem.parse()?,
             spec_path,
             diff,
         });
@@ -80,12 +80,12 @@ mod tests {
     fn render_fanout_emits_path_markers_and_blank_separators() {
         let touched = vec![
             TouchedSpec {
-                label: SpecLabel::new("alpha"),
+                label: SpecLabel::new("alpha").unwrap(),
                 spec_path: PathBuf::from("specs/alpha.md"),
                 diff: "alpha diff\n".into(),
             },
             TouchedSpec {
-                label: SpecLabel::new("beta"),
+                label: SpecLabel::new("beta").unwrap(),
                 spec_path: PathBuf::from("specs/beta.md"),
                 diff: "beta diff".into(),
             },

@@ -1088,10 +1088,10 @@ documents in front of the agent with zero configuration.
   [check](cargo run -p loom-walk -- template_pinning_matrix)
 - `LoopContext` and `ReviewContext` carry `style_rules: String`; other
   phase contexts do not
-  [check](cargo test -p loom-templates --test render template_renders_are_byte_stable_across_runs)
+  [test](template_renders_are_byte_stable_across_runs)
 - `PlanContext` carries `spec_conventions: String`; other phase contexts
   do not
-  [check](cargo test -p loom-templates --test render template_renders_are_byte_stable_across_runs)
+  [test](template_renders_are_byte_stable_across_runs)
 - `LoomConfig.style_rules` defaults to `"docs/style-rules.md"`;
   `LoomConfig.spec_conventions` defaults to
   `"docs/spec-conventions.md"`; `LoomConfig.pinned_context` defaults to
@@ -1104,7 +1104,7 @@ documents in front of the agent with zero configuration.
   rule-family-agnostic: their bodies do not enumerate fixed prefixes like
   `SH-` / `RS-` / `COM-`; rule-ID examples in template prose are
   placeholders, not normative
-  [check](cargo test -p loom-templates --test render review_renders_style_rule_conformance_walkthrough)
+  [test](review_renders_style_rule_conformance_walkthrough)
 - Every non-pending cell of the pinning matrix above matches the actual
   `{% include %}` graph in `loom-templates/templates/` (transitive
   resolution); drift in either direction fails the audit
@@ -1168,7 +1168,7 @@ documents in front of the agent with zero configuration.
 
 - Every template × representative-input combination has an `insta`
   snapshot
-  [check](cargo test -p loom-templates --test snapshots)
+  [test](every_askama_template_has_snapshot)
 - Snapshot tests run under the workspace clippy test exemptions
   (no per-file `#![allow(clippy::unwrap_used, ...)]`)
   [check](cargo run -p loom-walk -- loom_templates_snapshots_no_crate_root_allow)
@@ -1351,9 +1351,9 @@ documents in front of the agent with zero configuration.
   profile via `default_profile_for_spec(&SpecLabel)`; cargo-bound
   specs (`harness`, `templates`, `agent`, `gate`, `llm`, `tests`)
   resolve to `profile:rust`
-  [check](cargo test -p loom-workflow --lib default_profile_for_spec_returns_rust_for_cargo_bound_specs)
+  [test](default_profile_for_spec_returns_rust_for_cargo_bound_specs)
 - Nix-only / unknown specs fall through to `profile:base`
-  [check](cargo test -p loom-workflow --lib default_profile_for_spec_returns_base_for_nix_only_specs)
+  [test](default_profile_for_spec_returns_base_for_nix_only_specs)
 - Mint applies the resolved default profile as a `profile:<name>`
   label on every fix-up and clarify bead it creates; the operator
   overrides via `bd update <id> --labels` post-mint

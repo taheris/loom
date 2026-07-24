@@ -43,12 +43,12 @@ pub async fn resolve_molecule<R: CommandRunner>(
         .await?;
     let outcome = match beads.len() {
         0 => ResolverOutcome::None,
-        1 => ResolverOutcome::Existing(MoleculeId::new(beads[0].id.as_str())),
+        1 => ResolverOutcome::Existing(beads[0].id.as_str().parse()?),
         _ => ResolverOutcome::InvariantViolation(
             beads
                 .iter()
-                .map(|b| MoleculeId::new(b.id.as_str()))
-                .collect(),
+                .map(|bead| bead.id.as_str().parse())
+                .collect::<Result<Vec<_>, _>>()?,
         ),
     };
     Ok(outcome)
@@ -112,7 +112,7 @@ mod tests {
     async fn zero_results_resolves_to_none() {
         let runner = ScriptedRunner::new(vec![ok_stdout("[]")]);
         let bd = BdClient::with_runner(runner);
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let outcome = resolve_molecule(&bd, &label).await.expect("resolve ok");
         assert_eq!(outcome, ResolverOutcome::None);
     }
@@ -122,11 +122,11 @@ mod tests {
         let body = epic_body(&["lm-mol"], "alpha");
         let runner = ScriptedRunner::new(vec![ok_stdout(&body)]);
         let bd = BdClient::with_runner(runner);
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let outcome = resolve_molecule(&bd, &label).await.expect("resolve ok");
         assert_eq!(
             outcome,
-            ResolverOutcome::Existing(MoleculeId::new("lm-mol"))
+            ResolverOutcome::Existing(MoleculeId::new("lm-mol").unwrap())
         );
     }
 
@@ -138,13 +138,16 @@ mod tests {
         let body = epic_body(&["lm-aaa", "lm-bbb"], "alpha");
         let runner = ScriptedRunner::new(vec![ok_stdout(&body)]);
         let bd = BdClient::with_runner(runner);
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
         let outcome = resolve_molecule(&bd, &label).await.expect("resolve ok");
         match outcome {
             ResolverOutcome::InvariantViolation(ids) => {
                 assert_eq!(
                     ids,
-                    vec![MoleculeId::new("lm-aaa"), MoleculeId::new("lm-bbb"),],
+                    vec![
+                        MoleculeId::new("lm-aaa").unwrap(),
+                        MoleculeId::new("lm-bbb").unwrap(),
+                    ],
                 );
             }
             other => panic!("expected InvariantViolation, got {other:?}"),

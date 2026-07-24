@@ -126,7 +126,7 @@ pub fn todo_fingerprint(
     let bytes = match serde_json::to_vec(&canonical) {
         Ok(bytes) => bytes,
         Err(err) => {
-            tracing::error!(target: "loom::bug", error = %err, "todo fingerprint canonicalization failed");
+            tracing::error!(target: "loom::bug", error = ?err, "todo fingerprint canonicalization failed");
             std::process::abort();
         }
     };
@@ -134,7 +134,7 @@ pub fn todo_fingerprint(
     match TodoFingerprint::new(&digest) {
         Ok(fingerprint) => fingerprint,
         Err(err) => {
-            tracing::error!(target: "loom::bug", error = %err, "blake3 todo fingerprint rejected");
+            tracing::error!(target: "loom::bug", error = ?err, "blake3 todo fingerprint rejected");
             std::process::abort();
         }
     }
@@ -151,12 +151,12 @@ mod tests {
         let work_epic = BeadId::new("lm-work").expect("valid bead id");
         let todo_head = GitSha::new(SHA).expect("valid git sha");
         let changed_specs = vec![changed_spec_context(
-            SpecLabel::new("alpha"),
+            SpecLabel::new("alpha").unwrap(),
             "specs/alpha.md",
             None,
         )];
         let fingerprint_input = vec![FingerprintSpecInput {
-            label: SpecLabel::new("alpha"),
+            label: SpecLabel::new("alpha").unwrap(),
             spec_path: "specs/alpha.md".to_string(),
             spec_blob_sha: SHA.to_string(),
             spec_epic_id: work_epic.clone(),
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn build_context_returns_unified_todo_context() {
         let ctx = build_template_context(base_fields(), vec![]);
-        assert_eq!(ctx.changed_specs[0].label, SpecLabel::new("alpha"));
+        assert_eq!(ctx.changed_specs[0].label, SpecLabel::new("alpha").unwrap());
         assert_eq!(ctx.work_epic.as_str(), "lm-work");
     }
 
@@ -190,7 +190,7 @@ mod tests {
     fn notes_thread_into_unified_context() {
         let mut base = base_fields();
         base.implementation_notes = vec![implementation_notes_context(
-            SpecLabel::new("alpha"),
+            SpecLabel::new("alpha").unwrap(),
             vec!["note one".into(), "note two".into()],
         )];
         let ctx = build_template_context(base, vec![]);
@@ -207,8 +207,11 @@ mod tests {
             CriterionStatus, EvidenceState,
         };
         let cs = vec![CriterionStatus {
-            spec_label: SpecLabel::new("harness"),
-            criterion_id: CriterionId::for_spec_text(&SpecLabel::new("harness"), "Build succeeds"),
+            spec_label: SpecLabel::new("harness").unwrap(),
+            criterion_id: CriterionId::for_spec_text(
+                &SpecLabel::new("harness").unwrap(),
+                "Build succeeds",
+            ),
             criterion_text: "Build succeeds".into(),
             annotation: CriterionAnnotation {
                 tier: AnnotationTier::Check,
@@ -230,7 +233,7 @@ mod tests {
     fn fingerprint_is_order_independent_for_changed_specs() {
         let head = GitSha::new(SHA).expect("valid git sha");
         let alpha = FingerprintSpecInput {
-            label: SpecLabel::new("alpha"),
+            label: SpecLabel::new("alpha").unwrap(),
             spec_path: "specs/alpha.md".to_string(),
             spec_blob_sha: SHA.to_string(),
             spec_epic_id: BeadId::new("lm-alpha").expect("valid bead id"),
@@ -238,7 +241,7 @@ mod tests {
             initialized: true,
         };
         let beta = FingerprintSpecInput {
-            label: SpecLabel::new("beta"),
+            label: SpecLabel::new("beta").unwrap(),
             spec_path: "specs/beta.md".to_string(),
             spec_blob_sha: SHA.to_string(),
             spec_epic_id: BeadId::new("lm-beta").expect("valid bead id"),
@@ -253,7 +256,7 @@ mod tests {
     #[test]
     fn changed_spec_context_sets_path_and_diff() {
         let changed = changed_spec_context(
-            SpecLabel::new("alpha"),
+            SpecLabel::new("alpha").unwrap(),
             PathBuf::from("specs/alpha.md")
                 .to_string_lossy()
                 .into_owned(),

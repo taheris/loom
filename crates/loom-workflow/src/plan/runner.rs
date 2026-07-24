@@ -405,7 +405,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
 
         run_with_timeout(
             dir.path(),
-            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
+            plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest),
             Duration::from_secs(1),
         )?;
 
@@ -430,7 +430,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             )),
         )?;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
-        let mut opts = plan_opts(vec![SpecLabel::new("harness")], bin, manifest);
+        let mut opts = plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest);
         opts.launcher_env = vec![
             ("WRIX_DEPLOY_KEY".to_string(), "/keys/repo".to_string()),
             (
@@ -457,11 +457,14 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
 
         let report = run_with_timeout(
             dir.path(),
-            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
+            plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest),
             Duration::from_secs(1),
         )?;
 
-        assert_eq!(report.anchor_labels, vec![SpecLabel::new("harness")]);
+        assert_eq!(
+            report.anchor_labels,
+            vec![SpecLabel::new("harness").unwrap()]
+        );
         let argv_log = std::fs::read_to_string(dir.path().join("argv.log"))?;
         assert!(argv_log.starts_with("run\n"));
         assert!(argv_log.contains("# Specification Interview"));
@@ -498,7 +501,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
 
         run_with_timeout(
             dir.path(),
-            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
+            plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest),
             Duration::from_secs(1),
         )?;
 
@@ -511,14 +514,17 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
         let dir = tempfile::tempdir()?;
         seed_workspace(dir.path())?;
         let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
-        db.replace_companions(&SpecLabel::new("harness"), &["lib/sandbox/".to_string()])?;
+        db.replace_companions(
+            &SpecLabel::new("harness").unwrap(),
+            &["lib/sandbox/".to_string()],
+        )?;
         drop(db);
         let manifest = three_profile_manifest(dir.path())?;
         let bin = stub_wrix(dir.path())?;
 
         let report = run_with_timeout(
             dir.path(),
-            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
+            plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest),
             Duration::from_secs(1),
         )?;
 
@@ -534,8 +540,8 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
         seed_workspace(dir.path())?;
         let manifest = three_profile_manifest(dir.path())?;
         let bin = stub_wrix(dir.path())?;
-        let mut opts = plan_opts(vec![SpecLabel::new("harness")], bin, manifest);
-        opts.cli_profile = Some(ProfileName::new("rust"));
+        let mut opts = plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest);
+        opts.cli_profile = Some(ProfileName::new("rust").unwrap());
 
         run_with_timeout(dir.path(), opts, Duration::from_secs(1))?;
 
@@ -554,8 +560,8 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
         )?;
         let manifest = three_profile_manifest(dir.path())?;
         let bin = stub_wrix(dir.path())?;
-        let mut opts = plan_opts(vec![SpecLabel::new("harness")], bin, manifest);
-        opts.cli_profile = Some(ProfileName::new("rust"));
+        let mut opts = plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest);
+        opts.cli_profile = Some(ProfileName::new("rust").unwrap());
         opts.agent_override = Some(AgentKind::Claude);
 
         run_with_timeout(dir.path(), opts, Duration::from_secs(1))?;
@@ -605,7 +611,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
 
         run_with_timeout(
             dir.path(),
-            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
+            plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest),
             Duration::from_secs(1),
         )?;
 
@@ -710,8 +716,8 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
         seed_workspace(dir.path())?;
         let manifest = three_profile_manifest(dir.path())?;
         let bin = stub_wrix(dir.path())?;
-        let mut opts = plan_opts(vec![SpecLabel::new("harness")], bin, manifest);
-        opts.cli_profile = Some(ProfileName::new("missing"));
+        let mut opts = plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest);
+        opts.cli_profile = Some(ProfileName::new("missing").unwrap());
 
         let err = run_with_timeout(dir.path(), opts, Duration::from_secs(1)).unwrap_err();
         assert!(matches!(
@@ -734,7 +740,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
 
         let err = run_with_timeout(
             dir.path(),
-            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
+            plan_opts(vec![SpecLabel::new("harness").unwrap()], bin, manifest),
             Duration::from_secs(1),
         )
         .unwrap_err();

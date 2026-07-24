@@ -820,7 +820,7 @@ impl GitClient {
                 Err(error) => {
                     warn!(
                         base = %base.display(),
-                        %error,
+                        ?error,
                         "sweep_orphan_bead_clones: failed to read entry — skipping",
                     );
                     continue;
@@ -832,7 +832,7 @@ impl GitClient {
                 Err(error) => {
                     warn!(
                         path = %path.display(),
-                        %error,
+                        ?error,
                         "sweep_orphan_bead_clones: failed to stat entry — skipping",
                     );
                     continue;
@@ -853,7 +853,7 @@ impl GitClient {
                 Err(error) => {
                     warn!(
                         path = %path.display(),
-                        %error,
+                        ?error,
                         "sweep_orphan_bead_clones: directory name is not a bead id — skipping",
                     );
                     continue;
@@ -865,7 +865,7 @@ impl GitClient {
                     warn!(
                         bead = %bead_id,
                         path = %path.display(),
-                        %error,
+                        ?error,
                         "sweep_orphan_bead_clones: bd show failed — skipping",
                     );
                     continue;
@@ -891,7 +891,7 @@ impl GitClient {
                     warn!(
                         bead = %bead_id,
                         path = %path.display(),
-                        %error,
+                        ?error,
                         "sweep_orphan_bead_clones: removal failed — skipping",
                     );
                 }

@@ -9,8 +9,8 @@ use thiserror::Error;
 pub struct MoleculeId(String);
 
 impl MoleculeId {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+    pub fn new(s: impl AsRef<str>) -> Result<Self, ParseMoleculeIdError> {
+        s.as_ref().parse()
     }
 
     pub fn as_str(&self) -> &str {
@@ -57,8 +57,8 @@ impl<'de> Deserialize<'de> for MoleculeId {
     }
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error("invalid molecule id `{0}`: expected `<prefix>-<base32>`")]
+#[derive(Debug, displaydoc::Display, Error, PartialEq, Eq)]
+/// invalid molecule id `{0}`: expected `<prefix>-<base32>`
 pub struct ParseMoleculeIdError(pub String);
 
 #[cfg(test)]
@@ -67,15 +67,16 @@ mod tests {
     use anyhow::Result;
 
     #[test]
-    fn display_round_trips_with_as_str() {
-        let id = MoleculeId::new("lm-3hhwq");
+    fn display_round_trips_with_as_str() -> Result<()> {
+        let id = MoleculeId::new("lm-3hhwq")?;
         assert_eq!(id.as_str(), "lm-3hhwq");
         assert_eq!(id.to_string(), "lm-3hhwq");
+        Ok(())
     }
 
     #[test]
     fn serde_round_trips_as_plain_string() -> Result<()> {
-        let id = MoleculeId::new("lm-mol42");
+        let id = MoleculeId::new("lm-mol42")?;
         let json = serde_json::to_string(&id)?;
         assert_eq!(json, "\"lm-mol42\"");
         let back: MoleculeId = serde_json::from_str(&json)?;
@@ -112,7 +113,7 @@ mod tests {
             "wx_mol",
         ];
         for input in cases {
-            let err = input.parse::<MoleculeId>().expect_err(input);
+            let err = MoleculeId::new(input).expect_err(input);
             assert_eq!(err, ParseMoleculeIdError(input.to_owned()));
         }
     }

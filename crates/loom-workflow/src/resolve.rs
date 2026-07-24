@@ -10,7 +10,7 @@ use displaydoc::Display;
 use thiserror::Error;
 
 use loom_driver::bd::{BdClient, BdError, CommandRunner, CreateOpts, ListOpts};
-use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_driver::identifier::{BeadId, MoleculeId, ParseMoleculeIdError, SpecLabel};
 
 pub const SPEC_METADATA_CLOSE_REASON: &str = "spec metadata carrier";
 
@@ -21,6 +21,8 @@ const SPEC_METADATA_STATUSES: &str = "open,in_progress,blocked,deferred,closed";
 pub enum ResolveError {
     /// bd query failed while resolving the active molecule
     Bd(#[from] BdError),
+    /// active epic carried an invalid molecule id
+    InvalidMoleculeId(#[from] ParseMoleculeIdError),
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running
     InvariantViolation { label: String, ids: String },
     /// duplicate loom:spec epics found for spec `{label}`: {ids}; close or relabel all but one before re-running
@@ -123,7 +125,7 @@ pub async fn resolve_open_epic<R: CommandRunner>(
         .collect::<Vec<_>>();
     match work_epics.len() {
         0 => Ok(None),
-        1 => Ok(Some(MoleculeId::new(work_epics[0].id.as_str()))),
+        1 => Ok(Some(work_epics[0].id.as_str().parse()?)),
         _ => {
             let ids = work_epics
                 .iter()
@@ -199,7 +201,7 @@ pub async fn resolve_or_mint_open_epic<R: CommandRunner>(
         .await?;
     Ok(ResolvedEpic {
         label: label.clone(),
-        molecule_id: MoleculeId::new(bead_id.as_str()),
+        molecule_id: bead_id.as_str().parse()?,
         was_minted: true,
     })
 }
@@ -249,12 +251,12 @@ mod tests {
     async fn resolve_or_mint_mints_when_zero_open_epics() {
         let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("lm-newepic\n")]);
         let bd = BdClient::with_runner(runner);
-        let label = SpecLabel::new("acme");
+        let label = SpecLabel::new("acme").unwrap();
         let resolved = resolve_or_mint_open_epic(&bd, &label, "deadbeef")
             .await
             .expect("resolve_or_mint ok");
         assert_eq!(resolved.label, label);
-        assert_eq!(resolved.molecule_id, MoleculeId::new("lm-newepic"));
+        assert_eq!(resolved.molecule_id, MoleculeId::new("lm-newepic").unwrap());
         assert!(resolved.was_minted);
     }
 
@@ -271,11 +273,14 @@ mod tests {
         }]"#;
         let runner = ScriptedRunner::new(vec![ok_stdout(existing)]);
         let bd = BdClient::with_runner(runner);
-        let label = SpecLabel::new("acme");
+        let label = SpecLabel::new("acme").unwrap();
         let resolved = resolve_or_mint_open_epic(&bd, &label, "deadbeef")
             .await
             .expect("resolve_or_mint ok");
-        assert_eq!(resolved.molecule_id, MoleculeId::new("lm-existing"));
+        assert_eq!(
+            resolved.molecule_id,
+            MoleculeId::new("lm-existing").unwrap()
+        );
         assert!(!resolved.was_minted);
     }
 
@@ -293,11 +298,11 @@ mod tests {
         let runner =
             ScriptedRunner::new(vec![ok_stdout(only_spec_epic), ok_stdout("lm-newwork\n")]);
         let bd = BdClient::with_runner(runner);
-        let label = SpecLabel::new("acme");
+        let label = SpecLabel::new("acme").unwrap();
         let resolved = resolve_or_mint_open_epic(&bd, &label, "deadbeef")
             .await
             .expect("resolve_or_mint ok");
-        assert_eq!(resolved.molecule_id, MoleculeId::new("lm-newwork"));
+        assert_eq!(resolved.molecule_id, MoleculeId::new("lm-newwork").unwrap());
         assert!(
             resolved.was_minted,
             "spec epics are metadata carriers and must not satisfy work-epic resolution",
@@ -312,7 +317,7 @@ mod tests {
         ]"#;
         let runner = ScriptedRunner::new(vec![ok_stdout(conflict)]);
         let bd = BdClient::with_runner(runner);
-        let label = SpecLabel::new("acme");
+        let label = SpecLabel::new("acme").unwrap();
         let err = resolve_or_mint_open_epic(&bd, &label, "deadbeef")
             .await
             .expect_err("must refuse");
@@ -332,7 +337,7 @@ mod tests {
             ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("lm-spec\n"), ok_stdout("")]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let label = SpecLabel::new("alpha");
+        let label = SpecLabel::new("alpha").unwrap();
 
         let resolved = ensure_spec_metadata_epic(&bd, &label, false)
             .await
@@ -379,7 +384,7 @@ mod tests {
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
 
-        let resolved = ensure_spec_metadata_epic(&bd, &SpecLabel::new("alpha"), false)
+        let resolved = ensure_spec_metadata_epic(&bd, &SpecLabel::new("alpha").unwrap(), false)
             .await
             .expect("metadata ensure ok");
 
@@ -400,7 +405,7 @@ mod tests {
         let runner = ScriptedRunner::new(vec![ok_stdout(duplicate)]);
         let bd = BdClient::with_runner(runner);
 
-        let err = ensure_spec_metadata_epic(&bd, &SpecLabel::new("alpha"), false)
+        let err = ensure_spec_metadata_epic(&bd, &SpecLabel::new("alpha").unwrap(), false)
             .await
             .expect_err("duplicate metadata epics refuse");
 
@@ -419,7 +424,7 @@ mod tests {
         let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("lm-newepic\n")]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let label = SpecLabel::new("acme");
+        let label = SpecLabel::new("acme").unwrap();
         let _ = resolve_or_mint_open_epic(&bd, &label, "deadbeef")
             .await
             .expect("ok");
