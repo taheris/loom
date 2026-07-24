@@ -237,6 +237,66 @@ pub enum Cost {
     AgentReplay,
 }
 
+/// Registry-owned checker implementation dispatch key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Implementation {
+    SkillRegistry,
+    SkillMaterialization,
+    SkillProtocolBoundary,
+    TemplateCompile,
+    TemplateConformance,
+    TuneCaseValidation,
+    ReviewFindingRecall,
+    TodoDecomposition,
+    LoopVerifyAfterEdit,
+    LoopScopeDiscipline,
+    InboxResolutionPath,
+    TuneApplyHandoff,
+    AgentContextBeforeEdit,
+    LegacyReviewRecall,
+}
+
+/// Non-negative soft-score delta required to classify a regression.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct SoftRegressionEpsilon(f64);
+
+impl SoftRegressionEpsilon {
+    pub fn new(value: f64) -> Result<Self, ParseSoftRegressionEpsilonError> {
+        if value.is_finite() && (0.0..=1.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(ParseSoftRegressionEpsilonError::OutOfRange { value })
+        }
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl Eq for SoftRegressionEpsilon {}
+
+impl Serialize for SoftRegressionEpsilon {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f64(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for SoftRegressionEpsilon {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f64::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Soft regression epsilon parse failures.
+#[derive(Debug, Clone, PartialEq, Display, Error)]
+pub enum ParseSoftRegressionEpsilonError {
+    /// soft regression epsilon `{value}` must be finite and in the range 0.0..=1.0
+    OutOfRange { value: f64 },
+}
+
 /// Checker-specific case schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -262,8 +322,8 @@ pub struct Metadata {
     pub cost: Cost,
     pub mandatory: bool,
     pub case_roles: Vec<CaseRole>,
-    pub implementation: String,
-    pub soft_regression_epsilon: String,
+    pub implementation: Implementation,
+    pub soft_regression_epsilon: SoftRegressionEpsilon,
     pub schema: Option<CaseSchema>,
     pub retirement: Option<String>,
 }
@@ -402,8 +462,8 @@ struct MetadataDescriptor {
     cost: Cost,
     mandatory: bool,
     case_roles: &'static [CaseRole],
-    implementation: &'static str,
-    soft_regression_epsilon: &'static str,
+    implementation: Implementation,
+    soft_regression_epsilon: SoftRegressionEpsilon,
     schema: Option<CaseSchema>,
     retirement: Option<&'static str>,
 }
@@ -423,8 +483,8 @@ impl MetadataDescriptor {
             cost: self.cost,
             mandatory: self.mandatory,
             case_roles: self.case_roles.to_vec(),
-            implementation: self.implementation.to_owned(),
-            soft_regression_epsilon: self.soft_regression_epsilon.to_owned(),
+            implementation: self.implementation,
+            soft_regression_epsilon: self.soft_regression_epsilon,
             schema: self.schema,
             retirement: self.retirement.map(ToOwned::to_owned),
         })
@@ -445,35 +505,35 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
             "Skill registry legality",
             "Validates skill parsing, frontmatter, names, duplicates, and overrides.",
             SKILL_TARGET,
-            "skill_registry",
+            Implementation::SkillRegistry,
         ),
         preflight(
             "preflight.skill.materialization",
             "Skill materialization legality",
             "Validates materialized skill paths and backend registration inputs.",
             SKILL_TARGET,
-            "skill_materialization",
+            Implementation::SkillMaterialization,
         ),
         preflight(
             "preflight.skill.protocol-boundary",
             "Skill protocol boundary",
             "Ensures skills cannot weaken compiled phase protocol or gate contracts.",
             SKILL_TARGET,
-            "skill_protocol_boundary",
+            Implementation::SkillProtocolBoundary,
         ),
         preflight(
             "preflight.template.compile",
             "Template compilation",
             "Compiles candidate phase and partial templates against typed Askama contexts.",
             TEMPLATE_TARGET,
-            "template_compile",
+            Implementation::TemplateCompile,
         ),
         preflight(
             "preflight.template.conformance",
             "Template conformance",
             "Validates include graph, marker ownership, and protocol surfaces.",
             TEMPLATE_TARGET,
-            "template_conformance",
+            Implementation::TemplateConformance,
         ),
         preflight(
             "preflight.tune.case-validation",
@@ -484,14 +544,14 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
                 target::Kind::Phase,
                 target::Kind::Partial,
             ],
-            "tune_case_validation",
+            Implementation::TuneCaseValidation,
         ),
         behavior(
             "behavior.review.finding-recall",
             "Review finding recall",
             "Runs review on a known diff and scores expected findings.",
             SKILL_PHASE_TARGET,
-            "review_finding_recall",
+            Implementation::ReviewFindingRecall,
             CaseSchema::ReviewFindingRecall,
         ),
         behavior(
@@ -499,7 +559,7 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
             "Todo decomposition",
             "Runs todo decomposition and scores parseable, scoped LOOM_TODO output.",
             SKILL_PHASE_TARGET,
-            "todo_decomposition",
+            Implementation::TodoDecomposition,
             CaseSchema::TodoDecomposition,
         ),
         behavior(
@@ -507,7 +567,7 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
             "Loop verify after edit",
             "Verifies relevant commands ran after final relevant edits.",
             SKILL_PHASE_TARGET,
-            "loop_verify_after_edit",
+            Implementation::LoopVerifyAfterEdit,
             CaseSchema::LoopVerifyAfterEdit,
         ),
         behavior(
@@ -515,7 +575,7 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
             "Loop scope discipline",
             "Scores solving the requested task without unrelated edits.",
             SKILL_PHASE_TARGET,
-            "loop_scope_discipline",
+            Implementation::LoopScopeDiscipline,
             CaseSchema::LoopScopeDiscipline,
         ),
         behavior(
@@ -523,7 +583,7 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
             "Inbox resolution path",
             "Scores chat-based resolution without removed host-side mutation commands.",
             SKILL_PHASE_TARGET,
-            "inbox_resolution_path",
+            Implementation::InboxResolutionPath,
             CaseSchema::InboxResolutionPath,
         ),
         behavior(
@@ -531,7 +591,7 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
             "Tune apply handoff",
             "Scores LOOM_APPLY handoff without chat-side push or integration mutation.",
             SKILL_PHASE_TARGET,
-            "tune_apply_handoff",
+            Implementation::TuneApplyHandoff,
             CaseSchema::TuneApplyHandoff,
         ),
         behavior(
@@ -539,7 +599,7 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
             "Agent context before edit",
             "Verifies required context was read before the first relevant edit.",
             SKILL_PHASE_TARGET,
-            "agent_context_before_edit",
+            Implementation::AgentContextBeforeEdit,
             CaseSchema::AgentContextBeforeEdit,
         ),
         MetadataDescriptor {
@@ -552,8 +612,8 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
             cost: Cost::AgentReplay,
             mandatory: false,
             case_roles: REGRESSION,
-            implementation: "legacy_review_recall",
-            soft_regression_epsilon: "0.01",
+            implementation: Implementation::LegacyReviewRecall,
+            soft_regression_epsilon: SoftRegressionEpsilon(0.01),
             schema: Some(CaseSchema::ReviewFindingRecall),
             retirement: Some("Use behavior.review.finding-recall."),
         },
@@ -565,7 +625,7 @@ fn preflight(
     title: &'static str,
     summary: &'static str,
     target_kinds: &'static [target::Kind],
-    implementation: &'static str,
+    implementation: Implementation,
 ) -> MetadataDescriptor {
     MetadataDescriptor {
         id,
@@ -578,7 +638,7 @@ fn preflight(
         mandatory: true,
         case_roles: &[],
         implementation,
-        soft_regression_epsilon: "0.01",
+        soft_regression_epsilon: SoftRegressionEpsilon(0.01),
         schema: None,
         retirement: None,
     }
@@ -589,7 +649,7 @@ fn behavior(
     title: &'static str,
     summary: &'static str,
     target_kinds: &'static [target::Kind],
-    implementation: &'static str,
+    implementation: Implementation,
     schema: CaseSchema,
 ) -> MetadataDescriptor {
     MetadataDescriptor {
@@ -603,7 +663,7 @@ fn behavior(
         mandatory: false,
         case_roles: REGRESSION,
         implementation,
-        soft_regression_epsilon: "0.01",
+        soft_regression_epsilon: SoftRegressionEpsilon(0.01),
         schema: Some(schema),
         retirement: None,
     }

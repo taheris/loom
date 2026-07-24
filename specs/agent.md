@@ -152,41 +152,14 @@ Backends carry no per-instance state — the type parameter conveys all
 information. The implementation uses native `async fn` in traits
 (edition 2024) with static dispatch, avoiding the `async-trait` crate.
 
-### Skill Registration and Disclosure
+### Skill Registration Integration
 
-Skill disclosure is derived from the resolved per-phase `agent.backend` plus
-`[skills]` policy, not from a separate backend-like skill mode. Direct behavior
-therefore comes from `agent.backend = "direct"`; no `mode = "direct"` flag
-exists for skills.
-
-The workflow resolves skills before spawning an agent session:
-
-1. `loom-skills` discovers and parses candidates, resolves duplicates and
-   built-in overrides, applies phase/profile filters, and materializes built-ins
-   under the session scratch directory.
-2. The workflow selects a disclosure mode from `[skills].registration`:
-   `auto` (default) or `prompt`.
-3. The prompt receives the `SkillIndexMarkdown` rendered through
-   `partial/skill_index.md`.
-4. The backend spawn path receives a `MaterializedRegistry` plus the selected
-   disclosure mode.
-
-`registration = "auto"` requires native registration for a backend that declares
-native skill support. Native registration failure is a fatal spawn/setup error;
-Loom does not silently fall back to prompt disclosure because that would hide a
-backend capability regression. Backends without native skill support, and all
-sessions when `registration = "prompt"`, use prompt disclosure: the skill index
-contains readable paths and the agent loads full skill bodies on demand.
-
-Direct has no native skill registry in `loom-llm::Conversation`; it always uses
-prompt disclosure. Pi and Claude may use native skill mechanisms only when Loom
-has a concrete, tested registrar for the runtime/version. Loom does not infer
-native support from the product name. Exact per-backend mechanics (config files,
-package directories, or RPC commands) are backend implementation details, but
-the user-visible contract is common: after native registration succeeds, the
-skill index lists `name` + `description` (paths only when
-`[skills].show_paths = "always"`); in prompt disclosure it lists `name` +
-`description` + `path`.
+[skills.md § Registration and Progressive Disclosure](skills.md#registration-and-progressive-disclosure)
+owns discovery, policy selection, disclosure contents, and path visibility. The
+agent layer accepts that resolved result at spawn: a backend with a tested native
+registrar performs the requested registration and fails setup if registration
+fails, while Direct consumes the prompt-disclosure result through its `Read`
+tool. Backend adapters do not reinterpret the skills policy.
 
 ### Session Lifecycle Contract
 
@@ -1174,8 +1147,8 @@ the entrypoint run the wrong runtime.
 - `registration = "prompt"` disables native registration globally and renders
       prompt-disclosure paths for Pi, Claude, and Direct
   [test](prompt_skill_registration_policy_disables_native)
-- Direct sessions always use prompt disclosure: the skill index contains paths
-      and full skill bodies are loaded through Direct's `Read` tool on demand
+- Direct sessions consume the prompt-disclosure result produced by `loom-skills`,
+      and disclosed skill bodies are loadable through Direct's `Read` tool
   [test](direct_skill_disclosure_uses_readable_paths)
 
 ### Interactive shell-out
@@ -1310,12 +1283,12 @@ the entrypoint run the wrong runtime.
    `agent.provider` and `agent.model_id`. Valid `agent.backend` values are
    `claude`, `pi`, and `direct`. `--agent` CLI flag overrides all phase
    config for the current invocation.
-7. **Skill registration policy** — before spawn, the workflow passes an
-   applicable/materialized skill registry and disclosure mode to the backend.
-   `registration = "auto"` requires native registration for native-capable
-   backends and treats registration failure as fatal; `registration = "prompt"`
-   disables native registration globally. Direct has no native skill registry
-   and always consumes the prompt-disclosure index plus readable paths.
+7. **Skill registration integration** — before spawn, the workflow passes the
+   resolved registry/disclosure result owned by
+   [skills.md](skills.md#registration-and-progressive-disclosure) to the backend.
+   Agent adapters execute that result without defining a second policy; native
+   registrar failure remains a spawn/setup failure, and Direct loads disclosed
+   skills through `Read`.
 8. **Interactive launch profile contract** — The launch matrix, Pi chat
    TTY/RPC split, and unsupported phase/backend rejections are defined once
    in [Interactive Shell-Out](#interactive-shell-out). Image-selection

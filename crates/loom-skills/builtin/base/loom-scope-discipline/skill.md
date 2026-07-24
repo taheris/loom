@@ -7,4 +7,4 @@ metadata:
 ---
 # Scope Discipline
 
-Keep the change focused on the requested issue and its directly required verifiers. When you discover adjacent work, record it as a bead instead of folding it into the current diff. Prefer small, reviewable changes over broad cleanup.
+Keep work focused on the requested issue and its directly required verifiers. Surface adjacent work through the active phase's authorized output: implementation phases may create a bead when their prompt permits it, while inspection-only review reports the work as finding evidence for the driver. Prefer small, reviewable changes over broad cleanup.

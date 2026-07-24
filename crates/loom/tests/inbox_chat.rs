@@ -241,7 +241,12 @@ case "$mode" in
         done < <(printf '%s\n' "$prompt" | awk '/^### [0-9]+\. lm-/ {{print $3}}')
         ;;
     accept-tune)
+        workspace="${{2:?}}"
         while IFS= read -r id; do
+            manifest="$workspace/.loom/tune/$id/manifest.json"
+            if [[ -f "$manifest" ]]; then
+                sed -i -e 's/"state":[[:space:]]*"pending"/"state":"accepted"/' "$manifest"
+            fi
             bd update "$id" --status open --set-metadata loom.tune.state=accepted
         done < <(printf '%s\n' "$prompt" | awk '/^### [0-9]+\. lm-/ && /\[tune\]/ {{print $3}}')
         ;;
@@ -589,7 +594,21 @@ fn create_tune_proposal(env: &ChatRun, id: &str, edits: &[(&str, &str)]) {
             .join(".loom/tune")
             .join(id)
             .join("manifest.json"),
-        serde_json::json!({"proposal_id": id}).to_string(),
+        serde_json::json!({
+            "proposal_id": id,
+            "state": "pending",
+            "targets": ["skill:fixture"],
+            "level": "fast",
+            "seed": 7,
+            "base_commit": base.clone(),
+            "proposal_branch": branch.clone(),
+            "proposal_head": head.clone(),
+            "plan_hash": "fixture-plan",
+            "case_counts": {"declared": 0, "mined_train": 0, "mined_selection": 0, "selected": 0, "skipped": 0},
+            "outcome_counts": {"pending": 0, "passed": 0, "failed": 0, "blocked": 0},
+            "evidence_split": {"algorithm": "sha256-salt-v1", "salt_id": "fixture", "selection_fraction": 0.34},
+        })
+        .to_string(),
     )
     .expect("write manifest");
     seed_bead(
@@ -606,9 +625,16 @@ fn create_tune_proposal(env: &ChatRun, id: &str, edits: &[(&str, &str)]) {
         serde_json::json!({
             "loom.tune.id": id,
             "loom.tune.state": "pending",
+            "loom.tune.targets": ["skill:fixture"],
+            "loom.tune.level": "fast",
+            "loom.tune.seed": 7,
             "loom.tune.base_commit": base,
             "loom.tune.proposal_branch": branch,
             "loom.tune.proposal_head": head,
+            "loom.tune.plan_hash": "fixture-plan",
+            "loom.tune.case_counts": {"declared": 0, "mined_train": 0, "mined_selection": 0, "selected": 0, "skipped": 0},
+            "loom.tune.outcome_counts": {"pending": 0, "passed": 0, "failed": 0, "blocked": 0},
+            "loom.tune.evidence_split": {"algorithm": "sha256-salt-v1", "salt_id": "fixture", "selection_fraction": 0.34},
         }),
     );
 }
@@ -1257,6 +1283,45 @@ fn inbox_apply_marker_triggers_single_driver_handoff() {
     let origin_head =
         sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin head");
     assert_eq!(integration_head, origin_head);
+}
+
+#[test]
+fn inbox_apply_blocks_manifest_bead_disagreement() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-appm", &[("proposal.txt", "accepted\n")]);
+    let manifest_path = env.workspace.join(".loom/tune/lm-appm/manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest"))
+            .expect("manifest json");
+    manifest["proposal_head"] = serde_json::json!("disagrees-with-bead");
+    std::fs::write(&manifest_path, manifest.to_string()).expect("write mismatched manifest");
+    let marker = apply_marker(&["lm-appm"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &["-p", "lm-appm"],
+        &[
+            ("WRIX_STUB_MARKER", marker.as_str()),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", loom_stub_path.as_str()),
+        ],
+    );
+
+    assert!(
+        !output.status.success(),
+        "manifest disagreement must block apply"
+    );
+    let metadata = read_metadata(&env.state_dir, "lm-appm");
+    assert_eq!(metadata["loom.tune.state"], "blocked");
+    assert_eq!(read_field(&env.state_dir, "lm-appm", "status"), "blocked");
+    assert!(
+        read_labels(&env.state_dir, "lm-appm")
+            .iter()
+            .any(|label| label == "loom:blocked")
+    );
 }
 
 #[test]

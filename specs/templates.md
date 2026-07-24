@@ -61,21 +61,11 @@ workspace lint.
 
 ### Template Tuning Proposals
 
-Loom's workflow templates remain compiled source. `loom tune phase fast|run|full`
-and `loom tune partial fast|run|full` may propose source edits, but they do so in
-an isolated `.loom/tune/<bead-id>/repo/` worktree and never as runtime template
-overrides. A candidate template proposal must pass the same compile/render
-boundary real source uses before it reaches human review:
-
-1. Askama compiles the candidate templates against their typed contexts.
-2. Representative render snapshots are produced in the proposal worktree.
-3. Template conformance walkers validate the include graph, terminal-marker
-   ownership, options/findings wire-format single-source rules, and surface
-   references.
-4. The proposal is exposed through `loom inbox` only after validation succeeds.
-
-This lets the SkillOpt discipline improve templates while preserving the core
-safety property: phase protocol is reviewed source, not dynamic prompt state.
+Loom's workflow templates remain compiled source rather than runtime overrides.
+[skills.md § Tune Proposal Worktrees and Beads](skills.md#tune-proposal-worktrees-and-beads)
+owns proposal isolation, candidate validation, and inbox-exposure policy for
+phase and partial tuning. This spec owns the compile-time template surface those
+validators exercise.
 
 ### Partials
 
@@ -90,7 +80,7 @@ Current and target v1 set; pending additions are marked in the pinning matrix:
 | `spec_header.md` | Render spec label/work-root context supplied by the phase |
 | `companions_context.md` | List companion paths declared on the spec(s) in scope |
 | `scratchpad.md` | Pin the per-session scratchpad path |
-| `skill_index.md` | Target v1 partial that renders the compact skill index produced by `loom-skills`: skill `name`, `description`, and paths when disclosure mode requires them. Full skill bodies are not pinned into the prompt. |
+| `skill_index.md` | Render the precomputed compact index produced under [skills.md § Registration and Progressive Disclosure](skills.md#registration-and-progressive-disclosure). |
 | `progress_markers.md` | Document `LOOM_COMPLETE` success and the loop-only `LOOM_NOOP` empty-diff success terminator. **Not pinned in `todo.md`** because todo success is the typed `LOOM_TODO:` payload, not a generic complete/no-op marker. |
 | `todo_success.md` | Document the todo-specific success terminator `LOOM_TODO: <json>` and the `loom-protocol::todo::TodoSuccess` shape. Pinned only by `todo.md`. |
 | `self_report_markers.md` | Document direct loop/todo cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`, including bd-backed persistence for direct `LOOM_CLARIFY` in those phases. |
@@ -258,18 +248,12 @@ workflow/manifests, not rendered in normal prompts.
 
 ### Skill-Index Partial
 
-`partial/skill_index.md` is included by every agent-bearing template. It is the
-only workflow-template location that tells an agent how to discover dynamic
-skills. The partial must preserve the templates/skills boundary:
-
-- It lists compact skill entries only; full skill bodies are loaded on demand.
-- In native-registered mode, entries contain `name` + `description` and instruct
-  the agent to use its native skill mechanism. Paths appear only when
-  `[skills].show_paths = "always"`.
-- In prompt-disclosure mode, entries contain `name` + `description` + `path` and
-  instruct the agent to read the path when the skill is relevant.
-- It states that skills are additive strategy guidance and cannot override phase
-  protocol, terminal markers, or gate requirements.
+`partial/skill_index.md` is included by every agent-bearing template and renders
+the prompt-ready `SkillIndexMarkdown` value unchanged. Disclosure modes, entry
+contents, and path policy are owned by
+[skills.md § Registration and Progressive Disclosure](skills.md#registration-and-progressive-disclosure).
+The partial adds only the template-owned boundary reminder that skill guidance
+cannot override phase protocol, terminal markers, or gate requirements.
 
 ### Workspace-Recovery Surface
 
@@ -1113,11 +1097,10 @@ documents in front of the agent with zero configuration.
   is the only workflow-template location that describes skill discovery/loading
   semantics
   [check](cargo run -p loom-walk -- template_pinning_matrix)
-- `partial/skill_index.md` renders `{{ skill_index }}`, contains no full
-  built-in skill body literals, explains native-registered vs
-  prompt-disclosure loading, and states that skills are additive guidance
-  that cannot override phase protocol, terminal markers, or gate
-  requirements
+- `partial/skill_index.md` renders the precomputed `{{ skill_index }}` without
+  reconstructing skills-owned disclosure policy, contains no built-in skill
+  body literals, and states that skill guidance cannot override phase protocol,
+  terminal markers, or gate requirements
   [test](skill_index_partial_renders_precomputed_markdown)
 - `partial/interview_modes.md` exists, is included by `plan.md` only,
   and is omitted from non-planning templates
@@ -1609,13 +1592,12 @@ documents in front of the agent with zero configuration.
    back into a prompt is wrapped in `<agent-output>` /
    `</agent-output>`.
 8. **Skill index.** `partial/skill_index.md` is included by every
-   agent-bearing template and renders a `SkillIndexMarkdown` value produced by
-   `loom-skills`. It lists compact entries only; full skill bodies remain
-   on-demand files or native backend registrations.
-9. **Template tuning validation.** `loom tune phase fast|run|full` and `loom tune partial fast|run|full`
-   candidates must compile under Askama, render representative snapshots, and
-   pass template conformance walkers in the proposal worktree before entering
-   `loom inbox`.
+   agent-bearing template and renders the prompt-ready `SkillIndexMarkdown`
+   produced under [skills.md](skills.md#registration-and-progressive-disclosure)
+   without reinterpreting it.
+9. **Template tuning boundary.** Template source remains compiled and cannot be
+   hot-loaded; tuning proposal isolation, validation, and inbox exposure are
+   owned by [skills.md](skills.md#tune-proposal-worktrees-and-beads).
 10. **Snapshot tests.** Every template × representative-input
    combination has an `insta` snapshot.
 11. **Typed `PreviousFailure`** — `LoopContext.previous_failure` is

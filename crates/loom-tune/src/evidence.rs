@@ -219,11 +219,43 @@ pub fn harvest(
     Ok(items)
 }
 
+/// Convert driver-owned workspace evidence into the same typed item stream as files.
+pub fn harvest_text(
+    text: TextEvidence,
+    checker: CheckerId,
+    targets: &[Target],
+) -> Result<Option<Item>, HarvestError> {
+    if text.body.trim().is_empty() {
+        return Ok(None);
+    }
+    let targets = targets
+        .iter()
+        .filter(|target| !matches!(target, Target::Partial { .. }))
+        .cloned()
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Ok(None);
+    }
+    let root = Root {
+        kind: text.root_kind,
+        path: PathBuf::new(),
+    };
+    let id = harvested_item_id(&root, &text.relative_path, &text.body)?;
+    Ok(Some(Item::harvested(id, checker, targets, text)))
+}
+
 fn evidence_files(root: &Root) -> Result<Vec<PathBuf>, HarvestError> {
     let mut files = Vec::new();
     match root.kind {
         RootKind::Workspace => {
-            for relative in [".loom/logs", ".loom/evidence", "docs/tuning.md"] {
+            for relative in [
+                ".loom/logs",
+                ".loom/evidence",
+                ".loom/transcripts",
+                ".claude",
+                ".codex",
+                "docs/tuning.md",
+            ] {
                 let path = root.path.join(relative);
                 if path.exists() {
                     collect_evidence_files(&path, &mut files)?;

@@ -76,7 +76,7 @@ mod tests {
                 partial_bodies: vec![],
             },
             skills: Some(RegisteredSkills::new(
-                MaterializedRegistry::new(vec![]),
+                MaterializedRegistry::empty(),
                 disclosure,
             )),
             event_metadata: None,

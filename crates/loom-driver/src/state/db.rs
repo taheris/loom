@@ -405,6 +405,20 @@ impl CacheDb {
         Ok(())
     }
 
+    /// Read all cached criterion evidence in stable spec/criterion order.
+    pub fn criterion_evidence(&self) -> Result<Vec<CriterionEvidenceRow>, CacheError> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT spec_label, criterion_id, annotation_json, result,
+                    last_timestamp_ms, last_commit, evidence
+             FROM criterion_status ORDER BY spec_label, criterion_id",
+        )?;
+        let rows = stmt
+            .query_map([], row_to_criterion_evidence)?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().collect()
+    }
+
     /// Read cached criterion evidence for one spec.
     pub fn criterion_evidence_for_spec(
         &self,

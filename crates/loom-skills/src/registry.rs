@@ -13,7 +13,7 @@ use crate::identity::{PhaseName, SkillDescription, SkillName};
 use crate::source::{SkillProvenance, SkillSource};
 
 /// Skill with required identity fields parsed and source classified.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NamedSkill {
     document: SkillDocument,
     frontmatter: SkillFrontmatter,
@@ -66,7 +66,7 @@ impl NamedSkill {
 }
 
 /// Loaded candidates before duplicate and override resolution.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SkillSet {
     skills: Vec<NamedSkill>,
 }
@@ -94,7 +94,7 @@ impl SkillSet {
 }
 
 /// Effective registry after duplicate and override resolution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SkillRegistry {
     skills: Vec<NamedSkill>,
 }
@@ -165,18 +165,12 @@ impl SkillRegistry {
 }
 
 /// Registry narrowed to the current phase/profile.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApplicableRegistry {
     skills: Vec<NamedSkill>,
 }
 
 impl ApplicableRegistry {
-    pub fn from_registry(registry: SkillRegistry) -> Self {
-        Self {
-            skills: registry.into_skills(),
-        }
-    }
-
     pub fn filter(registry: SkillRegistry, phase: &PhaseName, profile: &ProfileName) -> Self {
         let skills = registry
             .into_skills()
@@ -196,24 +190,47 @@ impl ApplicableRegistry {
 }
 
 /// Materialized skill file ready for prompt or native registration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MaterializedSkill {
-    pub name: SkillName,
-    pub description: SkillDescription,
-    pub source: SkillSource,
-    pub provenance: SkillProvenance,
-    pub path: PathBuf,
+    name: SkillName,
+    description: SkillDescription,
+    source: SkillSource,
+    provenance: SkillProvenance,
+    path: PathBuf,
+}
+
+impl MaterializedSkill {
+    pub fn name(&self) -> &SkillName {
+        &self.name
+    }
+
+    pub fn description(&self) -> &SkillDescription {
+        &self.description
+    }
+
+    pub fn source(&self) -> SkillSource {
+        self.source
+    }
+
+    pub fn provenance(&self) -> &SkillProvenance {
+        &self.provenance
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// Registry whose built-ins have been copied to readable paths.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MaterializedRegistry {
     skills: Vec<MaterializedSkill>,
 }
 
 impl MaterializedRegistry {
-    pub fn new(skills: Vec<MaterializedSkill>) -> Self {
-        Self { skills }
+    /// Empty registry for sessions with no applicable skills.
+    pub fn empty() -> Self {
+        Self { skills: Vec::new() }
     }
 
     pub fn materialize(
@@ -263,7 +280,7 @@ impl MaterializedRegistry {
 }
 
 /// Skill set and disclosure mode passed into backend setup.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RegisteredSkills {
     registry: MaterializedRegistry,
     disclosure: DisclosureMode,
@@ -394,7 +411,10 @@ mod tests {
             tuning_path: None,
             built_in_bundle: None,
             built_in_name: None,
-            source_hash: blake3::hash(markdown.as_bytes()).to_hex().to_string(),
+            source_hash: crate::source::SourceHash::new(
+                blake3::hash(markdown.as_bytes()).to_hex().to_string(),
+            )
+            .expect("valid source hash"),
         }
     }
 

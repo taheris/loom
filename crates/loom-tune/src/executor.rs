@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use displaydoc::Display;
+use loom_protocol::gate::{DispatchScope, FindingValidator, parse_exit_signal, parse_walk_output};
 use thiserror::Error;
 
 use crate::case::{Case, Expected, LoadedCases};
-use crate::checker::CheckerId;
+use crate::checker::{CheckerId, Implementation, Registry, RegistryError};
 use crate::gate::{CaseResult, Scores};
 use crate::plan::{FrozenPlan, PlannedCaseId, SelectedCase};
 use crate::score::{Score, ScoreError};
@@ -55,6 +56,8 @@ pub fn run(
     plan: &FrozenPlan,
     cases: &LoadedCases,
     replays: &[Replay],
+    registry: &Registry,
+    finding_validator: &dyn FindingValidator,
 ) -> Result<Vec<CaseResult>, Error> {
     let case_by_id = cases
         .cases()
@@ -79,7 +82,7 @@ pub fn run(
                     .ok_or_else(|| Error::MissingDeclaredCase {
                         case_id: selected.case_id.clone(),
                     })?;
-                run_declared(selected, case, replay)?
+                run_declared(selected, case, replay, registry, finding_validator)?
             }
             PlannedCaseId::Mined(_) => run_mined(selected, replay)?,
         };
@@ -138,10 +141,12 @@ fn run_declared(
     selected: &SelectedCase,
     case: &Case,
     replay: &Replay,
+    registry: &Registry,
+    finding_validator: &dyn FindingValidator,
 ) -> Result<CaseResult, Error> {
-    require_known_checker(&case.checker)?;
-    let current = score_output(&replay.current_output, &case.expected)?;
-    let candidate = score_output(&replay.candidate_output, &case.expected)?;
+    require_known_checker(registry, &case.checker)?;
+    let current = score_output(&replay.current_output, &case.expected, finding_validator)?;
+    let candidate = score_output(&replay.candidate_output, &case.expected, finding_validator)?;
     Ok(CaseResult::new(selected, current, candidate))
 }
 
@@ -151,24 +156,35 @@ fn run_mined(selected: &SelectedCase, replay: &Replay) -> Result<CaseResult, Err
     Ok(CaseResult::new(selected, current, candidate))
 }
 
-fn require_known_checker(checker: &CheckerId) -> Result<(), Error> {
-    match checker.as_str() {
-        "behavior.review.finding-recall"
-        | "behavior.todo.decomposition"
-        | "behavior.loop.verify-after-edit"
-        | "behavior.loop.scope-discipline"
-        | "behavior.inbox.resolution-path"
-        | "behavior.tune.apply-handoff"
-        | "behavior.agent.context-before-edit" => Ok(()),
-        _ => Err(Error::UnsupportedChecker {
+fn require_known_checker(registry: &Registry, checker: &CheckerId) -> Result<(), Error> {
+    let implementation = registry.require_active(checker)?.implementation;
+    match implementation {
+        Implementation::ReviewFindingRecall
+        | Implementation::TodoDecomposition
+        | Implementation::LoopVerifyAfterEdit
+        | Implementation::LoopScopeDiscipline
+        | Implementation::InboxResolutionPath
+        | Implementation::TuneApplyHandoff
+        | Implementation::AgentContextBeforeEdit => Ok(()),
+        Implementation::SkillRegistry
+        | Implementation::SkillMaterialization
+        | Implementation::SkillProtocolBoundary
+        | Implementation::TemplateCompile
+        | Implementation::TemplateConformance
+        | Implementation::TuneCaseValidation
+        | Implementation::LegacyReviewRecall => Err(Error::UnsupportedChecker {
             checker: checker.clone(),
         }),
     }
 }
 
-fn score_output(output: &str, expected: &Expected) -> Result<Scores, ScoreError> {
+fn score_output(
+    output: &str,
+    expected: &Expected,
+    finding_validator: &dyn FindingValidator,
+) -> Result<Scores, ScoreError> {
     if let Expected::ReviewFindingRecall(expected) = expected {
-        return score_review_output(output, expected);
+        return score_review_output(output, expected, finding_validator);
     }
     let terms = expected_terms(expected);
     if terms.is_empty() {
@@ -186,7 +202,13 @@ fn score_output(output: &str, expected: &Expected) -> Result<Scores, ScoreError>
 fn score_review_output(
     output: &str,
     expected: &crate::case::ReviewExpected,
+    finding_validator: &dyn FindingValidator,
 ) -> Result<Scores, ScoreError> {
+    if parse_exit_signal(output).is_none()
+        || parse_walk_output(output, DispatchScope::Tree, finding_validator).is_err()
+    {
+        return scores(0.0, 0.0);
+    }
     let findings = output
         .lines()
         .filter(|line| line.trim_start().starts_with("LOOM_FINDING:"))
@@ -246,6 +268,8 @@ pub enum Error {
     MissingReplay { case_id: PlannedCaseId },
     /// checker `{checker}` has no executor implementation
     UnsupportedChecker { checker: CheckerId },
+    /// checker registry rejected executor metadata
+    Registry(#[from] RegistryError),
     /// checker score was invalid
     Score(#[from] ScoreError),
 }
@@ -253,9 +277,35 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_events::identifier::SpecLabel;
+
     use crate::case::{ReviewExpected, ReviewFinding};
     use crate::checker::CheckerId;
     use crate::plan::{Pool, SelectedCase};
+
+    struct AcceptAllFindings;
+
+    impl FindingValidator for AcceptAllFindings {
+        fn spec_label_is_known(&self, _label: &SpecLabel) -> bool {
+            true
+        }
+
+        fn criterion_anchor_resolves(&self, _spec: &SpecLabel, _anchor: &str) -> bool {
+            true
+        }
+
+        fn annotation_resolves(&self, _target_string: &str) -> bool {
+            true
+        }
+
+        fn file_exists(&self, _path: &str) -> bool {
+            true
+        }
+
+        fn invariant_resolves(&self, _spec: &SpecLabel, _section: &str, _tag: &str) -> bool {
+            true
+        }
+    }
 
     #[test]
     fn expected_terms_extracts_review_predicates() {
@@ -267,6 +317,25 @@ mod tests {
             max_extra_findings: None,
         }));
         assert_eq!(terms, vec!["missing test", "src/lib.rs"]);
+    }
+
+    #[test]
+    fn review_checker_requires_valid_finding_terminal_pair() {
+        let expected = ReviewExpected {
+            findings: vec![ReviewFinding {
+                contains: vec!["missing test".to_owned()],
+                file: None,
+            }],
+            max_extra_findings: None,
+        };
+        let malformed = score_review_output(
+            "LOOM_FINDING: {\"token\":\"spec-coherence-fail\",\"route\":\"blocking\",\"bonds\":[\"skills\"],\"target\":{\"kind\":\"Criterion\",\"spec\":\"skills\",\"anchor\":\"fixture\"},\"evidence\":\"missing test\"}",
+            &expected,
+            &AcceptAllFindings,
+        )
+        .expect("malformed output is scored as failure");
+        assert_eq!(malformed.hard.get(), 0.0);
+        assert_eq!(malformed.soft.get(), 0.0);
     }
 
     #[test]
@@ -302,9 +371,11 @@ mod tests {
         let replay = Replay::new(
             selected.case_id.clone(),
             "LOOM_COMPLETE",
-            r#"LOOM_FINDING: {"evidence":"missing test"}"#,
+            "LOOM_FINDING: {\"token\":\"spec-coherence-fail\",\"route\":\"blocking\",\"bonds\":[\"skills\"],\"target\":{\"kind\":\"Criterion\",\"spec\":\"skills\",\"anchor\":\"fixture\"},\"evidence\":\"missing test\"}\nLOOM_CONCERN: {\"summary\":\"missing test\"}",
         );
-        let result = run_declared(&selected, &case, &replay).expect("checker runs");
+        let registry = Registry::builtin().expect("registry");
+        let result = run_declared(&selected, &case, &replay, &registry, &AcceptAllFindings)
+            .expect("checker runs");
         assert_eq!(result.current.soft.get(), 0.0);
         assert_eq!(result.candidate.soft.get(), 1.0);
     }

@@ -236,7 +236,7 @@ run_tune_review() {
         exit 4
     fi
     if [[ "$prompt_line" == *"Use concrete review inputs when evaluating candidate guidance."* ]]; then
-        emit_message_delta 'LOOM_FINDING: {"token":"fabricated-result","route":"blocking","bonds":["skills"],"target":{"kind":"Criterion","spec":"skills","anchor":"fixture"},"evidence":"missing test from replay input"}'
+        emit_message_delta $'LOOM_FINDING: {"token":"spec-coherence-fail","route":"blocking","bonds":["skills"],"target":{"kind":"Criterion","spec":"skills","anchor":"skill_tune_evidence_roots_and_gate"},"evidence":"missing test from replay input"}\nLOOM_CONCERN: {"summary":"missing test from replay input"}'
     else
         emit_message_delta 'LOOM_COMPLETE'
     fi

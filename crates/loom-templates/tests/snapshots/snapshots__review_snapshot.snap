@@ -1,6 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-expression: ctx.render().unwrap()
+expression: ctx.render()?
 ---
 # Post-Epic Review
 
@@ -501,12 +501,6 @@ review options yourself with `bd` commands. If the canonical block
 lives only in your stdout body or the review log, `loom inbox` will not
 find it.
 
-> **`spec:harness` label is REQUIRED on every clarify and fix-up bead the driver mints.**
-> `loom inbox -s <label>` filters on it, and `loom inbox`'s resume hint reads it to
-> emit `Resume with: loom loop -s <label>`. The driver adds `spec:harness` to
-> every minted bead automatically from the finding's `bonds` array — you do not
-> apply the label yourself, but every finding you emit MUST include `harness`
-> (or another resolvable spec label) in `bonds` so the bead inherits it.
 
 ## Findings — Streaming Wire Format
 

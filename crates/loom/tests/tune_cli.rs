@@ -68,6 +68,32 @@ fn install_tune_review_wrix(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (shim, manifest, count)
 }
 
+fn project_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|candidate| {
+            candidate.join("Cargo.toml").is_file() && candidate.join("specs").is_dir()
+        })
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+fn clone_project(destination: &Path) {
+    let output = git_command()
+        .arg("clone")
+        .arg("--quiet")
+        .arg("--no-hardlinks")
+        .arg(project_root())
+        .arg(destination)
+        .output()
+        .expect("clone project fixture");
+    assert!(
+        output.status.success(),
+        "project clone failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 fn git_command() -> Command {
     let mut command = Command::new("git");
     loom_test_support::scrub_git_local_env(&mut command);
@@ -90,24 +116,6 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
         }
     }
     bin_dir
-}
-
-fn install_template_validation_cargo(bin_dir: &Path, log: &Path) {
-    let cargo = bin_dir.join("cargo");
-    let bash = find_bash();
-    write_file(
-        &cargo,
-        &format!(
-            "#!{}\nset -euo pipefail\nprintf '%s|%s\\n' \"$PWD\" \"$*\" >> '{}'\nif [[ \"${{FAIL_TEMPLATE_CHECK-}}\" == \"representative-renders\" && \"${{1-}}\" == \"test\" ]]; then\n  echo 'representative render failure' >&2\n  exit 42\nfi\n",
-            bash.display(),
-            log.display(),
-        ),
-    );
-    let mut permissions = std::fs::metadata(&cargo)
-        .expect("stat cargo shim")
-        .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&cargo, permissions).expect("chmod cargo shim");
 }
 
 fn init_workspace(root: &Path) {
@@ -376,6 +384,10 @@ fn skill_tune_evidence_roots_and_gate() {
         ),
     );
     write_file(
+        &tmp.path().join("specs/skills.md"),
+        "# Skills fixture\n\n## Success Criteria\n\n- Evidence roots and gate behavior are checked.\n  [test](skill_tune_evidence_roots_and_gate)\n",
+    );
+    write_file(
         &tmp.path().join("docs/tuning.md"),
         r#"# Fixture tuning guidance
 
@@ -461,20 +473,20 @@ contains = ["missing test from replay input"]
     );
 
     assert_success(&output, &args);
-    assert_eq!(
-        std::fs::read_to_string(&replay_count)
-            .expect("replay count")
-            .lines()
-            .count(),
-        2,
-        "current and candidate must each run through the real Pi spawn path",
-    );
     let envelope = tmp.path().join(".loom/tune/lm-tune.2");
     let manifest: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(envelope.join("manifest.json")).expect("read manifest"),
     )
     .expect("manifest json");
-    assert_eq!(manifest["state"], "pending");
+    assert_eq!(manifest["state"], "pending", "manifest={manifest}");
+    let replay_runs = match std::fs::read_to_string(&replay_count) {
+        Ok(body) => body.lines().count(),
+        Err(_) => 0,
+    };
+    assert_eq!(
+        replay_runs, 2,
+        "current and candidate must each run through the real Pi spawn path; manifest={manifest}",
+    );
     assert_eq!(manifest["evidence_split"]["algorithm"], "sha256-salt-v1");
     assert!(
         manifest["evidence_split"]["salt_id"]
@@ -493,9 +505,9 @@ contains = ["missing test from replay input"]
         + case_counts["mined_selection"]
             .as_u64()
             .expect("selection count");
-    assert_eq!(
-        mined, 3,
-        "workspace log, tuning doc, and external transcript"
+    assert!(
+        mined >= 5,
+        "expected workspace log, tuning doc, external transcript, git diff, and bead state; count={mined}"
     );
     assert!(
         manifest["validation"]
@@ -525,100 +537,99 @@ contains = ["missing test from replay input"]
 #[test]
 fn template_tune_candidate_validation() {
     let tmp = tempfile::tempdir().expect("tmpdir");
-    init_workspace(tmp.path());
-    write_file(
-        &tmp.path().join("crates/loom-templates/Cargo.toml"),
-        "[package]\nname = \"loom-templates\"\nversion = \"0.0.0\"\n",
-    );
-    write_file(
-        &tmp.path().join("crates/loom-templates/templates/loop.md"),
-        "# Loop fixture\n",
-    );
-    write_file(
-        &tmp.path()
-            .join("crates/loom-templates/templates/partial/skill_index.md"),
-        "# Skill index fixture\n",
-    );
-    git(tmp.path(), &["add", "."]);
-    git(tmp.path(), &["commit", "-q", "-m", "add template fixture"]);
+    let workspace = tmp.path().join("repo");
+    clone_project(&workspace);
     let bin_dir = install_bd_shim(tmp.path());
     let state_dir = tmp.path().join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir state");
-    let cargo_log = state_dir.join("cargo-invocations.log");
-    install_template_validation_cargo(&bin_dir, &cargo_log);
-
-    let passing_args = ["tune", "phase", "fast", "--seed", "7", "loop"];
-    let passing = run_loom_with_env(
-        tmp.path(),
+    let args = ["tune", "phase", "fast", "--seed", "7", "loop"];
+    let output = run_loom_with_env(
+        &workspace,
         &bin_dir,
         &state_dir,
-        &passing_args,
+        &args,
         &[("BD_CREATE_ID", "lm-tune.3")],
     );
-    assert_success(&passing, &passing_args);
-    let passing_manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(tmp.path().join(".loom/tune/lm-tune.3/manifest.json"))
-            .expect("passing manifest"),
-    )
-    .expect("passing manifest json");
-    assert_eq!(passing_manifest["state"], "pending");
+    assert_success(&output, &args);
 
-    let failing_args = ["tune", "partial", "fast", "--seed", "8", "skill_index"];
-    let failing = run_loom_with_env(
+    let proposal_repo = workspace.join(".loom/tune/lm-tune.3/repo");
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(workspace.join(".loom/tune/lm-tune.3/manifest.json"))
+            .expect("manifest"),
+    )
+    .expect("manifest json");
+    assert_eq!(manifest["state"], "pending", "manifest={manifest}");
+    let validation = manifest["validation"].as_array().expect("validation rows");
+    for check in [
+        "askama-compile",
+        "representative-renders",
+        "template-conformance",
+    ] {
+        assert!(
+            validation
+                .iter()
+                .any(|row| row["check"] == check && row["status"] == "passed"),
+            "missing real validation pass for {check}: {validation:?}",
+        );
+    }
+    let committed_paths = git_stdout(
+        &proposal_repo,
+        &["show", "--format=", "--name-only", "HEAD"],
+    );
+    assert!(
+        committed_paths.contains("crates/loom-templates/templates/loop.md"),
+        "{committed_paths}",
+    );
+    assert!(
+        committed_paths.contains("crates/loom-templates/tests/snapshots/"),
+        "representative snapshots were not regenerated: {committed_paths}",
+    );
+}
+
+#[test]
+fn failed_proposal_preparation_publishes_blocked_tune_record() {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    init_workspace(tmp.path());
+    let bin_dir = install_bd_shim(tmp.path());
+    let state_dir = tmp.path().join("bd-state");
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    let envelope = tmp.path().join(".loom/tune/lm-tune.5");
+    std::fs::create_dir_all(&envelope).expect("create envelope");
+    write_file(&envelope.join("repo"), "clone collision\n");
+
+    let args = [
+        "tune",
+        "skill",
+        "fast",
+        "--seed",
+        "7",
+        "loom-inbox-resolution",
+    ];
+    let output = run_loom_with_env(
         tmp.path(),
         &bin_dir,
         &state_dir,
-        &failing_args,
-        &[
-            ("BD_CREATE_ID", "lm-tune.4"),
-            ("FAIL_TEMPLATE_CHECK", "representative-renders"),
-        ],
+        &args,
+        &[("BD_CREATE_ID", "lm-tune.5")],
     );
-    assert_success(&failing, &failing_args);
-    let failing_manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(tmp.path().join(".loom/tune/lm-tune.4/manifest.json"))
-            .expect("failing manifest"),
-    )
-    .expect("failing manifest json");
-    assert_eq!(failing_manifest["state"], "blocked");
+
+    assert_failure(&output, &args);
     assert_eq!(
-        std::fs::read_to_string(state_dir.join("lm-tune.4/status"))
-            .expect("blocked bead status")
+        std::fs::read_to_string(state_dir.join("lm-tune.5/status"))
+            .expect("blocked status")
             .trim(),
         "blocked",
     );
-
-    let cargo_invocations = std::fs::read_to_string(&cargo_log).expect("cargo invocations");
-    let lines = cargo_invocations.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 6, "{cargo_invocations}");
-    let expected_commands = [
-        "check -p loom-templates --quiet",
-        "test -p loom-templates --test snapshots --quiet",
-        "run -p loom-walk --quiet -- template_pinning_matrix template_wire_format_restatement templates_no_removed_surface",
-    ];
-    for (proposal_id, chunk) in ["lm-tune.3", "lm-tune.4"]
-        .into_iter()
-        .zip(lines.chunks_exact(3))
-    {
-        let proposal_repo = tmp.path().join(".loom/tune").join(proposal_id).join("repo");
-        for (line, expected) in chunk.iter().zip(expected_commands) {
-            assert_eq!(*line, format!("{}|{expected}", proposal_repo.display()),);
-        }
-    }
-
-    let bd_invocations =
-        std::fs::read_to_string(state_dir.join(".invocations.log")).expect("bd invocations");
-    for line in bd_invocations
-        .lines()
-        .filter(|line| line.starts_with("create "))
-    {
-        assert!(!line.contains("loom:tune"), "{line}");
-    }
-    for (proposal_id, status) in [("lm-tune.3", "open"), ("lm-tune.4", "blocked")] {
-        let publication =
-            format!("update {proposal_id} --status {status} --add-label loom:tune --description");
-        assert!(bd_invocations.contains(&publication), "{bd_invocations}");
-    }
+    let labels = std::fs::read_to_string(state_dir.join("lm-tune.5/labels")).expect("labels");
+    assert!(labels.contains("loom:tune"), "{labels}");
+    let metadata: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(state_dir.join("lm-tune.5/metadata.json")).expect("metadata"),
+    )
+    .expect("metadata json");
+    assert_eq!(metadata["loom.tune.state"], "blocked");
+    let body =
+        std::fs::read_to_string(state_dir.join("lm-tune.5/description")).expect("description");
+    assert!(body.contains("Preparation failure"), "{body}");
 }
 
 #[test]

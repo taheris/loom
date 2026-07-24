@@ -1,0 +1,63 @@
+error[E0599]: no associated function or constant named `from_registry` found for struct `ApplicableRegistry` in the current scope
+ --> tests/ui/registry_stage_forgery.rs:4:33
+  |
+4 |     let _ = ApplicableRegistry::from_registry(registry);
+  |                                 ^^^^^^^^^^^^^ associated function or constant not found in `ApplicableRegistry`
+  |
+note: if you're trying to build a new `ApplicableRegistry`, consider using `ApplicableRegistry::filter` which returns `ApplicableRegistry`
+ --> src/registry.rs
+  |
+  |     pub fn filter(registry: SkillRegistry, phase: &PhaseName, profile: &ProfileName) -> Self {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `new` found for struct `MaterializedRegistry` in the current scope
+ --> tests/ui/registry_stage_forgery.rs:5:35
+  |
+5 |     let _ = MaterializedRegistry::new(Vec::new());
+  |                                   ^^^ associated function or constant not found in `MaterializedRegistry`
+  |
+note: if you're trying to build a new `MaterializedRegistry` consider using one of the following associated functions:
+      MaterializedRegistry::empty
+      MaterializedRegistry::materialize
+ --> src/registry.rs
+  |
+  |       pub fn empty() -> Self {
+  |       ^^^^^^^^^^^^^^^^^^^^^^
+...
+  | /     pub fn materialize(
+  | |         registry: ApplicableRegistry,
+  | |         scratch_dir: impl AsRef<Path>,
+  | |     ) -> Result<Self, MaterializeError> {
+  | |_______________________________________^
+help: there is a method `ne` with a similar name
+  |
+5 -     let _ = MaterializedRegistry::new(Vec::new());
+5 +     let _ = MaterializedRegistry::ne(Vec::new());
+  |
+
+error[E0277]: the trait bound `MaterializedRegistry: serde::Deserialize<'de>` is not satisfied
+ --> tests/ui/registry_stage_forgery.rs:6:35
+  |
+6 |     let _: MaterializedRegistry = serde_json::from_str(r#"{"skills":[]}"#).unwrap();
+  |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `serde_core::de::Deserialize<'_>` is not implemented for `MaterializedRegistry`
+  |
+  = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `MaterializedRegistry` type
+  = note: for types from other crates check whether the crate offers a `serde` feature flag
+  = help: the following other types implement trait `serde_core::de::Deserialize<'de>`:
+            &'a Path
+            &'a RawValue
+            &'a [u8]
+            &'a str
+            ()
+            (T,)
+            (T0, T1)
+            (T0, T1, T2)
+          and $N others
+note: required by a bound in `serde_json::from_str`
+ --> $CARGO/serde_json-$VERSION/src/de.rs
+  |
+  | pub fn from_str<'a, T>(s: &'a str) -> Result<T>
+  |        -------- required by a bound in this function
+  | where
+  |     T: de::Deserialize<'a>,
+  |        ^^^^^^^^^^^^^^^^^^^ required by this bound in `from_str`

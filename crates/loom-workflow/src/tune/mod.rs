@@ -7,7 +7,7 @@ use std::process::Command;
 use displaydoc::Display;
 use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
 use loom_driver::agent::{ProtocolError, SessionOutcome, SpawnConfig};
-use loom_driver::bd::{BdClient, CreateOpts, UpdateOpts};
+use loom_driver::bd::{BdClient, CreateOpts, ListOpts, UpdateOpts};
 use loom_driver::clock::SystemClock;
 use loom_driver::config::{AgentSelectionError, LoomConfig, LoomConfigError, Phase};
 use loom_driver::git::{GitClient, GitError, GitOid, read_origin_url};
@@ -15,6 +15,7 @@ use loom_driver::identifier::BeadId;
 use loom_driver::lock::{LockError, LockManager, PhaseLock};
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::ScratchSession;
+use loom_driver::state::{CacheDb, CacheError};
 use loom_skills::builtin::{self, CatalogError};
 use loom_skills::discovery::{DiscoveryError, load_workspace};
 use loom_skills::identity::{PhaseName, SkillName};
@@ -22,13 +23,13 @@ use loom_skills::registry::{NamedSkill, RegistryError, SkillRegistry};
 use loom_skills::source::SkillSource;
 use loom_tune::case::{Document, Input, LoadContext, LoadError, LoadedCases, load_documents};
 use loom_tune::checker::{
-    Domain as CheckerDomain, Level, Registry as CheckerRegistry,
+    CheckerId, Domain as CheckerDomain, Level, Registry as CheckerRegistry,
     RegistryError as CheckerRegistryError, protocol_boundary,
 };
 use loom_tune::config::{FileConfig as TuneFileConfig, TuneConfig};
 use loom_tune::evidence::{
-    HarvestError, RootReport, Snapshot as EvidenceSnapshot, SplitError, SplitMetadata, SplitSalt,
-    Splitter, harvest,
+    HarvestError, RootKind, RootReport, Snapshot as EvidenceSnapshot, SplitError, SplitMetadata,
+    SplitSalt, Splitter, TextEvidence, harvest, harvest_text,
 };
 use loom_tune::executor::{self as tune_executor, Artifact as TuneArtifact, Replay};
 use loom_tune::gate::{self as tune_gate, Outcome as GateOutcome, State as GateState};
@@ -147,16 +148,16 @@ impl PreparedRun {
         self
     }
 
-    pub async fn execute(mut self, request: Request) -> Result<Response, TuneError> {
+    pub async fn execute(self, request: Request) -> Result<Response, TuneError> {
         match request {
             Request::List(surface) => Ok(Response::Listing(self.context.render_listing(surface)?)),
             Request::Propose(proposal) => {
-                self.context.harvest_evidence()?;
+                let context = self.context.harvest_evidence().await?;
                 if proposal.dry_run {
-                    let plan = self.context.plan(&proposal)?;
-                    Ok(Response::DryRun(render_dry_run(&self.context, &plan)))
+                    let plan = context.plan(&proposal)?;
+                    Ok(Response::DryRun(render_dry_run(&context, &plan)))
                 } else {
-                    create_proposal(self.context, &proposal)
+                    create_proposal(context, &proposal)
                         .await
                         .map(Response::Proposal)
                 }
@@ -186,12 +187,11 @@ struct Context {
     phases: Vec<TemplateEntry>,
     partials: Vec<TemplateEntry>,
     checker_registry: CheckerRegistry,
-    disabled_checkers: BTreeSet<loom_tune::CheckerId>,
+    disabled_checkers: BTreeSet<CheckerId>,
     target_catalog: TargetCatalog,
     loom_config: LoomConfig,
     root_report: RootReport,
     split_salt: SplitSalt,
-    evidence: EvidenceSnapshot,
     base_commit: String,
     launcher_env: Vec<(String, String)>,
 }
@@ -226,8 +226,6 @@ impl Context {
             origin_url.as_deref(),
             root_commits.iter().map(GitOid::as_str),
         )?;
-        let evidence = Splitter::new(split_salt.clone(), tune_config.evidence.selection_fraction)
-            .snapshot(Vec::new());
         Ok(Self {
             workspace,
             tracked_files,
@@ -241,20 +239,73 @@ impl Context {
             loom_config,
             root_report,
             split_salt,
-            evidence,
             base_commit,
             launcher_env: Vec::new(),
         })
     }
 
-    fn harvest_evidence(&mut self) -> Result<(), TuneError> {
-        self.evidence = build_evidence(
-            &self.split_salt,
-            &self.tune_config,
-            &self.root_report,
-            self.target_catalog.targets().cloned(),
+    async fn harvest_evidence(self) -> Result<HarvestedContext, TuneError> {
+        let evidence = self.build_evidence().await?;
+        Ok(HarvestedContext {
+            context: self,
+            evidence,
+        })
+    }
+
+    async fn build_evidence(&self) -> Result<EvidenceSnapshot, TuneError> {
+        let checker = CheckerId::new("behavior.review.finding-recall")?;
+        let targets = self.target_catalog.targets().cloned().collect::<Vec<_>>();
+        let mut items = harvest(&self.root_report, checker.clone(), &targets)?;
+
+        let git_diff = GitClient::open(&self.workspace)?.diff_head_parent().await?;
+        push_text_evidence(
+            &mut items,
+            checker.clone(),
+            &targets,
+            PathBuf::from("git/head-parent.diff"),
+            git_diff,
         )?;
-        Ok(())
+
+        let beads = BdClient::new().list(ListOpts::default()).await?;
+        push_text_evidence(
+            &mut items,
+            checker.clone(),
+            &targets,
+            PathBuf::from("beads/state.json"),
+            serde_json::to_string_pretty(&beads)?,
+        )?;
+
+        let cache_path = self.workspace.join(".loom/cache.db");
+        if cache_path.is_file() {
+            let rows = CacheDb::open(&cache_path)?.criterion_evidence()?;
+            let evidence = rows
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "spec": row.spec_label,
+                        "criterion_id": row.criterion_id,
+                        "annotation": row.annotation_json,
+                        "result": row.result,
+                        "last_timestamp_ms": row.last_timestamp_ms,
+                        "last_commit": row.last_commit,
+                        "evidence": row.evidence,
+                    })
+                })
+                .collect::<Vec<_>>();
+            push_text_evidence(
+                &mut items,
+                checker,
+                &targets,
+                PathBuf::from("criterion/evidence.json"),
+                serde_json::to_string_pretty(&evidence)?,
+            )?;
+        }
+
+        Ok(Splitter::new(
+            self.split_salt.clone(),
+            self.tune_config.evidence.selection_fraction,
+        )
+        .snapshot(items))
     }
 
     fn render_listing(&self, surface: ListSurface) -> Result<String, TuneError> {
@@ -265,20 +316,6 @@ impl Context {
             ListSurface::Checker => render_checker_listing(&self.checker_registry),
             ListSurface::All => render_all_listing(self),
         })
-    }
-
-    fn plan(&self, proposal: &ProposeRequest) -> Result<PreparedPlan, TuneError> {
-        self.plan_with_evidence(proposal, &self.evidence)
-    }
-
-    fn refreshed_plan(&self, proposal: &ProposeRequest) -> Result<PreparedPlan, TuneError> {
-        let evidence = build_evidence(
-            &self.split_salt,
-            &self.tune_config,
-            &self.root_report,
-            self.target_catalog.targets().cloned(),
-        )?;
-        self.plan_with_evidence(proposal, &evidence)
     }
 
     fn plan_with_evidence(
@@ -480,6 +517,26 @@ impl Context {
     }
 }
 
+#[derive(Debug)]
+struct HarvestedContext {
+    context: Context,
+    evidence: EvidenceSnapshot,
+}
+
+impl HarvestedContext {
+    fn plan(&self, proposal: &ProposeRequest) -> Result<PreparedPlan, TuneError> {
+        self.context.plan_with_evidence(proposal, &self.evidence)
+    }
+}
+
+impl std::ops::Deref for HarvestedContext {
+    type Target = Context;
+
+    fn deref(&self) -> &Self::Target {
+        &self.context
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SkillEntry {
     target: Target,
@@ -508,7 +565,6 @@ struct PreparedPlan {
 
 #[derive(Debug, Clone)]
 struct TuningDocumentGuidance {
-    path: PathBuf,
     lines: Vec<String>,
 }
 
@@ -518,7 +574,7 @@ struct LoadedTuning {
 }
 
 async fn create_proposal(
-    context: Context,
+    context: HarvestedContext,
     proposal: &ProposeRequest,
 ) -> Result<ProposalReport, TuneError> {
     let prepared = context.plan(proposal)?;
@@ -545,76 +601,109 @@ async fn create_proposal(
             notes: None,
         })
         .await?;
-    let envelope = context.workspace.join(".loom/tune").join(bead_id.as_str());
-    let repo = envelope.join("repo");
-    let local_paths = local_paths(&envelope);
-    create_envelope_dirs(&local_paths)?;
-    let branch = format!("loom/tune/{bead_id}");
-    clone_repo(&context.workspace, &repo, &context.base_commit, &branch).await?;
-    let touched = write_candidate_files(&context, proposal, &prepared, &repo)?;
-    let rebuilt = context.refreshed_plan(proposal)?;
-    let candidate_validation = match prepared.frozen.reject_if_changed(&rebuilt.frozen) {
-        Ok(()) => {
-            let artifacts = target_artifacts(&context, &prepared.targets, &repo)?;
-            validate_candidate(ValidationInput {
-                context: &context,
-                repo: &repo,
-                plan: &prepared.frozen,
-                loaded_cases: &prepared.loaded_cases,
-                registry: &context.checker_registry,
-                targets: &prepared.targets,
-                touched: &touched,
-                artifacts: &artifacts,
-            })
-            .await?
-        }
-        Err(source) => changed_plan_validation(&prepared.frozen, &touched, &source),
-    };
-    commit_candidate(&repo, proposal.surface, proposal.level, &bead_id).await?;
-    let proposal_head = GitClient::open(&repo)?.head_commit_sha().await?.to_string();
-    let state = proposal_state(&candidate_validation.rows);
-    let outcome_counts = candidate_validation.outcome_counts.clone();
-    let manifest = ProposalManifest::from_plan(ManifestInput {
-        proposal_id: bead_id.clone(),
-        workspace_path: context.workspace.clone(),
-        plan: &prepared.frozen,
-        state,
-        target_files: touched
-            .iter()
-            .map(|path| relative_or_original(path, &repo))
-            .collect(),
-        base_commit: context.base_commit.clone(),
-        proposal_branch: branch.clone(),
-        proposal_head: proposal_head.clone(),
-        case_counts: prepared.case_counts.clone(),
-        outcome_counts: outcome_counts.clone(),
-        validation: candidate_validation.rows.clone(),
-        caps: Caps::from(&context.tune_config.checks),
-        local_paths: relative_local_paths(&local_paths, &context.workspace),
-    });
-    write_manifest(&local_paths.manifest, &manifest)?;
-    write_evidence(&local_paths.evidence, &context, &prepared)?;
-    update_tune_bead(BeadUpdate {
-        bead_id: &bead_id,
-        context: &context,
-        plan: &prepared,
-        state,
-        branch: &branch,
-        proposal_head: &proposal_head,
-        outcome_counts: &outcome_counts,
-        validation: &candidate_validation.rows,
-        local_paths: &local_paths,
-    })
-    .await?;
-    Ok(ProposalReport {
-        proposal_id: bead_id,
-        state,
-        envelope,
-        repo,
-        branch,
-        base_commit: context.base_commit,
-        proposal_head,
-    })
+    let result = async {
+        let envelope = context.workspace.join(".loom/tune").join(bead_id.as_str());
+        let repo = envelope.join("repo");
+        let local_paths = local_paths(&envelope);
+        create_envelope_dirs(&local_paths)?;
+        let branch = format!("loom/tune/{bead_id}");
+        clone_repo(&context.workspace, &repo, &context.base_commit, &branch).await?;
+        let touched = write_candidate_files(&context, &prepared, &repo)?;
+        let rebuilt = context.plan(proposal)?;
+        let candidate_validation = match prepared.frozen.reject_if_changed(&rebuilt.frozen) {
+            Ok(()) => {
+                let artifacts = target_artifacts(&context, &prepared.targets, &repo)?;
+                validate_candidate(ValidationInput {
+                    context: &context,
+                    repo: &repo,
+                    plan: &prepared.frozen,
+                    loaded_cases: &prepared.loaded_cases,
+                    registry: &context.checker_registry,
+                    targets: &prepared.targets,
+                    touched: &touched,
+                    artifacts: &artifacts,
+                })
+                .await?
+            }
+            Err(source) => changed_plan_validation(&prepared.frozen, &touched, &source),
+        };
+        commit_candidate(&repo, proposal.surface, proposal.level, &bead_id).await?;
+        let proposal_head = GitClient::open(&repo)?.head_commit_sha().await?.to_string();
+        let state = proposal_state(&candidate_validation.rows);
+        let outcome_counts = candidate_validation.outcome_counts.clone();
+        let manifest = ProposalManifest::from_plan(ManifestInput {
+            proposal_id: bead_id.clone(),
+            workspace_path: context.workspace.clone(),
+            plan: &prepared.frozen,
+            state,
+            target_files: touched
+                .iter()
+                .map(|path| relative_or_original(path, &repo))
+                .collect(),
+            base_commit: context.base_commit.clone(),
+            proposal_branch: branch.clone(),
+            proposal_head: proposal_head.clone(),
+            case_counts: prepared.case_counts.clone(),
+            outcome_counts: outcome_counts.clone(),
+            validation: candidate_validation.rows.clone(),
+            caps: Caps::from(&context.tune_config.checks),
+            local_paths: relative_local_paths(&local_paths, &context.workspace),
+        });
+        write_manifest(&local_paths.manifest, &manifest)?;
+        write_evidence(&local_paths.evidence, &context, &prepared)?;
+        update_tune_bead(BeadUpdate {
+            bead_id: &bead_id,
+            context: &context,
+            plan: &prepared,
+            state,
+            branch: &branch,
+            proposal_head: &proposal_head,
+            outcome_counts: &outcome_counts,
+            validation: &candidate_validation.rows,
+            local_paths: &local_paths,
+        })
+        .await?;
+        Ok(ProposalReport {
+            proposal_id: bead_id.clone(),
+            state,
+            envelope,
+            repo,
+            branch,
+            base_commit: context.base_commit.clone(),
+            proposal_head,
+        })
+    }
+    .await;
+    if let Err(source) = &result {
+        publish_preparation_failure(&bead_id, source).await?;
+    }
+    result
+}
+
+async fn publish_preparation_failure(
+    bead_id: &BeadId,
+    source: &TuneError,
+) -> Result<(), TuneError> {
+    let detail = source.to_string();
+    BdClient::new()
+        .update(
+            bead_id,
+            UpdateOpts {
+                status: Some("blocked".to_owned()),
+                description: Some(format!(
+                    "# Tune proposal {bead_id}\n\nState: `blocked`\n\n## Preparation failure\n\n{detail}\n\nReview, repair, or reject this proposal through `loom inbox`.\n"
+                )),
+                add_labels: vec!["loom:tune".to_owned()],
+                set_metadata: vec![
+                    ("loom.tune.id".to_owned(), bead_id.to_string()),
+                    ("loom.tune.state".to_owned(), "blocked".to_owned()),
+                    ("loom.tune.preparation_failure".to_owned(), detail),
+                ],
+                ..UpdateOpts::default()
+            },
+        )
+        .await?;
+    Ok(())
 }
 
 fn load_tune_config(path: &Path) -> Result<TuneConfig, TuneError> {
@@ -770,7 +859,7 @@ fn load_tuning_cases(
     known_targets: &TargetCatalog,
     tune_targets: &[Target],
     registry: &CheckerRegistry,
-    disabled: &BTreeSet<loom_tune::CheckerId>,
+    disabled: &BTreeSet<CheckerId>,
 ) -> Result<LoadedTuning, TuneError> {
     let tuning = tuning_documents(workspace, tracked_files, skills, tune_targets)?;
     let cases = load_documents(
@@ -808,7 +897,6 @@ fn tuning_documents(
         let path = workspace.join(&repo_tuning);
         let markdown = read_to_string(&path)?;
         guidance.push(TuningDocumentGuidance {
-            path: path.clone(),
             lines: tuning_guidance_lines(&markdown),
         });
         documents.push(Document::repo(path, markdown));
@@ -829,7 +917,6 @@ fn tuning_documents(
         if let Target::Skill { name } = &skill.target {
             let markdown = read_to_string(path)?;
             guidance.push(TuningDocumentGuidance {
-                path: path.clone(),
                 lines: tuning_guidance_lines(&markdown),
             });
             documents.push(Document::package(path.clone(), name.clone(), markdown));
@@ -867,17 +954,25 @@ fn tuning_guidance_lines(markdown: &str) -> Vec<String> {
     lines
 }
 
-fn build_evidence(
-    split_salt: &SplitSalt,
-    config: &TuneConfig,
-    root_report: &RootReport,
-    targets: impl IntoIterator<Item = Target>,
-) -> Result<EvidenceSnapshot, TuneError> {
-    let splitter = Splitter::new(split_salt.clone(), config.evidence.selection_fraction);
-    let checker = loom_tune::CheckerId::new("behavior.review.finding-recall")?;
-    let targets = targets.into_iter().collect::<Vec<_>>();
-    let items = harvest(root_report, checker, &targets)?;
-    Ok(splitter.snapshot(items))
+fn push_text_evidence(
+    items: &mut Vec<loom_tune::evidence::Item>,
+    checker: CheckerId,
+    targets: &[Target],
+    relative_path: PathBuf,
+    body: String,
+) -> Result<(), TuneError> {
+    if let Some(item) = harvest_text(
+        TextEvidence {
+            root_kind: RootKind::Workspace,
+            relative_path,
+            body,
+        },
+        checker,
+        targets,
+    )? {
+        items.push(item);
+    }
+    Ok(())
 }
 
 fn render_skill_listing(skills: &[SkillEntry]) -> String {
@@ -1087,8 +1182,7 @@ async fn clone_repo(
 }
 
 fn write_candidate_files(
-    context: &Context,
-    proposal: &ProposeRequest,
+    context: &HarvestedContext,
     plan: &PreparedPlan,
     repo: &Path,
 ) -> Result<Vec<PathBuf>, TuneError> {
@@ -1102,7 +1196,7 @@ fn write_candidate_files(
         {
             write_parented(&path, &entry.markdown)?;
         }
-        append_candidate_note(&path, proposal.level, target, context, plan)?;
+        apply_candidate_guidance(&path, target, plan, &context.evidence)?;
         touched.push(path);
     }
     touched.sort();
@@ -1110,54 +1204,160 @@ fn write_candidate_files(
     Ok(touched)
 }
 
-fn append_candidate_note(
+const GENERATED_GUIDANCE_START: &str = "<!-- loom-tune-generated:start -->";
+const GENERATED_GUIDANCE_END: &str = "<!-- loom-tune-generated:end -->";
+const MAX_CANDIDATE_GUIDANCE_LINES: usize = 6;
+
+fn apply_candidate_guidance(
     path: &Path,
-    level: Level,
     target: &Target,
-    context: &Context,
     plan: &PreparedPlan,
+    evidence: &EvidenceSnapshot,
 ) -> Result<(), TuneError> {
     let mut body = fs::read_to_string(path).map_err(|source| TuneError::ReadFile {
         path: path.to_path_buf(),
         source,
     })?;
-    if !body.ends_with('\n') {
+    let guidance = candidate_guidance(target, plan, evidence);
+    if let Some(start) = body.find(GENERATED_GUIDANCE_START) {
+        let search_from = start.saturating_add(GENERATED_GUIDANCE_START.len());
+        let end_offset = body[search_from..]
+            .find(GENERATED_GUIDANCE_END)
+            .ok_or_else(|| TuneError::UnterminatedGeneratedGuidance {
+                path: path.to_path_buf(),
+            })?;
+        let end = search_from
+            .saturating_add(end_offset)
+            .saturating_add(GENERATED_GUIDANCE_END.len());
+        body.replace_range(start..end, &guidance);
+    } else {
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push('\n');
+        body.push_str(&guidance);
         body.push('\n');
     }
-    body.push_str("\n## Tuning Candidate Notes\n\n");
-    body.push_str(&candidate_note(level, target, context, plan));
     write_parented(path, &body)
 }
 
-fn candidate_note(level: Level, target: &Target, context: &Context, plan: &PreparedPlan) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "- Candidate level: `{}` for `{}`.\n",
-        level_name(level),
-        target
-    ));
-    out.push_str(
-        "- Edit budget: one bounded guidance section derived from loaded tuning context.\n",
-    );
-    out.push_str("- Evidence roots considered:\n");
-    for line in context.root_report.lines() {
-        out.push_str(&format!("  - {line}\n"));
-    }
-    out.push_str("- Tuning guidance considered:\n");
-    if plan.tuning_guidance.is_empty() {
-        out.push_str("  - (none)\n");
-    } else {
-        for guidance in &plan.tuning_guidance {
-            let path = relative_or_original(&guidance.path, &context.workspace);
-            let summary = if guidance.lines.is_empty() {
-                "case declarations only".to_owned()
-            } else {
-                guidance.lines.join(" / ")
-            };
-            out.push_str(&format!("  - {}: {summary}\n", path.display()));
+fn candidate_guidance(target: &Target, plan: &PreparedPlan, evidence: &EvidenceSnapshot) -> String {
+    let mut lines = plan
+        .tuning_guidance
+        .iter()
+        .flat_map(|document| document.lines.iter())
+        .map(|line| line.trim().trim_start_matches("- "))
+        .filter(|line| !line.is_empty())
+        .take(3)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    for signal in candidate_signals(target, evidence) {
+        if lines.len() == MAX_CANDIDATE_GUIDANCE_LINES {
+            break;
+        }
+        let guidance = signal.guidance();
+        if !lines.iter().any(|line| line == guidance) {
+            lines.push(guidance.to_owned());
         }
     }
+    if lines.is_empty() {
+        lines.push(format!(
+            "For `{target}`, prefer concrete task evidence and observable verifier outcomes over generic completion claims."
+        ));
+    }
+    let mut out = format!("{GENERATED_GUIDANCE_START}\n## Tuned Guidance\n\n");
+    for line in lines {
+        out.push_str("- ");
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.push_str(GENERATED_GUIDANCE_END);
     out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CandidateSignal {
+    ContextBeforeEdit,
+    DiffReview,
+    FindingRecall,
+    ScopeDiscipline,
+    VerificationOutcome,
+    HumanCorrection,
+    TerminalProtocol,
+}
+
+impl CandidateSignal {
+    fn guidance(self) -> &'static str {
+        match self {
+            Self::ContextBeforeEdit => {
+                "Read the governing spec, applicable style rules, and nearby source before editing."
+            }
+            Self::DiffReview => {
+                "Use the actual changed paths and diff as evidence; tie each conclusion to an observable change."
+            }
+            Self::FindingRecall => {
+                "Enumerate concrete findings and preserve the required finding/terminal pairing instead of summarizing issues vaguely."
+            }
+            Self::ScopeDiscipline => {
+                "Keep edits within the requested scope and surface unrelated work through the phase-authorized handoff."
+            }
+            Self::VerificationOutcome => {
+                "Run the relevant verifier after the final edit and report its observed result rather than claiming success from intent."
+            }
+            Self::HumanCorrection => {
+                "Treat recorded human corrections as higher-priority evidence than generic workflow habits."
+            }
+            Self::TerminalProtocol => {
+                "Check the phase-specific terminal protocol against the final output before ending the session."
+            }
+        }
+    }
+}
+
+fn candidate_signals(target: &Target, evidence: &EvidenceSnapshot) -> BTreeSet<CandidateSignal> {
+    let mut signals = BTreeSet::new();
+    for item in &evidence.train {
+        if !item.targets.contains(target) {
+            continue;
+        }
+        let path = item.text().relative_path.to_string_lossy();
+        let body = item.text().body.to_ascii_lowercase();
+        if body.contains("style-rules")
+            || body.contains("context before edit")
+            || body.contains("read before edit")
+        {
+            signals.insert(CandidateSignal::ContextBeforeEdit);
+        }
+        if path.ends_with(".diff") || body.contains("diff --git") {
+            signals.insert(CandidateSignal::DiffReview);
+        }
+        if body.contains("loom_finding")
+            || body.contains("loom_concern")
+            || body.contains("review finding")
+        {
+            signals.insert(CandidateSignal::FindingRecall);
+        }
+        if body.contains("unrelated") || body.contains("scope discipline") {
+            signals.insert(CandidateSignal::ScopeDiscipline);
+        }
+        if body.contains("verifier") || body.contains("cargo test") || body.contains("test result")
+        {
+            signals.insert(CandidateSignal::VerificationOutcome);
+        }
+        if body.contains("human correction")
+            || body.contains("human feedback")
+            || body.contains("instead, ")
+        {
+            signals.insert(CandidateSignal::HumanCorrection);
+        }
+        if body.contains("terminal marker")
+            || body.contains("loom_complete")
+            || body.contains("loom_apply")
+        {
+            signals.insert(CandidateSignal::TerminalProtocol);
+        }
+    }
+    signals
 }
 
 #[derive(Debug, Clone)]
@@ -1243,7 +1443,7 @@ fn current_template_text(
 }
 
 struct ValidationInput<'a> {
-    context: &'a Context,
+    context: &'a HarvestedContext,
     repo: &'a Path,
     plan: &'a FrozenPlan,
     loaded_cases: &'a LoadedCases,
@@ -1290,7 +1490,7 @@ async fn validate_candidate(input: ValidationInput<'_>) -> Result<CandidateValid
 }
 
 async fn validate_behavioral_cases(
-    context: &Context,
+    context: &HarvestedContext,
     plan: &FrozenPlan,
     loaded_cases: &LoadedCases,
     registry: &CheckerRegistry,
@@ -1320,24 +1520,26 @@ async fn validate_behavioral_cases(
             };
         }
     };
-    let results = match tune_executor::run(plan, loaded_cases, &replays) {
-        Ok(results) => results,
-        Err(source) => {
-            return CandidateValidation {
-                rows: vec![ValidationRow {
-                    check: "behavioral-cases".to_owned(),
-                    status: ValidationStatus::Failed,
-                    detail: format!("checker execution failed: {source}"),
-                }],
-                outcome_counts: OutcomeCounts {
-                    pending: 0,
-                    passed: 0,
-                    failed: 0,
-                    blocked: plan.selected_cases.len(),
-                },
-            };
-        }
-    };
+    let finding_validator = crate::review::WorkspaceFindingValidator::new(&context.workspace);
+    let results =
+        match tune_executor::run(plan, loaded_cases, &replays, registry, &finding_validator) {
+            Ok(results) => results,
+            Err(source) => {
+                return CandidateValidation {
+                    rows: vec![ValidationRow {
+                        check: "behavioral-cases".to_owned(),
+                        status: ValidationStatus::Failed,
+                        detail: format!("checker execution failed: {source}"),
+                    }],
+                    outcome_counts: OutcomeCounts {
+                        pending: 0,
+                        passed: 0,
+                        failed: 0,
+                        blocked: plan.selected_cases.len(),
+                    },
+                };
+            }
+        };
     match tune_gate::evaluate(plan, results, registry) {
         Ok(report) => CandidateValidation {
             rows: vec![ValidationRow {
@@ -1367,7 +1569,7 @@ async fn validate_behavioral_cases(
 }
 
 async fn replay_selected_cases(
-    context: &Context,
+    context: &HarvestedContext,
     plan: &FrozenPlan,
     loaded_cases: &LoadedCases,
     artifacts: &[TuneArtifact],
@@ -1412,7 +1614,7 @@ async fn replay_selected_cases(
 }
 
 fn replay_input(
-    context: &Context,
+    context: &HarvestedContext,
     loaded_cases: &LoadedCases,
     case_id: &loom_tune::plan::PlannedCaseId,
 ) -> Result<(Vec<Target>, String), TuneError> {
@@ -1519,7 +1721,7 @@ fn artifact_text(
     Ok(out)
 }
 
-fn replay_prompt(checker: &loom_tune::CheckerId, input: &str, artifact: &str) -> String {
+fn replay_prompt(checker: &CheckerId, input: &str, artifact: &str) -> String {
     format!(
         "Execute behavioral checker `{checker}` against the supplied input.\n\
          Apply the artifact guidance as agent strategy, then emit the behavior the task requests.\n\
@@ -1704,14 +1906,25 @@ fn validate_templates(repo: &Path) -> Vec<ValidationRow> {
             })
             .collect();
     }
+    let target_dir = repo.join("target/loom-tune-validation");
     commands
         .iter()
-        .map(|(name, args)| validation_command(repo, name, args))
+        .map(|(name, args)| {
+            let mut command = Command::new("cargo");
+            command
+                .args(args)
+                .current_dir(repo)
+                .env("CARGO_TARGET_DIR", &target_dir);
+            if *name == "representative-renders" {
+                command.env("INSTA_UPDATE", "always");
+            }
+            validation_command(name, &mut command)
+        })
         .collect()
 }
 
-fn validation_command(repo: &Path, name: &str, args: &[&str]) -> ValidationRow {
-    match Command::new("cargo").args(args).current_dir(repo).output() {
+fn validation_command(name: &str, command: &mut Command) -> ValidationRow {
+    match command.output() {
         Ok(output) if output.status.success() => ValidationRow {
             check: name.to_owned(),
             status: ValidationStatus::Passed,
@@ -1951,7 +2164,7 @@ fn tune_metadata(update: &BeadUpdate<'_>) -> Result<Vec<(String, String)>, TuneE
         ),
         (
             "loom.tune.base_commit".to_owned(),
-            update.context.base_commit.to_owned(),
+            update.context.base_commit.clone(),
         ),
         (
             "loom.tune.proposal_branch".to_owned(),
@@ -1990,9 +2203,12 @@ fn tune_metadata(update: &BeadUpdate<'_>) -> Result<Vec<(String, String)>, TuneE
 }
 
 fn preparation_labels(targets: &[Target]) -> Vec<String> {
-    specs_for_targets(targets)
-        .into_iter()
-        .map(|spec| format!("spec:{spec}"))
+    std::iter::once("loom:tune".to_owned())
+        .chain(
+            specs_for_targets(targets)
+                .into_iter()
+                .map(|spec| format!("spec:{spec}")),
+        )
         .collect()
 }
 
@@ -2181,18 +2397,31 @@ pub enum TuneError {
         #[source]
         source: std::io::Error,
     },
+    /// generated tuning guidance in {path} has no closing marker
+    UnterminatedGeneratedGuidance { path: PathBuf },
     /// failed to serialize tune artifact
     Serialize(#[from] serde_json::Error),
     /// tune lock error
     Lock(#[from] LockError),
     /// bd error
     Bd(#[from] loom_driver::bd::BdError),
+    /// cache error while harvesting criterion evidence
+    Cache(#[from] CacheError),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use loom_driver::git::{commit_all_in, init_test_repo};
+
+    fn harvested_for_test(context: Context) -> HarvestedContext {
+        let evidence = Splitter::new(
+            context.split_salt.clone(),
+            context.tune_config.evidence.selection_fraction,
+        )
+        .snapshot(Vec::new());
+        HarvestedContext { context, evidence }
+    }
 
     #[tokio::test]
     async fn skill_protocol_boundary_preflight_blocks_unsafe_candidate() {
@@ -2205,8 +2434,8 @@ mod tests {
         .expect("write skill");
         commit_all_in(workspace.path(), "add skill").expect("commit skill");
 
-        let mut context = Context::load(workspace.path()).await.expect("load context");
-        context.harvest_evidence().expect("harvest evidence");
+        let context =
+            harvested_for_test(Context::load(workspace.path()).await.expect("load context"));
         let request = ProposeRequest {
             surface: Surface::Skill,
             level: Level::Fast,
@@ -2273,8 +2502,8 @@ mod tests {
         .expect("write skill");
         commit_all_in(workspace.path(), "add skill").expect("commit skill");
 
-        let mut context = Context::load(workspace.path()).await.expect("load context");
-        context.harvest_evidence().expect("initial harvest");
+        let context =
+            harvested_for_test(Context::load(workspace.path()).await.expect("load context"));
         let request = ProposeRequest {
             surface: Surface::Skill,
             level: Level::Fast,
@@ -2289,12 +2518,12 @@ mod tests {
             "---\nname: repo-review\ndescription: Use when reviewing code.\n---\nReview carefully.\n",
         )
         .expect("seed candidate");
-        write_candidate_files(&context, &request, &prepared, candidate_repo.path())
+        write_candidate_files(&context, &prepared, candidate_repo.path())
             .expect("generate candidate");
         assert!(
             read_to_string(&candidate_repo.path().join("skills/review/skill.md"))
                 .expect("candidate text")
-                .contains("Tuning Candidate Notes")
+                .contains("Tuned Guidance")
         );
 
         write_parented(
@@ -2302,15 +2531,54 @@ mod tests {
             "{\"type\":\"review\",\"finding\":\"new post-candidate evidence\"}\n",
         )
         .expect("write changed evidence pool");
-        let rebuilt = context.refreshed_plan(&request).expect("rebuild plan");
-        let error = prepared
-            .frozen
-            .reject_if_changed(&rebuilt.frozen)
-            .expect_err("post-candidate plan drift rejects");
-        assert!(matches!(error, PlanError::PlanChanged { .. }));
-        let validation = changed_plan_validation(&prepared.frozen, &[], &error);
-        assert!(validation.rows.iter().any(|row| {
-            row.check == "checker-plan-freeze" && row.status == ValidationStatus::Failed
-        }));
+        let rebuilt = context.plan(&request).expect("rebuild frozen plan");
+        prepared.frozen.reject_if_changed(&rebuilt.frozen).expect(
+            "candidate generation cannot alter the frozen evidence snapshot or checker plan",
+        );
+        assert_eq!(prepared.frozen.plan_hash, rebuilt.frozen.plan_hash);
+        assert_eq!(prepared.frozen.checker_plan, rebuilt.frozen.checker_plan);
+    }
+
+    #[test]
+    fn candidate_generation_reflects_train_but_withholds_selection() {
+        use loom_tune::evidence::{Item, ItemId};
+
+        let target = "skill:loom-context-before-edit"
+            .parse::<Target>()
+            .expect("target");
+        let checker = CheckerId::new("behavior.review.finding-recall").expect("checker");
+        let item = |id: &str, body: &str| {
+            Item::harvested(
+                ItemId::new(id).expect("item id"),
+                checker.clone(),
+                vec![target.clone()],
+                TextEvidence {
+                    root_kind: RootKind::Workspace,
+                    relative_path: PathBuf::from(format!("{id}.jsonl")),
+                    body: body.to_owned(),
+                },
+            )
+        };
+        let evidence = EvidenceSnapshot {
+            train: vec![item(
+                "train-verifier",
+                "The cargo test verifier must run after the final edit.",
+            )],
+            selection: vec![item(
+                "selection-finding",
+                "LOOM_FINDING and LOOM_CONCERN are held-out predicates.",
+            )],
+            metadata: SplitMetadata {
+                algorithm: "sha256-salt-v1".to_owned(),
+                salt_id: "repo".to_owned(),
+                selection_fraction: loom_tune::config::SelectionFraction::new(0.34)
+                    .expect("selection fraction"),
+            },
+        };
+
+        let signals = candidate_signals(&target, &evidence);
+
+        assert!(signals.contains(&CandidateSignal::VerificationOutcome));
+        assert!(!signals.contains(&CandidateSignal::FindingRecall));
     }
 }

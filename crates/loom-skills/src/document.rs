@@ -45,22 +45,27 @@ impl RawSkillDocument {
 /// Frontmatter fields as written before Loom-owned fields are typed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawSkillFrontmatter {
+    #[serde(skip)]
     pub present: bool,
     pub name: Option<String>,
     pub description: Option<String>,
+    #[serde(default)]
     pub metadata: RawSkillMetadata,
 }
 
 /// Raw metadata namespace carried alongside Loom metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawSkillMetadata {
+    #[serde(default)]
     pub loom: RawLoomMetadata,
 }
 
 /// Raw Loom-owned filter metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawLoomMetadata {
+    #[serde(default, deserialize_with = "deserialize_string_list")]
     pub phases: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_list")]
     pub profiles: Vec<String>,
 }
 
@@ -197,6 +202,8 @@ impl SkillDocument {
 pub enum DocumentError {
     /// frontmatter opening marker has no closing marker
     UnterminatedFrontmatter,
+    /// frontmatter is not valid YAML
+    InvalidFrontmatter(#[source] serde_yaml::Error),
 }
 
 /// Typed frontmatter extraction failures.
@@ -227,12 +234,6 @@ pub enum FrontmatterError {
     InvalidProfile { value: String },
 }
 
-#[derive(Debug, Clone)]
-struct StackEntry {
-    indent: usize,
-    key: String,
-}
-
 fn split_frontmatter(markdown: &str) -> Result<(RawSkillFrontmatter, String), DocumentError> {
     let mut lines = markdown.split_inclusive('\n');
     let Some(first_line) = lines.next() else {
@@ -249,7 +250,7 @@ fn split_frontmatter(markdown: &str) -> Result<(RawSkillFrontmatter, String), Do
         offset = offset.saturating_add(line.len());
         let marker = trim_line_end(line);
         if marker == "---" || marker == "..." {
-            let raw = parse_raw_frontmatter(&markdown[frontmatter_start..line_start]);
+            let raw = parse_raw_frontmatter(&markdown[frontmatter_start..line_start])?;
             return Ok((raw, markdown[offset..].to_string()));
         }
     }
@@ -260,141 +261,35 @@ fn trim_line_end(line: &str) -> &str {
     line.trim_end_matches(['\r', '\n'])
 }
 
-fn parse_raw_frontmatter(block: &str) -> RawSkillFrontmatter {
-    let mut raw = RawSkillFrontmatter {
-        present: true,
-        ..RawSkillFrontmatter::default()
-    };
-    let mut stack = Vec::new();
-    for raw_line in block.lines() {
-        let line = raw_line.trim_end();
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = line.len().saturating_sub(trimmed.len());
-        while stack
-            .last()
-            .is_some_and(|entry: &StackEntry| indent <= entry.indent)
-        {
-            stack.pop();
-        }
-        if let Some(item) = trimmed.strip_prefix("- ") {
-            apply_sequence_item(&mut raw, &stack, item.trim());
-            continue;
-        }
-        let Some((key, value)) = trimmed.split_once(':') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim();
-        apply_key_value(&mut raw, &stack, key, value);
-        if value.is_empty() {
-            stack.push(StackEntry {
-                indent,
-                key: key.to_string(),
-            });
-        }
-    }
-    raw
+fn parse_raw_frontmatter(block: &str) -> Result<RawSkillFrontmatter, DocumentError> {
+    let mut raw = serde_yaml::from_str::<RawSkillFrontmatter>(block)
+        .map_err(DocumentError::InvalidFrontmatter)?;
+    raw.present = true;
+    Ok(raw)
 }
 
-fn apply_sequence_item(raw: &mut RawSkillFrontmatter, stack: &[StackEntry], item: &str) {
-    let path = stack_path(stack);
-    if path == ["metadata", "loom", "phases"] {
-        raw.metadata.loom.phases.push(unquote_scalar(item));
-    } else if path == ["metadata", "loom", "profiles"] {
-        raw.metadata.loom.profiles.push(unquote_scalar(item));
+fn deserialize_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringList {
+        One(String),
+        Many(Vec<String>),
     }
-}
 
-fn apply_key_value(raw: &mut RawSkillFrontmatter, stack: &[StackEntry], key: &str, value: &str) {
-    let mut path = stack_path(stack);
-    path.push(key.to_string());
-    match path.as_slice() {
-        [name] if name == "name" && !value.is_empty() => {
-            raw.name = Some(unquote_scalar(value));
-        }
-        [description] if description == "description" && !value.is_empty() => {
-            raw.description = Some(unquote_scalar(value));
-        }
-        [metadata, loom, phases]
-            if metadata == "metadata" && loom == "loom" && phases == "phases" =>
-        {
-            raw.metadata.loom.phases = parse_list_or_scalar(value);
-        }
-        [metadata, loom, profiles]
-            if metadata == "metadata" && loom == "loom" && profiles == "profiles" =>
-        {
-            raw.metadata.loom.profiles = parse_list_or_scalar(value);
-        }
-        _ => {}
+    match Option::<StringList>::deserialize(deserializer)? {
+        None => Ok(Vec::new()),
+        Some(StringList::One(value)) => Ok(vec![value]),
+        Some(StringList::Many(values)) => Ok(values),
     }
-}
-
-fn stack_path(stack: &[StackEntry]) -> Vec<String> {
-    stack.iter().map(|entry| entry.key.clone()).collect()
-}
-
-fn parse_list_or_scalar(value: &str) -> Vec<String> {
-    if value.is_empty() {
-        return Vec::new();
-    }
-    let trimmed = value.trim();
-    if let Some(inner) = trimmed
-        .strip_prefix('[')
-        .and_then(|without_open| without_open.strip_suffix(']'))
-    {
-        return split_top_level_commas(inner)
-            .into_iter()
-            .filter(|part| !part.trim().is_empty())
-            .map(|part| unquote_scalar(part.trim()))
-            .collect();
-    }
-    vec![unquote_scalar(trimmed)]
-}
-
-fn split_top_level_commas(input: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let mut quote: Option<char> = None;
-    for (idx, ch) in input.char_indices() {
-        match (quote, ch) {
-            (Some(current), c) if c == current => quote = None,
-            (None, '\'' | '"') => quote = Some(ch),
-            (None, ',') => {
-                parts.push(&input[start..idx]);
-                start = idx.saturating_add(ch.len_utf8());
-            }
-            _ => {}
-        }
-    }
-    parts.push(&input[start..]);
-    parts
-}
-
-fn unquote_scalar(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.len() >= 2 {
-        let mut chars = trimmed.chars();
-        let first = chars.next();
-        let last = trimmed.chars().next_back();
-        if matches!(
-            (first, last),
-            (Some('"'), Some('"')) | (Some('\''), Some('\''))
-        ) {
-            let start = first.map_or(0, char::len_utf8);
-            let end = trimmed.len().saturating_sub(last.map_or(0, char::len_utf8));
-            return trimmed[start..end].to_string();
-        }
-    }
-    trimmed.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::{SkillSource, SourceShape};
+    use crate::source::{SkillSource, SourceHash, SourceShape};
 
     fn raw(markdown: &str) -> RawSkillDocument {
         RawSkillDocument::new(
@@ -407,7 +302,10 @@ mod tests {
                 tuning_path: None,
                 built_in_bundle: None,
                 built_in_name: None,
-                source_hash: "hash".to_string(),
+                source_hash: SourceHash::new(
+                    blake3::hash(markdown.as_bytes()).to_hex().to_string(),
+                )
+                .expect("valid source hash"),
             },
         )
     }
@@ -439,6 +337,38 @@ Body
             .expect("loom metadata");
         assert_eq!(loom.phases.len(), 2);
         assert_eq!(loom.profiles[0].as_str(), "rust");
+    }
+
+    #[test]
+    fn yaml_frontmatter_supports_escaped_and_folded_scalars() {
+        let document = SkillDocument::parse(raw(
+            "---\nname: rust-review\ndescription: >-\n  Use when reviewing \\\"quoted\\\" Rust changes.\nmetadata:\n  loom:\n    phases: loop\n---\nBody\n",
+        ))
+        .expect("valid YAML parses");
+        let frontmatter = document.typed_frontmatter().expect("typed frontmatter");
+        assert_eq!(
+            frontmatter.description.as_str(),
+            "Use when reviewing \\\"quoted\\\" Rust changes."
+        );
+        assert_eq!(
+            frontmatter
+                .metadata
+                .expect("metadata")
+                .loom
+                .expect("loom metadata")
+                .phases[0]
+                .as_str(),
+            "loop"
+        );
+    }
+
+    #[test]
+    fn malformed_yaml_is_a_document_error_even_in_unknown_fields() {
+        let error = SkillDocument::parse(raw(
+            "---\nname: rust-review\ndescription: Valid description.\nunknown: [unterminated\n---\nBody\n",
+        ))
+        .expect_err("malformed YAML rejects");
+        assert!(matches!(error, DocumentError::InvalidFrontmatter(_)));
     }
 
     #[test]

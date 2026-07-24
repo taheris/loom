@@ -15,13 +15,17 @@ use loom_gate::{
     GateRun, GateSuccess, HandoffEvidence, MarkerProof, append_gate_run_lifecycle_events,
 };
 use loom_protocol::gate::{ExitSignal, parse_exit_signal};
+use loom_tune::proposal::State as TuneState;
 use serde_json::json;
 use thiserror::Error;
 use tokio::process::Command;
 use tracing::warn;
 
+use super::list::read_manifest_identity;
+
 const TUNE_LABEL: &str = "loom:tune";
 const TUNE_STATE_KEY: &str = "loom.tune.state";
+const TUNE_BASE_KEY: &str = "loom.tune.base_commit";
 const TUNE_BRANCH_KEY: &str = "loom.tune.proposal_branch";
 const TUNE_HEAD_KEY: &str = "loom.tune.proposal_head";
 const APPLY_FAILURE_KEY: &str = "loom.tune.apply_failure";
@@ -45,6 +49,8 @@ pub enum ApplyError {
     Git(#[from] GitError),
     /// tune proposal `{id}` cannot be applied: {reason}
     InvalidProposal { id: BeadId, reason: String },
+    /// tune proposal `{id}` is accepted but its canonical/local records are invalid: {reason}
+    BlockedProposal { id: BeadId, reason: String },
     /// tune apply requires at least one proposal id
     EmptyBatch,
     /// failed to create tokio runtime for tune apply
@@ -200,7 +206,14 @@ async fn validate_proposals(
     let mut proposals = Vec::with_capacity(ids.len());
     for id in ids {
         let bead = bd.show(id).await?;
-        proposals.push(validate_proposal(workspace, bead).await?);
+        match validate_proposal(workspace, bead).await {
+            Ok(proposal) => proposals.push(proposal),
+            Err(ApplyError::BlockedProposal { id, reason }) => {
+                block_invalid_proposal(bd, &id, &reason).await?;
+                return Err(ApplyError::BlockedProposal { id, reason });
+            }
+            Err(source) => return Err(source),
+        }
     }
     Ok(proposals)
 }
@@ -219,29 +232,42 @@ async fn validate_proposal(workspace: &Path, bead: Bead) -> Result<Proposal, App
             ),
         );
     }
+    let base = required_metadata(&bead, TUNE_BASE_KEY)?;
     let branch = required_metadata(&bead, TUNE_BRANCH_KEY)?;
     let head = required_metadata(&bead, TUNE_HEAD_KEY)?;
     let envelope = workspace.join(".loom/tune").join(bead.id.as_str());
     let repo = envelope.join("repo");
     require_path(&bead.id, &repo, "proposal repo")?;
-    require_file(&bead.id, &envelope.join("manifest.json"), "manifest")?;
+    let manifest_path = envelope.join("manifest.json");
+    require_file(&bead.id, &manifest_path, "manifest")?;
+    let manifest =
+        read_manifest_identity(&manifest_path).ok_or_else(|| ApplyError::BlockedProposal {
+            id: bead.id.clone(),
+            reason: format!("manifest is corrupt at {}", manifest_path.display()),
+        })?;
+    if !manifest.agrees_for_apply(&bead, TuneState::Accepted, &base, &branch, &head) {
+        return blocked(
+            bead.id,
+            "manifest disagrees with canonical tune bead metadata",
+        );
+    }
     let proposal_git = GitClient::open(&repo)?;
     let branch_head = proposal_git
         .resolve_commit_sha(&branch)
         .await
-        .map_err(|source| ApplyError::InvalidProposal {
+        .map_err(|source| ApplyError::BlockedProposal {
             id: bead.id.clone(),
             reason: format!("proposal branch `{branch}` is not reachable: {source}"),
         })?;
     let expected_head = proposal_git
         .resolve_commit_sha(&head)
         .await
-        .map_err(|source| ApplyError::InvalidProposal {
+        .map_err(|source| ApplyError::BlockedProposal {
             id: bead.id.clone(),
             reason: format!("proposal head `{head}` is not reachable: {source}"),
         })?;
     if branch_head != expected_head {
-        return invalid(
+        return blocked(
             bead.id,
             format!("proposal branch `{branch}` points to {branch_head}, expected {expected_head}"),
         );
@@ -251,6 +277,25 @@ async fn validate_proposal(workspace: &Path, bead: Bead) -> Result<Proposal, App
         repo,
         branch,
     })
+}
+
+async fn block_invalid_proposal(
+    bd: &BdClient,
+    id: &BeadId,
+    reason: &str,
+) -> Result<(), ApplyError> {
+    bd.update(
+        id,
+        UpdateOpts {
+            status: Some("blocked".to_owned()),
+            add_labels: vec!["loom:blocked".to_owned()],
+            notes: Some(format!("tune proposal validation blocked apply: {reason}")),
+            set_metadata: vec![(TUNE_STATE_KEY.to_owned(), "blocked".to_owned())],
+            ..UpdateOpts::default()
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 async fn attempt_batch(
@@ -592,7 +637,7 @@ fn metadata_string(metadata: &BTreeMap<String, serde_json::Value>, key: &str) ->
 }
 
 fn required_metadata(bead: &Bead, key: &str) -> Result<String, ApplyError> {
-    metadata_string(&bead.metadata, key).ok_or_else(|| ApplyError::InvalidProposal {
+    metadata_string(&bead.metadata, key).ok_or_else(|| ApplyError::BlockedProposal {
         id: bead.id.clone(),
         reason: format!("missing metadata `{key}`"),
     })
@@ -602,7 +647,7 @@ fn require_path(id: &BeadId, path: &Path, label: &str) -> Result<(), ApplyError>
     if path.is_dir() {
         return Ok(());
     }
-    Err(ApplyError::InvalidProposal {
+    Err(ApplyError::BlockedProposal {
         id: id.clone(),
         reason: format!("{label} missing at {}", path.display()),
     })
@@ -612,7 +657,7 @@ fn require_file(id: &BeadId, path: &Path, label: &str) -> Result<(), ApplyError>
     if path.is_file() {
         return Ok(());
     }
-    Err(ApplyError::InvalidProposal {
+    Err(ApplyError::BlockedProposal {
         id: id.clone(),
         reason: format!("{label} missing at {}", path.display()),
     })
@@ -620,6 +665,13 @@ fn require_file(id: &BeadId, path: &Path, label: &str) -> Result<(), ApplyError>
 
 fn invalid<T>(id: BeadId, reason: impl Into<String>) -> Result<T, ApplyError> {
     Err(ApplyError::InvalidProposal {
+        id,
+        reason: reason.into(),
+    })
+}
+
+fn blocked<T>(id: BeadId, reason: impl Into<String>) -> Result<T, ApplyError> {
+    Err(ApplyError::BlockedProposal {
         id,
         reason: reason.into(),
     })

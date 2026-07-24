@@ -203,22 +203,10 @@ fn classify(current: Scores, candidate: Scores, epsilon: f64) -> Outcome {
 }
 
 fn soft_regression_epsilon(registry: &Registry, checker: &CheckerId) -> Result<f64, Error> {
-    let metadata = registry.require_active(checker)?;
-    let epsilon = metadata
+    Ok(registry
+        .require_active(checker)?
         .soft_regression_epsilon
-        .parse::<f64>()
-        .map_err(|_| Error::InvalidEpsilon {
-            checker: checker.clone(),
-            value: metadata.soft_regression_epsilon.clone(),
-        })?;
-    if epsilon.is_finite() && epsilon >= 0.0 {
-        Ok(epsilon)
-    } else {
-        Err(Error::InvalidEpsilon {
-            checker: checker.clone(),
-            value: metadata.soft_regression_epsilon.clone(),
-        })
-    }
+        .get())
 }
 
 /// Behavioral gate failures.
@@ -240,8 +228,6 @@ pub enum Error {
     },
     /// checker registry rejected behavioral gate metadata
     Registry(#[from] RegistryError),
-    /// checker `{checker}` has invalid soft regression epsilon `{value}`
-    InvalidEpsilon { checker: CheckerId, value: String },
     /// aggregate behavioral score is invalid
     Score(#[from] ScoreError),
 }

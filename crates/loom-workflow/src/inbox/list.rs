@@ -3,7 +3,14 @@ use std::path::Path;
 use std::str::FromStr;
 
 use loom_driver::bd::{Bead, Label};
-use loom_driver::identifier::SpecLabel;
+use loom_driver::identifier::{BeadId, SpecLabel};
+use loom_tune::checker::Level;
+use loom_tune::evidence::SplitMetadata;
+use loom_tune::plan::Hash as PlanHash;
+use loom_tune::proposal::{CaseCounts, OutcomeCounts, State as TuneState};
+use loom_tune::target::Target;
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use tracing::warn;
 
 use super::options::parse_options_in;
@@ -191,17 +198,114 @@ pub fn frame_unavailable_tune_items(workspace: &Path, items: &mut [InboxItem]) {
         let Some(tune) = item.tune.as_mut() else {
             continue;
         };
-        let repo = workspace
-            .join(".loom/tune")
-            .join(&tune.proposal_id)
-            .join("repo");
-        let unavailable =
-            tune.proposal_branch.is_none() || tune.proposal_head.is_none() || !repo.is_dir();
+        let envelope = workspace.join(".loom/tune").join(&tune.proposal_id);
+        let repo = envelope.join("repo");
+        let manifest = read_manifest_identity(&envelope.join("manifest.json"));
+        let unavailable = tune.proposal_branch.is_none()
+            || tune.proposal_head.is_none()
+            || !repo.is_dir()
+            || manifest
+                .as_ref()
+                .is_none_or(|manifest| !manifest.agrees_with_bead(&item.bead));
         if unavailable {
             if tune.state == "pending" {
                 tune.state = "blocked".to_string();
             }
             item.bead.status = "blocked".to_string();
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub(crate) struct ManifestIdentity {
+    proposal_id: BeadId,
+    state: TuneState,
+    targets: Vec<Target>,
+    level: Level,
+    seed: u64,
+    base_commit: String,
+    proposal_branch: String,
+    proposal_head: String,
+    plan_hash: PlanHash,
+    case_counts: CaseCounts,
+    outcome_counts: OutcomeCounts,
+    evidence_split: SplitMetadata,
+}
+
+impl ManifestIdentity {
+    fn agrees_with_bead(&self, bead: &Bead) -> bool {
+        self.proposal_id == bead.id
+            && metadata_matches(&bead.metadata, TUNE_ID_KEY, &self.proposal_id)
+            && metadata_matches(&bead.metadata, TUNE_STATE_KEY, &self.state)
+            && metadata_matches(&bead.metadata, "loom.tune.targets", &self.targets)
+            && metadata_matches(&bead.metadata, "loom.tune.level", &self.level)
+            && metadata_matches(&bead.metadata, "loom.tune.seed", &self.seed)
+            && metadata_matches(&bead.metadata, TUNE_BASE_KEY, &self.base_commit)
+            && metadata_matches(&bead.metadata, TUNE_BRANCH_KEY, &self.proposal_branch)
+            && metadata_matches(&bead.metadata, TUNE_HEAD_KEY, &self.proposal_head)
+            && metadata_matches(&bead.metadata, "loom.tune.plan_hash", &self.plan_hash)
+            && metadata_matches(&bead.metadata, "loom.tune.case_counts", &self.case_counts)
+            && metadata_matches(
+                &bead.metadata,
+                "loom.tune.outcome_counts",
+                &self.outcome_counts,
+            )
+            && metadata_matches(
+                &bead.metadata,
+                "loom.tune.evidence_split",
+                &self.evidence_split,
+            )
+    }
+
+    pub(crate) fn agrees_for_apply(
+        &self,
+        bead: &Bead,
+        state: TuneState,
+        base_commit: &str,
+        branch: &str,
+        head: &str,
+    ) -> bool {
+        self.agrees_with_bead(bead)
+            && self.state == state
+            && self.base_commit == base_commit
+            && self.proposal_branch == branch
+            && self.proposal_head == head
+    }
+}
+
+fn metadata_matches<T>(
+    metadata: &BTreeMap<String, serde_json::Value>,
+    key: &str,
+    expected: &T,
+) -> bool
+where
+    T: DeserializeOwned + PartialEq,
+{
+    let Some(value) = metadata.get(key) else {
+        return false;
+    };
+    match serde_json::from_value::<T>(value.clone()) {
+        Ok(actual) => actual == *expected,
+        Err(source) => {
+            warn!(key, %source, "tune bead metadata has an invalid canonical value");
+            false
+        }
+    }
+}
+
+pub(crate) fn read_manifest_identity(path: &Path) -> Option<ManifestIdentity> {
+    let body = match std::fs::read_to_string(path) {
+        Ok(body) => body,
+        Err(source) => {
+            warn!(path = %path.display(), %source, "tune manifest is unavailable");
+            return None;
+        }
+    };
+    match serde_json::from_str(&body) {
+        Ok(manifest) => Some(manifest),
+        Err(source) => {
+            warn!(path = %path.display(), %source, "tune manifest is corrupt");
+            None
         }
     }
 }
@@ -539,6 +643,65 @@ mod tests {
         let chat = build_queue(&[epic], None, None, false);
         assert_eq!(list.len(), 1);
         assert!(chat.is_empty());
+    }
+
+    #[test]
+    fn tune_manifest_disagreement_frames_pending_item_as_blocked() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut tune = bead("lm-tune", "tune", "", &["loom:tune"]);
+        for (key, value) in [
+            (TUNE_STATE_KEY, "pending"),
+            (TUNE_ID_KEY, "lm-tune"),
+            (TUNE_BASE_KEY, "base"),
+            (TUNE_BRANCH_KEY, "loom/tune/lm-tune"),
+            (TUNE_HEAD_KEY, "head"),
+            ("loom.tune.level", "fast"),
+            ("loom.tune.plan_hash", "fixture-plan"),
+        ] {
+            tune.metadata.insert(key.to_owned(), json!(value));
+        }
+        tune.metadata
+            .insert("loom.tune.targets".to_owned(), json!(["skill:fixture"]));
+        tune.metadata.insert("loom.tune.seed".to_owned(), json!(7));
+        tune.metadata.insert(
+            "loom.tune.case_counts".to_owned(),
+            json!({"declared": 0, "mined_train": 0, "mined_selection": 0, "selected": 0, "skipped": 0}),
+        );
+        tune.metadata.insert(
+            "loom.tune.outcome_counts".to_owned(),
+            json!({"pending": 0, "passed": 0, "failed": 0, "blocked": 0}),
+        );
+        tune.metadata.insert(
+            "loom.tune.evidence_split".to_owned(),
+            json!({"algorithm": "sha256-salt-v1", "salt_id": "fixture", "selection_fraction": 0.34}),
+        );
+        let envelope = workspace.path().join(".loom/tune/lm-tune");
+        std::fs::create_dir_all(envelope.join("repo")).expect("proposal repo");
+        std::fs::write(
+            envelope.join("manifest.json"),
+            json!({
+                "proposal_id": "lm-tune",
+                "state": "pending",
+                "targets": ["skill:fixture"],
+                "level": "fast",
+                "seed": 7,
+                "base_commit": "different-base",
+                "proposal_branch": "loom/tune/lm-tune",
+                "proposal_head": "head",
+                "plan_hash": "fixture-plan",
+                "case_counts": {"declared": 0, "mined_train": 0, "mined_selection": 0, "selected": 0, "skipped": 0},
+                "outcome_counts": {"pending": 0, "passed": 0, "failed": 0, "blocked": 0},
+                "evidence_split": {"algorithm": "sha256-salt-v1", "salt_id": "fixture", "selection_fraction": 0.34},
+            })
+            .to_string(),
+        )
+        .expect("manifest");
+
+        let mut queue = build_queue(&[tune], None, None, true);
+        frame_unavailable_tune_items(workspace.path(), &mut queue);
+
+        assert_eq!(queue[0].bead.status, "blocked");
+        assert_eq!(queue[0].tune.as_ref().expect("tune").state, "blocked");
     }
 
     #[test]

@@ -927,7 +927,7 @@ mod tests {
     fn spawn_config_skills_are_host_only_and_never_serialized() {
         let mut cfg = sample_config(None);
         cfg.skills = Some(RegisteredSkills::new(
-            loom_skills::registry::MaterializedRegistry::new(vec![]),
+            loom_skills::registry::MaterializedRegistry::empty(),
             loom_skills::disclosure::DisclosureMode::Prompt,
         ));
         let json = serde_json::to_string(&cfg).expect("serialize");

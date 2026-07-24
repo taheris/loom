@@ -619,9 +619,9 @@ Proposal creation requires an explicit level:
 | `loom tune partial fast|run|full [<partial-name>...]` | Tune all partials when no names are supplied, or named partials such as `review_rubric`. |
 | `loom tune all fast|run|full` | Tune skills, phase templates, and partials in one proposal. Target names are not accepted after `all`. |
 
-There are no plural aliases (`skills`, `phases`, `partials`) and no `template`
-umbrella command in v1. Template target names use phase names and partial
-filenames without `.md`. The former `msg` phase is renamed to `inbox`.
+There are no plural aliases (`skills`, `phases`, `partials`), no `template`
+umbrella command, and no `msg` phase target in v1. Template target names use
+phase names and partial filenames without `.md`.
 
 Each proposal-creating invocation creates one proposal bead. Mixed surfaces are
 allowed only through `loom tune all fast|run|full` in v1. Proposal branches may

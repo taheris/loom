@@ -1167,13 +1167,11 @@ populates that validated host-only state:
       wired into the binary, and read-only tune invocations do not allocate tune
       proposal envelopes
   [test](loom_tune_bare_prints_help_without_proposal)
-- Tune dry-runs exercise the same planning path as proposal creation and stop
-      before candidate generation, preserving deterministic checker-plan output
+- Tune dry-runs and proposal creation dispatch through the same
+      `loom-workflow::tune` planning integration, with dry-run stopping before
+      candidate generation; evidence policy and checker-plan semantics are owned
+      by [skills.md](skills.md#skillopt-style-tuning-loop)
   [test](loom_tune_level_seed_dry_run_shape_plan)
-- Tune evidence harvesting stays workspace-first and reports only explicitly
-      configured external evidence roots; home-directory transcript roots are
-      not implicit
-  [test](skill_tune_evidence_roots_and_gate)
 - `loom spec` queries spec annotations (`[check]` / `[test]` /
       `[system]` / `[judge]`) parsed via `loom-gate`'s annotation parser
   [test](list_for_label_reads_all_four_tiers)

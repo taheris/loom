@@ -97,8 +97,10 @@ known; read that spec and companions on demand for the current item.
    `bd close <id>` when the user decides no further implementation is needed.
    Pair label removal with `--status=open` unless closing the bead.
 5. For tune proposals, use the bead body/metadata as durable state and local
-   `.loom/tune/<id>/` paths as repair artifacts. Never push from chat and never
-   leave `.loom/integration` dirty.
+   `.loom/tune/<id>/` paths as repair artifacts. Before requesting apply, set
+   both bead metadata and `manifest.json` state to `accepted`; disagreement
+   between their proposal id, state, base, branch, or head blocks the handoff.
+   Never push from chat and never leave `.loom/integration` dirty.
 6. The driver does not reconcile bd state after this interactive session.
    Unresolved items remain visible in the next `loom inbox` list.
 
