@@ -1482,6 +1482,14 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
     };
     append_gate_run_lifecycle_events(&verify_log_path, &verify_run)?;
     if let Err(error) = verify_result {
+        let detail = error.to_string();
+        append_push_gate_diagnostic(
+            &verify_log_path,
+            "verify",
+            "pre-push verification failed",
+            "",
+            &detail,
+        )?;
         warn!(
             spec = %label,
             error = ?error,
@@ -1522,6 +1530,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         .await?;
     let review_status = review_output.status;
     let review_stdout = String::from_utf8_lossy(&review_output.stdout);
+    let review_stderr = String::from_utf8_lossy(&review_output.stderr);
     let validator = WorkspaceFindingValidator::new(&gate_workspace);
     let walk = WalkOutput::from_stdout(&review_stdout, DispatchScope::PerBead, &validator);
     let config = LoomConfig::load(LoomConfig::resolve_path(&gate_workspace))?;
@@ -1567,10 +1576,47 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         None
     };
 
-    let mut runs = parse_gate_runs_from_jsonl(&verify_log_path);
-    if review_log_path.exists() {
-        runs.extend(parse_gate_runs_from_jsonl(&review_log_path));
+    let review_runs = parse_gate_runs_from_jsonl(&review_log_path);
+    let has_review_run = review_runs.iter().any(|run| run.phase == GatePhase::Review);
+    let has_failed_review_run = review_runs
+        .iter()
+        .any(|run| run.phase == GatePhase::Review && matches!(run.status, GateRunStatus::Failed));
+    let review_failure = if !review_status.success() {
+        Some(format!(
+            "review subprocess exited {}",
+            review_status.code().unwrap_or(-1),
+        ))
+    } else if !has_review_run {
+        Some("review subprocess produced no completed gate evidence".to_string())
+    } else {
+        None
+    };
+    if let Some(failure) = review_failure.as_deref() {
+        if !has_review_run || (!review_status.success() && !has_failed_review_run) {
+            let failed_review = GateRun {
+                phase: GatePhase::Review,
+                push_range: diff_range.clone(),
+                tree_oid: actual.tree_oid.to_string(),
+                config_digest: config_digest.clone(),
+                log_path: review_log_path.clone(),
+                exit_code: review_status.code(),
+                status: GateRunStatus::Failed,
+                marker: review_marker.clone(),
+                covered_hooks: Vec::new(),
+            };
+            append_gate_run_lifecycle_events(&review_log_path, &failed_review)?;
+        }
+        append_push_gate_diagnostic(
+            &review_log_path,
+            "review",
+            failure,
+            &review_stdout,
+            &review_stderr,
+        )?;
     }
+
+    let mut runs = parse_gate_runs_from_jsonl(&verify_log_path);
+    runs.extend(parse_gate_runs_from_jsonl(&review_log_path));
     let mut evidence = HandoffEvidence::from_runs(runs);
     evidence.molecule_state = if mint_summary.is_some() {
         MoleculeState::Unresolved
@@ -1589,6 +1635,8 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
             diff = %diff_range,
             exit_code = review_status.code().unwrap_or(-1),
             gate_log_path = %review_log_path.display(),
+            stdout_tail = %text_tail(&review_stdout, 4_000),
+            stderr_tail = %text_tail(&review_stderr, 4_000),
             "loom loop: molecule push gate refused by review process",
         );
         return Ok(MoleculeGateHandoff {
@@ -1725,6 +1773,64 @@ fn bead_has_parked_state(bead: &Bead) -> bool {
         || bead.labels.iter().any(|label| {
             label.is_blocked() || label.is_clarify() || label.is_deferred() || label.is_infra()
         })
+}
+
+fn append_push_gate_diagnostic(
+    path: &Path,
+    phase: &str,
+    summary: &str,
+    stdout: &str,
+    stderr: &str,
+) -> Result<(), LoopError> {
+    use std::io::Write as _;
+
+    let contents = std::fs::read_to_string(path)?;
+    let last_event = contents
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<AgentEvent>(line).ok())
+        .ok_or_else(|| LoopError::Io(std::io::Error::other("gate log has no event envelope")))?;
+    let envelope = last_event.envelope();
+    let clock = SystemClock::new();
+    let mut builder = EnvelopeBuilder::with_seq_start(
+        SessionScope::phase(envelope.session_id.clone(), envelope.molecule_id.clone()),
+        Source::Driver,
+        envelope.seq + 1,
+        move || {
+            clock
+                .wall_now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                })
+        },
+    );
+    let event = AgentEvent::DriverEvent {
+        envelope: builder.build(),
+        driver_kind: DriverKind::VerdictGate,
+        summary: summary.to_string(),
+        payload: serde_json::json!({
+            "phase": phase,
+            "summary": summary,
+            "stdout_tail": text_tail(stdout, 4_000),
+            "stderr_tail": text_tail(stderr, 4_000),
+            "log_path": path.to_string_lossy(),
+        }),
+    };
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    serde_json::to_writer(&mut file, &event).map_err(std::io::Error::other)?;
+    writeln!(&mut file)?;
+    file.flush()?;
+    Ok(())
+}
+
+fn text_tail(text: &str, max_chars: usize) -> String {
+    let start = text
+        .char_indices()
+        .rev()
+        .nth(max_chars.saturating_sub(1))
+        .map_or(0, |(index, _)| index);
+    text[start..].to_string()
 }
 
 fn diagnostic_notes(cause: &str, error: &str) -> String {
@@ -3752,6 +3858,16 @@ mod tests {
             "deadbeef",
         ));
         let git = git_workspace(dir.path());
+        let publish_marker = dir.path().join("unexpected-publish");
+        let wrix = dir.path().join("wrix-stub.sh");
+        loom_test_support::write_executable_bash_script(
+            &wrix,
+            &format!(
+                "set -euo pipefail\nprintf published > {}\n",
+                publish_marker.display()
+            ),
+        )
+        .expect("write publication stub");
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label,
@@ -3770,7 +3886,8 @@ mod tests {
                     Some(ExitSignal::Complete),
                 )
             },
-        );
+        )
+        .with_wrix_bin(wrix);
 
         let evidence = controller
             .exec_review()
@@ -3779,6 +3896,17 @@ mod tests {
         assert_eq!(evidence.review_exit, Some(17));
         assert!(evidence.verified.is_some());
         assert!(evidence.reviewed.is_none());
+        let failed_review = evidence
+            .gate_runs
+            .iter()
+            .find(|run| run.phase == GatePhase::Review)
+            .expect("failed review run is retained");
+        assert_eq!(failed_review.status, GateRunStatus::Failed);
+        let diagnostic = std::fs::read_to_string(&failed_review.log_path)
+            .expect("failed review log is readable");
+        assert!(diagnostic.contains("review subprocess exited 17"));
+        assert!(diagnostic.contains("child stdout"));
+        assert!(diagnostic.contains("child stderr"));
         assert!(matches!(
             GateSuccess::new(&evidence, 1),
             Err(loom_gate::GateFail {
@@ -3792,6 +3920,10 @@ mod tests {
                 .loom_workspace()
                 .join(".loom/marker.json")
                 .exists()
+        );
+        assert!(
+            !publish_marker.exists(),
+            "failed review must stop before Beads publication"
         );
     }
 

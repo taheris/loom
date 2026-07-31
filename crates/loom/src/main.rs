@@ -3410,6 +3410,7 @@ fn print_loop_summary(prefix: &str, summary: &LoopOutcome) {
         summary.outer_iterations,
         gate_label(&summary.gate),
     );
+    print_gate_failure(&summary.gate);
 }
 
 #[expect(
@@ -3430,6 +3431,7 @@ fn print_parallel_loop_summary(
             outcome.beads_waiting,
             gate_label(&outcome.gate),
         );
+        print_gate_failure(&outcome.gate);
     } else {
         print_parallel_aggregate_summary(parallel_n, outcome);
     }
@@ -3446,6 +3448,32 @@ fn print_parallel_aggregate_summary(parallel_n: u32, outcome: &LoopOutcome) {
         outcome.beads_waiting,
         gate_label(&outcome.gate),
     );
+    print_gate_failure(&outcome.gate);
+}
+
+#[expect(
+    clippy::print_stdout,
+    reason = "gate refusal details are part of the loop's operator summary"
+)]
+fn print_gate_failure(gate: &GateOutcome) {
+    let GateOutcome::Fail(failure) = gate else {
+        return;
+    };
+    println!("  gate failure: {}", failure.reason);
+    let mut paths = Vec::new();
+    for run in &failure.gate_runs {
+        if !paths.iter().any(|path| path == &run.log_path) {
+            paths.push(run.log_path.clone());
+        }
+    }
+    if let Some(path) = failure.review_log_path.as_ref()
+        && !paths.iter().any(|candidate| candidate == path)
+    {
+        paths.push(path.clone());
+    }
+    for path in paths {
+        println!("  gate log: {}", path.display());
+    }
 }
 
 /// One-word render of a [`GateOutcome`] for the operator-facing summary

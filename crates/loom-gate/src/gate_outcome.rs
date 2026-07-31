@@ -1,6 +1,7 @@
 //! Typed outcomes of one `loom loop` invocation.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -442,6 +443,24 @@ pub enum GateFailReason {
     ReviewEvidenceMissing,
     MarkerCoverageMissing,
     IntegrityFinding,
+}
+
+impl fmt::Display for GateFailReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MoleculeStateUnresolved => formatter.write_str("molecule-state-unresolved"),
+            Self::VerifierFailed => formatter.write_str("verifier-failed"),
+            Self::PrePushHookFailed => formatter.write_str("pre-push-hook-failed"),
+            Self::ReviewConcern { summary } => write!(formatter, "review-concern: {summary}"),
+            Self::BadWalk => formatter.write_str("bad-review-walk"),
+            Self::EmptyDiffNoop => formatter.write_str("empty-diff-noop"),
+            Self::StalledMaxIterations => formatter.write_str("stalled-max-iterations"),
+            Self::SignalKilled => formatter.write_str("signal-killed"),
+            Self::ReviewEvidenceMissing => formatter.write_str("review-evidence-missing"),
+            Self::MarkerCoverageMissing => formatter.write_str("marker-coverage-missing"),
+            Self::IntegrityFinding => formatter.write_str("integrity-finding"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1229,6 +1248,21 @@ mod tests {
             }) => {}
             other => panic!("expected mismatched range to fail, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn gate_failure_reason_renders_operator_diagnostic() {
+        assert_eq!(
+            GateFailReason::ReviewEvidenceMissing.to_string(),
+            "review-evidence-missing"
+        );
+        assert_eq!(
+            GateFailReason::ReviewConcern {
+                summary: "unsafe change".to_owned(),
+            }
+            .to_string(),
+            "review-concern: unsafe change"
+        );
     }
 
     #[test]

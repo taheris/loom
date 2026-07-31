@@ -229,32 +229,32 @@ mod tests {
 
     #[test]
     fn workspace_discovery_skips_loom_builtin_source_packages() {
-        let repo = workspace();
-        let source_path = repo
-            .path()
-            .join("crates/loom-skill/builtin/base/loom-context-before-edit/skill.md");
-        write(
-            &source_path,
-            &skill_markdown(
-                "loom-context-before-edit",
-                "Use when testing built-in source discovery.",
-                "",
-            ),
-        );
-        let report = load_workspace(
-            repo.path(),
-            &[
-                PathBuf::from("crates/loom-skill/src/builtin.rs"),
-                PathBuf::from("crates/loom-skill/builtin/base/loom-context-before-edit/skill.md"),
-            ],
-            &[],
-        )
-        .expect("workspace skills load");
-        assert_eq!(report.set().skills().len(), 0);
+        for source_root in ["crates/loom-skill", "components/renamed-skill-source"] {
+            let repo = workspace();
+            let skill = format!("{source_root}/builtin/base/loom-context-before-edit/skill.md");
+            write(
+                &repo.path().join(&skill),
+                &skill_markdown(
+                    "loom-context-before-edit",
+                    "Use when testing built-in source discovery.",
+                    "",
+                ),
+            );
+            let report = load_workspace(
+                repo.path(),
+                &[
+                    PathBuf::from(format!("{source_root}/src/builtin.rs")),
+                    PathBuf::from(skill),
+                ],
+                &[],
+            )
+            .expect("workspace skills load");
+            assert_eq!(report.set().skills().len(), 0);
 
-        let mut set = builtin::catalog().expect("catalog");
-        set.extend(report.into_set());
-        SkillRegistry::from_set(set).expect("built-in source packages are not duplicated");
+            let mut set = builtin::catalog().expect("catalog");
+            set.extend(report.into_set());
+            SkillRegistry::from_set(set).expect("built-in source packages are not duplicated");
+        }
     }
 
     #[test]

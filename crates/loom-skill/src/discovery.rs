@@ -12,8 +12,7 @@ use crate::source::{SkillProvenance, SkillSource};
 const SKILL_DOCUMENT: &str = "skill.md";
 const TUNING_DOCUMENT: &str = "tuning.md";
 const OVERRIDE_ROOT: &str = ".loom-override/skills";
-const LOOM_SKILL_SOURCE_DIR: &str = "crates/loom-skill";
-const LOOM_SKILL_BUILTIN_SOURCE: &str = "crates/loom-skill/src/builtin.rs";
+const LOOM_SKILL_BUILTIN_SOURCE: &str = "src/builtin.rs";
 
 /// Severity assigned to a skill diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,22 +403,23 @@ fn is_override_path(path: &Path) -> bool {
 }
 
 fn embedded_catalog_source_paths(tracked_files: &[PathBuf]) -> BTreeSet<PathBuf> {
-    if !is_loom_source_checkout(tracked_files) {
-        return BTreeSet::new();
-    }
-    crate::builtin::PACKAGES
+    tracked_files
         .iter()
-        .map(|package| {
-            comparable_path(&Path::new(LOOM_SKILL_SOURCE_DIR).join(package.relative_path))
+        .filter_map(|path| loom_skill_source_root(path))
+        .flat_map(|source_root| {
+            crate::builtin::PACKAGES
+                .iter()
+                .map(move |package| comparable_path(&source_root.join(package.relative_path)))
         })
         .collect()
 }
 
-fn is_loom_source_checkout(tracked_files: &[PathBuf]) -> bool {
-    let marker = comparable_path(Path::new(LOOM_SKILL_BUILTIN_SOURCE));
-    tracked_files
-        .iter()
-        .any(|path| comparable_path(path) == marker)
+fn loom_skill_source_root(path: &Path) -> Option<PathBuf> {
+    let path = comparable_path(path);
+    if !path.ends_with(Path::new(LOOM_SKILL_BUILTIN_SOURCE)) {
+        return None;
+    }
+    path.parent()?.parent().map(Path::to_path_buf)
 }
 
 fn resolve_workspace_path(workspace: &Path, configured: &Path) -> PathBuf {

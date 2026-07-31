@@ -291,6 +291,54 @@ fn install_wrix_commit_shim(dir: &Path, mock_agent: &Path) -> PathBuf {
     shim
 }
 
+fn install_completion_publish_wrix_shim(
+    dir: &Path,
+    mock_agent: &Path,
+    publish_marker: &Path,
+) -> PathBuf {
+    let shim = dir.join("wrix-completion-publish");
+    let bash = find_bash();
+    let body = format!(
+        "#!{bash}\n\
+         set -euo pipefail\n\
+         if [[ \"${{1:-}}\" == 'beads' && \"${{2:-}}\" == 'push' ]]; then\n\
+             printf 'published\\n' > '{publish_marker}'\n\
+             exit 0\n\
+         fi\n\
+         spawn_config=''\n\
+         previous=''\n\
+         for argument in \"$@\"; do\n\
+             if [[ \"$previous\" == '--spawn-config' ]]; then\n\
+                 spawn_config=\"$argument\"\n\
+                 break\n\
+             fi\n\
+             previous=\"$argument\"\n\
+         done\n\
+         [[ -n \"$spawn_config\" ]] || {{ echo 'missing --spawn-config' >&2; exit 2; }}\n\
+         workspace=\"$(sed -n 's/.*\"workspace\":\"\\([^\"]*\\)\".*/\\1/p' \"$spawn_config\")\"\n\
+         [[ -n \"$workspace\" ]] || {{ echo 'spawn config missing workspace' >&2; exit 2; }}\n\
+         if [[ \"$workspace\" == */.loom/beads/* ]]; then\n\
+             git -C \"$workspace\" config user.email test@example.com\n\
+             git -C \"$workspace\" config user.name Test\n\
+             git -C \"$workspace\" config commit.gpgsign false\n\
+             git -C \"$workspace\" mv crates/loom-skill crates/renamed-loom-skill\n\
+             git -C \"$workspace\" commit -q -m 'rename skill crate source'\n\
+         fi\n\
+         echo '[wrix] Starting container (mock)...' >&2\n\
+         exec '{bash}' '{mock}' happy-path\n",
+        bash = bash.display(),
+        mock = mock_agent.display(),
+        publish_marker = publish_marker.display(),
+    );
+    std::fs::write(&shim, body).expect("write completion publish wrix shim");
+    let mut permissions = std::fs::metadata(&shim)
+        .expect("stat completion publish wrix shim")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&shim, permissions).expect("chmod completion publish wrix shim");
+    shim
+}
+
 /// Locate a shim script under `tests/<rel>` by walking ancestors of the
 /// crate manifest dir. Two layouts are supported transparently:
 ///   - dev tree: `repo/crates/loom/` is the manifest dir, mock scripts
@@ -1130,6 +1178,164 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
             "every post-session_complete line must be a driver_event. line={line}",
         );
     }
+}
+
+/// The loop process cannot replace its own executable after integrating a
+/// self-hosting change. This process-boundary regression keeps the driver on
+/// the pre-change binary while the worker renames the built-in skill source,
+/// then requires that exact completion to pass review and both publication
+/// steps instead of ending with unlogged `gate=fail` evidence.
+#[test]
+fn completed_bead_with_renamed_builtin_source_reaches_publication() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+    seed_active_spec(workspace, env!("CARGO_BIN_EXE_loom"), "agent");
+
+    let builtin_root = workspace.join("crates/loom-skill");
+    std::fs::create_dir_all(builtin_root.join("src")).expect("create built-in source directory");
+    std::fs::create_dir_all(builtin_root.join("builtin/base/loom-context-before-edit"))
+        .expect("create built-in package directory");
+    std::fs::write(builtin_root.join("src/builtin.rs"), "// fixture marker\n")
+        .expect("write built-in source marker");
+    std::fs::write(
+        builtin_root.join("builtin/base/loom-context-before-edit/skill.md"),
+        "---\nname: loom-context-before-edit\ndescription: Read context before editing.\nmetadata:\n  loom:\n    phases: [\"loop\", \"review\"]\n---\n# Context Before Edit\n",
+    )
+    .expect("write built-in skill fixture");
+    let add = git_command()
+        .arg("-C")
+        .arg(workspace)
+        .args(["add", "crates/loom-skill"])
+        .status()
+        .expect("git add built-in source fixture");
+    assert!(add.success(), "git add failed: {add}");
+    let commit = git_command()
+        .arg("-C")
+        .arg(workspace)
+        .args(["commit", "-q", "-m", "seed skill crate source"])
+        .status()
+        .expect("git commit built-in source fixture");
+    assert!(commit.success(), "git commit failed: {commit}");
+    let push = git_command()
+        .arg("-C")
+        .arg(workspace)
+        .args(["push", "-q", "origin", "main"])
+        .status()
+        .expect("git push source fixture");
+    assert!(push.success(), "fixture push failed: {push}");
+
+    let manifest_path = workspace.join("profile-images.json");
+    let image_source = workspace.join("base.tar");
+    std::fs::write(&image_source, "").expect("write image source");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            r#"{{"base":{{"pi":{{"ref":"localhost/wrix-base-pi:test","source":{source:?},"source_kind":"nix-descriptor"}},"claude":{{"ref":"localhost/wrix-base-claude:test","source":{source:?},"source_kind":"nix-descriptor"}},"direct":{{"ref":"localhost/wrix-base-direct:test","source":{source:?},"source_kind":"nix-descriptor"}}}}}}"#,
+            source = image_source.display().to_string(),
+        ),
+    )
+    .expect("write profile manifest");
+
+    let shim_dir = workspace.join("shim");
+    std::fs::create_dir_all(&shim_dir).expect("create shim directory");
+    let publish_marker = shim_dir.join("beads-published");
+    let wrix = install_completion_publish_wrix_shim(&shim_dir, &mock_pi_path(), &publish_marker);
+    let bead_json = r#"[{"id":"lm-complete","title":"rename built-in source","description":"","status":"open","priority":2,"issue_type":"task","parent":"lm-active","labels":["spec:agent","profile:base"]}]"#;
+    let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = vec![bd_bin_dir];
+    path_entries.extend(std::env::split_paths(&path_var));
+    let path = std::env::join_paths(path_entries).expect("join PATH");
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    // The fixture isolates the final handoff; only the independently covered
+    // per-bead verifier is bypassed, while gate review still runs `loom_bin`.
+    let loom_dispatch = shim_dir.join("loom-dispatch");
+    loom_test_support::write_executable_bash_script(
+        &loom_dispatch,
+        &format!(
+            "set -euo pipefail\n\
+             if [[ \"${{1:-}}\" == 'gate' && \"${{2:-}}\" == 'verify' ]]; then\n\
+                 exit 0\n\
+             fi\n\
+             exec {loom_bin:?} \"$@\"\n",
+        ),
+    )
+    .expect("write gate subprocess dispatcher");
+
+    let output = Command::new(loom_bin)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--host-key")
+        .arg("--agent")
+        .arg("pi")
+        .arg("loop")
+        .arg("lm-complete")
+        .env("PATH", path)
+        .env("LOOM_BIN", &loom_dispatch)
+        .env("LOOM_WRIX_BIN", &wrix)
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
+        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env_remove("LOOM_INSIDE")
+        .output()
+        .expect("spawn completion-to-publish loop");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let integration = workspace.join(".loom/integration");
+    let gate_diagnostics = [
+        integration.join(".loom/logs/gate"),
+        integration.join(".loom/logs/review"),
+    ]
+    .into_iter()
+    .filter_map(|directory| std::fs::read_dir(directory).ok())
+    .flatten()
+    .filter_map(Result::ok)
+    .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+    .collect::<Vec<_>>()
+    .join("\n");
+    assert!(
+        output.status.success(),
+        "completed work must reach publication. stdout={stdout}\nstderr={stderr}\ngate logs={gate_diagnostics}",
+    );
+    assert!(
+        stdout.contains("gate=success"),
+        "completed work must carry a successful gate receipt: {stdout}",
+    );
+    assert!(publish_marker.is_file(), "wrix beads push was not invoked");
+
+    let local = git_command()
+        .arg("-C")
+        .arg(&integration)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("resolve integration head");
+    let remote = git_command()
+        .arg("-C")
+        .arg(&integration)
+        .args(["rev-parse", "origin/main"])
+        .output()
+        .expect("resolve published head");
+    assert!(local.status.success() && remote.status.success());
+    assert_eq!(
+        local.stdout, remote.stdout,
+        "git publication did not finish"
+    );
+    assert!(integration.join("crates/renamed-loom-skill").is_dir());
+    assert!(!integration.join("crates/loom-skill").exists());
+
+    let review_runs = std::fs::read_dir(integration.join(".loom/logs/review"))
+        .expect("review log directory")
+        .filter_map(Result::ok)
+        .flat_map(|entry| loom_gate::parse_gate_runs_from_jsonl(&entry.path()))
+        .collect::<Vec<_>>();
+    assert!(
+        review_runs
+            .iter()
+            .any(|run| run.phase == loom_gate::GatePhase::Review && run.is_success()),
+        "completed review evidence missing: {review_runs:?}",
+    );
 }
 
 #[test]
