@@ -1,8 +1,4 @@
-//! Shared canonicalization + BLAKE3-16 hashing pipeline both observers
-//! consume. Per `specs/llm.md` the utility lives in exactly one place;
-//! [`crate::Conversation`] fingerprints each live tool result once and
-//! fans that value into [`super::doom_loop`] and
-//! [`super::duplicate_result`].
+//! Shared RFC 8785 canonicalization and BLAKE3-16 result hashing.
 
 use displaydoc::Display;
 use serde_json::Value;
@@ -33,7 +29,7 @@ pub struct ResultHash([u8; 16]);
 
 impl ResultHash {
     /// Copy of the 16-byte hash.
-    pub fn as_bytes(&self) -> [u8; 16] {
+    pub const fn as_bytes(&self) -> [u8; 16] {
         self.0
     }
 }
@@ -48,12 +44,12 @@ pub struct ResultFingerprint {
 
 impl ResultFingerprint {
     /// 16-byte BLAKE3 prefix of the canonical result payload.
-    pub fn hash(self) -> ResultHash {
+    pub const fn hash(self) -> ResultHash {
         self.hash
     }
 
     /// Byte length of the canonical result payload.
-    pub fn canonical_len(self) -> usize {
+    pub const fn canonical_len(self) -> usize {
         self.canonical_len
     }
 }
@@ -68,12 +64,17 @@ impl ResultHasher {
     /// Construct a `ResultHasher`. The type is a ZST today; the
     /// constructor exists so observer scaffolds that store a hasher
     /// instance compile without coupling to `Default`.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
     /// Compose the `(tool_name, canonical_params)` `CallKey` two
     /// successive calls share when their params are JCS-equivalent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Canonicalization`] when `params` cannot be
+    /// represented as RFC 8785 canonical JSON.
     pub fn call_key(tool_name: &str, params: &Value) -> Result<CallKey, Error> {
         let canon = canonical_string(params)?;
         let mut buf = String::with_capacity(tool_name.len() + 1 + canon.len());
@@ -85,6 +86,11 @@ impl ResultHasher {
 
     /// Hash and byte length of the canonical JSON serialisation of
     /// `result`, computed from one canonical byte buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Canonicalization`] when `result` cannot be
+    /// represented as RFC 8785 canonical JSON.
     pub fn result_fingerprint(result: &Value) -> Result<ResultFingerprint, Error> {
         let bytes = canonical_bytes(result)?;
         let full = blake3::hash(&bytes);
@@ -98,12 +104,22 @@ impl ResultHasher {
 
     /// Parse a tool-result output string and fingerprint the resulting
     /// JSON value, treating non-JSON output as a JSON string payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Canonicalization`] when the parsed value cannot
+    /// be represented as RFC 8785 canonical JSON.
     pub fn output_fingerprint(output: &str) -> Result<ResultFingerprint, Error> {
         let value = parse_output(output);
         Self::result_fingerprint(&value)
     }
 
     /// BLAKE3-16 of the canonical JSON serialisation of `result`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Canonicalization`] when `result` cannot be
+    /// represented as RFC 8785 canonical JSON.
     pub fn result_hash(result: &Value) -> Result<ResultHash, Error> {
         Ok(Self::result_fingerprint(result)?.hash())
     }
@@ -112,6 +128,11 @@ impl ResultHasher {
     /// Shared so `DuplicateResultObserver`'s `min_bytes` filter and
     /// `bytes_wasted` event payload use the exact same notion of size
     /// the hashing pipeline does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Canonicalization`] when `result` cannot be
+    /// represented as RFC 8785 canonical JSON.
     pub fn canonical_len(result: &Value) -> Result<usize, Error> {
         Ok(Self::result_fingerprint(result)?.canonical_len())
     }

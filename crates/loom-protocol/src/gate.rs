@@ -80,7 +80,7 @@ impl FindingRoute {
 /// The wire string (e.g. `spec-coherence-fail`) is the canonical name
 /// across the `LOOM_FINDING:` JSON, bd labels, and log surfaces; the
 /// Rust variant name is the same with kebab-case lowered to
-/// PascalCase. Tokens carry a [`ScopeKind`] discoverable via
+/// `PascalCase`. Tokens carry a [`ScopeKind`] discoverable via
 /// [`Self::scope_kind`]; the parse pipeline rejects a finding whose
 /// token does not admit the active [`DispatchScope`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -142,7 +142,7 @@ impl ConcernToken {
     /// and finding identity input. Matches the leftmost column in
     /// `specs/gate.md` §"Concern tokens and target variants".
     #[must_use]
-    pub fn as_wire(self) -> &'static str {
+    pub const fn as_wire(self) -> &'static str {
         match self {
             Self::SpecCoherenceFail => "spec-coherence-fail",
             Self::OrphanIntegration => "orphan-integration",
@@ -177,7 +177,7 @@ impl ConcernToken {
     /// `LOOM_FINDING:` payload whose `target.kind` does not equal the
     /// value returned here.
     #[must_use]
-    pub fn expected_target_kind(self) -> TargetKind {
+    pub const fn expected_target_kind(self) -> TargetKind {
         match self {
             Self::SpecCoherenceFail
             | Self::VerifierTooNarrow
@@ -230,7 +230,7 @@ impl ConcernToken {
     ///   tree-scope walk never emits them.
     /// - Everything else is admissible at any scope.
     #[must_use]
-    pub fn scope_kind(self) -> ScopeKind {
+    pub const fn scope_kind(self) -> ScopeKind {
         match self {
             Self::TemplateSpecDrift
             | Self::CrossSpecClash
@@ -260,13 +260,7 @@ impl ConcernToken {
     }
 }
 
-/// Dispatch scope the parse pipeline ran under — `--bead` / regular
-/// `--diff` / `--files` collapse to [`Self::PerBead`]; `--tree` is
-/// [`Self::Tree`]; molecule-completion integrity recovery uses
-/// [`Self::PushGate`]. Threaded into [`Finding::parse_payload`],
-/// [`WalkOutput::from_stdout`], and [`parse_walk_output`] so token-scope
-/// alignment is enforced at the wire boundary per `specs/gate.md` §
-/// *Concern tokens and target variants*.
+/// Dispatch scope used to validate finding tokens at the wire boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchScope {
     /// `--bead <id>` / ordinary `--diff <range>` / `--files <paths>` —
@@ -285,7 +279,7 @@ pub enum DispatchScope {
 impl DispatchScope {
     /// Stable label for error messages and log surfaces.
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::PerBead => "per-bead",
             Self::PushGate => "push-gate",
@@ -316,7 +310,7 @@ impl ScopeKind {
     /// True iff the token (with this scope class) may be parsed under
     /// the active dispatch scope.
     #[must_use]
-    pub fn admits(self, scope: DispatchScope) -> bool {
+    pub const fn admits(self, scope: DispatchScope) -> bool {
         match (self, scope) {
             (Self::AnyScope, _)
             | (Self::PerBead, DispatchScope::PerBead)
@@ -330,7 +324,7 @@ impl ScopeKind {
 
     /// Stable label for error messages.
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::PerBead => "per-bead-only",
             Self::TreeOnly => "tree-only",
@@ -340,11 +334,7 @@ impl ScopeKind {
     }
 }
 
-/// Discriminator tag for [`FindingTarget`]. Matches the `kind` field in
-/// the wire JSON one-to-one; the parser compares
-/// [`ConcernToken::expected_target_kind`] against [`FindingTarget::kind`]
-/// to enforce the token/variant alignment from `specs/gate.md`
-/// §"Concern tokens and target variants".
+/// Wire `kind` discriminator for [`FindingTarget`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetKind {
     Criterion,
@@ -364,7 +354,7 @@ impl TargetKind {
     /// variant name in [`FindingTarget`], so error messages and the wire
     /// payload agree byte-for-byte.
     #[must_use]
-    pub fn as_wire(self) -> &'static str {
+    pub const fn as_wire(self) -> &'static str {
         match self {
             Self::Criterion => "Criterion",
             Self::Contract => "Contract",
@@ -442,7 +432,7 @@ impl FindingTarget {
     /// Used by the parser to enforce token/variant alignment per
     /// `specs/gate.md` §"Concern tokens and target variants".
     #[must_use]
-    pub fn kind(&self) -> TargetKind {
+    pub const fn kind(&self) -> TargetKind {
         match self {
             Self::Criterion { .. } => TargetKind::Criterion,
             Self::Contract { .. } => TargetKind::Contract,
@@ -463,7 +453,7 @@ impl FindingTarget {
     /// "target.spec MUST appear in bonds" rule from `specs/gate.md`
     /// § *Findings and Minting*.
     #[must_use]
-    pub fn spec(&self) -> Option<&SpecLabel> {
+    pub const fn spec(&self) -> Option<&SpecLabel> {
         match self {
             Self::Criterion { spec, .. }
             | Self::Invariant { spec, .. }
@@ -630,7 +620,10 @@ fn annotation_wrapper_prefix(prefix: &str) -> bool {
     let trimmed = prefix.trim();
     trimmed.is_empty()
         || trimmed.rsplit_once(':').is_some_and(|(path, line)| {
-            path.ends_with(".md") && line.chars().all(|ch| ch.is_ascii_digit())
+            std::path::Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+                && line.chars().all(|ch| ch.is_ascii_digit())
         })
 }
 
@@ -651,17 +644,10 @@ fn matching_annotation_paren(input: &str, start: usize) -> Option<usize> {
     None
 }
 
-/// Wire-format prefix the LLM rubric emits before each finding's JSON
-/// payload (per `specs/gate.md` § *Emit shape*). Matches the prefix
-/// shape `parse_review_flag` / `parse_exit_signal` use for the marker
-/// surface so consumers can scan a single agent-stdout buffer for both.
+/// Wire prefix emitted before each finding JSON payload.
 pub const LOOM_FINDING_PREFIX: &str = "LOOM_FINDING:";
 
-/// Resolver injected into the walk-level parser for the I/O-bearing
-/// validation layers — Layer 3 (spec-label resolution) and Layer 5
-/// (target-content resolution). Wrapping these in a trait keeps the
-/// parser unit-testable against synthetic fixtures and lets the mint
-/// driver plug in the real on-disk implementations.
+/// Resolver for finding validation that requires workspace state.
 pub trait FindingValidator {
     /// Layer 3 — every element of `bonds` MUST be a known workspace
     /// spec label (the basename of a file under `specs/` minus `.md`).
@@ -687,17 +673,11 @@ pub trait FindingValidator {
     fn invariant_resolves(&self, spec: &SpecLabel, section: &str, tag: &str) -> bool;
 }
 
-/// Per-layer parse / validation failure. Every variant carries the
-/// offending record's 1-based start line and verbatim text so a re-run
-/// prompt has the evidence it needs (per `specs/gate.md` § *Strict
-/// parse-time validation*).
-///
-/// Clone / PartialEq / Eq are required so this error type can ride
-/// inside `BadWalk::MalformedFinding { errors: Vec<FindingParseError>,
-/// .. }` (and through `ExitSignal::BadWalk`); for the `Json` variant the
-/// `source` field is the rendered `serde_json::Error` message rather
-/// than the typed error, so the chain via `std::error::Error::source`
-/// is the rendered string.
+/// Finding validation failure carrying its source line and record text.
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; wrapping them in backticks makes the generated format string invalid"
+)]
 #[derive(Debug, Display, Error, Clone, PartialEq, Eq)]
 pub enum FindingParseError {
     /// line {line_number}: LOOM_FINDING payload is not valid JSON ({message}) — `{raw}`
@@ -772,6 +752,11 @@ impl Finding {
     /// and target variants* — tokens whose [`ConcernToken::scope_kind`]
     /// does not [`ScopeKind::admits`] this scope surface a typed
     /// [`FindingParseError::TokenScopeMismatch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FindingParseError`] when the payload is malformed or its
+    /// token, target, bonds, route, or dispatch scope are inconsistent.
     pub fn parse_payload(
         payload: &str,
         line_number: usize,
@@ -848,6 +833,11 @@ impl Finding {
     /// bonds-spec rules already fired in [`Finding::parse_payload`];
     /// this is the second stage that the mint driver runs once the
     /// resolver is wired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FindingParseError`] when a bond is unknown or the target
+    /// does not resolve through `validator`.
     pub fn validate<V: FindingValidator + ?Sized>(
         &self,
         line_number: usize,
@@ -920,7 +910,7 @@ fn target_unresolved_detail(target: &FindingTarget) -> String {
             format!("lock-site file `{file}` (line {line}) not found on disk")
         }
         FindingTarget::Invariant { spec, section, tag } => {
-            format!("invariant `{tag}` in section `{section}` not present in spec `{spec}`",)
+            format!("invariant `{tag}` in section `{section}` not present in spec `{spec}`")
         }
         FindingTarget::MatrixCell {
             spec,
@@ -940,12 +930,7 @@ fn target_unresolved_detail(target: &FindingTarget) -> String {
     }
 }
 
-/// Review-walk malformation variants surfaced by the verdict gate when the
-/// terminal `LOOM_CONCERN:` payload fails to parse or the
-/// `LOOM_FINDING:` stream and terminator disagree. Mirrors the
-/// `RecoveryCause::BadWalk(BadWalk)` wrapped pattern that
-/// `RecoveryCause::ReviewConcern(ReviewFlag)` already uses at the workflow
-/// layer (per `specs/templates.md` § Typed `PreviousFailure`).
+/// Review-walk malformation with the maximum well-formed context retained.
 ///
 /// Each variant carries the **maximum well-formed context** by struct
 /// shape per `specs/gate.md` § *Maximum-context preservation invariant*
@@ -1013,12 +998,7 @@ pub enum BadWalk {
     },
 }
 
-/// Typed terminal surface a review walk left behind. Mirrors
-/// [`ExitSignal`]'s well-formed variants and adds
-/// [`TerminalSurface::Malformed`] for the terminal-marker parse-failure
-/// case and [`TerminalSurface::Missing`] for the absent-terminator case,
-/// so `BadWalk::MalformedFinding { terminal, .. }` can carry every
-/// possible terminal shape by struct.
+/// Typed terminal surface left by a review walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalSurface {
     /// `LOOM_COMPLETE` on the final non-empty line.
@@ -1134,7 +1114,7 @@ pub enum ExitSignal {
     /// terminal `LOOM_CONCERN: {"summary": "..."}` marker. The summary is
     /// for the verdict log only; per-finding routing is decided on each
     /// streamed `LOOM_FINDING:` record's token per `specs/gate.md` §
-    /// LOOM_CONCERN payload. Review-phase-only — emitting `LOOM_CONCERN`
+    /// `LOOM_CONCERN` payload. Review-phase-only — emitting `LOOM_CONCERN`
     /// from any other phase is a `wrong-phase-marker` error in the verdict
     /// gate per `specs/harness.md` § Marker definitions.
     Concern { summary: String },
@@ -1142,7 +1122,7 @@ pub enum ExitSignal {
     /// Review walk's terminal `LOOM_CONCERN:` payload was malformed —
     /// invalid JSON, missing `summary`, or empty `summary`. Wraps the
     /// typed [`BadWalk`] variant so the verdict gate routes to
-    /// `RecoveryCause::BadWalk` per `specs/gate.md` § LOOM_CONCERN payload
+    /// `RecoveryCause::BadWalk` per `specs/gate.md` § `LOOM_CONCERN` payload
     /// — JSON shape and parse discipline. Only the
     /// [`BadWalk::Concern`] sub-variant is produced here; the
     /// stream/terminator pairing-rule variants are owned by the verdict
@@ -1348,10 +1328,11 @@ fn reason_at(marker_start: usize, line: &str, prior: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Top-level error for [`parse_walk_output`]. Either a per-record
-/// validation failure or the terminal-marker enforcement — a walk that
-/// emits `LOOM_FINDING:` records without a terminal marker per
-/// `specs/gate.md` § *Findings and Minting*.
+/// Finding or terminal-contract failure from [`parse_walk_output`].
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; wrapping them in backticks makes the generated format string invalid"
+)]
 #[derive(Debug, Display, Error)]
 pub enum WalkOutputError {
     /// walk output contained an invalid LOOM_FINDING record
@@ -1371,10 +1352,7 @@ pub enum WalkOutputError {
     MissingTerminalMarker { findings_count: usize },
 }
 
-/// Typed product the review-phase classifier consumes — a single
-/// pre-parsed snapshot of the agent's stdout containing the typed
-/// terminal surface, the well-formed [`Finding`] records, and any
-/// per-record parse errors.
+/// Parsed review output containing its terminal, findings, and errors.
 ///
 /// `WalkOutput`'s fields are private at the `loom-protocol` crate
 /// boundary. The silent-loss failure class — production caller
@@ -1586,7 +1564,7 @@ fn line_end_after(output: &str, byte_index: usize) -> usize {
         .map_or(output.len(), |relative_end| byte_index + relative_end)
 }
 
-fn next_line_offset(output: &str, line_end: usize) -> usize {
+const fn next_line_offset(output: &str, line_end: usize) -> usize {
     if line_end < output.len() {
         line_end + 1
     } else {
@@ -1645,7 +1623,7 @@ impl WalkOutput {
     /// Typed terminal surface read from the final non-empty line of
     /// the parsed stdout.
     #[must_use]
-    pub fn terminal(&self) -> &TerminalSurface {
+    pub const fn terminal(&self) -> &TerminalSurface {
         &self.terminal
     }
 
@@ -1685,18 +1663,19 @@ fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
     }
 }
 
-/// Scan `output` for `LOOM_FINDING:` records, parse and fully-validate
-/// each (Layers 1–5 plus the `target.spec ∈ bonds` rule), then enforce
-/// the review-walk pairing rule before returning findings to mint.
-/// Findings may reach mint only when the raw stream and terminal agree:
-/// zero findings with `LOOM_COMPLETE` is clean, and one or more
-/// findings require a well-formed `LOOM_CONCERN` terminal.
+/// Parse validated findings whose stream agrees with its review terminal.
 ///
 /// Findings interleave with markers in stdout order — the returned
 /// vector preserves emission order, and the terminal-marker check
 /// reads through [`parse_exit_signal`] so the parser surface used by
 /// `LOOM_CONCERN` / `LOOM_COMPLETE` is the same one consulted here
 /// (no separate channel).
+///
+/// # Errors
+///
+/// Returns [`WalkOutputError`] when a finding is malformed, terminal
+/// markers disagree with the finding stream, or review uses a forbidden
+/// terminal path.
 pub fn parse_walk_output<V: FindingValidator + ?Sized>(
     output: &str,
     scope: DispatchScope,
@@ -2662,7 +2641,7 @@ mod tests {
     fn loom_finding_substring_match_requires_uppercase_and_colon_suffix() {
         let no_colon = "the LOOM_FINDING marker is mentioned in prose";
         let lowercase = format!("loom_finding: {}", "{\"token\":\"x\"}");
-        let output = format!("{no_colon}\n{lowercase}\nLOOM_COMPLETE\n",);
+        let output = format!("{no_colon}\n{lowercase}\nLOOM_COMPLETE\n");
         let walk = WalkOutput::from_stdout(&output, DispatchScope::Tree, &AlwaysValid);
         assert!(
             walk.findings().is_empty(),
@@ -2759,7 +2738,7 @@ mod tests {
                     assert_eq!(marker, expected_marker);
                     assert_eq!(reason, expected_reason);
                 }
-                other => panic!("expected CannotComplete for {expected_marker}, got {other:?}",),
+                other => panic!("expected CannotComplete for {expected_marker}, got {other:?}"),
             }
         }
     }
@@ -3029,7 +3008,7 @@ mod tests {
 
         for (subject, reason) in [("", "empty subject"), ("42", "bare line number")] {
             let target =
-                format!(r#"{{"kind":"StyleRule","rule_id":"RS-3","subject":"{subject}"}}"#,);
+                format!(r#"{{"kind":"StyleRule","rule_id":"RS-3","subject":"{subject}"}}"#);
             let line = finding_line("style-rule-violation", &["gate"], &target, "bad subject");
             let output = format!("{line}\n{valid_terminal}\n");
             match single_malformed_finding_error(&output, DispatchScope::Tree, &AlwaysValid).0 {
@@ -3190,11 +3169,7 @@ mod tests {
                 spec: gate.clone(),
                 anchor: "spec-conventions-violation".to_owned(),
             },
-            ConcernToken::ScopeCreep => FindingTarget::Criterion {
-                spec: gate.clone(),
-                anchor: "scope-appropriateness".to_owned(),
-            },
-            ConcernToken::ScopeShortfall => FindingTarget::Criterion {
+            ConcernToken::ScopeCreep | ConcernToken::ScopeShortfall => FindingTarget::Criterion {
                 spec: gate.clone(),
                 anchor: "scope-appropriateness".to_owned(),
             },
@@ -3421,7 +3396,7 @@ mod tests {
             route: FindingRoute::Deferred,
             bonds: vec![gate.clone()],
             target: FindingTarget::Criterion {
-                spec: gate.clone(),
+                spec: gate,
                 anchor: "verifier-honesty".to_owned(),
             },
             evidence: "any-scope token".to_owned(),
@@ -3546,7 +3521,7 @@ mod tests {
         let finding = Finding {
             token,
             route: FindingRoute::Deferred,
-            bonds: vec![gate.clone()],
+            bonds: vec![gate],
             target,
             evidence: "cross-spec-clash round-trip".to_owned(),
         };
@@ -3577,7 +3552,7 @@ mod tests {
         let finding = Finding {
             token,
             route: FindingRoute::Deferred,
-            bonds: vec![gate.clone()],
+            bonds: vec![gate],
             target,
             evidence: "spec-conventions-violation round-trip".to_owned(),
         };
@@ -3610,7 +3585,7 @@ mod tests {
         let finding = Finding {
             token,
             route: FindingRoute::Deferred,
-            bonds: vec![gate.clone()],
+            bonds: vec![gate],
             target,
             evidence: "inputs-protocol-error round-trip".to_owned(),
         };

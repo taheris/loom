@@ -54,11 +54,11 @@ pub struct DiscoveryReport {
 }
 
 impl DiscoveryReport {
-    pub fn new(set: SkillSet, warnings: Vec<SkillDiagnostic>) -> Self {
+    pub const fn new(set: SkillSet, warnings: Vec<SkillDiagnostic>) -> Self {
         Self { set, warnings }
     }
 
-    pub fn set(&self) -> &SkillSet {
+    pub const fn set(&self) -> &SkillSet {
         &self.set
     }
 
@@ -108,6 +108,12 @@ pub enum DiscoveryError {
     },
 }
 
+/// Discover tracked workspace skill packages.
+///
+/// # Errors
+///
+/// Returns [`DiscoveryError`] when tracked package names have ambiguous
+/// case variants or their paths cannot be inspected.
 pub fn discover_workspace(
     workspace: impl AsRef<Path>,
     tracked_files: &[PathBuf],
@@ -140,6 +146,12 @@ pub fn discover_workspace(
     Ok(DiscoveryReport::new(set, warnings))
 }
 
+/// Load explicitly configured skill paths.
+///
+/// # Errors
+///
+/// Returns [`DiscoveryError`] when a path is missing, unreadable, ambiguous,
+/// or contains an invalid configured skill.
 pub fn load_configured_paths(
     workspace: impl AsRef<Path>,
     paths: &[PathBuf],
@@ -147,6 +159,12 @@ pub fn load_configured_paths(
     load_configured_paths_inner(workspace.as_ref(), paths, &BTreeSet::new())
 }
 
+/// Load tracked, configured, and override skills for a workspace.
+///
+/// # Errors
+///
+/// Returns [`DiscoveryError`] when discovery, configured-path loading, or
+/// override loading fails.
 pub fn load_workspace(
     workspace: impl AsRef<Path>,
     tracked_files: &[PathBuf],
@@ -162,6 +180,12 @@ pub fn load_workspace(
     Ok(report)
 }
 
+/// Load personal skill overrides beneath the workspace override root.
+///
+/// # Errors
+///
+/// Returns [`DiscoveryError`] when the override tree cannot be walked or an
+/// override package is ambiguous or invalid.
 pub fn load_overrides(workspace: impl AsRef<Path>) -> Result<SkillSet, DiscoveryError> {
     let root = workspace.as_ref().join(OVERRIDE_ROOT);
     if !root.exists() {
@@ -332,7 +356,7 @@ fn parse_named(
     })
 }
 
-fn diagnostic_kind(err: &FrontmatterError) -> DiagnosticKind {
+const fn diagnostic_kind(err: &FrontmatterError) -> DiagnosticKind {
     match err {
         FrontmatterError::MissingFrontmatter => DiagnosticKind::MissingFrontmatter,
         FrontmatterError::MissingName => DiagnosticKind::MissingName,

@@ -106,7 +106,7 @@ fn collect_public_skill_surface(items: &[syn::Item], rel_path: &str, violations:
     }
 }
 
-fn is_public(vis: &Visibility) -> bool {
+const fn is_public(vis: &Visibility) -> bool {
     matches!(vis, Visibility::Public(_))
 }
 

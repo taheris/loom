@@ -27,6 +27,7 @@ use super::phase_verdict::{RecoveryCause, ReviewConcern};
 use super::verify_fail::{VerifyFailure, format_previous_failure};
 
 /// Derive a human-readable concern label from the streamed-findings vec.
+///
 /// Returns the [`ReviewConcern`] enum string for the homogeneous case
 /// (every finding shares one `ConcernToken` whose wire string matches a
 /// [`ReviewConcern`] variant), `"multiple"` for the heterogeneous case,
@@ -45,9 +46,7 @@ pub fn concern_label_from_findings(findings: &[Finding]) -> String {
         return "multiple".to_owned();
     }
     let wire = first.token.as_wire();
-    ReviewConcern::parse(wire)
-        .map(|c| c.as_str().to_owned())
-        .unwrap_or_else(|| wire.to_owned())
+    ReviewConcern::parse(wire).map_or_else(|| wire.to_owned(), |c| c.as_str().to_owned())
 }
 
 /// Render a [`RecoveryCause`] into a `previous_failure` body suitable for
@@ -91,7 +90,7 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
             marker_name,
             phase_kind,
         } => {
-            format!("wrong-phase-marker: `{marker_name}` is not admitted in {phase_kind} phases.",)
+            format!("wrong-phase-marker: `{marker_name}` is not admitted in {phase_kind} phases.")
         }
     }
 }
@@ -194,7 +193,9 @@ pub enum RecoveryResolution {
     Blocked { cause: String, notes: String },
 }
 
-/// Pure-ish recovery resolver. `max` is `[loop] max_iterations` (default
+/// Pure-ish recovery resolver.
+///
+/// `max` is `[loop] max_iterations` (default
 /// 3). `iter` is the bead's pre-decision iteration counter: 0 on the
 /// first failure, so the function returns Retry until `iter` reaches
 /// `max`.
@@ -440,7 +441,9 @@ mod tests {
                     "dirty path appears in notes: {notes}",
                 );
             }
-            other => panic!("expected Blocked, got {other:?}"),
+            other @ RecoveryResolution::Retry { .. } => {
+                panic!("expected Blocked, got {other:?}");
+            }
         }
     }
 
@@ -472,7 +475,9 @@ mod tests {
                     "stderr tail is part of the previous_failure body: {previous_failure}",
                 );
             }
-            other => panic!("expected Retry, got {other:?}"),
+            other @ RecoveryResolution::Blocked { .. } => {
+                panic!("expected Retry, got {other:?}");
+            }
         }
     }
 
@@ -521,7 +526,9 @@ mod tests {
                         "stderr tail is embedded in notes: {notes}",
                     );
                 }
-                other => panic!("expected Blocked at iter={iter}, got {other:?}"),
+                other @ RecoveryResolution::Retry { .. } => {
+                    panic!("expected Blocked at iter={iter}, got {other:?}");
+                }
             }
         }
     }
@@ -551,7 +558,9 @@ mod tests {
                     "finding token preserved verbatim: {notes}",
                 );
             }
-            other => panic!("expected Blocked, got {other:?}"),
+            other @ RecoveryResolution::Retry { .. } => {
+                panic!("expected Blocked, got {other:?}");
+            }
         }
         // Silence unused-import warning in the test module.
         let _ = ReviewConcern::VerifierBypass;
@@ -578,7 +587,9 @@ mod tests {
                     "notes preserve verbatim observer reason: {notes}",
                 );
             }
-            other => panic!("expected Blocked, got {other:?}"),
+            other @ RecoveryResolution::Retry { .. } => {
+                panic!("expected Blocked, got {other:?}");
+            }
         }
     }
 

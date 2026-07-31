@@ -19,6 +19,10 @@ pub struct CheckerId {
 }
 
 impl CheckerId {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn new(value: impl Into<String>) -> Result<Self, ParseCheckerIdError> {
         value.into().parse()
     }
@@ -27,11 +31,11 @@ impl CheckerId {
         &self.value
     }
 
-    pub fn kind(&self) -> Kind {
+    pub const fn kind(&self) -> Kind {
         self.kind
     }
 
-    pub fn domain(&self) -> Domain {
+    pub const fn domain(&self) -> Domain {
         self.domain
     }
 }
@@ -262,6 +266,10 @@ pub enum Implementation {
 pub struct SoftRegressionEpsilon(f64);
 
 impl SoftRegressionEpsilon {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn new(value: f64) -> Result<Self, ParseSoftRegressionEpsilonError> {
         if value.is_finite() && (0.0..=1.0).contains(&value) {
             Ok(Self(value))
@@ -270,7 +278,7 @@ impl SoftRegressionEpsilon {
         }
     }
 
-    pub fn get(self) -> f64 {
+    pub const fn get(self) -> f64 {
         self.0
     }
 }
@@ -345,6 +353,10 @@ pub struct Registry {
 }
 
 impl Registry {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn builtin() -> Result<Self, RegistryError> {
         Self::new(
             builtin_descriptors()
@@ -353,6 +365,10 @@ impl Registry {
         )
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn new(
         metadata: impl IntoIterator<Item = Result<Metadata, RegistryError>>,
     ) -> Result<Self, RegistryError> {
@@ -381,6 +397,10 @@ impl Registry {
         self.checkers.values().cloned().collect()
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn require_active(&self, id: &CheckerId) -> Result<&Metadata, RegistryError> {
         let metadata = self
             .get(id)
@@ -394,6 +414,10 @@ impl Registry {
         Ok(metadata)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn require_case_checker(
         &self,
         id: &CheckerId,
@@ -412,6 +436,10 @@ impl Registry {
         Ok(metadata)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn validate_disabled(
         &self,
         disabled: &[CheckerId],
@@ -620,7 +648,7 @@ fn builtin_descriptors() -> Vec<MetadataDescriptor> {
     ]
 }
 
-fn preflight(
+const fn preflight(
     id: &'static str,
     title: &'static str,
     summary: &'static str,
@@ -644,7 +672,7 @@ fn preflight(
     }
 }
 
-fn behavior(
+const fn behavior(
     id: &'static str,
     title: &'static str,
     summary: &'static str,

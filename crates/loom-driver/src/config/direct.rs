@@ -1,7 +1,8 @@
 use serde::Deserialize;
 
-/// `[direct]` block from `<workspace>/loom.toml` — Direct-backend runtime
-/// settings, symmetric with [`super::ClaudeConfig`]. Applied wherever the
+/// Direct-backend settings from `<workspace>/loom.toml`.
+///
+/// Symmetric with [`super::ClaudeConfig`] and applied wherever the
 /// direct backend is selected; resolved into
 /// [`crate::agent::SpawnConfig::output_limits`] at dispatch time.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

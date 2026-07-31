@@ -5,10 +5,7 @@
 use displaydoc::Display;
 use thiserror::Error;
 
-/// Non-empty API credential. Constructed via [`ApiKey::new`]; the
-/// constructor rejects empty input so downstream calls cannot be issued
-/// with an unset credential. Per RS-7 / RS-8 the type does not derive
-/// `From` / `Into`; consumers parse-then-pass at the boundary.
+/// Non-empty API credential constructed through [`ApiKey::new`].
 #[derive(Clone)]
 pub struct ApiKey(String);
 
@@ -22,6 +19,10 @@ pub enum ApiKeyError {
 impl ApiKey {
     /// Construct an `ApiKey` from a credential string. Empty input
     /// returns [`ApiKeyError::Empty`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiKeyError::Empty`] when `value` is empty.
     pub fn new(value: String) -> Result<Self, ApiKeyError> {
         if value.is_empty() {
             Err(ApiKeyError::Empty)

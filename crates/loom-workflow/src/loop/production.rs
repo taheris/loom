@@ -72,22 +72,27 @@ use loom_templates::run::{PreviousFailure, RecoveryStash, WorkspaceAlignment, Wo
 
 /// Env var the molecule-completion handoff sets when spawning `loom gate
 /// review` so the child re-uses the parent's pinned `phase_when`
-/// timestamp. With both sides computing the JSONL log path from the
+/// timestamp.
+///
+/// With both sides computing the JSONL log path from the
 /// same `(logs_root, "review", when)` tuple, the parent can
 /// thread `review_log_path` into [`HandoffEvidence`] without scanning
 /// directories.
 pub const REVIEW_PHASE_WHEN_ENV: &str = "LOOM_REVIEW_PHASE_WHEN_MILLIS";
 
-/// Env var the molecule-completion handoff sets when spawning `loom gate
-/// review` so the child emits the agent's combined stdout to its own
-/// stdout. The parent captures it via [`Command::output`] and runs
+/// Requests review output from the molecule-completion handoff.
+///
+/// The handoff sets this when spawning `loom gate review` so the child emits
+/// the agent's combined stdout to its own stdout. The parent captures it via
+/// [`Command::output`] and runs
 /// [`parse_exit_signal`] on the final non-empty line.
 pub const REVIEW_EMIT_STDOUT_ENV: &str = "LOOM_REVIEW_EMIT_STDOUT";
 
-/// Env var the molecule-completion handoff sets when spawning `loom gate
-/// review` so the child can select the same spec context/log namespace as
-/// the parent controller without adding a public `--spec` gate filter. The
-/// value is context only: `--diff` remains the trust-bearing scope.
+/// Selects the review handoff's spec context and log namespace.
+///
+/// The molecule-completion handoff sets it when spawning `loom gate review`,
+/// without adding a public `--spec` gate filter. The value is context only:
+/// `--diff` remains the trust-bearing scope.
 pub const REVIEW_SPEC_LABEL_ENV: &str = "LOOM_REVIEW_SPEC_LABEL";
 
 /// Internal handoff flag that keeps `loom gate review` inspection-only when
@@ -224,7 +229,7 @@ where
     /// call — typically a fresh fix-up bead, not a retry — consumes it
     /// so the parsed `Vec<Finding>` rides through into the recovery
     /// prompt per `specs/harness.md`
-    /// § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*.
+    /// § *`molecule_completion_review_threads_findings_into_previous_failure_review_concern`*.
     /// Consumed once (take); cleared on first read.
     stashed_review_concern: Option<PreviousFailure>,
     /// Per-bead JSONL log root. When set, the controller appends driver
@@ -319,21 +324,25 @@ where
         }
     }
 
+    #[must_use]
     pub fn with_beads_push_bin(mut self, path: PathBuf) -> Self {
         self.beads_push_bin = path;
         self
     }
 
+    #[must_use]
     pub fn with_fixed_queue(mut self, queue: VecDeque<Bead>) -> Self {
         self.fixed_queue = Some(queue);
         self
     }
 
+    #[must_use]
     pub fn with_ready_parent(mut self, parent: BeadId) -> Self {
         self.ready_parent = Some(parent);
         self
     }
 
+    #[must_use]
     pub fn with_handoff_molecule(mut self, molecule: MoleculeId) -> Self {
         self.handoff_molecule = Some(molecule);
         self
@@ -343,11 +352,13 @@ where
     /// per-bead dispatch picks up the shared sccache mount + env when
     /// [`LoomTopConfig::sccache_dir`] is set. Defaults to
     /// `LoomTopConfig::default()` when unset, which emits no mount.
+    #[must_use]
     pub fn with_loom_config(mut self, cfg: LoomTopConfig) -> Self {
         self.loom_cfg = cfg;
         self
     }
 
+    #[must_use]
     pub fn with_skills_config(mut self, cfg: SkillsConfig) -> Self {
         self.skills_cfg = cfg;
         self
@@ -358,6 +369,7 @@ where
     /// thread `<workspace>/.loom/logs`; tests that don't exercise
     /// the driver-event channel leave it unset and the emit path is a
     /// silent no-op.
+    #[must_use]
     pub fn with_phase_log_root(mut self, logs_root: PathBuf) -> Self {
         self.logs_root = Some(logs_root);
         self
@@ -365,6 +377,7 @@ where
 
     /// Hand the work-root lock to the controller so `exec_review` can drop it
     /// before spawning child `loom gate` commands that acquire the same lock.
+    #[must_use]
     pub fn with_handoff_lock(mut self, guard: LockGuard) -> Self {
         self.lock = Some(guard);
         self
@@ -399,12 +412,14 @@ where
     /// Override the style-rules pin used in the rendered run prompt.
     /// Production callers thread this from `LoomConfig.style_rules`; tests
     /// rely on the built-in default.
+    #[must_use]
     pub fn with_style_rules(mut self, path: String) -> Self {
         self.style_rules = path;
         self
     }
 
-    pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
+    #[must_use]
+    pub const fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
         self.runtime = runtime;
         self
     }
@@ -785,8 +800,10 @@ where
                     ),
                 });
             }
-            Err(e @ ProfileError::InvalidSpawnConfig { .. })
-            | Err(e @ ProfileError::RuntimeMetadataMismatch { .. }) => {
+            Err(
+                e @ (ProfileError::InvalidSpawnConfig { .. }
+                | ProfileError::RuntimeMetadataMismatch { .. }),
+            ) => {
                 drop(scratch);
                 return Ok(AgentOutcome::StaticInfra {
                     cause: INVALID_SPAWN_CONFIG_CAUSE.to_string(),
@@ -830,8 +847,12 @@ where
             self.emit_to_log(DriverKind::WorkspaceRecovery, &event.summary, event.payload);
         }
 
-        let outcome =
-            validate_waiting_outcome(&self.bd, &bead.id, classify_session(session, marker)).await?;
+        let outcome = validate_waiting_outcome(
+            &self.bd,
+            &bead.id,
+            classify_session(session, marker.as_ref()),
+        )
+        .await?;
         self.emit_to_log(
             DriverKind::MarkerRouted,
             &format!(
@@ -1275,24 +1296,22 @@ where
             };
             let gate_log_dir =
                 gate_log_root(self.logs_root.as_deref(), &self.workspace).join(self.label.as_str());
-            let gate_log_path = write_post_integrate_gate_log(
-                gate_log_dir,
-                PostIntegrateGateLog {
-                    argv: verify_args,
-                    scope: diff_range.clone(),
-                    exit_code: verify_code,
-                    stdout: stdout_tail.clone(),
-                    stderr: stderr_tail.clone(),
-                    terminal_marker: parse_exit_signal(&stdout_tail),
-                    integration_sha,
-                    tree_oid,
-                    config_digest: pre_commit_config_digest(&gate_workspace)?,
-                    bead_id: bead.clone(),
-                    retry_attempt: self.current_attempt,
-                    rollback_state,
-                    failures: vec![failure.clone()],
-                },
-            )?;
+            let gate_log_record = PostIntegrateGateLog {
+                argv: verify_args,
+                scope: diff_range.clone(),
+                exit_code: verify_code,
+                stdout: stdout_tail.clone(),
+                stderr: stderr_tail.clone(),
+                terminal_marker: parse_exit_signal(&stdout_tail),
+                integration_sha,
+                tree_oid,
+                config_digest: pre_commit_config_digest(&gate_workspace)?,
+                bead_id: bead.clone(),
+                retry_attempt: self.current_attempt,
+                rollback_state,
+                failures: vec![failure.clone()],
+            };
+            let gate_log_path = write_post_integrate_gate_log(&gate_log_dir, &gate_log_record)?;
             let gate_log = gate_log_path.to_string_lossy().to_string();
             let detail = format!(
                 "loom gate verify --diff {diff_range} exited {verify_code}\n\
@@ -1372,6 +1391,10 @@ pub struct MoleculeGateHandoff {
     pub mint_summary: Option<crate::mint::MintSummary>,
 }
 
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn execute_molecule_push_gate<R: CommandRunner>(
     bd: &BdClient<R>,
     label: &SpecLabel,
@@ -1445,7 +1468,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         });
     }
 
-    let (review_log_path, phase_when) = allocate_review_log_path(&gate_workspace)?;
+    let (review_log_path, phase_when) = allocate_review_log_path(&gate_workspace);
     let phase_when_millis = phase_when
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
@@ -1645,9 +1668,7 @@ fn allocate_gate_log_path(workspace: &Path, stem: &str) -> Result<PathBuf, LoopE
     .into())
 }
 
-fn allocate_review_log_path(
-    workspace: &Path,
-) -> Result<(PathBuf, std::time::SystemTime), LoopError> {
+fn allocate_review_log_path(workspace: &Path) -> (PathBuf, std::time::SystemTime) {
     let logs_root = workspace.join(".loom/logs");
     let mut phase_when = SystemClock::new().wall_now();
     let mut path = phase_log_path(&logs_root, "review", phase_when);
@@ -1655,7 +1676,7 @@ fn allocate_review_log_path(
         phase_when += Duration::from_secs(1);
         path = phase_log_path(&logs_root, "review", phase_when);
     }
-    Ok((path, phase_when))
+    (path, phase_when)
 }
 
 fn bead_has_parked_state(bead: &Bead) -> bool {
@@ -1691,10 +1712,10 @@ fn pre_commit_config_digest(workspace: &std::path::Path) -> Result<String, LoopE
 }
 
 fn write_post_integrate_gate_log(
-    dir: PathBuf,
-    record: PostIntegrateGateLog,
+    dir: &Path,
+    record: &PostIntegrateGateLog,
 ) -> Result<PathBuf, LoopError> {
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(dir)?;
     let clock = SystemClock::new();
     let stamp = clock
         .wall_now()
@@ -1734,7 +1755,7 @@ fn write_post_integrate_gate_log(
             covered_hooks: Vec::new(),
         };
         append_gate_run_lifecycle_events(&path, &run)?;
-        append_post_integrate_diagnostics(&path, &record)?;
+        append_post_integrate_diagnostics(&path, record)?;
         return Ok(path);
     }
     Err(LoopError::Io(std::io::Error::new(
@@ -1785,7 +1806,9 @@ fn append_post_integrate_diagnostics(
             clock
                 .wall_now()
                 .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis() as i64)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                })
         },
     );
     let failures = record
@@ -1850,7 +1873,9 @@ fn terminal_marker_json(marker: &ExitSignal) -> serde_json::Value {
 }
 
 /// Render the operator-facing note body for the `unknown-profile`
-/// blocked-cause path. Names the requested label as it appears on the
+/// blocked-cause path.
+///
+/// Names the requested label as it appears on the
 /// bead (`profile:X`) and the manifest's declared set in the same form,
 /// so the human can relabel the bead without re-reading the manifest.
 pub fn format_unknown_profile_error(
@@ -1889,7 +1914,7 @@ pub fn format_unknown_runtime_for_profile_error(
     format!("requested profile:{profile} runtime:{runtime} not declared; {declared_part}")
 }
 
-fn session_exit_code(session: &SessionResult) -> Option<i32> {
+const fn session_exit_code(session: &SessionResult) -> Option<i32> {
     match session {
         SessionResult::Complete(outcome) => Some(outcome.exit_code),
         SessionResult::PreflightFailed { .. }
@@ -1903,7 +1928,7 @@ pub(super) fn marker_name(marker: Option<&ExitSignal>) -> &'static str {
     marker.map_or("missing", ExitSignal::identity)
 }
 
-pub(super) fn agent_outcome_route(outcome: &AgentOutcome) -> &'static str {
+pub(super) const fn agent_outcome_route(outcome: &AgentOutcome) -> &'static str {
     match outcome {
         AgentOutcome::Success => "success",
         AgentOutcome::Noop => "noop",
@@ -1924,7 +1949,9 @@ pub(super) fn agent_outcome_route(outcome: &AgentOutcome) -> &'static str {
 }
 
 /// Translate a `(SessionResult, Option<ExitSignal>)` pair into an
-/// [`AgentOutcome`]. Marker → outcome routing goes through the canonical
+/// [`AgentOutcome`].
+///
+/// Marker → outcome routing goes through the canonical
 /// [`crate::review::decide`] gate function (FR12 — single source of truth);
 /// `bd_closed` / `diff_empty` / verify / review observables are not queried
 /// at the per-bead exit (they belong to `loom gate verify`'s deterministic
@@ -1934,7 +1961,7 @@ pub(super) fn agent_outcome_route(outcome: &AgentOutcome) -> &'static str {
 /// spec's decision table does not consider exit code: a marker that
 /// disagrees with the kernel's view is surfaced as a failure rather than
 /// trusted blindly.
-pub fn classify_session(session: SessionResult, marker: Option<ExitSignal>) -> AgentOutcome {
+pub fn classify_session(session: SessionResult, marker: Option<&ExitSignal>) -> AgentOutcome {
     match session {
         SessionResult::PreflightFailed { error } => AgentOutcome::InfraPreflight { error },
         SessionResult::MidSessionFailed { error } => AgentOutcome::InfraMidSession { error },
@@ -1946,7 +1973,7 @@ pub fn classify_session(session: SessionResult, marker: Option<ExitSignal>) -> A
             0,
         ),
         SessionResult::Complete(outcome) => {
-            if let Some(ExitSignal::Concern { summary }) = marker.as_ref() {
+            if let Some(ExitSignal::Concern { summary }) = marker {
                 return AgentOutcome::Failure {
                     error: format!(
                         "wrong-phase-marker: LOOM_CONCERN ({summary}) is review-phase only",
@@ -1959,7 +1986,7 @@ pub fn classify_session(session: SessionResult, marker: Option<ExitSignal>) -> A
                 };
             }
             if let Some(marker @ (ExitSignal::Complete | ExitSignal::Noop | ExitSignal::Waiting)) =
-                marker.as_ref()
+                marker
                 && outcome.exit_code != 0
             {
                 return AgentOutcome::Failure {
@@ -1970,10 +1997,7 @@ pub fn classify_session(session: SessionResult, marker: Option<ExitSignal>) -> A
                     ),
                 };
             }
-            verdict_to_outcome(
-                decide(marker.as_ref(), neutral_gate_inputs()),
-                outcome.exit_code,
-            )
+            verdict_to_outcome(decide(marker, neutral_gate_inputs()), outcome.exit_code)
         }
     }
 }
@@ -2038,7 +2062,12 @@ fn verdict_to_outcome(verdict: PhaseVerdict, exit_code: i32) -> AgentOutcome {
 
 /// Helper used by `main.rs` to fetch the spec-filtered open list when the
 /// caller needs the typed [`Bead`] slice (e.g. to print a status line).
-/// Surfacing this here keeps the BdClient list-shape next to the controller.
+///
+/// Surfacing this here keeps the `BdClient` list-shape next to the controller.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<Bead>, LoopError> {
     let beads = bd
         .list(ListOpts {
@@ -2093,7 +2122,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .pop_front()
-                .unwrap_or(RunOutput {
+                .unwrap_or_else(|| RunOutput {
                     status: 0,
                     stdout: b"null\n".to_vec(),
                     stderr: Vec::new(),
@@ -2173,7 +2202,7 @@ mod tests {
         // `BLOCKED` self-report → terminal `Blocked` (gate row 1).
         match classify_session(
             session_ok(),
-            Some(ExitSignal::Blocked {
+            Some(&ExitSignal::Blocked {
                 reason: "missing schema".into(),
             }),
         ) {
@@ -2183,7 +2212,7 @@ mod tests {
         // `CLARIFY` self-report → terminal `Clarify` (gate row 2).
         match classify_session(
             session_ok(),
-            Some(ExitSignal::Clarify {
+            Some(&ExitSignal::Clarify {
                 question: "additive only?".into(),
             }),
         ) {
@@ -2192,12 +2221,12 @@ mod tests {
         }
         // `COMPLETE` + clean exit → `Success` (gate row "Done" with neutral inputs).
         assert_eq!(
-            classify_session(session_ok(), Some(ExitSignal::Complete)),
+            classify_session(session_ok(), Some(&ExitSignal::Complete)),
             AgentOutcome::Success,
         );
         // `NOOP` + clean exit → `Success` (gate row "Done" with neutral inputs).
         assert_eq!(
-            classify_session(session_ok(), Some(ExitSignal::Noop)),
+            classify_session(session_ok(), Some(&ExitSignal::Noop)),
             AgentOutcome::Success,
         );
         // None marker → `Recovery::SwallowedMarker` → `Failure` carrying
@@ -2231,7 +2260,7 @@ mod tests {
                     exit_code: 0,
                     cost_usd: None,
                 }),
-                Some(ExitSignal::Blocked {
+                Some(&ExitSignal::Blocked {
                     reason: "semantic dead end with no safe options".to_string(),
                 }),
             ),
@@ -2298,7 +2327,7 @@ mod tests {
         });
         match classify_session(
             session,
-            Some(ExitSignal::Concern {
+            Some(&ExitSignal::Concern {
                 summary: "verifier-bypass on the agent backend mock".into(),
             }),
         ) {
@@ -2404,7 +2433,7 @@ mod tests {
             issue_type: "task".into(),
             labels: vec![Label::new("profile:base").expect("valid Label")],
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }
@@ -2552,6 +2581,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        drop(captured);
         assert_eq!(infra_argv[0], "list");
         assert!(infra_argv.contains(&"--status=blocked".to_string()));
         assert!(infra_argv.contains(&"--label=spec:gate".to_string()));
@@ -2607,6 +2637,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        drop(captured);
         assert_eq!(update[0], "update");
         assert_eq!(update[1], "lm-infra");
         assert!(
@@ -2681,6 +2712,7 @@ mod tests {
             "second retry prompt must render attempt 2: {}",
             prompts[2],
         );
+        drop(prompts);
     }
 
     #[tokio::test]
@@ -2823,7 +2855,7 @@ mod tests {
 
     /// `loom loop` must dispatch with the rendered
     /// [`LoopContext`] template — bead title/description, scratchpad path,
-    /// and spec_path all reach the agent prompt — and the same body must
+    /// and `spec_path` all reach the agent prompt — and the same body must
     /// land in `<scratch_dir>/prompt.txt` so post-compaction `repin.sh`
     /// can re-emit the actual phase prompt.
     #[tokio::test]
@@ -2874,7 +2906,7 @@ mod tests {
             issue_type: "task".into(),
             labels: vec![Label::new("profile:base").expect("valid Label")],
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         };
         controller.run_bead(&bead, None).await.expect("run_bead ok");
@@ -3423,7 +3455,7 @@ mod tests {
             issue_type: "task".into(),
             labels: vec![Label::new("profile:nonexistent").expect("valid Label")],
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         };
         let outcome = controller
@@ -4006,15 +4038,17 @@ mod tests {
         controller.exec_review().await.expect("exec_review ok");
 
         {
-            let calls = bd_calls.lock().expect("bd calls lock");
-            let calls = calls
-                .iter()
-                .map(|args| {
-                    args.iter()
-                        .map(|arg| arg.to_string_lossy().into_owned())
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
+            let calls = {
+                let guard = bd_calls.lock().expect("bd calls lock");
+                guard
+                    .iter()
+                    .map(|args| {
+                        args.iter()
+                            .map(|arg| arg.to_string_lossy().into_owned())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            };
             let create = calls
                 .iter()
                 .find(|call| call.first().is_some_and(|arg| arg == "create"))
@@ -4156,6 +4190,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        drop(captured);
         assert_eq!(update_argv[0], "update");
         assert_eq!(update_argv[1], "lm-clarify.1");
         assert!(
@@ -4227,6 +4262,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        drop(captured);
         assert_eq!(argv[0], "update");
         assert_eq!(argv[1], "lm-blocked.1");
         assert!(
@@ -4293,6 +4329,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        drop(captured);
         assert!(argv.iter().any(|a| a == "loom:infra"), "{argv:?}");
         assert!(!argv.iter().any(|a| a == "loom:blocked"), "{argv:?}");
         assert!(
@@ -4361,6 +4398,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        drop(captured);
         assert_eq!(argv[0], "ready");
         assert!(
             !argv.iter().any(|a| a.starts_with("--exclude-label")),
@@ -4408,6 +4446,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        drop(captured);
         assert!(
             argv.iter().any(|arg| arg == "--parent=lm-root"),
             "ready lookup must be scoped to the active work epic: {argv:?}",
@@ -4724,7 +4763,7 @@ mod tests {
                 assert_eq!(*driver_kind, DriverKind::VerdictGate);
                 assert_eq!(
                     payload["argv"],
-                    serde_json::json!(["gate", "verify", "--diff", format!("{}..HEAD", base_tip)])
+                    serde_json::json!(["gate", "verify", "--diff", format!("{base_tip}..HEAD")])
                 );
                 assert_eq!(payload["scope_flag"], "--diff");
                 assert_eq!(payload["exit_code"], 1);
@@ -4753,7 +4792,7 @@ mod tests {
                 assert_eq!(runs.len(), 1, "{runs:?}");
                 assert_eq!(runs[0].status, GateRunStatus::Failed);
                 assert_eq!(runs[0].exit_code, Some(1));
-                assert_eq!(runs[0].push_range, format!("{}..HEAD", base_tip));
+                assert_eq!(runs[0].push_range, format!("{base_tip}..HEAD"));
                 assert_eq!(runs[0].tree_oid, merged_tree.to_string());
                 assert_eq!(runs[0].log_path, *gate_log_path);
             }

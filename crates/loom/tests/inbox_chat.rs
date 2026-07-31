@@ -39,10 +39,10 @@ fn seed_bead(
     std::fs::write(bead_dir.join("labels"), labels.join("\n")).expect("write labels");
 }
 
-fn seed_metadata(state_dir: &Path, id: &str, metadata: serde_json::Value) {
+fn seed_metadata(state_dir: &Path, id: &str, metadata: &serde_json::Value) {
     std::fs::write(
         state_dir.join(id).join("metadata.json"),
-        serde_json::to_string(&metadata).expect("metadata json"),
+        serde_json::to_string(metadata).expect("metadata json"),
     )
     .expect("write metadata");
 }
@@ -52,14 +52,12 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
     let bd_path = bin_dir.join("bd");
     let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
-    match std::os::unix::fs::symlink(&source, &bd_path) {
-        Ok(()) => {}
-        Err(_) => {
-            std::fs::copy(&source, &bd_path).expect("copy bd-shim");
-            let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
-        }
+    if matches!(std::os::unix::fs::symlink(&source, &bd_path), Ok(())) {
+    } else {
+        std::fs::copy(&source, &bd_path).expect("copy bd-shim");
+        let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
     }
     bin_dir
 }
@@ -600,9 +598,9 @@ fn create_tune_proposal(env: &ChatRun, id: &str, edits: &[(&str, &str)]) {
             "targets": ["skill:fixture"],
             "level": "fast",
             "seed": 7,
-            "base_commit": base.clone(),
-            "proposal_branch": branch.clone(),
-            "proposal_head": head.clone(),
+            "base_commit": base,
+            "proposal_branch": branch,
+            "proposal_head": head,
             "plan_hash": "fixture-plan",
             "case_counts": {"declared": 0, "mined_train": 0, "mined_selection": 0, "selected": 0, "skipped": 0},
             "outcome_counts": {"pending": 0, "passed": 0, "failed": 0, "blocked": 0},
@@ -622,7 +620,7 @@ fn create_tune_proposal(env: &ChatRun, id: &str, edits: &[(&str, &str)]) {
     seed_metadata(
         &env.state_dir,
         id,
-        serde_json::json!({
+        &serde_json::json!({
             "loom.tune.id": id,
             "loom.tune.state": "pending",
             "loom.tune.targets": ["skill:fixture"],
@@ -1076,7 +1074,7 @@ fn loom_inbox_chat_scope_filters_queue() {
     seed_metadata(
         &env.state_dir,
         "lm-tune",
-        serde_json::json!({"loom.tune.state":"pending"}),
+        &serde_json::json!({"loom.tune.state":"pending"}),
     );
     let prompt_dump = env.workspace.join("prompt.txt");
     let dump = prompt_dump.to_string_lossy().into_owned();
@@ -1505,7 +1503,7 @@ fn apply_failed_tune_proposals_require_reauthorization() {
     seed_metadata(
         &env.state_dir,
         "lm-app4",
-        serde_json::json!({
+        &serde_json::json!({
             "loom.tune.id": "lm-app4",
             "loom.tune.state": "apply_failed",
             "loom.tune.proposal_branch": "loom/tune/lm-app4",

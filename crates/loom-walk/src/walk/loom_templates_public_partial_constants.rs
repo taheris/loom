@@ -31,7 +31,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
         .filter_map(|p| {
             p.file_name()
                 .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
+                .map(ToString::to_string)
         })
         .collect();
     let exposed = collect_public_include_paths(&src_dir);

@@ -12,6 +12,10 @@ use loom_driver::state::CacheError;
 use crate::spec::SpecError;
 
 /// Errors raised by the `loom review` driver.
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
+)]
 #[derive(Debug, Display, Error)]
 pub enum ReviewError {
     /// agent backend protocol failure during `loom review`

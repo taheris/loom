@@ -18,7 +18,7 @@
 //!   split across failures; later failures truncate first when the total
 //!   exceeds budget.
 
-use std::fmt::{self, Display};
+use std::fmt::{self, Display, Write as _};
 use std::path::{Path, PathBuf};
 
 use crate::finding::Finding;
@@ -26,13 +26,16 @@ use crate::finding::Finding;
 pub use loom_protocol::gate::{BadWalk, TerminalSurface};
 pub use loom_protocol::oid::GitOid;
 
-/// Maximum length of the rendered `previous_failure` body. The render path
-/// truncates anything past this at a char boundary so multi-byte stderr does
-/// not panic.
+/// Maximum length of the rendered `previous_failure` body.
+///
+/// The render path truncates anything past this at a character boundary so
+/// multi-byte stderr does not panic.
 pub const PREVIOUS_FAILURE_MAX_LEN: usize = 4000;
 
-/// Per-block cap on [`VerifierFailure::stderr_tail`] before the per-variant
-/// budget split. Mirrors `specs/templates.md` § Typed `PreviousFailure`
+/// Per-block cap on [`VerifierFailure::stderr_tail`].
+///
+/// Applied before the per-variant budget split. Mirrors `specs/templates.md`
+/// § Typed `PreviousFailure`
 /// ("Each `VerifierFailure.stderr_tail` capped individually (~1500 chars)").
 pub const STDERR_TAIL_PER_BLOCK: usize = 1500;
 
@@ -40,6 +43,7 @@ pub const STDERR_TAIL_PER_BLOCK: usize = 1500;
 const TRUNC_MARKER: &str = "[truncated]";
 
 /// Typed retry context threaded into `loop.md` via `LoopContext.previous_failure`.
+///
 /// Variants carry the cause-appropriate detail so the template can render each
 /// with its documented framing (see [`Display`] impl).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +120,7 @@ pub enum DriverNoticeCause {
 
 impl DriverNoticeCause {
     /// Stable spec-table label used in user-facing surfaces (logs, notes).
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::SwallowedMarker => "swallowed-marker",
             Self::IncompleteSignaling => "incomplete-signaling",
@@ -128,9 +132,11 @@ impl DriverNoticeCause {
     }
 }
 
-/// One failing verifier captured by the gate. `stderr_tail` is the tail of
-/// the verifier's stderr stream, pre-capped at [`STDERR_TAIL_PER_BLOCK`] by
-/// [`VerifierFailure::new`] so callers can hand it raw stderr.
+/// One failing verifier captured by the gate.
+///
+/// `stderr_tail` is the tail of the verifier's stderr stream, pre-capped at
+/// [`STDERR_TAIL_PER_BLOCK`] by [`VerifierFailure::new`] so callers can hand it
+/// raw stderr.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifierFailure {
     pub target: String,
@@ -273,7 +279,7 @@ fn render_post_integrate_fail(failures: &[VerifierFailure], gate_log_path: &Path
     }
     let omitted = failures.len() - included;
     if omitted > 0 {
-        out.push_str(&format!("[+{omitted} more verify failure(s) omitted]\n"));
+        let _ = writeln!(out, "[+{omitted} more verify failure(s) omitted]");
     }
     out.push_str(footer);
     out
@@ -305,7 +311,7 @@ fn render_review_concern(summary: &str, findings: &[Finding]) -> String {
 /// vec for `Display` of [`PreviousFailure::ReviewConcern`]. Returns the
 /// finding token's wire string for the homogeneous case, `"multiple"`
 /// for the heterogeneous case, and `"review-concern"` when no findings
-/// streamed (the BadWalk path normally handles that, but the default is
+/// streamed (the `BadWalk` path normally handles that, but the default is
 /// safe). Per `specs/gate.md` § *Findings and Minting* — the human
 /// label comes from `findings`, never from `summary`.
 fn concern_label_from_findings(findings: &[Finding]) -> String {
@@ -330,9 +336,10 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
             );
             let count = parsed_findings.len();
             if count > 0 {
-                out.push_str(&format!(
-                    "\n\n{count} finding(s) parsed cleanly before the malformed terminator:",
-                ));
+                let _ = write!(
+                    out,
+                    "\n\n{count} finding(s) parsed cleanly before the malformed terminator:"
+                );
                 for finding in parsed_findings {
                     append_finding_digest(&mut out, finding);
                 }
@@ -370,7 +377,7 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
                 out.push_str("\n\n");
                 out.push_str(&err.to_string());
             }
-            out.push_str(&format!("\n\nYour terminal was: {}", terminal.label()));
+            let _ = write!(out, "\n\nYour terminal was: {}", terminal.label());
             out
         }
     }
@@ -426,7 +433,7 @@ fn render_verify_failures(failures: &[VerifierFailure]) -> String {
     }
     let omitted = failures.len() - included;
     if omitted > 0 {
-        out.push_str(&format!("[+{omitted} more verify failure(s) omitted]\n",));
+        let _ = writeln!(out, "[+{omitted} more verify failure(s) omitted]");
     }
     out
 }
@@ -468,7 +475,7 @@ fn truncate_at_char_boundary_with_marker(s: &mut String, max: usize) {
     s.push_str(&marker);
 }
 
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+const fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
     if idx >= s.len() {
         return s.len();
     }
@@ -478,7 +485,7 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
     idx
 }
 
-fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
+const fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
     if idx >= s.len() {
         return s.len();
     }
@@ -782,7 +789,7 @@ mod tests {
     }
 
     /// `Display` on `PostIntegrateFail { failures }` enumerates each
-    /// `VerifierFailure` block (target + exit + stderr_tail) and trails
+    /// `VerifierFailure` block (target + exit + `stderr_tail`) and trails
     /// the cross-bead reconciliation hint so the agent knows the bead's
     /// own verify already passed at its workspace.
     #[test]
@@ -1262,10 +1269,7 @@ mod tests {
         assert!(
             body.contains(TRUNC_MARKER) || body.contains("omitted"),
             "later failures must signal truncation: tail=…{tail}",
-            tail = body
-                .rsplit_once('\n')
-                .map(|(_, t)| t)
-                .unwrap_or(body.as_str()),
+            tail = body.rsplit_once('\n').map_or(body.as_str(), |(_, t)| t),
         );
     }
 

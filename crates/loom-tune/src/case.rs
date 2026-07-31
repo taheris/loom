@@ -20,6 +20,10 @@ use crate::target::{Catalog as TargetCatalog, Target, TargetCatalogError};
 pub struct Id(String);
 
 impl Id {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn new(value: impl Into<String>) -> Result<Self, ParseIdError> {
         value.into().parse()
     }
@@ -123,14 +127,14 @@ pub struct Source {
 }
 
 /// Loaded tuning cases plus document metadata.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadedCases {
     cases: Vec<Case>,
     documents: Vec<LoadedDocument>,
 }
 
 impl LoadedCases {
-    pub fn new(cases: Vec<Case>, documents: Vec<LoadedDocument>) -> Self {
+    pub const fn new(cases: Vec<Case>, documents: Vec<LoadedDocument>) -> Self {
         Self { cases, documents }
     }
 
@@ -152,7 +156,7 @@ pub struct LoadedDocument {
 }
 
 /// Parsed and validated declared regression case.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Case {
     pub id: Id,
     pub checker: CheckerId,
@@ -164,7 +168,7 @@ pub struct Case {
 }
 
 /// Checker-specific validated input.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "schema")]
 pub enum Input {
     ReviewFindingRecall {
@@ -196,7 +200,7 @@ pub enum Input {
 }
 
 /// Checker-specific expected result schema.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "schema")]
 pub enum Expected {
     ReviewFindingRecall(ReviewExpected),
@@ -233,6 +237,10 @@ pub struct LoadContext<'a> {
 }
 
 /// Parse and validate tuning documents.
+///
+/// # Errors
+///
+/// Returns an error when tuning input, execution, or evidence validation fails.
 pub fn load_documents(
     documents: &[Document],
     context: &LoadContext<'_>,
@@ -505,7 +513,7 @@ struct ReviewInput {
     patch: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewExpected {
     pub findings: Vec<ReviewFinding>,
@@ -724,7 +732,7 @@ fn resolve_case_path(
     match kind {
         PathKind::File => validate_file_path(id, raw, &canonical, &relative, tracked_files)?,
         PathKind::Directory => {
-            validate_directory_path(id, raw, repo_root, &canonical, tracked_files)?
+            validate_directory_path(id, raw, repo_root, &canonical, tracked_files)?;
         }
     }
     Ok(RepoPath { relative, kind })

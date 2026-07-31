@@ -1,21 +1,18 @@
 use loom_driver::config::SuppressionConfig;
 use loom_templates::finding::{ConcernToken, Finding};
 
-pub(crate) fn suppresses_rubric_finding(
-    suppressions: &[SuppressionConfig],
-    finding: &Finding,
-) -> bool {
+pub fn suppresses_rubric_finding(suppressions: &[SuppressionConfig], finding: &Finding) -> bool {
     is_rubric_suppressible(finding.token) && matching_suppression(suppressions, finding).is_some()
 }
 
-pub(crate) fn has_ineffective_suppression_match(
+pub fn has_ineffective_suppression_match(
     suppressions: &[SuppressionConfig],
     finding: &Finding,
 ) -> bool {
     !is_rubric_suppressible(finding.token) && matching_suppression(suppressions, finding).is_some()
 }
 
-pub(crate) fn matching_suppression<'a>(
+pub fn matching_suppression<'a>(
     suppressions: &'a [SuppressionConfig],
     finding: &Finding,
 ) -> Option<&'a SuppressionConfig> {
@@ -24,7 +21,7 @@ pub(crate) fn matching_suppression<'a>(
         .find(|entry| suppression_matches(entry, finding))
 }
 
-pub(crate) fn suppression_matches(entry: &SuppressionConfig, finding: &Finding) -> bool {
+pub fn suppression_matches(entry: &SuppressionConfig, finding: &Finding) -> bool {
     entry.id.as_deref().is_some_and(|id| id == finding.id())
         || entry
             .hash
@@ -32,7 +29,7 @@ pub(crate) fn suppression_matches(entry: &SuppressionConfig, finding: &Finding) 
             .is_some_and(|hash| hash == finding.hash())
 }
 
-fn is_rubric_suppressible(token: ConcernToken) -> bool {
+const fn is_rubric_suppressible(token: ConcernToken) -> bool {
     !matches!(
         token,
         ConcernToken::VerifierFailed

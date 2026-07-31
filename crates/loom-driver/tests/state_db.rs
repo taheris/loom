@@ -729,7 +729,7 @@ fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
 
     let bd_fail: BdUpdateFn = Box::new(|_, _| Err(BdError::CreateMissingId));
     let err = db
-        .consume_notes_and_refresh_base_commit(&label, &mol_id, "new-sha", bd_fail)
+        .consume_notes_and_refresh_base_commit(&label, &mol_id, "new-sha", &bd_fail)
         .expect_err("closure failure must propagate");
     assert!(
         matches!(err, CacheError::BdUpdate(BdError::CreateMissingId)),
@@ -751,7 +751,7 @@ fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
     );
 
     let bd_ok: BdUpdateFn = Box::new(|_, _| Ok(()));
-    db.consume_notes_and_refresh_base_commit(&label, &mol_id, "new-sha", bd_ok)?;
+    db.consume_notes_and_refresh_base_commit(&label, &mol_id, "new-sha", &bd_ok)?;
 
     assert!(
         db.notes_list(Some(&label), Some("implementation"))?
@@ -805,7 +805,7 @@ fn consume_notes_and_refresh_base_commit_invokes_closure_with_args() -> Result<(
             .push((mol_id.as_str().to_owned(), new_base_commit.to_owned()));
         Ok(())
     });
-    db.consume_notes_and_refresh_base_commit(&label, &mol_id, "fresh-head", bd_capture)?;
+    db.consume_notes_and_refresh_base_commit(&label, &mol_id, "fresh-head", &bd_capture)?;
 
     let calls = captured.lock().unwrap().clone();
     assert_eq!(
@@ -818,7 +818,7 @@ fn consume_notes_and_refresh_base_commit_invokes_closure_with_args() -> Result<(
 
 /// At the state-DB layer, `rebuild` mirrors the single-query resolver's
 /// invariant: a spec may carry at most one active molecule. When the input
-/// list pairs two molecules with the same spec_label, rebuild MUST refuse
+/// list pairs two molecules with the same `spec_label`, rebuild MUST refuse
 /// with [`CacheError::DuplicateSpecMolecules`] naming every conflicting id,
 /// not silently insert both. Spec: `harness.md` *Auxiliary commands*
 /// `loom init --rebuild` aborts on this case rather than papering over the

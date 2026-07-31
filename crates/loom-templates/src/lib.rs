@@ -52,10 +52,7 @@ pub use run::LoopContext;
 pub use todo::{SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext};
 pub use workspace_recovery::{RecoveryStash, WorkspaceAlignment, WorkspaceRecovery};
 
-/// Project-overview + style-rules pinning shape, exposed as a typed
-/// building block external consumers can embed in their own template
-/// contexts to mirror Loom's pinning ergonomics without re-deriving the
-/// field names.
+/// Typed project-overview and style-rules content for external template contexts.
 ///
 /// `pinned_context` is the project-overview body (`docs/README.md` by
 /// default in Loom's binary); `style_rules` is the style-rules document
@@ -82,7 +79,7 @@ impl SkillIndexMarkdown {
         Self::default()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.body.is_empty()
     }
 
@@ -104,7 +101,9 @@ pub const PARTIAL_COMPANIONS_CONTEXT: &str =
 /// `partial/context_pinning.md` — pin the project-overview file.
 pub const PARTIAL_CONTEXT_PINNING: &str = include_str!("../templates/partial/context_pinning.md");
 
-/// `partial/decomposition_discipline.md` — pin the audit-before-fan-out
+/// Audit-before-fan-out instructions from `partial/decomposition_discipline.md`.
+///
+/// Pins the
 /// rule on `todo`: every authored bead must correspond to
 /// evidence-confirmed missing work (read off `criterion_status` and
 /// representative implementations), or the agent emits `LOOM_CLARIFY` on
@@ -116,15 +115,19 @@ pub const PARTIAL_DECOMPOSITION_DISCIPLINE: &str =
 /// open bead with an active declared blocker.
 pub const PARTIAL_DEPENDENCY_WAIT: &str = include_str!("../templates/partial/dependency_wait.md");
 
-/// `partial/chat_interview.md` — pin the chat discipline for planning
+/// Planning chat discipline from `partial/chat_interview.md`.
+///
+/// Pins the rule for planning
 /// interviews: questions and answers flow as prose, and the planning
 /// agent does not use Claude Code's structured option-picker tool
 /// (`AskUserQuestion`) or any equivalent multi-choice UI. Included only
 /// by `plan`.
 pub const PARTIAL_CHAT_INTERVIEW: &str = include_str!("../templates/partial/chat_interview.md");
 
-/// `partial/findings_walk.md` — sole carrier of the `LOOM_FINDING:` /
-/// `LOOM_CONCERN:` colon-suffixed wire format. Pinned by `review.md`;
+/// Findings wire format from `partial/findings_walk.md`.
+///
+/// This is the sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:`
+/// colon-suffixed wire format. Pinned by `review.md`;
 /// the anti-drift verifier (see `specs/gate.md` § Findings and
 /// Minting) fails any other template under
 /// `crates/loom-templates/templates/` that restates the wire format.
@@ -155,13 +158,16 @@ pub const PARTIAL_REVIEW_SELF_REPORT_MARKERS: &str =
     include_str!("../templates/partial/review_self_report_markers.md");
 
 /// `partial/options_format.md` — canonical `## Options — <summary>` /
-/// `### Option N — <title>` markdown block consumed by `loom inbox`'s
+/// `### Option N — <title>` markdown block.
+///
+/// It is consumed by `loom inbox`'s
 /// chat-drafter. Pinned by worker phases that may emit `LOOM_CLARIFY` or
 /// stream a clarify-bound finding.
 pub const PARTIAL_OPTIONS_FORMAT: &str = include_str!("../templates/partial/options_format.md");
 
-/// `partial/chat_marker_final_turn_only.md` — restrict interactive terminal
-/// marker emission to the **final** assistant turn of a multi-turn chat
+/// Final-turn marker rule from `partial/chat_marker_final_turn_only.md`.
+///
+/// Restricts interactive terminal marker emission to the **final** assistant turn of a multi-turn chat
 /// session. Multi-turn templates (`inbox`, `plan`) include this so the
 /// "end your response with the marker" instruction does not get read as
 /// "every response." One-shot worker templates (`todo`, `loop`, `review`)
@@ -170,8 +176,9 @@ pub const PARTIAL_OPTIONS_FORMAT: &str = include_str!("../templates/partial/opti
 pub const PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY: &str =
     include_str!("../templates/partial/chat_marker_final_turn_only.md");
 
-/// `partial/interview_modes.md` — describe the "one by one" / "polish
-/// the spec" interview sub-modes.
+/// Interview sub-modes from `partial/interview_modes.md`.
+///
+/// Describes the "one by one" and "polish the spec" modes.
 pub const PARTIAL_INTERVIEW_MODES: &str = include_str!("../templates/partial/interview_modes.md");
 
 /// `partial/invariant_clash.md` — describe the invariant-clash awareness scan.

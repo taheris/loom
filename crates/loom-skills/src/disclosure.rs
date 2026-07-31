@@ -35,7 +35,7 @@ pub enum NativeRegistration {
 }
 
 impl RegistrationPolicy {
-    pub fn disclosure_mode(self, native: NativeRegistration) -> DisclosureMode {
+    pub const fn disclosure_mode(self, native: NativeRegistration) -> DisclosureMode {
         match (self, native) {
             (Self::Auto, NativeRegistration::Supported) => DisclosureMode::Native,
             (Self::Auto | Self::Prompt, NativeRegistration::Unsupported)

@@ -24,6 +24,10 @@ pub struct PlanPromptInputs {
 }
 
 /// Render the Askama template for `loom plan [SPEC_LABEL ...]`.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn render_prompt(inputs: PlanPromptInputs) -> Result<String, PlanError> {
     Ok(PlanContext {
         pinned_context: inputs.pinned_context,

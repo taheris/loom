@@ -52,7 +52,7 @@ fn loom_templates_re_exports_finding_contract_from_loom_protocol() {
         route: loom_protocol::gate::FindingRoute::Deferred,
         bonds: vec![spec.clone()],
         target: loom_protocol::gate::FindingTarget::Criterion {
-            spec: spec.clone(),
+            spec,
             anchor: "verifier-honesty".to_owned(),
         },
         evidence: "via loom-protocol".to_owned(),

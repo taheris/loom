@@ -12,6 +12,10 @@ use loom_driver::lock::LockError;
 use loom_driver::state::CacheError;
 
 /// Failures raised by [`super::run`] and [`super::fetch_active_molecules`].
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
+)]
 #[derive(Debug, Display, Error)]
 pub enum InitError {
     /// failed to create directory at {path}

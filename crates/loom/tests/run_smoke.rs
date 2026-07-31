@@ -224,7 +224,6 @@ printf allowed > .git/wrix/allowed_signers
 printf '#!/bin/sh\n' > .git/wrix/git-ssh
 chmod +x .git/wrix/git-ssh
 "#,
-            log = log,
         )),
     )
     .unwrap();

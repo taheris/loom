@@ -5,7 +5,7 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-fn loom_bin() -> &'static str {
+const fn loom_bin() -> &'static str {
     env!("CARGO_BIN_EXE_loom")
 }
 

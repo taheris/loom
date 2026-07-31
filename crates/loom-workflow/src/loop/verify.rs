@@ -21,7 +21,9 @@ use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 
 /// Which side of the per-bead integration a signature-verification pass
-/// covers. The two variants are the closed, codebase-owned set the
+/// covers.
+///
+/// The two variants are the closed, codebase-owned set the
 /// verdict gate enumerates (`specs/harness.md` § Verdict Gate phases 2 &
 /// 4); modelling them as an enum rather than a `&str` keeps a typo'd side
 /// label from silently corrupting the operator-facing routing detail
@@ -43,7 +45,7 @@ impl VerifyPass {
     /// `signature-verification-failed ({side}-side)` reason string, the
     /// `warn!` field, and the `side` field of the
     /// `SignatureVerificationFailed` JSONL payload.
-    pub fn side(self) -> &'static str {
+    pub const fn side(self) -> &'static str {
         match self {
             VerifyPass::Worker => "worker",
             VerifyPass::Driver => "driver",
@@ -65,6 +67,10 @@ impl VerifyPass {
 ///
 /// [`AgentOutcome::SignatureVerificationFailed`]: super::outcome::AgentOutcome::SignatureVerificationFailed
 /// [`BatchResult::AgentBlocked`]: super::parallel::BatchResult::AgentBlocked
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn verify_pass(
     git: &GitClient,
     emit: Option<&mut BeadEmit>,

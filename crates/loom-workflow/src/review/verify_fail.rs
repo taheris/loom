@@ -28,7 +28,9 @@ use super::phase_verdict::ReviewFlag;
 /// recovery (`specs/harness.md` table row "verify-fail").
 pub const PREVIOUS_FAILURE_BUDGET: usize = 4000;
 
-/// 1000-char cap on the appended `Review notes:` block. The spec calls this a
+/// 1000-char cap on the appended `Review notes:` block.
+///
+/// The spec calls this a
 /// "separate budget, ~1000 chars" — separate from
 /// [`PREVIOUS_FAILURE_BUDGET`] so review reasoning never crowds out the
 /// mechanical failure detail (the cause label stays `verify-fail`).
@@ -48,7 +50,9 @@ pub struct VerifyFailure {
 }
 
 /// Format every failure into a single `previous_failure` body within
-/// [`PREVIOUS_FAILURE_BUDGET`]. Earlier failures get their full block;
+/// [`PREVIOUS_FAILURE_BUDGET`].
+///
+/// Earlier failures get their full block;
 /// later failures truncate first when budget runs out. When `review_notes` is
 /// `Some`, the review LLM's flag is appended under a `Review notes:` heading
 /// inside its own [`REVIEW_NOTES_BUDGET`] (separate from the verify budget).
@@ -64,6 +68,8 @@ pub fn format_previous_failure(
 }
 
 fn format_within_budget(failures: &[VerifyFailure], budget: usize) -> String {
+    const TRUNC_MARKER: &str = "[truncated]\n";
+
     let mut out = String::new();
     let mut remaining = budget;
     let mut included = 0usize;
@@ -78,7 +84,6 @@ fn format_within_budget(failures: &[VerifyFailure], budget: usize) -> String {
         }
         // Truncate the block to whatever budget is left, leaving room for a
         // marker so the agent knows the tail was cut.
-        const TRUNC_MARKER: &str = "[truncated]\n";
         if remaining > TRUNC_MARKER.len() {
             let allowance = remaining - TRUNC_MARKER.len();
             let cut = floor_char_boundary(&block, allowance);
@@ -161,7 +166,7 @@ fn last_n_lines(s: &str, n: usize) -> &str {
     &s[..end]
 }
 
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+const fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
     if idx >= s.len() {
         return s.len();
     }
@@ -207,7 +212,10 @@ mod tests {
 
     #[test]
     fn stderr_is_tailed_to_last_n_lines() {
-        let stderr: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+        let mut stderr = String::new();
+        for line in 1..=100 {
+            writeln!(stderr, "line {line}").expect("writing to a String cannot fail");
+        }
         let f = failure("tests/a.sh", 1, &stderr);
         let body = format_previous_failure(&[f], None);
         // Most recent lines retained, oldest dropped.

@@ -23,6 +23,10 @@ pub struct TuneConfig {
 }
 
 impl TuneConfig {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn disabled_checkers(
         &self,
         registry: &Registry,
@@ -65,6 +69,10 @@ impl Default for ChecksConfig {
 pub struct SelectionFraction(f64);
 
 impl SelectionFraction {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn new(value: f64) -> Result<Self, SelectionFractionError> {
         if value.is_finite() && value > 0.0 && value < 1.0 {
             Ok(Self(value))
@@ -73,7 +81,7 @@ impl SelectionFraction {
         }
     }
 
-    pub fn get(self) -> f64 {
+    pub const fn get(self) -> f64 {
         self.0
     }
 }
@@ -106,7 +114,7 @@ impl<'de> Deserialize<'de> for SelectionFraction {
 /// Selection fraction construction failures.
 #[derive(Debug, Clone, PartialEq, Display, Error)]
 pub enum SelectionFractionError {
-    /// selection_fraction `{value}` must satisfy 0.0 < value < 1.0
+    /// `selection_fraction` `{value}` must satisfy 0.0 < value < 1.0
     OutOfRange { value: f64 },
 }
 
@@ -117,7 +125,10 @@ mod tests {
     #[test]
     fn tune_config_defaults_match_v1_policy() {
         let config = TuneConfig::default();
-        assert_eq!(config.evidence.selection_fraction.get(), 0.34);
+        assert_eq!(
+            config.evidence.selection_fraction.get().to_bits(),
+            0.34_f64.to_bits()
+        );
         assert!(config.evidence.external_roots.is_empty());
         assert_eq!(config.checks.max_behavior_cases, 3);
         assert_eq!(config.checks.max_wall_time_secs, 1_800);
@@ -130,7 +141,10 @@ mod tests {
         for value in [0.0, 1.0, f64::NAN, -0.1, 1.1] {
             assert!(SelectionFraction::new(value).is_err(), "{value}");
         }
-        assert_eq!(SelectionFraction::new(0.5).expect("valid").get(), 0.5);
+        assert_eq!(
+            SelectionFraction::new(0.5).expect("valid").get().to_bits(),
+            0.5_f64.to_bits()
+        );
     }
 
     #[test]

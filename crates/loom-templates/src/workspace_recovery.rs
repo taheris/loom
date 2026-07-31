@@ -35,7 +35,7 @@ pub enum WorkspaceAlignment {
 }
 
 impl WorkspaceAlignment {
-    pub fn is_conflict(&self) -> bool {
+    pub const fn is_conflict(&self) -> bool {
         matches!(self, Self::Conflict { .. })
     }
 

@@ -33,7 +33,7 @@ const LOG_EXTENSION: &str = "jsonl";
 const DEFAULT_FOLLOW_POLL: Duration = Duration::from_millis(100);
 
 /// Options for [`select_log`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct LogsOpts<'a> {
     /// Restrict the search to files belonging to this bead. When `None`,
     /// the most recent log across every bead in every spec is returned.
@@ -52,6 +52,10 @@ pub enum LogsError {
     /// no logs found for bead {bead} under {root}
     NoLogsForBead { bead: String, root: PathBuf },
 
+    #[expect(
+        clippy::doc_markdown,
+        reason = "displaydoc placeholders are formatting syntax; backticks would change the error text"
+    )]
     /// failed to parse log line {line_no} in {path}: {source}
     ParseLine {
         path: PathBuf,
@@ -62,9 +66,15 @@ pub enum LogsError {
 }
 
 /// Walk `logs_root` (typically `<workspace>/.loom/logs/`) and return
-/// the most recent `*.jsonl` log. The traversal is two levels deep —
+/// the most recent `*.jsonl` log.
+///
+/// The traversal is two levels deep —
 /// `<root>/<spec-label>/<bead-id>-<utc>.jsonl` per the path layout in
 /// `specs/harness.md` *Run UX & Logging*.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn select_log(logs_root: &Path, opts: LogsOpts<'_>) -> Result<PathBuf, LogsError> {
     let bead_filter = opts.bead.map(|b| b.as_str().to_string());
     let mut candidates: Vec<(SystemTime, PathBuf)> = Vec::new();
@@ -172,6 +182,10 @@ pub struct ReplayOpts<'a> {
 /// `follow=true` waits for the file to grow after the initial read.
 /// The poll loop honors `follow_max_polls` for tests; production sets
 /// `None` so the call blocks until the process is interrupted.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub async fn replay(
     opts: ReplayOpts<'_>,
     writer: Box<dyn Write + Send>,
@@ -180,6 +194,10 @@ pub async fn replay(
     replay_with_tool_body_limit(opts, writer, clock, loom_render::tool_body::BODY_CAP_BYTES).await
 }
 
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub async fn replay_with_tool_body_limit(
     opts: ReplayOpts<'_>,
     writer: Box<dyn Write + Send>,
@@ -236,7 +254,9 @@ async fn replay_rendered(
         clock.sleep(poll).await;
     }
     let elapsed = match (first_ts_ms, last_ts_ms) {
-        (Some(a), Some(b)) if b >= a => Duration::from_millis((b - a) as u64),
+        (Some(a), Some(b)) if b >= a => {
+            Duration::from_millis(u64::try_from(b.saturating_sub(a)).unwrap_or(u64::MAX))
+        }
         _ => Duration::ZERO,
     };
     renderer
@@ -316,7 +336,7 @@ where
     }
 }
 
-fn event_ts(event: &AgentEvent) -> i64 {
+const fn event_ts(event: &AgentEvent) -> i64 {
     event.envelope().ts_ms
 }
 
@@ -350,7 +370,7 @@ mod tests {
     /// wall clock — matches the rest of the loom test suite, which routes
     /// every wall-time read through the `SystemClock` impl.
     fn reference_now() -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000)
+        SystemTime::UNIX_EPOCH + Duration::from_hours(500_000)
     }
 
     fn touch(path: &Path, mtime: SystemTime) -> Result<()> {
@@ -377,7 +397,7 @@ mod tests {
     fn returns_most_recent_log_across_specs() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join(".loom/logs");
-        let older = reference_now() - Duration::from_secs(120);
+        let older = reference_now() - Duration::from_mins(2);
         touch(&root.join("alpha/lm-1-old.jsonl"), older)?;
         touch(&root.join("beta/lm-2-newer.jsonl"), reference_now())?;
         let path = select_log(&root, LogsOpts::default())?;
@@ -394,7 +414,7 @@ mod tests {
         touch(&root.join("alpha/lm-10-newer.jsonl"), reference_now())?;
         touch(
             &root.join("alpha/lm-1-older.jsonl"),
-            reference_now() - Duration::from_secs(60),
+            reference_now() - Duration::from_mins(1),
         )?;
         let path = select_log(
             &root,
@@ -436,7 +456,6 @@ mod tests {
     }
 
     fn shared_buf() -> (Arc<Mutex<Vec<u8>>>, Box<dyn Write + Send>) {
-        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
         struct Sink(Arc<Mutex<Vec<u8>>>);
         impl Write for Sink {
             fn write(&mut self, b: &[u8]) -> io::Result<usize> {
@@ -450,6 +469,7 @@ mod tests {
                 Ok(())
             }
         }
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
         let sink: Box<dyn Write + Send> = Box::new(Sink(buf.clone()));
         (buf, sink)
     }

@@ -29,8 +29,9 @@ pub(crate) fn resolve_wrix_spawn_bin(config: &SpawnConfig) -> OsString {
     config
         .wrix_launcher
         .as_ref()
-        .map(|path| deprofiled_wrix(path.as_os_str().to_os_string()))
-        .unwrap_or_else(resolve_wrix_spawn_bin_from_env)
+        .map_or_else(resolve_wrix_spawn_bin_from_env, |path| {
+            deprofiled_wrix(path.as_os_str().to_os_string())
+        })
 }
 
 fn resolve_wrix_spawn_bin_from_env() -> OsString {
@@ -44,12 +45,11 @@ fn deprofiled_wrix(candidate: OsString) -> OsString {
     let Some(path) = resolve_candidate_path(&candidate) else {
         return candidate;
     };
-    let script = match std::fs::read_to_string(&path) {
-        Ok(script) => script,
+    let Ok(script) = std::fs::read_to_string(&path) else {
         // best-effort: raw wrix binaries are not UTF-8 shell scripts, and a
         // missing/unreadable override should preserve the operator-provided
         // command so the eventual spawn error names what they configured.
-        Err(_) => return candidate,
+        return candidate;
     };
     let Some(launcher) = parse_profiled_wrix_launcher(&script) else {
         return candidate;
@@ -117,8 +117,9 @@ fn strip_shell_quotes(token: &str) -> &str {
         .unwrap_or(token)
 }
 
-/// Apply [`SpawnConfig::launcher_env`] to the `wrix spawn` child process
-/// before it is spawned. These pairs (`WRIX_DEPLOY_KEY` /
+/// Apply [`SpawnConfig::launcher_env`] to the `wrix spawn` child process.
+///
+/// These pairs (`WRIX_DEPLOY_KEY` /
 /// `WRIX_SIGNING_KEY` → host key paths) are read by the wrix launcher to
 /// bind-mount the deploy + signing keys into the bead container; they are
 /// deliberately **not** part of [`SpawnConfig::env`] (the in-container

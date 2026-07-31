@@ -61,7 +61,9 @@ impl MintScope {
 }
 
 /// One deterministic-verifier failure surfaced by the dispatch layer at
-/// tree scope. The orchestration normalises each into a typed
+/// tree scope.
+///
+/// The orchestration normalises each into a typed
 /// [`Finding`] via [`verifier_failure_to_finding`] per the mapping table
 /// at `specs/gate.md` § *Emit shape*.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,7 +129,9 @@ pub enum WalkError {
 
 /// Abstracts the two side-effect-bearing surfaces the orchestration
 /// depends on so the walk logic stays pure and is exercised under fakes
-/// in tests. Production wires `run_rubric` to the existing review-agent
+/// in tests.
+///
+/// Production wires `run_rubric` to the existing review-agent
 /// invocation in [`crate::review::runner`] and `run_verifiers` to the
 /// deterministic dispatcher in [`loom_gate::dispatch`] plus the
 /// integrity gate's resolver chain.
@@ -152,15 +156,21 @@ pub trait MintWalker: Send {
     ) -> impl std::future::Future<Output = Result<Vec<VerifierFailure>, WalkError>> + Send;
 }
 
-/// Top-level walk: run the configured sources for `scope`, normalise
-/// any verifier failures into typed `Finding` records, parse the rubric
-/// stdout, and return the combined ordered vector for the mint pipeline.
+/// Runs the configured mint sources for `scope`.
+///
+/// Normalises verifier failures into typed `Finding` records, parses the
+/// rubric stdout, and returns the combined ordered vector for the mint
+/// pipeline.
 ///
 /// Order: verifier-side findings come first (in dispatch order), rubric
 /// findings come second (in stdout order). Both share the same finding
 /// hash scheme, so order only affects the end-of-run summary's
 /// per-finding lines — not which beads end up minted.
-pub async fn walk<W: MintWalker, V: FindingValidator + ?Sized>(
+///
+/// # Errors
+///
+/// Returns an error when finding validation, deduplication, or bead creation fails.
+pub async fn walk<W: MintWalker, V: FindingValidator + Sync + ?Sized>(
     walker: &mut W,
     scope: &MintScope,
     validator: &V,
@@ -177,10 +187,16 @@ pub async fn walk<W: MintWalker, V: FindingValidator + ?Sized>(
 }
 
 /// Normalise one [`VerifierFailure`] into a typed [`Finding`] per the
-/// mapping at `specs/gate.md` § *Emit shape*. The owning spec for
+/// mapping at `specs/gate.md` § *Emit shape*.
+///
+/// The owning spec for
 /// `bonds` is derived from the annotation's `source_spec` path
 /// (basename minus `.md`) — the same spec-section auto-include the
 /// verifier's input set uses.
+///
+/// # Errors
+///
+/// Returns an error when finding validation, deduplication, or bead creation fails.
 pub fn verifier_failure_to_finding(failure: VerifierFailure) -> Result<Finding, WalkError> {
     let owning = spec_label_from_path(&failure.annotation.source_spec)?;
     let target_string = failure.annotation.target.clone();
@@ -348,7 +364,8 @@ where
         self
     }
 
-    pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
+    #[must_use]
+    pub const fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
         self.runtime = runtime;
         self
     }
@@ -703,11 +720,11 @@ fn dispatch_outcome_to_failures(
 /// `source_spec`-derived bonding still resolves to a real spec.
 fn dispatch_error_annotation(err: &loom_gate::DispatchError) -> Annotation {
     let target = match err {
-        loom_gate::DispatchError::Spawn { command, .. } => command.clone(),
-        loom_gate::DispatchError::MalformedVerdict { command, .. } => command.clone(),
+        loom_gate::DispatchError::Spawn { command, .. }
+        | loom_gate::DispatchError::MalformedVerdict { command, .. } => command.clone(),
         loom_gate::DispatchError::MissingFromBatchOutput { target, .. } => target.clone(),
-        loom_gate::DispatchError::EmptyTarget { .. } => String::new(),
-        loom_gate::DispatchError::ZeroMatch { .. } => String::new(),
+        loom_gate::DispatchError::EmptyTarget { .. }
+        | loom_gate::DispatchError::ZeroMatch { .. } => String::new(),
     };
     Annotation {
         tier: Tier::Check,
@@ -863,7 +880,7 @@ mod tests {
             ProfileImageManifest::from_path(&manifest_path).expect("profile manifest parses"),
         );
         let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
-        let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("[]")]);
+        let runner = ScriptedRunner::new(vec![Ok(ok_stdout("[]")), Ok(ok_stdout("[]"))]);
         let bd = BdClient::with_runner(runner);
         let rubric_stdout = format!(
             "{}\nLOOM_CONCERN: {{\"summary\":\"rubric finding\"}}\n",
@@ -943,7 +960,10 @@ mod tests {
             ProfileImageManifest::from_path(&manifest_path).expect("profile manifest parses"),
         );
         let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
-        let bd = BdClient::with_runner(ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("[]")]));
+        let bd = BdClient::with_runner(ScriptedRunner::new(vec![
+            Ok(ok_stdout("[]")),
+            Ok(ok_stdout("[]")),
+        ]));
         let walker = ProductionMintWalker::new(
             bd,
             spec("gate"),
@@ -1057,12 +1077,12 @@ mod tests {
         }
     }
 
-    fn ok_stdout(body: &str) -> Result<RunOutput, BdError> {
-        Ok(RunOutput {
+    fn ok_stdout(body: &str) -> RunOutput {
+        RunOutput {
             status: 0,
             stdout: body.as_bytes().to_vec(),
             stderr: Vec::new(),
-        })
+        }
     }
 
     fn epic_list(id: &str, label: &str) -> String {
@@ -1120,12 +1140,12 @@ mod tests {
         let findings = vec![finding_a.clone(), finding_b.clone(), finding_c.clone()];
 
         let pass1_responses: Vec<Result<RunOutput, BdError>> = vec![
-            ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-harnessepic", "harness")),
-            ok_stdout("[]"),
-            ok_stdout("lm-gatebatch.1\n"),
+            Ok(ok_stdout("[]")),
+            Ok(ok_stdout(&epic_list("lm-gateepic", "gate"))),
+            Ok(ok_stdout("[]")),
+            Ok(ok_stdout(&epic_list("lm-harnessepic", "harness"))),
+            Ok(ok_stdout("[]")),
+            Ok(ok_stdout("lm-gatebatch.1\n")),
             Err(BdError::Spawn(std::io::Error::other(
                 "simulated mid-run crash",
             ))),
@@ -1154,17 +1174,17 @@ mod tests {
         );
 
         let pass2_responses: Vec<Result<RunOutput, BdError>> = vec![
-            ok_stdout(&format!(
+            Ok(ok_stdout(&format!(
                 "[{}]",
                 fixup_row("lm-gatebatch.1", &finding_a.hash())
-            )),
-            ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-harnessepic", "harness")),
-            ok_stdout(&format!(
+            ))),
+            Ok(ok_stdout("[]")),
+            Ok(ok_stdout(&epic_list("lm-harnessepic", "harness"))),
+            Ok(ok_stdout(&format!(
                 "[{}]",
                 fixup_row("lm-gatebatch.1", &finding_c.hash())
-            )),
-            ok_stdout("lm-harnessbatch.1\n"),
+            ))),
+            Ok(ok_stdout("lm-harnessbatch.1\n")),
         ];
         let runner2 = ScriptedRunner::new(pass2_responses);
         let invocations2 = runner2.invocations_handle();
@@ -1425,10 +1445,12 @@ mod tests {
         use loom_driver::profile_manifest::ProfileImageManifest;
         use loom_driver::state::CacheDb;
 
+        const UNRESOLVED_TARGET: &str = "loom-verifier-bypass-fixture-9b8d-does-not-exist";
+
+        fn assert_is_mint_walker<W: MintWalker>(_walker: &W) {}
+
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().to_path_buf();
-
-        const UNRESOLVED_TARGET: &str = "loom-verifier-bypass-fixture-9b8d-does-not-exist";
 
         std::fs::create_dir_all(workspace.join("specs")).expect("specs dir");
         std::fs::create_dir_all(workspace.join("verifier-cwd")).expect("cwd dir");
@@ -1461,7 +1483,7 @@ cwd = "verifier-cwd"
         // bd.list calls during prompt build: (1) spec-label bead summary,
         // (2) resolve_open_epic. Both return `[]` so the walker proceeds
         // with no molecule_id and no beads_summary.
-        let responses = vec![ok_stdout("[]"), ok_stdout("[]")];
+        let responses = vec![Ok(ok_stdout("[]")), Ok(ok_stdout("[]"))];
         let runner = ScriptedRunner::new(responses);
         let bd = BdClient::with_runner(runner);
 
@@ -1476,7 +1498,7 @@ cwd = "verifier-cwd"
             let captured = Arc::clone(&captured_inner);
             let prompt = Arc::clone(&captured_prompt_inner);
             let scratch = cfg.scratch_dir.clone();
-            let initial_prompt = cfg.initial_prompt.clone();
+            let initial_prompt = cfg.initial_prompt;
             async move {
                 *called.lock().expect("not poisoned") += 1;
                 *captured.lock().expect("not poisoned") = Some(scratch);
@@ -1554,7 +1576,6 @@ cwd = "verifier-cwd"
         // a generic helper that requires the bound is the load-bearing
         // assertion — if the impl block ever drifts, this fails to
         // compile rather than at runtime.
-        fn assert_is_mint_walker<W: MintWalker>(_w: &W) {}
         assert_is_mint_walker(&walker);
     }
 
@@ -1577,13 +1598,13 @@ cwd = "verifier-cwd"
         use loom_driver::profile_manifest::ProfileImageManifest;
         use loom_driver::state::CacheDb;
 
+        const RUNNER_OWNED_TARGET: &str = "loom-runner-only-fixture-7c3a-not-on-path";
+
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().to_path_buf();
 
         // tokens[0] is deliberately absent from PATH; only the runner match
         // can resolve and dispatch it.
-        const RUNNER_OWNED_TARGET: &str = "loom-runner-only-fixture-7c3a-not-on-path";
-
         std::fs::create_dir_all(workspace.join("specs")).expect("specs dir");
         std::fs::write(
             workspace.join("specs/test-mint.md"),
@@ -1605,7 +1626,7 @@ cwd = "verifier-cwd"
             Arc::new(ProfileImageManifest::from_path(&manifest_path).expect("manifest parse"));
         let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
 
-        let responses = vec![ok_stdout("[]"), ok_stdout("[]")];
+        let responses = vec![Ok(ok_stdout("[]")), Ok(ok_stdout("[]"))];
         let bd = BdClient::with_runner(ScriptedRunner::new(responses));
 
         let spawn = move |_cfg: SpawnConfig| async move {

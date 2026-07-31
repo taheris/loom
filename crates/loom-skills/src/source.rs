@@ -32,6 +32,12 @@ pub enum SourceShape {
 pub struct SourceHash(String);
 
 impl SourceHash {
+    /// Parse a canonical source-document hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseSourceHashError`] unless the value contains exactly
+    /// 64 lowercase hexadecimal characters.
     pub fn new(value: impl Into<String>) -> Result<Self, ParseSourceHashError> {
         value.into().parse()
     }

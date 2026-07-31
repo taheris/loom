@@ -159,28 +159,32 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         }
     }
 
+    #[must_use]
     pub fn with_loom_config(mut self, cfg: LoomTopConfig) -> Self {
         self.loom_cfg = cfg;
         self
     }
 
-    pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
+    #[must_use]
+    pub const fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
         self.runtime = runtime;
         self
     }
 
+    #[must_use]
     pub fn with_skills_config(mut self, cfg: SkillsConfig) -> Self {
         self.skills_cfg = cfg;
         self
     }
 
+    #[must_use]
     pub fn with_phase_log(mut self, logs_root: PathBuf, when: SystemTime) -> Self {
         self.phase_log_root = Some(logs_root);
         self.phase_log_when = when;
         self
     }
 
-    fn emit_driver_event(&mut self, event: DriverEventPayload) {
+    fn emit_driver_event(&self, event: DriverEventPayload) {
         let Some(logs_root) = self.phase_log_root.as_deref() else {
             return;
         };
@@ -223,6 +227,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             DriverEventPayload::new(event.driver_kind, event.summary, payload),
             builder.build_with_source(Source::Driver),
         );
+        drop(guard);
         match LogSink::open_at_path_append(&path) {
             Ok(mut sink) => {
                 if let Err(error) = sink.emit(&agent_event) {
@@ -249,7 +254,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     }
 
     fn emit_bd_update(
-        &mut self,
+        &self,
         bead: &BeadId,
         identity: &str,
         status: Option<&str>,
@@ -334,23 +339,20 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 ids,
             });
         }
-        let (spec_epic, todo_cursor, initialized) = match epics.first() {
-            Some(bead) => {
-                let cursor = metadata_string(bead, TODO_CURSOR_METADATA_KEY).ok_or_else(|| {
-                    TodoError::MissingSpecCursor {
-                        label: spec.label.to_string(),
-                        epic_id: bead.id.to_string(),
-                    }
-                })?;
-                self.validate_cursor(&spec.label, &bead.id, &cursor).await?;
-                self.close_spec_epic_if_needed(&bead.id, bead.status.as_str())
-                    .await?;
-                (bead.id.clone(), Some(cursor), false)
-            }
-            None => {
-                let id = self.create_spec_epic(spec).await?;
-                (id, None, true)
-            }
+        let (spec_epic, todo_cursor, initialized) = if let Some(bead) = epics.first() {
+            let cursor = metadata_string(bead, TODO_CURSOR_METADATA_KEY).ok_or_else(|| {
+                TodoError::MissingSpecCursor {
+                    label: spec.label.to_string(),
+                    epic_id: bead.id.to_string(),
+                }
+            })?;
+            self.validate_cursor(&spec.label, &bead.id, &cursor).await?;
+            self.close_spec_epic_if_needed(&bead.id, bead.status.as_str())
+                .await?;
+            (bead.id.clone(), Some(cursor), false)
+        } else {
+            let id = self.create_spec_epic(spec).await?;
+            (id, None, true)
         };
         let molecule_id = spec_epic.as_str().parse()?;
         self.state.upsert_spec_epic(&SpecEpicRow {
@@ -723,7 +725,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         Ok(())
     }
 
-    async fn record_validation_failure(&mut self, detail: &str) -> Result<(), TodoError> {
+    async fn record_validation_failure(&self, detail: &str) -> Result<(), TodoError> {
         let Some(preflight) = self.preflight.clone() else {
             return Ok(());
         };
@@ -748,7 +750,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     }
 
     async fn record_missing_exit_signal(
-        &mut self,
+        &self,
         outcome: &SessionOutcome,
         marker: Option<&ExitSignal>,
     ) -> Result<(), TodoError> {
@@ -891,7 +893,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         failures
     }
 
-    async fn finalize_success(&mut self, success: &TodoSuccess) -> Result<TodoRecord, TodoError> {
+    async fn finalize_success(&self, success: &TodoSuccess) -> Result<TodoRecord, TodoError> {
         let preflight = self
             .preflight
             .clone()
@@ -1030,7 +1032,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         })
     }
 
-    async fn record_blocked(&mut self, reason: &str) -> Result<TodoRecord, TodoError> {
+    async fn record_blocked(&self, reason: &str) -> Result<TodoRecord, TodoError> {
         let Some(preflight) = self.preflight.clone() else {
             return Ok(TodoRecord::default());
         };
@@ -1210,7 +1212,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
     }
 }
 
-fn todo_outcome_route(
+const fn todo_outcome_route(
     outcome: &SessionOutcome,
     marker: Option<&ExitSignal>,
     todo_success: Option<&TodoSuccess>,
@@ -1223,9 +1225,9 @@ fn todo_outcome_route(
             ExitSignal::Complete
             | ExitSignal::Noop
             | ExitSignal::Waiting
-            | ExitSignal::Concern { .. },
-        )
-        | Some(ExitSignal::BadWalk(_)) => "wrong-phase-marker",
+            | ExitSignal::Concern { .. }
+            | ExitSignal::BadWalk(_),
+        ) => "wrong-phase-marker",
         None if outcome.exit_code != 0 => "recovery",
         None if todo_success.is_some() => "success",
         None => "recovery",

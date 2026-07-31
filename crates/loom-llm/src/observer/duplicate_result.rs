@@ -1,8 +1,4 @@
-//! `DuplicateResultObserver` — pure observability. Detects any tool
-//! result whose canonical-JSON payload duplicates an earlier result in
-//! the same session, regardless of which tool produced it. Surfaces a
-//! wasted-token signal for SaaS billing pipelines without ever sending
-//! a `SessionCommand`.
+//! Observe repeated canonical tool results without steering the session.
 
 use std::collections::HashMap;
 
@@ -16,12 +12,9 @@ use super::result_hasher::{ResultFingerprint, ResultHash, ResultHasher};
 /// payloads like `"ok"`.
 pub const DEFAULT_MIN_BYTES: u32 = 256;
 
-/// Per-observer configuration. Mirrors the `[agent.duplicate_result]`
-/// TOML block the binary's `LoomConfig` exposes — consumers driving
-/// [`crate::Conversation`] directly construct the same shape and pass it
-/// in via [`crate::Conversation::duplicate_result`] (or rely on
-/// [`DuplicateResultConfig::default`] which matches the spec defaults).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Configuration for [`DuplicateResultObserver`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
 pub struct DuplicateResultConfig {
     /// When false, the observer is omitted from
     /// [`crate::Conversation`]'s default sink chain entirely.
@@ -39,11 +32,7 @@ impl Default for DuplicateResultConfig {
     }
 }
 
-/// One detected duplicate. Drained by `take_pending` and lifted into a
-/// `DriverKind::DuplicateToolResult` `AgentEvent` by the conversation /
-/// driver sink-chain wiring (B.12). The observer cannot synthesize the
-/// `AgentEvent` itself — it has no `EnvelopeBuilder` — so it carries the
-/// payload-shaped struct and lets the chain assemble the wire event.
+/// Duplicate result awaiting delivery as an observability event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateDetection {
     /// `ToolCallId` of the first tool call whose canonical result
@@ -85,7 +74,8 @@ impl DuplicateResultObserver {
     }
 
     /// Override the `min_bytes` threshold.
-    pub fn with_min_bytes(mut self, n: u32) -> Self {
+    #[must_use]
+    pub const fn with_min_bytes(mut self, n: u32) -> Self {
         self.min_bytes = n;
         self
     }
@@ -94,17 +84,17 @@ impl DuplicateResultObserver {
     /// `enabled` flag is consulted by [`crate::Conversation`]'s builder —
     /// it's irrelevant here because the caller already decided to
     /// materialise the observer.
-    pub fn from_config(config: &DuplicateResultConfig) -> Self {
+    pub fn from_config(config: DuplicateResultConfig) -> Self {
         Self::new().with_min_bytes(config.min_bytes)
     }
 
     /// Borrow the shared hasher.
-    pub fn hasher(&self) -> &ResultHasher {
+    pub const fn hasher(&self) -> &ResultHasher {
         &self.hasher
     }
 
     /// Read-only access to the configured threshold.
-    pub fn min_bytes(&self) -> u32 {
+    pub const fn min_bytes(&self) -> u32 {
         self.min_bytes
     }
 
@@ -127,7 +117,7 @@ impl DuplicateResultObserver {
     /// by the conversation loop's shared hashing pass.
     pub fn observe_tool_result(&mut self, id: &ToolCallId, fingerprint: ResultFingerprint) {
         let bytes = fingerprint.canonical_len();
-        if (bytes as u32) < self.min_bytes {
+        if usize::try_from(self.min_bytes).map_or(true, |min_bytes| bytes < min_bytes) {
             return;
         }
         let hash = fingerprint.hash();
@@ -135,7 +125,7 @@ impl DuplicateResultObserver {
             self.pending.push(DuplicateDetection {
                 original_call_id: original.clone(),
                 repeated_call_id: id.clone(),
-                bytes_wasted: bytes as u64,
+                bytes_wasted: u64::try_from(bytes).unwrap_or(u64::MAX),
             });
         } else {
             self.seen.insert(hash, id.clone());
@@ -191,7 +181,7 @@ mod tests {
             molecule_id: None,
             iteration: Some(0),
             source: Source::Agent,
-            ts_ms: seq as i64,
+            ts_ms: i64::try_from(seq).expect("test sequence fits i64"),
             seq,
         }
     }
@@ -271,8 +261,8 @@ mod tests {
     #[test]
     fn detection_keys_on_canonical_payload_not_string_form() {
         let mut obs = DuplicateResultObserver::new();
-        let a = format!("{{\"a\":1,\"b\":2,\"filler\":\"{}\"}}", "y".repeat(512),);
-        let b = format!("{{\"b\":2,\"a\":1,\"filler\":\"{}\"}}", "y".repeat(512),);
+        let a = format!("{{\"a\":1,\"b\":2,\"filler\":\"{}\"}}", "y".repeat(512));
+        let b = format!("{{\"b\":2,\"a\":1,\"filler\":\"{}\"}}", "y".repeat(512));
         obs.emit(&tool_result(0, "call-1", &a));
         obs.emit(&tool_result(1, "call-2", &b));
         let detections = obs.take_pending();

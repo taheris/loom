@@ -3,7 +3,7 @@
 //! [`PiBackend::spawn`] serializes the [`SpawnConfig`] to a JSON file,
 //! execs the raw wrix launcher as
 //! `wrix --profile-config <file> spawn --spawn-config <file> --stdio`
-//! when the manifest provides a ProfileConfig, and drives the pi RPC
+//! when the manifest provides a `ProfileConfig`, and drives the pi RPC
 //! handshake before handing back an [`AgentSession`] in the [`Idle`] state:
 //!
 //! 1. `get_state` probe — verifies the RPC process is responsive and
@@ -90,6 +90,10 @@ static SPAWN_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub struct PiBackend;
 
 impl PiBackend {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent startup, protocol handling, or tool execution fails.
     pub async fn spawn_with_wrix_bin(
         config: &SpawnConfig,
         wrix_bin: &OsStr,
@@ -102,11 +106,19 @@ impl PiBackend {
         .await
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent startup, protocol handling, or tool execution fails.
     pub async fn spawn_bridge(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
         let wrix_bin = resolve_wrix_spawn_bin(config);
         Self::spawn_bridge_with_wrix_bin(config, &wrix_bin).await
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent startup, protocol handling, or tool execution fails.
     pub async fn spawn_bridge_with_wrix_bin(
         config: &SpawnConfig,
         wrix_bin: &OsStr,
@@ -241,6 +253,10 @@ pub(crate) fn build_wrix_command(
 /// through the process-env launcher override (Rust 2024 makes
 /// `env::set_var` unsafe, and the workspace forbids `unsafe_code`).
 /// Production callers go through [`PiBackend::spawn`].
+///
+/// # Errors
+///
+/// Returns an error when agent startup, protocol handling, or tool execution fails.
 pub async fn spawn_with_handshake(
     cmd: Command,
     model: Option<&ModelSelection>,
@@ -533,7 +549,7 @@ async fn run_set_thinking_level(
 }
 
 /// Encode `payload` as JSONL and flush it to pi's stdin.
-async fn write_command<T: Serialize>(
+async fn write_command<T: Serialize + Sync>(
     writer: &mut BufWriter<ChildStdin>,
     payload: &T,
 ) -> Result<(), ProtocolError> {
@@ -799,7 +815,7 @@ mod tests {
             model_id: None,
             model,
             thinking_level: None,
-            observers: Default::default(),
+            observers: loom_driver::config::AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),
@@ -844,7 +860,7 @@ mod tests {
         loop {
             match session.next_event().await.expect("event ok") {
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF"),
             }
         }
@@ -913,7 +929,7 @@ mod tests {
         loop {
             match session.next_event().await.expect("event ok") {
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF"),
             }
         }
@@ -960,7 +976,7 @@ mod tests {
                     }
                 }
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF"),
             }
         }
@@ -987,7 +1003,7 @@ mod tests {
         loop {
             match session.next_event().await.expect("event ok") {
                 Some(ParsedAgentEvent::TurnEnd) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF before first TurnEnd"),
             }
         }
@@ -1006,7 +1022,7 @@ mod tests {
                     }
                 }
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF before SessionComplete"),
             }
         }
@@ -1046,7 +1062,7 @@ mod tests {
                     }
                 }
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF before SessionComplete"),
             }
         }
@@ -1096,7 +1112,7 @@ mod tests {
                     }
                 }
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF before SessionComplete"),
             }
         }
@@ -1153,7 +1169,7 @@ mod tests {
                     }
                 }
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF before SessionComplete"),
             }
         }
@@ -1223,7 +1239,7 @@ mod tests {
                     }
                 }
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF"),
             }
         }
@@ -1277,7 +1293,7 @@ mod tests {
                     }
                 }
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF"),
             }
         }
@@ -1311,7 +1327,7 @@ mod tests {
                     }
                 }
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF"),
             }
         }
@@ -1349,7 +1365,7 @@ mod tests {
                     }
                 }
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF"),
             }
         }

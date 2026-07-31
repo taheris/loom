@@ -1,8 +1,8 @@
 //! Verdict-gate direct-emit `LOOM_CLARIFY` validation.
 //!
 //! When the agent self-reports `LOOM_CLARIFY`, the verdict gate inspects
-//! the target bead's notes ∪ description for a well-formed `## Options —
-//! <summary>` heading with at least one `### Option <N> — <title>`
+//! the target bead's notes ∪ description for a well-formed
+//! `## Options — <summary>` heading with at least one `### Option <N> — <title>`
 //! subsection (per `specs/gate.md` § *Options Format Contract*). A
 //! well-formed block applies `loom:clarify`; an absent or malformed
 //! block downgrades to `loom:blocked` carrying
@@ -23,7 +23,9 @@ use serde::Serialize;
 
 /// Cause string written into the target bead's notes when the gate
 /// downgrades a direct-emit `LOOM_CLARIFY` because the bead's notes ∪
-/// description lacks a well-formed options block. Shared with the
+/// description lacks a well-formed options block.
+///
+/// Shared with the
 /// mint-side per-finding processing path so a single cause label
 /// surfaces from both enforcement sites.
 pub const CLARIFY_WITHOUT_OPTIONS_CAUSE: &str = "clarify-without-options";
@@ -157,7 +159,9 @@ pub(crate) fn evidence_excerpt(text: &str) -> String {
 
 /// Inspect the target bead's notes ∪ description for a well-formed
 /// options block; apply `loom:clarify` when found, `loom:blocked` with
-/// cause [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] otherwise. Either path
+/// cause [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] otherwise.
+///
+/// Either path
 /// transitions the bead to `status=blocked` so `bd ready` excludes it
 /// pending human resolution.
 ///
@@ -165,6 +169,10 @@ pub(crate) fn evidence_excerpt(text: &str) -> String {
 /// boundary*) is preserved: the agent owns writing the options block
 /// before emitting `LOOM_CLARIFY`; this helper only stamps the verdict
 /// label and (on the downgrade path) the cause notes.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub async fn apply_clarify_or_blocked<R: CommandRunner>(
     bd: &BdClient<R>,
     bead: &BeadId,
@@ -173,6 +181,10 @@ pub async fn apply_clarify_or_blocked<R: CommandRunner>(
 }
 
 /// Apply clarify validation and retain diagnostics for route observability.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
     bd: &BdClient<R>,
     bead: &BeadId,

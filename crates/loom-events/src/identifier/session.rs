@@ -9,6 +9,11 @@ use thiserror::Error;
 pub struct SessionId(String);
 
 impl SessionId {
+    /// Parses a canonical session id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseSessionIdError`] when the input is malformed.
     pub fn new(s: impl AsRef<str>) -> Result<Self, ParseSessionIdError> {
         s.as_ref().parse()
     }

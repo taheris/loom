@@ -41,6 +41,10 @@ impl CacheDb {
     ///    listed path. Specs without the section contribute zero rows.
     ///
     /// Iteration counters reset to 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn rebuild(
         &self,
         workspace: &Path,

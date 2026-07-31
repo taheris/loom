@@ -496,7 +496,7 @@ async fn stall_window_fires_warning_after_five_minutes_without_aborting() {
     let buf: log_capture::Buffer = Arc::new(Mutex::new(Vec::new()));
     let _guard = log_capture::install(buf.clone());
 
-    let stall_window = Duration::from_secs(5 * 60);
+    let stall_window = Duration::from_mins(5);
     let clock = MockClock::new();
 
     // Run the warn-and-continue loop with a deadline at 11 minutes so
@@ -504,7 +504,7 @@ async fn stall_window_fires_warning_after_five_minutes_without_aborting() {
     // future is `pending::<()>()`, which never completes; the deadline
     // breaks the test out via timeout, not via abort.
     let body = next_with_stall_warn(pending::<()>(), stall_window, &clock);
-    let result = clock.timeout(Duration::from_secs(11 * 60), body).await;
+    let result = clock.timeout(Duration::from_mins(11), body).await;
     assert!(
         result.is_err(),
         "stall watchdog must keep polling — a returned Ok means the inner future short-circuited",
@@ -534,12 +534,12 @@ async fn stall_warning_does_not_abort_when_event_eventually_arrives() {
     let buf: log_capture::Buffer = Arc::new(Mutex::new(Vec::new()));
     let _guard = log_capture::install(buf.clone());
 
-    let stall_window = Duration::from_secs(5 * 60);
+    let stall_window = Duration::from_mins(5);
     let clock = MockClock::new();
 
     let body = async {
         // Outlast one full stall window, then yield a real value.
-        tokio::time::sleep(Duration::from_secs(6 * 60)).await;
+        tokio::time::sleep(Duration::from_mins(6)).await;
         "session_complete"
     };
     let value = next_with_stall_warn(body, stall_window, &clock).await;

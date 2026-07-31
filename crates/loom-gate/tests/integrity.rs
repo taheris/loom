@@ -106,12 +106,6 @@ fn fixture_with_broken_target_per_tier_flags_each_one() {
 - four [judge](does-not-exist.md)
 ";
     let parsed = parse_content(&PathBuf::from("specs/broken.md"), md);
-    struct NoCommands;
-    impl CommandResolver for NoCommands {
-        fn resolves(&self, _: &str) -> bool {
-            false
-        }
-    }
     let findings = check_forward(
         &parsed.annotations,
         &[],
@@ -198,12 +192,6 @@ fn self_referential_judge_annotation_resolves_against_integrity_source_file() {
     let target = integrity_rs.to_string_lossy();
     let md = format!("## Success Criteria\n\n- Integrity gate impl exists [judge]({target})\n");
     let parsed = parse_content(&PathBuf::from("specs/gate.md"), &md);
-    struct NoCommands;
-    impl CommandResolver for NoCommands {
-        fn resolves(&self, _: &str) -> bool {
-            false
-        }
-    }
     let findings = check_forward(
         &parsed.annotations,
         &[],

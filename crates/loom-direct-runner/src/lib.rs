@@ -45,7 +45,7 @@ use tracing::{debug, info, warn};
 
 /// TTL the runner attaches to every user prompt so the underlying
 /// provider treats each turn as a cache breakpoint. Anthropic honours
-/// this directly; OpenAI / Gemini no-op the marker per
+/// this directly; `OpenAI` / Gemini no-op the marker per
 /// [`CacheControl`]'s contract.
 const PROMPT_CACHE_TTL: CacheTtl = CacheTtl::Hours1;
 
@@ -73,8 +73,9 @@ pub fn six_tools(ctx: ToolContext) -> Vec<Box<dyn Tool>> {
     ]
 }
 
-/// Construct the Conversation `loom-direct-runner` drives. The model is
-/// resolved from [`SpawnConfig::model_id`] via [`ModelId::from_str`]; when
+/// Construct the [`Conversation`] driven by `loom-direct-runner`.
+///
+/// The model is resolved from [`SpawnConfig::model_id`] via [`ModelId::from_str`]; when
 /// absent the runner falls back to [`DEFAULT_MODEL`]. The six sandbox-aware
 /// tools are registered in the canonical order, and observer settings come
 /// from [`SpawnConfig::observers`].
@@ -94,7 +95,7 @@ fn build_conversation_with_context(config: &SpawnConfig, ctx: ToolContext) -> Co
     conv
 }
 
-fn llm_doom_loop_config(config: &loom_driver::config::DoomLoopConfig) -> LlmDoomLoopConfig {
+const fn llm_doom_loop_config(config: &loom_driver::config::DoomLoopConfig) -> LlmDoomLoopConfig {
     LlmDoomLoopConfig {
         enabled: config.enabled,
         window: config.window,
@@ -103,7 +104,7 @@ fn llm_doom_loop_config(config: &loom_driver::config::DoomLoopConfig) -> LlmDoom
     }
 }
 
-fn llm_duplicate_result_config(
+const fn llm_duplicate_result_config(
     config: &loom_driver::config::DuplicateResultConfig,
 ) -> LlmDuplicateResultConfig {
     LlmDuplicateResultConfig {
@@ -131,10 +132,15 @@ fn configured_model(config: &SpawnConfig) -> ModelId {
     )
 }
 
-/// Resolve the configured model's schema, read the matching credential
-/// from the per-schema environment variable, and construct the typed
+/// Construct a client for the configured model schema.
+///
+/// Reads the matching credential from the per-schema environment variable and constructs the typed
 /// per-schema [`LlmClient`] the runner drives. Returned boxed so the
 /// runner does not branch on schema at the call site.
+///
+/// # Errors
+///
+/// Returns an error when the model schema is unsupported or its credential is unavailable.
 pub fn build_client_for_config(
     config: &SpawnConfig,
 ) -> Result<Box<dyn LlmClient + Send + Sync>, RunnerError> {
@@ -170,6 +176,10 @@ fn read_api_key(var: &str) -> Result<ApiKey, RunnerError> {
 /// Drive one Direct session against `client`. Reads JSONL commands from
 /// `stdin`, emits JSONL events to `stdout`, and lets commands received during
 /// an active turn drain before a requested completion.
+///
+/// # Errors
+///
+/// Returns an error when command decoding, model execution, or event output fails.
 pub async fn run_session<C, R, W>(
     client: C,
     config: SpawnConfig,
@@ -226,23 +236,23 @@ where
         }
         let input = match pending.pop_front() {
             Some(input) => input,
-            None => match lines.next_line().await.map_err(RunnerError::Io)? {
-                Some(line) => {
+            None => {
+                if let Some(line) = lines.next_line().await.map_err(RunnerError::Io)? {
                     let Some(input) = decode_input(&line) else {
                         continue;
                     };
                     input
-                }
-                None => {
+                } else {
                     input_closed = true;
                     continue;
                 }
-            },
+            }
         };
 
         match input {
-            PendingInput::Command(DirectCommand::Prompt { message })
-            | PendingInput::Command(DirectCommand::Steer { message }) => {
+            PendingInput::Command(
+                DirectCommand::Prompt { message } | DirectCommand::Steer { message },
+            ) => {
                 let pin_initial_prompt = initial_prompt_pending;
                 if pin_initial_prompt {
                     debug!(bytes = message.len(), "received prompt");
@@ -429,7 +439,9 @@ where
 }
 
 fn drain_driver_events(events: &Mutex<Vec<DriverEventPayload>>) -> Vec<DriverEventPayload> {
-    let mut guard = events.lock().unwrap_or_else(|poison| poison.into_inner());
+    let mut guard = events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::mem::take(&mut *guard)
 }
 
@@ -460,7 +472,7 @@ impl<C> UsageRecordingClient<C> {
     fn record(&self, event: DriverEventPayload) {
         self.driver_events
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(event);
     }
 }
@@ -478,10 +490,10 @@ impl<C: LlmClient + Sync> LlmClient for UsageRecordingClient<C> {
         self.record(event);
     }
 
-    fn complete<'a>(
-        &'a self,
+    fn complete(
+        &self,
         req: CompletionRequest,
-    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+    ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
         Box::pin(async move {
             let model = req.model.clone();
             let resp = self.inner.complete(req).await?;
@@ -496,12 +508,12 @@ impl<C: LlmClient + Sync> LlmClient for UsageRecordingClient<C> {
         })
     }
 
-    fn complete_structured_raw<'a>(
-        &'a self,
+    fn complete_structured_raw(
+        &self,
         req: CompletionRequest,
         schema: serde_json::Value,
         type_name: String,
-    ) -> BoxFuture<'a, Result<String, LlmError>> {
+    ) -> BoxFuture<'_, Result<String, LlmError>> {
         self.inner.complete_structured_raw(req, schema, type_name)
     }
 }
@@ -555,7 +567,7 @@ struct Emitter<W: AsyncWrite + Unpin> {
 }
 
 impl<W: AsyncWrite + Unpin> Emitter<W> {
-    fn new(writer: W) -> Self {
+    const fn new(writer: W) -> Self {
         Self { writer }
     }
 
@@ -660,7 +672,7 @@ mod tests {
             model_id: model_id.map(str::to_string),
             model: None,
             thinking_level: None,
-            observers: Default::default(),
+            observers: loom_driver::config::AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),
@@ -695,15 +707,15 @@ mod tests {
             true
         }
 
-        fn complete<'a>(
-            &'a self,
+        fn complete(
+            &self,
             _req: CompletionRequest,
-        ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+        ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
             Box::pin(async move {
                 let mut guard = self
                     .responses
                     .lock()
-                    .unwrap_or_else(|poison| poison.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if guard.is_empty() {
                     Err(LlmError::Provider {
                         message: "scripted client exhausted".into(),
@@ -714,12 +726,12 @@ mod tests {
             })
         }
 
-        fn complete_structured_raw<'a>(
-            &'a self,
+        fn complete_structured_raw(
+            &self,
             _req: CompletionRequest,
             _schema: serde_json::Value,
             _type_name: String,
-        ) -> BoxFuture<'a, Result<String, LlmError>> {
+        ) -> BoxFuture<'_, Result<String, LlmError>> {
             Box::pin(async move {
                 Err(LlmError::Provider {
                     message: "structured not used in runner tests".into(),
@@ -749,22 +761,22 @@ mod tests {
             true
         }
 
-        fn complete<'a>(
-            &'a self,
+        fn complete(
+            &self,
             _req: CompletionRequest,
-        ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+        ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
             Box::pin(async move {
                 self.started.notify_one();
                 std::future::pending().await
             })
         }
 
-        fn complete_structured_raw<'a>(
-            &'a self,
+        fn complete_structured_raw(
+            &self,
             _req: CompletionRequest,
             _schema: serde_json::Value,
             _type_name: String,
-        ) -> BoxFuture<'a, Result<String, LlmError>> {
+        ) -> BoxFuture<'_, Result<String, LlmError>> {
             Box::pin(async move {
                 Err(LlmError::Provider {
                     message: "structured not used in runner tests".into(),
@@ -1008,13 +1020,10 @@ mod tests {
         ))
         .expect("run_session completes");
 
-        let events: Vec<DirectEvent> = std::str::from_utf8(&stdout)
+        let mut iter = std::str::from_utf8(&stdout)
             .expect("utf-8")
             .lines()
-            .map(|l| serde_json::from_str(l).expect("parse line"))
-            .collect();
-
-        let mut iter = events.into_iter();
+            .map(|line| serde_json::from_str::<DirectEvent>(line).expect("parse line"));
         match iter.next().expect("tool_call") {
             DirectEvent::ToolCall {
                 id, tool, params, ..
@@ -1176,25 +1185,25 @@ mod tests {
             true
         }
 
-        fn complete<'a>(
-            &'a self,
+        fn complete(
+            &self,
             req: CompletionRequest,
-        ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+        ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
             Box::pin(async move {
                 self.captured
                     .lock()
-                    .unwrap_or_else(|poison| poison.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(req);
                 Ok(self.response.clone())
             })
         }
 
-        fn complete_structured_raw<'a>(
-            &'a self,
+        fn complete_structured_raw(
+            &self,
             _req: CompletionRequest,
             _schema: serde_json::Value,
             _type_name: String,
-        ) -> BoxFuture<'a, Result<String, LlmError>> {
+        ) -> BoxFuture<'_, Result<String, LlmError>> {
             Box::pin(async move {
                 Err(LlmError::Provider {
                     message: "structured not used in runner tests".into(),
@@ -1257,7 +1266,10 @@ mod tests {
         ))
         .expect("run_session completes");
 
-        let requests = captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let requests = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(
             requests.len(),
             4,
@@ -1394,7 +1406,10 @@ mod tests {
             .expect("runner task joins")
             .expect("run_session completes");
 
-        let requests = captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let requests = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(requests.len(), 2, "the steer must drive a second turn");
         assert_eq!(
             requests[1]
@@ -1430,8 +1445,10 @@ mod tests {
         ))
         .expect("run_session completes");
 
-        let requests: Vec<CompletionRequest> =
-            captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let requests: Vec<CompletionRequest> = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(
             requests.len(),
             2,
@@ -1463,7 +1480,7 @@ mod tests {
             "ephemeral 1h marker reaches the request: {first_cache:?}",
         );
 
-        let second_cached: Vec<&Message> = requests[1]
+        let second_cached = requests[1]
             .messages
             .iter()
             .filter(|m| {
@@ -1471,10 +1488,9 @@ mod tests {
                     .iter()
                     .any(|part| matches!(part.cache(), CacheControl::Ephemeral(_)))
             })
-            .collect();
+            .count();
         assert_eq!(
-            second_cached.len(),
-            2,
+            second_cached, 2,
             "the first prompt and steer become cache breakpoints: {:?}",
             requests[1].messages,
         );
@@ -1776,7 +1792,7 @@ mod tests {
     }
 
     /// `abort` halts the session immediately and emits a clean
-    /// session_complete — no remaining stdin frames are processed.
+    /// `session_complete` — no remaining stdin frames are processed.
     #[test]
     fn abort_command_terminates_loop_with_zero_exit() {
         let client = ScriptedClient::new(Vec::new());

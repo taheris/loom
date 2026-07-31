@@ -10,6 +10,10 @@ use loom_driver::state::CacheError;
 use thiserror::Error;
 
 /// Errors raised by the `loom todo` driver.
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
+)]
 #[derive(Debug, Display, Error)]
 pub enum TodoError {
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running

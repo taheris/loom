@@ -45,6 +45,10 @@ pub struct SkillPlan {
 }
 
 impl SkillPlan {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when workflow setup, execution, or state validation fails.
     pub fn resolve_from_workspace_sync(
         workspace: &Path,
         phase: &str,
@@ -61,6 +65,10 @@ impl SkillPlan {
         Self::resolve(workspace, &tracked_files, phase, profile, runtime, config)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when workflow setup, execution, or state validation fails.
     pub async fn resolve_from_workspace(
         workspace: &Path,
         phase: &str,
@@ -77,6 +85,10 @@ impl SkillPlan {
         Self::resolve(workspace, &tracked_files, phase, profile, runtime, config)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when workflow setup, execution, or state validation fails.
     pub fn resolve(
         workspace: &Path,
         tracked_files: &[PathBuf],
@@ -106,6 +118,10 @@ impl SkillPlan {
         })
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when workflow setup, execution, or state validation fails.
     pub fn materialize(
         &self,
         scratch_dir: &Path,
@@ -129,7 +145,7 @@ pub struct SkillSession {
     pub registered: RegisteredSkills,
 }
 
-pub fn disclosure_mode_for(
+pub const fn disclosure_mode_for(
     runtime: AgentRuntime,
     registration: SkillRegistration,
 ) -> DisclosureMode {
@@ -139,25 +155,25 @@ pub fn disclosure_mode_for(
     registration_policy(registration).disclosure_mode(native_registration(runtime))
 }
 
-pub fn disclosure_mode_from_policy(
+pub const fn disclosure_mode_from_policy(
     registration: SkillRegistration,
     native: NativeRegistration,
 ) -> DisclosureMode {
     registration_policy(registration).disclosure_mode(native)
 }
 
-fn native_registration(_runtime: AgentRuntime) -> NativeRegistration {
+const fn native_registration(_runtime: AgentRuntime) -> NativeRegistration {
     NativeRegistration::Unsupported
 }
 
-fn registration_policy(registration: SkillRegistration) -> RegistrationPolicy {
+const fn registration_policy(registration: SkillRegistration) -> RegistrationPolicy {
     match registration {
         SkillRegistration::Auto => RegistrationPolicy::Auto,
         SkillRegistration::Prompt => RegistrationPolicy::Prompt,
     }
 }
 
-fn path_display(display: SkillPathDisplay) -> PathDisplay {
+const fn path_display(display: SkillPathDisplay) -> PathDisplay {
     match display {
         SkillPathDisplay::Needed => PathDisplay::Needed,
         SkillPathDisplay::Always => PathDisplay::Always,
@@ -246,7 +262,7 @@ mod tests {
             model_id: None,
             model: None,
             thinking_level: None,
-            observers: Default::default(),
+            observers: loom_driver::config::AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),
@@ -338,9 +354,9 @@ mod tests {
         let native =
             RegisteredSkills::new(prompt.registered.registry().clone(), DisclosureMode::Native);
         let native_config = spawn_config(native, String::new(), scratch.path());
-        let error = match PiBackend::spawn_with_wrix_bin(&native_config, wrix.as_os_str()).await {
-            Ok(_) => panic!("declared native mode spawned without a registrar"),
-            Err(error) => error,
+        let Err(error) = PiBackend::spawn_with_wrix_bin(&native_config, wrix.as_os_str()).await
+        else {
+            panic!("declared native mode spawned without a registrar");
         };
         assert!(matches!(
             error,

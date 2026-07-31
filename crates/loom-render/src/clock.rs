@@ -15,9 +15,7 @@ pub trait Clock: Send + Sync + 'static {
     fn now(&self) -> Instant;
 }
 
-/// Default implementation backed by `std::time::Instant::now`. Tests in
-/// `loom-driver` substitute the driver-side `MockClock` (which also impls
-/// this trait); the renderer never knows which one is in flight.
+/// Default clock backed by [`Instant::now`].
 pub struct SystemClock;
 
 impl SystemClock {

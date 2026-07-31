@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// Re-pin payload for delivery via pi's `steer` command on
-/// `compaction_start`. Claude's compaction recovery flows through
+/// Re-pin payload for delivery via pi's `steer` command on `compaction_start`.
+///
+/// Claude's compaction recovery flows through
 /// [`ScratchSession`]'s `repin.sh`, which reads `prompt.txt` and
 /// `scratch.md` from the scratch dir at run time, so the on-disk
 /// envelope is written there — not here.

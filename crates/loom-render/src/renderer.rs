@@ -52,25 +52,41 @@ pub enum RenderMode {
     Raw,
 }
 
+/// Explicit output-format override used during render-mode selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderFormat {
+    Auto,
+    Plain,
+    Json,
+    Raw,
+}
+
+impl RenderFormat {
+    /// Resolve CLI format flags using raw-over-json-over-plain precedence.
+    pub const fn from_flags(plain: bool, json: bool, raw: bool) -> Self {
+        if raw {
+            Self::Raw
+        } else if json {
+            Self::Json
+        } else if plain {
+            Self::Plain
+        } else {
+            Self::Auto
+        }
+    }
+}
+
 impl RenderMode {
     /// Auto-select the right mode for a given (TTY, flags, env) state.
     /// Pure function — every input is a parameter so tests can pin
     /// behavior without env mutation.
-    pub fn select(
-        tty: bool,
-        no_color_env: bool,
-        flag_plain: bool,
-        flag_json: bool,
-        flag_raw: bool,
-    ) -> RenderMode {
-        if flag_raw {
-            RenderMode::Raw
-        } else if flag_json {
-            RenderMode::Json
-        } else if flag_plain || !tty || no_color_env {
-            RenderMode::Plain
-        } else {
-            RenderMode::Pretty
+    pub const fn select(tty: bool, no_color_env: bool, format: RenderFormat) -> RenderMode {
+        match format {
+            RenderFormat::Raw => RenderMode::Raw,
+            RenderFormat::Json => RenderMode::Json,
+            RenderFormat::Plain => RenderMode::Plain,
+            RenderFormat::Auto if !tty || no_color_env => RenderMode::Plain,
+            RenderFormat::Auto => RenderMode::Pretty,
         }
     }
 }
@@ -172,7 +188,7 @@ fn driver_event_is_warning(payload: &Value) -> bool {
         .is_some_and(|severity| severity == "warning")
 }
 
-fn input_kind_label(kind: InputKind) -> &'static str {
+const fn input_kind_label(kind: InputKind) -> &'static str {
     match kind {
         InputKind::InitialPrompt => "initial_prompt",
         InputKind::FollowUp => "follow_up",
@@ -184,14 +200,14 @@ fn input_kind_label(kind: InputKind) -> &'static str {
 const DIAGNOSTIC_JSON_MAX_CHARS: usize = 240;
 const DIAGNOSTIC_STRING_MAX_CHARS: usize = 80;
 
-fn source_label(source: loom_events::Source) -> &'static str {
+const fn source_label(source: loom_events::Source) -> &'static str {
     match source {
         loom_events::Source::Agent => "agent",
         loom_events::Source::Driver => "driver",
     }
 }
 
-fn event_kind(event: &AgentEvent) -> &'static str {
+const fn event_kind(event: &AgentEvent) -> &'static str {
     match event {
         AgentEvent::AgentStart { .. } => "agent_start",
         AgentEvent::AgentInput { .. } => "agent_input",
@@ -215,7 +231,7 @@ fn event_kind(event: &AgentEvent) -> &'static str {
     }
 }
 
-fn event_is_streaming_delta(event: &AgentEvent) -> bool {
+const fn event_is_streaming_delta(event: &AgentEvent) -> bool {
     matches!(
         event,
         AgentEvent::TextDelta { .. }
@@ -358,7 +374,7 @@ fn diagnostic_metadata_line(event: &AgentEvent) -> String {
     format!("[event {}]", parts.join(" "))
 }
 
-fn compaction_reason_label(reason: loom_events::event::CompactionReason) -> &'static str {
+const fn compaction_reason_label(reason: loom_events::event::CompactionReason) -> &'static str {
     match reason {
         loom_events::event::CompactionReason::ContextLimit => "context_limit",
         loom_events::event::CompactionReason::UserRequested => "user_requested",
@@ -488,6 +504,23 @@ struct PendingToolCall {
     ts_ms: i64,
 }
 
+struct DisplayFlags {
+    parallel: bool,
+    color: bool,
+    indicator_enabled: bool,
+}
+
+struct StreamFlags {
+    text_needs_newline: bool,
+    thinking_open: bool,
+    thinking_needs_newline: bool,
+}
+
+struct LifecycleFlags {
+    header_printed: bool,
+    closed: bool,
+}
+
 /// Per-bead terminal renderer.
 ///
 /// One renderer is constructed per bead spawn. The driver creates it via
@@ -496,12 +529,12 @@ struct PendingToolCall {
 /// [`finish`]. With `--parallel N > 1`, the renderer is constructed in
 /// `Parallel` mode so tool-call lines carry a `[bead-id]` prefix for
 /// attribution.
+#[must_use]
 pub struct TerminalRenderer {
     out: Box<dyn Write + Send>,
     mode: RenderMode,
     bead_id: BeadId,
-    parallel: bool,
-    color: bool,
+    display: DisplayFlags,
     clock: Arc<dyn Clock>,
     started: Instant,
     tool_count: u32,
@@ -541,7 +574,6 @@ pub struct TerminalRenderer {
     /// in parallel (multiple `\r` regions don't compose), and when
     /// the writer is known to be non-TTY. The CLI surface decides this
     /// and wires it through `RenderMode::select`.
-    indicator_enabled: bool,
     /// Byte budget for visible tool-output content. Live Direct sessions and
     /// replay load this from `[direct].max_inline_bytes`.
     tool_body_limit: usize,
@@ -555,11 +587,8 @@ pub struct TerminalRenderer {
     /// in production — each emission queries crossterm so SIGWINCH
     /// resizes take effect immediately.
     term_width_override: Option<usize>,
-    text_needs_newline: bool,
-    thinking_open: bool,
-    thinking_needs_newline: bool,
-    header_printed: bool,
-    closed: bool,
+    stream: StreamFlags,
+    lifecycle: LifecycleFlags,
 }
 
 impl TerminalRenderer {
@@ -624,8 +653,11 @@ impl TerminalRenderer {
             out: Box::new(out),
             mode,
             bead_id,
-            parallel,
-            color,
+            display: DisplayFlags {
+                parallel,
+                color,
+                indicator_enabled: color && !parallel && live,
+            },
             clock,
             started,
             tool_count: 0,
@@ -641,15 +673,18 @@ impl TerminalRenderer {
             // something to spin while we wait for. Tests pass
             // `color=false` to disable the indicator so captured-buffer
             // assertions stay stable.
-            indicator_enabled: color && !parallel && live,
             tool_body_limit: tool_body::BODY_CAP_BYTES,
             osc8: tool_body::Osc8Context::disabled(),
             term_width_override: None,
-            text_needs_newline: false,
-            thinking_open: false,
-            thinking_needs_newline: false,
-            header_printed: false,
-            closed: false,
+            stream: StreamFlags {
+                text_needs_newline: false,
+                thinking_open: false,
+                thinking_needs_newline: false,
+            },
+            lifecycle: LifecycleFlags {
+                header_printed: false,
+                closed: false,
+            },
         }
     }
 
@@ -658,7 +693,7 @@ impl TerminalRenderer {
     /// every emission so the layout adapts to SIGWINCH. Tests use it to
     /// reproduce a narrow terminal (e.g. 40 columns) without spawning a
     /// real pty.
-    pub fn with_term_width(mut self, width: usize) -> Self {
+    pub const fn with_term_width(mut self, width: usize) -> Self {
         self.term_width_override = Some(width);
         self
     }
@@ -670,7 +705,7 @@ impl TerminalRenderer {
         self.term_width_override.unwrap_or_else(detect_term_width)
     }
 
-    fn diagnostic_metadata_enabled(&self) -> bool {
+    const fn diagnostic_metadata_enabled(&self) -> bool {
         matches!(self.mode, RenderMode::Verbose | RenderMode::VerbosePlain)
     }
 
@@ -690,7 +725,7 @@ impl TerminalRenderer {
     /// adds the bead-id bracket for cross-bead attribution; otherwise
     /// just the two-space base indent.
     fn prefix_str(&self) -> String {
-        if self.parallel {
+        if self.display.parallel {
             format!("  [{}] ", self.bead_id.as_str())
         } else {
             "  ".to_string()
@@ -698,7 +733,7 @@ impl TerminalRenderer {
     }
 
     /// Set the raw UTF-8 byte budget used for inline tool-output content.
-    pub fn with_tool_body_limit(mut self, max_inline_bytes: usize) -> Self {
+    pub const fn with_tool_body_limit(mut self, max_inline_bytes: usize) -> Self {
         self.tool_body_limit = max_inline_bytes;
         self
     }
@@ -714,21 +749,21 @@ impl TerminalRenderer {
     }
 
     fn close_text_line(&mut self) -> io::Result<()> {
-        if self.text_needs_newline {
+        if self.stream.text_needs_newline {
             self.out.write_all(b"\n")?;
             self.out.flush()?;
         }
-        self.text_needs_newline = false;
+        self.stream.text_needs_newline = false;
         Ok(())
     }
 
     fn close_thinking_line(&mut self) -> io::Result<()> {
-        if self.thinking_needs_newline {
+        if self.stream.thinking_needs_newline {
             self.out.write_all(b"\n")?;
             self.out.flush()?;
         }
-        self.thinking_needs_newline = false;
-        self.thinking_open = false;
+        self.stream.thinking_needs_newline = false;
+        self.stream.thinking_open = false;
         Ok(())
     }
 
@@ -780,14 +815,14 @@ impl TerminalRenderer {
     fn render_text_delta(&mut self, text: &str) -> io::Result<()> {
         self.close_thinking_line()?;
         self.close_in_flight("…")?;
-        if self.parallel {
+        if self.display.parallel {
             let prefix = self.prefix_str();
-            self.text_needs_newline =
-                self.write_prefixed_fragment(text, &prefix, self.text_needs_newline, None)?;
+            self.stream.text_needs_newline =
+                self.write_prefixed_fragment(text, &prefix, self.stream.text_needs_newline, None)?;
         } else {
             self.out.write_all(text.as_bytes())?;
             if !text.is_empty() {
-                self.text_needs_newline = !text.ends_with('\n');
+                self.stream.text_needs_newline = !text.ends_with('\n');
             }
         }
         self.out.flush()?;
@@ -797,33 +832,37 @@ impl TerminalRenderer {
     fn render_thinking_delta(&mut self, text: &str) -> io::Result<()> {
         self.close_text_line()?;
         self.close_in_flight("…")?;
-        if self.parallel {
+        if self.display.parallel {
             let prefix = format!("{}thinking: ", self.prefix_str());
-            let style = self.color.then_some((ANSI_DIM, ANSI_RESET));
-            self.thinking_needs_newline =
-                self.write_prefixed_fragment(text, &prefix, self.thinking_needs_newline, style)?;
-            self.thinking_open = self.thinking_needs_newline;
+            let style = self.display.color.then_some((ANSI_DIM, ANSI_RESET));
+            self.stream.thinking_needs_newline = self.write_prefixed_fragment(
+                text,
+                &prefix,
+                self.stream.thinking_needs_newline,
+                style,
+            )?;
+            self.stream.thinking_open = self.stream.thinking_needs_newline;
             self.out.flush()?;
             return Ok(());
         }
-        if !self.thinking_open {
+        if !self.stream.thinking_open {
             let prefix = "  thinking: ";
-            if self.color {
+            if self.display.color {
                 self.out.write_all(ANSI_DIM.as_bytes())?;
             }
             self.out.write_all(prefix.as_bytes())?;
-            self.thinking_open = true;
-        } else if self.color {
+            self.stream.thinking_open = true;
+        } else if self.display.color {
             self.out.write_all(ANSI_DIM.as_bytes())?;
         }
         self.out.write_all(text.as_bytes())?;
-        if self.color {
+        if self.display.color {
             self.out.write_all(ANSI_RESET.as_bytes())?;
         }
         self.out.flush()?;
-        self.thinking_needs_newline = !text.is_empty() && !text.ends_with('\n');
-        if !self.thinking_needs_newline {
-            self.thinking_open = false;
+        self.stream.thinking_needs_newline = !text.is_empty() && !text.ends_with('\n');
+        if !self.stream.thinking_needs_newline {
+            self.stream.thinking_open = false;
         }
         Ok(())
     }
@@ -834,6 +873,10 @@ impl TerminalRenderer {
     ///
     /// Atomically printed (single write call) so parallel renderers do not
     /// interleave the header itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when writing or flushing the header fails.
     pub fn header(&mut self, title: &str, profile: &ProfileName) -> io::Result<()> {
         let line = format!(
             "▸ {id}  {title}    [profile:{profile}]\n",
@@ -843,7 +886,7 @@ impl TerminalRenderer {
         );
         self.out.write_all(line.as_bytes())?;
         self.out.flush()?;
-        self.header_printed = true;
+        self.lifecycle.header_printed = true;
         Ok(())
     }
 
@@ -853,6 +896,10 @@ impl TerminalRenderer {
     /// assistant prose, exposed thinking, tool blocks, and driver rows.
     /// Diagnostic modes add event metadata without widening transcript
     /// visibility or tool-output caps.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when rendering or flushing any event output fails.
     pub fn render_event(&mut self, event: &AgentEvent) -> io::Result<()> {
         self.render_diagnostic_metadata(event)?;
         match event {
@@ -920,15 +967,15 @@ impl TerminalRenderer {
                         ts_ms: envelope.ts_ms,
                     },
                 );
-                let use_indicator = self.indicator_enabled
+                let use_indicator = self.display.indicator_enabled
                     && parent_tool_call_id.is_none()
                     && !self.diagnostic_metadata_enabled();
+                let prefix = self.prefix_str();
                 if use_indicator {
                     // Decide between the single-line indicator (summary
                     // shares its row with the right-edge column) and the
                     // buffered overflow case (right-edge column gets its
                     // own row at result time, summary wraps below).
-                    let prefix = self.prefix_str();
                     let single_width = display_width(&prefix)
                         + display_width(&indent)
                         + display_width(&summary)
@@ -952,7 +999,6 @@ impl TerminalRenderer {
                             Some((id.clone(), self.clock.now(), summary, indent));
                     }
                 } else {
-                    let prefix = self.prefix_str();
                     let line = format!("{prefix}{indent}{summary}\n");
                     self.out.write_all(line.as_bytes())?;
                     self.out.flush()?;
@@ -982,7 +1028,7 @@ impl TerminalRenderer {
                 let pair_duration = pending
                     .as_ref()
                     .map(|p| ts_ms_delta(p.ts_ms, envelope.ts_ms));
-                let tool_name = pending.as_ref().map(|p| p.tool.as_str()).unwrap_or("");
+                let tool_name = pending.as_ref().map_or("", |p| p.tool.as_str());
                 let glyph = if *is_error { "✗" } else { "✓" };
                 if matches_running {
                     self.finalize_running_with_glyph_dur(glyph, pair_duration)?;
@@ -1074,7 +1120,7 @@ impl TerminalRenderer {
             AgentEvent::Error { message, .. } => {
                 self.close_stream_lines()?;
                 self.close_in_flight("✗")?;
-                let line = if self.parallel {
+                let line = if self.display.parallel {
                     format!("  [{}] error: {message}\n", self.bead_id.as_str())
                 } else {
                     format!("  error: {message}\n")
@@ -1093,12 +1139,12 @@ impl TerminalRenderer {
                 let kind_wire = driver_kind.as_wire();
                 let warning = driver_event_is_warning(payload);
                 let glyph = if warning { "⚠" } else { "→" };
-                let glyph = if warning && self.color {
+                let glyph = if warning && self.display.color {
                     format!("{ANSI_YELLOW}{glyph}{ANSI_RESET}")
                 } else {
                     glyph.to_string()
                 };
-                let line = if self.parallel {
+                let line = if self.display.parallel {
                     format!(
                         "  [{}] {glyph} {kind_wire}: {summary}\n",
                         self.bead_id.as_str(),
@@ -1116,7 +1162,7 @@ impl TerminalRenderer {
 
     /// Close the in-place running line — if one is open — with a final
     /// `\r` + clear-to-EOL + `<summary>   <glyph> Ns\n` line. `glyph` is
-    /// `✓` on clean ToolResult, `✗` on errored ToolResult, `…` when an
+    /// `✓` on clean `ToolResult`, `✗` on errored `ToolResult`, `…` when an
     /// intervening event preempted the result. The caller may pass a
     /// duration derived from `ts_ms` deltas instead of falling back to
     /// the local clock; `loom logs` replay drives this with the event
@@ -1170,7 +1216,7 @@ impl TerminalRenderer {
         } else {
             let depth = self.indent_by_tool.get(id).copied().unwrap_or(0);
             let indent: String = "  ".repeat(depth + 1);
-            if self.parallel {
+            if self.display.parallel {
                 format!("  [{}] {indent}{glyph} {secs:.1}s\n", self.bead_id.as_str())
             } else {
                 format!("  {indent}{glyph} {secs:.1}s\n")
@@ -1184,7 +1230,7 @@ impl TerminalRenderer {
         let depth = self.indent_by_tool.get(id).copied().unwrap_or(0);
         let indent: String = "  ".repeat(depth + 1);
         for body_line in body.lines() {
-            let line = if self.parallel {
+            let line = if self.display.parallel {
                 format!("  [{}] {indent}{body_line}\n", self.bead_id.as_str())
             } else {
                 format!("{indent}{body_line}\n")
@@ -1318,6 +1364,11 @@ impl TerminalRenderer {
     ///
     /// Status color is applied to the leading glyph + word only when
     /// `color = true`; the rest of the line is plain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when closing active output or writing the final
+    /// status line fails.
     pub fn finish(mut self, outcome: BeadOutcome) -> io::Result<()> {
         let elapsed = self.clock.now().saturating_duration_since(self.started);
         self.write_finish(outcome, elapsed)
@@ -1339,7 +1390,7 @@ impl TerminalRenderer {
             BeadOutcome::Failed => ("✗", "failed", ANSI_RED),
             BeadOutcome::Retry => ("↻", "retry", ANSI_YELLOW),
         };
-        let prefix = if self.color {
+        let prefix = if self.display.color {
             format!("{color}{glyph} {word}{ANSI_RESET}")
         } else {
             format!("{glyph} {word}")
@@ -1349,25 +1400,25 @@ impl TerminalRenderer {
             tools = self.tool_count,
             secs = elapsed.as_secs(),
         );
-        let line = if self.parallel {
+        let line = if self.display.parallel {
             format!("[{}] {prefix}{body}", self.bead_id.as_str())
         } else {
             format!("  {prefix}{body}")
         };
         self.out.write_all(line.as_bytes())?;
         self.out.flush()?;
-        self.closed = true;
+        self.lifecycle.closed = true;
         Ok(())
     }
 
     /// Number of `ToolCall` events observed since construction.
-    pub fn tool_count(&self) -> u32 {
+    pub const fn tool_count(&self) -> u32 {
         self.tool_count
     }
 
     /// Whether the header line has been printed.
-    pub fn header_printed(&self) -> bool {
-        self.header_printed
+    pub const fn header_printed(&self) -> bool {
+        self.lifecycle.header_printed
     }
 }
 
@@ -1377,7 +1428,7 @@ impl Drop for TerminalRenderer {
     /// region. The explicit cleanup contract still lives in
     /// [`finish`] — Drop is the safety net.
     fn drop(&mut self) {
-        if self.text_needs_newline || self.thinking_needs_newline {
+        if self.stream.text_needs_newline || self.stream.thinking_needs_newline {
             let _ = self.close_stream_lines();
         }
         if self.running.is_some() || self.buffered_overflow.is_some() {
@@ -1386,10 +1437,7 @@ impl Drop for TerminalRenderer {
     }
 }
 
-/// Output target for one bead's event stream. Four concrete impls
-/// (Pretty/Plain/Json/Raw) sit behind this trait; selection happens
-/// once per spawn via [`RenderMode::select`] and the chosen impl is
-/// handed to [`crate::LogSink`] as `Box<dyn Renderer>`.
+/// Output target for one bead's event stream.
 ///
 /// `loom loop` and `loom logs` share these impls — the `live` /
 /// replay distinction is encoded in how they feed events to the
@@ -1400,16 +1448,28 @@ pub trait Renderer: Send {
     /// Optional per-bead header — `Pretty`/`Plain` print it; `Json`/`Raw`
     /// suppress (header is chrome, not data). Default impl is a no-op
     /// so simpler impls don't have to override.
+    ///
+    /// # Errors
+    ///
+    /// Implementations return an I/O error when header output fails.
     fn header(&mut self, _title: &str, _profile: &ProfileName) -> io::Result<()> {
         Ok(())
     }
 
     /// Render one event. The renderer owns its `Write` sink.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when event output fails.
     fn render_event(&mut self, event: &AgentEvent) -> io::Result<()>;
 
     /// Close the renderer with the bead outcome. `&mut self` (not
     /// consuming) so trait-object call through `Box<dyn Renderer>`
     /// stays straightforward without `Box<Self>` indirection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when final output or flushing fails.
     fn finish(&mut self, outcome: BeadOutcome, elapsed: Duration) -> io::Result<()>;
 }
 
@@ -1425,12 +1485,7 @@ impl Renderer for TerminalRenderer {
     }
 }
 
-/// `Pretty` mode — colored, glyph-decorated output for an interactive
-/// terminal. Thin wrapper that delegates to the existing
-/// [`TerminalRenderer`] with `color = true`. `live` distinguishes
-/// `loom loop` (events arrive in real time, in-place indicator spins)
-/// from `loom logs` (replay; indicator suppressed, durations from
-/// `ts_ms` deltas).
+/// Colored interactive output backed by [`TerminalRenderer`].
 pub struct PrettyRenderer {
     inner: TerminalRenderer,
 }
@@ -1523,8 +1578,7 @@ impl Renderer for JsonRenderer {
     }
 }
 
-/// `Raw` mode — one compact JSON line per event. Used by
-/// `loom logs --raw` to reproduce the on-disk shape exactly.
+/// One compact JSON line per event, matching the on-disk shape.
 pub struct RawRenderer {
     out: Box<dyn Write + Send>,
 }
@@ -1548,12 +1602,7 @@ impl Renderer for RawRenderer {
     }
 }
 
-/// Construct the right [`Renderer`] for a given mode. Production
-/// callers in `loom loop` / `loom logs` pass a `Box<dyn Write + Send>`
-/// (typically `io::stdout()` or a buffered wrapper). `live` is `true`
-/// for `loom loop` (in-place indicator + wall-clock fallback) and
-/// `false` for `loom logs` replay (indicator suppressed, durations
-/// from `ts_ms` deltas).
+/// Construct the [`Renderer`] selected by `mode`.
 pub fn build_renderer(
     mode: RenderMode,
     out: Box<dyn Write + Send>,
@@ -1624,6 +1673,24 @@ mod tests {
         }
     }
 
+    struct CaptureSink {
+        inner: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl Write for CaptureSink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.inner
+                .lock()
+                .map_err(|_| io::Error::other("poisoned"))?
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     fn capture<F>(mode: RenderMode, parallel: bool, color: bool, f: F) -> String
     where
         F: FnOnce(&mut TerminalRenderer),
@@ -1644,23 +1711,8 @@ mod tests {
         let buf: Vec<u8> = Vec::new();
         let cell = std::sync::Arc::new(std::sync::Mutex::new(buf));
         let cell_for_writer = cell.clone();
-        struct Sink {
-            inner: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
-        }
-        impl Write for Sink {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                self.inner
-                    .lock()
-                    .map_err(|_| io::Error::other("poisoned"))?
-                    .extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let mut r = TerminalRenderer::new(
-            Sink {
+            CaptureSink {
                 inner: cell_for_writer,
             },
             mode,
@@ -1840,8 +1892,8 @@ mod tests {
         });
         assert!(out.contains("Edit"), "{out:?}");
         assert!(out.contains("src/lib.rs"), "{out:?}");
-        assert!(out.contains("+"), "{out:?}");
-        assert!(out.contains("-"), "{out:?}");
+        assert!(out.contains('+'), "{out:?}");
+        assert!(out.contains('-'), "{out:?}");
         assert!(out.contains("diff"), "{out:?}");
     }
 
@@ -1934,7 +1986,7 @@ mod tests {
         assert!(out.contains("result body"), "{out:?}");
     }
 
-    /// Default mode renders the Bash body when `exit != 0` (is_error=true),
+    /// Default mode renders the Bash body when `exit != 0` (`is_error=true`),
     /// capped with the standard recovery hint when the output exceeds
     /// the byte budget.
     #[test]
@@ -2032,23 +2084,8 @@ mod tests {
         let buf: Vec<u8> = Vec::new();
         let cell = std::sync::Arc::new(std::sync::Mutex::new(buf));
         let cell_for_writer = cell.clone();
-        struct Sink {
-            inner: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
-        }
-        impl Write for Sink {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                self.inner
-                    .lock()
-                    .map_err(|_| io::Error::other("poisoned"))?
-                    .extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let mut r = TerminalRenderer::new(
-            Sink {
+            CaptureSink {
                 inner: cell_for_writer,
             },
             RenderMode::Default,
@@ -2199,7 +2236,7 @@ mod tests {
     #[test]
     fn pretty_selected_on_tty() {
         assert_eq!(
-            RenderMode::select(true, false, false, false, false),
+            RenderMode::select(true, false, RenderFormat::Auto),
             RenderMode::Pretty,
         );
     }
@@ -2208,7 +2245,7 @@ mod tests {
     #[test]
     fn plain_selected_on_non_tty() {
         assert_eq!(
-            RenderMode::select(false, false, false, false, false),
+            RenderMode::select(false, false, RenderFormat::Auto),
             RenderMode::Plain,
         );
     }
@@ -2217,7 +2254,7 @@ mod tests {
     #[test]
     fn plain_selected_when_no_color_env() {
         assert_eq!(
-            RenderMode::select(true, true, false, false, false),
+            RenderMode::select(true, true, RenderFormat::Auto),
             RenderMode::Plain,
         );
     }
@@ -2226,7 +2263,7 @@ mod tests {
     #[test]
     fn json_flag_wins_over_tty() {
         assert_eq!(
-            RenderMode::select(true, false, false, true, false),
+            RenderMode::select(true, false, RenderFormat::Json),
             RenderMode::Json,
         );
     }
@@ -2237,7 +2274,7 @@ mod tests {
     #[test]
     fn raw_flag_wins_over_json() {
         assert_eq!(
-            RenderMode::select(true, false, false, true, true),
+            RenderMode::select(true, false, RenderFormat::Raw),
             RenderMode::Raw,
         );
     }
@@ -2262,7 +2299,7 @@ mod tests {
 
     /// H6 — when a `ToolCall` carries `parent_tool_call_id = Some(parent)`,
     /// the renderer prints it indented by 2 spaces beyond the parent.
-    /// Tracks indent depth per tool_call_id so nested chains layer
+    /// Tracks indent depth per `tool_call_id` so nested chains layer
     /// correctly (Task → Read → Edit etc.).
     #[test]
     fn task_subagent_nesting_indents_nested_tool_calls() {
@@ -2836,7 +2873,7 @@ mod tests {
 
     /// `driver_event` variants render with the `→` arrow glyph followed by
     /// `<driver_kind>: <summary>`. Pins the rendered shape for every
-    /// known driver_kind the spec enumerates.
+    /// known `driver_kind` the spec enumerates.
     #[test]
     fn driver_event_renders_arrow_glyph() {
         for kind in [
@@ -2890,7 +2927,7 @@ mod tests {
     /// Unknown `driver_kind` strings — new event types added without
     /// schema bumps — render as the same generic `→ <kind>: <summary>`
     /// fallback as known kinds. Renderer never errors on an unrecognized
-    /// driver_kind.
+    /// `driver_kind`.
     #[test]
     fn unknown_driver_kind_renders_generic_arrow_summary() {
         let out = capture(RenderMode::Default, false, false, |r| {
@@ -3008,22 +3045,7 @@ mod tests {
         let buf: Vec<u8> = Vec::new();
         let cell = std::sync::Arc::new(std::sync::Mutex::new(buf));
         let cell_for_writer = cell.clone();
-        struct Sink {
-            inner: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
-        }
-        impl Write for Sink {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                self.inner
-                    .lock()
-                    .map_err(|_| io::Error::other("poisoned"))?
-                    .extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let sink = Sink {
+        let sink = CaptureSink {
             inner: cell_for_writer,
         };
         let renderer = if live {
@@ -3138,8 +3160,8 @@ mod tests {
     }
 
     /// Every per-tool summary cell goes through the same overflow path.
-    /// Walk Read / Edit / Write / Grep / Glob / Bash / WebFetch /
-    /// WebSearch / Task / a custom unknown tool and pin that the
+    /// Walk Read / Edit / Write / Grep / Glob / Bash / `WebFetch` /
+    /// `WebSearch` / Task / a custom unknown tool and pin that the
     /// right-edge column survives intact when the left content blows
     /// past the terminal width.
     #[test]

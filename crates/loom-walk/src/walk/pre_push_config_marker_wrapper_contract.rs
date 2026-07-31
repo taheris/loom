@@ -502,7 +502,7 @@ fn parse_hooks(source: &str) -> Vec<Hook> {
             if let Some(hook) = current.take() {
                 hooks.push(hook);
             }
-            repo = unquote(value.trim()).to_owned();
+            unquote(value.trim()).clone_into(&mut repo);
             list_field = None;
             continue;
         }
@@ -559,7 +559,7 @@ fn parse_hooks(source: &str) -> Vec<Hook> {
     hooks
 }
 
-fn list_for(hook: &mut Hook, field: ListField) -> &mut Vec<String> {
+const fn list_for(hook: &mut Hook, field: ListField) -> &mut Vec<String> {
     match field {
         ListField::Stages => &mut hook.stages,
         ListField::Types => &mut hook.types,

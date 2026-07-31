@@ -12,8 +12,9 @@ pub struct RetentionReport {
     pub skipped_recent: u32,
 }
 
-/// Walk every regular file under `logs_root` once and delete any whose mtime
-/// is older than `retention_days` days. Best-effort: per-file failures are
+/// Delete log files older than `retention_days`.
+///
+/// Walks every regular file under `logs_root` once. Best-effort: per-file failures are
 /// logged at `debug!` and accumulated into [`RetentionReport::failed`] but do
 /// not abort the sweep.
 ///
@@ -44,17 +45,14 @@ pub fn sweep_retention_at(
     if !logs_root.exists() {
         return report;
     }
-    let cutoff = now.checked_sub(Duration::from_secs(retention_days as u64 * 86_400));
-    let cutoff = match cutoff {
-        Some(c) => c,
-        None => {
-            debug!(
-                target: "loom_driver::logging::retention",
-                retention_days,
-                "cutoff would precede UNIX epoch — skipping sweep"
-            );
-            return report;
-        }
+    let cutoff = now.checked_sub(Duration::from_secs(u64::from(retention_days) * 86_400));
+    let Some(cutoff) = cutoff else {
+        debug!(
+            target: "loom_driver::logging::retention",
+            retention_days,
+            "cutoff would precede UNIX epoch — skipping sweep"
+        );
+        return report;
     };
     walk_and_sweep(logs_root, cutoff, &mut report);
     debug!(
@@ -147,9 +145,9 @@ mod tests {
     #[test]
     fn deletes_files_older_than_cutoff() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let old = now - Duration::from_secs(20 * 86_400);
-        let recent = now - Duration::from_secs(2 * 86_400);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
+        let old = now - Duration::from_hours(480);
+        let recent = now - Duration::from_hours(48);
 
         let p_old = dir.path().join("alpha/lm-1-old.jsonl");
         let p_recent = dir.path().join("alpha/lm-2-new.jsonl");
@@ -168,8 +166,8 @@ mod tests {
     #[test]
     fn zero_disables_sweep() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let very_old = now - Duration::from_secs(365 * 86_400);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
+        let very_old = now - Duration::from_hours(8760);
         let p = dir.path().join("a/lm-1.jsonl");
         touch(&p, "ancient");
         set_mtime(&p, very_old);
@@ -183,7 +181,7 @@ mod tests {
     fn missing_root_is_no_op() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("does/not/exist");
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
         let report = sweep_retention_at(&missing, 14, now);
         assert!(report.deleted.is_empty());
         assert!(report.failed.is_empty());
@@ -192,8 +190,8 @@ mod tests {
     #[test]
     fn descends_into_nested_spec_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let old = now - Duration::from_secs(60 * 86_400);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
+        let old = now - Duration::from_hours(1440);
         for label in ["alpha", "beta", "gamma"] {
             let p = dir.path().join(format!("{label}/lm-{label}.jsonl"));
             touch(&p, "x");

@@ -68,6 +68,10 @@ pub struct PlanReport {
 /// 3. Spawn `wrix run` with inherited stdio; native Pi receives the existing
 ///    scratch `prompt.txt` by file reference, while Claude receives the body.
 /// 4. Wait for the interactive child to exit.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn run(workspace: &Path, opts: PlanOpts) -> Result<PlanReport, PlanError> {
     run_with_timeout(workspace, opts, DEFAULT_LOCK_TIMEOUT)
 }
@@ -115,11 +119,11 @@ pub fn run_with_timeout(
         spec_index,
         companion_paths: companion_paths.clone(),
         scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
-        spec_conventions: cfg.spec_conventions.clone(),
+        spec_conventions: cfg.spec_conventions,
         skill_index: skill_session.skill_index,
     })?;
 
-    let banner = format!("loom plan @ {}", key);
+    let banner = format!("loom plan @ {key}");
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)
         .map_err(|source| PlanError::Spawn { source })?;
     let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;

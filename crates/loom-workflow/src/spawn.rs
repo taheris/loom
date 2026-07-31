@@ -59,7 +59,7 @@ pub fn build_spawn_config(
         model_id: None,
         model: None,
         thinking_level: None,
-        observers: Default::default(),
+        observers: loom_driver::config::AgentObserversConfig::default(),
         output_limits: None,
         shutdown_grace: None,
         denied_tools: Vec::new(),

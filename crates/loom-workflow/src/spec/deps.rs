@@ -63,10 +63,16 @@ const TOOLS: &[(&str, &str)] = &[
 ];
 
 /// Walk `annotations` and return the set of nixpkgs names referenced by
-/// each tier's target. File-shaped `[test]`/`[judge]` targets are read
+/// each tier's target.
+///
+/// File-shaped `[test]`/`[judge]` targets are read
 /// from disk; `[check]`/`[system]` command strings are scanned in-place.
 /// Files that do not exist on disk are silently skipped so missing tests
 /// don't poison the sweep.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn collect_deps(
     workspace: &Path,
     annotations: &[Annotation],
@@ -106,10 +112,12 @@ pub fn collect_deps(
 }
 
 /// If `target` is file-shaped (contains a `/` or has a file extension on
-/// the part before any `#`/`::` fragment), return the bare path. Returns
+/// the part before any `#`/`::` fragment), return the bare path.
+///
+/// Returns
 /// `None` for Rust-style paths (`crate::a::b`) and other non-file shapes.
 pub fn target_file_path(target: &str) -> Option<PathBuf> {
-    let head = target.split_once('#').map(|(h, _)| h).unwrap_or(target);
+    let head = target.split_once('#').map_or(target, |(h, _)| h);
     let head = match head.split_once("::") {
         Some((h, _)) if path_shaped(h) => h,
         Some(_) => return None,
@@ -179,11 +187,11 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
 }
 
-fn is_command_boundary_before(b: u8) -> bool {
+const fn is_command_boundary_before(b: u8) -> bool {
     matches!(b, b'\n' | b' ' | b'\t' | b'|' | b';' | b'&' | b'(')
 }
 
-fn is_command_boundary_after(b: u8) -> bool {
+const fn is_command_boundary_after(b: u8) -> bool {
     matches!(b, b'\n' | b' ' | b'\t' | b'|' | b';' | b'&' | b')')
 }
 

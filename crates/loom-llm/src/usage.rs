@@ -1,6 +1,6 @@
 //! `TokenUsage` — per-call token accounting carried on every
 //! `CompletionResponse` and fanned out as a `DriverKind::TokenUsage`
-//! `AgentEvent` for SaaS billing pipelines.
+//! `AgentEvent` for `SaaS` billing pipelines.
 
 /// Token accounting for one `complete*` call. Cache fields surface
 /// prompt-cache reads and writes separately so consumers can make

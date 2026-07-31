@@ -47,9 +47,7 @@ pub enum LoopOutcome {
     ReturnLast,
 }
 
-/// Byte budget for a request assembled from a [`Conversation`]. Pinned
-/// history is retained even when it exceeds the budget; ordinary history
-/// is trimmed at turn boundaries before pinned messages are removed.
+/// Request byte budget that always preserves pinned conversation history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextBudget {
     max_request_bytes: usize,
@@ -68,12 +66,7 @@ impl ContextBudget {
     }
 }
 
-/// Loop-control errors [`Conversation::run`] surfaces above and beyond
-/// transport-level [`LlmError`]s. The transport surface stays purely
-/// classification-oriented; loop-budget, tool-registry, observer-abort,
-/// and tool-result-serialisation failures are loop concerns and live
-/// here. `#[non_exhaustive]` so future loop-control variants land
-/// additively.
+/// Non-exhaustive loop-control failures from [`Conversation::run`].
 #[non_exhaustive]
 #[derive(Debug, Display, Error)]
 pub enum ConversationError {
@@ -110,6 +103,7 @@ pub enum ConversationError {
 }
 
 /// Multi-turn conversation with built-in tool-use loop.
+#[must_use]
 pub struct Conversation {
     model: ModelId,
     system: Option<String>,
@@ -166,8 +160,8 @@ impl Conversation {
             history: Vec::new(),
             pinned_history_len: 0,
             context_budget: None,
-            doom_loop: build_doom_loop_observer(&doom_loop),
-            duplicate_result: build_duplicate_result_observer(&duplicate_result),
+            doom_loop: build_doom_loop_observer(doom_loop),
+            duplicate_result: build_duplicate_result_observer(duplicate_result),
             envelope_builder: Some(default_envelope_builder()),
             pending_steers: Vec::new(),
         }
@@ -198,14 +192,14 @@ impl Conversation {
 
     /// Cap iterations the loop runs before applying
     /// [`Conversation::on_iteration_exhausted`].
-    pub fn max_iterations(mut self, n: u32) -> Self {
+    pub const fn max_iterations(mut self, n: u32) -> Self {
         self.max_iterations = n;
         self
     }
 
     /// Behaviour when the iteration cap is hit without the agent
     /// stopping.
-    pub fn on_iteration_exhausted(mut self, outcome: LoopOutcome) -> Self {
+    pub const fn on_iteration_exhausted(mut self, outcome: LoopOutcome) -> Self {
         self.on_iteration_exhausted = outcome;
         self
     }
@@ -213,7 +207,7 @@ impl Conversation {
     /// Apply request-context budgeting when building provider calls.
     /// Pinned history stays verbatim; ordinary history is retained from
     /// the newest turn backwards until the budget is filled.
-    pub fn context_budget(mut self, budget: ContextBudget) -> Self {
+    pub const fn context_budget(mut self, budget: ContextBudget) -> Self {
         self.context_budget = Some(budget);
         self
     }
@@ -223,7 +217,7 @@ impl Conversation {
     /// from the sink chain entirely, matching the binary-side
     /// `[agent.doom_loop] enabled = false` knob.
     pub fn doom_loop(mut self, config: DoomLoopConfig) -> Self {
-        self.doom_loop = build_doom_loop_observer(&config);
+        self.doom_loop = build_doom_loop_observer(config);
         self
     }
 
@@ -240,7 +234,7 @@ impl Conversation {
     /// from the sink chain entirely, matching the binary-side
     /// `[agent.duplicate_result] enabled = false` knob.
     pub fn duplicate_result(mut self, config: DuplicateResultConfig) -> Self {
-        self.duplicate_result = build_duplicate_result_observer(&config);
+        self.duplicate_result = build_duplicate_result_observer(config);
         self
     }
 
@@ -298,6 +292,11 @@ impl Conversation {
     /// queued as user messages on the next iteration; the first
     /// `SessionCommand::Abort` short-circuits the loop and returns
     /// [`ConversationError::ObserverAbort`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConversationError`] when the provider or a tool fails,
+    /// observer processing fails, or the iteration budget is exhausted.
     pub async fn run<C: LlmClient + Sync + ?Sized>(
         &mut self,
         client: &C,
@@ -437,21 +436,20 @@ impl Conversation {
         if let Some(observer) = self.doom_loop.as_mut() {
             let tripped = observer.take_pending();
             for trip in tripped {
-                let event = self.doom_loop_driver_event(trip);
+                let event = Self::doom_loop_driver_event(trip);
                 client.emit_driver_event(event);
             }
         }
         if let Some(observer) = self.duplicate_result.as_mut() {
             let detections = observer.take_pending();
             for detection in detections {
-                let event = self.duplicate_result_driver_event(detection);
+                let event = Self::duplicate_result_driver_event(&detection);
                 client.emit_driver_event(event);
             }
         }
     }
 
     fn doom_loop_driver_event(
-        &self,
         trip: crate::observer::doom_loop::DoomLoopTripped,
     ) -> DriverEventPayload {
         DriverEventPayload::doom_loop_tripped(
@@ -463,8 +461,7 @@ impl Conversation {
     }
 
     fn duplicate_result_driver_event(
-        &self,
-        detection: crate::observer::duplicate_result::DuplicateDetection,
+        detection: &crate::observer::duplicate_result::DuplicateDetection,
     ) -> DriverEventPayload {
         DriverEventPayload::duplicate_tool_result(
             detection.original_call_id.as_str(),
@@ -498,41 +495,41 @@ impl Conversation {
     }
 
     /// Read-only view of the conversation's current `ModelId`.
-    pub fn model(&self) -> &ModelId {
+    pub const fn model(&self) -> &ModelId {
         &self.model
     }
 
     /// Read-only view of the iteration budget.
-    pub fn max_iterations_value(&self) -> u32 {
+    pub const fn max_iterations_value(&self) -> u32 {
         self.max_iterations
     }
 
     /// Read-only view of the exhaustion behaviour.
-    pub fn on_iteration_exhausted_value(&self) -> LoopOutcome {
+    pub const fn on_iteration_exhausted_value(&self) -> LoopOutcome {
         self.on_iteration_exhausted
     }
 
     /// Whether the default `DoomLoopObserver` is composed in this
     /// conversation's sink chain.
-    pub fn doom_loop_enabled(&self) -> bool {
+    pub const fn doom_loop_enabled(&self) -> bool {
         self.doom_loop.is_some()
     }
 
     /// Whether the default `DuplicateResultObserver` is composed in this
     /// conversation's sink chain.
-    pub fn duplicate_result_enabled(&self) -> bool {
+    pub const fn duplicate_result_enabled(&self) -> bool {
         self.duplicate_result.is_some()
     }
 
     /// Borrow the composed `DoomLoopObserver`, or `None` when the
     /// observer is disabled by config.
-    pub fn doom_loop_observer(&self) -> Option<&DoomLoopObserver> {
+    pub const fn doom_loop_observer(&self) -> Option<&DoomLoopObserver> {
         self.doom_loop.as_ref()
     }
 
     /// Borrow the composed `DuplicateResultObserver`, or `None` when the
     /// observer is disabled by config.
-    pub fn duplicate_result_observer(&self) -> Option<&DuplicateResultObserver> {
+    pub const fn duplicate_result_observer(&self) -> Option<&DuplicateResultObserver> {
         self.duplicate_result.as_ref()
     }
 
@@ -540,7 +537,7 @@ impl Conversation {
     /// Callers snapshot this before [`Conversation::run`] and pass the
     /// snapshot to [`Conversation::history_since`] afterwards to read
     /// only the turns the loop appended.
-    pub fn history_len(&self) -> usize {
+    pub const fn history_len(&self) -> usize {
         self.history.len()
     }
 
@@ -602,7 +599,7 @@ impl Conversation {
     }
 
     fn static_request_bytes(&self, tool_defs: &[ToolDef]) -> usize {
-        let system_bytes = self.system.as_ref().map_or(0, |system| system.len());
+        let system_bytes = self.system.as_ref().map_or(0, std::string::String::len);
         tool_defs.iter().fold(system_bytes, |total, tool| {
             total.saturating_add(estimate_tool_def_bytes(tool))
         })
@@ -666,7 +663,7 @@ fn estimate_content_bytes(part: &MessageContent) -> usize {
             .bytes
             .len()
             .saturating_add(binary.mime_type.as_str().len())
-            .saturating_add(binary.name.as_ref().map_or(0, |name| name.len())),
+            .saturating_add(binary.name.as_ref().map_or(0, std::string::String::len)),
     }
 }
 
@@ -692,14 +689,14 @@ fn default_envelope_builder() -> EnvelopeBuilder {
     )
 }
 
-fn build_doom_loop_observer(config: &DoomLoopConfig) -> Option<DoomLoopObserver> {
+fn build_doom_loop_observer(config: DoomLoopConfig) -> Option<DoomLoopObserver> {
     config
         .enabled
         .then(|| DoomLoopObserver::from_config(config))
 }
 
 fn build_duplicate_result_observer(
-    config: &DuplicateResultConfig,
+    config: DuplicateResultConfig,
 ) -> Option<DuplicateResultObserver> {
     config
         .enabled
@@ -730,20 +727,20 @@ mod tests {
     }
 
     impl Tool for EchoTool {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "echo"
         }
-        fn description(&self) -> &str {
+        fn description(&self) -> &'static str {
             "echo input"
         }
         fn input_schema(&self) -> Value {
             json!({ "type": "object" })
         }
-        fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
+        fn invoke(&self, args: Value) -> InvokeFuture<'_> {
             let seen = self.seen.clone();
             Box::pin(async move {
                 seen.lock()
-                    .unwrap_or_else(|p| p.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(args.clone());
                 Ok(ToolOutput {
                     content: json!({ "echoed": args }),
@@ -796,7 +793,10 @@ mod tests {
         }
 
         fn emit_driver_event(&self, event: DriverEventPayload) {
-            let mut guard = self.events.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = self
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let envelope = loom_events::EventEnvelope {
                 session_id: SessionId::new("scripted-client").unwrap(),
                 bead_id: None,
@@ -812,17 +812,23 @@ mod tests {
         fn emit_event(&self, event: &AgentEvent) {
             self.events
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(event.clone());
         }
 
-        fn complete<'a>(
-            &'a self,
+        fn complete(
+            &self,
             _req: CompletionRequest,
-        ) -> crate::client::BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+        ) -> crate::client::BoxFuture<'_, Result<CompletionResponse, LlmError>> {
             Box::pin(async move {
-                *self.calls.lock().unwrap_or_else(|p| p.into_inner()) += 1;
-                let mut guard = self.responses.lock().unwrap_or_else(|p| p.into_inner());
+                *self
+                    .calls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+                let mut guard = self
+                    .responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if guard.is_empty() {
                     Err(LlmError::Provider {
                         message: "scripted client out of responses".into(),
@@ -833,12 +839,12 @@ mod tests {
             })
         }
 
-        fn complete_structured_raw<'a>(
-            &'a self,
+        fn complete_structured_raw(
+            &self,
             _req: CompletionRequest,
             _schema: serde_json::Value,
             _type_name: String,
-        ) -> crate::client::BoxFuture<'a, Result<String, LlmError>> {
+        ) -> crate::client::BoxFuture<'_, Result<String, LlmError>> {
             Box::pin(async move {
                 Err(LlmError::Provider {
                     message: "complete_structured not exercised in conversation tests".into(),
@@ -874,25 +880,25 @@ mod tests {
             true
         }
 
-        fn complete<'a>(
-            &'a self,
+        fn complete(
+            &self,
             req: CompletionRequest,
-        ) -> crate::client::BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+        ) -> crate::client::BoxFuture<'_, Result<CompletionResponse, LlmError>> {
             Box::pin(async move {
                 self.captured
                     .lock()
-                    .unwrap_or_else(|p| p.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(req);
                 Ok(self.response.clone())
             })
         }
 
-        fn complete_structured_raw<'a>(
-            &'a self,
+        fn complete_structured_raw(
+            &self,
             _req: CompletionRequest,
             _schema: serde_json::Value,
             _type_name: String,
-        ) -> crate::client::BoxFuture<'a, Result<String, LlmError>> {
+        ) -> crate::client::BoxFuture<'_, Result<String, LlmError>> {
             Box::pin(async move {
                 Err(LlmError::Provider {
                     message: "complete_structured not exercised in conversation tests".into(),
@@ -935,7 +941,10 @@ mod tests {
 
         tokio_test::block_on(conv.run(&client)).expect("run completes");
 
-        let requests = captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let requests = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(requests.len(), 1);
         let texts: Vec<String> = requests[0]
             .messages
@@ -994,8 +1003,16 @@ mod tests {
 
         assert_eq!(resp.text, "done");
         assert!(resp.tool_calls.is_empty());
-        assert_eq!(*calls.lock().unwrap_or_else(|p| p.into_inner()), 2);
-        let seen_args = seen.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(
+            *calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            2
+        );
+        let seen_args = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(seen_args, vec![json!({ "text": "hello" })]);
 
         let history = conv.history.clone();
@@ -1004,7 +1021,10 @@ mod tests {
         assert_eq!(history[1].tool_calls.len(), 1);
         assert_eq!(history[1].tool_calls[0].name, "echo");
         assert_eq!(
-            history[2].tool_call_id.as_ref().map(|id| id.as_str()),
+            history[2]
+                .tool_call_id
+                .as_ref()
+                .map(super::super::client::ToolCallId::as_str),
             Some("call-1"),
         );
     }
@@ -1031,7 +1051,12 @@ mod tests {
             ConversationError::IterationBudgetExhausted { budget } => assert_eq!(budget, 3),
             other => panic!("expected IterationBudgetExhausted, got {other:?}"),
         }
-        assert_eq!(*calls.lock().unwrap_or_else(|p| p.into_inner()), 3);
+        assert_eq!(
+            *calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            3
+        );
     }
 
     /// With `LoopOutcome::ReturnLast`, exhausting the budget returns
@@ -1211,24 +1236,42 @@ mod tests {
                 SchemaKind::Anthropic
             }
 
-            fn complete<'a>(
-                &'a self,
+            fn complete(
+                &self,
                 _req: CompletionRequest,
-            ) -> crate::client::BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+            ) -> crate::client::BoxFuture<'_, Result<CompletionResponse, LlmError>> {
                 Box::pin(PendingOnDrop::new(self.dropped.clone()))
             }
 
-            fn complete_structured_raw<'a>(
-                &'a self,
+            fn complete_structured_raw(
+                &self,
                 _req: CompletionRequest,
                 _schema: serde_json::Value,
                 _type_name: String,
-            ) -> crate::client::BoxFuture<'a, Result<String, LlmError>> {
+            ) -> crate::client::BoxFuture<'_, Result<String, LlmError>> {
                 Box::pin(async move {
                     Err(LlmError::Provider {
                         message: "structured path not exercised".into(),
                     })
                 })
+            }
+        }
+
+        struct PendingTool {
+            dropped: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Tool for PendingTool {
+            fn name(&self) -> &'static str {
+                "pending"
+            }
+            fn description(&self) -> &'static str {
+                "never resolves"
+            }
+            fn input_schema(&self) -> Value {
+                json!({ "type": "object" })
+            }
+            fn invoke(&self, _args: Value) -> InvokeFuture<'_> {
+                Box::pin(PendingOnDrop::new(self.dropped.clone()))
             }
         }
 
@@ -1244,24 +1287,6 @@ mod tests {
             "dropping Conversation::run must drop the in-flight LLM future",
         );
 
-        struct PendingTool {
-            dropped: Arc<std::sync::atomic::AtomicBool>,
-        }
-        impl Tool for PendingTool {
-            fn name(&self) -> &str {
-                "pending"
-            }
-            fn description(&self) -> &str {
-                "never resolves"
-            }
-            fn input_schema(&self) -> Value {
-                json!({ "type": "object" })
-            }
-            fn invoke<'a>(&'a self, _args: Value) -> InvokeFuture<'a> {
-                Box::pin(PendingOnDrop::new(self.dropped.clone()))
-            }
-        }
-
         let tool_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (client, calls) = ScriptedClient::new(vec![with_call("pending", "call-1", json!({}))]);
         let mut tool_conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
@@ -1271,7 +1296,12 @@ mod tests {
         tool_conv.user("hang in tool");
 
         poll_once_then_drop(tool_conv.run(&client));
-        assert_eq!(*calls.lock().unwrap_or_else(|p| p.into_inner()), 1);
+        assert_eq!(
+            *calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            1
+        );
         assert!(
             tool_dropped.load(std::sync::atomic::Ordering::SeqCst),
             "dropping Conversation::run must drop the in-flight tool future",
@@ -1320,7 +1350,9 @@ mod tests {
             }
             other => panic!("expected ObserverAbort, got {other:?}"),
         }
-        let observed = *calls.lock().unwrap_or_else(|p| p.into_inner());
+        let observed = *calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
             observed <= 4,
             "loop must short-circuit by iteration 4 (stage 1 at 3, stage 2 at 4); \
@@ -1355,7 +1387,9 @@ mod tests {
         let resp = tokio_test::block_on(conv.run(&client)).expect("stage 1 only steers");
         assert_eq!(resp.text, "done");
 
-        let recorded = events.lock().unwrap_or_else(|p| p.into_inner());
+        let recorded = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(recorded.len(), 1);
         match &recorded[0] {
             AgentEvent::DriverEvent {
@@ -1404,7 +1438,9 @@ mod tests {
             other => panic!("expected ObserverAbort, got {other:?}"),
         }
 
-        let recorded = events.lock().unwrap_or_else(|p| p.into_inner());
+        let recorded = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let stages: Vec<u64> = recorded
             .iter()
             .filter_map(|event| match event {
@@ -1454,7 +1490,9 @@ mod tests {
             .expect("fixture serializes")
             .len() as u64;
 
-        let recorded = events.lock().unwrap_or_else(|p| p.into_inner());
+        let recorded = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(recorded.len(), 1);
         match &recorded[0] {
             AgentEvent::DriverEvent {
@@ -1498,14 +1536,13 @@ mod tests {
         let resp = tokio_test::block_on(conv.run(&client)).expect("run completes");
         assert!(resp.tool_calls.is_empty());
 
-        let steer_turns: Vec<&Message> = conv
+        let steer_turn_count = conv
             .history
             .iter()
             .filter(|m| m.role == Role::User && m.text_content().contains("doom-loop suspected"))
-            .collect();
+            .count();
         assert_eq!(
-            steer_turns.len(),
-            1,
+            steer_turn_count, 1,
             "exactly one steer must land as a user message in history",
         );
     }

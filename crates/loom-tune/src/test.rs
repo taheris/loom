@@ -206,7 +206,7 @@ contains = ["missing test"]
             checks: ChecksConfig::default(),
         };
         let plan = build(Request {
-            targets: vec![target.clone()],
+            targets: vec![target],
             level: Level::Run,
             cases: &cases,
             evidence: &evidence,

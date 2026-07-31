@@ -82,7 +82,7 @@ fn fake_bead(id: &str) -> Bead {
         issue_type: "task".into(),
         labels: vec![Label::new("profile:base").expect("valid Label")],
         parent: None,
-        metadata: Default::default(),
+        metadata: std::collections::BTreeMap::default(),
         notes: None,
     }
 }
@@ -256,6 +256,7 @@ async fn per_bead_profile_runtime_dispatch_produces_distinct_image_refs() -> Res
         Some(dir.path().join("python-claude-profile.json").as_path())
     );
     assert_ne!(configs[0].workspace, configs[1].workspace);
+    drop(configs);
     Ok(())
 }
 
@@ -639,6 +640,7 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
         "retry prompt must not fall back to the opaque agent-error framing when a typed stash is present: {}",
         prompts[1],
     );
+    drop(prompts);
     Ok(())
 }
 
@@ -1019,12 +1021,16 @@ fn read_bead_events(
         let Some(name_str) = name.to_str() else {
             continue;
         };
-        if !name_str.starts_with(&prefix) || !name_str.ends_with(".jsonl") {
+        if !name_str.starts_with(&prefix)
+            || !std::path::Path::new(name_str)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+        {
             continue;
         }
         let mtime = entry.metadata().unwrap().modified().unwrap();
         match &best {
-            Some((_, prev)) if mtime <= *prev => continue,
+            Some((_, prev)) if mtime <= *prev => {}
             _ => best = Some((entry.path(), mtime)),
         }
     }

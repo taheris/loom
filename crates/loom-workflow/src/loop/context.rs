@@ -64,6 +64,10 @@ pub fn build_loop_context(inputs: LoopContextInputs) -> LoopContext {
 
 /// Render the loop prompt for `inputs` so binaries that lack a direct askama
 /// dependency can build the same prompt as the workflow's own controllers.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub fn render_loop_prompt(inputs: LoopContextInputs) -> Result<String, askama::Error> {
     build_loop_context(inputs).render()
 }

@@ -2,7 +2,7 @@ use loom_driver::agent::SpawnConfig;
 use loom_events::{InputRedaction, RedactionClass};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RedactedAgentInput {
+pub struct RedactedAgentInput {
     pub text: String,
     pub redactions: Option<Vec<InputRedaction>>,
 }
@@ -14,7 +14,7 @@ struct SecretValue<'a> {
     class: RedactionClass,
 }
 
-pub(crate) fn redact_agent_input(text: &str, config: &SpawnConfig) -> RedactedAgentInput {
+pub fn redact_agent_input(text: &str, config: &SpawnConfig) -> RedactedAgentInput {
     let mut secrets: Vec<SecretValue<'_>> = config
         .env
         .iter()
@@ -106,7 +106,7 @@ mod tests {
             model_id: None,
             model: None,
             thinking_level: None,
-            observers: Default::default(),
+            observers: loom_driver::config::AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),

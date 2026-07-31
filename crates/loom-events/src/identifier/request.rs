@@ -9,6 +9,11 @@ use thiserror::Error;
 pub struct RequestId(String);
 
 impl RequestId {
+    /// Parses a canonical request id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseRequestIdError`] when the input is malformed.
     pub fn new(s: impl AsRef<str>) -> Result<Self, ParseRequestIdError> {
         s.as_ref().parse()
     }

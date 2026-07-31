@@ -10,6 +10,10 @@ pub const WRIX_PREK_HOOKS_ENV: &str = "WRIX_PREK_HOOKS";
 const REQUIRED_HOOKS: &[&str] = &["pre-commit", "pre-push"];
 
 /// Resolve the canonical wrix `prekHooks` directory.
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn resolve_prek_hooks_path() -> Result<PathBuf, GitError> {
     resolve_from(&ResolveInputs {
         env_hooks: std::env::var_os(WRIX_PREK_HOOKS_ENV),
@@ -18,6 +22,10 @@ pub fn resolve_prek_hooks_path() -> Result<PathBuf, GitError> {
 }
 
 /// Resolve the canonical wrix `prekHooks` directory for `workspace`.
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn resolve_prek_hooks_path_for_workspace(workspace: &Path) -> Result<PathBuf, GitError> {
     resolve_from(&ResolveInputs {
         env_hooks: std::env::var_os(WRIX_PREK_HOOKS_ENV),
@@ -43,12 +51,20 @@ pub fn ensure_prek_hooks_dir(path: &Path) -> Result<(), GitError> {
 }
 
 /// Write `core.hooksPath` in `target_dir` to `hooks_path`.
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn write_hooks_config(target_dir: &Path, hooks_path: &Path) -> Result<(), GitError> {
     ensure_prek_hooks_dir(hooks_path)?;
     sync_git_config(target_dir, "core.hooksPath", &hooks_path.to_string_lossy())
 }
 
 /// Verify `target_dir` has `core.hooksPath` set to `expected`.
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn validate_hooks_config(target_dir: &Path, expected: &Path) -> Result<(), GitError> {
     ensure_prek_hooks_dir(expected)?;
     let expected_value = expected.to_string_lossy().into_owned();

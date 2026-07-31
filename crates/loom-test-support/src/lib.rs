@@ -83,6 +83,12 @@ fn cleanup_temp_file(path: &std::path::Path, original: std::io::Error) -> std::i
 }
 
 #[cfg(unix)]
+/// Writes a Bash script and atomically marks it executable.
+///
+/// # Errors
+///
+/// Returns an I/O error when the temporary file cannot be written, permission
+/// changes fail, or the completed script cannot be moved into place.
 pub fn write_executable_bash_script(
     path: impl AsRef<std::path::Path>,
     body: &str,
@@ -94,7 +100,7 @@ pub fn write_executable_bash_script(
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     let path = path.as_ref();
-    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let script = bash_script(body);
 
     for _ in 0..32 {

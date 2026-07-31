@@ -167,7 +167,7 @@ fn render_under_500ms_on_2000_row_corpus() {
                 _ => Tier::Judge,
             },
             annotation_target: format!("target-{i}"),
-            last_run_ts_ms: i as i64,
+            last_run_ts_ms: i64::from(i),
             last_run_commit: "deadbeef".into(),
             verdict: match i % 3 {
                 0 => Verdict::Pass,
@@ -213,7 +213,7 @@ fn render_from_rows_under_500ms_on_2000_row_corpus() {
                 _ => Tier::Judge,
             },
             annotation_target: format!("t-{i}"),
-            last_run_ts_ms: i as i64,
+            last_run_ts_ms: i64::from(i),
             last_run_commit: "c".into(),
             verdict: match i % 3 {
                 0 => Verdict::Pass,

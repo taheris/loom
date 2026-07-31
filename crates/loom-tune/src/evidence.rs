@@ -81,6 +81,10 @@ impl RootReport {
 pub struct ItemId(String);
 
 impl ItemId {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn new(value: impl Into<String>) -> Result<Self, ParseItemIdError> {
         value.into().parse()
     }
@@ -141,7 +145,7 @@ pub struct Item {
 
 impl Item {
     /// Construct an item backed by text read from an evidence root.
-    pub fn harvested(
+    pub const fn harvested(
         id: ItemId,
         checker: CheckerId,
         targets: Vec<Target>,
@@ -155,7 +159,7 @@ impl Item {
         }
     }
 
-    pub fn text(&self) -> &TextEvidence {
+    pub const fn text(&self) -> &TextEvidence {
         &self.text
     }
 
@@ -175,9 +179,13 @@ impl Item {
 }
 
 /// Read workspace-first and explicitly configured evidence roots.
+///
+/// # Errors
+///
+/// Returns an error when tuning input, execution, or evidence validation fails.
 pub fn harvest(
     report: &RootReport,
-    checker: CheckerId,
+    checker: &CheckerId,
     targets: &[Target],
 ) -> Result<Vec<Item>, HarvestError> {
     let targets = targets
@@ -220,6 +228,10 @@ pub fn harvest(
 }
 
 /// Convert driver-owned workspace evidence into the same typed item stream as files.
+///
+/// # Errors
+///
+/// Returns an error when tuning input, execution, or evidence validation fails.
 pub fn harvest_text(
     text: TextEvidence,
     checker: CheckerId,
@@ -315,12 +327,10 @@ fn evidence_relative_path(root: &Root, path: &Path) -> PathBuf {
     if root.path.is_file() {
         return path
             .file_name()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("evidence"));
+            .map_or_else(|| PathBuf::from("evidence"), PathBuf::from);
     }
     path.strip_prefix(&root.path)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|_| PathBuf::from("evidence"))
+        .map_or_else(|_| PathBuf::from("evidence"), Path::to_path_buf)
 }
 
 fn harvested_item_id(
@@ -388,6 +398,10 @@ pub struct SplitSalt {
 
 impl SplitSalt {
     /// Derive an opaque salt from stable repository identity components.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn repository<I, S>(origin_url: Option<&str>, root_commits: I) -> Result<Self, SplitError>
     where
         I: IntoIterator<Item = S>,
@@ -431,7 +445,7 @@ impl SplitSalt {
         &self.id
     }
 
-    fn material(&self) -> &[u8] {
+    const fn material(&self) -> &[u8] {
         &self.material
     }
 }
@@ -444,7 +458,7 @@ pub struct Splitter {
 }
 
 impl Splitter {
-    pub fn new(salt: SplitSalt, selection_fraction: SelectionFraction) -> Self {
+    pub const fn new(salt: SplitSalt, selection_fraction: SelectionFraction) -> Self {
         Self {
             salt,
             selection_fraction,
@@ -467,7 +481,10 @@ impl Splitter {
         let mut bytes = [0_u8; 8];
         bytes.copy_from_slice(&digest[..8]);
         let bucket = u64::from_be_bytes(bytes);
-        let unit = (bucket as f64) / ((u64::MAX as f64) + 1.0);
+        let high = u32::try_from(bucket >> 32).unwrap_or(u32::MAX);
+        let low = u32::try_from(bucket & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+        let unit =
+            (f64::from(high) * 4_294_967_296.0 + f64::from(low)) / 18_446_744_073_709_551_616.0;
         if unit < self.selection_fraction.get() {
             Split::Selection
         } else {
@@ -565,7 +582,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub fn empty(metadata: SplitMetadata) -> Self {
+    pub const fn empty(metadata: SplitMetadata) -> Self {
         Self {
             train: Vec::new(),
             selection: Vec::new(),
@@ -614,13 +631,13 @@ mod tests {
         ];
         let first_items = harvest(
             &RootReport::from_config(first.path(), &EvidenceConfig::default()),
-            checker.clone(),
+            &checker,
             &targets,
         )
         .expect("first harvest");
         let second_items = harvest(
             &RootReport::from_config(second.path(), &EvidenceConfig::default()),
-            checker,
+            &checker,
             &targets,
         )
         .expect("second harvest");

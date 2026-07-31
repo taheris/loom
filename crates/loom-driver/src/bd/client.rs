@@ -12,7 +12,7 @@ use super::runner::{CommandRunner, RunOutput, TokioRunner, render_args};
 /// Default subprocess timeout. Configurable per [`BdClient`] instance via
 /// [`BdClient::with_timeout`]. Matches the 60-second ceiling used by
 /// `GitClient`.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Typed wrapper around the `bd` CLI.
 pub struct BdClient<R: CommandRunner = TokioRunner> {
@@ -39,7 +39,7 @@ impl Default for BdClient<TokioRunner> {
 impl<R: CommandRunner> BdClient<R> {
     /// Construct a client over a custom [`CommandRunner`] (used by tests
     /// to substitute a capturing fake).
-    pub fn with_runner(runner: R) -> Self {
+    pub const fn with_runner(runner: R) -> Self {
         Self {
             runner,
             timeout: DEFAULT_TIMEOUT,
@@ -47,16 +47,21 @@ impl<R: CommandRunner> BdClient<R> {
     }
 
     /// Override the per-call subprocess timeout.
-    pub fn with_timeout(mut self, t: Duration) -> Self {
+    #[must_use]
+    pub const fn with_timeout(mut self, t: Duration) -> Self {
         self.timeout = t;
         self
     }
 
-    pub fn timeout(&self) -> Duration {
+    pub const fn timeout(&self) -> Duration {
         self.timeout
     }
 
     /// `bd show <id> --json` → first row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn show(&self, id: &BeadId) -> Result<Bead, BdError> {
         self.show_selector(id.as_str()).await
     }
@@ -67,6 +72,10 @@ impl<R: CommandRunner> BdClient<R> {
     /// `lm-abcd.1`) on its CLI. This boundary method lets `bd` resolve
     /// that operator-facing selector, then deserializes the canonical
     /// [`BeadId`] from JSON before any downstream workflow code sees it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn show_selector(&self, selector: &str) -> Result<Bead, BdError> {
         let args = args(["show", selector, "--json"]);
         let out = self.invoke(args).await?;
@@ -79,6 +88,10 @@ impl<R: CommandRunner> BdClient<R> {
 
     /// Read the current status and direct dependency states from
     /// `bd show <id> --json` for loop dependency-wait validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn dependency_snapshot(&self, id: &BeadId) -> Result<DependencySnapshot, BdError> {
         let args = args(["show", id.as_str(), "--json"]);
         let out = self.invoke(args).await?;
@@ -94,6 +107,10 @@ impl<R: CommandRunner> BdClient<R> {
     /// Uses `--silent` (which prints only the id) to dodge the JSON
     /// deserializer for a single field. The id is the only output the
     /// caller needs at this point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn create(&self, opts: CreateOpts) -> Result<BeadId, BdError> {
         let mut args: Vec<OsString> = vec![
             "create".into(),
@@ -137,6 +154,10 @@ impl<R: CommandRunner> BdClient<R> {
     }
 
     /// `bd close <id>` (optionally with `--reason`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn close(&self, id: &BeadId, reason: Option<&str>) -> Result<(), BdError> {
         let mut args: Vec<OsString> = vec!["close".into(), id.as_str().to_owned().into()];
         if let Some(r) = reason {
@@ -149,6 +170,10 @@ impl<R: CommandRunner> BdClient<R> {
 
     /// `bd update <id> [flags]`. Flags map onto the corresponding `bd
     /// update` switches; unset fields are not forwarded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn update(&self, id: &BeadId, opts: UpdateOpts) -> Result<(), BdError> {
         let mut args: Vec<OsString> = vec!["update".into(), id.as_str().to_owned().into()];
         if opts.claim {
@@ -195,6 +220,10 @@ impl<R: CommandRunner> BdClient<R> {
     }
 
     /// `bd list --json` filtered by status and/or label.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn list(&self, opts: ListOpts) -> Result<Vec<Bead>, BdError> {
         let mut args: Vec<OsString> = vec!["list".into(), "--json".into()];
         if let Some(status) = opts.status {
@@ -227,6 +256,10 @@ impl<R: CommandRunner> BdClient<R> {
     }
 
     /// `bd dep add <issue> <depends-on>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn dep_add(&self, issue: &BeadId, depends_on: &BeadId) -> Result<(), BdError> {
         let args = args(["dep", "add", issue.as_str(), depends_on.as_str()]);
         self.invoke(args).await?;
@@ -236,6 +269,10 @@ impl<R: CommandRunner> BdClient<R> {
     /// `bd ready --json [--limit=N] [--label=<label>] [--parent=<id>] [--exclude-label=<label>...]`
     /// — beads ready to work (open, no active blockers). Step (1) of the
     /// parallel batch driver: pulls up to `limit` candidates per batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn ready(&self, opts: ReadyOpts) -> Result<Vec<Bead>, BdError> {
         let mut args: Vec<OsString> = vec!["ready".into(), "--json".into()];
         if let Some(n) = opts.limit {
@@ -266,6 +303,10 @@ impl<R: CommandRunner> BdClient<R> {
     /// `bd mol bond <left> <right>`. The polymorphic semantics of
     /// `bd mol bond` (formula+formula, formula+mol, etc.) are the
     /// caller's concern; this wrapper just forwards two operands.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn mol_bond(&self, left: &str, right: &str) -> Result<(), BdError> {
         let args = args(["mol", "bond", left, right]);
         self.invoke(args).await?;
@@ -273,6 +314,10 @@ impl<R: CommandRunner> BdClient<R> {
     }
 
     /// `bd mol progress <id> --json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn mol_progress(&self, id: &MoleculeId) -> Result<MolProgress, BdError> {
         let args = args(["mol", "progress", id.as_str(), "--json"]);
         let out = self.invoke(args).await?;
@@ -380,7 +425,9 @@ pub struct ListOpts {
     pub issue_type: Option<String>,
 }
 
-/// Filters accepted by `bd ready`. `limit` caps the result count
+/// Filters accepted by `bd ready`.
+///
+/// `limit` caps the result count
 /// (`--limit=N`); the parallel batch driver uses it to pull at most N ready
 /// beads per batch. `label` narrows by `spec:<label>` for legacy
 /// spec-scoped queues; `parent` narrows to a work epic's descendants.
@@ -423,9 +470,14 @@ mod tests {
             args: Vec<OsString>,
             _t: Duration,
         ) -> std::result::Result<RunOutput, BdError> {
-            let mut calls = self.calls.lock().unwrap_or_else(|p| p.into_inner());
-            calls.push(args);
-            let mut responses = self.responses.lock().unwrap_or_else(|p| p.into_inner());
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(args);
+            let mut responses = self
+                .responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             Ok(responses.pop_front().unwrap_or(RunOutput {
                 status: 0,
                 stdout: Vec::new(),
@@ -435,7 +487,10 @@ mod tests {
     }
 
     fn argv_of(runner: &CapturingRunner, idx: usize) -> Vec<String> {
-        let calls = runner.calls.lock().unwrap_or_else(|p| p.into_inner());
+        let calls = runner
+            .calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         calls[idx]
             .iter()
             .map(|s| s.to_string_lossy().into_owned())

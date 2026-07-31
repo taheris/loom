@@ -61,7 +61,7 @@ impl NativeCompactionReason {
         }
     }
 
-    fn to_canonical(self) -> CompactionReason {
+    const fn to_canonical(self) -> CompactionReason {
         match self {
             Self::Threshold | Self::Overflow => CompactionReason::ContextLimit,
             Self::Manual => CompactionReason::UserRequested,
@@ -93,11 +93,10 @@ impl PiParser {
     }
 
     fn push_task(&self, id: loom_events::identifier::ToolCallId) -> Result<(), ProtocolError> {
-        let mut stack = self
-            .task_stack
+        self.task_stack
             .lock()
-            .map_err(|_| ProtocolError::LockPoisoned)?;
-        stack.push(id);
+            .map_err(|_| ProtocolError::LockPoisoned)?
+            .push(id);
         Ok(())
     }
 
@@ -112,6 +111,7 @@ impl PiParser {
         if stack.last() == Some(id) {
             stack.pop();
         }
+        drop(stack);
         Ok(())
     }
 
@@ -121,6 +121,7 @@ impl PiParser {
             .lock()
             .map_err(|_| ProtocolError::LockPoisoned)?;
         capture.text_emitted = false;
+        drop(capture);
         Ok(())
     }
 
@@ -130,6 +131,7 @@ impl PiParser {
             .lock()
             .map_err(|_| ProtocolError::LockPoisoned)?;
         capture.text_emitted = true;
+        drop(capture);
         Ok(())
     }
 
@@ -149,6 +151,7 @@ impl PiParser {
             return Ok(Vec::new());
         }
         capture.text_emitted = true;
+        drop(capture);
         Ok(vec![
             ParsedAgentEvent::TextDelta { text },
             ParsedAgentEvent::TextEnd,
@@ -166,6 +169,7 @@ impl PiParser {
         if !policy.terminal_after_untrusted_retry {
             policy.active_reason = Some(reason);
         }
+        drop(policy);
         Ok(())
     }
 
@@ -185,7 +189,7 @@ impl PiParser {
         };
         if reason == NativeCompactionReason::Overflow && !aborted && will_retry {
             policy.terminal_after_untrusted_retry = true;
-            return Ok(vec![
+            let events = vec![
                 ParsedAgentEvent::CompactionEnd { aborted },
                 ParsedAgentEvent::Error {
                     message: UNTRUSTED_OVERFLOW_RETRY_MESSAGE.to_string(),
@@ -194,8 +198,11 @@ impl PiParser {
                     exit_code: 1,
                     cost_usd: None,
                 },
-            ]);
+            ];
+            drop(policy);
+            return Ok(events);
         }
+        drop(policy);
         Ok(vec![ParsedAgentEvent::CompactionEnd { aborted }])
     }
 
@@ -230,7 +237,7 @@ const UNTRUSTED_OVERFLOW_RETRY_MESSAGE: &str = concat!(
 );
 
 /// Empty `ParsedLine` — no events, no response.
-fn empty() -> ParsedLine {
+const fn empty() -> ParsedLine {
     ParsedLine {
         events: Vec::new(),
         response: None,
@@ -331,19 +338,20 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
             AssistantMessageDelta::ToolcallDelta {
                 tool_call_id,
                 delta,
-            } => match tool_call_id {
-                Some(tool_call_id) => ParsedLine {
-                    events: vec![ParsedAgentEvent::ToolcallDelta {
-                        id: tool_call_id,
-                        delta,
-                    }],
-                    response: None,
-                },
-                None => {
+            } => {
+                if let Some(tool_call_id) = tool_call_id {
+                    ParsedLine {
+                        events: vec![ParsedAgentEvent::ToolcallDelta {
+                            id: tool_call_id,
+                            delta,
+                        }],
+                        response: None,
+                    }
+                } else {
                     trace!("assistant toolcall_delta without toolCallId ignored");
                     empty()
                 }
-            },
+            }
             AssistantMessageDelta::Error { reason, message } => {
                 let message = message.or(reason).unwrap_or_default();
                 ParsedLine {
@@ -475,7 +483,7 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
     })
 }
 
-fn parse_ui_request(req: PiUiRequest) -> Result<ParsedLine, ProtocolError> {
+fn parse_ui_request(req: &PiUiRequest) -> Result<ParsedLine, ProtocolError> {
     if !ui_method_requires_response(&req.method) {
         debug!(method = %req.method, "extension_ui_request ignored");
         return Ok(empty());
@@ -528,7 +536,7 @@ impl LineParse for PiParser {
             Some("extension_ui_request") => {
                 let req: PiUiRequest = serde_json::from_str(line)
                     .map_err(|err| ProtocolError::invalid_protocol_line(line, err))?;
-                parse_ui_request(req)
+                parse_ui_request(&req)
             }
             _ if env.id.is_none() => {
                 let evt: PiEvent = serde_json::from_str(line)
@@ -573,9 +581,9 @@ mod tests {
             .expect("fixture line should parse cleanly")
     }
 
-    /// G4 — when a `Task` tool_call is open, subsequent tool_calls
+    /// G4 — when a `Task` `tool_call` is open, subsequent `tool_calls`
     /// carry `parent_tool_call_id = Some(<task-id>)`. The matching
-    /// tool_result closes the stack.
+    /// `tool_result` closes the stack.
     #[test]
     fn task_subagent_nesting_threads_parent_tool_call_id() {
         let parser = PiParser::new();
@@ -607,7 +615,9 @@ mod tests {
             } => {
                 assert_eq!(tool, "Read");
                 assert_eq!(
-                    parent_tool_call_id.as_ref().map(|id| id.as_str()),
+                    parent_tool_call_id
+                        .as_ref()
+                        .map(loom_driver::identifier::ToolCallId::as_str),
                     Some("tc-task"),
                 );
             }

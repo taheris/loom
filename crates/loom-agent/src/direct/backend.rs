@@ -68,7 +68,7 @@ impl AgentBackend for DirectBackend {
             &spawn_config_path,
         );
         apply_launcher_env(&mut cmd, &config.launcher_env);
-        spawn_session(cmd).await
+        spawn_session(cmd)
     }
 }
 
@@ -128,7 +128,7 @@ fn container_workspace_path(host_workspace: &Path, host_path: &Path) -> PathBuf 
 ///
 /// Module-public so integration tests can substitute a mock runner
 /// binary in place of the real `wrix spawn` exec.
-pub(crate) async fn spawn_session(mut cmd: Command) -> Result<AgentSession<Idle>, ProtocolError> {
+pub(crate) fn spawn_session(mut cmd: Command) -> Result<AgentSession<Idle>, ProtocolError> {
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::inherit());
@@ -155,7 +155,7 @@ pub(crate) async fn spawn_session(mut cmd: Command) -> Result<AgentSession<Idle>
 /// JSONL bridge between [`AgentSession`] and `loom-direct-runner`.
 ///
 /// Inbound lines are a `type`-tagged twin of [`ParsedAgentEvent`] in
-/// snake_case; outbound commands are
+/// `snake_case`; outbound commands are
 /// `{"type": "prompt"|"steer"|"complete"|"abort", "message": "..."}`.
 /// The runner owns the canonical wire shape; this host-side half
 /// deserializes the matching set of variants and rejects unknown `type` values as
@@ -216,8 +216,9 @@ pub enum DirectCommand {
     Abort,
 }
 
-/// JSONL event frame from `loom-direct-runner` to the host driver. The
-/// host-side [`DirectParser`] decodes this and joins it with the per-spawn
+/// JSONL event frame from `loom-direct-runner` to the host driver.
+///
+/// The host-side [`DirectParser`] decodes this and joins it with the per-spawn
 /// envelope on the way out to the workflow's [`AgentEvent`] stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -344,7 +345,7 @@ mod tests {
             model_id: None,
             model: None,
             thinking_level: None,
-            observers: Default::default(),
+            observers: loom_driver::config::AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),
@@ -540,7 +541,7 @@ esac
 printf '%s\n' '{"type":"session_complete","exit_code":0}'
 "#,
         );
-        let session = spawn_session(command).await.expect("spawn mock runner");
+        let session = spawn_session(command).expect("spawn mock runner");
         let mut session = session.prompt("hello").await.expect("send prompt");
 
         assert!(matches!(
@@ -582,7 +583,7 @@ esac
 printf '%s\n' '{"type":"session_complete","exit_code":0}'
 "#,
         );
-        let session = spawn_session(command).await.expect("spawn mock runner");
+        let session = spawn_session(command).expect("spawn mock runner");
         let mut session = session.prompt("hello").await.expect("send prompt");
 
         for steer in ["first steer", "second steer"] {

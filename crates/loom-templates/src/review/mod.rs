@@ -5,8 +5,9 @@ use loom_events::identifier::{MoleculeId, ProfileName, SpecLabel};
 
 use crate::SkillIndexMarkdown;
 
-/// One file body included in the review prompt — either a `[test]`
-/// script the gate just ran, or a `[judge]` rubric the LLM must score
+/// One file body included in the review prompt.
+///
+/// This is either a `[test]` script the gate just ran, or a `[judge]` rubric the LLM must score
 /// against. `path` is the workspace-relative source location used as the
 /// rendered section title.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,8 +16,9 @@ pub struct ReviewSource {
     pub body: String,
 }
 
-/// Which lane(s) of the review the prompt asks the agent to run. `Both`
-/// drives the full `loom gate review` path (criterion-attached `[judge]`
+/// Review lanes requested by the prompt.
+///
+/// `Both` drives the full `loom gate review` path (criterion-attached `[judge]`
 /// rubrics *and* the rubric walk over the diff). `Judge` and `Rubric` are
 /// the focused per-lane re-runs surfaced by `loom gate judge` /
 /// `loom gate rubric` respectively, used when iterating on one lane
@@ -34,12 +36,12 @@ pub enum ReviewLane {
 
 impl ReviewLane {
     /// True when the lane includes the `[judge]` rubric evaluation.
-    pub fn includes_judge(self) -> bool {
+    pub const fn includes_judge(self) -> bool {
         matches!(self, Self::Both | Self::Judge)
     }
 
     /// True when the lane includes the rubric walk over the diff.
-    pub fn includes_rubric(self) -> bool {
+    pub const fn includes_rubric(self) -> bool {
         matches!(self, Self::Both | Self::Rubric)
     }
 }

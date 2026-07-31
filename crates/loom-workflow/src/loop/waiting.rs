@@ -5,7 +5,7 @@ use super::{AgentOutcome, LoopError};
 
 /// Stable recovery cause for a dependency-wait marker whose Beads state does
 /// not prove a real wait.
-pub(crate) const INVALID_WAITING_CAUSE: &str = "invalid-waiting";
+pub const INVALID_WAITING_CAUSE: &str = "invalid-waiting";
 
 /// Non-empty set of active Beads blockers that authorized a loop wait.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,13 +17,13 @@ pub struct ActiveBlockers {
 impl ActiveBlockers {
     /// Construct a non-empty blocker set.
     #[must_use]
-    pub(crate) fn new(first: BeadId, rest: Vec<BeadId>) -> Self {
+    pub(crate) const fn new(first: BeadId, rest: Vec<BeadId>) -> Self {
         Self { first, rest }
     }
 
     /// Number of active blockers proving this wait.
     #[must_use]
-    pub fn count(&self) -> usize {
+    pub const fn count(&self) -> usize {
         1 + self.rest.len()
     }
 }
@@ -34,6 +34,10 @@ impl ActiveBlockers {
 /// scheduler-safe [`AgentOutcome::Waiting`] shape carrying a non-empty blocker
 /// set. Invalid wait requests become ordinary recovery failures, so they never
 /// silently park an unblocked or closed bead.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn validate_waiting_outcome<R: CommandRunner>(
     bd: &BdClient<R>,
     bead: &BeadId,
@@ -45,7 +49,7 @@ pub async fn validate_waiting_outcome<R: CommandRunner>(
 
     let snapshot = bd.dependency_snapshot(bead).await?;
     if !snapshot.is_open() {
-        return Ok(invalid_waiting(format!(
+        return Ok(invalid_waiting(&format!(
             "bead {bead} has status {}, expected open",
             snapshot.status_label(),
         )));
@@ -53,7 +57,7 @@ pub async fn validate_waiting_outcome<R: CommandRunner>(
 
     let mut blockers = snapshot.active_blockers().into_iter();
     let Some(first) = blockers.next() else {
-        return Ok(invalid_waiting(format!(
+        return Ok(invalid_waiting(&format!(
             "bead {bead} has no active declared blocking dependency",
         )));
     };
@@ -62,7 +66,7 @@ pub async fn validate_waiting_outcome<R: CommandRunner>(
     })
 }
 
-fn invalid_waiting(detail: String) -> AgentOutcome {
+fn invalid_waiting(detail: &str) -> AgentOutcome {
     AgentOutcome::Failure {
         error: format!("{INVALID_WAITING_CAUSE}: {detail}"),
     }

@@ -417,7 +417,7 @@ pub(super) fn run(input: &WalkInput, operation: Operation, rule: &str) -> Verdic
 }
 
 impl Exception {
-    fn is_auditable(&self) -> bool {
+    const fn is_auditable(&self) -> bool {
         self.occurrences > 0
             && !self.justification.is_empty()
             && !self.upper_deadline.is_empty()

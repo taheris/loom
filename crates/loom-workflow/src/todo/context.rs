@@ -65,7 +65,7 @@ pub fn changed_spec_context(
     }
 }
 
-pub fn spec_epic_context(
+pub const fn spec_epic_context(
     label: SpecLabel,
     epic_id: Option<MoleculeId>,
     todo_cursor: Option<String>,
@@ -77,7 +77,7 @@ pub fn spec_epic_context(
     }
 }
 
-pub fn implementation_notes_context(
+pub const fn implementation_notes_context(
     label: SpecLabel,
     notes: Vec<String>,
 ) -> SpecImplementationNotes {

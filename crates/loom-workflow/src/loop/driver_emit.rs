@@ -55,7 +55,9 @@ impl BeadEmit {
                 clock
                     .wall_now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |duration| duration.as_millis() as i64)
+                    .map_or(0, |duration| {
+                        i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                    })
             },
         );
         Some(Self { log_path, builder })
@@ -109,7 +111,7 @@ fn max_seq_in_log(log_path: &Path) -> Option<u64> {
     body.lines()
         .filter_map(|line| {
             let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-            value.get("seq").and_then(|v| v.as_u64())
+            value.get("seq").and_then(serde_json::Value::as_u64)
         })
         .max()
 }
@@ -127,9 +129,8 @@ fn session_id_in_log(log_path: &Path) -> Option<SessionId> {
         }
     };
     body.lines().find_map(|line| {
-        let value = match serde_json::from_str::<serde_json::Value>(line.trim()) {
-            Ok(value) => value,
-            Err(_) => return None,
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            return None;
         };
         let raw = value.get("session_id")?.as_str()?;
         let Ok(session_id) = raw.parse::<SessionId>() else {
@@ -149,15 +150,18 @@ fn find_latest_bead_log(logs_root: &Path, label: &SpecLabel, bead_id: &BeadId) -
         let Some(name_str) = name.to_str() else {
             continue;
         };
-        if !name_str.starts_with(&prefix) || !name_str.ends_with(".jsonl") {
+        if !name_str.starts_with(&prefix)
+            || !Path::new(name_str)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+        {
             continue;
         }
-        let mtime = match entry.metadata().and_then(|m| m.modified()) {
-            Ok(t) => t,
-            Err(_) => continue,
+        let Ok(mtime) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+            continue;
         };
         match &best {
-            Some((_, prev)) if mtime <= *prev => continue,
+            Some((_, prev)) if mtime <= *prev => {}
             _ => best = Some((entry.path(), mtime)),
         }
     }

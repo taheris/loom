@@ -9,6 +9,11 @@ use thiserror::Error;
 pub struct SpecLabel(String);
 
 impl SpecLabel {
+    /// Parses a canonical spec label.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseSpecLabelError`] when the input is malformed.
     pub fn new(s: impl AsRef<str>) -> Result<Self, ParseSpecLabelError> {
         s.as_ref().parse()
     }

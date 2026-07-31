@@ -40,6 +40,10 @@ pub struct FrozenPlan {
 }
 
 impl FrozenPlan {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn reject_if_changed(&self, rebuilt: &Self) -> Result<(), PlanError> {
         if self.plan_hash == rebuilt.plan_hash {
             Ok(())
@@ -148,6 +152,10 @@ pub struct Diagnostic {
 }
 
 /// Build and freeze a deterministic checker plan.
+///
+/// # Errors
+///
+/// Returns an error when tuning input, execution, or evidence validation fails.
 pub fn build(request: Request<'_>) -> Result<FrozenPlan, PlanError> {
     let disabled = request
         .registry
@@ -308,7 +316,7 @@ fn partition_declared(
     selected_ids.len()
 }
 
-fn behavior_remaining_cap(
+const fn behavior_remaining_cap(
     level: Level,
     cap: usize,
     applicable_declared: usize,

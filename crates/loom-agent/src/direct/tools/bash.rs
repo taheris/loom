@@ -14,7 +14,7 @@ use tokio::time;
 use super::{ToolContext, parse_args, schema_for};
 
 /// Per-invocation timeout when the agent does not pass `timeout_ms`.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Bash tool bound to a session context.
 pub struct Bash {
@@ -22,7 +22,7 @@ pub struct Bash {
 }
 
 impl Bash {
-    pub fn new(ctx: ToolContext) -> Self {
+    pub const fn new(ctx: ToolContext) -> Self {
         Self { ctx }
     }
 }
@@ -37,11 +37,11 @@ pub struct Args {
 }
 
 impl Tool for Bash {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Bash"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Run `command` via `sh -c`, returning stdout, stderr, and the \
          exit status. Bounded by `timeout_ms` (default 120000 ms)."
     }
@@ -50,7 +50,7 @@ impl Tool for Bash {
         schema_for::<Args>()
     }
 
-    fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
+    fn invoke(&self, args: Value) -> InvokeFuture<'_> {
         Box::pin(async move {
             let parsed: Args = parse_args(args)?;
             run_command(parsed, self.ctx.clone()).await
@@ -83,8 +83,8 @@ async fn run_command(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_ll
             Ok(ToolOutput {
                 content: json!({
                     "exit_code": output.status.code(),
-                    "stdout": ctx.cap_or_offload("Bash", stdout)?,
-                    "stderr": ctx.cap_or_offload("Bash", stderr)?,
+                    "stdout": ctx.cap_or_offload("Bash", &stdout)?,
+                    "stderr": ctx.cap_or_offload("Bash", &stderr)?,
                 }),
                 is_error: !output.status.success(),
             })
@@ -94,7 +94,7 @@ async fn run_command(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_ll
     }
 }
 
-fn error(message: String) -> ToolOutput {
+const fn error(message: String) -> ToolOutput {
     ToolOutput {
         content: Value::String(message),
         is_error: true,

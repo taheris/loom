@@ -6,7 +6,7 @@ use loom_events::ParsedAgentEvent;
 /// `events` carries zero-or-more [`ParsedAgentEvent`]s — the parser-visible
 /// payload prior to envelope stamping. The session layer joins each one
 /// with the per-spawn `EventEnvelope` (bead id / iteration / source /
-/// ts_ms / seq) via `AgentEvent::from_parsed` (RS-12). A `Vec` is used
+/// `ts_ms` / `seq`) via `AgentEvent::from_parsed` (RS-12). A `Vec` is used
 /// because some protocol messages map to multiple events (claude's
 /// `result/success` produces both `TurnEnd` and `SessionComplete`); other
 /// lines (e.g. claude's `system/init`) produce zero.
@@ -35,30 +35,54 @@ pub struct ParsedLine {
 /// keeps the session a concrete generic-free type.
 pub trait LineParse: Send {
     /// Parse one JSONL line received from the agent's stdout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     fn parse_line(&self, line: &str) -> Result<ParsedLine, ProtocolError>;
 
     /// Encode the initial prompt that opens the session. Returned string is
     /// written to stdin verbatim — implementors include the trailing `\n`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     fn encode_prompt(&self, msg: &str) -> Result<String, ProtocolError>;
 
     /// Encode a mid-session steering message. Same framing rules as
     /// [`Self::encode_prompt`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     fn encode_steer(&self, msg: &str) -> Result<String, ProtocolError>;
 
     /// Encode a post-turn follow-up message. Backends choose the wire verb
     /// that starts the next turn from an idle prompt cycle; some reuse their
     /// initial prompt frame rather than a queue-only follow-up command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     fn encode_follow_up(&self, msg: &str) -> Result<String, ProtocolError> {
         self.encode_steer(msg)
     }
 
     /// Encode a controlled session-completion command after all queued turns
     /// have ended. Most backends complete natively and return `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     fn encode_complete(&self) -> Result<Option<String>, ProtocolError> {
         Ok(None)
     }
 
     /// Encode an abort command, or `None` if the backend has no abort wire
     /// command (claude is killed via signals instead).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     fn encode_abort(&self) -> Result<Option<String>, ProtocolError>;
 }

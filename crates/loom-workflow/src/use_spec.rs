@@ -24,11 +24,19 @@ pub enum UseError {
 }
 
 /// Acquire the planning lock and validate that `label` exists in the cache.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn run(workspace: &Path, label: &SpecLabel, db_path: &Path) -> Result<(), UseError> {
     run_with_timeout(workspace, label, db_path, DEFAULT_LOCK_TIMEOUT)
 }
 
 /// Same as [`run`] with an explicit lock-wait timeout.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn run_with_timeout(
     workspace: &Path,
     label: &SpecLabel,

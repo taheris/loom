@@ -34,17 +34,10 @@ use crate::model_id::{ModelId, SchemaKind};
 use crate::request::{CompletionRequest, MimeType};
 use crate::usage::TokenUsage;
 
-/// Boxed future the object-safe trait methods return. Using a boxed
-/// future (rather than `impl Future`) keeps the trait dyn-compatible so
-/// `Arc<dyn LlmClient>` works for runtime polymorphism — per-tenant
-/// Client caches, mock impls, and external-crate impls compose through
-/// the same dyn surface.
+/// Boxed future returned by object-safe [`LlmClient`] methods.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Successful completion outcome. Every call carries token usage so
-/// consumers see cache hits and cost directly; the same `TokenUsage` is
-/// fanned out as a `DriverKind::TokenUsage` `AgentEvent` for SaaS billing
-/// pipelines tailing the live event stream.
+/// Successful completion containing text, usage, and emitted tool calls.
 #[derive(Clone)]
 pub struct CompletionResponse {
     /// Final assistant text. Tool-use loops yield this from the last
@@ -74,6 +67,11 @@ pub struct ToolCallId(String);
 
 impl ToolCallId {
     /// Parse and validate a provider tool-call identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseToolCallIdError`] when the identifier is empty or
+    /// exceeds the protocol length limit.
     pub fn parse(raw: impl Into<String>) -> Result<Self, ParseToolCallIdError> {
         let raw = raw.into();
         validate_tool_call_id(&raw)?;
@@ -147,10 +145,7 @@ fn validate_tool_call_id(raw: &str) -> Result<(), ParseToolCallIdError> {
     Ok(())
 }
 
-/// One tool call the model emitted on a turn. The conversation loop
-/// dispatches each call to the registered [`crate::Tool`] whose `name`
-/// matches and appends the result as a tool-role message on the next
-/// iteration.
+/// Model-issued call dispatched to a registered [`crate::Tool`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolUseRequest {
     /// Provider-stable identifier the loop echoes back on the matching
@@ -163,14 +158,12 @@ pub struct ToolUseRequest {
     pub args: serde_json::Value,
 }
 
-/// Typed transport-failure surface returned by every fallible `llm`
-/// transport call. Variants are deliberately coarse — the classes
-/// spec'd in `specs/llm.md` — so consumers can drive retry
-/// policy via [`LlmError::retry_advice`] without parsing message
-/// strings. `#[non_exhaustive]` keeps the door open for future
-/// HTTP-status carve-outs and provider-specific error families to land
-/// additively without breaking consumer matchers.
+/// Non-exhaustive transport-failure categories for every LLM client.
 #[non_exhaustive]
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; wrapping them in backticks makes the generated format string invalid"
+)]
 #[derive(Display, Error)]
 pub enum LlmError {
     /// transport failure: {0}
@@ -311,13 +304,15 @@ pub enum RetryAdvice {
 
 impl LlmError {
     /// Retry advice for this error per the canonical classification
-    /// table in `specs/llm.md` § LlmError. Consumers drive their retry
+    /// table in `specs/llm.md` § `LlmError`. Consumers drive their retry
     /// policy off this method; `loom-llm` does not retry.
-    pub fn retry_advice(&self) -> RetryAdvice {
+    pub const fn retry_advice(&self) -> RetryAdvice {
         match self {
-            LlmError::Transport(_) | LlmError::Timeout => RetryAdvice::Retryable,
             LlmError::RateLimited { retry_after } => RetryAdvice::RetryAfter(*retry_after),
-            LlmError::MalformedJson(_) | LlmError::SchemaViolation(_) => RetryAdvice::Retryable,
+            LlmError::Transport(_)
+            | LlmError::Timeout
+            | LlmError::MalformedJson(_)
+            | LlmError::SchemaViolation(_) => RetryAdvice::Retryable,
             LlmError::ProviderHttp { status, .. } => {
                 if *status >= 500 {
                     RetryAdvice::Retryable
@@ -334,21 +329,10 @@ impl LlmError {
     }
 }
 
-/// Fallback applied to [`LlmError::RateLimited`] when the provider's
-/// `Retry-After` header is missing or cannot be parsed. Sixty seconds
-/// is conservative — long enough that consumer retry budgets are
-/// unlikely to burst through a real rate-limit window, short enough
-/// that legitimate transient throttles still recover within one wait.
-pub const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(60);
+/// Fallback for missing or invalid provider `Retry-After` headers.
+pub const DEFAULT_RETRY_AFTER: Duration = Duration::from_mins(1);
 
-/// Parse a `Retry-After` header value into a [`Duration`] per
-/// RFC 7231 §7.1.3. Accepts the documented integer-seconds form (e.g.
-/// `"30"`) and the IMF-fixdate form (e.g.
-/// `"Sun, 06 Nov 1994 08:49:37 GMT"`). The `now` parameter anchors
-/// HTTP-date subtraction; consumers inject a clock-supplied value so
-/// the helper stays pure and deterministic. Unparseable input and
-/// past dates fall back to [`DEFAULT_RETRY_AFTER`] / [`Duration::ZERO`]
-/// respectively.
+/// Parse an RFC 7231 `Retry-After` value relative to `now`.
 pub fn parse_retry_after(value: &str, now: SystemTime) -> Duration {
     let trimmed = value.trim();
     if let Ok(secs) = trimmed.parse::<u64>() {
@@ -539,25 +523,25 @@ pub trait LlmClient: Send + Sync {
 
     /// Run a completion against the request's `ModelId`. Returns the
     /// final assistant text plus token usage.
-    fn complete<'a>(
-        &'a self,
+    fn complete(
+        &self,
         req: CompletionRequest,
-    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>>;
+    ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>>;
 
     /// Schema-aware completion that returns the raw assistant-text JSON
     /// payload. Implementers select the right provider mechanism
     /// (Anthropic `output_config.format = json_schema` when available,
-    /// OpenAI `response_format`, Gemini response schema) using the
+    /// `OpenAI` `response_format`, Gemini response schema) using the
     /// supplied schema and type name, run the call, and return the raw
     /// text the model produced. Consumers should prefer the typed
     /// [`LlmClientExt::complete_structured`] wrapper which generates
     /// the schema from `T` and parses the returned text.
-    fn complete_structured_raw<'a>(
-        &'a self,
+    fn complete_structured_raw(
+        &self,
         req: CompletionRequest,
         schema: serde_json::Value,
         type_name: String,
-    ) -> BoxFuture<'a, Result<String, LlmError>>;
+    ) -> BoxFuture<'_, Result<String, LlmError>>;
 }
 
 impl<C: LlmClient + ?Sized> LlmClient for Box<C> {
@@ -577,29 +561,24 @@ impl<C: LlmClient + ?Sized> LlmClient for Box<C> {
         (**self).emit_event(event);
     }
 
-    fn complete<'a>(
-        &'a self,
+    fn complete(
+        &self,
         req: CompletionRequest,
-    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+    ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
         (**self).complete(req)
     }
 
-    fn complete_structured_raw<'a>(
-        &'a self,
+    fn complete_structured_raw(
+        &self,
         req: CompletionRequest,
         schema: serde_json::Value,
         type_name: String,
-    ) -> BoxFuture<'a, Result<String, LlmError>> {
+    ) -> BoxFuture<'_, Result<String, LlmError>> {
         (**self).complete_structured_raw(req, schema, type_name)
     }
 }
 
-/// Typed consumer-facing structured-output entry point. Blanket-
-/// implemented for every [`LlmClient`] (including `dyn LlmClient`), so
-/// `Arc<dyn LlmClient>` dispatches `complete_structured::<T>` through
-/// the dyn-safe [`LlmClient::complete_structured_raw`] without the
-/// trait itself carrying a generic method (which would break
-/// object-safety).
+/// Typed structured-output extension implemented for every [`LlmClient`].
 pub trait LlmClientExt: LlmClient {
     /// Run a completion that deserializes into `T`. Generates `T`'s
     /// JSON schema via `schemars`, calls
@@ -608,19 +587,13 @@ pub trait LlmClientExt: LlmClient {
     /// variants: [`LlmError::MalformedJson`] for non-JSON / parse
     /// failures, [`LlmError::SchemaViolation`] for parsed-but-invalid
     /// responses.
-    fn complete_structured<'a, T>(
-        &'a self,
-        req: CompletionRequest,
-    ) -> BoxFuture<'a, Result<T, LlmError>>
+    fn complete_structured<T>(&self, req: CompletionRequest) -> BoxFuture<'_, Result<T, LlmError>>
     where
         T: DeserializeOwned + JsonSchema + Send + 'static;
 }
 
 impl<C: LlmClient + ?Sized> LlmClientExt for C {
-    fn complete_structured<'a, T>(
-        &'a self,
-        req: CompletionRequest,
-    ) -> BoxFuture<'a, Result<T, LlmError>>
+    fn complete_structured<T>(&self, req: CompletionRequest) -> BoxFuture<'_, Result<T, LlmError>>
     where
         T: DeserializeOwned + JsonSchema + Send + 'static,
     {
@@ -644,7 +617,7 @@ where
     serde_json::from_value(value).map_err(|err| LlmError::SchemaViolation(err.to_string()))
 }
 
-/// Sanitize a schemars-derived schema name for the OpenAI
+/// Sanitize a schemars-derived schema name for the `OpenAI`
 /// structured-output API, which only accepts ASCII alphanumerics plus
 /// `-` and `_`. The other adapters ignore the name, so the same
 /// sanitization is safe across providers.
@@ -704,15 +677,15 @@ mod tests {
                 SchemaKind::Anthropic
             }
 
-            fn complete<'a>(
-                &'a self,
+            fn complete(
+                &self,
                 req: CompletionRequest,
-            ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+            ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
                 let captured = self.captured.clone();
                 Box::pin(async move {
                     captured
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(req.model.as_wire());
                     Ok(CompletionResponse {
                         text: "ok".into(),
@@ -722,12 +695,12 @@ mod tests {
                 })
             }
 
-            fn complete_structured_raw<'a>(
-                &'a self,
+            fn complete_structured_raw(
+                &self,
                 _req: CompletionRequest,
                 _schema: serde_json::Value,
                 _type_name: String,
-            ) -> BoxFuture<'a, Result<String, LlmError>> {
+            ) -> BoxFuture<'_, Result<String, LlmError>> {
                 Box::pin(async move { Ok(r#"{"text":"structured"}"#.to_string()) })
             }
         }
@@ -749,7 +722,9 @@ mod tests {
             tokio_test::block_on(client.complete(req)).expect("dyn dispatch reaches stub complete");
         assert_eq!(resp.text, "ok");
         assert_eq!(
-            *captured.lock().unwrap_or_else(|p| p.into_inner()),
+            *captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             vec!["claude-sonnet-4-6".to_string()],
         );
 
@@ -777,22 +752,22 @@ mod tests {
             fn schema(&self) -> SchemaKind {
                 self.0
             }
-            fn complete<'a>(
-                &'a self,
+            fn complete(
+                &self,
                 _req: CompletionRequest,
-            ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+            ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
                 Box::pin(async move {
                     Err(LlmError::Provider {
                         message: "stub".into(),
                     })
                 })
             }
-            fn complete_structured_raw<'a>(
-                &'a self,
+            fn complete_structured_raw(
+                &self,
                 _req: CompletionRequest,
                 _schema: serde_json::Value,
                 _type_name: String,
-            ) -> BoxFuture<'a, Result<String, LlmError>> {
+            ) -> BoxFuture<'_, Result<String, LlmError>> {
                 Box::pin(async move {
                     Err(LlmError::Provider {
                         message: "stub".into(),
@@ -866,7 +841,7 @@ mod tests {
     }
 
     /// Every variant of [`LlmError`] reports the [`RetryAdvice`] the
-    /// classification table in `specs/llm.md` § LlmError pins. The
+    /// classification table in `specs/llm.md` § `LlmError` pins. The
     /// const list is exhaustive — adding a variant trips the
     /// `[non_exhaustive]` compile error on the const slice and forces
     /// the table to grow with the enum.
@@ -952,12 +927,9 @@ mod tests {
     /// header falls back to [`DEFAULT_RETRY_AFTER`].
     #[test]
     fn rate_limited_parses_retry_after_header() {
-        let anchor = SystemTime::UNIX_EPOCH + Duration::from_secs(785_330_400);
+        let anchor = SystemTime::UNIX_EPOCH + Duration::from_mins(13_088_840);
         assert_eq!(parse_retry_after("30", anchor), Duration::from_secs(30));
-        assert_eq!(
-            parse_retry_after("  120 ", anchor),
-            Duration::from_secs(120),
-        );
+        assert_eq!(parse_retry_after("  120 ", anchor), Duration::from_mins(2),);
 
         let later = anchor + Duration::from_secs(90);
         let later_header = format_imf_fixdate(later);
@@ -1001,10 +973,12 @@ mod tests {
     /// use this to build header values whose parse round-trip is the
     /// invariant under test in [`rate_limited_parses_retry_after_header`].
     fn format_imf_fixdate(t: SystemTime) -> String {
-        let secs = t
+        let secs: i64 = t
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("test anchor after epoch")
-            .as_secs() as i64;
+            .as_secs()
+            .try_into()
+            .expect("test timestamp fits i64");
         let days = secs.div_euclid(86_400);
         let tod = secs.rem_euclid(86_400);
         let hour = tod / 3_600;
@@ -1014,25 +988,25 @@ mod tests {
         let day_name = day_name_from_days(days);
         let month_name = [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ][(month - 1) as usize];
-        format!("{day_name}, {day:02} {month_name} {year:04} {hour:02}:{min:02}:{sec:02} GMT",)
+        ][usize::try_from(month - 1).expect("month index fits usize")];
+        format!("{day_name}, {day:02} {month_name} {year:04} {hour:02}:{min:02}:{sec:02} GMT")
     }
 
     fn day_name_from_days(days: i64) -> &'static str {
-        let wd = ((days + 4).rem_euclid(7)) as usize;
+        let wd = usize::try_from((days + 4).rem_euclid(7)).expect("weekday index fits usize");
         ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][wd]
     }
 
     fn civil_from_days(z: i64) -> (i64, u32, u32) {
         let z = z + 719_468;
         let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let doe = (z - era * 146_097) as u64;
+        let doe = u64::try_from(z - era * 146_097).expect("day of era is non-negative");
         let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-        let y = yoe as i64 + era * 400;
+        let y = i64::try_from(yoe).expect("year of era fits i64") + era * 400;
         let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
         let mp = (5 * doy + 2) / 153;
-        let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-        let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+        let d = u32::try_from(doy - (153 * mp + 2) / 5 + 1).expect("day fits u32");
+        let m = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).expect("month fits u32");
         let y = if m <= 2 { y + 1 } else { y };
         (y, m, d)
     }

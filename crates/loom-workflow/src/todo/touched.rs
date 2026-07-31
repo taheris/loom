@@ -27,6 +27,10 @@ pub struct TouchedSpec {
 /// Compute the touched set: every spec whose `specs/<X>.md` differs from
 /// `HEAD` in the working tree. Returns the per-spec diff bodies so callers
 /// can render the multi-spec fan-out block directly.
+///
+/// # Errors
+///
+/// Returns an error when todo planning, fan-out, or state persistence fails.
 pub async fn touched_specs(git: &GitClient) -> Result<Vec<TouchedSpec>, TodoError> {
     let paths = git
         .workdir_changed_specs()

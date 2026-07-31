@@ -1,7 +1,9 @@
 use loom_driver::identifier::BeadId;
 use loom_gate::IntegrityFinding;
 
-/// Which of the four push-gate inputs refused the push. Carried on
+/// Which of the four push-gate inputs refused the push.
+///
+/// Carried on
 /// [`ReviewVerdict::PushBlocked`] so the `push_gate_refuse` driver event
 /// can name the failing condition without the consumer re-deriving it
 /// from the payload shape.
@@ -23,7 +25,7 @@ pub enum PushGateRefuseCause {
 impl PushGateRefuseCause {
     /// Stable wire string used in `push_gate_refuse` driver-event
     /// payloads and `bd update --notes` surfaces.
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::BeadNotDone => "bead-not-done",
             Self::VerifierFailed => "verifier-failed",
@@ -33,7 +35,9 @@ impl PushGateRefuseCause {
     }
 }
 
-/// Snapshot of bead state taken on either side of the reviewer agent. The
+/// Snapshot of bead state taken on either side of the reviewer agent.
+///
+/// The
 /// driver pre-counts beads with `spec:<label>`, runs the reviewer, then
 /// re-counts and inspects the same query for terminal inbox/deferred label
 /// membership.

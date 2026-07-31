@@ -64,7 +64,7 @@ pub fn run(input: &WalkInput) -> Verdict {
 }
 
 /// `true` iff `needle` appears in `haystack` followed by a non-alphanumeric
-/// (or end-of-string) — so `loom run` matches `loom run -s` and `\`loom run\``
+/// (or end-of-string) — so `loom run` matches `loom run -s` and a code span
 /// but not `loom runner` / `loom runtime`. Word-boundary intentionally only
 /// checks the trailing edge; the leading edge is fenced by the literal
 /// space between `loom` and the subcommand.

@@ -1,5 +1,6 @@
-//! `Edit` — find-and-replace `old_string` with `new_string` in a single
-//! workspace file. When `replace_all` is false (the default), errors if
+//! Exact string replacement for one workspace file.
+//!
+//! Replaces `old_string` with `new_string`. When `replace_all` is false (the default), errors if
 //! `old_string` is not unique in the file so the agent cannot
 //! accidentally edit an unrelated occurrence.
 
@@ -19,7 +20,7 @@ pub struct Edit {
 }
 
 impl Edit {
-    pub fn new(ctx: ToolContext) -> Self {
+    pub const fn new(ctx: ToolContext) -> Self {
         Self { ctx }
     }
 }
@@ -38,11 +39,11 @@ pub struct Args {
 }
 
 impl Tool for Edit {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Edit"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Replace `old_string` with `new_string` in `file_path`. Errors \
          when `old_string` is not unique unless `replace_all` is true."
     }
@@ -51,7 +52,7 @@ impl Tool for Edit {
         schema_for::<Args>()
     }
 
-    fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
+    fn invoke(&self, args: Value) -> InvokeFuture<'_> {
         Box::pin(async move {
             let parsed: Args = parse_args(args)?;
             Ok(edit_file(parsed, self.ctx.clone()).await)
@@ -95,7 +96,7 @@ async fn edit_file(args: Args, ctx: ToolContext) -> ToolOutput {
     }
 }
 
-fn error(message: String) -> ToolOutput {
+const fn error(message: String) -> ToolOutput {
     ToolOutput {
         content: Value::String(message),
         is_error: true,

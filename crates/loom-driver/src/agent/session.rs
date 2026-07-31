@@ -15,8 +15,10 @@ pub struct Idle;
 /// Typestate marker — session has been prompted and is streaming events.
 pub struct Active;
 
-/// Live agent session. The state parameter `S` enforces protocol order at
-/// compile time: `prompt` only exists on [`Idle`], while event reads and
+/// Live agent session with a typestate-enforced protocol.
+///
+/// The state parameter `S` enforces protocol order at compile time: `prompt`
+/// only exists on [`Idle`], while event reads and
 /// in-flight commands only exist on [`Active`]. Backend implementations
 /// construct the session with [`Self::new`] and hand it back through
 /// `AgentBackend::spawn`.
@@ -71,6 +73,10 @@ impl AgentSession<Idle> {
     /// Send the initial prompt and transition the session to [`Active`].
     /// The parser owns wire framing — this method only writes the encoded
     /// bytes and flushes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     pub async fn prompt(mut self, msg: &str) -> Result<AgentSession<Active>, ProtocolError> {
         let line = self.parser.encode_prompt(msg)?;
         self.stdin.write_all(line.as_bytes()).await?;
@@ -100,26 +106,29 @@ impl AgentSession<Active> {
     /// Per RS-12 the session yields the unstamped parser payload; the
     /// workflow layer joins each event with the per-spawn `EventEnvelope`
     /// via `AgentEvent::from_parsed` before any consumer sees it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     pub async fn next_event(&mut self) -> Result<Option<ParsedAgentEvent>, ProtocolError> {
         if let Some(evt) = self.pending.pop_front() {
             return Ok(Some(evt));
         }
         loop {
-            let line_owned = match self.reader.next_line().await? {
-                Some(line) => line.to_owned(),
-                None => {
-                    if let Some(status) = self.child.try_wait()?
-                        && !status.success()
-                    {
-                        if let Some(code) = process_exit_code(status) {
-                            return Err(ProtocolError::ProcessExit(code));
-                        }
-                        return Err(ProtocolError::Io(std::io::Error::other(
-                            "agent process exited without status code",
-                        )));
+            let line_owned = if let Some(line) = self.reader.next_line().await? {
+                line.to_owned()
+            } else {
+                if let Some(status) = self.child.try_wait()?
+                    && !status.success()
+                {
+                    if let Some(code) = process_exit_code(status) {
+                        return Err(ProtocolError::ProcessExit(code));
                     }
-                    return Ok(None);
+                    return Err(ProtocolError::Io(std::io::Error::other(
+                        "agent process exited without status code",
+                    )));
                 }
+                return Ok(None);
             };
             let parsed = self.parser.parse_line(&line_owned)?;
             if let Some(response) = parsed.response {
@@ -139,6 +148,10 @@ impl AgentSession<Active> {
 
     /// Send a mid-session steering message. The parser encodes the wire
     /// payload (pi: JSONL `steer` command, claude: stream-json user message).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     pub async fn steer(&mut self, msg: &str) -> Result<(), ProtocolError> {
         let line = self.parser.encode_steer(msg)?;
         self.stdin.write_all(line.as_bytes()).await?;
@@ -148,6 +161,10 @@ impl AgentSession<Active> {
     }
 
     /// Send a post-turn follow-up message while keeping the process alive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     pub async fn follow_up(&mut self, msg: &str) -> Result<(), ProtocolError> {
         let line = self.parser.encode_follow_up(msg)?;
         self.stdin.write_all(line.as_bytes()).await?;
@@ -162,6 +179,10 @@ impl AgentSession<Active> {
     /// far has reached its own `TurnEnd`. Backends with native completion do
     /// not encode a frame, so this remains a bookkeeping-only operation for
     /// them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     pub async fn finish_turn(&mut self) -> Result<(), ProtocolError> {
         self.open_turns = self.open_turns.saturating_sub(1);
         if self.open_turns != 0 || self.completion_sent {
@@ -181,6 +202,10 @@ impl AgentSession<Active> {
     /// stdin first; otherwise the caller is responsible for any process-level
     /// cleanup (claude is killed via signals — see the shutdown watchdog in
     /// the claude backend). The pending event queue is drained.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     pub async fn abort(mut self) -> Result<AgentSession<Idle>, ProtocolError> {
         if let Some(line) = self.parser.encode_abort()? {
             self.stdin.write_all(line.as_bytes()).await?;
@@ -202,7 +227,7 @@ impl AgentSession<Active> {
 impl<S> AgentSession<S> {
     /// Borrow the underlying child process — backends use this to wire up
     /// shutdown watchdogs without giving up ownership of the session.
-    pub fn child_mut(&mut self) -> &mut Child {
+    pub const fn child_mut(&mut self) -> &mut Child {
         &mut self.child
     }
 

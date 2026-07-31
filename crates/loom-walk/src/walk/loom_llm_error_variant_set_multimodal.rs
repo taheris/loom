@@ -1,6 +1,6 @@
 //! `LlmError` is the typed transport-failure surface external consumers
 //! drive retry policy off; the variant set is spec'd in `specs/llm.md`
-//! § LlmError and must include the multimodal client-side variants.
+//! § `LlmError` and must include the multimodal client-side variants.
 
 use std::collections::BTreeSet;
 

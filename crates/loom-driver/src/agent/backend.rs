@@ -36,16 +36,16 @@ pub struct SpawnConfig {
     pub image_source_kind: Option<ImageSourceKind>,
     /// Raw, profile-agnostic wrix launcher selected from the same manifest
     /// entry as [`SpawnConfig::image_ref`]. Host-side backends prefer this
-    /// over `LOOM_WRIX_BIN` so they can pass Loom's per-bead ProfileConfig to
+    /// over `LOOM_WRIX_BIN` so they can pass Loom's per-bead `ProfileConfig` to
     /// a launcher that does not already inject a different `--profile-config`.
     /// Skipped because it is host process state, not part of wrix's
     /// per-launch JSON contract.
     #[serde(skip)]
     pub wrix_launcher: Option<PathBuf>,
-    /// Wrix ProfileConfig path selected from the same manifest entry as
+    /// Wrix `ProfileConfig` path selected from the same manifest entry as
     /// [`SpawnConfig::image_ref`]. Host-side backends pass it as a launcher
     /// flag rather than serializing it into the spawn-config JSON; the
-    /// ProfileConfig carries the matching image digest for wrix install
+    /// `ProfileConfig` carries the matching image digest for wrix install
     /// preflight.
     #[serde(skip)]
     pub profile_config: Option<PathBuf>,
@@ -56,13 +56,13 @@ pub struct SpawnConfig {
     /// `/workspace/.wrix/dolt.sock` (replacing the host-side hardlink shim
     /// in [`crate::git::GitClient`]) and, when configured, the shared sccache
     /// directory at the configured container path. Additive to the resolved
-    /// profile's `mounts`; see `specs/agent.md` § SpawnConfig.
+    /// profile's `mounts`; see `specs/agent.md` § `SpawnConfig`.
     ///
     /// Single-file mounts (sockets) and directory mounts both pass through
     /// virtiofs on Linux. On Darwin, the wrix sandbox classifier accepts
     /// directories (staged + copied at launch) and regular files
     /// (copy-from-parent-dir), but rejects Unix-socket `host_path` entries at
-    /// launch — Apple's VirtioFS does not pass socket operations across the
+    /// launch — Apple's `VirtioFS` does not pass socket operations across the
     /// VM boundary. Callers that emit a socket mount on Darwin will see the
     /// launcher exit non-zero with a clear error naming the offending
     /// `host_path`; route the same resource over TCP for the Darwin path.
@@ -204,7 +204,7 @@ pub enum ImageSourceKind {
 }
 
 impl ImageSourceKind {
-    /// Stable wire token used in SpawnConfig and profile-image manifests.
+    /// Stable wire token used in `SpawnConfig` and profile-image manifests.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NixDescriptor => "nix-descriptor",
@@ -222,8 +222,9 @@ fn path_is_empty(path: &Path) -> bool {
 /// invocations (`specs/harness.md` § Nested-Loom Guard).
 pub const LOOM_INSIDE_ENV: &str = "LOOM_INSIDE";
 
-/// Append `LOOM_INSIDE=1` to a [`SpawnConfig::env`] allowlist if not already
-/// present. Idempotent so dispatch helpers can apply it without first
+/// Add `LOOM_INSIDE=1` to a [`SpawnConfig::env`] allowlist.
+///
+/// Idempotent so dispatch helpers can apply it without first
 /// checking, and downstream code can re-apply it without duplicating the
 /// entry.
 pub fn set_loom_inside(env: &mut Vec<(String, String)>) {
@@ -248,6 +249,10 @@ mod duration_secs_opt {
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    #[expect(
+        clippy::ref_option,
+        reason = "serde passes a reference to the optional field to a with-module serializer"
+    )]
     pub fn serialize<S: Serializer>(value: &Option<Duration>, ser: S) -> Result<S::Ok, S::Error> {
         value.map(|d| d.as_secs()).serialize(ser)
     }
@@ -295,8 +300,9 @@ pub struct ModelSelection {
     pub model_id: String,
 }
 
-/// Per-session reasoning-effort knob sent by pi RPC's
-/// `set_thinking_level { level }`. The level set matches the pi-mono protocol
+/// Per-session reasoning-effort knob for pi RPC.
+///
+/// Sent through `set_thinking_level { level }`. The level set matches the pi-mono protocol
 /// (`specs/agent.md` Pi command table). The driver sends this
 /// best-effort after the startup probe — pi rejections downgrade to a `warn!`
 /// rather than aborting the handshake, so providers without thinking support
@@ -313,7 +319,7 @@ pub enum ThinkingLevel {
 }
 
 impl ThinkingLevel {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             ThinkingLevel::Off => "off",
             ThinkingLevel::Minimal => "minimal",
@@ -355,6 +361,10 @@ pub trait AgentBackend: Send + Sync {
     /// emits the `agent_input` event before sending the returned payload via
     /// `steer`. Claude's default `None` stands because its compaction hook
     /// re-pins inside the agent process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     fn compaction_repin(_config: &SpawnConfig) -> Result<Option<String>, ProtocolError> {
         Ok(None)
     }
@@ -425,7 +435,7 @@ mod tests {
             model_id: None,
             model,
             thinking_level: None,
-            observers: Default::default(),
+            observers: AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),

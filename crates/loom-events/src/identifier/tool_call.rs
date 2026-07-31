@@ -9,6 +9,11 @@ use thiserror::Error;
 pub struct ToolCallId(String);
 
 impl ToolCallId {
+    /// Parses a canonical tool-call id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseToolCallIdError`] when the input is malformed.
     pub fn new(s: impl AsRef<str>) -> Result<Self, ParseToolCallIdError> {
         s.as_ref().parse()
     }

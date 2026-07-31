@@ -40,7 +40,10 @@ fn pinned_path() -> String {
             return dir.to_string_lossy().into_owned();
         }
     }
-    panic!("could not locate `true` on PATH={path_var:?}");
+    panic!(
+        "could not locate `true` on PATH={}",
+        Path::new(&path_var).display()
+    );
 }
 
 fn run_loom_gate(workspace: &Path, subcommand: &str) -> std::process::Output {

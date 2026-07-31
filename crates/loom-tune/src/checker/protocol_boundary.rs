@@ -31,11 +31,11 @@ pub struct Violation {
 }
 
 impl Violation {
-    pub fn boundary(&self) -> Boundary {
+    pub const fn boundary(&self) -> Boundary {
         self.boundary
     }
 
-    pub fn line(&self) -> usize {
+    pub const fn line(&self) -> usize {
         self.line
     }
 

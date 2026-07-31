@@ -51,7 +51,7 @@ pub fn build_wrix_argv(
     argv
 }
 
-fn agent_command(kind: AgentKind) -> &'static str {
+const fn agent_command(kind: AgentKind) -> &'static str {
     match kind {
         AgentKind::Claude => "claude",
         AgentKind::Pi => "pi",

@@ -173,7 +173,7 @@ fn annotation_from_cache_row(row: &CacheRow) -> CriterionAnnotation {
     }
 }
 
-fn tier_from_gate(tier: Tier) -> AnnotationTier {
+const fn tier_from_gate(tier: Tier) -> AnnotationTier {
     match tier {
         Tier::Check => AnnotationTier::Check,
         Tier::Test => AnnotationTier::Test,
@@ -182,7 +182,7 @@ fn tier_from_gate(tier: Tier) -> AnnotationTier {
     }
 }
 
-fn verdict_to_result(verdict: Verdict) -> CriterionResult {
+const fn verdict_to_result(verdict: Verdict) -> CriterionResult {
     match verdict {
         Verdict::Pass => CriterionResult::Pass,
         Verdict::Fail => CriterionResult::Fail,

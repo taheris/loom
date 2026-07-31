@@ -4,7 +4,7 @@ use crate::identifier::{BeadId, MoleculeId, ProfileName, SessionId, SpecLabel, T
 
 /// Driver-side event subtype carried on [`AgentEvent::DriverEvent`].
 ///
-/// On the wire `driver_kind` is a snake_case string for forward
+/// On the wire `driver_kind` is a snake-case string for forward
 /// compatibility — older consumers see unknown kinds as
 /// [`DriverKind::Other`] rather than failing deserialization. Producers
 /// pass the enum, so they cannot typo a known kind; consumers match
@@ -25,7 +25,7 @@ pub enum DriverKind {
     /// `severity`, `phase`, `stall_secs`.
     StallWatchdog,
     /// Per-call token accounting emitted by `llm` after every
-    /// `complete*` so SaaS billing pipelines tail the live event stream
+    /// `complete*` so billing pipelines tail the live event stream
     /// instead of re-parsing provider responses.
     TokenUsage,
     /// Direct tool output was written to the per-session offload sink.
@@ -112,9 +112,9 @@ pub enum DriverKind {
 }
 
 impl DriverKind {
-    /// Snake_case wire representation. `Other` round-trips the carried
+    /// Snake-case wire representation. `Other` round-trips the carried
     /// string verbatim so unknown producers stay legible in JSONL logs.
-    pub fn as_wire(&self) -> &str {
+    pub const fn as_wire(&self) -> &str {
         match self {
             DriverKind::VerdictGate => "verdict_gate",
             DriverKind::RetryDispatch => "retry_dispatch",
@@ -233,7 +233,7 @@ pub enum RedactionClass {
 }
 
 impl RedactionClass {
-    pub fn as_wire(&self) -> &str {
+    pub const fn as_wire(&self) -> &str {
         match self {
             RedactionClass::Secret => "secret",
             RedactionClass::Token => "token",
@@ -275,7 +275,7 @@ pub struct InputRedaction {
 }
 
 /// Driver-origin payload before the session stamper adds envelope fields.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverEventPayload {
     pub driver_kind: DriverKind,
     pub summary: String,
@@ -339,15 +339,18 @@ impl DriverEventPayload {
     ) -> Self {
         let tool = tool.into();
         let call_id = call_id.into();
+        let mut payload = serde_json::Map::new();
+        payload.insert("stage".to_string(), serde_json::Value::from(stage));
+        payload.insert("tool".to_string(), serde_json::Value::from(tool.clone()));
+        payload.insert("params".to_string(), params);
+        payload.insert(
+            "call_id".to_string(),
+            serde_json::Value::from(call_id.clone()),
+        );
         Self::new(
             DriverKind::DoomLoopTripped,
             format!("doom-loop stage {stage} for tool `{tool}` on call {call_id}"),
-            serde_json::json!({
-                "stage": stage,
-                "tool": tool,
-                "params": params,
-                "call_id": call_id,
-            }),
+            serde_json::Value::Object(payload),
         )
     }
 
@@ -383,7 +386,7 @@ pub struct SessionScope {
 }
 
 impl SessionScope {
-    pub fn bead(
+    pub const fn bead(
         session_id: SessionId,
         bead_id: BeadId,
         molecule_id: Option<MoleculeId>,
@@ -397,7 +400,7 @@ impl SessionScope {
         }
     }
 
-    pub fn phase(session_id: SessionId, molecule_id: Option<MoleculeId>) -> Self {
+    pub const fn phase(session_id: SessionId, molecule_id: Option<MoleculeId>) -> Self {
         Self {
             session_id,
             bead_id: None,
@@ -407,8 +410,9 @@ impl SessionScope {
     }
 }
 
-/// Common envelope every [`AgentEvent`] carries. Serialized flat at the
-/// top level via `#[serde(flatten)]` — consumers see one discriminator
+/// Common flat envelope carried by every [`AgentEvent`].
+///
+/// Serialized at the top level via `#[serde(flatten)]` — consumers see one discriminator
 /// (`kind`) plus the envelope fields plus variant-specific payload, all
 /// at the same nesting level. No nested `message_update { delta: { ... } }`
 /// wrappers — every consumer dispatches with one `match` (Rust) or one
@@ -418,7 +422,7 @@ impl SessionScope {
 /// driver-event emitter) maintains a per-session counter and stamps each
 /// emitted event with the next value. Bead-backed sessions also carry
 /// `bead_id`; standalone phase sessions leave work-routing fields absent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventEnvelope {
     pub session_id: SessionId,
     pub bead_id: Option<BeadId>,
@@ -453,8 +457,9 @@ pub struct AgentStartMetadata {
     pub parent_tool_call_id: Option<ToolCallId>,
 }
 
-/// Backend-neutral event flowing from a running agent up to the workflow
-/// engine. Both pi and claude line parsers normalize their wire messages
+/// Backend-neutral event emitted by a running agent.
+///
+/// Both Pi and Claude line parsers normalize their wire messages
 /// into this enum — once an `AgentEvent` flows downstream no code knows
 /// which backend produced it.
 ///
@@ -619,7 +624,7 @@ pub enum AgentEvent {
         aborted: bool,
     },
 
-    /// Agent backend signaled an auto-retry attempt (pi's auto_retry,
+    /// Agent backend signaled an auto-retry attempt (Pi's `auto_retry`,
     /// claude's transient-error retries).
     AutoRetry {
         #[serde(flatten)]
@@ -657,7 +662,7 @@ pub enum AgentEvent {
 impl AgentEvent {
     /// Borrow the common envelope. All variants carry one — exhaustive
     /// match keeps this in sync as new variants land.
-    pub fn envelope(&self) -> &EventEnvelope {
+    pub const fn envelope(&self) -> &EventEnvelope {
         match self {
             AgentEvent::AgentStart { envelope, .. }
             | AgentEvent::AgentInput { envelope, .. }
@@ -769,8 +774,10 @@ impl AgentEvent {
     }
 }
 
-/// Parser-emitted event prior to envelope stamping. The parser layer has
-/// no visibility into the live session/work scope / source / ts_ms /
+/// Parser-emitted event prior to envelope stamping.
+///
+/// The parser layer has
+/// no visibility into the live session/work scope / source / `ts_ms` /
 /// seq context — the session layer joins this payload with the
 /// per-spawn [`EventEnvelope`] via [`AgentEvent::from_parsed`].
 ///
@@ -905,7 +912,7 @@ impl EnvelopeBuilder {
 
     /// Borrow the current seq counter without advancing it. Tests use
     /// this to assert monotonicity.
-    pub fn current_seq(&self) -> u64 {
+    pub const fn current_seq(&self) -> u64 {
         self.seq
     }
 }
@@ -1074,8 +1081,9 @@ mod tests {
         assert!(parsed.envelope().iteration.is_none());
     }
 
-    /// `agent_start` carries the extras spec calls out: schema_version,
-    /// title, profile, spec_label, started_at_ms, parent_tool_call_id.
+    /// `agent_start` carries the extras the spec calls out:
+    /// `schema_version`, `title`, `profile`, `spec_label`, `started_at_ms`,
+    /// and `parent_tool_call_id`.
     #[test]
     fn agent_start_fields_present() {
         let mut b = builder();
@@ -1098,7 +1106,7 @@ mod tests {
             "started_at_ms",
             "parent_tool_call_id",
         ] {
-            assert!(obj.contains_key(key), "agent_start missing `{key}`: {v}",);
+            assert!(obj.contains_key(key), "agent_start missing `{key}`: {v}");
         }
         assert_eq!(obj["kind"], "agent_start");
         assert_eq!(obj["schema_version"], 1);
@@ -1206,7 +1214,7 @@ mod tests {
             "tool",
             "params",
         ] {
-            assert!(obj.contains_key(key), "flat key `{key}` missing from {v}",);
+            assert!(obj.contains_key(key), "flat key `{key}` missing from {v}");
         }
         // Anti-test: there must NOT be any wrapping `delta`/`payload`/
         // `assistantMessageEvent` keys that would indicate nesting.

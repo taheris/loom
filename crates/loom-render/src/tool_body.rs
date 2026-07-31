@@ -29,18 +29,13 @@ use crate::osc8;
 /// Default renderer byte budget for inline tool bodies.
 pub const BODY_CAP_BYTES: usize = 16 * 1024;
 
-/// OSC 8 wrapping context for summary cells. When `supported = true`,
-/// path-bearing tools (Read/Edit/Write/Grep/WebFetch) wrap the path or
-/// URL in the OSC 8 hyperlink escape so cmd-click opens the editor or
-/// browser. `cwd` is the workspace root used to compute absolute
-/// `file://` URLs from relative paths and to normalize absolute
-/// workspace paths to repo-relative form in the displayed summary
-/// cell.
+/// OSC 8 support and workspace context for path-bearing summary cells.
 ///
 /// Constructed once per renderer at session start — environment
 /// detection lives at the call site, not inside this struct, so tests
 /// can pin both branches without env mutation.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct Osc8Context {
     pub supported: bool,
     pub cwd: PathBuf,
@@ -50,7 +45,7 @@ impl Osc8Context {
     /// OSC 8 wrapping suppressed — every `wrap` call returns the
     /// display string unchanged. Used by non-Pretty render modes and
     /// the default case when no terminal capability has been probed.
-    pub fn disabled() -> Self {
+    pub const fn disabled() -> Self {
         Self {
             supported: false,
             cwd: PathBuf::new(),
@@ -60,7 +55,7 @@ impl Osc8Context {
     /// OSC 8 wrapping active. `cwd` is the workspace root, used to
     /// turn relative paths into absolute `file://` URLs so cmd-click
     /// resolves correctly regardless of the terminal's working dir.
-    pub fn enabled(cwd: PathBuf) -> Self {
+    pub const fn enabled(cwd: PathBuf) -> Self {
         Self {
             supported: true,
             cwd,
@@ -126,10 +121,7 @@ pub(crate) fn renders_body_by_default(tool: &str) -> bool {
     )
 }
 
-/// Build the one-line summary cell for a tool call. `tool` is the
-/// builtin name; `params` is the call's argument JSON; `osc8` controls
-/// hyperlink wrapping for path-bearing cells. Pure function so tests
-/// can pin per-tool shape without the renderer state.
+/// Build a tool call's one-line summary cell.
 pub fn summary_cell(tool: &str, params: &Value, osc8: &Osc8Context) -> String {
     match tool_kind(tool) {
         Some(ToolKind::Read) => read_summary(params, osc8),
@@ -218,10 +210,7 @@ fn wrap_path(osc8: &Osc8Context, path: &str, line: Option<u32>, display: &str) -
     osc8::wrap(&url, display, true)
 }
 
-/// Strip the workspace-root prefix from `path` for display purposes
-/// only — the agent's invocation still uses the absolute form. Returns
-/// the input unchanged when `cwd` is empty, when `path` is not absolute,
-/// or when `path` does not start with `cwd`.
+/// Strip the workspace prefix from an absolute display path when possible.
 pub fn normalize_for_display(cwd: &Path, path: &str) -> String {
     if path.is_empty() || cwd.as_os_str().is_empty() {
         return path.to_string();
@@ -388,8 +377,8 @@ mod tests {
             &disabled(),
         );
         assert!(cell.contains("src/lib.rs"));
-        assert!(cell.contains("+"));
-        assert!(cell.contains("-"));
+        assert!(cell.contains('+'));
+        assert!(cell.contains('-'));
         assert!(cell.contains("diff"));
     }
 
@@ -467,10 +456,10 @@ mod tests {
         );
         assert!(cell.contains("src/lib.rs"), "{cell:?}");
         // BEL terminator after the display string.
-        assert!(cell.contains("\x07"), "{cell:?}");
+        assert!(cell.contains('\x07'), "{cell:?}");
     }
 
-    /// WebFetch URL wraps the same URL as both target and display so
+    /// `WebFetch` URL wraps the same URL as both target and display so
     /// cmd-click opens the browser at the visible URL.
     #[test]
     fn enabled_osc8_wraps_webfetch_url() {

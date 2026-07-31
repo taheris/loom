@@ -282,7 +282,7 @@ struct InboxArgs {
 }
 
 impl InboxArgs {
-    fn mutates_workspace(&self) -> bool {
+    const fn mutates_workspace(&self) -> bool {
         matches!(self.action, Some(InboxAction::Chat(_)))
     }
 }
@@ -340,7 +340,7 @@ struct TuneArgs {
 }
 
 impl TuneArgs {
-    fn mutates_workspace(&self) -> bool {
+    const fn mutates_workspace(&self) -> bool {
         matches!(
             &self.action,
             Some(TuneAction::Skill(args)) if args.creates_proposal()
@@ -388,7 +388,7 @@ struct TuneSurfaceArgs {
 }
 
 impl TuneSurfaceArgs {
-    fn creates_proposal(&self) -> bool {
+    const fn creates_proposal(&self) -> bool {
         self.level.is_some() && !self.dry_run
     }
 }
@@ -407,7 +407,7 @@ struct TuneAllArgs {
 }
 
 impl TuneAllArgs {
-    fn creates_proposal(&self) -> bool {
+    const fn creates_proposal(&self) -> bool {
         self.level.is_some() && !self.dry_run
     }
 }
@@ -573,33 +573,28 @@ impl Command {
     /// driver. Read-only subcommands (`status`, `logs`, `spec`, plain
     /// `gate` status) return `false`. Spec: `harness.md` §
     /// Nested-Loom Guard.
-    fn refused_inside_loom(&self) -> bool {
+    const fn refused_inside_loom(&self) -> bool {
         match self {
-            Command::Status | Command::Logs { .. } | Command::Spec { .. } => false,
             // Bare `loom gate` (help print), `gate status` (cache read),
             // and the deterministic tier subcommands are read-only
             // relative to workspace state — they parse spec files, run
             // verifiers, and write the local status cache. The
             // LLM-driven `review` / `judge` / `rubric` / `audit` paths
             // spawn agent containers, so they're refused.
-            Command::Gate { subcommand: None } => false,
-            Command::Gate {
-                subcommand: Some(GateSubcommand::Status(_)),
-            }
+            Command::Status
+            | Command::Logs { .. }
+            | Command::Spec { .. }
             | Command::Gate {
-                subcommand: Some(GateSubcommand::Verify(_)),
-            }
-            | Command::Gate {
-                subcommand: Some(GateSubcommand::Check(_)),
-            }
-            | Command::Gate {
-                subcommand: Some(GateSubcommand::Test(_)),
-            }
-            | Command::Gate {
-                subcommand: Some(GateSubcommand::System(_)),
-            }
-            | Command::Gate {
-                subcommand: Some(GateSubcommand::VerifyMarker(_)),
+                subcommand:
+                    None
+                    | Some(
+                        GateSubcommand::Status(_)
+                        | GateSubcommand::Verify(_)
+                        | GateSubcommand::Check(_)
+                        | GateSubcommand::Test(_)
+                        | GateSubcommand::System(_)
+                        | GateSubcommand::VerifyMarker(_),
+                    ),
             } => false,
             Command::Inbox(args) => args.mutates_workspace(),
             Command::Tune(args) => args.mutates_workspace(),
@@ -656,6 +651,10 @@ fn args_request_top_level_help(args: &[String]) -> bool {
 /// clap-rendered everything-else (about line, usage, options) so flag
 /// changes flow through automatically — only the subcommand listing is
 /// regrouped.
+#[expect(
+    clippy::print_stdout,
+    reason = "this function renders the loom CLI's documented stdout contract"
+)]
 fn print_grouped_help() {
     use std::fmt::Write;
     let mut cmd = Cli::command();
@@ -680,21 +679,21 @@ fn print_grouped_help() {
             let about = cmd
                 .get_subcommands()
                 .find(|s| s.get_name() == *name)
-                .and_then(|s| s.get_about().map(|d| d.to_string()))
+                .and_then(|s| s.get_about().map(std::string::ToString::to_string))
                 .map(|text| help_sentence(&text))
                 .unwrap_or_default();
-            let _ = writeln!(grouped, "  {name:<width$}  {about}", width = width);
+            let _ = writeln!(grouped, "  {name:<width$}  {about}");
         }
         grouped.push('\n');
     }
     let help_about = cmd
         .get_subcommands()
         .find(|s| s.get_name() == "help")
-        .and_then(|s| s.get_about().map(|d| d.to_string()))
-        .map(|text| help_sentence(&text))
-        .unwrap_or_else(|| {
-            "Print this message or the help of the given subcommand(s).".to_string()
-        });
+        .and_then(|s| s.get_about().map(std::string::ToString::to_string))
+        .map_or_else(
+            || "Print this message or the help of the given subcommand(s).".to_string(),
+            |text| help_sentence(&text),
+        );
     let _ = writeln!(
         grouped,
         "  {help:<width$}  {help_about}",
@@ -745,6 +744,10 @@ fn replace_commands_section(help: &str, grouped: &str) -> String {
     out
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "this function reports CLI initialization failures to stderr"
+)]
 fn init_tracing(command: &Command) {
     let Some(default_filter) = tracing_default_filter(command) else {
         return;
@@ -762,7 +765,7 @@ fn init_tracing(command: &Command) {
     }
 }
 
-fn tracing_default_filter(command: &Command) -> Option<&'static str> {
+const fn tracing_default_filter(command: &Command) -> Option<&'static str> {
     match command {
         Command::Loop { trace, .. } if *trace => Some("trace"),
         Command::Loop { .. } => None,
@@ -770,6 +773,10 @@ fn tracing_default_filter(command: &Command) -> Option<&'static str> {
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the executable boundary reports usage and command failures to stderr"
+)]
 fn main() -> ExitCode {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     if args_request_top_level_help(&raw_args) {
@@ -810,15 +817,23 @@ fn main() -> ExitCode {
             raw,
             verbose,
             path,
-        } => run_logs(&workspace, bead.as_deref(), follow, raw, verbose, path)
-            .map(|()| ExitCode::SUCCESS),
+        } => run_logs(
+            &workspace,
+            bead.as_deref(),
+            LogSelectionFlags {
+                follow,
+                path_only: path,
+            },
+            LogRenderFlags { raw, verbose },
+        )
+        .map(|()| ExitCode::SUCCESS),
         Command::Spec {
             label,
             deps,
             targets,
             tier,
             plain,
-        } => run_spec(&workspace, label, deps, targets, tier, plain).map(|()| ExitCode::SUCCESS),
+        } => run_spec(&workspace, &label, deps, targets, tier, plain).map(|()| ExitCode::SUCCESS),
         Command::Plan {
             anchor_labels,
             profile,
@@ -841,9 +856,7 @@ fn main() -> ExitCode {
             agent_override,
             host_key,
             RenderFlags {
-                plain,
-                json,
-                raw,
+                format: loom_render::RenderFormat::from_flags(plain, json, raw),
                 verbose,
             },
         )
@@ -885,14 +898,17 @@ fn prepare_wrix_git_policy(workspace: &Path, host_key: bool) -> anyhow::Result<R
     } else {
         KeyMode::Repository
     };
-    let wrix_bin = std::env::var_os("LOOM_WRIX_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("wrix"));
+    let wrix_bin =
+        std::env::var_os("LOOM_WRIX_BIN").map_or_else(|| PathBuf::from("wrix"), PathBuf::from);
     let policy = RepoGitPolicy::resolve(workspace, wrix_bin, mode)?;
     policy.apply(workspace)?;
     Ok(policy)
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders its documented result to stdout"
+)]
 fn run_tune(workspace: &Path, args: TuneArgs, host_key: bool) -> anyhow::Result<()> {
     let Some(action) = args.action else {
         print_tune_help()?;
@@ -920,6 +936,10 @@ fn run_tune(workspace: &Path, args: TuneArgs, host_key: bool) -> anyhow::Result<
     Ok(())
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "the trailing newline completes clap's stdout help rendering"
+)]
 fn print_tune_help() -> anyhow::Result<()> {
     let mut cmd = Cli::command();
     let Some(tune) = cmd.find_subcommand_mut("tune") else {
@@ -970,6 +990,10 @@ fn tune_surface_request(
     }
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders its initialization report to stdout"
+)]
 fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let molecules = if rebuild {
@@ -1013,14 +1037,21 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders note results to stdout"
+)]
 fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<()> {
     let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db"))?;
     let clock = SystemClock::new();
-    let now_ms = clock
-        .wall_now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now_ms = i64::try_from(
+        clock
+            .wall_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX);
     match action {
         NoteAction::Set { label, json, kind } => {
             let label: SpecLabel = label.parse()?;
@@ -1211,7 +1242,7 @@ fn run_gate(
             if !args.tree && args.molecule.is_none() {
                 return print_gate_subcommand_help("mint");
             }
-            run_gate_mint(workspace, args, agent_override, host_key)
+            run_gate_mint(workspace, &args, agent_override, host_key)
         }
         Some(GateSubcommand::VerifyMarker(args)) => run_gate_verify_marker(workspace, args),
     }
@@ -1229,7 +1260,7 @@ fn print_gate_subcommand_help(name: &str) -> anyhow::Result<()> {
     }
 }
 
-fn has_scope(args: &GateScopeArgs) -> bool {
+const fn has_scope(args: &GateScopeArgs) -> bool {
     !args.files.is_empty() || args.diff.is_some() || args.tree || args.target.is_some()
 }
 
@@ -1301,7 +1332,7 @@ fn run_gate_verify_marker(workspace: &Path, args: GateVerifyMarkerArgs) -> anyho
             loom_gate::verify_marker_for_hook(workspace, &request)
         }
         (None, None, None) => loom_gate::verify_marker(workspace),
-        _ => anyhow::bail!("--hook-id, --hook-entry, and --push-range must be supplied together",),
+        _ => anyhow::bail!("--hook-id, --hook-entry, and --push-range must be supplied together"),
     };
     match result {
         Ok(_) => Ok(()),
@@ -1379,11 +1410,11 @@ fn resolve_gate_scope(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::Res
 /// run everything" (`--tree`). Per specs/gate.md § *Scope flags* the
 /// contract is that every finite scope flag defines an input set and
 /// verifiers run iff their declared inputs intersect.
-fn scope_is_finite(args: &GateScopeArgs) -> bool {
+const fn scope_is_finite(args: &GateScopeArgs) -> bool {
     !args.files.is_empty() || args.diff.is_some()
 }
 
-fn scope_allows_missing_binary_skip(args: &GateScopeArgs) -> bool {
+const fn scope_allows_missing_binary_skip(args: &GateScopeArgs) -> bool {
     !args.files.is_empty() && args.diff.is_none() && !args.tree
 }
 
@@ -1471,16 +1502,23 @@ fn run_gate_status(workspace: &Path) -> anyhow::Result<()> {
     let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path)?;
     let parsed = loom_gate::annotation::parse(&workspace.join("specs"))?;
-    let now_ms = SystemClock::new()
-        .wall_now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now_ms = i64::try_from(
+        SystemClock::new()
+            .wall_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX);
     let report = render_report(&cache, &parsed, &[], now_ms, 14)?;
     print_gate_status(&report);
     Ok(())
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this function is the gate status stdout renderer"
+)]
 fn print_gate_status(report: &loom_gate::Report) {
     for spec in &report.specs {
         println!(
@@ -1556,6 +1594,10 @@ fn print_gate_status(report: &loom_gate::Report) {
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "gate progress and verifier failures are CLI diagnostics"
+)]
 fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()> {
     if nested_diff_gate_skip(args) {
         eprintln!("loom gate verify --files: skipped under parent --diff gate");
@@ -1695,7 +1737,7 @@ fn all_tier_cwds(config: &LoomConfig) -> TierCwds {
 /// `[system](target)` resolves its inputs end-to-end through the matching
 /// runner per `specs/gate.md` § Target resolution — execution stays
 /// per-annotation. `[test]` / `[judge]` batch through their own templates
-/// and consult no RunnerSpec list. Targets matching no configured runner
+/// and consult no `RunnerSpec` list. Targets matching no configured runner
 /// fall through to per-annotation spawn / the `tokens[0]`-on-PATH fallback.
 fn resolve_runner_context(
     workspace: &Path,
@@ -1737,6 +1779,10 @@ fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "gate dispatch diagnostics are part of the CLI stderr contract"
+)]
 fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::Result<i32> {
     let specs_dir = workspace.join("specs");
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
@@ -1766,11 +1812,14 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
     let options = gate_dispatch_options(args);
     let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path)?;
-    let now_ms = SystemClock::new()
-        .wall_now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now_ms = i64::try_from(
+        SystemClock::new()
+            .wall_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX);
     let commit = current_commit(workspace).unwrap_or_default();
 
     match tier {
@@ -1850,6 +1899,8 @@ fn partition_pending_for_forward_resolution(
 /// the verify lane fails the same way the per-annotation `[check]`
 /// dispatch does.
 fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<i32> {
+    use std::io::Write;
+
     let specs_dir = workspace.join("specs");
     if !specs_dir.exists() {
         return Ok(0);
@@ -1894,7 +1945,6 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
         return Ok(0);
     }
     let mut stderr = std::io::stderr().lock();
-    use std::io::Write;
     for finding in &findings {
         let _ = writeln!(stderr, "loom gate [integrity]: {finding}");
     }
@@ -2081,6 +2131,10 @@ fn truncate_for_progress(s: &str, max: usize) -> String {
     out
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "cache persistence failures are non-fatal CLI diagnostics"
+)]
 fn persist_outcome(
     workspace: &Path,
     cache: &StatusCache,
@@ -2148,8 +2202,7 @@ fn criterion_id_for_annotation(
 fn spec_label_from_path(path: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+        .map_or_else(|| path.to_string_lossy().into_owned(), str::to_owned)
 }
 
 fn current_commit(workspace: &Path) -> anyhow::Result<String> {
@@ -2165,14 +2218,18 @@ fn current_commit(workspace: &Path) -> anyhow::Result<String> {
 /// mapping. Tree-scope findings are produced by dispatching
 /// [`MintScope::Tree`] through the production [`ProductionMintWalker`];
 /// molecule scope promotes existing deferred remediation beads.
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders the mint summary to stdout"
+)]
 fn run_gate_mint(
     workspace: &Path,
-    args: GateMintArgs,
+    args: &GateMintArgs,
     agent_override: Option<AgentKind>,
     host_key: bool,
 ) -> anyhow::Result<()> {
     let head_commit = current_commit(workspace).unwrap_or_default();
-    let scope = resolve_mint_scope(workspace, &args)?;
+    let scope = resolve_mint_scope(workspace, args)?;
 
     let runtime = tokio::runtime::Runtime::new()?;
     let summary = match scope {
@@ -2229,7 +2286,7 @@ fn run_gate_mint(
             let direct_output_limits = config.direct_output_limits();
             let observer_config = config.agent.clone();
             let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
-            let style_rules = config.style_rules.clone();
+            let style_rules = config.style_rules;
             let workspace_buf = workspace.to_path_buf();
             let logs_root = workspace.join(".loom/logs");
             let phase_when = phase_when_from_env().unwrap_or_else(|| SystemClock::new().wall_now());
@@ -2585,11 +2642,7 @@ fn run_gate_mint(
 /// counts do not affect the process status.
 #[must_use]
 fn mint_summary_exit_code(summary: &loom_workflow::mint::MintSummary) -> i32 {
-    if summary.refused > 0 || summary.errors > 0 {
-        1
-    } else {
-        0
-    }
+    i32::from(summary.refused > 0 || summary.errors > 0)
 }
 
 /// Strict walk-then-mint test seam. Production `run_gate_mint --tree`
@@ -2608,7 +2661,7 @@ async fn mint_via_walker<W, V, R>(
 ) -> anyhow::Result<loom_workflow::mint::MintSummary>
 where
     W: loom_workflow::mint::MintWalker,
-    V: loom_workflow::review::FindingValidator + ?Sized,
+    V: loom_workflow::review::FindingValidator + Sync + ?Sized,
     R: loom_driver::bd::CommandRunner,
 {
     let findings = loom_workflow::mint::walk(walker, scope, validator).await?;
@@ -2676,6 +2729,10 @@ fn run_gate_review(
     )
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders workspace status to stdout"
+)]
 fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
     let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db"))?;
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
@@ -2684,6 +2741,10 @@ fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command confirms its selected spec on stdout"
+)]
 fn run_use(workspace: &std::path::Path, label: &str) -> anyhow::Result<()> {
     let label: SpecLabel = label.parse()?;
     let db_path = workspace.join(".loom/cache.db");
@@ -2692,13 +2753,27 @@ fn run_use(workspace: &std::path::Path, label: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LogSelectionFlags {
+    follow: bool,
+    path_only: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LogRenderFlags {
+    raw: bool,
+    verbose: bool,
+}
+
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders log paths or log content to stdout"
+)]
 fn run_logs(
     workspace: &std::path::Path,
     bead: Option<&str>,
-    follow: bool,
-    raw: bool,
-    verbose: bool,
-    path_only: bool,
+    selection: LogSelectionFlags,
+    render: LogRenderFlags,
 ) -> anyhow::Result<()> {
     let logs_root = workspace.join(".loom/logs");
     let bead_id = bead.map(BeadId::new).transpose()?;
@@ -2713,13 +2788,13 @@ fn run_logs(
         // on a fresh workspace — render a one-liner and exit 0 instead
         // of a typed error. `--path` keeps the typed error so scripts
         // can detect the missing-file case cheaply.
-        Err(logs_cmd::LogsError::NoLogs { .. }) if !path_only => {
+        Err(logs_cmd::LogsError::NoLogs { .. }) if !selection.path_only => {
             println!("No bead logs yet");
             return Ok(());
         }
         Err(e) => return Err(e.into()),
     };
-    if path_only {
+    if selection.path_only {
         println!("{}", path.display());
         return Ok(());
     }
@@ -2727,13 +2802,13 @@ fn run_logs(
     // renderer chrome (header, recovery hints) carries the right id
     // even when `--bead` is not passed. Falls back to a sentinel when
     // the stem doesn't parse — we still render successfully.
-    let renderer_bead = match bead_id.clone().or_else(|| derive_bead_id_from_path(&path)) {
+    let renderer_bead = match bead_id.or_else(|| derive_bead_id_from_path(&path)) {
         Some(b) => b,
         None => BeadId::new("lm-x")
             .map_err(|err| anyhow::anyhow!("`lm-x` sentinel must parse as BeadId: {err}"))?,
     };
-    let mode = resolve_replay_mode(raw, verbose);
-    let max_inline_bytes = if raw {
+    let mode = resolve_replay_mode(render.raw, render.verbose);
+    let max_inline_bytes = if render.raw {
         loom_render::tool_body::BODY_CAP_BYTES
     } else {
         LoomConfig::load(LoomConfig::resolve_path(workspace))?
@@ -2747,7 +2822,7 @@ fn run_logs(
             path: &path,
             bead_id: renderer_bead,
             mode,
-            follow,
+            follow: selection.follow,
             follow_poll: None,
             follow_max_polls: None,
         },
@@ -2772,7 +2847,7 @@ fn resolve_replay_mode(raw: bool, verbose: bool) -> logs_cmd::ReplayMode {
     }
     let tty = loom_render::in_place::stdout_supports_indicator();
     let no_color = std::env::var_os("NO_COLOR").is_some();
-    let base = loom_render::RenderMode::select(tty, no_color, false, false, false);
+    let base = loom_render::RenderMode::select(tty, no_color, loom_render::RenderFormat::Auto);
     let mode = if verbose {
         match base {
             loom_render::RenderMode::Pretty => loom_render::RenderMode::Verbose,
@@ -2785,6 +2860,10 @@ fn resolve_replay_mode(raw: bool, verbose: bool) -> logs_cmd::ReplayMode {
     logs_cmd::ReplayMode::Render(mode)
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders its plan anchors to stdout"
+)]
 fn run_plan(
     workspace: &Path,
     anchor_label_args: Vec<String>,
@@ -2834,9 +2913,7 @@ fn run_plan(
 /// the spec'd flag table and decides Pretty/Plain/Json/Raw.
 #[derive(Debug, Clone, Copy)]
 struct RenderFlags {
-    plain: bool,
-    json: bool,
-    raw: bool,
+    format: loom_render::RenderFormat,
     verbose: bool,
 }
 
@@ -3012,9 +3089,8 @@ impl LoopOutcomeAccumulator {
 
 fn merge_decisive_gate(current: Option<GateOutcome>, next: GateOutcome) -> Option<GateOutcome> {
     match (current, next) {
-        (Some(gate @ GateOutcome::Fail(_)), _) => Some(gate),
-        (_, gate @ GateOutcome::Fail(_)) => Some(gate),
-        (_, gate @ GateOutcome::Success(_)) => Some(gate),
+        (Some(gate @ GateOutcome::Fail(_)), _)
+        | (_, gate @ (GateOutcome::Fail(_) | GateOutcome::Success(_))) => Some(gate),
         (current, GateOutcome::NoGate { .. }) => current,
     }
 }
@@ -3306,6 +3382,10 @@ fn print_sequential_loop_summary(multi_root: bool, root: &LoopWorkRoot, summary:
     }
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this function is the sequential-loop stdout summary renderer"
+)]
 fn print_loop_summary(prefix: &str, summary: &LoopOutcome) {
     println!(
         "{prefix} processed {} bead(s), waiting {}, clarified {}, blocked {}, outer_iterations={}, gate={}",
@@ -3318,6 +3398,10 @@ fn print_loop_summary(prefix: &str, summary: &LoopOutcome) {
     );
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this function is the per-worker stdout summary renderer"
+)]
 fn print_parallel_loop_summary(
     multi_root: bool,
     root: &LoopWorkRoot,
@@ -3337,6 +3421,10 @@ fn print_parallel_loop_summary(
     }
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this function is the parallel-loop stdout summary renderer"
+)]
 fn print_parallel_aggregate_summary(parallel_n: u32, outcome: &LoopOutcome) {
     println!(
         "loom loop --parallel {parallel_n}: processed {}, waiting {}, gate={}",
@@ -3349,7 +3437,7 @@ fn print_parallel_aggregate_summary(parallel_n: u32, outcome: &LoopOutcome) {
 /// One-word render of a [`GateOutcome`] for the operator-facing summary
 /// line. The structured variant lives in [`LoopOutcome::gate`] for
 /// programmatic consumers; this is the human-friendly column.
-fn gate_label(gate: &GateOutcome) -> &'static str {
+const fn gate_label(gate: &GateOutcome) -> &'static str {
     match gate {
         GateOutcome::Success(_) => "success",
         GateOutcome::Fail(_) => "fail",
@@ -4139,8 +4227,10 @@ async fn dispatch_for_slot(
                 ),
             });
         }
-        Err(e @ ProfileError::InvalidSpawnConfig { .. })
-        | Err(e @ ProfileError::RuntimeMetadataMismatch { .. }) => {
+        Err(
+            e @ (ProfileError::InvalidSpawnConfig { .. }
+            | ProfileError::RuntimeMetadataMismatch { .. }),
+        ) => {
             drop(scratch);
             return Ok(AgentOutcome::StaticInfra {
                 cause: loom_workflow::r#loop::INVALID_SPAWN_CONFIG_CAUSE.to_string(),
@@ -4193,7 +4283,7 @@ async fn dispatch_for_slot(
     .await;
     drop(scratch);
     let marker = parse_exit_signal(&output);
-    let outcome = classify_session(result, marker);
+    let outcome = classify_session(result, marker.as_ref());
     Ok(
         loom_workflow::r#loop::validate_waiting_outcome(&BdClient::new(), &slot.bead.id, outcome)
             .await?,
@@ -4383,7 +4473,9 @@ fn build_envelope_builder(bead_id: BeadId) -> loom_events::EnvelopeBuilder {
             clock
                 .wall_now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis() as i64)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                })
         },
     )
 }
@@ -4406,7 +4498,9 @@ fn build_phase_envelope_builder(phase: Phase) -> loom_events::EnvelopeBuilder {
             clock
                 .wall_now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis() as i64)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                })
         },
     )
 }
@@ -4491,7 +4585,9 @@ fn build_gate_mint_envelope_builder(when: std::time::SystemTime) -> loom_events:
             clock
                 .wall_now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis() as i64)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                })
         },
     )
 }
@@ -4499,7 +4595,7 @@ fn build_gate_mint_envelope_builder(when: std::time::SystemTime) -> loom_events:
 fn default_live_render_mode() -> loom_render::RenderMode {
     let tty = loom_render::in_place::stdout_supports_indicator();
     let no_color = std::env::var_os("NO_COLOR").is_some();
-    loom_render::RenderMode::select(tty, no_color, false, false, false)
+    loom_render::RenderMode::select(tty, no_color, loom_render::RenderFormat::Auto)
 }
 
 fn mint_summary_counts(summary: &loom_workflow::mint::MintSummary) -> serde_json::Value {
@@ -4719,7 +4815,7 @@ fn emit_mint_summary_events(
 }
 
 /// Test seam: read a millisecond budget from `name` if set. Production
-/// runs leave the env vars unset and SpawnConfig falls back to the
+/// runs leave the env vars unset and `SpawnConfig` falls back to the
 /// constants in `loom_driver::agent` (30s handshake / 60s stall warn).
 fn duration_env_ms(name: &str) -> Option<Duration> {
     std::env::var(name)
@@ -4834,7 +4930,7 @@ fn todo_renderer_id(spawn_cfg: &SpawnConfig) -> Result<BeadId, ProtocolError> {
 fn resolve_render_mode(flags: RenderFlags) -> loom_render::RenderMode {
     let tty = loom_render::in_place::stdout_supports_indicator();
     let no_color = std::env::var_os("NO_COLOR").is_some();
-    let base = loom_render::RenderMode::select(tty, no_color, flags.plain, flags.json, flags.raw);
+    let base = loom_render::RenderMode::select(tty, no_color, flags.format);
     if flags.verbose {
         match base {
             loom_render::RenderMode::Pretty => loom_render::RenderMode::Verbose,
@@ -4922,7 +5018,7 @@ fn build_renderer_with_writer(
 /// Resolve `phase`'s [`AgentKind`] honoring the global `--agent` override.
 /// CLI override wins over `[phase.<phase>] agent.backend` and
 /// `[phase.default] agent.backend`. Returns the full [`AgentSelection`] so
-/// callers retain access to profile / provider / model / claude_settings.
+/// callers retain access to profile / provider / model / `claude_settings`.
 fn resolved_agent_for(
     config: &LoomConfig,
     agent_override: Option<AgentKind>,
@@ -4952,6 +5048,10 @@ struct ReviewOpts {
     lane: ReviewLane,
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders review output and its result to stdout"
+)]
 fn run_review(
     workspace: &Path,
     spec: Option<String>,
@@ -5047,9 +5147,14 @@ fn run_review(
                     )
                     .await?;
                     let marker = parse_exit_signal(&output);
-                    *stdout_capture.lock().map_err(|_| {
-                        ProtocolError::Io(std::io::Error::other("review stdout capture poisoned"))
-                    })? = output.clone();
+                    stdout_capture
+                        .lock()
+                        .map_err(|_| {
+                            ProtocolError::Io(std::io::Error::other(
+                                "review stdout capture poisoned",
+                            ))
+                        })?
+                        .clone_from(&output);
                     Ok((outcome, marker, output))
                 }
             },
@@ -5092,6 +5197,10 @@ fn run_review(
     Ok(())
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "review finding-status records form a JSON-lines stdout protocol"
+)]
 fn emit_review_finding_statuses(
     review_stdout: &str,
     dispatch_scope: DispatchScope,
@@ -5168,14 +5277,14 @@ fn run_inbox(
     match args.action {
         None => print_inbox_help(),
         Some(InboxAction::List(list)) => {
-            run_inbox_list(workspace, merge_inbox_filters(args.filters, list.filters)?)
+            run_inbox_list(workspace, &merge_inbox_filters(args.filters, list.filters)?)
         }
         Some(InboxAction::View(view)) => run_inbox_view(
             workspace,
-            merge_inbox_filters(args.filters, view.filters)?,
+            &merge_inbox_filters(args.filters, view.filters)?,
             view.number,
-            view.bead,
-            view.proposal,
+            view.bead.as_deref(),
+            view.proposal.as_deref(),
         ),
         Some(InboxAction::Chat(chat)) => run_inbox_chat(
             workspace,
@@ -5189,6 +5298,10 @@ fn run_inbox(
     }
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "the trailing newline completes clap's stdout help rendering"
+)]
 fn print_inbox_help() -> anyhow::Result<()> {
     let mut cmd = Cli::command();
     let Some(inbox) = cmd.find_subcommand_mut("inbox") else {
@@ -5223,7 +5336,11 @@ fn merge_inbox_filters(
     Ok(ResolvedInboxFilters { spec, kind })
 }
 
-fn run_inbox_list(workspace: &Path, filters: ResolvedInboxFilters) -> anyhow::Result<()> {
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders the inbox listing to stdout"
+)]
+fn run_inbox_list(workspace: &Path, filters: &ResolvedInboxFilters) -> anyhow::Result<()> {
     let beads = load_inbox_beads()?;
     let mut items = build_queue(&beads, filters.spec.as_ref(), filters.kind, true);
     frame_unavailable_tune_items(workspace, &mut items);
@@ -5258,19 +5375,23 @@ fn run_inbox_list(workspace: &Path, filters: ResolvedInboxFilters) -> anyhow::Re
 
 fn run_inbox_view(
     workspace: &Path,
-    filters: ResolvedInboxFilters,
+    filters: &ResolvedInboxFilters,
     number: Option<u32>,
-    bead: Option<String>,
-    proposal: Option<String>,
+    bead: Option<&str>,
+    proposal: Option<&str>,
 ) -> anyhow::Result<()> {
     let beads = load_inbox_beads()?;
     let mut items = build_queue(&beads, filters.spec.as_ref(), filters.kind, true);
     frame_unavailable_tune_items(workspace, &mut items);
-    let item = select_inbox_item(&items, number, bead.as_deref(), proposal.as_deref())?;
+    let item = select_inbox_item(&items, number, bead, proposal)?;
     render_inbox_item_view(workspace, item);
     Ok(())
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders chat selection and empty-state output to stdout"
+)]
 fn run_inbox_chat(
     workspace: &Path,
     filters: ResolvedInboxFilters,
@@ -5282,10 +5403,10 @@ fn run_inbox_chat(
 ) -> anyhow::Result<()> {
     let target = chat_target(number, bead, proposal)?;
     let _guard = match &target {
-        Some(loom_workflow::inbox::chat::ChatTarget::Bead(id))
-        | Some(loom_workflow::inbox::chat::ChatTarget::Proposal(id)) => {
-            Some(acquire_work_root_lock(workspace, id)?)
-        }
+        Some(
+            loom_workflow::inbox::chat::ChatTarget::Bead(id)
+            | loom_workflow::inbox::chat::ChatTarget::Proposal(id),
+        ) => Some(acquire_work_root_lock(workspace, id)?),
         _ => None,
     };
     let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
@@ -5367,11 +5488,14 @@ fn chat_target(
         (Some(index), None, None) => Some(loom_workflow::inbox::chat::ChatTarget::Index(index)),
         (None, Some(id), None) => Some(loom_workflow::inbox::chat::ChatTarget::Bead(id)),
         (None, None, Some(id)) => Some(loom_workflow::inbox::chat::ChatTarget::Proposal(id)),
-        (None, None, None) => None,
         _ => None,
     })
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this function renders an inbox item view to stdout"
+)]
 fn render_inbox_item_view(workspace: &Path, item: &InboxItem) {
     print!("{}", render_inbox_item_view_text(workspace, item));
 }
@@ -5503,6 +5627,10 @@ fn push_artifact(out: &mut String, label: &str, path: &Path) {
     push_line(out, format!("  {label}: {} ({state})", path.display()));
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders todo outcomes to stdout"
+)]
 fn run_todo(
     workspace: &Path,
     agent_override: Option<AgentKind>,
@@ -5534,13 +5662,11 @@ fn run_todo(
     let phase_when = SystemClock::new().wall_now();
     let workspace_for_renderer = workspace.to_path_buf();
     let render_mode = resolve_render_mode(RenderFlags {
-        plain: false,
-        json: false,
-        raw: false,
+        format: loom_render::RenderFormat::Auto,
         verbose: false,
     });
     let loom_cfg_for_todo = config.loom.clone();
-    let skills_cfg_for_todo = config.skills.clone();
+    let skills_cfg_for_todo = config.skills;
     let result = runtime.block_on(async move {
         let mut controller = ProductionTodoController::for_workspace(
             workspace_buf,
@@ -5744,7 +5870,7 @@ fn primary_spec_label_from_work_root(root: &Bead) -> anyhow::Result<SpecLabel> {
     let mut labels = root
         .labels
         .iter()
-        .filter_map(|label| label.spec_label())
+        .filter_map(loom_driver::bd::Label::spec_label)
         .collect::<Vec<_>>();
     labels.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     labels.dedup_by(|a, b| a.as_str() == b.as_str());
@@ -5767,7 +5893,10 @@ fn resolve_review_label(
         Ok(s) => return Ok(s.parse()?),
         Err(std::env::VarError::NotPresent) => {}
         Err(std::env::VarError::NotUnicode(raw)) => {
-            anyhow::bail!("{REVIEW_SPEC_LABEL_ENV} must be valid UTF-8, got {:?}", raw,);
+            anyhow::bail!(
+                "{REVIEW_SPEC_LABEL_ENV} must be valid UTF-8, got {}",
+                Path::new(&raw).display()
+            );
         }
     }
     if tree {
@@ -5836,9 +5965,13 @@ fn current_loom_bin() -> anyhow::Result<PathBuf> {
     Ok(std::env::current_exe()?)
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "this command renders spec queries and audit rows to stdout"
+)]
 fn run_spec(
     workspace: &std::path::Path,
-    label: String,
+    label: &str,
     deps: bool,
     targets: bool,
     tier: Option<SpecTierArg>,
@@ -5916,8 +6049,12 @@ mod tests {
             _args: Vec<OsString>,
             _timeout: Duration,
         ) -> Result<loom_driver::bd::RunOutput, loom_driver::bd::BdError> {
-            let mut outputs = self.outputs.lock().expect("scripted output lock");
-            let stdout = outputs.pop_front().expect("scripted bd output");
+            let stdout = self
+                .outputs
+                .lock()
+                .expect("scripted output lock")
+                .pop_front()
+                .expect("scripted bd output");
             Ok(loom_driver::bd::RunOutput {
                 status: 0,
                 stdout: stdout.as_bytes().to_vec(),
@@ -6067,7 +6204,9 @@ mod tests {
                 assert_eq!(diagnostic.max_attempts, Some(2));
                 assert_eq!(diagnostic.first_event_seen, Some(false));
             }
-            other => panic!("first preflight failure should retry, got {other:?}"),
+            other @ ParallelInfraRoute::Park { .. } => {
+                panic!("first preflight failure should retry, got {other:?}");
+            }
         }
         let second = budget.record(&bead, &failure);
         match second {
@@ -6076,7 +6215,9 @@ mod tests {
                 assert_eq!(diagnostic.attempt, Some(2));
                 assert_eq!(diagnostic.max_attempts, Some(2));
             }
-            other => panic!("second preflight failure should park, got {other:?}"),
+            other @ ParallelInfraRoute::Retry { .. } => {
+                panic!("second preflight failure should park, got {other:?}");
+            }
         }
     }
 
@@ -6149,7 +6290,7 @@ mod tests {
                 loom_driver::bd::Label::new("loom:infra").expect("valid Label"),
             ],
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: Some("infra-preflight: image load failed".into()),
         };
         bead.metadata
@@ -6587,10 +6728,9 @@ mod tests {
             format!(
                 "#!/usr/bin/env bash\n\
                  set -euo pipefail\n\
-                 n=$(< {:?})\n\
-                 printf '%s\\n' \"$((n + 1))\" > {:?}\n\
+                 n=$(< {counter:?})\n\
+                 printf '%s\\n' \"$((n + 1))\" > {counter:?}\n\
                  printf '{{\"inputs\":[\"src/lib.rs\"]}}\\n'\n",
-                counter, counter,
             ),
         )
         .expect("write responder");
@@ -6689,7 +6829,7 @@ mod tests {
     /// must refuse to run inside a loom-managed container with a
     /// deterministic non-zero exit. The top-level main check consults
     /// [`Command::refused_inside_loom`] against the parsed command; this
-    /// test pins the variant-to-marker mapping so a future GateSubcommand
+    /// test pins the variant-to-marker mapping so a future `GateSubcommand`
     /// edit can't accidentally let mint slip past the guard.
     #[test]
     fn mint_refuses_when_loom_inside_env_is_set() {

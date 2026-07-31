@@ -64,7 +64,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
 fn check_member_inherits(crates_root: &Path, name: &str, violations: &mut Vec<String>) {
     let manifest = crates_root.join(name).join("Cargo.toml");
     let Some(body) = read_to_string(&manifest) else {
-        violations.push(format!("crates/{name}/Cargo.toml:1 manifest not readable",));
+        violations.push(format!("crates/{name}/Cargo.toml:1 manifest not readable"));
         return;
     };
     if !body

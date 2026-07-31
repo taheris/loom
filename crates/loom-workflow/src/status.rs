@@ -1,5 +1,7 @@
 //! `loom status` — read-only snapshot of cache health and work epics.
 
+use std::fmt::Write as _;
+
 use displaydoc::Display;
 use loom_driver::state::{CacheDb, CacheError, WorkEpicRow};
 use thiserror::Error;
@@ -21,6 +23,10 @@ pub enum StatusError {
 }
 
 /// Read cached work-epic mirrors from `db` for a non-load-bearing listing.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn load(db: &CacheDb, integration_branch: String) -> Result<StatusReport, StatusError> {
     let work_epics = db.work_epics()?;
     let active_work_epic = work_epics.iter().find(|row| row.is_active).cloned();
@@ -44,32 +50,27 @@ pub fn render(report: &StatusReport) -> String {
     } else {
         "cache: unhealthy\n"
     });
-    match &report.active_work_epic {
-        Some(epic) => {
-            out.push_str(&format!("active work epic: {}\n", epic.epic_id));
-            out.push_str(&format!("active iteration: {}\n", epic.iteration_count));
-        }
-        None => {
-            out.push_str("active work epic: <none>\n");
-            out.push_str("active iteration: 0\n");
-        }
+    if let Some(epic) = &report.active_work_epic {
+        let _ = writeln!(out, "active work epic: {}", epic.epic_id);
+        let _ = writeln!(out, "active iteration: {}", epic.iteration_count);
+    } else {
+        out.push_str("active work epic: <none>\n");
+        out.push_str("active iteration: 0\n");
     }
     if report.pending_todo.is_empty() {
         out.push_str("pending loom:todo: <none>\n");
     } else {
         for epic in &report.pending_todo {
-            out.push_str(&format!(
-                "pending loom:todo: {} head={} iteration={}\n",
+            let _ = writeln!(
+                out,
+                "pending loom:todo: {} head={} iteration={}",
                 epic.epic_id,
                 epic.todo_head.as_deref().unwrap_or("<unset>"),
                 epic.iteration_count,
-            ));
+            );
         }
     }
-    out.push_str(&format!(
-        "integration branch: {}\n",
-        report.integration_branch,
-    ));
+    let _ = writeln!(out, "integration branch: {}", report.integration_branch);
     out
 }
 

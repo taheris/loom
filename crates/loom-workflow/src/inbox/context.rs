@@ -52,8 +52,7 @@ fn to_template_item(workspace: &Path, item: &InboxItem) -> TemplateItem {
         spec_label: item
             .spec
             .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "—".to_owned()),
+            .map_or_else(|| "—".to_owned(), ToString::to_string),
         title: item.bead.title.clone(),
         body: item.bead.description.clone(),
         notes: item.bead.notes.clone().filter(|notes| !notes.is_empty()),
@@ -118,7 +117,7 @@ mod tests {
                 .map(|s| Label::new(*s).expect("valid Label"))
                 .collect(),
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }

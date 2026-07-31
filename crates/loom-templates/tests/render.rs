@@ -819,7 +819,7 @@ fn review_renders_review_context_fields() -> Result<()> {
 /// `ReviewLane::Judge` narrows the prompt to the `[judge]` rubric evaluation
 /// lane — the `[judge]` rubric bodies still render so the agent has its
 /// inputs, but the rubric walk over the diff (Review Dimensions,
-/// review_rubric.md content, Invariant-Clash Detection) is suppressed.
+/// `review_rubric.md` content, Invariant-Clash Detection) is suppressed.
 /// Pins the per-lane render contract for `loom gate judge`.
 #[test]
 fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Result<()> {
@@ -1722,7 +1722,7 @@ fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
 }
 
 /// Pins template-render determinism: every context renders byte-identically
-/// twice in a row from identical inputs. Catches non-determinism (HashMap
+/// twice in a row from identical inputs. Catches non-determinism (`HashMap`
 /// ordering, time, env reads) that snapshots would only flag on the next
 /// snapshot review.
 #[test]

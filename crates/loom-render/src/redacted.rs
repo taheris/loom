@@ -32,7 +32,7 @@ impl<T> Redacted<T> {
     /// Borrow the underlying value. Callers that need the secret (to pass to
     /// a subprocess, for example) call this explicitly — there is no implicit
     /// `Deref` so leaking via formatting is impossible.
-    pub fn reveal(&self) -> &T {
+    pub const fn reveal(&self) -> &T {
         &self.0
     }
 }

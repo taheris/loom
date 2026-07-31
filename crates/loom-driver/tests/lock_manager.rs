@@ -96,7 +96,7 @@ fn times_out_with_default_timeout() -> Result<()> {
     if waited < Duration::from_millis(4_500) {
         return Err(anyhow!("default timeout wait too short: {waited:?}"));
     }
-    if waited > Duration::from_millis(7_000) {
+    if waited > Duration::from_secs(7) {
         return Err(anyhow!("default timeout wait too long: {waited:?}"));
     }
     Ok(())
@@ -200,7 +200,7 @@ fn acquire_workspace_serializes_workspace_holders() -> Result<()> {
 }
 
 #[test]
-#[ignore]
+#[ignore = "helper process invoked explicitly by the crash-recovery test"]
 fn crash_helper_take_lock_then_exit() -> Result<()> {
     let workspace = std::env::var("LOOM_LOCK_TEST_DIR")?;
     let state_home = std::env::var("LOOM_LOCK_TEST_STATE_HOME")?;
@@ -272,9 +272,9 @@ fn second_thread_unblocks_when_holder_drops() -> Result<()> {
     let holder = mgr.acquire_work_root(&root)?;
 
     let (tx, rx) = mpsc::channel::<Result<Duration, String>>();
-    let root_clone = root.clone();
-    let workspace_clone = workspace.clone();
-    let state_home_clone = state_home_path.clone();
+    let root_clone = root;
+    let workspace_clone = workspace;
+    let state_home_clone = state_home_path;
     let waiter = thread::spawn(move || {
         let mgr2 = match LockManager::with_state_home(&workspace_clone, &state_home_clone) {
             Ok(m) => m,
@@ -341,12 +341,12 @@ fn locks_outside_workspace() -> Result<()> {
         ));
     }
 
-    let _plan = mgr.acquire_phase(PhaseLock::Planning)?;
-    drop(_plan);
-    let _work = mgr.acquire_work_root(&BeadId::new("lm-alpha")?)?;
-    drop(_work);
-    let _ws = mgr.acquire_workspace()?;
-    drop(_ws);
+    let plan = mgr.acquire_phase(PhaseLock::Planning)?;
+    drop(plan);
+    let work = mgr.acquire_work_root(&BeadId::new("lm-alpha")?)?;
+    drop(work);
+    let workspace_guard = mgr.acquire_workspace()?;
+    drop(workspace_guard);
 
     let mut intruders = Vec::new();
     walk_collect_locks(workspace, &mut intruders)?;

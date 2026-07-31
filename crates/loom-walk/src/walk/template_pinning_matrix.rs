@@ -228,7 +228,7 @@ fn strip_inline_code(s: &str) -> &str {
     s.trim()
         .strip_prefix('`')
         .and_then(|s| s.strip_suffix('`'))
-        .unwrap_or(s.trim())
+        .unwrap_or_else(|| s.trim())
 }
 
 fn template_partials(templates_dir: &Path) -> Result<BTreeMap<String, BTreeSet<String>>, String> {

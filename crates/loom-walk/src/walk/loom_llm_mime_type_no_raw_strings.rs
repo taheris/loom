@@ -47,7 +47,7 @@ fn public_binary_signatures(body: &str) -> Vec<(usize, String)> {
             continue;
         }
         let mut signature = trimmed[start..].to_string();
-        while !signature.contains('{') && !signature.contains(";") {
+        while !signature.contains('{') && !signature.contains(';') {
             let Some((_, next)) = lines.next() else {
                 break;
             };

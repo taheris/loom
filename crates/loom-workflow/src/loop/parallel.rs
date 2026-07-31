@@ -76,7 +76,9 @@ impl BatchInfraFailure {
     }
 }
 
-/// Per-bead result after merge-back. Drives the bd-side cleanup the caller
+/// Per-bead result after merge-back.
+///
+/// Drives the bd-side cleanup the caller
 /// will perform: `Merged` → driver observes the agent's `bd close` (no
 /// driver-side close), `Conflict` → mark failed (worktree preserved),
 /// `AgentFailed` → re-queue per the retry policy, `AgentInfra` → retry or
@@ -233,6 +235,10 @@ impl BatchOutcome {
 /// merge-back, the function returns immediately and the partial batch is
 /// surfaced through the error — slots already merged stay merged, slots not
 /// yet merged stay in the worktree and require manual intervention.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn run_parallel_batch<S, F>(
     git: &GitClient,
     label: &SpecLabel,
@@ -246,12 +252,19 @@ where
     run_parallel_batch_with_logs(git, label, beads, None, spawn).await
 }
 
-/// Same as [`run_parallel_batch`] but threads a `logs_root` through to
-/// `merge_back_one` so each slot's merge/cleanup steps emit
-/// driver events into the per-bead `.jsonl` the spawn closure already
-/// wrote to. Production callers pass
+/// Runs [`run_parallel_batch`] with per-bead logging.
+///
+/// Threads a `logs_root` through to `merge_back_one` so each slot's
+/// merge/cleanup steps emit driver events into the per-bead `.jsonl` the
+/// spawn closure already wrote to.
+///
+/// Production callers pass
 /// `Some(<workspace>/.loom/logs)`; tests that do not exercise
 /// the driver-event channel pass `None`.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn run_parallel_batch_with_logs<S, F>(
     git: &GitClient,
     label: &SpecLabel,
@@ -274,6 +287,10 @@ where
 /// (handled by [`GitClient::create_worktree`]), so this step is *not*
 /// parallelised — git's worktree command serializes against the repo
 /// `.git/worktrees/` directory. Running them concurrently buys nothing.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn create_worktrees(
     git: &GitClient,
     label: &SpecLabel,
@@ -360,6 +377,10 @@ where
 /// - Infra/profile variants → **preserve** the bead workspace and return
 ///   [`BatchResult::AgentInfra`] so the caller can apply the `[loop.infra]`
 ///   retry budget instead of collapsing infrastructure into semantic failure.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn merge_back(git: &GitClient, slots: Vec<BatchSlot>) -> Result<BatchOutcome, LoopError> {
     let mut results = Vec::with_capacity(slots.len());
     for slot in slots {
@@ -371,9 +392,15 @@ pub async fn merge_back(git: &GitClient, slots: Vec<BatchSlot>) -> Result<BatchO
 
 /// Same as [`merge_back`] but threads `logs_root` + `label` through to
 /// every slot's merge/cleanup so driver events surface in the
-/// per-bead `.jsonl`. Production callers pass
+/// per-bead `.jsonl`.
+///
+/// Production callers pass
 /// `Some(<workspace>/.loom/logs)`; tests that do not exercise
 /// the driver-event channel pass `None`.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn merge_back_with_logs(
     git: &GitClient,
     slots: Vec<BatchSlot>,
@@ -794,7 +821,7 @@ mod tests {
             issue_type: "task".into(),
             labels: vec![],
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }

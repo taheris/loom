@@ -21,8 +21,8 @@ note: if you're trying to build a new `MaterializedRegistry` consider using one 
       MaterializedRegistry::materialize
  --> src/registry.rs
   |
-  |       pub fn empty() -> Self {
-  |       ^^^^^^^^^^^^^^^^^^^^^^
+  |       pub const fn empty() -> Self {
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ...
   | /     pub fn materialize(
   | |         registry: ApplicableRegistry,

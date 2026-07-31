@@ -1,13 +1,6 @@
-//! `ModelId` — hybrid nested enum: outer variant discriminates by
-//! [`SchemaKind`]; inner enum names known models within that schema with
-//! an `Other(String)` forward-compat fallback. The `OpenAiCompat`
-//! variant carries the raw model string because customer-hosted models
-//! have no loom-knowable name set.
+//! Model identifiers grouped by provider wire-schema family.
 
-/// Wire-format discriminator. One variant per HTTP message-shape family;
-/// each maps 1:1 to a [`ModelId`] outer variant and to a per-schema
-/// Client type. `#[non_exhaustive]` so future adapters add variants
-/// additively without breaking matchers.
+/// Non-exhaustive discriminator for provider HTTP wire formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SchemaKind {
@@ -18,11 +11,7 @@ pub enum SchemaKind {
     OpenAiCompat,
 }
 
-/// One LLM model. Outer variant discriminates by [`SchemaKind`]; inner
-/// enum names known models within that schema. Adding a known model is
-/// a minor version bump (new inner-enum variant). Adding a new schema is
-/// a minor bump (new `SchemaKind` variant + new outer variant + new
-/// Client type — all additive under `#[non_exhaustive]`).
+/// Non-exhaustive model identifier grouped by [`SchemaKind`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ModelId {
@@ -33,11 +22,7 @@ pub enum ModelId {
     OpenAiCompat(String),
 }
 
-/// Anthropic-family models. `Other(String)` absorbs unknown wire names
-/// so consumers can target not-yet-listed Anthropic models without
-/// waiting for a minor bump. Not `#[non_exhaustive]`: exhaustive
-/// matching from outside the crate (model-picker UIs, etc.) is a
-/// supported pattern, and the `Other` arm already absorbs unknowns.
+/// Anthropic models with `Other` preserving forward-compatible names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnthropicModel {
     ClaudeOpus48,
@@ -68,7 +53,7 @@ impl ModelId {
     /// returns the matching [`SchemaKind`] tag; client-side
     /// compatibility checks compare this against a Client's fixed
     /// schema.
-    pub fn schema(&self) -> SchemaKind {
+    pub const fn schema(&self) -> SchemaKind {
         match self {
             ModelId::Anthropic(_) => SchemaKind::Anthropic,
             ModelId::OpenAi(_) => SchemaKind::OpenAi,

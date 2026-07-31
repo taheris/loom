@@ -46,7 +46,7 @@ pub enum Tier {
 
 impl Tier {
     /// Lowercase wire string. Matches the `[tier]` text in spec files.
-    pub fn as_wire(&self) -> &'static str {
+    pub const fn as_wire(&self) -> &'static str {
         match self {
             Tier::Check => "check",
             Tier::Test => "test",
@@ -146,6 +146,10 @@ pub enum ParseError {
 /// Lex order keeps the output deterministic across hosts so downstream
 /// consumers (cache writes, integrity findings) don't shuffle on each
 /// run.
+///
+/// # Errors
+///
+/// Returns an error when gate input, execution, or validation fails.
 pub fn parse(specs_dir: &Path) -> Result<ParsedSpecs, ParseError> {
     let entries = fs::read_dir(specs_dir).map_err(|e| ParseError::ReadDir {
         path: specs_dir.to_path_buf(),
@@ -178,8 +182,9 @@ pub fn parse(specs_dir: &Path) -> Result<ParsedSpecs, ParseError> {
     Ok(out)
 }
 
-/// Parse a single in-memory spec body. `source_spec` is recorded as-is
-/// on every emitted record so callers can produce filename-tagged
+/// Parse a single in-memory spec body.
+///
+/// `source_spec` is recorded as-is on every emitted record so callers can produce filename-tagged
 /// errors without re-resolving the path. Infallible: markdown parsing
 /// never errors and the parser does not validate annotation targets.
 pub fn parse_content(source_spec: &Path, content: &str) -> ParsedSpecs {
@@ -236,7 +241,7 @@ struct TokenHit {
 /// Scan `content` for `[tier](target)` tokens by direct byte inspection.
 ///
 /// `pulldown-cmark` only emits `Tag::Link` events for URLs that conform
-/// to CommonMark's destination grammar — destinations with spaces (the
+/// to `CommonMark`'s destination grammar — destinations with spaces (the
 /// common shape for `[check]` / `[system]` commands) round-trip through
 /// `Text` events instead. Rather than coalescing those text fragments,
 /// the parser scans the raw source and uses the structural pass to mask
@@ -309,8 +314,7 @@ pub fn criterion_text_for_line(content: &str, line: u32, next_line: Option<u32>)
     let lines: Vec<&str> = content.lines().collect();
     let start = line.saturating_sub(1) as usize;
     let end = next_line
-        .map(|n| n.saturating_sub(1) as usize)
-        .unwrap_or(lines.len())
+        .map_or(lines.len(), |n| n.saturating_sub(1) as usize)
         .min(lines.len());
     let mut parts = Vec::new();
     for (idx, raw) in lines[start..end].iter().enumerate() {
@@ -467,10 +471,7 @@ impl StructuralPass {
                         code_ranges.push(range);
                     }
                 }
-                Event::Start(Tag::CodeBlock(_)) => {
-                    code_ranges.push(range);
-                }
-                Event::Code(_) => {
+                Event::Start(Tag::CodeBlock(_)) | Event::Code(_) => {
                     code_ranges.push(range);
                 }
                 Event::Start(Tag::Item) => {
@@ -530,7 +531,7 @@ impl LineIndex {
             Ok(i) => i,
             Err(i) => i.saturating_sub(1),
         };
-        (idx + 1) as u32
+        u32::try_from(idx.saturating_add(1)).unwrap_or(u32::MAX)
     }
 }
 
@@ -643,13 +644,13 @@ mod tests {
             .iter()
             .map(|a| a.criterion_line)
             .collect();
-        let unannotated: Vec<u32> = parsed
+        let unannotated = parsed
             .criteria
             .iter()
             .map(|c| c.line)
             .filter(|l| !annotated.contains(l))
-            .collect();
-        assert_eq!(unannotated.len(), 1, "exactly one un-annotated bullet");
+            .count();
+        assert_eq!(unannotated, 1, "exactly one un-annotated bullet");
     }
 
     #[test]

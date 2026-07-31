@@ -26,7 +26,7 @@ use super::messages::{AssistantBlock, ClaudeMessage, UserBlock};
 pub struct ClaudeParser {
     denied_tools: HashSet<String>,
     /// Per-session `Task` subagent stack. Same shape as the pi
-    /// parser's. `&self` LineParse trait requires interior mutability;
+    /// parser's. `&self` `LineParse` trait requires interior mutability;
     /// one parser per session means contention is nil.
     task_stack: std::sync::Mutex<Vec<loom_events::identifier::ToolCallId>>,
 }
@@ -51,11 +51,10 @@ impl ClaudeParser {
     }
 
     fn push_task(&self, id: loom_events::identifier::ToolCallId) -> Result<(), ProtocolError> {
-        let mut stack = self
-            .task_stack
+        self.task_stack
             .lock()
-            .map_err(|_| ProtocolError::LockPoisoned)?;
-        stack.push(id);
+            .map_err(|_| ProtocolError::LockPoisoned)?
+            .push(id);
         Ok(())
     }
 
@@ -70,6 +69,7 @@ impl ClaudeParser {
         if stack.last() == Some(id) {
             stack.pop();
         }
+        drop(stack);
         Ok(())
     }
 }

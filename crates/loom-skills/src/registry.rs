@@ -20,6 +20,12 @@ pub struct NamedSkill {
 }
 
 impl NamedSkill {
+    /// Validate a parsed document and attach its typed identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrontmatterError`] when the document lacks valid required
+    /// frontmatter.
     pub fn from_document(document: SkillDocument) -> Result<Self, FrontmatterError> {
         let frontmatter = document.typed_frontmatter()?;
         Ok(Self {
@@ -28,27 +34,27 @@ impl NamedSkill {
         })
     }
 
-    pub fn name(&self) -> &SkillName {
+    pub const fn name(&self) -> &SkillName {
         &self.frontmatter.name
     }
 
-    pub fn description(&self) -> &SkillDescription {
+    pub const fn description(&self) -> &SkillDescription {
         &self.frontmatter.description
     }
 
-    pub fn frontmatter(&self) -> &SkillFrontmatter {
+    pub const fn frontmatter(&self) -> &SkillFrontmatter {
         &self.frontmatter
     }
 
-    pub fn document(&self) -> &SkillDocument {
+    pub const fn document(&self) -> &SkillDocument {
         &self.document
     }
 
-    pub fn provenance(&self) -> &SkillProvenance {
+    pub const fn provenance(&self) -> &SkillProvenance {
         self.document.provenance()
     }
 
-    pub fn source(&self) -> SkillSource {
+    pub const fn source(&self) -> SkillSource {
         self.provenance().source
     }
 
@@ -72,7 +78,7 @@ pub struct SkillSet {
 }
 
 impl SkillSet {
-    pub fn new(skills: Vec<NamedSkill>) -> Self {
+    pub const fn new(skills: Vec<NamedSkill>) -> Self {
         Self { skills }
     }
 
@@ -100,10 +106,22 @@ pub struct SkillRegistry {
 }
 
 impl SkillRegistry {
+    /// Resolve a vector of loaded skills into the effective registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] for duplicate names or invalid built-in
+    /// override relationships.
     pub fn new(skills: Vec<NamedSkill>) -> Result<Self, RegistryError> {
         Self::from_set(SkillSet::new(skills))
     }
 
+    /// Resolve a loaded skill set into the effective registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] for duplicate names or invalid built-in
+    /// override relationships.
     pub fn from_set(set: SkillSet) -> Result<Self, RegistryError> {
         let skills = set.into_skills();
         let built_in_names = skills
@@ -200,19 +218,19 @@ pub struct MaterializedSkill {
 }
 
 impl MaterializedSkill {
-    pub fn name(&self) -> &SkillName {
+    pub const fn name(&self) -> &SkillName {
         &self.name
     }
 
-    pub fn description(&self) -> &SkillDescription {
+    pub const fn description(&self) -> &SkillDescription {
         &self.description
     }
 
-    pub fn source(&self) -> SkillSource {
+    pub const fn source(&self) -> SkillSource {
         self.source
     }
 
-    pub fn provenance(&self) -> &SkillProvenance {
+    pub const fn provenance(&self) -> &SkillProvenance {
         &self.provenance
     }
 
@@ -229,10 +247,16 @@ pub struct MaterializedRegistry {
 
 impl MaterializedRegistry {
     /// Empty registry for sessions with no applicable skills.
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self { skills: Vec::new() }
     }
 
+    /// Copy applicable built-ins into readable session paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MaterializeError`] when a materialization directory or
+    /// built-in skill document cannot be written.
     pub fn materialize(
         registry: ApplicableRegistry,
         scratch_dir: impl AsRef<Path>,
@@ -287,18 +311,18 @@ pub struct RegisteredSkills {
 }
 
 impl RegisteredSkills {
-    pub fn new(registry: MaterializedRegistry, disclosure: DisclosureMode) -> Self {
+    pub const fn new(registry: MaterializedRegistry, disclosure: DisclosureMode) -> Self {
         Self {
             registry,
             disclosure,
         }
     }
 
-    pub fn registry(&self) -> &MaterializedRegistry {
+    pub const fn registry(&self) -> &MaterializedRegistry {
         &self.registry
     }
 
-    pub fn disclosure(&self) -> DisclosureMode {
+    pub const fn disclosure(&self) -> DisclosureMode {
         self.disclosure
     }
 }

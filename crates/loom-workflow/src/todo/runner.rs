@@ -83,6 +83,10 @@ pub struct TodoSummary {
 /// backend-agnostic. Errors from the closure are surfaced as
 /// [`TodoError::Protocol`] — the binary maps them to the user-visible exit
 /// status.
+///
+/// # Errors
+///
+/// Returns an error when todo planning, fan-out, or state persistence fails.
 pub async fn run<C, S, F>(controller: &mut C, spawn: S) -> Result<TodoSummary, TodoError>
 where
     C: TodoController + ?Sized,
@@ -166,7 +170,7 @@ mod tests {
                     model_id: None,
                     model: None,
                     thinking_level: None,
-                    observers: Default::default(),
+                    observers: loom_driver::config::AgentObserversConfig::default(),
                     output_limits: None,
                     shutdown_grace: None,
                     denied_tools: Vec::new(),

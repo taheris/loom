@@ -143,6 +143,12 @@ pub const PACKAGES: &[Package] = &[
     },
 ];
 
+/// Parse the embedded built-in skill catalog.
+///
+/// # Errors
+///
+/// Returns [`CatalogError`] when a package name, document, frontmatter, or
+/// declared identity is invalid.
 pub fn catalog() -> Result<SkillSet, CatalogError> {
     let mut set = SkillSet::default();
     for package in PACKAGES {

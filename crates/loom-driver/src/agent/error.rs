@@ -43,7 +43,7 @@ pub enum ProtocolError {
 }
 
 impl ProtocolError {
-    pub fn invalid_protocol_line(_line: &str, source: serde_json::Error) -> Self {
+    pub const fn invalid_protocol_line(_line: &str, source: serde_json::Error) -> Self {
         Self::InvalidJson(source)
     }
 }
@@ -56,7 +56,7 @@ mod tests {
         serde_json::from_str::<serde_json::Value>("{").expect_err("invalid JSON fixture")
     }
 
-    fn variant_name(err: ProtocolError) -> &'static str {
+    fn variant_name(err: &ProtocolError) -> &'static str {
         match err {
             ProtocolError::InvalidJson(_) => "InvalidJson",
             ProtocolError::UnknownMessageType(_) => "UnknownMessageType",
@@ -86,7 +86,7 @@ mod tests {
             },
             ProtocolError::LockPoisoned,
         ];
-        let names = variants.into_iter().map(variant_name).collect::<Vec<_>>();
+        let names = variants.iter().map(variant_name).collect::<Vec<_>>();
         assert_eq!(
             names,
             vec![

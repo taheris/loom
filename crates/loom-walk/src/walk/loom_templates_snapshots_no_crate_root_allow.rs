@@ -23,7 +23,7 @@ pub fn run(input: &WalkInput) -> Verdict {
     let root = workspace_root();
     let target = root.join(TARGET);
     let scope: Vec<PathBuf> = if target.is_file() {
-        vec![target.clone()]
+        vec![target]
     } else {
         Vec::new()
     };

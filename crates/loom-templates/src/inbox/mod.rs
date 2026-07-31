@@ -33,25 +33,25 @@ pub struct InboxItem {
 }
 
 impl InboxItem {
-    pub fn is_blocked(&self) -> bool {
+    pub const fn is_blocked(&self) -> bool {
         matches!(self.kind, ItemKind::Blocked)
     }
 
-    pub fn is_infra(&self) -> bool {
+    pub const fn is_infra(&self) -> bool {
         matches!(self.kind, ItemKind::Infra)
     }
 
-    pub fn is_tune(&self) -> bool {
+    pub const fn is_tune(&self) -> bool {
         matches!(self.kind, ItemKind::Tune)
     }
 
-    pub fn kind_tag(&self) -> &'static str {
+    pub const fn kind_tag(&self) -> &'static str {
         self.kind.tag()
     }
 }
 
 impl ItemKind {
-    pub fn tag(self) -> &'static str {
+    pub const fn tag(self) -> &'static str {
         match self {
             Self::Clarify => "clarify",
             Self::Blocked => "blocked",

@@ -21,12 +21,14 @@ use super::error::GitError;
 #[cfg(any(test, feature = "test-support"))]
 const DEFAULT_SIGNING_IDENTITY: &str = "sandbox@wrix.dev";
 
-/// Basename of the derived allowed_signers file under a workspace's
+/// Basename of the derived `allowed_signers` file under a workspace's
 /// `.git/` directory.
 const ALLOWED_SIGNERS_FILE: &str = "loom-allowed-signers";
 const GIT_CONFIG_KEY_NOT_FOUND_STATUS: i32 = 5;
 
-/// Launcher env var naming the host deploy-key path. Loom sets it on the
+/// Launcher environment variable naming the host deploy-key path.
+///
+/// Loom sets it on the
 /// `wrix spawn` child process so the wrapper mounts the key into the bead
 /// container; it is also the first tier [`resolve_deploy_key`] consults.
 pub const WRIX_DEPLOY_KEY_ENV: &str = "WRIX_DEPLOY_KEY";
@@ -56,6 +58,10 @@ pub struct RepoGitPolicy {
 
 impl RepoGitPolicy {
     /// Resolve the repository keys required by `loom loop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub fn resolve(origin_dir: &Path, wrix_bin: PathBuf, mode: KeyMode) -> Result<Self, GitError> {
         if mode == KeyMode::Host {
             return Ok(Self {
@@ -98,7 +104,7 @@ impl RepoGitPolicy {
     /// Build an explicit repository policy for cross-crate tests.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
-    pub fn for_test(
+    pub const fn for_test(
         wrix_bin: PathBuf,
         key_name: String,
         deploy_key: PathBuf,
@@ -114,6 +120,10 @@ impl RepoGitPolicy {
     }
 
     /// Install context-stable Wrix Git policy or explicitly restore host policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub fn apply(&self, workspace: &Path) -> Result<(), GitError> {
         if self.mode == KeyMode::Host {
             return if workspace.join(".git").exists() {
@@ -301,6 +311,10 @@ fn invalid_wrix_policy(workspace: &Path, detail: String) -> GitError {
 ///
 /// `origin_dir` is normally `.loom/integration`, whose `origin` points at the
 /// repository remote (a bead clone's origin is only a local workspace path).
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn resolve_signing_key(origin_dir: &Path) -> Result<Option<PathBuf>, GitError> {
     resolve_from(
         &ResolveInputs::for_kind(KeyKind::Signing, origin_dir)?,
@@ -308,12 +322,17 @@ pub fn resolve_signing_key(origin_dir: &Path) -> Result<Option<PathBuf>, GitErro
     )
 }
 
-/// Resolve the wrix deploy key for the launcher environment, mirroring
-/// [`resolve_signing_key`] with the `-signing` suffix dropped: the keyname
+/// Resolve the wrix deploy key for the launcher environment.
+///
+/// Mirrors [`resolve_signing_key`] with the `-signing` suffix dropped: the keyname
 /// fallback is `<repo>-<host>` and the env var is `$WRIX_DEPLOY_KEY`.
 /// Set-but-missing is a hard error ([`GitError::DeployKeyMissing`]). Loom
 /// passes the resolved host path only to Wrix child processes; Loom never
 /// reads the private material (`specs/harness.md` § Repository Git isolation).
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn resolve_deploy_key(origin_dir: &Path) -> Result<Option<PathBuf>, GitError> {
     resolve_from(
         &ResolveInputs::for_kind(KeyKind::Deploy, origin_dir)?,
@@ -330,7 +349,7 @@ enum KeyKind {
 }
 
 impl KeyKind {
-    fn env_var(self) -> &'static str {
+    const fn env_var(self) -> &'static str {
         match self {
             KeyKind::Deploy => WRIX_DEPLOY_KEY_ENV,
             KeyKind::Signing => WRIX_SIGNING_KEY_ENV,
@@ -339,14 +358,14 @@ impl KeyKind {
 
     /// Suffix appended to `<repo>-<host>` for the `$HOME/.ssh/deploy_keys`
     /// fallback. Signing keys carry `-signing`; deploy keys carry nothing.
-    fn keyname_suffix(self) -> &'static str {
+    const fn keyname_suffix(self) -> &'static str {
         match self {
             KeyKind::Deploy => "",
             KeyKind::Signing => "-signing",
         }
     }
 
-    fn missing(self, path: PathBuf) -> GitError {
+    const fn missing(self, path: PathBuf) -> GitError {
         match self {
             KeyKind::Deploy => GitError::DeployKeyMissing { path },
             KeyKind::Signing => GitError::SigningKeyMissing { path },
@@ -442,6 +461,10 @@ fn resolve_hostname() -> Option<String> {
 
 /// Configure a legacy host-only signing fixture for integration tests.
 #[cfg(any(test, feature = "test-support"))]
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn reconcile_signing_config(
     target_dir: &Path,
     signing_key: Option<&Path>,
@@ -454,6 +477,10 @@ pub fn reconcile_signing_config(
 
 /// Write a host-only signing fixture for integration tests.
 #[cfg(any(test, feature = "test-support"))]
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn write_signing_config(target_dir: &Path, signing_key: &Path) -> Result<(), GitError> {
     let allowed_signers_file = target_dir.join(".git").join(ALLOWED_SIGNERS_FILE);
     // `.ok()` discards VarError (unset or non-UTF-8): either case means the
@@ -514,13 +541,18 @@ fn remove_legacy_allowed_signers(target_dir: &Path) -> Result<(), GitError> {
     }
 }
 
-/// Enable rerere in `target_dir`'s local `.git/config`
-/// (`rerere.enabled=true`, `rerere.autoupdate=true`) so the driver-side
+/// Enable rerere in `target_dir`'s local `.git/config`.
+///
+/// Sets `rerere.enabled=true` and `rerere.autoupdate=true` so the driver-side
 /// rebase replays previously-recorded conflict resolutions from
 /// `<target_dir>/.git/rr-cache/` before falling through to
 /// `integration-conflict` recovery. Written only into the loom workspace
 /// (bead clones are reaped on `bd close`, so their rerere cache would never
 /// transfer).
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn enable_rerere(target_dir: &Path) -> Result<(), GitError> {
     sync_git_config(target_dir, "rerere.enabled", "true")?;
     sync_git_config(target_dir, "rerere.autoupdate", "true")?;

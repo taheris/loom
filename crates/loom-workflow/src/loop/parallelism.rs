@@ -17,11 +17,11 @@ impl Parallelism {
     /// Sequential default.
     pub const ONE: Self = Self(NonZeroU32::MIN);
 
-    pub fn get(self) -> u32 {
+    pub const fn get(self) -> u32 {
         self.0.get()
     }
 
-    pub fn is_one(self) -> bool {
+    pub const fn is_one(self) -> bool {
         self.0.get() == 1
     }
 }

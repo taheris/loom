@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn loom_bin() -> &'static str {
+const fn loom_bin() -> &'static str {
     env!("CARGO_BIN_EXE_loom")
 }
 

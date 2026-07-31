@@ -84,8 +84,7 @@ fn inspect_items(items: &[syn::Item], rel_path: &str, violations: &mut Vec<Strin
                         let field_name = field
                             .ident
                             .as_ref()
-                            .map(ToString::to_string)
-                            .unwrap_or_else(|| "<unnamed>".to_string());
+                            .map_or_else(|| "<unnamed>".to_string(), ToString::to_string);
                         violations.push(format!(
                             "{rel_path}:{} `pub struct {}` field `{}` exposes a genai type",
                             line_of(field),
@@ -102,8 +101,7 @@ fn inspect_items(items: &[syn::Item], rel_path: &str, violations: &mut Vec<Strin
                             let field_name = field
                                 .ident
                                 .as_ref()
-                                .map(ToString::to_string)
-                                .unwrap_or_else(|| "<unnamed>".to_string());
+                                .map_or_else(|| "<unnamed>".to_string(), ToString::to_string);
                             violations.push(format!(
                                 "{rel_path}:{} `pub enum {}::{}` field `{}` exposes a genai type",
                                 line_of(field),

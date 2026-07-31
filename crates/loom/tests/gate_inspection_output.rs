@@ -18,14 +18,12 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
     let bd_path = bin_dir.join("bd");
     let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
-    match std::os::unix::fs::symlink(&source, &bd_path) {
-        Ok(()) => {}
-        Err(_) => {
-            std::fs::copy(&source, &bd_path).expect("copy bd-shim");
-            let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
-        }
+    if matches!(std::os::unix::fs::symlink(&source, &bd_path), Ok(())) {
+    } else {
+        std::fs::copy(&source, &bd_path).expect("copy bd-shim");
+        let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
     }
     bin_dir
 }
@@ -151,7 +149,12 @@ fn latest_gate_mint_log(workspace: &Path) -> PathBuf {
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("mint-") && name.ends_with(".jsonl"))
+                .is_some_and(|name| {
+                    name.starts_with("mint-")
+                        && Path::new(name)
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+                })
         })
         .collect::<Vec<_>>();
     entries.sort();
@@ -257,7 +260,7 @@ fn gate_mint_tree_streams_progress_events() {
                 "closed",
                 "epic",
                 &["loom:spec", "spec:acme"],
-            )
+            );
         },
     );
     let stdout = String::from_utf8_lossy(&output.stdout);

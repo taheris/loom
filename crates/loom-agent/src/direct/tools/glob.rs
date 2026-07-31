@@ -16,7 +16,7 @@ pub struct Glob {
 }
 
 impl Glob {
-    pub fn new(ctx: ToolContext) -> Self {
+    pub const fn new(ctx: ToolContext) -> Self {
         Self { ctx }
     }
 }
@@ -32,11 +32,11 @@ pub struct Args {
 }
 
 impl Tool for Glob {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Glob"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "List paths matching a shell-style glob `pattern`. Optional \
          `path` rebases the pattern against that directory."
     }
@@ -45,25 +45,25 @@ impl Tool for Glob {
         schema_for::<Args>()
     }
 
-    fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
+    fn invoke(&self, args: Value) -> InvokeFuture<'_> {
         Box::pin(async move {
             let parsed: Args = parse_args(args)?;
             let ctx = self.ctx.clone();
-            task::spawn_blocking(move || expand(parsed, ctx))
+            task::spawn_blocking(move || expand(parsed, &ctx))
                 .await
                 .unwrap_or_else(|err| Ok(error(format!("join: {err}"))))
         })
     }
 }
 
-fn expand(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError> {
+fn expand(args: Args, ctx: &ToolContext) -> Result<ToolOutput, loom_llm::LlmError> {
     let pattern = match args.path {
         Some(base) => ctx
             .resolve_workspace_path(&base)
             .join(&args.pattern)
             .to_string_lossy()
             .into_owned(),
-        None => args.pattern.clone(),
+        None => args.pattern,
     };
     let iter = match ::glob::glob(&pattern) {
         Ok(it) => it,
@@ -77,12 +77,12 @@ fn expand(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError
         }
     }
     Ok(ToolOutput {
-        content: ctx.cap_or_offload("Glob", paths.join("\n"))?,
+        content: ctx.cap_or_offload("Glob", &paths.join("\n"))?,
         is_error: false,
     })
 }
 
-fn error(message: String) -> ToolOutput {
+const fn error(message: String) -> ToolOutput {
     ToolOutput {
         content: Value::String(message),
         is_error: true,

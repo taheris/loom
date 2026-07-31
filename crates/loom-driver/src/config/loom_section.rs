@@ -60,14 +60,14 @@ pub fn default_sccache_container_path() -> PathBuf {
     PathBuf::from("/sccache")
 }
 
-pub fn default_git_hook_timeout_secs() -> u64 {
+pub const fn default_git_hook_timeout_secs() -> u64 {
     600
 }
 
 impl LoomTopConfig {
     /// [`git_hook_timeout_secs`](Self::git_hook_timeout_secs) as a typed
     /// [`Duration`], ready to hand to `GitClient::with_hook_timeout`.
-    pub fn git_hook_timeout(&self) -> Duration {
+    pub const fn git_hook_timeout(&self) -> Duration {
         Duration::from_secs(self.git_hook_timeout_secs)
     }
 

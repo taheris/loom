@@ -47,6 +47,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the test-only CLI shim reports argument and setup errors on stderr"
+)]
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let Some(state_raw) = env::var_os("BD_STATE_DIR") else {
@@ -206,13 +210,12 @@ fn extend_csv_filter(filters: &mut Vec<String>, raw: &str) {
 }
 
 fn list_bead_ids(state_dir: &Path) -> Vec<String> {
-    let entries = match fs::read_dir(state_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
+    let Ok(entries) = fs::read_dir(state_dir) else {
+        return Vec::new();
     };
     let mut ids: Vec<String> = entries
         .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|name| !name.starts_with('.'))
         .collect();
@@ -220,6 +223,11 @@ fn list_bead_ids(state_dir: &Path) -> Vec<String> {
     ids
 }
 
+#[expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "the test-only shim reproduces bd list's JSON and diagnostic channels"
+)]
 fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
     let mut label_any: Vec<String> = Vec::new();
     let mut status_filters: Vec<String> = Vec::new();
@@ -307,6 +315,11 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "the test-only shim reproduces bd ready's JSON and diagnostic channels"
+)]
 fn cmd_ready(state_dir: &Path, args: &[String]) -> ExitCode {
     // `bd ready --json [--limit=N] [--label=<L>] [--exclude-label=<L> …]` —
     // beads with status=open, no active blocker, carrying the named label
@@ -375,6 +388,11 @@ fn cmd_ready(state_dir: &Path, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "the test-only shim reproduces bd show's JSON and diagnostic channels"
+)]
 fn cmd_show(state_dir: &Path, args: &[String]) -> ExitCode {
     let Some(id) = args.first() else {
         eprintln!("bd-shim: show: bead id required");
@@ -402,6 +420,11 @@ fn cmd_show(state_dir: &Path, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "the test-only shim reproduces bd create's identifier and diagnostic channels"
+)]
 fn cmd_create(state_dir: &Path, args: &[String]) -> ExitCode {
     let mut title = String::new();
     let mut description = String::new();
@@ -505,6 +528,10 @@ fn next_create_id(state_dir: &Path) -> String {
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the test-only shim reproduces bd update's diagnostics"
+)]
 fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
     let Some(id) = args.first() else {
         eprintln!("bd-shim: update: bead id required");
@@ -598,6 +625,10 @@ fn parse_metadata_value(value: &str) -> serde_json::Value {
     serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::String(value.to_owned()))
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the test-only shim reproduces bd close's diagnostics"
+)]
 fn cmd_close(state_dir: &Path, args: &[String]) -> ExitCode {
     let Some(id) = args.first() else {
         eprintln!("bd-shim: close: bead id required");

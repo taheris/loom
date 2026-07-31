@@ -63,7 +63,9 @@ pub struct RunnerEntry {
     pub inputs: Option<String>,
 }
 
-/// One tier block: `[runner.<tier>]` carries the tier-default `cwd` plus
+/// Configuration for one `[runner.<tier>]` block.
+///
+/// It carries the tier-default `cwd` plus
 /// the optional implicit-default-runner fields (`command`/`target`/`join`/
 /// `parse`/`match`). Named runners declared as `[runner.<tier>.<name>]`
 /// subtables collect into `runners`. A bare `[runner.<tier>] cwd = "..."`
@@ -130,7 +132,9 @@ impl RunnerTier {
     }
 }
 
-/// The full `[runner.*]` table from `<workspace>/loom.toml`. Keys are
+/// The full `[runner.*]` table from `<workspace>/loom.toml`.
+///
+/// Keys are
 /// tier names (`test`, `check`, `system`, `judge`) matching the
 /// `loom-gate::annotation::Tier` enum at the consumer end. Empty by
 /// default, so configs without a `[runner]` block parse cleanly.

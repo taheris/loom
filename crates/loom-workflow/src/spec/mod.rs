@@ -22,6 +22,10 @@ use loom_gate::annotation::{Annotation, parse_content};
 
 /// Convenience: locate the spec file for `label` under `<workspace>/specs/`
 /// and parse its annotations via [`loom_gate::annotation::parse_content`].
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn list_for_label(workspace: &Path, label: &SpecLabel) -> Result<Vec<Annotation>, SpecError> {
     let spec_path = workspace
         .join("specs")
@@ -36,6 +40,10 @@ pub fn list_for_label(workspace: &Path, label: &SpecLabel) -> Result<Vec<Annotat
 /// Convenience: parse `<workspace>/specs/<label>.md` and return the unique
 /// nixpkgs names referenced by its `[check]`/`[test]`/`[system]`/`[judge]`
 /// annotations.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn deps_for_label(
     workspace: &Path,
     label: &SpecLabel,

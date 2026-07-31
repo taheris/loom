@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn distinct_spec_labels_yield_distinct_directories() {
         let root = Path::new("/r");
-        let when = UNIX_EPOCH + Duration::from_secs(1777811445);
+        let when = UNIX_EPOCH + Duration::from_secs(1_777_811_445);
         let bead = BeadId::new("lm-1").expect("valid bead id");
         let p_a = bead_log_path(root, &SpecLabel::new("a").unwrap(), &bead, when);
         let p_b = bead_log_path(root, &SpecLabel::new("b").unwrap(), &bead, when);
@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn distinct_beads_in_same_spec_yield_distinct_files() {
         let root = Path::new("/r");
-        let when = UNIX_EPOCH + Duration::from_secs(1777811445);
+        let when = UNIX_EPOCH + Duration::from_secs(1_777_811_445);
         let label = SpecLabel::new("a").unwrap();
         let bead_a = BeadId::new("lm-1").expect("valid bead id");
         let bead_b = BeadId::new("lm-2").expect("valid bead id");
@@ -102,7 +102,7 @@ mod tests {
         let path = phase_log_path(
             Path::new("/x/.loom/logs"),
             "todo",
-            UNIX_EPOCH + Duration::from_secs(1777811445),
+            UNIX_EPOCH + Duration::from_secs(1_777_811_445),
         );
         assert_eq!(
             path,

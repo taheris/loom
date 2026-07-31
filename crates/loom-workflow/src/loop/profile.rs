@@ -44,6 +44,10 @@ pub fn resolve_profile(
 /// manifest entry surfaces as [`ProfileError::UnknownProfile`] — there is
 /// no silent fallback to `base` once the resolved name lands in the
 /// manifest, per `specs/harness.md` § Profile-Image Manifest.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub fn resolve_profile_image<'a>(
     manifest: &'a ProfileImageManifest,
     bead_labels: &[Label],

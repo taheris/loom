@@ -38,14 +38,12 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
     let bd_path = bin_dir.join("bd");
     let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
-    match std::os::unix::fs::symlink(&source, &bd_path) {
-        Ok(_) => {}
-        Err(_) => {
-            std::fs::copy(&source, &bd_path).expect("copy bd-shim");
-            let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
-        }
+    if matches!(std::os::unix::fs::symlink(&source, &bd_path), Ok(())) {
+    } else {
+        std::fs::copy(&source, &bd_path).expect("copy bd-shim");
+        let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
     }
     bin_dir
 }
@@ -68,6 +66,10 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
 /// stage checks*) are no-ops in tests that exercise only the run-phase
 /// envelope-stamping path; without it the review subprocess spawns an
 /// agent backend the test fixtures don't fully wire.
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "the braces are Bash parameter expansion syntax in the generated test script"
+)]
 fn install_loom_noop_stub(dir: &Path) -> PathBuf {
     let stub = dir.join("loom-noop-stub.sh");
     std::fs::write(
@@ -138,9 +140,12 @@ fn find_bead_log(workspace: &Path, spec_label: &str, bead_id: &str) -> PathBuf {
     let mut candidates: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".jsonl"))
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|name| {
+                name.starts_with(&prefix)
+                    && Path::new(name)
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+            })
         })
         .collect();
     candidates.sort();

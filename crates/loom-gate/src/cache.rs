@@ -68,7 +68,7 @@ pub enum Verdict {
 impl Verdict {
     /// Lowercase wire string. Matches the column value persisted by
     /// [`StatusCache::upsert`]; the parser side is [`Verdict::from_wire`].
-    pub fn as_wire(&self) -> &'static str {
+    pub const fn as_wire(&self) -> &'static str {
         match self {
             Verdict::Pass => "pass",
             Verdict::Fail => "fail",
@@ -89,8 +89,9 @@ impl Verdict {
     }
 }
 
-/// One row of the status cache. Indexed by `(spec_label, criterion_anchor)`
-/// per `specs/gate.md`. `last_run_commit` lets the report distinguish
+/// One row of the status cache.
+///
+/// Indexed by `(spec_label, criterion_anchor)` per `specs/gate.md`. `last_run_commit` lets the report distinguish
 /// fresh runs from stale runs without re-executing the verifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheRow {
@@ -115,6 +116,10 @@ pub struct StatusCache {
 
 impl StatusCache {
     /// Open or create the cache at `path`, applying the schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when cache metadata cannot be read, validated, or updated.
     pub fn open(path: &Path) -> Result<Self, CacheError> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -138,6 +143,10 @@ impl StatusCache {
     /// Read every row currently persisted for `spec_label`, sorted by
     /// `criterion_anchor` for deterministic output. Empty when the spec has
     /// no cached rows (fresh checkout, never-verified spec).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when cache metadata cannot be read, validated, or updated.
     pub fn read_for_spec(&self, spec_label: &str) -> Result<Vec<CacheRow>, CacheError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
@@ -150,6 +159,8 @@ impl StatusCache {
         let rows = stmt
             .query_map(params![spec_label], row_to_cache_row)?
             .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             out.push(row?);
@@ -159,6 +170,10 @@ impl StatusCache {
 
     /// Read every row currently persisted, sorted by
     /// `(spec_label, criterion_anchor)` for deterministic output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when cache metadata cannot be read, validated, or updated.
     pub fn read_all(&self) -> Result<Vec<CacheRow>, CacheError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
@@ -170,6 +185,8 @@ impl StatusCache {
         let rows = stmt
             .query_map([], row_to_cache_row)?
             .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             out.push(row?);
@@ -179,6 +196,10 @@ impl StatusCache {
 
     /// Insert or update a row keyed by `(spec_label, criterion_anchor)`.
     /// Idempotent — re-upserting the same key overwrites the prior verdict.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when cache metadata cannot be read, validated, or updated.
     pub fn upsert(&self, row: &CacheRow) -> Result<(), CacheError> {
         let conn = self.lock_conn()?;
         ensure_spec_row(&conn, &row.spec_label)?;
@@ -195,12 +216,17 @@ impl StatusCache {
                 row.evidence.as_str(),
             ],
         )?;
+        drop(conn);
         Ok(())
     }
 
     /// Batched form of [`Self::upsert`]: every row lands inside one
     /// transaction with a single prepared statement, so callers seeding
     /// many rows pay one fsync instead of N.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when cache metadata cannot be read, validated, or updated.
     pub fn upsert_many(&self, rows: &[CacheRow]) -> Result<(), CacheError> {
         if rows.is_empty() {
             return Ok(());
@@ -217,6 +243,7 @@ impl StatusCache {
             }
         }
         tx.commit()?;
+        drop(conn);
         Ok(())
     }
 
@@ -328,6 +355,10 @@ fn row_to_cache_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CacheRow
 
 /// Failures the cache surfaces. Per RS-4 each variant carries enough
 /// context for the caller to route the error back to its source.
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
+)]
 #[derive(Debug, Display, Error)]
 pub enum CacheError {
     /// failed to open cache at {path}: {source}
@@ -451,6 +482,10 @@ pub struct Report {
 /// tests can pass a fixed value and avoid wall-time dependency.
 /// `stale_threshold_days` follows the spec's "stale runs older than N
 /// days" wording — pass a non-positive value to disable staleness flags.
+///
+/// # Errors
+///
+/// Returns an error when cache metadata cannot be read, validated, or updated.
 pub fn render_report(
     cache: &StatusCache,
     parsed: &ParsedSpecs,
@@ -575,6 +610,13 @@ fn summarise_health(
                 line,
                 tier,
                 target,
+            }
+            | IntegrityFinding::StubTestFunction {
+                spec,
+                line,
+                tier,
+                target,
+                ..
             } => Some(BrokenAnnotation {
                 source_spec: spec.clone(),
                 line: *line,
@@ -587,18 +629,6 @@ fn summarise_health(
                 source_spec: spec.clone(),
                 line: *line,
                 tier: Tier::Check,
-                target: target.clone(),
-            }),
-            IntegrityFinding::StubTestFunction {
-                spec,
-                line,
-                tier,
-                target,
-                ..
-            } => Some(BrokenAnnotation {
-                source_spec: spec.clone(),
-                line: *line,
-                tier: *tier,
                 target: target.clone(),
             }),
             IntegrityFinding::MultipleAnnotations { .. }
@@ -684,7 +714,7 @@ struct TierBuilder {
     failing: Vec<FailingCriterion>,
 }
 
-fn tier_ord(tier: Tier) -> u8 {
+const fn tier_ord(tier: Tier) -> u8 {
     match tier {
         Tier::Check => 0,
         Tier::Test => 1,
@@ -699,8 +729,7 @@ fn tier_ord(tier: Tier) -> u8 {
 fn spec_label_from_path(path: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+        .map_or_else(|| path.to_string_lossy().into_owned(), str::to_owned)
 }
 
 /// Build a [`CacheRow`] from an [`Annotation`] plus a fresh verdict.
@@ -787,7 +816,7 @@ mod tests {
         let cache = StatusCache::open(&db_path(&dir)).unwrap();
         let first = row("alpha", "42", Tier::Test, Verdict::Pass, 1);
         cache.upsert(&first).unwrap();
-        let mut second = first.clone();
+        let mut second = first;
         second.verdict = Verdict::Fail;
         second.evidence = "boom".into();
         second.last_run_ts_ms = 2;

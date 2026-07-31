@@ -5,7 +5,7 @@
 //! internally-tagged enum handles dispatch directly, with `#[serde(other)]`
 //! catching any future variants without breaking the build.
 //!
-//! Inner content blocks (`assistant` text/tool_use, `user` tool_result) are
+//! Inner content blocks (`assistant` `text/tool_use`, `user` `tool_result`) are
 //! also tagged unions; the same `#[serde(tag = "type")]` pattern dispatches
 //! into [`AssistantBlock`] and [`UserBlock`] respectively. Unknown content
 //! types are absorbed by `#[serde(other)]` so a forward-compatible block
@@ -74,7 +74,9 @@ pub struct AssistantContent {
     pub content: Vec<AssistantBlock>,
 }
 
-/// One entry in an assistant message's `content` array. `text` blocks become
+/// One entry in an assistant message's `content` array.
+///
+/// `text` blocks become
 /// [`AgentEvent::TextDelta`](loom_driver::agent::AgentEvent::TextDelta);
 /// `tool_use` blocks become
 /// [`AgentEvent::ToolCall`](loom_driver::agent::AgentEvent::ToolCall).
@@ -108,7 +110,9 @@ pub struct UserContent {
     pub content: Vec<UserBlock>,
 }
 
-/// One entry in a user message's `content` array. `tool_result` blocks become
+/// One entry in a user message's `content` array.
+///
+/// `tool_result` blocks become
 /// [`AgentEvent::ToolResult`](loom_driver::agent::AgentEvent::ToolResult).
 /// `content` may be a plain string or a nested block array — the parser
 /// stringifies whichever shape arrives.
@@ -206,7 +210,7 @@ mod tests {
                         assert_eq!(content, &serde_json::Value::String("ok".into()));
                         assert!(!is_error);
                     }
-                    other => panic!("expected ToolResult, got {other:?}"),
+                    UserBlock::Unknown => panic!("expected ToolResult, got Unknown"),
                 }
             }
             other => panic!("expected User, got {other:?}"),
@@ -335,7 +339,7 @@ mod tests {
                 assert_eq!(content, serde_json::Value::String("out".into()));
                 assert!(is_error);
             }
-            other => panic!("expected ToolResult, got {other:?}"),
+            UserBlock::Unknown => panic!("expected ToolResult, got Unknown"),
         }
     }
 
@@ -353,7 +357,7 @@ mod tests {
                 assert_eq!(content, serde_json::Value::Null);
                 assert!(!is_error);
             }
-            other => panic!("expected ToolResult, got {other:?}"),
+            UserBlock::Unknown => panic!("expected ToolResult, got Unknown"),
         }
     }
 

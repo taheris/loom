@@ -86,7 +86,7 @@ fn fake_bead(id: &str) -> Bead {
         issue_type: "task".into(),
         labels: vec![],
         parent: None,
-        metadata: Default::default(),
+        metadata: std::collections::BTreeMap::default(),
         notes: None,
     }
 }
@@ -262,8 +262,7 @@ async fn parallel_merge_back() -> Result<()> {
         let file = format!("{}.txt", slot.bead.id);
         assert!(
             loom.join(&file).exists(),
-            "{} should be merged into the integration branch",
-            file,
+            "{file} should be merged into the integration branch",
         );
         assert!(
             !slot.worktree.path.exists(),
@@ -378,8 +377,7 @@ async fn parallel_failure_preserves_worktree() -> Result<()> {
         let file = format!("{}.partial", slot.bead.id);
         assert!(
             !loom.join(&file).exists(),
-            "{} must not appear on the integration branch after agent failure",
-            file,
+            "{file} must not appear on the integration branch after agent failure",
         );
     }
     Ok(())
@@ -587,8 +585,7 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
     // Bead workspace preserved so the agent's work survives.
     assert!(
         worktree_path.exists(),
-        "bead workspace {:?} should be preserved on conflict",
-        worktree_path,
+        "bead workspace {worktree_path:?} should be preserved on conflict",
     );
     assert_eq!(*branch, slot.worktree.branch);
     // Transient loom-workspace ref deleted unconditionally on the
@@ -724,12 +721,13 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
         .results
         .iter()
         .map(|r| match r {
-            BatchResult::Merged { bead } | BatchResult::Waiting { bead, .. } => bead.as_str(),
-            BatchResult::Conflict { bead, .. } => bead.as_str(),
-            BatchResult::AgentFailed { bead, .. } => bead.as_str(),
-            BatchResult::AgentInfra { bead, .. } => bead.as_str(),
-            BatchResult::AgentBlocked { bead, .. } => bead.as_str(),
-            BatchResult::AgentClarify { bead, .. } => bead.as_str(),
+            BatchResult::Merged { bead }
+            | BatchResult::Waiting { bead, .. }
+            | BatchResult::Conflict { bead, .. }
+            | BatchResult::AgentFailed { bead, .. }
+            | BatchResult::AgentInfra { bead, .. }
+            | BatchResult::AgentBlocked { bead, .. }
+            | BatchResult::AgentClarify { bead, .. } => bead.as_str(),
         })
         .collect();
     let expected: Vec<&str> = beads.iter().map(|b| b.id.as_str()).collect();
@@ -850,19 +848,22 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
     anyhow::ensure!(kg.success(), "ssh-keygen for untrusted key exited {kg}");
 
     let bead2 = fake_bead("lm-driverside.1");
-    let slots2 = create_worktrees(&client, &label, vec![bead2.clone()]).await?;
-    let slot2 = slots2.into_iter().next().expect("one slot");
+    let driver_slots = create_worktrees(&client, &label, vec![bead2.clone()]).await?;
+    let driver_slot = driver_slots.into_iter().next().expect("one slot");
 
     // Worker commit signed with the trusted key + the matching principal so
     // pass 1 verifies. (`commit -S` forces signing regardless of the bead
     // clone's own config; the explicit `-c` block supplies the key.)
-    std::fs::write(slot2.worktree.path.join("worker.txt"), b"worker work\n")?;
-    git(&slot2.worktree.path, &["add", "worker.txt"])?;
+    std::fs::write(
+        driver_slot.worktree.path.join("worker.txt"),
+        b"worker work\n",
+    )?;
+    git(&driver_slot.worktree.path, &["add", "worker.txt"])?;
     let signingkey_arg = format!("user.signingkey={}", key.display());
     let email_arg = format!("user.email={identity}");
     let status = git_command()
         .arg("-C")
-        .arg(&slot2.worktree.path)
+        .arg(&driver_slot.worktree.path)
         .args([
             "-c",
             "gpg.format=ssh",
@@ -909,8 +910,8 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
         .to_string();
 
     let batch_slot2 = BatchSlot {
-        bead: slot2.bead.clone(),
-        worktree: slot2.worktree.clone(),
+        bead: driver_slot.bead.clone(),
+        worktree: driver_slot.worktree.clone(),
         outcome: AgentOutcome::Success,
     };
     let outcome2 = merge_back(&client, vec![batch_slot2]).await?;
@@ -934,11 +935,11 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
     assert_eq!(configured_key.trim(), key.to_string_lossy().as_ref());
     // The transient `loom/<id>` ref was deleted on the merge path after the
     // successful rebase left the workspace on the bead branch.
-    let leaked2 = git_capture(&loom, &["branch", "--list", &slot2.worktree.branch])?;
+    let leaked2 = git_capture(&loom, &["branch", "--list", &driver_slot.worktree.branch])?;
     assert!(
         leaked2.trim().is_empty(),
         "transient ref {} must be deleted after merge (got: {leaked2:?})",
-        slot2.worktree.branch,
+        driver_slot.worktree.branch,
     );
     Ok(())
 }

@@ -1,25 +1,6 @@
-//! Shared validator for the [Options Format
-//! Contract](https://specs/gate.md#options-format-contract): clarify-bound
-//! findings and direct-emit `LOOM_CLARIFY` self-reports must persist a
-//! `## Options — <summary>` heading with at least one `### Option <N> —
-//! <title>` subsection to the bead under dispatch (or the molecule epic
-//! for `todo_*` phases).
-//!
-//! The contract is enforced symmetrically by the verdict-gate direct-emit
-//! path and the mint-side per-finding processing step in `loom-workflow`;
-//! a single validator here gives both sites a structurally identical
-//! check so a malformed block surfaces the same `clarify-without-options`
-//! downgrade on either path.
+//! Validator for the [Options Format Contract](https://specs/gate.md#options-format-contract).
 
-/// Returns `true` iff `text` contains a well-formed `## Options —
-/// <non-empty summary>` heading followed by at least one
-/// `### Option <N> — <non-empty title>` subsection per `specs/gate.md` §
-/// *Options Format Contract*.
-///
-/// The validator scans line-by-line — the contract names the heading
-/// shapes, not nesting rules, so a line scan is sufficient and keeps
-/// `loom-protocol`'s dependency surface a leaf. Whitespace around the
-/// heading separator (`—` / `–` / `-` / `--`) is tolerated.
+/// Check for an Options summary followed by at least one titled option.
 #[must_use]
 pub fn has_well_formed_block(text: &str) -> bool {
     let mut summary_seen = false;

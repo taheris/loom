@@ -76,6 +76,7 @@ fn genai_client_for_schema_endpoint(
 }
 
 /// Client targeting the [`SchemaKind::Anthropic`] schema.
+#[must_use]
 pub struct AnthropicClient {
     inner: Arc<genai::Client>,
     api_key: ApiKey,
@@ -128,7 +129,7 @@ impl AnthropicClient {
     /// Borrow the credential the Client was constructed with. Callers
     /// SHOULD NOT log or emit this value; per RS-15 the wrapped string
     /// is meant for wire-level auth resolvers only.
-    pub fn api_key(&self) -> &ApiKey {
+    pub const fn api_key(&self) -> &ApiKey {
         &self.api_key
     }
 
@@ -156,10 +157,10 @@ impl LlmClient for AnthropicClient {
         emit_event_to_chain(&self.sinks, event);
     }
 
-    fn complete<'a>(
-        &'a self,
+    fn complete(
+        &self,
         req: CompletionRequest,
-    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+    ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
         let model = req.model.clone();
         if model.schema() != Self::SCHEMA {
             return Box::pin(async move {
@@ -186,12 +187,12 @@ impl LlmClient for AnthropicClient {
         })
     }
 
-    fn complete_structured_raw<'a>(
-        &'a self,
+    fn complete_structured_raw(
+        &self,
         req: CompletionRequest,
         schema: serde_json::Value,
         type_name: String,
-    ) -> BoxFuture<'a, Result<String, LlmError>> {
+    ) -> BoxFuture<'_, Result<String, LlmError>> {
         let model = req.model.clone();
         if model.schema() != Self::SCHEMA {
             return Box::pin(async move {
@@ -220,6 +221,7 @@ impl LlmClient for AnthropicClient {
 }
 
 /// Client targeting the [`SchemaKind::OpenAi`] schema.
+#[must_use]
 pub struct OpenAiClient {
     inner: Arc<genai::Client>,
     api_key: ApiKey,
@@ -265,7 +267,7 @@ impl OpenAiClient {
     }
 
     /// Borrow the credential the Client was constructed with.
-    pub fn api_key(&self) -> &ApiKey {
+    pub const fn api_key(&self) -> &ApiKey {
         &self.api_key
     }
 
@@ -293,10 +295,10 @@ impl LlmClient for OpenAiClient {
         emit_event_to_chain(&self.sinks, event);
     }
 
-    fn complete<'a>(
-        &'a self,
+    fn complete(
+        &self,
         req: CompletionRequest,
-    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+    ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
         let model = req.model.clone();
         if model.schema() != Self::SCHEMA {
             return Box::pin(async move {
@@ -323,12 +325,12 @@ impl LlmClient for OpenAiClient {
         })
     }
 
-    fn complete_structured_raw<'a>(
-        &'a self,
+    fn complete_structured_raw(
+        &self,
         req: CompletionRequest,
         schema: serde_json::Value,
         type_name: String,
-    ) -> BoxFuture<'a, Result<String, LlmError>> {
+    ) -> BoxFuture<'_, Result<String, LlmError>> {
         let model = req.model.clone();
         if model.schema() != Self::SCHEMA {
             return Box::pin(async move {
@@ -357,6 +359,7 @@ impl LlmClient for OpenAiClient {
 }
 
 /// Client targeting the [`SchemaKind::Gemini`] schema.
+#[must_use]
 pub struct GeminiClient {
     inner: Arc<genai::Client>,
     api_key: ApiKey,
@@ -402,7 +405,7 @@ impl GeminiClient {
     }
 
     /// Borrow the credential the Client was constructed with.
-    pub fn api_key(&self) -> &ApiKey {
+    pub const fn api_key(&self) -> &ApiKey {
         &self.api_key
     }
 
@@ -430,10 +433,10 @@ impl LlmClient for GeminiClient {
         emit_event_to_chain(&self.sinks, event);
     }
 
-    fn complete<'a>(
-        &'a self,
+    fn complete(
+        &self,
         req: CompletionRequest,
-    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+    ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
         let model = req.model.clone();
         if model.schema() != Self::SCHEMA {
             return Box::pin(async move {
@@ -460,12 +463,12 @@ impl LlmClient for GeminiClient {
         })
     }
 
-    fn complete_structured_raw<'a>(
-        &'a self,
+    fn complete_structured_raw(
+        &self,
         req: CompletionRequest,
         schema: serde_json::Value,
         type_name: String,
-    ) -> BoxFuture<'a, Result<String, LlmError>> {
+    ) -> BoxFuture<'_, Result<String, LlmError>> {
         let model = req.model.clone();
         if model.schema() != Self::SCHEMA {
             return Box::pin(async move {
@@ -502,18 +505,25 @@ pub(super) fn default_envelope_builder() -> EnvelopeBuilder {
 }
 
 pub(super) fn push_sink(sinks: &Mutex<Vec<Box<dyn EventSink>>>, sink: Box<dyn EventSink>) {
-    sinks.lock().unwrap_or_else(|p| p.into_inner()).push(sink);
+    sinks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(sink);
 }
 
 pub(super) fn set_envelope_builder(
     slot: &Mutex<Option<EnvelopeBuilder>>,
     envelope_builder: EnvelopeBuilder,
 ) {
-    *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(envelope_builder);
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(envelope_builder);
 }
 
 pub(super) fn emit_event_to_chain(sinks: &Mutex<Vec<Box<dyn EventSink>>>, event: &AgentEvent) {
-    let mut guard = sinks.lock().unwrap_or_else(|p| p.into_inner());
+    let mut guard = sinks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for sink in guard.iter_mut() {
         sink.emit(event);
     }
@@ -525,7 +535,9 @@ pub(super) fn emit_driver_event_to_chain(
     payload: DriverEventPayload,
 ) {
     let envelope = {
-        let mut guard = envelope_builder.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = envelope_builder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.as_mut() {
             Some(builder) => builder.build_with_source(Source::Driver),
             None => return,
@@ -562,8 +574,7 @@ pub(super) fn debug_per_schema_client(
 ) -> std::fmt::Result {
     let count = sinks
         .lock()
-        .map(|g| g.len())
-        .unwrap_or_else(|p| p.into_inner().len());
+        .map_or_else(|p| p.into_inner().len(), |g| g.len());
     f.debug_struct(name)
         .field("schema", &schema)
         .field("sinks_attached", &count)
@@ -694,12 +705,12 @@ fn current_system_time() -> SystemTime {
 /// Lower a [`CompletionRequest`] to the genai chat request + options
 /// pair and attach the supplied JSON schema as the structured-output
 /// spec. The same `JsonSpec` round-trips through every adapter —
-/// Anthropic's `output_config.format = json_schema`, OpenAI's
+/// Anthropic's `output_config.format = json_schema`, `OpenAI`'s
 /// `response_format = json_schema`, and Gemini's
 /// `responseMimeType = "application/json"` + `responseJsonSchema` — so
 /// the provider mechanism is hidden behind one call shape and only the
 /// `ModelId` variant decides routing.
-pub(crate) fn to_genai_structured_chat_options_raw(
+pub fn to_genai_structured_chat_options_raw(
     req: CompletionRequest,
     schema: serde_json::Value,
     type_name: String,
@@ -712,7 +723,7 @@ pub(crate) fn to_genai_structured_chat_options_raw(
 }
 
 #[cfg(test)]
-pub(crate) fn to_genai_structured_chat_options<T: JsonSchema>(
+pub fn to_genai_structured_chat_options<T: JsonSchema>(
     req: CompletionRequest,
 ) -> (ChatRequest, ChatOptions) {
     let schema = SchemaGenerator::default()
@@ -739,11 +750,11 @@ fn json_spec_name<T: JsonSchema>() -> String {
 /// Map a typed [`ModelId`] to the underlying crate's model-name string.
 /// Delegates to [`ModelId::as_wire`] so the canonical mapping lives on
 /// the public type.
-pub(crate) fn model_id_to_provider_name(model: &ModelId) -> String {
+pub fn model_id_to_provider_name(model: &ModelId) -> String {
     model.as_wire()
 }
 
-pub(crate) fn to_genai_chat_request(req: CompletionRequest) -> (ChatRequest, ChatOptions) {
+pub fn to_genai_chat_request(req: CompletionRequest) -> (ChatRequest, ChatOptions) {
     let CompletionRequest {
         model: _,
         system,
@@ -752,7 +763,7 @@ pub(crate) fn to_genai_chat_request(req: CompletionRequest) -> (ChatRequest, Cha
         tools,
     } = req;
 
-    let chat_messages: Vec<ChatMessage> = messages.into_iter().flat_map(to_chat_messages).collect();
+    let chat_messages: Vec<ChatMessage> = messages.iter().flat_map(to_chat_messages).collect();
 
     let mut chat_req = ChatRequest::new(chat_messages);
     if let Some(prefix) = system {
@@ -776,12 +787,12 @@ fn to_genai_tool(def: ToolDef) -> GenAiTool {
         .with_schema(def.input_schema)
 }
 
-fn to_chat_messages(msg: Message) -> Vec<ChatMessage> {
+fn to_chat_messages(msg: &Message) -> Vec<ChatMessage> {
     let role = chat_role(msg.role);
     if msg.tool_call_id.is_some() || !msg.tool_calls.is_empty() {
         return vec![chat_message_with_cache(
             role,
-            build_message_content(&msg),
+            build_message_content(msg),
             CacheControl::None,
         )];
     }
@@ -807,7 +818,7 @@ fn to_chat_messages(msg: Message) -> Vec<ChatMessage> {
         .collect()
 }
 
-fn chat_role(role: Role) -> ChatRole {
+const fn chat_role(role: Role) -> ChatRole {
     match role {
         Role::User => ChatRole::User,
         Role::Assistant => ChatRole::Assistant,
@@ -821,7 +832,7 @@ fn chat_message_with_cache(
     cache: CacheControl,
 ) -> ChatMessage {
     let mut chat_msg = ChatMessage::new(role, content);
-    if let Some(cache) = cache_control_to_genai(&cache) {
+    if let Some(cache) = cache_control_to_genai(cache) {
         let opts = MessageOptions::default().with_cache_control(cache);
         chat_msg = chat_msg.with_options(opts);
     }
@@ -925,7 +936,7 @@ fn schema_supports_binary_mime(schema: SchemaKind, mime_type: &str) -> bool {
     }
 }
 
-pub(crate) fn validate_binary_payloads(req: &CompletionRequest) -> Result<(), LlmError> {
+pub fn validate_binary_payloads(req: &CompletionRequest) -> Result<(), LlmError> {
     for message in &req.messages {
         for part in &message.content {
             if let MessageContent::Binary { binary, .. } = part
@@ -958,7 +969,7 @@ fn chat_tool_call_to_request(call: &GenAiToolCall) -> Result<ToolUseRequest, Llm
     })
 }
 
-pub(crate) fn cache_control_to_genai(cache: &CacheControl) -> Option<GenAiCacheControl> {
+pub const fn cache_control_to_genai(cache: CacheControl) -> Option<GenAiCacheControl> {
     match cache {
         CacheControl::None => None,
         CacheControl::Ephemeral(CacheTtl::Minutes5) => Some(GenAiCacheControl::Ephemeral5m),
@@ -967,9 +978,7 @@ pub(crate) fn cache_control_to_genai(cache: &CacheControl) -> Option<GenAiCacheC
     }
 }
 
-pub(crate) fn chat_response_to_completion(
-    resp: ChatResponse,
-) -> Result<CompletionResponse, LlmError> {
+pub fn chat_response_to_completion(resp: ChatResponse) -> Result<CompletionResponse, LlmError> {
     let usage = usage_to_token_usage(&resp.usage);
     let tool_calls: Vec<ToolUseRequest> = resp
         .tool_calls()
@@ -985,16 +994,16 @@ pub(crate) fn chat_response_to_completion(
 }
 
 fn usage_to_token_usage(usage: &GenAiUsage) -> TokenUsage {
-    let input = usage.prompt_tokens.unwrap_or(0).max(0) as u32;
-    let output = usage.completion_tokens.unwrap_or(0).max(0) as u32;
+    let input = u32::try_from(usage.prompt_tokens.unwrap_or(0)).unwrap_or(0);
+    let output = u32::try_from(usage.completion_tokens.unwrap_or(0)).unwrap_or(0);
     let (cache_read, cache_write) =
         usage
             .prompt_tokens_details
             .as_ref()
             .map_or((0_u32, 0_u32), |details| {
                 (
-                    details.cached_tokens.unwrap_or(0).max(0) as u32,
-                    details.cache_creation_tokens.unwrap_or(0).max(0) as u32,
+                    u32::try_from(details.cached_tokens.unwrap_or(0)).unwrap_or(0),
+                    u32::try_from(details.cache_creation_tokens.unwrap_or(0)).unwrap_or(0),
                 )
             });
     TokenUsage {
@@ -1065,7 +1074,7 @@ mod tests {
     }
 
     /// `LlmClient::supports(&model)` returns `model.schema() ==
-    /// self.schema()` for every Client × ModelId pair. The default
+    /// self.schema()` for every Client × `ModelId` pair. The default
     /// trait impl carries the equality; this exhaustive cross-product
     /// pins per-schema Clients refuse models from other schemas while
     /// accepting any model whose schema matches their own (including
@@ -1115,7 +1124,7 @@ mod tests {
         fn emit(&mut self, event: &AgentEvent) {
             self.events
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(event.clone());
         }
     }
@@ -1202,6 +1211,7 @@ mod tests {
                 other => panic!("expected DriverEvent, got {other:?}"),
             }
         }
+        drop((events_a, events_b));
     }
 
     const CONCURRENT_COMPLETIONS: usize = 8;
@@ -1251,6 +1261,7 @@ mod tests {
                 other => panic!("expected DriverEvent, got {other:?}"),
             }
         }
+        drop(events);
         sequences.sort_unstable();
         let event_count = u64::try_from(CONCURRENT_COMPLETIONS).expect("event count fits u64");
         assert_eq!(sequences, (0..event_count).collect::<Vec<_>>());
@@ -1435,17 +1446,17 @@ mod tests {
     /// payload remains pristine when no cache breakpoint is requested.
     #[test]
     fn cache_control_lowers_to_matching_genai_variant() {
-        assert_eq!(cache_control_to_genai(&CacheControl::None), None);
+        assert_eq!(cache_control_to_genai(CacheControl::None), None);
         assert_eq!(
-            cache_control_to_genai(&CacheControl::Ephemeral(CacheTtl::Minutes5)),
+            cache_control_to_genai(CacheControl::Ephemeral(CacheTtl::Minutes5)),
             Some(GenAiCacheControl::Ephemeral5m),
         );
         assert_eq!(
-            cache_control_to_genai(&CacheControl::Ephemeral(CacheTtl::Hours1)),
+            cache_control_to_genai(CacheControl::Ephemeral(CacheTtl::Hours1)),
             Some(GenAiCacheControl::Ephemeral1h),
         );
         assert_eq!(
-            cache_control_to_genai(&CacheControl::Ephemeral(CacheTtl::Hours24)),
+            cache_control_to_genai(CacheControl::Ephemeral(CacheTtl::Hours24)),
             Some(GenAiCacheControl::Ephemeral24h),
         );
     }
@@ -1488,7 +1499,7 @@ mod tests {
         assert_eq!(options.max_tokens, Some(512));
     }
 
-    /// A cache-marked OpenAI request exercises the live provider
+    /// A cache-marked `OpenAI` request exercises the live provider
     /// serialization path and succeeds while omitting the unsupported
     /// per-message cache marker from the Responses API payload.
     #[tokio::test]
@@ -1946,7 +1957,7 @@ mod tests {
     /// the four-field `TokenUsage`: `input`, `output`, `cache_read`,
     /// `cache_write`. The cache fields are pulled from the provider's
     /// prompt-tokens detail block. Pricing is consumer-owned (see
-    /// `specs/llm.md` § TokenUsage); the exhaustive destructure below
+    /// `specs/llm.md` § `TokenUsage`); the exhaustive destructure below
     /// would fail to compile if a fifth field appeared on the struct.
     #[test]
     fn completion_response_carries_token_usage_without_cost() {
@@ -1971,7 +1982,7 @@ mod tests {
     /// genai `ChatOptions` whose `response_format = JsonSpec` carries
     /// `T`'s JSON schema regardless of which provider the request's
     /// `ModelId` routes to. The same lowering function is invoked on
-    /// the Anthropic, OpenAI, and Gemini paths, so consumers never see
+    /// the Anthropic, `OpenAI`, and Gemini paths, so consumers never see
     /// the provider mechanism — switching providers is a `ModelId`
     /// variant change.
     #[test]
@@ -2012,7 +2023,7 @@ mod tests {
     }
 
     /// `complete_structured::<T>` drives the concrete Anthropic,
-    /// OpenAI, and Gemini Clients through their generated provider
+    /// `OpenAI`, and Gemini Clients through their generated provider
     /// requests. Each mock asserts the provider-specific structured
     /// output field is present, then returns that provider's native
     /// response shape carrying a JSON string that the public typed
@@ -2152,7 +2163,7 @@ mod tests {
     /// Every successful `complete*` call emits a
     /// `DriverKind::TokenUsage` driver event into the configured sink
     /// chain. The event's payload carries the four-field `TokenUsage`
-    /// plus the model identifier so SaaS billing pipelines see cache
+    /// plus the model identifier so `SaaS` billing pipelines see cache
     /// hits and compute their own per-tenant cost from the raw counts.
     #[tokio::test]
     async fn complete_emits_token_usage_driver_event() {
@@ -2232,7 +2243,7 @@ mod tests {
     }
 
     /// Each Client owns the credential supplied to its constructor.
-    /// Two OpenAI Clients pointed at the same mock endpoint emit
+    /// Two `OpenAI` Clients pointed at the same mock endpoint emit
     /// different Authorization headers, proving per-tenant credentials
     /// are Client-local rather than process-global.
     #[tokio::test]

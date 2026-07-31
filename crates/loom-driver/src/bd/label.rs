@@ -26,6 +26,10 @@ enum Kind {
 }
 
 impl Label {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub fn new(s: impl AsRef<str>) -> Result<Self, ParseLabelError> {
         let raw = s.as_ref();
         let kind = if let Some(suffix) = raw.strip_prefix(SPEC_PREFIX) {

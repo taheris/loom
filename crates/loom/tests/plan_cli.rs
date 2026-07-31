@@ -72,6 +72,10 @@ fn seed_workspace(root: &Path) -> PathBuf {
     manifest
 }
 
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "the braces are Bash parameter expansion syntax in the generated test script"
+)]
 fn install_wrix_shim(root: &Path) -> PathBuf {
     let path = root.join("wrix-shim");
     loom_test_support::write_executable_bash_script(

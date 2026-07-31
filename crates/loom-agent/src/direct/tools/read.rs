@@ -27,7 +27,7 @@ pub struct Read {
 }
 
 impl Read {
-    pub fn new(ctx: ToolContext) -> Self {
+    pub const fn new(ctx: ToolContext) -> Self {
         Self { ctx }
     }
 }
@@ -45,11 +45,11 @@ pub struct Args {
 }
 
 impl Tool for Read {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Read"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Read a workspace file. Optional 1-indexed `offset` and `limit` \
          slice the content by line. Errors on binary files."
     }
@@ -58,7 +58,7 @@ impl Tool for Read {
         schema_for::<Args>()
     }
 
-    fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
+    fn invoke(&self, args: Value) -> InvokeFuture<'_> {
         Box::pin(async move {
             let parsed: Args = parse_args(args)?;
             read_file(parsed, self.ctx.clone()).await
@@ -75,19 +75,16 @@ async fn read_file(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm:
     };
 
     if is_binary(&bytes) {
-        return Ok(error(format!("binary file rejected: {}", display_path)));
+        return Ok(error(format!("binary file rejected: {display_path}")));
     }
 
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(_) => {
-            return Ok(error(format!("invalid utf-8: {}", display_path)));
-        }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Ok(error(format!("invalid utf-8: {display_path}")));
     };
 
     let sliced = slice_lines(&text, args.offset, args.limit);
     Ok(ToolOutput {
-        content: ctx.cap_or_offload("Read", sliced)?,
+        content: ctx.cap_or_offload("Read", &sliced)?,
         is_error: false,
     })
 }
@@ -110,7 +107,7 @@ fn slice_lines(text: &str, offset: Option<usize>, limit: Option<usize>) -> Strin
         .join("\n")
 }
 
-fn error(message: String) -> ToolOutput {
+const fn error(message: String) -> ToolOutput {
     ToolOutput {
         content: Value::String(message),
         is_error: true,
@@ -187,13 +184,15 @@ mod tests {
     async fn read_input_schema_describes_file_path_required() {
         let dir = tempdir().unwrap();
         let schema = read_with(&dir, usize::MAX).input_schema();
-        let required = schema["required"]
+        let mut required = schema["required"]
             .as_array()
             .expect("required array")
             .iter()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>();
-        assert!(required.contains(&"file_path"), "schema: {schema}");
+            .filter_map(|v| v.as_str());
+        assert!(
+            required.any(|field| field == "file_path"),
+            "schema: {schema}"
+        );
     }
 
     #[tokio::test]
@@ -288,7 +287,11 @@ mod tests {
             first_path,
             first_again.content["path"].as_str().expect("repeat path"),
         );
-        assert!(first_path.ends_with(".txt"), "{first_path}");
+        assert_eq!(
+            std::path::Path::new(first_path).extension(),
+            Some(std::ffi::OsStr::new("txt")),
+            "{first_path}"
+        );
     }
 
     #[tokio::test]

@@ -15,6 +15,12 @@ const MAX_PHASE_CHARS: usize = 64;
 pub struct SkillName(String);
 
 impl SkillName {
+    /// Parse a skill package name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseSkillNameError`] unless the value is non-empty,
+    /// bounded lowercase kebab-case.
     pub fn new(value: impl Into<String>) -> Result<Self, ParseSkillNameError> {
         value.into().parse()
     }
@@ -93,6 +99,12 @@ pub enum ParseSkillNameError {
 pub struct SkillDescription(String);
 
 impl SkillDescription {
+    /// Construct a bounded non-empty routing description.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseSkillDescriptionError`] when the value is empty or
+    /// exceeds the description length limit.
     pub fn new(value: impl Into<String>) -> Result<Self, ParseSkillDescriptionError> {
         let value = value.into();
         if value.is_empty() {
@@ -145,6 +157,12 @@ pub enum ParseSkillDescriptionError {
 pub struct PhaseName(String);
 
 impl PhaseName {
+    /// Parse a workflow phase selector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParsePhaseNameError`] unless the value is bounded lowercase
+    /// kebab-case, optionally separated by dots.
     pub fn new(value: impl Into<String>) -> Result<Self, ParsePhaseNameError> {
         value.into().parse()
     }

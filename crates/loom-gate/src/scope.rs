@@ -80,6 +80,10 @@ impl CargoMetadataScope {
     /// whose root manifest is `manifest_path`. The current `cargo` on
     /// PATH is used; consumers needing toolchain pinning are expected to
     /// set up `PATH` accordingly before calling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when gate input, execution, or validation fails.
     pub fn from_manifest(manifest_path: &Path) -> Result<Self, ScopeError> {
         let stdout = run_cargo_metadata(manifest_path)?;
         let metadata: CargoMetadataJson = serde_json::from_slice(&stdout)

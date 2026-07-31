@@ -38,8 +38,9 @@ use crate::{apply_launcher_env, resolve_wrix_spawn_bin};
 /// [`ScratchSession`]: loom_driver::scratch::ScratchSession
 const SPAWN_CONFIG_FILE: &str = "spawn-config.json";
 
-/// Default seconds to wait for claude to exit naturally after observing
-/// `result`. Per spec the value is configurable via
+/// Default grace period after observing a Claude `result`.
+///
+/// The value is configurable via
 /// `[claude] post_result_grace_secs`; this constant is the fallback the
 /// dispatcher uses when no override is wired up yet.
 pub const DEFAULT_POST_RESULT_GRACE_SECS: u64 = 5;
@@ -73,7 +74,7 @@ impl AgentBackend for ClaudeBackend {
         );
         apply_launcher_env(&mut cmd, &config.launcher_env);
 
-        spawn_session(cmd, config.denied_tools.clone()).await
+        spawn_session(cmd, config.denied_tools.clone())
     }
 
     async fn after_session_complete(
@@ -104,6 +105,10 @@ impl ClaudeBackend {
     ///
     /// `clock` drives the grace timer so tests can substitute
     /// [`loom_driver::clock::MockClock`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent startup, protocol handling, or tool execution fails.
     pub async fn shutdown_after_result<S>(
         session: AgentSession<S>,
         clock: &dyn Clock,
@@ -165,7 +170,7 @@ fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
 /// Module-private — the public surface is [`ClaudeBackend::spawn`]. Tests
 /// call this through the `pub(crate)` re-export to substitute a mock claude
 /// binary in place of the real `wrix spawn` exec.
-pub(crate) async fn spawn_session(
+pub(crate) fn spawn_session(
     mut cmd: Command,
     denied_tools: Vec<String>,
 ) -> Result<AgentSession<Idle>, ProtocolError> {
@@ -245,12 +250,11 @@ fn send_signal(child: &Child, sig: Signal) {
         debug!("claude child id unavailable; skipping signal {}", sig);
         return;
     };
-    let pid = match i32::try_from(pid) {
-        Ok(p) => Pid::from_raw(p),
-        Err(_) => {
-            warn!(pid, "claude child id does not fit in i32; skipping signal");
-            return;
-        }
+    let pid = if let Ok(p) = i32::try_from(pid) {
+        Pid::from_raw(p)
+    } else {
+        warn!(pid, "claude child id does not fit in i32; skipping signal");
+        return;
     };
     if let Err(e) = kill(pid, sig) {
         debug!(error = %e, signal = %sig, "kill returned error; child may already have exited");
@@ -284,8 +288,7 @@ mod tests {
         std::process::Command::new("jq")
             .arg("--version")
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     }
 
     fn compact_hook_context_from_settings(
@@ -381,7 +384,7 @@ mod tests {
             model_id: None,
             model: None,
             thinking_level: None,
-            observers: Default::default(),
+            observers: loom_driver::config::AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),
@@ -478,9 +481,7 @@ mod tests {
 
     #[tokio::test]
     async fn steering_message_reaches_mock_and_emits_followup_turn() {
-        let session = spawn_session(mock_command("steering"), Vec::new())
-            .await
-            .expect("spawn session");
+        let session = spawn_session(mock_command("steering"), Vec::new()).expect("spawn session");
         let mut session = session.prompt("first prompt").await.expect("prompt ok");
 
         // First assistant turn — proves the mock saw the prompt.
@@ -512,7 +513,7 @@ mod tests {
         loop {
             match session.next_event().await.expect("event ok") {
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF before SessionComplete"),
             }
         }
@@ -537,15 +538,14 @@ mod tests {
         // OS scheduler is not a tokio task. We use a small grace + an upper
         // bound to keep the test deterministic without measuring elapsed time
         // against an Instant.
-        let session = spawn_session(mock_command("ignore-stdin"), Vec::new())
-            .await
-            .expect("spawn session");
+        let session =
+            spawn_session(mock_command("ignore-stdin"), Vec::new()).expect("spawn session");
         let mut session = session.prompt("hello").await.expect("prompt ok");
 
         loop {
             match session.next_event().await.expect("event ok") {
                 Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => continue,
+                Some(_) => {}
                 None => panic!("unexpected EOF before SessionComplete"),
             }
         }

@@ -18,6 +18,8 @@
 //!   Contract](../../../specs/gate.md#options-format-contract) block
 //!   and exits.
 
+use std::fmt::Write as _;
+
 use loom_driver::bd::{BdClient, CommandRunner, ListOpts};
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 
@@ -58,6 +60,10 @@ pub enum FanoutOutcome {
 /// Calls `bd list --type=epic --label=spec:<X> --status=open` for every
 /// touched spec, reads the resulting epic's `parent` (its molecule), and
 /// projects the result onto [`FanoutOutcome`].
+///
+/// # Errors
+///
+/// Returns an error when todo planning, fan-out, or state persistence fails.
 pub async fn classify_touched_set<R: CommandRunner>(
     bd: &BdClient<R>,
     touched: &[TouchedSpec],
@@ -185,21 +191,19 @@ pub fn render_collision_options(resolutions: &[SpecResolution]) -> String {
             .map(SpecLabel::as_str)
             .collect::<Vec<_>>()
             .join(", ");
-        body.push_str(&format!(
-            "\n### Option {idx} — Bond into molecule `{mol}`\n"
-        ));
-        body.push_str(&format!(
+        let _ = write!(body, "\n### Option {idx} — Bond into molecule `{mol}`\n");
+        let _ = writeln!(
+            body,
             "Adopt the existing molecule `{mol}` (currently anchoring {spec_list}). \
              Re-run `loom todo` so fan-out beads bond under each touched spec's \
-             epic; close any conflicting open epic in the other touched spec(s) first.\n",
-            mol = mol,
-            spec_list = spec_list,
-        ));
+             epic; close any conflicting open epic in the other touched spec(s) first.",
+        );
         idx += 1;
     }
-    body.push_str(&format!(
+    let _ = write!(
+        body,
         "\n### Option {idx} — Close existing epics and mint a fresh cross-cutting molecule\n"
-    ));
+    );
     let existing_mols: Vec<String> = existing
         .iter()
         .map(|(m, _)| format!("`{}`", m.as_str()))
@@ -210,13 +214,14 @@ pub fn render_collision_options(resolutions: &[SpecResolution]) -> String {
              Re-run `loom todo` to fan out fresh epics and bond them under the new molecule.\n",
         );
     } else {
-        body.push_str(&format!(
+        let _ = writeln!(
+            body,
             "Close the pre-existing epic(s) ({mols}) via `bd update --status=closed`, \
              then re-run `loom todo` to mint one fresh cross-cutting molecule covering \
-             every touched spec ({labels}).\n",
+             every touched spec ({labels}).",
             mols = existing_mols.join(", "),
             labels = labels.join(", "),
-        ));
+        );
     }
     body
 }

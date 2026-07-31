@@ -24,7 +24,7 @@ pub enum State {
 }
 
 impl State {
-    pub fn bead_status(self) -> &'static str {
+    pub const fn bead_status(self) -> &'static str {
         match self {
             Self::Pending | Self::Accepted => "open",
             Self::Blocked | Self::ApplyFailed => "blocked",
@@ -53,7 +53,7 @@ pub struct OutcomeCounts {
 }
 
 impl OutcomeCounts {
-    pub fn pending(count: usize) -> Self {
+    pub const fn pending(count: usize) -> Self {
         Self {
             pending: count,
             passed: 0,

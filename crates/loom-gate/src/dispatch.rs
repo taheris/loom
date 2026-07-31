@@ -43,8 +43,9 @@ use crate::runner::{
     group_by_runner, parse_runner_output,
 };
 
-/// JSON-line verdict every verifier returns on stdout, per the
-/// verifier-runner contract in `specs/gate.md`. The exit code mirrors
+/// JSON-line verdict returned by a verifier.
+///
+/// Per the verifier-runner contract in `specs/gate.md`, the exit code mirrors
 /// `pass` (0 for true, non-zero for false); the gate parses one line of
 /// JSON-encoded `VerifierVerdict` from each verifier's stdout. A
 /// verifier may exit `77` (GNU test-suite skip convention) or emit
@@ -92,8 +93,9 @@ pub enum DispatchError {
     MissingFromBatchOutput { runner: String, target: String },
 }
 
-/// Options shared by every dispatch entry point: the `--files` scope set
-/// (colon-joined into `LOOM_FILES`) and the optional `--spec` label
+/// Options shared by every dispatch entry point.
+///
+/// Carries the `--files` scope set (colon-joined into `LOOM_FILES`) and the optional `--spec` label
 /// (forwarded as `LOOM_SPEC`). An empty `files` vec means "no `--files`
 /// filter" — verifiers see an empty `LOOM_FILES` and batched tiers skip
 /// scope intersection.
@@ -103,8 +105,9 @@ pub struct DispatchOptions {
     pub spec: Option<String>,
 }
 
-/// Per-tier default working directories used when neither the matched
-/// runner's `cwd` field nor an annotation's explicit override applies.
+/// Per-tier default working directories.
+///
+/// Used when neither the matched runner's `cwd` field nor an annotation's explicit override applies.
 /// The dispatcher resolves the per-spawn cwd by walking
 /// matched-runner > tier-default > repo-root in that order; this
 /// struct carries the middle source. Repo-relative paths in this
@@ -153,8 +156,9 @@ pub trait TestScope {
     fn scope_for(&self, annotation: &Annotation) -> Vec<PathBuf>;
 }
 
-/// Scope impl that reports the empty set for every annotation. With
-/// `--files` empty (no filter requested) the dispatcher skips
+/// Scope implementation that reports an empty set for every annotation.
+///
+/// With `--files` empty (no filter requested) the dispatcher skips
 /// intersection and every annotation passes through; with `--files`
 /// set, every annotation is filtered out. This is the safe default
 /// before a cargo-metadata-backed scope lands.
@@ -166,8 +170,9 @@ impl TestScope for EmptyScope {
     }
 }
 
-/// Dispatch every `[check]`-tier annotation in `annotations` through
-/// the matched-runner / per-annotation fallback composition described
+/// Dispatch all `[check]`-tier annotations.
+///
+/// Uses the matched-runner / per-annotation fallback composition described
 /// in `specs/gate.md` § Runners. `specs` is the resolved
 /// `[runner.check]` table; an empty slice degrades to per-annotation
 /// spawn for every entry. Returns one result per Check-tier annotation
@@ -191,8 +196,9 @@ pub fn run_check(
     run_with_runners(&check_only, specs, options, repo_root, tier_cwds)
 }
 
-/// Dispatch every `[system]`-tier annotation in `annotations`. One
-/// subprocess spawns per annotation — `[system]` execution stays
+/// Dispatch all `[system]`-tier annotations.
+///
+/// One subprocess spawns per annotation — `[system]` execution stays
 /// per-annotation per `specs/gate.md` § Runners (system verifiers are slow
 /// and self-contained, so batching does not pay). A matched runner owns
 /// invocation construction via its `command` template, but the template is
@@ -225,7 +231,7 @@ fn run_system_with_runners(
     let position_of: std::collections::HashMap<*const Annotation, usize> = annotations
         .iter()
         .enumerate()
-        .map(|(i, a)| (a as *const Annotation, i))
+        .map(|(i, a)| (std::ptr::from_ref::<Annotation>(a), i))
         .collect();
 
     for group in groups {
@@ -243,15 +249,17 @@ fn run_system_with_runners(
                         target: matched.rendered_target.clone(),
                     })
                 });
-            if let Some(&idx) = position_of.get(&(matched.annotation as *const Annotation)) {
+            if let Some(&idx) =
+                position_of.get(&std::ptr::from_ref::<Annotation>(matched.annotation))
+            {
                 per_index[idx] = Some(result);
             }
         }
     }
     for ann in unmatched {
-        if let Some(&idx) = position_of.get(&(ann as *const Annotation)) {
+        if let Some(&idx) = position_of.get(&std::ptr::from_ref::<Annotation>(ann)) {
             let cwd = resolve_cwd(None, tier_cwds.for_tier(ann.tier), repo_root);
-            per_index[idx] = Some(run_single_in(ann, options, cwd.as_deref()));
+            per_index[idx] = Some(run_single_in(ann, options, Some(cwd.as_path())));
         }
     }
 
@@ -261,11 +269,16 @@ fn run_system_with_runners(
         .collect()
 }
 
-/// Dispatch every `[test]`-tier annotation in `annotations` as one
-/// batched runner subprocess. Targets are filtered by `--files` scope
+/// Dispatch all `[test]` annotations as one batched runner subprocess.
+///
+/// Targets are filtered by `--files` scope
 /// via the [`TestScope`] resolver before being passed to the runner
 /// template; an empty filter result returns `Ok(None)` so the caller
 /// can distinguish "skipped — no scope match" from a true verdict.
+///
+/// # Errors
+///
+/// Returns an error when a verifier cannot be selected, prepared, or dispatched.
 pub fn run_test(
     annotations: &[Annotation],
     options: &DispatchOptions,
@@ -276,6 +289,10 @@ pub fn run_test(
 }
 
 /// Dispatch every `[test]` annotation with an explicit runner cwd.
+///
+/// # Errors
+///
+/// Returns an error when a verifier cannot be selected, prepared, or dispatched.
 pub fn run_test_in(
     annotations: &[Annotation],
     options: &DispatchOptions,
@@ -303,6 +320,10 @@ pub fn run_test_in(
 /// Dispatch every `[judge]`-tier annotation in `annotations` as one
 /// batched runner subprocess. Judges aren't `--files`-filterable, so
 /// every judge annotation is included.
+///
+/// # Errors
+///
+/// Returns an error when a verifier cannot be selected, prepared, or dispatched.
 pub fn run_judge(
     annotations: &[Annotation],
     options: &DispatchOptions,
@@ -324,8 +345,9 @@ pub fn run_judge(
     }))
 }
 
-/// Dispatch `annotations` through `specs` per the runner-batched
-/// contract in `specs/gate.md` § Runners. Annotations are grouped
+/// Dispatch annotations through batched runner specifications.
+///
+/// Per `specs/gate.md` § Runners, annotations are grouped
 /// by which spec matches their target (first match wins, declaration
 /// order); each group spawns one subprocess and parses per-target
 /// verdicts via the spec's [`BuiltinParser`]. Annotations no spec
@@ -361,21 +383,23 @@ pub fn run_with_runners(
     let position_of: std::collections::HashMap<*const Annotation, usize> = annotations
         .iter()
         .enumerate()
-        .map(|(i, a)| (a as *const Annotation, i))
+        .map(|(i, a)| (std::ptr::from_ref::<Annotation>(a), i))
         .collect();
 
     for group in groups {
         let results = dispatch_group(&group, options, repo_root, tier_cwds);
         for (matched, result) in group.matched.iter().zip(results) {
-            if let Some(&idx) = position_of.get(&(matched.annotation as *const Annotation)) {
+            if let Some(&idx) =
+                position_of.get(&std::ptr::from_ref::<Annotation>(matched.annotation))
+            {
                 per_index[idx] = Some(result);
             }
         }
     }
     for ann in unmatched {
-        if let Some(&idx) = position_of.get(&(ann as *const Annotation)) {
+        if let Some(&idx) = position_of.get(&std::ptr::from_ref::<Annotation>(ann)) {
             let cwd = resolve_cwd(None, tier_cwds.for_tier(ann.tier), repo_root);
-            per_index[idx] = Some(run_single_in(ann, options, cwd.as_deref()));
+            per_index[idx] = Some(run_single_in(ann, options, Some(cwd.as_path())));
         }
     }
     per_index
@@ -388,16 +412,12 @@ pub fn run_with_runners(
 /// matched-runner > tier-default > repo-root chain in
 /// `specs/gate.md` § Runners. Repo-relative paths are joined to
 /// `repo_root`; absolute paths round-trip unchanged.
-fn resolve_cwd(
-    runner_cwd: Option<&Path>,
-    tier_cwd: Option<&Path>,
-    repo_root: &Path,
-) -> Option<PathBuf> {
+fn resolve_cwd(runner_cwd: Option<&Path>, tier_cwd: Option<&Path>, repo_root: &Path) -> PathBuf {
     let chosen = runner_cwd.or(tier_cwd);
     match chosen {
-        Some(p) if p.is_absolute() => Some(p.to_path_buf()),
-        Some(p) => Some(repo_root.join(p)),
-        None => Some(repo_root.to_path_buf()),
+        Some(p) if p.is_absolute() => p.to_path_buf(),
+        Some(p) => repo_root.join(p),
+        None => repo_root.to_path_buf(),
     }
 }
 
@@ -414,7 +434,7 @@ fn dispatch_group(
         .map(|m| m.annotation.tier)
         .and_then(|t| tier_cwds.for_tier(t));
     let cwd = resolve_cwd(group.spec.cwd.as_deref(), tier_default, repo_root);
-    let output = match spawn_in(&command, options, cwd.as_deref()) {
+    let output = match spawn_in(&command, options, Some(cwd.as_path())) {
         Ok(o) => o,
         Err(err) => {
             let message = err.to_string();
@@ -612,7 +632,7 @@ fn parse_verdict_optional(
                     source,
                 });
             }
-            Err(_) => continue,
+            Err(_) => {}
         }
     }
     Ok(None)

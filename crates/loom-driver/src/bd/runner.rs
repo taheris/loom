@@ -18,7 +18,7 @@ pub struct RunOutput {
 }
 
 impl RunOutput {
-    pub fn success(&self) -> bool {
+    pub const fn success(&self) -> bool {
         self.status == 0
     }
 }
@@ -37,8 +37,9 @@ pub trait CommandRunner: Send + Sync + 'static {
     ) -> impl Future<Output = Result<RunOutput, BdError>> + Send;
 }
 
-/// Default runner: `tokio::process::Command::new("bd")` with each argument
-/// passed through `.arg()` so no shell is involved. The subprocess timeout is
+/// Default runner for the `bd` subprocess.
+///
+/// Each argument is passed through `.arg()` so no shell is involved. The subprocess timeout is
 /// driven by the injected [`Clock`] so tests can substitute
 /// [`crate::clock::MockClock`].
 #[derive(Clone)]

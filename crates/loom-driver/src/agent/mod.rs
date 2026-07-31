@@ -39,8 +39,10 @@ pub use parse::{LineParse, ParsedLine};
 pub use repin::RePinContent;
 pub use session::{Active, AgentSession, Idle};
 
-/// `AgentEvent` + `CompactionReason` live in `loom-events` now, since
-/// they're part of the public contract leaf consumers depend on. The
+/// Re-exported agent event types from `loom-events`.
+///
+/// `AgentEvent` and `CompactionReason` are part of the public contract leaf
+/// consumers depend on. The
 /// driver re-exports them so the `agent::event::AgentEvent` path keeps
 /// resolving for existing call sites.
 pub mod event {

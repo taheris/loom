@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -75,7 +76,9 @@ pub fn default_profile_for_spec(spec: &SpecLabel) -> ProfileName {
 }
 
 /// Read every file-shaped `[test]` and `[judge]` target referenced from
-/// the spec into [`ReviewSource`] bundles for the reviewer prompt. Files
+/// the spec into [`ReviewSource`] bundles for the reviewer prompt.
+///
+/// Files
 /// are de-duplicated by path so a script referenced from N criteria
 /// appears once.
 ///
@@ -88,6 +91,10 @@ pub fn default_profile_for_spec(spec: &SpecLabel) -> ProfileName {
 /// appear in the spec. Bubbles up [`SpecError::Io`] when a referenced file
 /// needed by the selected review lane is missing — the gate must fail
 /// loudly rather than review with a truncated context.
+///
+/// # Errors
+///
+/// Returns an error when review setup, execution, or verdict validation fails.
 pub fn load_review_sources(
     workspace: &Path,
     spec_path: &Path,
@@ -95,13 +102,19 @@ pub fn load_review_sources(
     load_review_sources_for_lane(workspace, spec_path, ReviewLane::Both)
 }
 
-/// Lane-aware variant of [`load_review_sources`]. The rubric-only lane never
+/// Lane-aware variant of [`load_review_sources`].
+///
+/// The rubric-only lane never
 /// renders the `[judge]` section, so it must not read judge rubric files while
 /// building the prompt; unresolved or unreadable judge targets are already
 /// surfaced by the deterministic integrity walk as `unresolved-annotation` /
 /// `inputs-protocol-error` findings. Avoiding unused reads keeps one broken
 /// judge script from aborting a full tree-scope mint before earlier findings
 /// can be materialized.
+///
+/// # Errors
+///
+/// Returns an error when review setup, execution, or verdict validation fails.
 pub fn load_review_sources_for_lane(
     workspace: &Path,
     spec_path: &Path,
@@ -153,7 +166,7 @@ fn push_unique(
         return Ok(());
     };
     let abs = if rel.is_absolute() {
-        rel.clone()
+        rel
     } else {
         normalize(&spec_dir.join(&rel))
     };
@@ -162,8 +175,7 @@ fn push_unique(
     // across repos via symlink, etc.) fall back to the absolute path.
     let display = abs
         .strip_prefix(workspace)
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| abs.display().to_string());
+        .map_or_else(|_| abs.display().to_string(), |p| p.display().to_string());
     if !seen.insert(display.clone()) {
         return Ok(());
     }
@@ -196,7 +208,9 @@ fn normalize(path: &Path) -> std::path::PathBuf {
     out
 }
 
-/// Render `BEADS_SUMMARY` for the reviewer prompt. One line per bead in the
+/// Render `BEADS_SUMMARY` for the reviewer prompt.
+///
+/// One line per bead in the
 /// molecule: `- <id>: <title> [<status>]`. Returns `None` when `beads` is
 /// empty so the template can render the em-dash placeholder; the reviewer
 /// is expected to read full descriptions on demand via `bd show`.
@@ -206,10 +220,7 @@ pub fn beads_summary(beads: &[Bead]) -> Option<String> {
     }
     let mut s = String::new();
     for bead in beads {
-        s.push_str(&format!(
-            "- {}: {} [{}]\n",
-            bead.id, bead.title, bead.status
-        ));
+        let _ = writeln!(s, "- {}: {} [{}]", bead.id, bead.title, bead.status);
     }
     while s.ends_with('\n') {
         s.pop();
@@ -233,7 +244,7 @@ mod tests {
             issue_type: "task".into(),
             labels: vec![],
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }

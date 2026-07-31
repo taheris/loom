@@ -45,6 +45,10 @@ pub enum SpecEpicAction {
 }
 
 /// Ensure exactly one `loom:spec spec:<label>` metadata epic exists.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub async fn ensure_spec_metadata_epic<R: CommandRunner>(
     bd: &BdClient<R>,
     label: &SpecLabel,
@@ -60,7 +64,7 @@ pub async fn ensure_spec_metadata_epic<R: CommandRunner>(
         .await?;
     let spec_epics = beads
         .into_iter()
-        .filter(|bead| bead.labels.iter().any(|label| label.is_spec_epic()))
+        .filter(|bead| bead.labels.iter().any(loom_driver::bd::Label::is_spec_epic))
         .collect::<Vec<_>>();
     match spec_epics.len() {
         0 if dry_run => Ok(ResolvedSpecEpic {
@@ -104,9 +108,14 @@ pub async fn ensure_spec_metadata_epic<R: CommandRunner>(
 
 /// Resolve the spec's active/current molecule via `bd find --type=epic
 /// --label=spec:<X> --status=open`, ignoring `loom:spec` metadata epics.
+///
 /// Returns the open work epic's id, `None` when no open work epic exists,
 /// or [`ResolveError::InvariantViolation`] when more than one open work
 /// epic exists for the spec.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub async fn resolve_open_epic<R: CommandRunner>(
     bd: &BdClient<R>,
     label: &SpecLabel,
@@ -121,7 +130,7 @@ pub async fn resolve_open_epic<R: CommandRunner>(
         .await?;
     let work_epics = beads
         .iter()
-        .filter(|bead| !bead.labels.iter().any(|label| label.is_spec_epic()))
+        .filter(|bead| !bead.labels.iter().any(loom_driver::bd::Label::is_spec_epic))
         .collect::<Vec<_>>();
     match work_epics.len() {
         0 => Ok(None),
@@ -151,10 +160,15 @@ pub struct ResolvedEpic {
 }
 
 /// Per-spec resolve-or-mint loop for legacy molecule-scoped recovery.
+///
 /// Calls [`resolve_or_mint_open_epic`] for every label in `labels` and
 /// returns the resolved epics in the same order. Stops on the first
 /// [`ResolveError::InvariantViolation`] so the operator sees the
 /// conflicting epic IDs before any further work happens.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub async fn resolve_or_mint_open_epics<R: CommandRunner>(
     bd: &BdClient<R>,
     labels: &[SpecLabel],
@@ -176,6 +190,10 @@ pub async fn resolve_or_mint_open_epics<R: CommandRunner>(
 /// "loom.base_commit=<head_commit>"` and returns it with
 /// `was_minted = true`. More-than-one open work epics propagate as
 /// [`ResolveError::InvariantViolation`].
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub async fn resolve_or_mint_open_epic<R: CommandRunner>(
     bd: &BdClient<R>,
     label: &SpecLabel,

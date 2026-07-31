@@ -50,6 +50,10 @@ pub fn dolt_socket_mount(loom_workspace: &Path) -> Option<MountSpec> {
 /// `specs/harness.md` § Bead dispatch —
 /// `sccache_mount_present_when_configured` /
 /// `sccache_mount_omitted_when_unset`.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub fn sccache_mount(cfg: &LoomTopConfig) -> std::io::Result<Option<MountSpec>> {
     let Some(host_path) = cfg.sccache_dir.clone() else {
         return Ok(None);
@@ -81,6 +85,10 @@ pub fn sccache_mount(cfg: &LoomTopConfig) -> std::io::Result<Option<MountSpec>> 
 ///
 /// [`GitClient::launcher_key_env`]: loom_driver::git::GitClient::launcher_key_env
 #[expect(clippy::too_many_arguments, reason = "explicit dispatch surface")]
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub fn build_spawn_config_from_manifest(
     manifest: &ProfileImageManifest,
     bead: &Bead,
@@ -155,7 +163,7 @@ mod tests {
                 .map(|s| Label::new(*s).expect("valid Label"))
                 .collect(),
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }
@@ -176,7 +184,7 @@ mod tests {
     }
 
     /// Per-bead dispatch: two beads with different `profile:X` labels
-    /// produce SpawnConfigs with different `image_ref` + `image_source`.
+    /// produce `SpawnConfigs` with different `image_ref` + `image_source`.
     /// Argv-shape is verified by the integration test in
     /// `loom/tests/spawn_dispatch.rs`.
     #[test]
@@ -237,7 +245,7 @@ mod tests {
     }
 
     /// FR5 (`--profile` CLI override precedence): the same bead resolves
-    /// to two different SpawnConfigs depending on whether the override is
+    /// to two different `SpawnConfigs` depending on whether the override is
     /// applied.
     #[test]
     fn cli_override_swaps_resolved_image() {
@@ -282,10 +290,10 @@ mod tests {
     }
 
     /// lm-cmzob: sequential (`loom loop`) and parallel (`loom loop -p N`)
-    /// must produce identical SpawnConfigs for the same bead modulo the
+    /// must produce identical `SpawnConfigs` for the same bead modulo the
     /// workspace path — sequential dispatches against the repo root,
     /// parallel against a per-bead worktree, but every other field
-    /// (image_ref, image_source, env, agent_args, prompt) must
+    /// (`image_ref`, `image_source`, env, `agent_args`, prompt) must
     /// match. If either path adds an arg or rewrites the prompt format,
     /// this test trips before the divergence reaches users.
     #[test]

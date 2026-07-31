@@ -26,7 +26,7 @@ impl DependencySnapshot {
 
     /// Stable status label for invalid-wait diagnostics.
     #[must_use]
-    pub fn status_label(&self) -> &'static str {
+    pub const fn status_label(&self) -> &'static str {
         self.status.as_str()
     }
 

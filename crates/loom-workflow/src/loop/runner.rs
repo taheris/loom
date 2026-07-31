@@ -21,7 +21,9 @@ pub const INFRA_INTERRUPTED_CAUSE: &str = "infra-interrupted";
 
 /// Spec-table cause string written to `bd update --notes` when a bead's
 /// requested `profile:X` label is not declared in the profile-image
-/// manifest. Same routing pattern as [`INFRA_PREFLIGHT_CAUSE`]: no retry,
+/// manifest.
+///
+/// Same routing pattern as [`INFRA_PREFLIGHT_CAUSE`]: no retry,
 /// the loop continues with the next ready bead.
 pub const UNKNOWN_PROFILE_CAUSE: &str = "unknown-profile";
 
@@ -112,12 +114,12 @@ struct LoopProgress {
 
 /// Side-effect surface the [`run_loop`] driver depends on.
 ///
-/// The trait abstracts the concrete BdClient + AgentBackend + LogSink wiring
+/// The trait abstracts the concrete `BdClient` + `AgentBackend` + `LogSink` wiring
 /// so the loop logic stays pure-ish and can be exercised under a fake without
 /// spawning a real container. The binary wires this to:
 ///
 /// - `next_ready_bead` → `BdClient::list` filtered by ready label
-/// - `run_bead` → render template, build SpawnConfig, drive `AgentBackend`,
+/// - `run_bead` → render template, build `SpawnConfig`, drive `AgentBackend`,
 ///   tee `AgentEvent` stream into `LogSink`, parse exit signal
 /// - `apply_clarify` → `BdClient::update --add-label loom:clarify`
 /// - `apply_blocked` → `BdClient::update --add-label loom:blocked --notes <cause>`
@@ -289,7 +291,9 @@ pub const INTEGRATION_CONFLICT_CAUSE: &str = "integration-conflict";
 pub const ZERO_PROGRESS_CAUSE: &str = "zero-progress";
 
 /// Non-terminal bead label tracking the parallel path's single
-/// integration-conflict retry budget. The serial path holds this counter
+/// integration-conflict retry budget.
+///
+/// The serial path holds this counter
 /// in `process_one_bead`'s stack, but a one-shot `--parallel` batch has no
 /// agent left to retry once `merge_back` runs, so the budget lives on the
 /// bead instead: a first conflict applies this label (the bead stays ready
@@ -373,6 +377,10 @@ pub enum PerBeadGateOutcome {
 }
 
 /// Run the per-bead loop with the default infra budget.
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn run_loop<C: AgentLoopController>(
     controller: &mut C,
     policy: RetryPolicy,
@@ -401,6 +409,10 @@ pub async fn run_loop<C: AgentLoopController>(
 /// single invocation and is **not** persisted. A new `loom loop` starts with a
 /// fresh per-bead budget per spec §"Verdict Gate · Infra failures bypass the
 /// gate".
+///
+/// # Errors
+///
+/// Returns an error when loop state, agent execution, or gate handling fails.
 pub async fn run_loop_with_infra_policy<C: AgentLoopController>(
     controller: &mut C,
     policy: RetryPolicy,
@@ -430,7 +442,6 @@ pub async fn run_loop_with_infra_policy<C: AgentLoopController>(
                             break 'outer;
                         }
                         match controller.promote_deferred().await? {
-                            StabilizationOutcome::NoDeferred => continue,
                             StabilizationOutcome::Promoted { count } if count > 0 => {
                                 info!(
                                     count,
@@ -439,7 +450,8 @@ pub async fn run_loop_with_infra_policy<C: AgentLoopController>(
                                 );
                                 continue;
                             }
-                            StabilizationOutcome::Promoted { .. } => continue,
+                            StabilizationOutcome::NoDeferred
+                            | StabilizationOutcome::Promoted { .. } => continue,
                             StabilizationOutcome::StructuralConflict { molecule, detail } => {
                                 controller
                                     .apply_blocked(
@@ -621,7 +633,7 @@ async fn process_one_bead<C: AgentLoopController>(
             .run_bead(bead, state.previous_failure.clone())
             .await?
         {
-            AgentOutcome::Noop => return terminal(BeadResult::Noop),
+            AgentOutcome::Noop => return Ok(terminal(BeadResult::Noop)),
             AgentOutcome::WaitingRequested => {
                 return Err(LoopError::Bug {
                     context: format!(
@@ -631,15 +643,15 @@ async fn process_one_bead<C: AgentLoopController>(
                 });
             }
             AgentOutcome::Waiting { blockers } => {
-                return terminal(BeadResult::Waiting { blockers });
+                return Ok(terminal(BeadResult::Waiting { blockers }));
             }
             AgentOutcome::Success => match controller.exec_per_bead_gate(&bead.id).await? {
-                PerBeadGateOutcome::Clean => return terminal(BeadResult::Done),
+                PerBeadGateOutcome::Clean => return Ok(terminal(BeadResult::Done)),
                 PerBeadGateOutcome::StructuralViolation { detail } => {
-                    return terminal(BeadResult::Blocked {
+                    return Ok(terminal(BeadResult::Blocked {
                         cause: MINT_STRUCTURAL_VIOLATION_CAUSE.to_string(),
                         error: detail,
-                    });
+                    }));
                 }
                 PerBeadGateOutcome::Recovery { detail } => {
                     let exhausted_detail = detail.clone();
@@ -652,10 +664,10 @@ async fn process_one_bead<C: AgentLoopController>(
                             state.previous_failure = Some(pf);
                         }
                         RetryDecision::GiveUp => {
-                            return terminal(BeadResult::Blocked {
+                            return Ok(terminal(BeadResult::Blocked {
                                 cause: RETRY_EXHAUSTED_CAUSE.to_string(),
                                 error: exhausted_detail,
-                            });
+                            }));
                         }
                     }
                 }
@@ -671,10 +683,10 @@ async fn process_one_bead<C: AgentLoopController>(
                         state.previous_failure = Some(pf);
                     }
                     RetryDecision::GiveUp => {
-                        return terminal(BeadResult::Blocked {
+                        return Ok(terminal(BeadResult::Blocked {
                             cause: RETRY_EXHAUSTED_CAUSE.to_string(),
                             error: exhausted_detail,
-                        });
+                        }));
                     }
                 }
             }
@@ -702,10 +714,10 @@ async fn process_one_bead<C: AgentLoopController>(
                         state.previous_failure = Some(pf);
                     }
                     RetryDecision::GiveUp => {
-                        return terminal(BeadResult::Blocked {
+                        return Ok(terminal(BeadResult::Blocked {
                             cause: RETRY_EXHAUSTED_CAUSE.to_string(),
                             error: reason,
-                        });
+                        }));
                     }
                 }
             }
@@ -714,9 +726,9 @@ async fn process_one_bead<C: AgentLoopController>(
                 new_base_sha,
             } => {
                 if state.integration_conflict_used {
-                    return terminal(BeadResult::Clarified {
+                    return Ok(terminal(BeadResult::Clarified {
                         note: synthesize_integration_conflict_options(&files, &new_base_sha),
-                    });
+                    }));
                 }
                 state.integration_conflict_used = true;
                 controller.emit_driver_event(
@@ -737,10 +749,10 @@ async fn process_one_bead<C: AgentLoopController>(
                 ));
             }
             AgentOutcome::SignatureVerificationFailed { detail } => {
-                return terminal(BeadResult::Blocked {
+                return Ok(terminal(BeadResult::Blocked {
                     cause: SIGNATURE_VERIFICATION_FAILED_CAUSE.to_string(),
                     error: detail,
-                });
+                }));
             }
             AgentOutcome::ZeroProgress { detail } => {
                 let error = zero_progress_recovery_detail(&detail);
@@ -754,21 +766,21 @@ async fn process_one_bead<C: AgentLoopController>(
                         state.previous_failure = Some(pf);
                     }
                     RetryDecision::GiveUp => {
-                        return terminal(BeadResult::Blocked {
+                        return Ok(terminal(BeadResult::Blocked {
                             cause: RETRY_EXHAUSTED_CAUSE.to_string(),
                             error: exhausted_detail,
-                        });
+                        }));
                     }
                 }
             }
             AgentOutcome::Blocked { reason } => {
-                return terminal(BeadResult::Blocked {
+                return Ok(terminal(BeadResult::Blocked {
                     cause: AGENT_BLOCKED_CAUSE.to_string(),
                     error: reason,
-                });
+                }));
             }
             AgentOutcome::Clarify { question } => {
-                return terminal(BeadResult::Clarified { note: question });
+                return Ok(terminal(BeadResult::Clarified { note: question }));
             }
             AgentOutcome::InfraPreflight { error } => {
                 return Ok(handle_retryable_infra(
@@ -783,18 +795,18 @@ async fn process_one_bead<C: AgentLoopController>(
             AgentOutcome::StaticInfra { cause, error } => {
                 let diagnostic = InfraDiagnostic::static_diagnostic(&cause, error);
                 emit_infra_failure(controller, bead, &diagnostic);
-                return terminal(BeadResult::Infra { diagnostic });
+                return Ok(terminal(BeadResult::Infra { diagnostic }));
             }
             AgentOutcome::UnknownProfile { error } => {
                 let diagnostic = InfraDiagnostic::static_diagnostic(UNKNOWN_PROFILE_CAUSE, error);
                 emit_infra_failure(controller, bead, &diagnostic);
-                return terminal(BeadResult::Infra { diagnostic });
+                return Ok(terminal(BeadResult::Infra { diagnostic }));
             }
             AgentOutcome::UnknownRuntimeForProfile { error } => {
                 let diagnostic =
                     InfraDiagnostic::static_diagnostic(UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, error);
                 emit_infra_failure(controller, bead, &diagnostic);
-                return terminal(BeadResult::Infra { diagnostic });
+                return Ok(terminal(BeadResult::Infra { diagnostic }));
             }
             AgentOutcome::InfraMidSession { error } => {
                 return Ok(handle_retryable_infra(
@@ -810,8 +822,8 @@ async fn process_one_bead<C: AgentLoopController>(
     }
 }
 
-fn terminal(result: BeadResult) -> Result<ProcessOneResult, LoopError> {
-    Ok(ProcessOneResult::Terminal(result))
+const fn terminal(result: BeadResult) -> ProcessOneResult {
+    ProcessOneResult::Terminal(result)
 }
 
 fn zero_progress_recovery_detail(detail: &str) -> String {
@@ -1094,7 +1106,7 @@ mod tests {
                 .map(|s| Label::new(*s).expect("valid Label"))
                 .collect(),
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }
@@ -1265,7 +1277,7 @@ mod tests {
     /// `[loop] max_retries`, threads the verbatim reason into the next
     /// attempt's `previous_failure`, and emits a `retry_dispatch`
     /// driver event tagged with the `agent-retry` cause so a replay
-    /// surface can distinguish the LOOM_RETRY path from generic
+    /// surface can distinguish the `LOOM_RETRY` path from generic
     /// `Failure` retries without re-deriving it from the reason body.
     #[tokio::test]
     async fn agent_retry_consumes_max_retries_slot_and_threads_reason() -> Result<(), LoopError> {
@@ -2025,7 +2037,7 @@ mod tests {
     /// variant — `Success` and `NoGate` exit 0; `Fail` exits non-zero.
     /// This test pins the mapping at the workflow boundary by walking
     /// `run_loop` through three paths — empty queue → `NoGate`,
-    /// stalled max_iterations → `Fail`, scripted-success evidence →
+    /// stalled `max_iterations` → `Fail`, scripted-success evidence →
     /// `Success` — and asserts on the variant each produces. The
     /// binary's `exit_code_for_gate` consumes the same `GateOutcome`
     /// so as long as this test holds, the exit code does too.

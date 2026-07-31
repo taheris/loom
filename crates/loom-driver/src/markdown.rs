@@ -16,8 +16,9 @@ pub fn parser(content: &str) -> Parser<'_> {
     Parser::new_ext(content, Options::ENABLE_TASKLISTS)
 }
 
-/// Locate the first heading at `level` whose plain-text content matches
-/// `predicate`, then collect the events of its section. The section starts
+/// Collect the section under the first matching heading.
+///
+/// The section starts
 /// after the heading's `End` event and ends at the first subsequent heading
 /// whose level is ≤ `level` (or at end of input).
 ///
@@ -26,11 +27,11 @@ pub fn parser(content: &str) -> Parser<'_> {
 ///
 /// Returns `None` when no matching heading exists. The heading's own events
 /// are not included in the returned slice.
-pub fn section_events<'a, F>(
-    content: &'a str,
+pub fn section_events<F>(
+    content: &str,
     level: HeadingLevel,
     mut predicate: F,
-) -> Option<Vec<(Event<'a>, Range<usize>)>>
+) -> Option<Vec<(Event<'_>, Range<usize>)>>
 where
     F: FnMut(&str) -> bool,
 {

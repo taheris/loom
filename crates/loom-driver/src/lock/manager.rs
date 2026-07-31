@@ -37,11 +37,19 @@ impl Drop for LockGuard {
 }
 
 impl LockManager {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn new(workspace: impl AsRef<Path>) -> Result<Self, LockError> {
         let state_home = resolve_xdg_state_home()?;
         Self::with_state_home(workspace, state_home)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn with_state_home(
         workspace: impl AsRef<Path>,
         state_home: impl AsRef<Path>,
@@ -59,18 +67,34 @@ impl LockManager {
         &self.locks_dir
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn acquire_planning(&self) -> Result<LockGuard, LockError> {
         self.acquire_phase(PhaseLock::Planning)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn acquire_todo(&self) -> Result<LockGuard, LockError> {
         self.acquire_phase(PhaseLock::Todo)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn acquire_phase(&self, phase: PhaseLock) -> Result<LockGuard, LockError> {
         self.acquire_phase_with_timeout(phase, DEFAULT_LOCK_TIMEOUT)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn acquire_phase_with_timeout(
         &self,
         phase: PhaseLock,
@@ -83,6 +107,10 @@ impl LockManager {
         runtime.block_on(self.acquire_phase_with_timeout_async(phase, &SystemClock::new(), timeout))
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub async fn acquire_phase_async(
         &self,
         phase: PhaseLock,
@@ -92,6 +120,10 @@ impl LockManager {
             .await
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub async fn acquire_phase_with_timeout_async(
         &self,
         phase: PhaseLock,
@@ -102,10 +134,18 @@ impl LockManager {
         acquire_with_timeout(&path, timeout, clock, || LockError::PhaseBusy { phase }).await
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn acquire_work_root(&self, root: &BeadId) -> Result<LockGuard, LockError> {
         self.acquire_work_root_with_timeout(root, DEFAULT_LOCK_TIMEOUT)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn acquire_work_root_with_timeout(
         &self,
         root: &BeadId,
@@ -122,6 +162,10 @@ impl LockManager {
         ))
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub async fn acquire_work_root_async(
         &self,
         root: &BeadId,
@@ -131,6 +175,10 @@ impl LockManager {
             .await
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub async fn acquire_work_root_with_timeout_async(
         &self,
         root: &BeadId,
@@ -144,6 +192,10 @@ impl LockManager {
         .await
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn acquire_workspace(&self) -> Result<LockGuard, LockError> {
         if let Some(root) = self.find_held_mutating_lock()? {
             return Err(LockError::WorkspaceBusy { root });
@@ -213,7 +265,7 @@ fn workspace_basename(workspace: &Path) -> Result<OsString, LockError> {
             })?;
     canonical
         .file_name()
-        .map(|n| n.to_os_string())
+        .map(std::ffi::OsStr::to_os_string)
         .ok_or_else(|| LockError::WorkspaceNoBasename {
             path: canonical.clone(),
         })
@@ -285,7 +337,7 @@ mod tests {
             .path()
             .canonicalize()?
             .file_name()
-            .map(|n| n.to_os_string())
+            .map(std::ffi::OsStr::to_os_string)
             .ok_or_else(|| anyhow::anyhow!("workspace tempdir has no basename"))?;
         let expected = state_home.path().join("loom/locks").join(&basename);
         assert_eq!(mgr.locks_dir(), expected.as_path());

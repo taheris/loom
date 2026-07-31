@@ -422,15 +422,12 @@ fn parse_spec_inbox_subcommands(
     violations: &mut Vec<String>,
 ) -> Option<BTreeSet<String>> {
     let section = section_lines(body, "### Inbox Modes")?;
-    let header_idx = match section
+    let Some(header_idx) = section
         .iter()
         .position(|line| line.trim_start().starts_with("| Mode "))
-    {
-        Some(idx) => idx,
-        None => {
-            violations.push(format!("{SPEC} Inbox Modes table missing `| Mode ` header"));
-            return None;
-        }
+    else {
+        violations.push(format!("{SPEC} Inbox Modes table missing `| Mode ` header"));
+        return None;
     };
     let mut out = BTreeSet::new();
     for line in section.iter().skip(header_idx + 2) {
@@ -534,17 +531,16 @@ fn removed_entry_from_invocation(invocation: &str) -> Option<RemovedEntry> {
     let Some(next) = tokens.next() else {
         return Some(RemovedEntry::TopCommand(command.to_string()));
     };
-    if let Some(flag) = removed_flag_from_token(next) {
-        Some(RemovedEntry::Flag {
+    Some(match removed_flag_from_token(next) {
+        Some(flag) => RemovedEntry::Flag {
             command: command.to_string(),
             flag,
-        })
-    } else {
-        Some(RemovedEntry::Subcommand {
+        },
+        None => RemovedEntry::Subcommand {
             command: command.to_string(),
             subcommand: next.to_string(),
-        })
-    }
+        },
+    })
 }
 
 fn removed_flag_from_token(token: &str) -> Option<RemovedFlag> {
@@ -586,8 +582,7 @@ fn section_lines<'a>(body: &'a str, heading: &str) -> Option<Vec<&'a str>> {
         .enumerate()
         .skip(start + 1)
         .find(|(_, line)| line.starts_with("### "))
-        .map(|(idx, _)| idx)
-        .unwrap_or(lines.len());
+        .map_or(lines.len(), |(idx, _)| idx);
     Some(lines[start..end].to_vec())
 }
 
@@ -620,8 +615,7 @@ fn locate_fr1(body: &str) -> Result<(Vec<&str>, usize, usize), String> {
         .enumerate()
         .skip(start + 1)
         .find(|(_, l)| l.starts_with("2. **"))
-        .map(|(i, _)| i)
-        .unwrap_or(lines.len());
+        .map_or(lines.len(), |(i, _)| i);
     Ok((lines[start..end].to_vec(), start, end))
 }
 

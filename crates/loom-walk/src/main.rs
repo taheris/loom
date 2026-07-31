@@ -26,6 +26,7 @@
 
 mod walk;
 
+use std::io::Write as _;
 use std::process::ExitCode;
 
 use displaydoc::Display;
@@ -53,6 +54,11 @@ enum DispatchError {
         #[source]
         source: serde_json::Error,
     },
+    /// failed to write verifier output: {source}
+    WriteOutput {
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Per-target verdict line emitted to stdout, one per requested walk
@@ -75,7 +81,7 @@ fn main() -> ExitCode {
             }
         }
         Err(err) => {
-            eprintln!("loom-walk: {err:#}");
+            let _ = writeln!(std::io::stderr().lock(), "loom-walk: {err:#}");
             ExitCode::from(2)
         }
     }
@@ -101,7 +107,8 @@ fn run() -> Result<bool, DispatchError> {
     if print_inputs {
         let document = walk::render_print_inputs(&names)
             .map_err(|source| DispatchError::SerialiseVerdict { source })?;
-        println!("{document}");
+        writeln!(std::io::stdout().lock(), "{document}")
+            .map_err(|source| DispatchError::WriteOutput { source })?;
         return Ok(true);
     }
     let input = WalkInput::from_env();
@@ -119,7 +126,8 @@ fn run() -> Result<bool, DispatchError> {
             evidence: &evidence,
         })
         .map_err(|source| DispatchError::SerialiseVerdict { source })?;
-        println!("{line}");
+        writeln!(std::io::stdout().lock(), "{line}")
+            .map_err(|source| DispatchError::WriteOutput { source })?;
     }
     Ok(all_pass)
 }

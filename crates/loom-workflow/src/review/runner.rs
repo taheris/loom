@@ -11,7 +11,7 @@ use crate::todo::ExitSignal;
 
 /// Side-effect surface the [`review_loop`] driver depends on.
 ///
-/// The trait abstracts the BdClient + AgentBackend + git wiring so the
+/// The trait abstracts the `BdClient` + `AgentBackend` + git wiring so the
 /// verdict logic stays pure-ish and is exercised under a fake without
 /// spawning a real container or touching the working tree. The binary wires
 /// the methods to:
@@ -19,7 +19,7 @@ use crate::todo::ExitSignal;
 /// - `pre_snapshot` / `post_snapshot` → `BdClient::list { label: "spec:<L>" }`
 /// - terminal label IDs → filter the same list for `loom:blocked`,
 ///   `loom:clarify`, `loom:deferred`, and `loom:infra`
-/// - `run_review` → render review.md, build SpawnConfig, drive
+/// - `run_review` → render review.md, build `SpawnConfig`, drive
 ///   `AgentBackend`, tee the event stream into the log sink, parse the
 ///   exit signal
 /// - `iteration_count` / `set_iteration_count` / `reset_iteration_count` →
@@ -262,27 +262,27 @@ pub enum ReviewResult {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct UnresolvedBeadState {
-    blocked_ids: Vec<BeadId>,
-    clarify_ids: Vec<BeadId>,
-    deferred_ids: Vec<BeadId>,
-    infra_ids: Vec<BeadId>,
+    blocked: Vec<BeadId>,
+    clarify: Vec<BeadId>,
+    deferred: Vec<BeadId>,
+    infra: Vec<BeadId>,
 }
 
 impl UnresolvedBeadState {
     fn from_beads(beads: &[Bead]) -> Self {
         Self {
-            blocked_ids: ids_with_label(beads, Label::is_blocked),
-            clarify_ids: ids_with_label(beads, Label::is_clarify),
-            deferred_ids: ids_with_label(beads, Label::is_deferred),
-            infra_ids: ids_with_label(beads, Label::is_infra),
+            blocked: ids_with_label(beads, Label::is_blocked),
+            clarify: ids_with_label(beads, Label::is_clarify),
+            deferred: ids_with_label(beads, Label::is_deferred),
+            infra: ids_with_label(beads, Label::is_infra),
         }
     }
 
-    fn is_empty(&self) -> bool {
-        self.blocked_ids.is_empty()
-            && self.clarify_ids.is_empty()
-            && self.deferred_ids.is_empty()
-            && self.infra_ids.is_empty()
+    const fn is_empty(&self) -> bool {
+        self.blocked.is_empty()
+            && self.clarify.is_empty()
+            && self.deferred.is_empty()
+            && self.infra.is_empty()
     }
 }
 
@@ -300,6 +300,10 @@ fn ids_with_label(beads: &[Bead], predicate: impl Fn(&Label) -> bool) -> Vec<Bea
 /// 2. Run the reviewer agent.
 /// 3. Snapshot again (`post`); compute new bead IDs and unresolved labels.
 /// 4. Apply the verdict (push / clarify-stop / auto-iterate / escalate).
+///
+/// # Errors
+///
+/// Returns an error when review setup, execution, or verdict validation fails.
 pub async fn review_loop<C: ReviewController>(
     controller: &mut C,
     cap: IterationCap,
@@ -455,10 +459,10 @@ async fn decide_verdict<C: ReviewController>(
     if !unresolved.is_empty() {
         return Ok(ReviewVerdict::PushBlocked {
             cause: PushGateRefuseCause::BeadNotDone,
-            blocked_ids: unresolved.blocked_ids.clone(),
-            clarify_ids: unresolved.clarify_ids.clone(),
-            deferred_ids: unresolved.deferred_ids.clone(),
-            infra_ids: unresolved.infra_ids.clone(),
+            blocked_ids: unresolved.blocked.clone(),
+            clarify_ids: unresolved.clarify.clone(),
+            deferred_ids: unresolved.deferred.clone(),
+            infra_ids: unresolved.infra.clone(),
             integrity_findings: vec![],
         });
     }
@@ -589,10 +593,10 @@ async fn apply_verdict<C: ReviewController>(
                 &format!("verdict push-blocked — cause {}", cause.as_str()),
                 serde_json::json!({
                     "cause": cause.as_str(),
-                    "blocked_ids": blocked_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
-                    "clarify_ids": clarify_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
-                    "deferred_ids": deferred_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
-                    "infra_ids": infra_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                    "blocked_ids": blocked_ids.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
+                    "clarify_ids": clarify_ids.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
+                    "deferred_ids": deferred_ids.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
+                    "infra_ids": infra_ids.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
                 }),
             );
             let parked_ids = controller
@@ -607,7 +611,7 @@ async fn apply_verdict<C: ReviewController>(
                     ),
                     serde_json::json!({
                         "cause": cause.as_str(),
-                        "bead_ids": parked_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                        "bead_ids": parked_ids.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
                     }),
                 );
             }
@@ -632,7 +636,7 @@ async fn apply_verdict<C: ReviewController>(
                 "verdict auto-iterate — fix-up beads detected, re-entering loom loop",
                 serde_json::json!({
                     "next_iteration": next_iteration,
-                    "new_bead_ids": new_bead_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                    "new_bead_ids": new_bead_ids.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
                 }),
             );
             controller.set_iteration_count(next_iteration).await?;
@@ -693,7 +697,7 @@ fn is_non_fast_forward_push(detail: &str) -> bool {
 /// Compact label describing the verdict shape — used as the `verdict`
 /// field on the leading `push_gate_walk` event so a replay can tell at
 /// a glance which branch the gate took.
-fn verdict_label(verdict: &ReviewVerdict) -> &'static str {
+const fn verdict_label(verdict: &ReviewVerdict) -> &'static str {
     match verdict {
         ReviewVerdict::Clean => "clean",
         ReviewVerdict::PushBlocked { .. } => "push_blocked",
@@ -897,14 +901,14 @@ mod tests {
                 .map(|s| Label::new(*s).expect("valid Label"))
                 .collect(),
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }
 
     /// Build a bead with a typed `issue_type`, `status`, and an
     /// optional `parent`. Used by the epic auto-close tests to populate
-    /// the FakeController's bead store with realistic ancestry.
+    /// the `FakeController`'s bead store with realistic ancestry.
     fn shaped_bead(id: &str, issue_type: &str, status: &str, parent: Option<&str>) -> Bead {
         let mut b = bead(id, &[]);
         b.issue_type = issue_type.into();
@@ -1535,7 +1539,7 @@ mod tests {
     #[tokio::test]
     async fn no_path_constructs_concern_without_bead_deltas_in_production_harness_lane()
     -> Result<(), ReviewError> {
-        fn variant_set_excludes_concern_without_bead_deltas(err: ReviewError) {
+        fn variant_set_excludes_concern_without_bead_deltas(err: &ReviewError) {
             match err {
                 ReviewError::Protocol(_)
                 | ReviewError::Bd(_)
@@ -1840,11 +1844,11 @@ mod tests {
         Ok(())
     }
 
-    /// Helper: build a FakeController whose `post_beads` carry the
+    /// Helper: build a `FakeController` whose `post_beads` carry the
     /// `parent` field set so the auto-close walk has parent candidates
-    /// to enumerate. The bead_store maps every id (epics + leaves) so
+    /// to enumerate. The `bead_store` maps every id (epics + leaves) so
     /// `show_bead` / `list_children` can resolve the ancestry.
-    fn controller_with_ancestry(leaves: Vec<Bead>, epics: Vec<Bead>) -> FakeController {
+    fn controller_with_ancestry(leaves: Vec<Bead>, epics: &[Bead]) -> FakeController {
         let mut store: std::collections::HashMap<BeadId, Bead> = std::collections::HashMap::new();
         for b in leaves.iter().chain(epics.iter()) {
             store.insert(b.id.clone(), b.clone());
@@ -1858,14 +1862,14 @@ mod tests {
     }
 
     /// Trigger pin: every leaf closed + parent epic open + review
-    /// LOOM_COMPLETE → epic auto-closes. Emits a single
+    /// `LOOM_COMPLETE` → epic auto-closes. Emits a single
     /// `epic_auto_closed` driver event carrying the epic id.
     #[tokio::test]
     async fn epic_auto_closes_when_all_children_closed_and_review_passes() -> Result<(), ReviewError>
     {
         let leaf = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
         let epic = shaped_bead("lm-epic", "epic", "open", None);
-        let mut c = controller_with_ancestry(vec![leaf], vec![epic]);
+        let mut c = controller_with_ancestry(vec![leaf], &[epic]);
         let result = review_loop(&mut c, IterationCap::default()).await?;
         assert_eq!(result, ReviewResult::Pushed);
         assert_eq!(
@@ -1896,7 +1900,7 @@ mod tests {
             let leaf_closed = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
             let leaf_non_closed = shaped_bead("lm-leaf.2", "task", status, Some("lm-epic"));
             let epic = shaped_bead("lm-epic", "epic", "open", None);
-            let mut c = controller_with_ancestry(vec![leaf_closed, leaf_non_closed], vec![epic]);
+            let mut c = controller_with_ancestry(vec![leaf_closed, leaf_non_closed], &[epic]);
             let _ = review_loop(&mut c, IterationCap::default()).await?;
             assert!(
                 c.close_calls.is_empty(),
@@ -1940,16 +1944,16 @@ mod tests {
 
         let cases: Vec<(&str, FakeController)> = vec![
             ("clarify-on-leaf", {
-                controller_with_ancestry(vec![leaf_clarify], vec![epic.clone()])
+                controller_with_ancestry(vec![leaf_clarify], std::slice::from_ref(&epic))
             }),
             ("blocked-on-leaf", {
-                controller_with_ancestry(vec![leaf_blocked], vec![epic.clone()])
+                controller_with_ancestry(vec![leaf_blocked], std::slice::from_ref(&epic))
             }),
             ("infra-on-leaf", {
-                controller_with_ancestry(vec![leaf_infra], vec![epic.clone()])
+                controller_with_ancestry(vec![leaf_infra], std::slice::from_ref(&epic))
             }),
             ("loom_concern-marker", {
-                let mut c = controller_with_ancestry(vec![leaf_clean], vec![epic.clone()]);
+                let mut c = controller_with_ancestry(vec![leaf_clean], std::slice::from_ref(&epic));
                 c.review = Some(ReviewOutcome::Incomplete {
                     detail: "LOOM_CONCERN: scope -- nope".into(),
                 });
@@ -1985,7 +1989,7 @@ mod tests {
         let leaf = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-inner"));
         let inner_epic = shaped_bead("lm-inner", "epic", "open", Some("lm-outer"));
         let outer_epic = shaped_bead("lm-outer", "epic", "open", None);
-        let mut c = controller_with_ancestry(vec![leaf], vec![inner_epic, outer_epic]);
+        let mut c = controller_with_ancestry(vec![leaf], &[inner_epic, outer_epic]);
         let result = review_loop(&mut c, IterationCap::default()).await?;
         assert_eq!(result, ReviewResult::Pushed);
         let closed_ids: Vec<&str> = c.close_calls.iter().map(|(id, _)| id.as_str()).collect();
@@ -2058,7 +2062,7 @@ mod tests {
         }
         let leaf = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
         let epic = shaped_bead("lm-epic", "epic", "open", None);
-        let mut c = PushFailController(controller_with_ancestry(vec![leaf], vec![epic]));
+        let mut c = PushFailController(controller_with_ancestry(vec![leaf], &[epic]));
         let err = review_loop(&mut c, IterationCap::default()).await;
         assert!(matches!(err, Err(ReviewError::GitPushFailed(_))));
         assert!(

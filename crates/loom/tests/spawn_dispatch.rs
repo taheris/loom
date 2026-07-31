@@ -45,7 +45,8 @@ fn bounded_output(command: &mut Command, deadline: Duration) -> Output {
         .stderr(Stdio::piped())
         .process_group(0);
     let mut child = command.spawn().expect("spawn bounded child");
-    let pgid = Pid::from_raw(-(child.id() as i32));
+    let child_pid = i32::try_from(child.id()).expect("child PID fits in i32");
+    let process_group_id = Pid::from_raw(-child_pid);
     let mut stdout = child.stdout.take().expect("child stdout piped");
     let mut stderr = child.stderr.take().expect("child stderr piped");
     let stdout_reader = thread::spawn(move || {
@@ -65,7 +66,7 @@ fn bounded_output(command: &mut Command, deadline: Duration) -> Output {
             break status;
         }
         if started.elapsed() >= deadline {
-            if kill(pgid, Signal::SIGKILL).is_err() {
+            if kill(process_group_id, Signal::SIGKILL).is_err() {
                 child
                     .kill()
                     .expect("kill bounded child after group kill failed");
@@ -168,7 +169,7 @@ fn install_policy_aware_wrix_shim(dir: &Path, delegate: &Path) -> PathBuf {
     let body = loom_test_support::bash_script(&format!(
         r#"set -euo pipefail
 if [[ "${{1:-}}" != "init" ]]; then
-    exec {delegate:?} "$@"
+    exec {delegate} "$@"
 fi
 key_name=""
 prev=""
@@ -190,7 +191,7 @@ printf allowed > .git/wrix/allowed_signers
 printf '#!/bin/sh\n' > .git/wrix/git-ssh
 chmod +x .git/wrix/git-ssh
 "#,
-        delegate = delegate,
+        delegate = delegate.display(),
     ));
     std::fs::write(&shim, body).unwrap();
     let mut permissions = std::fs::metadata(&shim).unwrap().permissions();
@@ -536,6 +537,10 @@ fn init_workspace_repo(workspace: &Path) {
 /// stage checks*) are no-ops in tests that exercise only the run-phase
 /// path; without it the review subprocess spawns an agent backend the
 /// test fixtures don't fully wire.
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "the braces are Bash parameter expansion syntax in the generated test script"
+)]
 fn install_loom_noop_stub(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let stub = dir.join("loom-noop-stub.sh");
@@ -572,10 +577,10 @@ fn install_loom_noop_stub(dir: &Path) -> PathBuf {
     stub
 }
 
-/// Loom hands the wrapper the selected Pi ProfileConfig before `spawn`, and
+/// Loom hands the wrapper the selected Pi `ProfileConfig` before `spawn`, and
 /// the spawn-config file resolves to a JSON [`SpawnConfig`] carrying the
 /// per-bead profile image. A future profile-resolution change that drops the
-/// `image_ref`/`image_source` fields, uses the direct ProfileConfig, or
+/// `image_ref`/`image_source` fields, uses the direct `ProfileConfig`, or
 /// renames the subcommand will trip this assertion before the wrapper ever
 /// sees the malformed argv.
 #[test]
@@ -1554,12 +1559,9 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         session_complete_count, 1,
         "exactly one session_complete must appear in the phase log. lines={lines:?}",
     );
-    let driver_events: Vec<&serde_json::Value> = parsed
-        .iter()
-        .filter(|v| v["kind"] == "driver_event")
-        .collect();
+    let has_driver_events = parsed.iter().any(|v| v["kind"] == "driver_event");
     assert!(
-        !driver_events.is_empty(),
+        has_driver_events,
         "verdict gate must emit driver events after session_complete. lines={lines:?}",
     );
     let session_complete_index = parsed
@@ -1842,7 +1844,7 @@ fn loom_todo_pi_compaction_drives_repin_steer_through_run_agent() {
 /// This test drives `loom todo --agent claude` end-to-end. The shim hands
 /// stdio to mock-claude in `ignore-stdin` mode, which emits `result/success`,
 /// then traps SIGTERM and loops forever. Without the wiring, `run_agent`
-/// returns immediately on SessionComplete and the loom binary exits in
+/// returns immediately on `SessionComplete` and the loom binary exits in
 /// milliseconds; with the wiring, the watchdog waits `grace=1s` for the
 /// child to exit on its own, sends SIGTERM (ignored by the mock), waits
 /// another second, then escalates to SIGKILL — total elapsed ≥ ~2s.
@@ -1906,7 +1908,10 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the todo dispatch path under test.
         .env_remove("LOOM_INSIDE");
-    let output = bounded_output(&mut command, Duration::from_secs(10));
+    // This is only the outer deadlock-reaping budget. The assertions below
+    // still verify the watchdog's two-second escalation path; allow loaded CI
+    // enough scheduler headroom to reach those assertions.
+    let output = bounded_output(&mut command, Duration::from_secs(30));
     let elapsed = started.elapsed();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2015,7 +2020,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     );
 }
 
-/// Mid-session silence must trip the run_agent stall heartbeat.
+/// Mid-session silence must trip the `run_agent` stall heartbeat.
 /// The dedicated fixture answers the probe and acks one prompt, then
 /// sleeps; with `LOOM_STALL_WARN_MS=300` the run loop must
 /// emit `"no agent event for stall window"` to stderr while the agent
@@ -2081,7 +2086,8 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         .spawn()
         .expect("spawn loom");
 
-    let pgid = Pid::from_raw(-(child.id() as i32));
+    let child_pid = i32::try_from(child.id()).expect("child PID fits in i32");
+    let process_group_id = Pid::from_raw(-child_pid);
 
     let stderr = child.stderr.take().expect("stderr piped");
     let buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -2105,7 +2111,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         thread::sleep(Duration::from_millis(50));
     }
 
-    kill(pgid, Signal::SIGKILL).expect("kill stalled process group");
+    kill(process_group_id, Signal::SIGKILL).expect("kill stalled process group");
     child.wait().expect("reap stalled loom child");
     reader.join().expect("join stalled stderr reader");
 

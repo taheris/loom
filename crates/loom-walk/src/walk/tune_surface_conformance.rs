@@ -77,7 +77,7 @@ fn check_tune_actions(main_file: &syn::File, violations: &mut Vec<String>) {
     };
     compare_set(
         "TuneAction subcommand",
-        expected_set(EXPECTED_TUNE_ACTIONS),
+        &expected_set(EXPECTED_TUNE_ACTIONS),
         &actions,
         violations,
     );
@@ -107,7 +107,7 @@ fn check_tune_levels(main_file: &syn::File, violations: &mut Vec<String>) {
     };
     compare_set(
         "TuneLevelArg",
-        expected_set(EXPECTED_LEVELS),
+        &expected_set(EXPECTED_LEVELS),
         &levels,
         violations,
     );
@@ -133,13 +133,13 @@ fn check_proposal_args(main_file: &syn::File, violations: &mut Vec<String>) {
     let expected_all_fields = expected_set(&["level", "dry_run", "seed"]);
     compare_set(
         "TuneSurfaceArgs field",
-        expected_surface_fields,
+        &expected_surface_fields,
         &surface_fields,
         violations,
     );
     compare_set(
         "TuneAllArgs field",
-        expected_all_fields,
+        &expected_all_fields,
         &all_fields,
         violations,
     );
@@ -159,7 +159,7 @@ fn check_proposal_args(main_file: &syn::File, violations: &mut Vec<String>) {
         };
         compare_set(
             &format!("{struct_name} proposal flag"),
-            expected_set(EXPECTED_PROPOSAL_FLAGS),
+            &expected_set(EXPECTED_PROPOSAL_FLAGS),
             &flags,
             violations,
         );
@@ -177,7 +177,7 @@ fn check_proposal_args(main_file: &syn::File, violations: &mut Vec<String>) {
 
 fn compare_set(
     label: &str,
-    expected: BTreeSet<String>,
+    expected: &BTreeSet<String>,
     actual: &BTreeSet<String>,
     violations: &mut Vec<String>,
 ) {
@@ -186,7 +186,7 @@ fn compare_set(
             "{SPEC} documents {label} `{missing}` but {MAIN_RS} does not declare it"
         ));
     }
-    for extra in actual.difference(&expected) {
+    for extra in actual.difference(expected) {
         violations.push(format!(
             "{MAIN_RS} declares {label} `{extra}` but {SPEC} does not document it"
         ));

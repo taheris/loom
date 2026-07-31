@@ -13,7 +13,7 @@ pub enum PhaseLock {
 }
 
 impl PhaseLock {
-    pub fn file_stem(self) -> &'static str {
+    pub const fn file_stem(self) -> &'static str {
         match self {
             Self::Planning => "plan",
             Self::Todo => "todo",
@@ -28,6 +28,10 @@ impl fmt::Display for PhaseLock {
     }
 }
 
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
+)]
 #[derive(Debug, Display, Error)]
 pub enum LockError {
     /// failed to create lock directory at {path}

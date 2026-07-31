@@ -29,6 +29,10 @@ pub enum ResolverOutcome {
 /// Implementation is the single bd query named in `specs/harness.md`
 /// *Workflow commands*: zero results → `None`, one → `Existing(id)`,
 /// more than one → `InvariantViolation(ids)`.
+///
+/// # Errors
+///
+/// Returns an error when todo planning, fan-out, or state persistence fails.
 pub async fn resolve_molecule<R: CommandRunner>(
     bd: &BdClient<R>,
     label: &SpecLabel,

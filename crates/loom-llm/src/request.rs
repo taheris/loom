@@ -30,6 +30,11 @@ impl MimeType {
     pub const IMAGE_WEBP: Self = Self(Cow::Borrowed("image/webp"));
 
     /// Parse and validate a MIME type string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MimeTypeParseError`] when `raw` is empty or does not
+    /// contain a valid `type/subtype` pair.
     pub fn parse(raw: impl Into<String>) -> Result<Self, MimeTypeParseError> {
         let raw = raw.into();
         validate_mime_type(&raw)?;
@@ -167,17 +172,17 @@ impl MessageContent {
     }
 
     /// Construct a binary part without a cache marker.
-    pub fn binary(binary: BinaryContent) -> Self {
+    pub const fn binary(binary: BinaryContent) -> Self {
         Self::binary_cached(binary, CacheControl::None)
     }
 
     /// Construct a binary part with a cache marker.
-    pub fn binary_cached(binary: BinaryContent, cache: CacheControl) -> Self {
+    pub const fn binary_cached(binary: BinaryContent, cache: CacheControl) -> Self {
         Self::Binary { binary, cache }
     }
 
     /// Borrow this part's cache marker.
-    pub fn cache(&self) -> &CacheControl {
+    pub const fn cache(&self) -> &CacheControl {
         match self {
             MessageContent::Text { cache, .. } | MessageContent::Binary { cache, .. } => cache,
         }
@@ -192,7 +197,7 @@ impl MessageContent {
     }
 
     /// Borrow the binary payload when this part is binary.
-    pub fn as_binary(&self) -> Option<&BinaryContent> {
+    pub const fn as_binary(&self) -> Option<&BinaryContent> {
         match self {
             MessageContent::Text { .. } => None,
             MessageContent::Binary { binary, .. } => Some(binary),
@@ -254,10 +259,7 @@ impl fmt::Debug for Message {
     }
 }
 
-/// Role on a [`Message`]. The system role is carried via
-/// [`CompletionRequest::system`] rather than as a `Role` variant so that
-/// the system prefix is structurally distinct from the user/assistant
-/// turn sequence.
+/// Message role; system instructions remain separate on [`CompletionRequest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     User,
@@ -265,10 +267,7 @@ pub enum Role {
     Tool,
 }
 
-/// Typed builder for a single completion. Model is required at
-/// construction — `CompletionRequest::new(model)` is the only entry
-/// point, so the type system forbids constructing a request without
-/// naming the model.
+/// Completion builder that requires a model at construction.
 ///
 /// Omitting the `ModelId` is a compile error:
 ///
@@ -278,6 +277,7 @@ pub enum Role {
 /// let _req = CompletionRequest::new();
 /// ```
 #[derive(Clone)]
+#[must_use]
 pub struct CompletionRequest {
     /// Model the underlying provider should route to.
     pub model: ModelId,
@@ -310,7 +310,7 @@ impl fmt::Debug for CompletionRequest {
 impl CompletionRequest {
     /// Construct a new request. `ModelId` is positional so the type
     /// system requires a model on every call site.
-    pub fn new(model: ModelId) -> Self {
+    pub const fn new(model: ModelId) -> Self {
         Self {
             model,
             system: None,
@@ -403,7 +403,7 @@ impl CompletionRequest {
     }
 
     /// Cap the provider's response length.
-    pub fn max_tokens(mut self, n: u32) -> Self {
+    pub const fn max_tokens(mut self, n: u32) -> Self {
         self.max_tokens = Some(n);
         self
     }
@@ -494,6 +494,11 @@ impl Message {
     }
 
     /// Parse a raw tool-call id and construct a tool-result turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseToolCallIdError`] when `call_id` violates the
+    /// provider tool-call identifier contract.
     pub fn try_tool_result(
         call_id: impl Into<String>,
         content: impl Into<String>,
@@ -553,7 +558,7 @@ fn validate_mime_type(raw: &str) -> Result<(), MimeTypeParseError> {
     Ok(())
 }
 
-fn is_mime_token_byte(byte: u8) -> bool {
+const fn is_mime_token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric()
         || matches!(
             byte,

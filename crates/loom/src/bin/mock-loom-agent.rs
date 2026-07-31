@@ -78,6 +78,10 @@ const FINDING_CONCERN_LINE: &str = concat!(
     r#"{"summary": "spec-coherence-fail: status output fixture"}"#,
 );
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the test-only mock reproduces wrix startup and protocol diagnostics"
+)]
 fn main() -> ExitCode {
     let mode = env::var("LOOM_TEST_AGENT_MODE").unwrap_or_else(|_| MODE_COMPLETE.to_string());
 
@@ -89,12 +93,9 @@ fn main() -> ExitCode {
     // Step 1 — handshake. Production loom sends a `get_state` probe as
     // the first JSONL line; the agent must respond with the minimal state
     // object shape before any further protocol traffic flows.
-    let probe_line = match read_line(&stdin) {
-        Some(l) => l,
-        None => {
-            eprintln!("mock-loom-agent: stdin closed before probe");
-            return ExitCode::from(2);
-        }
+    let Some(probe_line) = read_line(&stdin) else {
+        eprintln!("mock-loom-agent: stdin closed before probe");
+        return ExitCode::from(2);
     };
     let probe_id = extract_field("id", &probe_line).unwrap_or_else(|| "probe-0".to_string());
     let probe_response = format!(
@@ -196,7 +197,7 @@ fn emit_message_delta(stdout: &mut io::Stdout, text: &str) {
 
 /// Minimal JSON field extractor — pulls a string value for `field` out
 /// of a flat JSON line. The probe line is shallow (`{"type":"get_state",
-/// "id":"…"}`) so this avoids pulling serde_json's
+/// "id":"…"}`) so this avoids pulling `serde_json`'s
 /// parser into the read path; if the field is absent we fall back to a
 /// stand-in id and the caller decides whether that's fatal.
 fn extract_field(field: &str, line: &str) -> Option<String> {

@@ -77,6 +77,10 @@ pub struct MaterializedIntegration {
 /// 3. Opens `cache.db` (creating the schema on first open). When
 ///    `opts.rebuild` is true, the file is dropped and recreated, and the
 ///    schema is repopulated from `specs/*.md` plus `molecules`.
+///
+/// # Errors
+///
+/// Returns an error when workspace initialization or validation fails.
 pub fn run(
     workspace: &Path,
     opts: InitOpts,
@@ -206,6 +210,7 @@ fn materialize_integration_workspace(
 }
 
 /// Enumerate active molecules via `bd list --status=open --type=epic`.
+///
 /// Each returned bead's `spec:<label>` label resolves the [`SpecLabel`] for
 /// the rebuilt row; beads without a `spec:` label produce
 /// [`InitError::MissingSpecLabel`]. For each active bead, `bd show <id>
@@ -216,9 +221,13 @@ fn materialize_integration_workspace(
 /// from their parent: if the bead lacks the metadata, the parent (via
 /// `bd show <parent> --json`) is consulted; a present value is written back
 /// to the child via `bd update --set-metadata` and surfaced as the child's
-/// base_commit. Beads with neither own metadata nor an inheritable parent
+/// `base_commit`. Beads with neither own metadata nor an inheritable parent
 /// produce [`InitError::MoleculeMissingBaseCommit`], whose `Display` includes
 /// the `bd update` fix command.
+///
+/// # Errors
+///
+/// Returns an error when workspace initialization or validation fails.
 pub async fn fetch_active_molecules<R: CommandRunner>(
     bd: &BdClient<R>,
 ) -> Result<Vec<ActiveMolecule>, InitError> {
@@ -234,7 +243,7 @@ pub async fn fetch_active_molecules<R: CommandRunner>(
         let spec_label = bead
             .labels
             .iter()
-            .find_map(|l| l.spec_label())
+            .find_map(loom_driver::bd::Label::spec_label)
             .ok_or_else(|| InitError::MissingSpecLabel {
                 id: bead.id.to_string(),
             })?;
@@ -399,9 +408,9 @@ mod tests {
         Ok(hooks)
     }
 
-    fn run_with_hooks(workspace: &Path, hooks: PathBuf) -> Result<InitReport, InitError> {
+    fn run_with_hooks(workspace: &Path, hooks: &Path) -> Result<InitReport, InitError> {
         run_with_hooks_resolver(workspace, InitOpts::default(), &[], |_workspace| {
-            Ok(hooks.clone())
+            Ok(hooks.to_path_buf())
         })
     }
 
@@ -418,7 +427,7 @@ mod tests {
         loom_driver::git::init_test_repo(&workspace)?;
         let hooks = fake_prek_hooks(tmp.path())?;
 
-        let report = run_with_hooks(&workspace, hooks)?;
+        let report = run_with_hooks(&workspace, &hooks)?;
         let integ = report
             .integration_workspace
             .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;
@@ -449,7 +458,7 @@ mod tests {
         loom_driver::git::init_test_repo(&workspace)?;
         let hooks = fake_prek_hooks(tmp.path())?;
 
-        let report = run_with_hooks(&workspace, hooks.clone())?;
+        let report = run_with_hooks(&workspace, &hooks)?;
         let integ = report
             .integration_workspace
             .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;
@@ -484,7 +493,7 @@ mod tests {
         loom_driver::git::init_test_repo(&workspace)?;
         let hooks = fake_prek_hooks(tmp.path())?;
 
-        let first = run_with_hooks(&workspace, hooks.clone())?
+        let first = run_with_hooks(&workspace, &hooks)?
             .integration_workspace
             .ok_or_else(|| anyhow!("first init must materialize integration workspace"))?;
         assert!(first.created, "first init must clone");
@@ -494,7 +503,7 @@ mod tests {
         let sentinel = first.path.join("loom-sentinel.txt");
         std::fs::write(&sentinel, b"keep me")?;
 
-        let second = run_with_hooks(&workspace, hooks)?
+        let second = run_with_hooks(&workspace, &hooks)?
             .integration_workspace
             .ok_or_else(|| anyhow!("second init must report the existing workspace"))?;
         assert!(
@@ -539,7 +548,7 @@ mod tests {
         loom_driver::git::init_test_repo(&workspace)?;
         let hooks = fake_prek_hooks(tmp.path())?;
 
-        let report = run_with_hooks(&workspace, hooks)?;
+        let report = run_with_hooks(&workspace, &hooks)?;
         let integ = report
             .integration_workspace
             .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;

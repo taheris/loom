@@ -126,7 +126,7 @@ fn walk_output_fields_private_only_constructor_is_from_stdout() {
 }
 
 /// The `LOOM_FINDING:` / `LOOM_CONCERN:` wire payloads carry no
-/// `"protocol": <n>` field. Wire-format SemVer rides through Cargo +
+/// `"protocol": <n>` field. Wire-format `SemVer` rides through Cargo +
 /// the typed parse errors (`FindingParseError::Json` /
 /// `TokenVariantMismatch`); per-line versioning would re-introduce a
 /// silent-breakage path the leaf-crate dependency shape exists to

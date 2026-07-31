@@ -15,7 +15,7 @@ use loom_protocol::oid::GitOid;
 
 use super::error::GitError;
 
-const GIT_TIMEOUT: Duration = Duration::from_secs(60);
+const GIT_TIMEOUT: Duration = Duration::from_mins(1);
 /// Default timeout for git operations whose hooks can legitimately run
 /// for minutes — pre-push fires the workspace's pre-push CI stage
 /// (nextest + nix build), which on a warm sccache takes a few minutes.
@@ -23,7 +23,7 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// network); it must not abort legitimate CI. Overridable per client via
 /// [`GitClient::with_hook_timeout`], which production threads from
 /// `[loom] git_hook_timeout_secs`.
-const GIT_HOOK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const GIT_HOOK_TIMEOUT: Duration = Duration::from_mins(10);
 const WORKTREE_BASE: &str = ".loom/beads";
 const BRANCH_PREFIX: &str = "loom";
 /// Path of the loom-owned integration workspace relative to the workspace
@@ -64,6 +64,15 @@ const SIGPIPE_SIGNAL: i32 = 13;
 const DEFAULT_INTEGRATION_BRANCH: &str = "main";
 const RECOVERY_STASH_SELECTOR: &str = "stash@{0}";
 
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, Default)]
+enum SigningKeyOverride {
+    #[default]
+    Resolve,
+    Disabled,
+    Key(PathBuf),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActualPushRange {
     pub range: String,
@@ -94,7 +103,7 @@ pub struct GitClient {
     /// Test-only seam for legacy host-only signing fixtures. Production loop
     /// signing is exclusively configured by [`Self::repo_git_policy`].
     #[cfg(any(test, feature = "test-support"))]
-    signing_key_override: Option<Option<PathBuf>>,
+    signing_key_override: SigningKeyOverride,
     #[cfg(any(test, feature = "test-support"))]
     prek_hooks_path_override: Option<PathBuf>,
 }
@@ -102,12 +111,20 @@ pub struct GitClient {
 impl GitClient {
     /// Open an existing repository at `path` using a [`SystemClock`] for
     /// subprocess timeouts and the default integration branch (`main`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, GitError> {
         Self::open_with_clock(path, Arc::new(SystemClock::new()))
     }
 
     /// Open an existing repository at `path` with an explicit clock for
     /// subprocess timeouts. Integration branch defaults to `main`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub fn open_with_clock(
         path: impl AsRef<Path>,
         clock: Arc<dyn Clock>,
@@ -121,6 +138,10 @@ impl GitClient {
     /// the field is consulted by [`Self::merge_branch`] (rebase target)
     /// and [`Self::push`] (origin push target) instead of querying
     /// `HEAD` or relying on `git push`'s upstream defaulting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub fn open_with_integration_branch(
         path: impl AsRef<Path>,
         integration_branch: String,
@@ -140,8 +161,7 @@ impl GitClient {
         })?;
         let workdir = repo
             .work_dir()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| path.to_path_buf());
+            .map_or_else(|| path.to_path_buf(), Path::to_path_buf);
         Ok(Self {
             repo,
             workdir,
@@ -150,7 +170,7 @@ impl GitClient {
             hook_timeout: GIT_HOOK_TIMEOUT,
             repo_git_policy: None,
             #[cfg(any(test, feature = "test-support"))]
-            signing_key_override: None,
+            signing_key_override: SigningKeyOverride::Resolve,
             #[cfg(any(test, feature = "test-support"))]
             prek_hooks_path_override: None,
         })
@@ -160,12 +180,14 @@ impl GitClient {
     /// (currently [`Self::push`]). Production threads
     /// `[loom] git_hook_timeout_secs` here; absent an override the client
     /// uses [`GIT_HOOK_TIMEOUT`].
-    pub fn with_hook_timeout(mut self, hook_timeout: Duration) -> Self {
+    #[must_use]
+    pub const fn with_hook_timeout(mut self, hook_timeout: Duration) -> Self {
         self.hook_timeout = hook_timeout;
         self
     }
 
     /// Install the repository Git policy selected by the CLI startup preflight.
+    #[must_use]
     pub fn with_repo_git_policy(mut self, policy: super::signing::RepoGitPolicy) -> Self {
         self.repo_git_policy = Some(policy);
         self
@@ -192,13 +214,13 @@ impl GitClient {
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn set_signing_key_override(&mut self, key: PathBuf) {
-        self.signing_key_override = Some(Some(key));
+        self.signing_key_override = SigningKeyOverride::Key(key);
     }
 
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn disable_signing_key_resolution(&mut self) {
-        self.signing_key_override = Some(None);
+        self.signing_key_override = SigningKeyOverride::Disabled;
     }
 
     /// Test-only: force [`Self::create_worktree`] / push-gate hook
@@ -208,18 +230,6 @@ impl GitClient {
     #[doc(hidden)]
     pub fn set_prek_hooks_path_override(&mut self, path: PathBuf) {
         self.prek_hooks_path_override = Some(path);
-    }
-
-    /// Test-only signing-key resolver override.
-    #[cfg(any(test, feature = "test-support"))]
-    fn signing_override(&self) -> Option<Option<PathBuf>> {
-        self.signing_key_override.clone()
-    }
-
-    /// Production carries no resolver override.
-    #[cfg(not(any(test, feature = "test-support")))]
-    fn signing_override(&self) -> Option<Option<PathBuf>> {
-        None
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -252,9 +262,17 @@ impl GitClient {
     }
 
     fn resolve_signing_key(&self) -> Result<Option<PathBuf>, GitError> {
-        match self.signing_override() {
-            Some(key) => Ok(key),
-            None => super::signing::resolve_signing_key(&self.loom_workspace()),
+        #[cfg(any(test, feature = "test-support"))]
+        match &self.signing_key_override {
+            SigningKeyOverride::Resolve => {
+                super::signing::resolve_signing_key(&self.loom_workspace())
+            }
+            SigningKeyOverride::Disabled => Ok(None),
+            SigningKeyOverride::Key(key) => Ok(Some(key.clone())),
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            super::signing::resolve_signing_key(&self.loom_workspace())
         }
     }
 
@@ -263,11 +281,14 @@ impl GitClient {
             return Ok(());
         }
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(signing_key) = self.signing_override() {
-            super::signing::reconcile_signing_config(
-                &self.loom_workspace(),
-                signing_key.as_deref(),
-            )?;
+        match &self.signing_key_override {
+            SigningKeyOverride::Resolve => {}
+            SigningKeyOverride::Disabled => {
+                super::signing::reconcile_signing_config(&self.loom_workspace(), None)?;
+            }
+            SigningKeyOverride::Key(key) => {
+                super::signing::reconcile_signing_config(&self.loom_workspace(), Some(key))?;
+            }
         }
         Ok(())
     }
@@ -296,6 +317,10 @@ impl GitClient {
     }
 
     /// Working tree status against HEAD.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn status(&self) -> Result<Vec<StatusEntry>, GitError> {
         let repo = self.repo.clone();
         spawn_blocking(move || -> Result<Vec<StatusEntry>, GitError> {
@@ -319,6 +344,10 @@ impl GitClient {
     /// Unified diff of `HEAD` against its first parent (`HEAD~`).
     ///
     /// Returns an empty string when `HEAD` has no parent (initial commit).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn diff_head_parent(&self) -> Result<String, GitError> {
         let repo = self.repo.clone();
         spawn_blocking(move || -> Result<String, GitError> {
@@ -357,6 +386,10 @@ impl GitClient {
     }
 
     /// Linked worktrees registered with the repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn worktrees(&self) -> Result<Vec<WorktreeInfo>, GitError> {
         let repo = self.repo.clone();
         spawn_blocking(move || -> Result<Vec<WorktreeInfo>, GitError> {
@@ -408,6 +441,10 @@ impl GitClient {
     /// attempts and `loom loop` invocations until the bead is closed, so
     /// a second dispatch attempt must observe the existing tree rather
     /// than tripping `git clone --local: destination path already exists`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn create_worktree(
         &self,
         _label: &SpecLabel,
@@ -501,6 +538,10 @@ impl GitClient {
     /// `$WRIX_DEPLOY_KEY` / `$WRIX_SIGNING_KEY` to those paths (wrix
     /// `specs/security.md` § Credential Surfaces). See `specs/harness.md`
     /// § Repository Git isolation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub fn launcher_key_env(&self) -> Result<Vec<(String, String)>, GitError> {
         if let Some(policy) = &self.repo_git_policy {
             return Ok(policy.launcher_env());
@@ -526,6 +567,10 @@ impl GitClient {
     /// Preserve dirty bead-workspace state, align committed bead work with
     /// the current integration tip, and clean non-conflicted workspaces for
     /// dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn prepare_bead_clone(
         &self,
         path: &Path,
@@ -564,6 +609,10 @@ impl GitClient {
     /// This is the destructive cleanup primitive. Dispatch paths that may
     /// encounter prior dirty work should call [`Self::prepare_bead_clone`]
     /// so the work is preserved before this reset/clean pair runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn reset_bead_clone(&self, path: &Path) -> Result<(), GitError> {
         run_git(
             path,
@@ -733,6 +782,10 @@ impl GitClient {
 
     /// Configure a bead clone's local `core.hooksPath` from wrix's
     /// canonical prek hooks directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn repair_bead_hooks_path(&self, path: &Path) -> Result<(), GitError> {
         let hooks_path = self.resolve_prek_hooks_path()?;
         let value = hooks_path.to_string_lossy().into_owned();
@@ -747,6 +800,10 @@ impl GitClient {
 
     /// Reconcile and validate the loom integration workspace's local
     /// `core.hooksPath`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn validate_loom_hooks_path_configured(&self) -> Result<(), GitError> {
         let expected = self.resolve_prek_hooks_path()?;
         let workdir = self.loom_workspace();
@@ -774,6 +831,10 @@ impl GitClient {
     /// The workspace is a standalone clone (not a git-registered linked
     /// worktree), so cleanup is a recursive directory removal. Idempotent:
     /// a missing directory is not an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn remove_worktree(&self, path: &Path) -> Result<(), GitError> {
         if !path.exists() {
             return Ok(());
@@ -802,6 +863,10 @@ impl GitClient {
     /// A missing `.loom/beads/` directory is a no-op (returns the
     /// empty vec). The returned paths are the workspaces actually
     /// removed during this sweep.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn sweep_orphan_bead_clones<R: CommandRunner>(
         &self,
         bd: &BdClient<R>,
@@ -901,6 +966,10 @@ impl GitClient {
     }
 
     /// Fetch any branch from an isolated checkout into the loom workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn fetch_branch_from_path(
         &self,
         checkout_path: &Path,
@@ -934,6 +1003,10 @@ impl GitClient {
     /// driver pulls the branch over the filesystem path, which is always
     /// reachable from the host through the bead's lifetime (the bead
     /// container, by contrast, has no mount back to the loom workspace).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn fetch_bead_branch(
         &self,
         bead_workspace_path: &Path,
@@ -945,6 +1018,10 @@ impl GitClient {
     }
 
     /// Create an isolated tune proposal checkout at `destination`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn create_tune_checkout(
         &self,
         destination: &Path,
@@ -992,6 +1069,10 @@ impl GitClient {
     }
 
     /// Commit every current worktree change, permitting an empty candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn commit_all_allow_empty(&self, message: &str) -> Result<(), GitError> {
         run_git(&self.workdir, self.clock.as_ref(), ["add", "--all"], None).await?;
         run_git(
@@ -1009,6 +1090,10 @@ impl GitClient {
     /// [`Self::remove_worktree`]). A non-existent branch surfaces as
     /// [`GitError::GitCli`] — call only when the branch is known to
     /// exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn delete_branch(&self, branch: &str) -> Result<(), GitError> {
         run_git(
             &self.loom_workspace(),
@@ -1044,6 +1129,10 @@ impl GitClient {
     /// `[loom] git_hook_timeout_secs`, default [`GIT_HOOK_TIMEOUT`])
     /// because the remote's pre-push hook (or loom's own pre-push hook on
     /// the GitHub publish) runs the workspace's pre-push CI stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn push(&self) -> Result<(), GitError> {
         self.run_push_command_with_transport_retry([
             "push",
@@ -1053,6 +1142,10 @@ impl GitClient {
         .await
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn prepare_actual_push_range(&self) -> Result<ActualPushRange, GitError> {
         self.validate_loom_hooks_path_configured().await?;
         self.refresh_loom_signing_config()?;
@@ -1082,6 +1175,10 @@ impl GitClient {
         })
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn run_pre_push_chain(&self) -> Result<(), GitError> {
         self.run_push_command_with_transport_retry([
             "push",
@@ -1092,6 +1189,10 @@ impl GitClient {
         .await
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn push_once(&self) -> Result<(), GitError> {
         self.run_push_command(["push", "origin", self.integration_branch.as_str()])
             .await
@@ -1156,6 +1257,10 @@ impl GitClient {
     }
 
     /// `git rev-parse --verify <rev>^{commit}` — resolve a commit object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn resolve_commit_sha(&self, rev: &str) -> Result<GitOid, GitError> {
         let output = run_git_raw(
             &self.workdir,
@@ -1173,6 +1278,10 @@ impl GitClient {
 
     /// `git rev-parse --verify <rev>^{commit}` — true iff `rev` resolves to
     /// a commit object in this repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn rev_exists(&self, rev: &str) -> Result<bool, GitError> {
         let output = run_git_raw(
             &self.workdir,
@@ -1191,6 +1300,10 @@ impl GitClient {
 
     /// `git merge-base --is-ancestor <rev> HEAD` — true iff `rev` is an
     /// ancestor of the current `HEAD`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn is_ancestor_of_head(&self, rev: &str) -> Result<bool, GitError> {
         let output = run_git_raw(
             &self.workdir,
@@ -1204,6 +1317,10 @@ impl GitClient {
 
     /// `git diff <base> HEAD --name-only -- specs/` — repo-relative spec
     /// file paths changed since `base`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn changed_spec_files(&self, base: &str) -> Result<Vec<PathBuf>, GitError> {
         let output = run_git_raw(
             &self.workdir,
@@ -1227,6 +1344,10 @@ impl GitClient {
     /// changed across the supplied diff range, optionally filtered by a
     /// pathspec (e.g. `"specs/"`). `range` is forwarded verbatim, so any
     /// shape `git diff` accepts works (`A..B`, `A...B`, `A B`, etc.).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn changed_files_in_range(
         &self,
         range: &str,
@@ -1253,6 +1374,10 @@ impl GitClient {
     /// files whose working-tree contents differ from `HEAD`. Powers
     /// `loom todo`'s touched-set discovery: any spec edit visible in the
     /// working tree (committed or not) qualifies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn workdir_changed_specs(&self) -> Result<Vec<PathBuf>, GitError> {
         let output = run_git_raw(
             &self.workdir,
@@ -1273,12 +1398,20 @@ impl GitClient {
     }
 
     /// `git ls-files` — repo-relative paths tracked at the current worktree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn tracked_files(&self) -> Result<Vec<PathBuf>, GitError> {
         let output = run_git_raw(&self.workdir, self.clock.as_ref(), ["ls-files"], None).await?;
         tracked_files_from_output(output)
     }
 
     /// Synchronous `git ls-files` for sync workflow phases such as `loom plan`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub fn tracked_files_sync(&self) -> Result<Vec<PathBuf>, GitError> {
         let output = sync_git_raw(&self.workdir, &["ls-files"])?;
         tracked_files_from_output(output)
@@ -1286,6 +1419,10 @@ impl GitClient {
 
     /// `git diff HEAD -- <spec_path>` — working-tree diff for one spec file.
     /// Empty string when the file matches `HEAD`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn workdir_diff_spec(&self, spec_path: &Path) -> Result<String, GitError> {
         let path_str = spec_path.to_string_lossy().into_owned();
         let output = run_git_raw(
@@ -1303,6 +1440,10 @@ impl GitClient {
 
     /// `git diff <base> HEAD -- <spec_path>` — unified diff of one spec
     /// file. Empty string when there is no diff.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn diff_spec(&self, base: &str, spec_path: &Path) -> Result<String, GitError> {
         let path_str = spec_path.to_string_lossy().into_owned();
         let output = run_git_raw(
@@ -1319,6 +1460,10 @@ impl GitClient {
     }
 
     /// `git diff --quiet <base> HEAD -- <path>` — true when `path` changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn path_changed_since(&self, base: &str, path: &Path) -> Result<bool, GitError> {
         let path_str = path.to_string_lossy().into_owned();
         let output = run_git_raw(
@@ -1336,6 +1481,10 @@ impl GitClient {
     }
 
     /// `git show <rev>:<path>` — file contents at `rev`, or `None` if absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn file_at_revision(
         &self,
         rev: &str,
@@ -1351,6 +1500,10 @@ impl GitClient {
     }
 
     /// `git rev-parse HEAD:<path>` — blob SHA for a path at HEAD.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn head_blob_sha(&self, path: &Path) -> Result<GitOid, GitError> {
         let path_str = path.to_string_lossy();
         let spec = format!("HEAD:{path_str}");
@@ -1369,6 +1522,10 @@ impl GitClient {
     }
 
     /// `git rev-parse <rev>:<path>` — blob SHA for a path at `rev`, if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn blob_sha_at_revision(
         &self,
         rev: &str,
@@ -1393,6 +1550,10 @@ impl GitClient {
     /// `git rev-list --count <commit>..HEAD` — number of commits between
     /// `commit` and the current `HEAD`. Returns `0` when `commit` is `HEAD`,
     /// and surfaces [`GitError::GitCli`] when `commit` does not resolve.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn commits_since(&self, commit: &str) -> Result<u32, GitError> {
         let range = format!("{commit}..HEAD");
         let output = run_git_raw(
@@ -1422,6 +1583,10 @@ impl GitClient {
     /// [`crate::run::dirty_paths_from_porcelain`] (or equivalent) without
     /// reopening a [`GitClient`] per worktree. Used by the run-phase
     /// verdict-gate tree-not-clean dispatcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn status_porcelain_at(&self, workdir: &Path) -> Result<String, GitError> {
         let output = run_git_raw(
             workdir,
@@ -1437,6 +1602,10 @@ impl GitClient {
     }
 
     /// `git rev-parse HEAD` — full SHA of the current `HEAD`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn head_commit_sha(&self) -> Result<GitOid, GitError> {
         let output = run_git_raw(
             &self.workdir,
@@ -1454,6 +1623,10 @@ impl GitClient {
 
     /// `git rev-list --max-parents=0 HEAD` — root commit ids for the current
     /// history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn root_commit_shas(&self) -> Result<Vec<GitOid>, GitError> {
         let output = run_git_raw(
             &self.workdir,
@@ -1488,6 +1661,10 @@ impl GitClient {
     /// `[loom] integration_branch`) — never from a `symbolic-ref HEAD`
     /// query, so the value is unambiguously the operator's configured
     /// target rather than whatever happens to be checked out.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn merge_branch(&self, branch: &str) -> Result<MergeResult, GitError> {
         match self.rebase_onto_integration(branch).await? {
             RebaseOutcome::Conflict {
@@ -1528,6 +1705,10 @@ impl GitClient {
     /// stay unmerged are a conflict rerere has no record for — abort,
     /// restore the integration branch, and surface
     /// [`RebaseOutcome::Conflict`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn rebase_onto_integration(&self, branch: &str) -> Result<RebaseOutcome, GitError> {
         self.refresh_loom_signing_config()?;
         let workdir = self.loom_workspace();
@@ -1643,6 +1824,10 @@ impl GitClient {
     /// Checks out the integration branch and runs `git merge --ff-only`
     /// so history stays linear (no merge commits); a non-fast-forward
     /// refusal surfaces as [`GitError`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn ff_merge_integration(&self, branch: &str) -> Result<(), GitError> {
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
@@ -1684,6 +1869,10 @@ impl GitClient {
     /// whether a bead's ff-merge actually advanced the integration line so
     /// the per-bead audit rollback fires only when there is a bead commit
     /// to unwind (`specs/harness.md` § Verdict Gate).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn integration_commit_sha(&self) -> Result<GitOid, GitError> {
         let output = run_git_raw(
             &self.loom_workspace(),
@@ -1700,6 +1889,10 @@ impl GitClient {
     }
 
     /// Reset the integration branch to an exact commit in the loom workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn reset_integration_to(&self, rev: &str) -> Result<(), GitError> {
         self.checkout_integration().await?;
         let output = run_git_index_mut(
@@ -1725,6 +1918,10 @@ impl GitClient {
     /// (`specs/harness.md` § Verdict Gate — `post-integrate-fail`). Takes
     /// the loom workspace's `index.lock`; a cross-spec peer holding it
     /// loses the race to a retryable [`GitError::IndexLocked`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn rollback_integration(&self) -> Result<(), GitError> {
         let output = run_git_index_mut(
             &self.loom_workspace(),
@@ -1748,6 +1945,10 @@ impl GitClient {
     /// driver-side rejection leaves the integration line as the checked-out
     /// state with the transient ref gone. When the workspace is already on
     /// the integration branch (the pass-1 path) it is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn checkout_integration(&self) -> Result<(), GitError> {
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
@@ -1802,6 +2003,10 @@ impl GitClient {
     /// Whether driver-side signature verification is active. Default loop
     /// startup requires repository keys and Wrix creates this file; an absent
     /// file is permitted only for legacy callers or explicit host-key mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn signing_verification_enabled(&self) -> Result<bool, GitError> {
         // Propagate anomalous IO failures rather than silently disabling a
         // repository-mode security control.
@@ -1825,13 +2030,17 @@ impl GitClient {
     }
 
     /// Verify every commit in `range` (e.g. `main..loom/<id>`) against the
-    /// loom workspace's allowed_signers file with `git verify-commit`.
+    /// loom workspace's `allowed_signers` file with `git verify-commit`.
     ///
     /// Returns [`SignatureCheck::Skipped`] only when verification is disabled
     /// by a legacy caller or explicit host-key mode. When enabled, walks the
     /// commits oldest-first and returns [`SignatureCheck::Failed`] on the first commit
     /// `git verify-commit` rejects, carrying the offending sha + stderr so
     /// the caller can route to `signature-verification-failed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn verify_commit_range(&self, range: &str) -> Result<SignatureCheck, GitError> {
         self.refresh_loom_signing_config()?;
         if !self.signing_verification_enabled().await? {
@@ -1873,6 +2082,10 @@ impl GitClient {
     /// origin) surfaces as [`GitError::IntegrationDiverged`] so the caller
     /// fails loud instead of branching off a split-brained base (per
     /// `specs/harness.md` § Bead dispatch).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn fast_forward_integration_to_origin(&self) -> Result<FastForwardOutcome, GitError> {
         let loom_workspace = self.loom_workspace();
         let branch = self.integration_branch.clone();
@@ -1910,6 +2123,10 @@ pub enum FastForwardOutcome {
 ///
 /// Synchronous: invoked directly from `loom init` and, via `spawn_blocking`,
 /// from `loom loop` startup ([`GitClient::fast_forward_integration_to_origin`]).
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn fast_forward_loom_workspace_to_origin(
     loom_workspace: &Path,
     branch: &str,
@@ -2000,7 +2217,7 @@ pub enum SignatureCheck {
     /// No allowed-signers file is active (legacy or explicit host-key mode).
     Skipped,
     /// Every commit in range carried a signature trusted by the loom
-    /// workspace's allowed_signers file.
+    /// workspace's `allowed_signers` file.
     Verified,
     /// `git verify-commit` rejected `commit`; `detail` is its stderr.
     Failed { commit: String, detail: String },
@@ -2083,13 +2300,13 @@ fn ensure_test_prek_hooks(path: &Path) -> Result<PathBuf, GitError> {
     Ok(hooks)
 }
 
-const TEST_PRE_COMMIT_CONFIG: &str = r#"repos:
+const TEST_PRE_COMMIT_CONFIG: &str = r"repos:
   - repo: local
     hooks:
       - id: pre-push
         entry: bin/pre-push-checks --hook-id pre-push --hook-entry 'true' -- true
         stages: [pre-push]
-"#;
+";
 
 fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError> {
     std::fs::create_dir_all(path)?;
@@ -2155,6 +2372,10 @@ fn run_test_git(dir: &Path, args: &[&str]) -> Result<(), GitError> {
 ///
 /// Synchronous — used by `loom init`, which is a one-shot workspace
 /// bootstrap and not driven by tokio.
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn read_origin_url(workdir: &Path) -> Result<Option<String>, GitError> {
     let output = super::environment::std_git_command()
         .arg("-C")
@@ -2166,7 +2387,7 @@ pub fn read_origin_url(workdir: &Path) -> Result<Option<String>, GitError> {
         let url = String::from_utf8(output.stdout)?.trim().to_string();
         return Ok((!url.is_empty()).then_some(url));
     }
-    if matches!(output.status.code(), Some(1) | Some(128)) {
+    if matches!(output.status.code(), Some(1 | 128)) {
         return Ok(None);
     }
     Err(GitError::GitCli {
@@ -2175,13 +2396,17 @@ pub fn read_origin_url(workdir: &Path) -> Result<Option<String>, GitError> {
     })
 }
 
-/// One-shot `git clone --branch <branch> <origin_url> <dest>` used by
-/// `loom init` to materialize the loom-owned integration workspace at
-/// `<workspace>/.loom/integration/`. Caller guarantees `dest` does
-/// not exist; the parent directory is created if missing.
+/// Clone the integration workspace for `loom init`.
+///
+/// Runs `git clone --branch <branch> <origin_url> <dest>`. The caller
+/// guarantees `dest` does not exist; the parent directory is created if missing.
 ///
 /// Synchronous: `loom init` is not async, and the spec marks the operation
 /// as one-shot + infrequent (see § Git operations table).
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn clone_loom_workspace(origin_url: &str, dest: &Path, branch: &str) -> Result<(), GitError> {
     let parent = dest.parent().ok_or_else(|| GitError::GitCli {
         status: -1,
@@ -2208,10 +2433,15 @@ pub fn clone_loom_workspace(origin_url: &str, dest: &Path, branch: &str) -> Resu
     })
 }
 
-/// Synchronous `git -C <workspace> rev-parse HEAD^{tree}`. Used by
-/// `loom gate verify-marker`, which is a one-shot CLI helper that
+/// Resolve the current tree OID synchronously.
+///
+/// Used by `loom gate verify-marker`, which is a one-shot CLI helper that
 /// does not justify the cost of standing up a tokio runtime for two
 /// git invocations.
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn head_tree_oid_sync(workspace: &Path) -> Result<GitOid, GitError> {
     let raw = sync_git_capture(workspace, &["rev-parse", "HEAD^{tree}"])?;
     Ok(GitOid::new(raw.trim())?)
@@ -2220,11 +2450,19 @@ pub fn head_tree_oid_sync(workspace: &Path) -> Result<GitOid, GitError> {
 /// Synchronous `git -C <workspace> rev-parse HEAD`. The informational
 /// commit SHA stamped onto a freshly minted [`crate::marker`] proof
 /// (the load-bearing fingerprint is the tree OID, not the commit SHA).
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn sync_head_commit_sha(workspace: &Path) -> Result<GitOid, GitError> {
     sync_rev_parse(workspace, "HEAD")
 }
 
 /// Synchronous `git -C <workspace> rev-parse --verify <rev>`.
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn sync_rev_parse(workspace: &Path, rev: &str) -> Result<GitOid, GitError> {
     let raw = sync_git_capture(workspace, &["rev-parse", "--verify", rev])?;
     Ok(GitOid::new(raw.trim())?)
@@ -2232,6 +2470,10 @@ pub fn sync_rev_parse(workspace: &Path, rev: &str) -> Result<GitOid, GitError> {
 
 /// Synchronous `git -C <workspace> status --porcelain`. Paired with
 /// [`head_tree_oid_sync`] for the marker fingerprint check.
+///
+/// # Errors
+///
+/// Returns an error when repository inspection, Git execution, or output decoding fails.
 pub fn status_porcelain_sync(workspace: &Path) -> Result<String, GitError> {
     sync_git_capture(workspace, &["status", "--porcelain"])
 }
@@ -2259,10 +2501,10 @@ fn sync_git_capture(workspace: &Path, args: &[&str]) -> Result<String, GitError>
 #[doc(hidden)]
 pub fn bare_origin_path(workspace: &Path) -> PathBuf {
     let parent = workspace.parent().unwrap_or(workspace);
-    let name = workspace
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "workspace".to_string());
+    let name = workspace.file_name().map_or_else(
+        || "workspace".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     parent.join(format!("{name}.git"))
 }
 
@@ -2343,8 +2585,9 @@ pub enum StatusKind {
     WorktreeChange,
 }
 
-/// Outcome of [`GitClient::rebase_onto_integration`] — the rebase half of
-/// the per-bead integration step, split from the fast-forward
+/// Outcome of [`GitClient::rebase_onto_integration`].
+///
+/// Represents the rebase half of the per-bead integration step, split from the fast-forward
 /// ([`GitClient::ff_merge_integration`]) so the verdict gate can verify
 /// the rewritten commits in between.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2498,22 +2741,22 @@ fn is_retryable_push_transport_failure(output: &std::process::Output) -> bool {
     if output.status.success() {
         return false;
     }
-    exit_status_is_sigpipe(&output.status) || push_transport_disconnect(output)
+    exit_status_is_sigpipe(output.status) || push_transport_disconnect(output)
 }
 
-fn exit_status_is_sigpipe(status: &ExitStatus) -> bool {
+fn exit_status_is_sigpipe(status: ExitStatus) -> bool {
     exit_status_signal(status) == Some(SIGPIPE_SIGNAL)
 }
 
 #[cfg(unix)]
-fn exit_status_signal(status: &ExitStatus) -> Option<i32> {
+fn exit_status_signal(status: ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;
 
     status.signal()
 }
 
 #[cfg(not(unix))]
-fn exit_status_signal(_status: &ExitStatus) -> Option<i32> {
+fn exit_status_signal(_status: ExitStatus) -> Option<i32> {
     None
 }
 

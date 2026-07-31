@@ -11,6 +11,10 @@ use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::CacheError;
 
 /// Errors raised by the `loom loop` driver.
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
+)]
 #[derive(Debug, Display, Error)]
 pub enum LoopError {
     /// agent backend protocol failure during `loom loop`

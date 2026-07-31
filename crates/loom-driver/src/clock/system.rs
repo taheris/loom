@@ -63,10 +63,10 @@ mod tests {
         // SystemClock::now() reads real wall time, so we measure progress
         // via tokio's paused instant rather than `clock.now()` here.
         let start = tokio::time::Instant::now();
-        clock.sleep(Duration::from_secs(60)).await;
+        clock.sleep(Duration::from_mins(1)).await;
         let elapsed = tokio::time::Instant::now() - start;
         assert!(
-            elapsed >= Duration::from_secs(60),
+            elapsed >= Duration::from_mins(1),
             "expected >=60s of paused-time advance, got {elapsed:?}"
         );
     }
@@ -81,7 +81,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn timeout_returns_value_when_future_completes_first() {
         let clock = SystemClock::new();
-        let result = clock.timeout(Duration::from_secs(60), async { 42 }).await;
+        let result = clock.timeout(Duration::from_mins(1), async { 42 }).await;
         assert_eq!(result.expect("future should complete"), 42);
     }
 }

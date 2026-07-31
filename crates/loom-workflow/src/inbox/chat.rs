@@ -135,6 +135,10 @@ pub enum ChatError {
 }
 
 /// Run one `loom inbox chat` session against `workspace`.
+///
+/// # Errors
+///
+/// Returns an error when inbox state, interaction, or persistence fails.
 pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .map_err(|e| ChatError::Config(e.to_string()))?;
@@ -269,7 +273,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                     workspace,
                     image,
                     &selection,
-                    prompt_body.clone(),
+                    prompt_body,
                     scratch.path().to_path_buf(),
                     &cfg,
                     &opts.launcher_env,
@@ -436,18 +440,18 @@ async fn run_pi_bridge(config: SpawnConfig, _wrix_bin: &Path) -> Result<String, 
 
 fn pi_bridge_envelope_builder() -> EnvelopeBuilder {
     let clock = SystemClock::new();
-    let started_ms = unix_timestamp_millis(&clock);
+    let started_ms = unix_timestamp_millis(clock);
     EnvelopeBuilder::new(
         SessionScope::phase(
             SessionId::generated(format!("inbox-pi-{}-{started_ms}", std::process::id())),
             None,
         ),
         Source::Agent,
-        move || unix_timestamp_millis(&clock),
+        move || unix_timestamp_millis(clock),
     )
 }
 
-fn unix_timestamp_millis(clock: &SystemClock) -> i64 {
+fn unix_timestamp_millis(clock: SystemClock) -> i64 {
     match clock.wall_now().duration_since(std::time::UNIX_EPOCH) {
         Ok(duration) => match i64::try_from(duration.as_millis()) {
             Ok(timestamp) => timestamp,
@@ -487,6 +491,8 @@ fn emit_pi_bridge_agent_input(
 }
 
 fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(), std::io::Error> {
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
     match event {
         AgentEvent::AgentInput {
             input_kind,
@@ -494,28 +500,29 @@ fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(),
             redactions,
             ..
         } => {
-            println!("\n[agent input: {input_kind:?}]\n{text}");
+            writeln!(stdout, "\n[agent input: {input_kind:?}]\n{text}")?;
             if let Some(redactions) = redactions {
                 for redaction in redactions {
-                    println!(
+                    writeln!(
+                        stdout,
                         "[redaction] {} ({})",
                         redaction.marker,
                         redaction.class.as_wire(),
-                    );
+                    )?;
                 }
             }
-            std::io::stdout().flush()?;
+            stdout.flush()?;
         }
         AgentEvent::TextDelta { text, .. } => {
             output.push_str(text);
-            print!("{text}");
-            std::io::stdout().flush()?;
+            write!(stdout, "{text}")?;
+            stdout.flush()?;
         }
         AgentEvent::ToolCall { tool, params, .. } => {
             if verbose_pi_bridge_tools() {
-                println!("\n[tool] {tool} {params}");
+                writeln!(stdout, "\n[tool] {tool} {params}")?;
             } else {
-                println!("\n[tool] {tool}");
+                writeln!(stdout, "\n[tool] {tool}")?;
             }
         }
         AgentEvent::ToolResult {
@@ -531,18 +538,18 @@ fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(),
                 } else {
                     "tool result"
                 };
-                println!("\n[{label}] {body}");
+                writeln!(stdout, "\n[{label}] {body}")?;
             }
         }
         AgentEvent::ToolProgress { text, .. } => {
             if verbose_pi_bridge_tools()
                 && let Some(body) = renderable_tool_body(text, false)
             {
-                println!("\n[tool progress] {body}");
+                writeln!(stdout, "\n[tool progress] {body}")?;
             }
         }
         AgentEvent::Error { message, .. } => {
-            eprintln!("\n[agent error] {message}");
+            writeln!(std::io::stderr().lock(), "\n[agent error] {message}")?;
         }
         _ => {}
     }
@@ -563,8 +570,12 @@ async fn read_pi_bridge_follow_up(
     envelope_builder: &mut EnvelopeBuilder,
     output: &mut String,
 ) -> Result<bool, ChatError> {
-    print!("\nloom inbox pi> ");
-    std::io::stdout().flush()?;
+    {
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        write!(stdout, "\nloom inbox pi> ")?;
+        stdout.flush()?;
+    }
     let mut line = String::new();
     let n = std::io::stdin().read_line(&mut line)?;
     if n == 0 {
@@ -580,8 +591,10 @@ async fn read_pi_bridge_follow_up(
 
 fn ensure_bridge_output_newline(output: &mut String) -> Result<(), std::io::Error> {
     if !output.ends_with('\n') {
-        println!();
-        std::io::stdout().flush()?;
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        writeln!(stdout)?;
+        stdout.flush()?;
         output.push('\n');
     }
     Ok(())
@@ -783,7 +796,7 @@ pub fn build_wrix_argv(
     argv
 }
 
-fn agent_command(kind: AgentKind) -> &'static str {
+const fn agent_command(kind: AgentKind) -> &'static str {
     match kind {
         AgentKind::Claude => "claude",
         AgentKind::Pi => "pi",
@@ -890,7 +903,7 @@ mod tests {
                 .map(|label| Label::new(*label).expect("valid Label"))
                 .collect(),
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }

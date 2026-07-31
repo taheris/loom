@@ -41,7 +41,7 @@ pub enum InboxKind {
 
 impl InboxKind {
     /// Short tag printed alongside each row.
-    pub fn tag(self) -> &'static str {
+    pub const fn tag(self) -> &'static str {
         match self {
             InboxKind::Clarify => "clarify",
             InboxKind::Blocked => "blocked",
@@ -50,7 +50,7 @@ impl InboxKind {
         }
     }
 
-    fn rank(self) -> u8 {
+    const fn rank(self) -> u8 {
         match self {
             InboxKind::Clarify => 0,
             InboxKind::Blocked => 1,
@@ -150,6 +150,7 @@ pub struct InboxRow {
 }
 
 /// Classify a bead's inbox membership without applying status/filter rules.
+///
 /// Tune wins over generic blocked labels so corrupt tune proposals remain tune
 /// items instead of falling into the blocked-bead queue.
 pub fn kind_of(bead: &Bead) -> Option<InboxKind> {
@@ -217,7 +218,7 @@ pub fn frame_unavailable_tune_items(workspace: &Path, items: &mut [InboxItem]) {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub(crate) struct ManifestIdentity {
+pub struct ManifestIdentity {
     proposal_id: BeadId,
     state: TuneState,
     targets: Vec<Target>,
@@ -293,7 +294,7 @@ where
     }
 }
 
-pub(crate) fn read_manifest_identity(path: &Path) -> Option<ManifestIdentity> {
+pub fn read_manifest_identity(path: &Path) -> Option<ManifestIdentity> {
     let body = match std::fs::read_to_string(path) {
         Ok(body) => body,
         Err(source) => {
@@ -322,8 +323,7 @@ pub fn build_rows(items: &[InboxItem], spec_filter: Option<&SpecLabel>) -> Vec<I
                 Some(
                     item.spec
                         .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| "—".to_string()),
+                        .map_or_else(|| "—".to_string(), ToString::to_string),
                 )
             },
             summary: item.summary.clone(),
@@ -571,7 +571,7 @@ mod tests {
                 .map(|s| Label::new(*s).expect("valid Label"))
                 .collect(),
             parent: None,
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }

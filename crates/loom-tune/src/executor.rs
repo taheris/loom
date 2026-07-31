@@ -52,6 +52,10 @@ impl Replay {
 }
 
 /// Score outputs captured by behavioral checker replays for a frozen plan.
+///
+/// # Errors
+///
+/// Returns an error when tuning input, execution, or evidence validation fails.
 pub fn run(
     plan: &FrozenPlan,
     cases: &LoadedCases,
@@ -194,7 +198,7 @@ fn score_output(
         .iter()
         .filter(|term| contains_case_insensitive(output, term))
         .count();
-    let soft = matched as f64 / terms.len() as f64;
+    let soft = count_as_f64(matched) / count_as_f64(terms.len());
     let hard = if matched == terms.len() { 1.0 } else { 0.0 };
     scores(hard, soft)
 }
@@ -235,7 +239,7 @@ fn score_review_output(
     let within_extra_limit = expected.max_extra_findings.is_none_or(|limit| {
         findings.len().saturating_sub(expected.findings.len()) <= limit as usize
     });
-    let soft = matched as f64 / expected.findings.len() as f64;
+    let soft = count_as_f64(matched) / count_as_f64(expected.findings.len());
     let hard = if matched == expected.findings.len() && within_extra_limit {
         1.0
     } else {
@@ -248,6 +252,13 @@ fn score_presence(output: &str) -> Result<Scores, ScoreError> {
     let present = !output.trim().is_empty();
     let value = if present { 1.0 } else { 0.0 };
     scores(value, value)
+}
+
+fn count_as_f64(value: usize) -> f64 {
+    let value = u64::try_from(value).unwrap_or(u64::MAX);
+    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
 }
 
 fn scores(hard: f64, soft: f64) -> Result<Scores, ScoreError> {
@@ -334,8 +345,8 @@ mod tests {
             &AcceptAllFindings,
         )
         .expect("malformed output is scored as failure");
-        assert_eq!(malformed.hard.get(), 0.0);
-        assert_eq!(malformed.soft.get(), 0.0);
+        assert_eq!(malformed.hard.get().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(malformed.soft.get().to_bits(), 0.0_f64.to_bits());
     }
 
     #[test]
@@ -376,7 +387,7 @@ mod tests {
         let registry = Registry::builtin().expect("registry");
         let result = run_declared(&selected, &case, &replay, &registry, &AcceptAllFindings)
             .expect("checker runs");
-        assert_eq!(result.current.soft.get(), 0.0);
-        assert_eq!(result.candidate.soft.get(), 1.0);
+        assert_eq!(result.current.soft.get().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(result.candidate.soft.get().to_bits(), 1.0_f64.to_bits());
     }
 }

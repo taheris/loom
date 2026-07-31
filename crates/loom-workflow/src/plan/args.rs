@@ -3,6 +3,10 @@ use loom_driver::identifier::SpecLabel;
 use super::error::PlanError;
 
 /// Parse optional positional plan anchors into typed spec labels.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub fn parse_anchor_labels(labels: Vec<String>) -> Result<Vec<SpecLabel>, PlanError> {
     labels
         .into_iter()

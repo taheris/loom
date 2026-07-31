@@ -141,8 +141,8 @@ the Mayor via `bd human` instead.
     `unreachable`, `dbg_macro`, `print_stdout`, `print_stderr`).
   - Set `unsafe_code = "forbid"` under `[workspace.lints.rust]`.
   - `= "allow"` pedantic/nursery lints that don't earn their keep
-    (e.g. `use_self`, `must_use_candidate`, `uninlined_format_args`,
-    `significant_drop_tightening`, `too_many_lines`).
+    (`use_self`, `must_use_candidate`, `option_if_let_else`,
+    `too_many_lines`).
 
   Every member declares `[lints] workspace = true`. No crate-root
   `#![warn(...)]` / `#![deny(...)]`. CI runs

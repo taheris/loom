@@ -8,6 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -1262,7 +1263,7 @@ fn workspace_deps_pinned_pass_required_deps_present() {
         "gix",
         "fd-lock",
     ] {
-        cargo.push_str(&format!("{dep} = \"1\"\n"));
+        writeln!(cargo, "{dep} = \"1\"").expect("writing to String is infallible");
     }
     std::fs::write(ws.path().join("Cargo.toml"), &cargo).unwrap();
     let out = invoke(&["workspace_deps_pinned"], Some(ws.path()), None);
@@ -1281,14 +1282,32 @@ fn workspace_deps_pinned_fail_missing_required_dep() {
 // workspace_lints
 // ---------------------------------------------------------------------------
 
+const COMPLIANT_WORKSPACE_LINTS: &str = "[workspace]\nresolver = \"3\"\nmembers = [\"crates/loom\"]\n\n\
+     [workspace.package]\nedition = \"2024\"\n\n\
+     [workspace.lints.rust]\nunsafe_code = \"forbid\"\nunused_must_use = \"deny\"\n\n\
+     [workspace.lints.clippy]\n\
+     all = { level = \"warn\", priority = -1 }\n\
+     pedantic = { level = \"warn\", priority = -1 }\n\
+     nursery = { level = \"warn\", priority = -1 }\n\
+     unwrap_used = \"deny\"\n\
+     expect_used = \"deny\"\n\
+     panic = \"deny\"\n\
+     todo = \"deny\"\n\
+     unimplemented = \"deny\"\n\
+     unreachable = \"deny\"\n\
+     dbg_macro = \"deny\"\n\
+     print_stdout = \"deny\"\n\
+     print_stderr = \"deny\"\n\
+     allow_attributes = \"warn\"\n\
+     must_use_candidate = \"allow\"\n\
+     option_if_let_else = \"allow\"\n\
+     too_many_lines = \"allow\"\n\
+     use_self = \"allow\"\n";
+
 #[test]
 fn workspace_lints_pass_inheritance_present() {
     let ws = make_workspace();
-    let cargo = "[workspace]\nresolver = \"3\"\nmembers = [\"crates/loom\"]\n\n\
-                 [workspace.package]\nedition = \"2024\"\n\n\
-                 [workspace.lints.rust]\nunused = \"warn\"\n\n\
-                 [workspace.lints.clippy]\npanic = \"deny\"\n";
-    std::fs::write(ws.path().join("Cargo.toml"), cargo).unwrap();
+    std::fs::write(ws.path().join("Cargo.toml"), COMPLIANT_WORKSPACE_LINTS).unwrap();
     seed(
         ws.path(),
         "crates/loom/Cargo.toml",
@@ -1314,11 +1333,7 @@ fn workspace_lints_pass_inheritance_present() {
 #[test]
 fn workspace_lints_fail_member_missing_workspace_true() {
     let ws = make_workspace();
-    let cargo = "[workspace]\nresolver = \"3\"\nmembers = [\"crates/loom\"]\n\n\
-                 [workspace.package]\nedition = \"2024\"\n\n\
-                 [workspace.lints.rust]\nunused = \"warn\"\n\n\
-                 [workspace.lints.clippy]\npanic = \"deny\"\n";
-    std::fs::write(ws.path().join("Cargo.toml"), cargo).unwrap();
+    std::fs::write(ws.path().join("Cargo.toml"), COMPLIANT_WORKSPACE_LINTS).unwrap();
     seed(
         ws.path(),
         "crates/loom/Cargo.toml",
@@ -1339,6 +1354,69 @@ fn workspace_lints_fail_member_missing_workspace_true() {
     }
     let out = invoke(&["workspace_lints"], Some(ws.path()), None);
     assert_fail(&out, "workspace = true");
+}
+
+#[test]
+fn workspace_lints_fail_unreviewed_cargo_wide_allow() {
+    let ws = make_workspace();
+    let cargo = COMPLIANT_WORKSPACE_LINTS.replace(
+        "use_self = \"allow\"",
+        "use_self = \"allow\"\nmissing_const_for_fn = \"allow\"",
+    );
+    std::fs::write(ws.path().join("Cargo.toml"), cargo).unwrap();
+    seed_workspace_lint_members(ws.path());
+
+    let out = invoke(&["workspace_lints"], Some(ws.path()), None);
+    assert_fail(
+        &out,
+        "`missing_const_for_fn = \"allow\"` is not in the reviewed allowlist",
+    );
+}
+
+#[test]
+fn workspace_lints_fail_weakened_required_denial() {
+    let ws = make_workspace();
+    let cargo = COMPLIANT_WORKSPACE_LINTS.replace("panic = \"deny\"", "panic = \"allow\"");
+    std::fs::write(ws.path().join("Cargo.toml"), cargo).unwrap();
+    seed_workspace_lint_members(ws.path());
+
+    let out = invoke(&["workspace_lints"], Some(ws.path()), None);
+    assert_fail(&out, "`panic` must have level `deny`");
+}
+
+#[test]
+fn workspace_lints_fail_group_without_negative_priority() {
+    let ws = make_workspace();
+    let cargo = COMPLIANT_WORKSPACE_LINTS.replace(
+        "all = { level = \"warn\", priority = -1 }",
+        "all = { level = \"warn\", priority = 0 }",
+    );
+    std::fs::write(ws.path().join("Cargo.toml"), cargo).unwrap();
+    seed_workspace_lint_members(ws.path());
+
+    let out = invoke(&["workspace_lints"], Some(ws.path()), None);
+    assert_fail(&out, "`all` must have priority -1");
+}
+
+fn seed_workspace_lint_members(root: &Path) {
+    seed(
+        root,
+        "crates/loom/Cargo.toml",
+        "[package]\nedition.workspace = true\n[lints]\nworkspace = true\n",
+    );
+    seed(root, "crates/loom/src/main.rs", "fn main() {}\n");
+    for name in STRUCTURE_LIB_NAMES {
+        seed(
+            root,
+            &format!("crates/{name}/Cargo.toml"),
+            "[package]\nedition.workspace = true\n[lints]\nworkspace = true\n",
+        );
+        seed(
+            root,
+            &format!("crates/{name}/src/lib.rs"),
+            "pub fn ok() {}\n",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4292,7 +4370,7 @@ loom gate system --tree
     seed(
         root,
         "nix/workspace.nix",
-        r#"{ craneLib }:
+        r"{ craneLib }:
 let
   commonArgs = { };
 
@@ -4319,7 +4397,7 @@ in
     nextest
     ;
 }
-"#,
+",
     );
 }
 
@@ -4342,7 +4420,7 @@ fn workspace_compile_checks_are_full_test_app_only_fail_when_flake_check_exposes
     seed(
         ws.path(),
         "nix/flake/checks.nix",
-        r#"_:
+        r"_:
 {
   perSystem = { loom, ... }:
     let
@@ -4354,7 +4432,7 @@ fn workspace_compile_checks_are_full_test_app_only_fail_when_flake_check_exposes
       };
     };
 }
-"#,
+",
     );
     let out = invoke(
         &["workspace_compile_checks_are_full_test_app_only"],
@@ -4396,13 +4474,13 @@ fn workspace_compile_checks_are_full_test_app_only_fail_when_full_app_inherits_g
     seed(
         ws.path(),
         "scripts/full-test.sh",
-        r#"#!/usr/bin/env bash
+        r"#!/usr/bin/env bash
 set -euo pipefail
 nix flake check --no-warn-dirty
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 loom gate system --tree
-"#,
+",
     );
     let out = invoke(
         &["workspace_compile_checks_are_full_test_app_only"],
@@ -4456,7 +4534,7 @@ fn workspace_compile_checks_are_full_test_app_only_fail_without_shared_cargo_art
     seed(
         ws.path(),
         "nix/workspace.nix",
-        r#"{ craneLib }:
+        r"{ craneLib }:
 let
   commonArgs = { };
 
@@ -4483,7 +4561,7 @@ in
     nextest
     ;
 }
-"#,
+",
     );
     let out = invoke(
         &["workspace_compile_checks_are_full_test_app_only"],

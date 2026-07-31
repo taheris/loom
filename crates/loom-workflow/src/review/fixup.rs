@@ -104,6 +104,10 @@ pub trait FixupContext: Send {
 ///   [`DriverNoticeCause::UnbondedOrigin`] to the originating bead and
 ///   returns [`FixupOutcome::RefusedUnbondedOrigin`] without creating
 ///   anything downstream.
+///
+/// # Errors
+///
+/// Returns an error when review setup, execution, or verdict validation fails.
 pub async fn spawn_fixup_bead<C: FixupContext>(
     ctx: &mut C,
     origin: &BeadId,
@@ -188,7 +192,7 @@ mod tests {
             issue_type: "task".into(),
             labels: vec![Label::new("spec:harness").expect("valid Label")],
             parent: parent.map(|p| BeadId::new(p).expect("valid parent")),
-            metadata: Default::default(),
+            metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
     }
@@ -217,7 +221,9 @@ mod tests {
                 assert_eq!(fixup_id, BeadId::new("lm-fix.1").expect("id"));
                 assert_eq!(molecule, MoleculeId::new("lm-mola").unwrap());
             }
-            other => panic!("expected Spawned, got {other:?}"),
+            other @ FixupOutcome::RefusedUnbondedOrigin { .. } => {
+                panic!("expected Spawned, got {other:?}");
+            }
         }
 
         assert_eq!(ctx.create_calls.len(), 1, "create_and_bond called once");
@@ -253,7 +259,9 @@ mod tests {
             FixupOutcome::RefusedUnbondedOrigin { origin: refused } => {
                 assert_eq!(refused, BeadId::new("lm-orphan.5").expect("valid"));
             }
-            other => panic!("expected RefusedUnbondedOrigin, got {other:?}"),
+            other @ FixupOutcome::Spawned { .. } => {
+                panic!("expected RefusedUnbondedOrigin, got {other:?}");
+            }
         }
 
         assert!(

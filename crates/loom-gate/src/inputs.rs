@@ -61,8 +61,9 @@ pub struct VerifierInputs {
     pub paths: Vec<PathBuf>,
 }
 
-/// Verdict of probing one annotation's input-query for the integrity
-/// gate's inputs-protocol direction (`specs/gate.md` § Inputs-protocol
+/// Verdict from probing one annotation's input query.
+///
+/// Used for the integrity gate's inputs-protocol direction (`specs/gate.md` § Inputs-protocol
 /// error). Enforcement is gated on an **explicit** opt-in, so only
 /// [`Self::Errored`] is a finding.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,7 +126,7 @@ enum InputDeclaration {
 }
 
 impl InputDeclaration {
-    fn is_known(&self) -> bool {
+    const fn is_known(&self) -> bool {
         matches!(self, Self::Known(_))
     }
 
@@ -412,11 +413,10 @@ impl InputResolver {
         self.print_inputs_cache
             .get(&cache_key)
             .cloned()
-            .map(InputDeclaration::Known)
-            .unwrap_or(InputDeclaration::Unknown)
+            .map_or(InputDeclaration::Unknown, InputDeclaration::Known)
     }
 
-    fn declared_for_test(&mut self, annotation: &Annotation) -> InputDeclaration {
+    fn declared_for_test(&self, annotation: &Annotation) -> InputDeclaration {
         if let Some(command) = self.inputs_for_test_command.clone()
             && let Some(paths) = self.invoke_inputs_helper(&command, &annotation.target)
         {
@@ -513,8 +513,7 @@ impl InputResolver {
             self.print_inputs_cache
                 .get(&cache_key)
                 .cloned()
-                .map(InputDeclaration::Known)
-                .unwrap_or(InputDeclaration::Unknown),
+                .map_or(InputDeclaration::Unknown, InputDeclaration::Known),
         )
     }
 
@@ -655,8 +654,9 @@ impl InputResolver {
     }
 }
 
-/// Retain annotations the scope `files` could affect. An empty `files`
-/// slice short-circuits to the caller's input unchanged — "no `--files`
+/// Retain annotations that the scope `files` could affect.
+///
+/// An empty `files` slice short-circuits to the caller's input unchanged — "no `--files`
 /// filter requested." Otherwise an annotation is kept when either its
 /// declared inputs (per [`InputResolver`]) intersect `files`, or it
 /// declares no inputs of its own — the *Conservative default* in
@@ -805,7 +805,7 @@ impl PatternMatcher {
     }
 }
 
-fn gitignore_match_options() -> MatchOptions {
+const fn gitignore_match_options() -> MatchOptions {
     MatchOptions {
         case_sensitive: true,
         require_literal_separator: true,

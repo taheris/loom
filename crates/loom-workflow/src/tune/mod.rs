@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -139,18 +139,23 @@ pub struct PreparedRun {
 }
 
 impl PreparedRun {
-    pub fn evidence_roots(&self) -> &RootReport {
+    pub const fn evidence_roots(&self) -> &RootReport {
         &self.context.root_report
     }
 
+    #[must_use]
     pub fn with_launcher_env(mut self, launcher_env: Vec<(String, String)>) -> Self {
         self.context.launcher_env = launcher_env;
         self
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning setup, execution, evidence, or validation fails.
     pub async fn execute(self, request: Request) -> Result<Response, TuneError> {
         match request {
-            Request::List(surface) => Ok(Response::Listing(self.context.render_listing(surface)?)),
+            Request::List(surface) => Ok(Response::Listing(self.context.render_listing(surface))),
             Request::Propose(proposal) => {
                 let context = self.context.harvest_evidence().await?;
                 if proposal.dry_run {
@@ -167,6 +172,10 @@ impl PreparedRun {
 }
 
 /// Prepare a tune command without reading any evidence root.
+///
+/// # Errors
+///
+/// Returns an error when tuning setup, execution, evidence, or validation fails.
 pub async fn prepare(workspace: &Path) -> Result<PreparedRun, TuneError> {
     Ok(PreparedRun {
         context: Context::load(workspace).await?,
@@ -174,6 +183,10 @@ pub async fn prepare(workspace: &Path) -> Result<PreparedRun, TuneError> {
 }
 
 /// Run a tune command against `workspace`.
+///
+/// # Errors
+///
+/// Returns an error when tuning setup, execution, evidence, or validation fails.
 pub async fn run(workspace: &Path, request: Request) -> Result<Response, TuneError> {
     prepare(workspace).await?.execute(request).await
 }
@@ -255,7 +268,7 @@ impl Context {
     async fn build_evidence(&self) -> Result<EvidenceSnapshot, TuneError> {
         let checker = CheckerId::new("behavior.review.finding-recall")?;
         let targets = self.target_catalog.targets().cloned().collect::<Vec<_>>();
-        let mut items = harvest(&self.root_report, checker.clone(), &targets)?;
+        let mut items = harvest(&self.root_report, &checker, &targets)?;
 
         let git_diff = GitClient::open(&self.workspace)?.diff_head_parent().await?;
         push_text_evidence(
@@ -308,14 +321,14 @@ impl Context {
         .snapshot(items))
     }
 
-    fn render_listing(&self, surface: ListSurface) -> Result<String, TuneError> {
-        Ok(match surface {
+    fn render_listing(&self, surface: ListSurface) -> String {
+        match surface {
             ListSurface::Skill => render_skill_listing(&self.skills),
             ListSurface::Phase => render_template_listing("phase", &self.phases),
             ListSurface::Partial => render_template_listing("partial", &self.partials),
             ListSurface::Checker => render_checker_listing(&self.checker_registry),
             ListSurface::All => render_all_listing(self),
-        })
+        }
     }
 
     fn plan_with_evidence(
@@ -469,8 +482,8 @@ impl Context {
     fn candidate_path(&self, target: &Target, repo: &Path) -> Result<PathBuf, TuneError> {
         match target {
             Target::Skill { .. } => self.skill_candidate_path(target, repo),
-            Target::Phase { .. } => self.template_candidate_path(target, repo, &self.phases),
-            Target::Partial { .. } => self.template_candidate_path(target, repo, &self.partials),
+            Target::Phase { .. } => Self::template_candidate_path(target, repo, &self.phases),
+            Target::Partial { .. } => Self::template_candidate_path(target, repo, &self.partials),
         }
     }
 
@@ -502,7 +515,6 @@ impl Context {
     }
 
     fn template_candidate_path(
-        &self,
         target: &Target,
         repo: &Path,
         entries: &[TemplateEntry],
@@ -984,10 +996,11 @@ fn render_skill_listing(skills: &[SkillEntry]) -> String {
     for skill in skills {
         let source = source_name(skill.source);
         let path = skill.source_path.display();
-        out.push_str(&format!(
-            "- {} | source={source} | applicability={} | path={} | {}\n",
+        let _ = writeln!(
+            out,
+            "- {} | source={source} | applicability={} | path={} | {}",
             skill.target, skill.applicability, path, skill.description,
-        ));
+        );
     }
     out
 }
@@ -999,11 +1012,12 @@ fn render_template_listing(kind: &str, entries: &[TemplateEntry]) -> String {
         return out;
     }
     for entry in entries {
-        out.push_str(&format!(
-            "- {} | path={}\n",
+        let _ = writeln!(
+            out,
+            "- {} | path={}",
             entry.target,
             entry.relative_path.display()
-        ));
+        );
     }
     out
 }
@@ -1023,8 +1037,9 @@ fn render_checker_listing(registry: &CheckerRegistry) -> String {
             .map(|level| level_name(*level))
             .collect::<Vec<_>>()
             .join(",");
-        out.push_str(&format!(
-            "- {} | status={:?} | targets={} | levels={} | cost={:?} | mandatory={} | {}\n",
+        let _ = writeln!(
+            out,
+            "- {} | status={:?} | targets={} | levels={} | cost={:?} | mandatory={} | {}",
             checker.id,
             checker.status,
             target_kinds,
@@ -1032,7 +1047,7 @@ fn render_checker_listing(registry: &CheckerRegistry) -> String {
             checker.cost,
             checker.mandatory,
             checker.summary,
-        ));
+        );
     }
     out
 }
@@ -1048,71 +1063,69 @@ fn render_all_listing(context: &Context) -> String {
 }
 
 fn push_split_summary(out: &mut String, metadata: &SplitMetadata) {
-    out.push_str(&format!("- algorithm: {}\n", metadata.algorithm));
-    out.push_str(&format!("- salt id: {}\n", metadata.salt_id));
-    out.push_str(&format!(
-        "- selection fraction: {}\n",
-        metadata.selection_fraction
-    ));
+    let _ = writeln!(out, "- algorithm: {}\n", metadata.algorithm);
+    let _ = writeln!(out, "- salt id: {}\n", metadata.salt_id);
+    let _ = writeln!(out, "- selection fraction: {}", metadata.selection_fraction);
 }
 
 fn render_dry_run(context: &Context, plan: &PreparedPlan) -> String {
     let mut out = String::new();
     out.push_str("loom tune dry-run\n");
-    out.push_str(&format!("workspace: {}\n", context.workspace.display()));
+    let _ = writeln!(out, "workspace: {}\n", context.workspace.display());
     out.push_str("loaded tuning docs:\n");
     if plan.loaded_cases.documents().is_empty() {
-        out.push_str("- (none)\n");
+        out.push_str("- (none)");
     } else {
         for document in plan.loaded_cases.documents() {
-            out.push_str(&format!(
-                "- {} ({} case(s))\n",
+            let _ = writeln!(
+                out,
+                "- {} ({} case(s))",
                 document.path.display(),
                 document.case_count
-            ));
+            );
         }
     }
     out.push_str("evidence split:\n");
     push_split_summary(&mut out, &plan.frozen.evidence_split);
-    out.push_str(&format!("seed: {}\n", plan.frozen.seed));
+    let _ = writeln!(out, "seed: {}\n", plan.frozen.seed);
     out.push_str("case pool:\n");
-    out.push_str(&format!("- declared: {}\n", plan.case_counts.declared));
-    out.push_str(&format!(
-        "- mined train: {}\n",
-        plan.case_counts.mined_train
-    ));
-    out.push_str(&format!(
-        "- mined selection: {}\n",
+    let _ = writeln!(out, "- declared: {}\n", plan.case_counts.declared);
+    let _ = writeln!(out, "- mined train: {}", plan.case_counts.mined_train);
+    let _ = writeln!(
+        out,
+        "- mined selection: {}",
         plan.case_counts.mined_selection
-    ));
+    );
     out.push_str("selected cases:\n");
     if plan.frozen.selected_cases.is_empty() {
-        out.push_str("- (none)\n");
+        out.push_str("- (none)");
     } else {
         for case in &plan.frozen.selected_cases {
-            out.push_str(&format!(
-                "- {} via {} ({:?})\n",
+            let _ = writeln!(
+                out,
+                "- {} via {} ({:?})",
                 case.case_id, case.checker, case.pool
-            ));
+            );
         }
     }
     out.push_str("skipped cases:\n");
     if plan.frozen.skipped_cases.is_empty() {
-        out.push_str("- (none)\n");
+        out.push_str("- (none)");
     } else {
         for case in &plan.frozen.skipped_cases {
-            out.push_str(&format!(
-                "- {} via {} ({:?}: {:?})\n",
+            let _ = writeln!(
+                out,
+                "- {} via {} ({:?}: {:?})",
                 case.case_id, case.checker, case.pool, case.reason
-            ));
+            );
         }
     }
     out.push_str("frozen checker plan:\n");
     for checker in &plan.frozen.checker_plan {
-        out.push_str(&format!("- {checker}\n"));
+        let _ = writeln!(out, "- {checker}\n");
     }
-    out.push_str(&format!("plan hash: {}\n", plan.frozen.plan_hash));
-    out.push_str("candidate generation: skipped (dry-run)\n");
+    let _ = writeln!(out, "plan hash: {}\n", plan.frozen.plan_hash);
+    out.push_str("candidate generation: skipped (dry-run)");
     out
 }
 
@@ -1265,7 +1278,7 @@ fn candidate_guidance(target: &Target, plan: &PreparedPlan, evidence: &EvidenceS
             "For `{target}`, prefer concrete task evidence and observable verifier outcomes over generic completion claims."
         ));
     }
-    let mut out = format!("{GENERATED_GUIDANCE_START}\n## Tuned Guidance\n\n");
+    let mut out = format!("{GENERATED_GUIDANCE_START}\n## Tuned Guidance");
     for line in lines {
         out.push_str("- ");
         out.push_str(&line);
@@ -1287,7 +1300,7 @@ enum CandidateSignal {
 }
 
 impl CandidateSignal {
-    fn guidance(self) -> &'static str {
+    const fn guidance(self) -> &'static str {
         match self {
             Self::ContextBeforeEdit => {
                 "Read the governing spec, applicable style rules, and nearby source before editing."
@@ -1676,7 +1689,7 @@ fn fixture_input(context: &Context, fixture: &Path, request: &str) -> Result<Str
         .filter(|relative| relative.starts_with(fixture))
     {
         let body = read_to_string(&context.workspace.join(relative))?;
-        out.push_str(&format!("\n--- {} ---\n{body}\n", relative.display()));
+        let _ = write!(out, "\n--- {} ---\n{body}\n", relative.display());
     }
     Ok(out)
 }
@@ -1716,7 +1729,7 @@ fn artifact_text(
             ReplaySide::Current => &artifact.current,
             ReplaySide::Candidate => &artifact.candidate,
         };
-        out.push_str(&format!("\n--- {} ---\n{body}\n", artifact.target));
+        let _ = write!(out, "\n--- {} ---\n{body}\n", artifact.target);
     }
     Ok(out)
 }
@@ -1727,7 +1740,7 @@ fn replay_prompt(checker: &CheckerId, input: &str, artifact: &str) -> String {
          Apply the artifact guidance as agent strategy, then emit the behavior the task requests.\n\
          Do not describe or score the artifact itself.\n\n\
          Artifact guidance:\n{artifact}\n\n\
-         Checker input:\n{input}\n"
+         Checker input:\n{input}"
     )
 }
 
@@ -1787,7 +1800,7 @@ async fn dispatch_replay_agent(
     }
 }
 
-fn checker_phase(domain: CheckerDomain) -> Phase {
+const fn checker_phase(domain: CheckerDomain) -> Phase {
     match domain {
         CheckerDomain::Todo => Phase::Todo,
         CheckerDomain::Loop | CheckerDomain::Agent | CheckerDomain::Tune => Phase::Loop,
@@ -1799,7 +1812,7 @@ fn checker_phase(domain: CheckerDomain) -> Phase {
     }
 }
 
-fn gate_validation_status(state: GateState) -> ValidationStatus {
+const fn gate_validation_status(state: GateState) -> ValidationStatus {
     match state {
         GateState::Passed => ValidationStatus::Passed,
         GateState::Blocked => ValidationStatus::Failed,
@@ -2006,18 +2019,19 @@ fn write_evidence(path: &Path, context: &Context, plan: &PreparedPlan) -> Result
         body.push_str("- (none)\n");
     } else {
         for document in plan.loaded_cases.documents() {
-            body.push_str(&format!(
-                "- {} ({} case(s))\n",
+            let _ = writeln!(
+                body,
+                "- {} ({} case(s))",
                 document.path.display(),
                 document.case_count
-            ));
+            );
         }
     }
     body.push_str("\n## Frozen checker plan\n\n");
-    body.push_str(&format!("- seed: {}\n", plan.frozen.seed));
-    body.push_str(&format!("- plan hash: {}\n", plan.frozen.plan_hash));
+    let _ = writeln!(body, "- seed: {}\n", plan.frozen.seed);
+    let _ = writeln!(body, "- plan hash: {}\n", plan.frozen.plan_hash);
     for checker in &plan.frozen.checker_plan {
-        body.push_str(&format!("- {checker}\n"));
+        let _ = writeln!(body, "- {checker}\n");
     }
     write_parented(path, &body)
 }
@@ -2054,88 +2068,80 @@ async fn update_tune_bead(update: BeadUpdate<'_>) -> Result<(), TuneError> {
 
 fn bead_body(update: &BeadUpdate<'_>) -> String {
     let mut body = String::new();
-    body.push_str(&format!("# Tune proposal {}\n\n", update.bead_id));
-    body.push_str(&format!("State: `{}`\n\n", state_name(update.state)));
+    let _ = write!(body, "# Tune proposal {}\n\n", update.bead_id);
+    let _ = write!(body, "State: `{}`\n\n", state_name(update.state));
     body.push_str("## Targets\n\n");
     for target in &update.plan.targets {
-        body.push_str(&format!("- `{target}`\n"));
+        let _ = writeln!(body, "- `{target}`\n");
     }
     body.push_str("\n## Proposal\n\n");
-    body.push_str(&format!(
-        "- Level: `{}`\n",
-        level_name(update.plan.frozen.level)
-    ));
-    body.push_str(&format!("- Seed: `{}`\n", update.plan.frozen.seed));
-    body.push_str(&format!(
-        "- Base commit: `{}`\n",
-        update.context.base_commit
-    ));
-    body.push_str(&format!("- Proposal branch: `{}`\n", update.branch));
-    body.push_str(&format!("- Proposal head: `{}`\n", update.proposal_head));
-    body.push_str(&format!(
-        "- Checker plan hash: `{}`\n",
+    let _ = writeln!(body, "- Level: `{}`", level_name(update.plan.frozen.level));
+    let _ = writeln!(body, "- Seed: `{}`\n", update.plan.frozen.seed);
+    let _ = writeln!(body, "- Base commit: `{}`\n", update.context.base_commit);
+    let _ = writeln!(body, "- Proposal branch: `{}`\n", update.branch);
+    let _ = writeln!(body, "- Proposal head: `{}`", update.proposal_head);
+    let _ = writeln!(
+        body,
+        "- Checker plan hash: `{}`",
         update.plan.frozen.plan_hash
-    ));
+    );
     body.push_str("\n## Evidence split\n\n");
     push_split_summary(&mut body, &update.plan.frozen.evidence_split);
-    body.push_str("\n## Case counts\n\n");
-    body.push_str(&format!(
-        "- Declared: {}\n",
-        update.plan.case_counts.declared
-    ));
-    body.push_str(&format!(
-        "- Mined train: {}\n",
+    body.push_str("\n## Case counts\n");
+    let _ = writeln!(body, "- Declared: {}", update.plan.case_counts.declared);
+    let _ = writeln!(
+        body,
+        "- Mined train: {}",
         update.plan.case_counts.mined_train
-    ));
-    body.push_str(&format!(
-        "- Mined selection: {}\n",
+    );
+    let _ = writeln!(
+        body,
+        "- Mined selection: {}",
         update.plan.case_counts.mined_selection
-    ));
-    body.push_str(&format!(
-        "- Selected: {}\n",
-        update.plan.case_counts.selected
-    ));
-    body.push_str(&format!("- Skipped: {}\n", update.plan.case_counts.skipped));
+    );
+    let _ = writeln!(body, "- Selected: {}\n", update.plan.case_counts.selected);
+    let _ = writeln!(body, "- Skipped: {}\n", update.plan.case_counts.skipped);
     body.push_str("\n## Outcome counts\n\n");
-    body.push_str(&format!("- Pending: {}\n", update.outcome_counts.pending));
-    body.push_str(&format!("- Passed: {}\n", update.outcome_counts.passed));
-    body.push_str(&format!("- Failed: {}\n", update.outcome_counts.failed));
-    body.push_str(&format!("- Blocked: {}\n", update.outcome_counts.blocked));
+    let _ = writeln!(body, "- Pending: {}\n", update.outcome_counts.pending);
+    let _ = writeln!(body, "- Passed: {}\n", update.outcome_counts.passed);
+    let _ = writeln!(body, "- Failed: {}\n", update.outcome_counts.failed);
+    let _ = writeln!(body, "- Blocked: {}\n", update.outcome_counts.blocked);
     body.push_str("\n## Summary\n\n");
     body.push_str("- Candidate edits are isolated in the local proposal repo.\n");
     body.push_str("- No push was performed by `loom tune`.\n");
-    body.push_str("\n## Validation\n\n");
-    body.push_str("| Check | Status | Detail |\n|---|---|---|\n");
+    body.push_str("\n## Validation\n");
+    body.push_str("| Check | Status | Detail |\n|---|---|---|");
     for row in update.validation {
-        body.push_str(&format!(
-            "| {} | {:?} | {} |\n",
+        let _ = writeln!(
+            body,
+            "| {} | {:?} | {} |",
             row.check,
             row.status,
             row.detail.replace('|', "\\|")
-        ));
+        );
     }
-    body.push_str("\n## Risks\n\n");
+    body.push_str("\n## Risks");
     body.push_str(
-        "- Human review must confirm the generated candidate improves the targeted artifact.\n",
+        "- Human review must confirm the generated candidate improves the targeted artifact.",
     );
-    body.push_str("- Template proposals must keep compiled phase protocol intact.\n");
-    body.push_str("\n## Inbox context\n\n");
-    body.push_str(&format!(
-        "- View with `loom inbox view -p {}`.\n",
-        update.bead_id
-    ));
-    body.push_str(&format!(
-        "- Proposal repo: `{}`\n",
+    body.push_str("- Template proposals must keep compiled phase protocol intact.");
+    body.push_str("\n## Inbox context");
+    let _ = writeln!(body, "- View with `loom inbox view -p {}`.", update.bead_id);
+    let _ = writeln!(
+        body,
+        "- Proposal repo: `{}`",
         update.local_paths.repo.display()
-    ));
-    body.push_str(&format!(
-        "- Manifest: `{}`\n",
+    );
+    let _ = writeln!(
+        body,
+        "- Manifest: `{}`",
         update.local_paths.manifest.display()
-    ));
-    body.push_str(&format!(
-        "- Evidence appendix: `{}`\n",
+    );
+    let _ = writeln!(
+        body,
+        "- Evidence appendix: `{}`",
         update.local_paths.evidence.display()
-    ));
+    );
     body
 }
 
@@ -2229,7 +2235,7 @@ fn specs_for_targets(targets: &[Target]) -> Vec<&'static str> {
     specs
 }
 
-fn source_name(source: SkillSource) -> &'static str {
+const fn source_name(source: SkillSource) -> &'static str {
     match source {
         SkillSource::BuiltIn => "built_in",
         SkillSource::Workspace => "workspace",
@@ -2238,7 +2244,7 @@ fn source_name(source: SkillSource) -> &'static str {
     }
 }
 
-fn state_name(state: State) -> &'static str {
+const fn state_name(state: State) -> &'static str {
     match state {
         State::Pending => "pending",
         State::Blocked => "blocked",
@@ -2249,7 +2255,7 @@ fn state_name(state: State) -> &'static str {
     }
 }
 
-fn level_name(level: Level) -> &'static str {
+const fn level_name(level: Level) -> &'static str {
     match level {
         Level::Fast => "fast",
         Level::Run => "run",
@@ -2363,6 +2369,10 @@ pub enum TuneError {
     },
     /// selected replay has no tuned artifact for targets {targets:?}
     MissingReplayArtifact { targets: Vec<Target> },
+    #[expect(
+        clippy::doc_markdown,
+        reason = "displaydoc placeholders are formatting syntax; backticks would change the error text"
+    )]
     /// replay for `{case_id}` ({side}) exited with status {exit_code}
     ReplayExit {
         case_id: loom_tune::plan::PlannedCaseId,
@@ -2429,7 +2439,7 @@ mod tests {
         init_test_repo(workspace.path()).expect("init repo");
         write_parented(
             &workspace.path().join("skills/review/skill.md"),
-            "---\nname: repo-review\ndescription: Use when reviewing code.\n---\nReview carefully.\n",
+            "---\nname: repo-review\ndescription: Use when reviewing code.\n---\nReview carefully.",
         )
         .expect("write skill");
         commit_all_in(workspace.path(), "add skill").expect("commit skill");
@@ -2497,7 +2507,7 @@ mod tests {
         init_test_repo(workspace.path()).expect("init repo");
         write_parented(
             &workspace.path().join("skills/review/skill.md"),
-            "---\nname: repo-review\ndescription: Use when reviewing code.\n---\nReview carefully.\n",
+            "---\nname: repo-review\ndescription: Use when reviewing code.\n---\nReview carefully.",
         )
         .expect("write skill");
         commit_all_in(workspace.path(), "add skill").expect("commit skill");
@@ -2515,7 +2525,7 @@ mod tests {
         let candidate_repo = tempfile::tempdir().expect("candidate repo");
         write_parented(
             &candidate_repo.path().join("skills/review/skill.md"),
-            "---\nname: repo-review\ndescription: Use when reviewing code.\n---\nReview carefully.\n",
+            "---\nname: repo-review\ndescription: Use when reviewing code.\n---\nReview carefully.",
         )
         .expect("seed candidate");
         write_candidate_files(&context, &prepared, candidate_repo.path())
@@ -2528,7 +2538,7 @@ mod tests {
 
         write_parented(
             &workspace.path().join(".loom/logs/review.jsonl"),
-            "{\"type\":\"review\",\"finding\":\"new post-candidate evidence\"}\n",
+            "{\"type\":\"review\",\"finding\":\"new post-candidate evidence\"}",
         )
         .expect("write changed evidence pool");
         let rebuilt = context.plan(&request).expect("rebuild frozen plan");

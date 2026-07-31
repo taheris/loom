@@ -44,12 +44,20 @@ pub enum ConfigError {
     MissingHookEntry { path: PathBuf, id: String },
 }
 
+///
+/// # Errors
+///
+/// Returns an error when gate input, execution, or validation fails.
 pub fn pre_push_hook_coverage_from_config(
     workspace: &Path,
 ) -> Result<Vec<HookCoverage>, ConfigError> {
     pre_push_hook_coverage_from_path(&workspace.join(CONFIG_PATH))
 }
 
+///
+/// # Errors
+///
+/// Returns an error when gate input, execution, or validation fails.
 pub fn pre_push_hook_coverage_from_path(path: &Path) -> Result<Vec<HookCoverage>, ConfigError> {
     let source = fs::read_to_string(path).map_err(|source| ConfigError::Read {
         path: path.to_path_buf(),
@@ -85,7 +93,7 @@ struct Hook {
 }
 
 impl Hook {
-    fn new(id: String) -> Self {
+    const fn new(id: String) -> Self {
         Self {
             id,
             entry: None,
@@ -280,7 +288,7 @@ fn leading_spaces(line: &str) -> usize {
 mod tests {
     use super::*;
 
-    const CONFIG: &str = r#"
+    const CONFIG: &str = r"
 repos:
   - repo: builtin
     hooks:
@@ -295,7 +303,7 @@ repos:
         entry: bin/pre-push-checks --hook-id cargo-clippy --hook-entry 'cargo clippy --workspace --all-targets -- -D warnings' -- cargo clippy --workspace --all-targets -- -D warnings
         stages:
           - pre-push
-"#;
+";
 
     #[test]
     fn derives_pre_push_hook_coverage_from_config_metadata() {
@@ -319,14 +327,14 @@ repos:
 
     #[test]
     fn derives_custom_pre_push_hooks_without_a_fixed_table() {
-        let source = r#"
+        let source = r"
 repos:
   - repo: local
     hooks:
       - id: custom-slow-check
         entry: bin/pre-push-checks --hook-id=custom-slow-check --hook-entry 'custom check --flag' -- custom check --flag
         stages: [pre-push]
-"#;
+";
 
         let coverage = pre_push_hook_coverage_from_source(Path::new("config.yaml"), source)
             .expect("coverage from config");
@@ -353,14 +361,14 @@ repos:
 
     #[test]
     fn rejects_pre_push_hook_without_wrapper_metadata() {
-        let source = r#"
+        let source = r"
 repos:
   - repo: local
     hooks:
       - id: cargo-clippy
         entry: cargo clippy --workspace --all-targets -- -D warnings
         stages: [pre-push]
-"#;
+";
 
         let error = pre_push_hook_coverage_from_source(Path::new("config.yaml"), source)
             .expect_err("missing wrapper must fail");
@@ -373,14 +381,14 @@ repos:
 
     #[test]
     fn rejects_wrapper_hook_id_mismatch() {
-        let source = r#"
+        let source = r"
 repos:
   - repo: local
     hooks:
       - id: cargo-clippy
         entry: bin/pre-push-checks --hook-id wrong-id --hook-entry 'cargo clippy' -- cargo clippy
         stages: [pre-push]
-"#;
+";
 
         let error = pre_push_hook_coverage_from_source(Path::new("config.yaml"), source)
             .expect_err("mismatch must fail");
@@ -394,14 +402,14 @@ repos:
 
     #[test]
     fn rejects_hook_entry_that_differs_from_wrapped_command() {
-        let source = r#"
+        let source = r"
 repos:
   - repo: local
     hooks:
       - id: cargo-clippy
         entry: bin/pre-push-checks --hook-id cargo-clippy --hook-entry 'nix flake check' -- cargo clippy
         stages: [pre-push]
-"#;
+";
 
         let error = pre_push_hook_coverage_from_source(Path::new("config.yaml"), source)
             .expect_err("mismatch must fail");

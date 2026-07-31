@@ -10,7 +10,7 @@
 //! silently — other runners are expected to fail on zero-match themselves
 //! and are passed through.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use displaydoc::Display;
@@ -20,8 +20,9 @@ use thiserror::Error;
 
 use crate::annotation::{Annotation, Tier};
 
-/// Template string for a batched-tier runner with a placeholder
-/// substituted at invocation time. Defaults come from toolchain
+/// Template string for a batched-tier runner.
+///
+/// Its placeholder is substituted at invocation time. Defaults come from toolchain
 /// detection; overrides come from `LoomConfig`'s `[runner.<tier>.<name>]`
 /// blocks at `<workspace>/loom.toml`.
 ///
@@ -55,8 +56,9 @@ impl RunnerTemplate {
     }
 }
 
-/// Resolve the runner template for `tier` rooted at `repo_root` via
-/// toolchain detection. Per-tier overrides from `LoomConfig`'s
+/// Detect the runner template for `tier` at `repo_root`.
+///
+/// Per-tier overrides from `LoomConfig`'s
 /// `[runner.<tier>.<name>]` blocks are resolved by the caller (the
 /// dispatcher in `loom-workflow` / `main.rs`) and passed in to the
 /// dispatch layer directly; this function performs detection only.
@@ -69,6 +71,10 @@ impl RunnerTemplate {
 ///
 /// Only batched tiers ([`Tier::Test`], [`Tier::Judge`]) are supported;
 /// other tiers receive [`RunnerError::NotBatched`].
+///
+/// # Errors
+///
+/// Returns an error when runner configuration or verifier execution fails.
 pub fn discover(repo_root: &Path, tier: Tier) -> Result<RunnerTemplate, RunnerError> {
     if !matches!(tier, Tier::Test | Tier::Judge) {
         return Err(RunnerError::NotBatched { tier });
@@ -115,7 +121,7 @@ impl RunnerKind {
     }
 
     /// Human-readable name embedded in zero-match diagnostics.
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::CargoTest => "cargo test",
             Self::CargoNextest => "cargo nextest",
@@ -132,6 +138,10 @@ impl RunnerKind {
 /// Returns `Ok(())` for [`RunnerKind::Unknown`] — per the spec, the gate
 /// documents the fail-on-zero-match expectation for unrecognised runners
 /// but does not enforce it.
+///
+/// # Errors
+///
+/// Returns an error when runner configuration or verifier execution fails.
 pub fn check_zero_match(command: &str, stdout: &str, stderr: &str) -> Result<(), RunnerError> {
     let kind = RunnerKind::classify(command);
     if let Some(evidence) = detect_zero_match(kind, stdout, stderr) {
@@ -182,6 +192,10 @@ fn detect_default(repo_root: &Path) -> Option<RunnerTemplate> {
     None
 }
 
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "runner templates intentionally use braces for dispatch-time placeholders"
+)]
 fn render_template(template: &str, paths: &[&str]) -> String {
     let mut s = template.to_string();
     if s.contains("{paths_or}") {
@@ -255,8 +269,9 @@ pub enum RunnerError {
     MissingCommand { name: String },
 }
 
-/// Named built-in parser that extracts per-target verdicts from a runner's
-/// stdout. The set is closed by loom; the schema-side equivalent in
+/// Built-in parser for per-target runner verdicts.
+///
+/// The set is closed by loom; the schema-side equivalent in
 /// `loom_driver::config::runner::Parser` round-trips into this enum at the
 /// translation boundary (e.g. `loom-workflow` building a [`RunnerSpec`] list).
 ///
@@ -297,8 +312,9 @@ pub struct ParsedVerdict {
     pub evidence: String,
 }
 
-/// One `[runner.<tier>.<name>]` entry resolved into runtime form: regex
-/// compiled, parser tag normalised, templates kept as raw strings ready
+/// Runtime form of one `[runner.<tier>.<name>]` entry.
+///
+/// Its regex is compiled, parser tag normalised, and templates retained as raw strings ready
 /// for substitution. Consumers translate from the TOML schema in
 /// `loom_driver::config::runner::RunnerEntry` to this type at the binary
 /// boundary.
@@ -343,6 +359,10 @@ pub struct RunnerSpec {
 impl RunnerSpec {
     /// Compile a runner spec from its raw schema fields. Validates the
     /// regex eagerly so dispatch never fails partway through a tier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when runner configuration or verifier execution fails.
     pub fn compile(
         name: impl Into<String>,
         match_regex: Option<&str>,
@@ -380,7 +400,7 @@ impl RunnerSpec {
 
     /// Attach the owning annotation tier, chained after [`Self::compile`].
     #[must_use]
-    pub fn with_tier(mut self, tier: Tier) -> Self {
+    pub const fn with_tier(mut self, tier: Tier) -> Self {
         self.tier = Some(tier);
         self
     }
@@ -409,8 +429,9 @@ impl RunnerSpec {
     }
 }
 
-/// Built-in batcher for `cargo run -p loom-walk -- <name>` `[check]`
-/// annotations. Ships in code (not `loom.toml`) so the batching is the
+/// Built-in batcher for `loom-walk` `[check]` annotations.
+///
+/// Ships in code (not `loom.toml`) so the batching is the
 /// default behaviour; operators can layer overrides via
 /// `[runner.check.<name>]` entries but cannot accidentally remove it.
 ///
@@ -419,6 +440,10 @@ impl RunnerSpec {
 /// file set: the gate scopes the ~77 loom-walk verifiers precisely under
 /// `loom gate verify --files` instead of always-running them, and the
 /// integrity gate holds the walks to the inputs-protocol contract.
+///
+/// # Errors
+///
+/// Returns an error when runner configuration or verifier execution fails.
 pub fn builtin_loom_walk_runner() -> Result<RunnerSpec, RunnerError> {
     Ok(RunnerSpec::compile(
         "builtin-loom-walk",
@@ -438,6 +463,14 @@ pub fn builtin_loom_walk_runner() -> Result<RunnerSpec, RunnerError> {
 /// Compile one `[runner.<tier>.<name>]` schema entry into runtime form.
 /// The `command` field is required; missing it is a
 /// [`RunnerError::MissingCommand`].
+///
+/// # Errors
+///
+/// Returns an error when runner configuration or verifier execution fails.
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "runner templates intentionally use braces for dispatch-time placeholders"
+)]
 pub fn compile_runner_entry(name: &str, entry: &RunnerEntry) -> Result<RunnerSpec, RunnerError> {
     let command = entry
         .command
@@ -467,11 +500,16 @@ pub fn compile_runner_entry(name: &str, entry: &RunnerEntry) -> Result<RunnerSpe
     .with_inputs(entry.inputs.clone()))
 }
 
-/// Compile the named `[runner.<tier>.<name>]` runners — and the implicit
-/// tier-default runner — declared under `tier` into runtime [`RunnerSpec`]s.
+/// Compile declared runners into runtime [`RunnerSpec`] values.
+///
+/// Includes named `[runner.<tier>.<name>]` runners and the implicit tier-default runner.
 /// Matching keys on target shape, not tier, so the caller decides which
 /// annotations flow through the returned specs; the `[check]`-tier builtin
 /// batcher is layered by the caller, not here.
+///
+/// # Errors
+///
+/// Returns an error when runner configuration or verifier execution fails.
 pub fn compile_tier_runners(
     config: &LoomConfig,
     tier: &str,
@@ -497,12 +535,17 @@ pub fn compile_tier_runners(
     Ok(specs)
 }
 
-/// Resolve the runner specs the integrity gate's forward-resolution
-/// consults. The gate checks every annotation regardless of tier, so it
+/// Resolve runner specifications for forward-integrity checks.
+///
+/// The gate checks every annotation regardless of tier, so it
 /// receives the tagged union of the builtin loom-walk batcher plus
 /// `[check]`- and `[system]`-tier runners. Matching remains tier-specific:
 /// a `[check]` annotation can be owned only by a `[runner.check.*]` runner,
 /// and a `[system]` annotation only by `[runner.system.*]`.
+///
+/// # Errors
+///
+/// Returns an error when runner configuration or verifier execution fails.
 pub fn integrity_runner_specs(config: &LoomConfig) -> Result<Vec<RunnerSpec>, RunnerError> {
     let mut specs = vec![builtin_loom_walk_runner()?];
     specs.extend(compile_tier_runners(config, "check")?);
@@ -510,8 +553,9 @@ pub fn integrity_runner_specs(config: &LoomConfig) -> Result<Vec<RunnerSpec>, Ru
     Ok(specs)
 }
 
-/// One annotation matched by a [`RunnerSpec`] together with its rendered
-/// per-target string and the captures the regex produced. Carried through
+/// One annotation matched by a [`RunnerSpec`].
+///
+/// Carries its rendered per-target string and the captures the regex produced. Carried through
 /// dispatch so the parser can map verdicts back to the original
 /// annotation by target name.
 #[derive(Debug, Clone)]
@@ -675,8 +719,9 @@ fn substitute_captures(template: &str, re: &Regex, target: &str) -> String {
     out
 }
 
-/// Parse per-target verdicts out of a batched runner's stdout / stderr
-/// according to the runner's built-in parser tag. Each parser is a
+/// Parse per-target verdicts from batched runner output.
+///
+/// Uses the runner's built-in parser tag. Each parser is a
 /// best-effort recovery layer; targets the parser cannot find are
 /// returned as missing so the dispatcher can flag them as dispatch
 /// failures.
@@ -779,33 +824,28 @@ fn parse_libtest_json(stdout: &str) -> HashMap<String, ParsedVerdict> {
 
 fn parse_junit_xml(stdout: &str) -> HashMap<String, ParsedVerdict> {
     let mut out = HashMap::new();
-    let testcase_re = match Regex::new(r#"(?s)<testcase\b([^>]*?)(?:/>|>(.*?)</testcase>)"#) {
-        Ok(re) => re,
-        Err(_) => return out,
+    let Ok(testcase_re) = Regex::new(r"(?s)<testcase\b([^>]*?)(?:/>|>(.*?)</testcase>)") else {
+        return out;
     };
-    let classname_re = match Regex::new(r#"\bclassname\s*=\s*"([^"]*)""#) {
-        Ok(re) => re,
-        Err(_) => return out,
+    let Ok(classname_re) = Regex::new(r#"\bclassname\s*=\s*"([^"]*)""#) else {
+        return out;
     };
-    let name_re = match Regex::new(r#"\bname\s*=\s*"([^"]*)""#) {
-        Ok(re) => re,
-        Err(_) => return out,
+    let Ok(name_re) = Regex::new(r#"\bname\s*=\s*"([^"]*)""#) else {
+        return out;
     };
     for cap in testcase_re.captures_iter(stdout) {
         let Some(attrs) = cap.get(1) else { continue };
-        let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        let body = cap.get(2).map_or("", |m| m.as_str());
         let classname = classname_re
             .captures(attrs.as_str())
             .and_then(|c| c.get(1))
-            .map(|m| m.as_str())
-            .unwrap_or("");
-        let name = match name_re
+            .map_or("", |m| m.as_str());
+        let Some(name) = name_re
             .captures(attrs.as_str())
             .and_then(|c| c.get(1))
             .map(|m| m.as_str())
-        {
-            Some(s) => s,
-            None => continue,
+        else {
+            continue;
         };
         let key = if classname.is_empty() {
             name.to_string()
@@ -842,9 +882,8 @@ fn extract_first_attr(body: &str, attr: &str) -> Option<String> {
 fn parse_nix_build_status(stdout: &str, stderr: &str) -> HashMap<String, ParsedVerdict> {
     let mut out = HashMap::new();
     let combined: Vec<&str> = stdout.lines().chain(stderr.lines()).collect();
-    let derivation_re = match Regex::new(r#"/nix/store/[a-z0-9]+-([^/'\s]+?)\.drv"#) {
-        Ok(re) => re,
-        Err(_) => return out,
+    let Ok(derivation_re) = Regex::new(r"/nix/store/[a-z0-9]+-([^/'\s]+?)\.drv") else {
+        return out;
     };
     let mut failed: HashMap<String, String> = HashMap::new();
     for line in &combined {
@@ -855,16 +894,16 @@ fn parse_nix_build_status(stdout: &str, stderr: &str) -> HashMap<String, ParsedV
             failed.insert(name.as_str().to_string(), (*line).to_string());
         }
     }
-    let mut built: HashMap<String, ()> = HashMap::new();
+    let mut built = HashSet::new();
     for line in &combined {
         if (line.starts_with("building ") || line.contains("building '"))
             && let Some(cap) = derivation_re.captures(line)
             && let Some(name) = cap.get(1)
         {
-            built.insert(name.as_str().to_string(), ());
+            built.insert(name.as_str().to_string());
         }
     }
-    for name in built.keys() {
+    for name in &built {
         let (pass, evidence) = match failed.get(name) {
             Some(line) => (false, line.clone()),
             None => (true, String::from("built")),
@@ -912,6 +951,10 @@ fn parse_exit_code(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "runner fixtures intentionally contain dispatch-time template placeholders"
+    )]
     #![allow(clippy::unwrap_used)]
     use super::*;
 

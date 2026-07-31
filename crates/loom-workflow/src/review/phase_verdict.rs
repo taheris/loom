@@ -17,6 +17,7 @@ use super::verify_fail::VerifyFailure;
 use crate::todo::ExitSignal;
 
 /// Which concern in the review LLM's structured response triggered the flag.
+///
 /// Mirrors the per-diff rubric flag causes enumerated in
 /// `specs/gate.md` ("Per-diff stage checks") and the flag-emission
 /// schema in `loom-templates/templates/review.md`: the four verifier-honesty
@@ -41,7 +42,7 @@ pub enum ReviewConcern {
 }
 
 impl ReviewConcern {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::VerifierBypass => "verifier-bypass",
             Self::FabricatedResult => "fabricated-result",
@@ -77,7 +78,9 @@ impl ReviewConcern {
     }
 }
 
-/// Parsed contents of the review LLM's structured flag emission. The detail
+/// Parsed contents of the review LLM's structured flag emission.
+///
+/// The detail
 /// string carried here is what feeds the `review-concern` row of
 /// `previous_failure` (`specs/harness.md` §"Recovery context") — sourced
 /// from the structured emission, not regex-extracted from prose.
@@ -175,7 +178,7 @@ impl RecoveryCause {
     /// Stable spec-table label used in user-facing surfaces (logs, bd notes).
     /// The label is the same for every review-concern variant; per-concern
     /// detail lives in [`RecoveryCause::ReviewConcern`]'s payload.
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::SwallowedMarker => "swallowed-marker",
             Self::IncompleteSignaling => "incomplete-signaling",
@@ -252,7 +255,9 @@ pub struct GateInputs {
 }
 
 /// Apply the spec's decision table to the parsed marker plus mechanical
-/// signals. `marker = None` means no exit marker was found in the agent
+/// signals.
+///
+/// `marker = None` means no exit marker was found in the agent
 /// output (translated from [`crate::todo::parse_exit_signal`] returning
 /// `None`).
 pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
@@ -324,7 +329,7 @@ pub enum PhaseKind {
 }
 
 impl PhaseKind {
-    fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Loop => "loop",
             Self::Todo => "todo",
@@ -334,7 +339,9 @@ impl PhaseKind {
     }
 }
 
-/// Phase-aware wrapper around [`decide`]. Defense-in-depth: rejects every
+/// Phase-aware wrapper around [`decide`].
+///
+/// Defense-in-depth: rejects every
 /// marker the selected phase does not own, including worker self-reports in
 /// interactive phases, generic progress in todo, and dependency waiting
 /// outside loop. The template partial-pinning matrix is the primary
@@ -357,19 +364,15 @@ fn reject_marker_for_phase(marker: Option<&ExitSignal>, phase: PhaseKind) -> Opt
         (PhaseKind::Interactive, ExitSignal::Retry { .. }) => "LOOM_RETRY",
         (PhaseKind::Interactive, ExitSignal::Blocked { .. }) => "LOOM_BLOCKED",
         (PhaseKind::Interactive | PhaseKind::Review, ExitSignal::Clarify { .. }) => "LOOM_CLARIFY",
-        (PhaseKind::Interactive, ExitSignal::Concern { .. } | ExitSignal::BadWalk(_)) => {
-            "LOOM_CONCERN"
-        }
-        (PhaseKind::Review, ExitSignal::Noop) => "LOOM_NOOP",
+        (
+            PhaseKind::Interactive | PhaseKind::Loop | PhaseKind::Todo,
+            ExitSignal::Concern { .. } | ExitSignal::BadWalk(_),
+        ) => "LOOM_CONCERN",
+        (PhaseKind::Review | PhaseKind::Todo, ExitSignal::Noop) => "LOOM_NOOP",
         (PhaseKind::Todo, ExitSignal::Complete) => "LOOM_COMPLETE",
-        (PhaseKind::Todo, ExitSignal::Noop) => "LOOM_NOOP",
         (PhaseKind::Todo | PhaseKind::Review | PhaseKind::Interactive, ExitSignal::Waiting) => {
             "LOOM_WAITING"
         }
-        (
-            PhaseKind::Loop | PhaseKind::Todo,
-            ExitSignal::Concern { .. } | ExitSignal::BadWalk(_),
-        ) => "LOOM_CONCERN",
         (
             PhaseKind::Loop,
             ExitSignal::Complete
@@ -577,7 +580,7 @@ mod tests {
                 assert_eq!(findings[0].token, ConcernToken::WeakAssertion);
             }
             other => {
-                panic!("expected Recovery::ReviewConcern (not SwallowedMarker), got {other:?}",)
+                panic!("expected Recovery::ReviewConcern (not SwallowedMarker), got {other:?}")
             }
         }
     }

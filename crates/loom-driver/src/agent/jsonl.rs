@@ -37,6 +37,10 @@ impl JsonlReader {
     /// (with the trailing `\n` and any preceding `\r` stripped), and
     /// [`ProtocolError::LineTooLong`] if a single line exceeds
     /// [`MAX_LINE_BYTES`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     pub async fn next_line(&mut self) -> Result<Option<&str>, ProtocolError> {
         loop {
             self.line_buf.clear();

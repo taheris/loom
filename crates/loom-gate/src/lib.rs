@@ -65,8 +65,9 @@ pub use runner::{
 };
 pub use scope::{CargoMetadataScope, ScopeError};
 
-/// Scaffold error returned by every stub entry point until the
-/// implementation bead lands. Per RS-9, stubs return a typed error rather
+/// Scaffold error for unimplemented entry points.
+///
+/// Per RS-9, stubs return a typed error rather
 /// than panicking via `todo!()` / `unimplemented!()`. Per RS-4, each
 /// implementation bead replaces this shared sentinel with its own
 /// per-module error enum (`annotation::ParseError`, `cache::CacheError`,

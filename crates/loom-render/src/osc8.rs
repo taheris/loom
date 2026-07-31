@@ -17,7 +17,8 @@ const OSC: &str = "\x1b]";
 const BEL: &str = "\x07";
 
 /// Detect whether the current terminal supports OSC 8 hyperlinks.
-/// Reads `TERM_PROGRAM` (set by iTerm2, VS Code, WezTerm, Apple
+///
+/// Reads `TERM_PROGRAM` (set by iTerm2, VS Code, `WezTerm`, Apple
 /// Terminal, etc.) and a small allowlist of `TERM` values
 /// (`kitty`, `xterm-kitty`, `alacritty`). Pure inputs so tests pin
 /// behavior without env mutation.
@@ -49,7 +50,7 @@ pub fn wrap(url: &str, display: &str, supported: bool) -> String {
 }
 
 /// Build a `file://` URL with an optional line-fragment for the
-/// editor. Cmd-click on iTerm2 / VS Code / WezTerm jumps to that
+/// editor. Cmd-click on iTerm2 / VS Code / `WezTerm` jumps to that
 /// line. `cwd` is the workspace root so relative paths resolve.
 pub fn file_url(cwd: &Path, rel_or_abs: &str, line: Option<u32>) -> String {
     let abs = if Path::new(rel_or_abs).is_absolute() {
@@ -99,7 +100,7 @@ mod tests {
         // Display text in the middle
         assert!(out.contains("\x07b.rs:42\x1b]8;;"), "{out:?}");
         // BEL terminator at the end
-        assert!(out.ends_with("\x07"), "{out:?}");
+        assert!(out.ends_with('\x07'), "{out:?}");
     }
 
     #[test]

@@ -6,6 +6,10 @@ use thiserror::Error;
 
 use crate::bd::BdError;
 
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
+)]
 #[derive(Debug, Display, Error)]
 pub enum CacheError {
     /// failed to open SQLite database at {path}

@@ -37,7 +37,7 @@ impl RawSkillDocument {
         &self.markdown
     }
 
-    pub fn provenance(&self) -> &SkillProvenance {
+    pub const fn provenance(&self) -> &SkillProvenance {
         &self.provenance
     }
 }
@@ -79,6 +79,12 @@ pub struct SkillFrontmatter {
 }
 
 impl SkillFrontmatter {
+    /// Validate and type raw skill frontmatter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrontmatterError`] when required identity fields or Loom
+    /// applicability filters are missing or invalid.
     pub fn from_raw(raw: &RawSkillFrontmatter) -> Result<Self, FrontmatterError> {
         if !raw.present {
             return Err(FrontmatterError::MissingFrontmatter);
@@ -166,6 +172,12 @@ pub struct SkillDocument {
 }
 
 impl SkillDocument {
+    /// Split a raw skill document into frontmatter and body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentError`] when a frontmatter block is unterminated or
+    /// contains invalid YAML.
     pub fn parse(raw: RawSkillDocument) -> Result<Self, DocumentError> {
         let (frontmatter, body) = split_frontmatter(raw.markdown())?;
         Ok(Self {
@@ -176,10 +188,16 @@ impl SkillDocument {
         })
     }
 
-    pub fn raw_frontmatter(&self) -> &RawSkillFrontmatter {
+    pub const fn raw_frontmatter(&self) -> &RawSkillFrontmatter {
         &self.raw_frontmatter
     }
 
+    /// Validate and return the document's typed frontmatter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrontmatterError`] when required identity or applicability
+    /// fields are missing or invalid.
     pub fn typed_frontmatter(&self) -> Result<SkillFrontmatter, FrontmatterError> {
         SkillFrontmatter::from_raw(&self.raw_frontmatter)
     }
@@ -192,7 +210,7 @@ impl SkillDocument {
         &self.markdown
     }
 
-    pub fn provenance(&self) -> &SkillProvenance {
+    pub const fn provenance(&self) -> &SkillProvenance {
         &self.provenance
     }
 }

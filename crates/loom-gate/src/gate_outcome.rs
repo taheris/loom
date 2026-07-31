@@ -89,7 +89,7 @@ pub struct GateRun {
 
 impl GateRun {
     #[must_use]
-    pub fn successful_verify(
+    pub const fn successful_verify(
         push_range: String,
         tree_oid: String,
         config_digest: String,
@@ -110,7 +110,7 @@ impl GateRun {
     }
 
     #[must_use]
-    pub fn successful_review(
+    pub const fn successful_review(
         push_range: String,
         tree_oid: String,
         config_digest: String,
@@ -271,6 +271,10 @@ impl GateSuccess {
         clippy::result_large_err,
         reason = "GateFail carries the verbatim evidence for triage"
     )]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when gate input, execution, or validation fails.
     pub fn new(evidence: &HandoffEvidence, total_handoffs: u32) -> Result<Self, GateFail> {
         let fail = |reason: GateFailReason| GateFail {
             reason,
@@ -412,7 +416,7 @@ pub struct GateFail {
 
 impl GateFail {
     #[must_use]
-    pub fn stalled(total_handoffs: u32) -> Self {
+    pub const fn stalled(total_handoffs: u32) -> Self {
         Self {
             reason: GateFailReason::StalledMaxIterations,
             gate_runs: Vec::new(),
@@ -472,12 +476,16 @@ pub struct LoopOutcome {
     pub gate: GateOutcome,
 }
 
+///
+/// # Errors
+///
+/// Returns an error when gate input, execution, or validation fails.
 pub fn append_gate_run_lifecycle_events(path: &Path, run: &GateRun) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let seq_start = next_seq_in_log(path);
-    let events = gate_run_lifecycle_events(path, run, seq_start)?;
+    let events = gate_run_lifecycle_events(path, run, seq_start);
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -499,9 +507,8 @@ pub fn parse_gate_runs_from_jsonl(path: &Path) -> Vec<GateRun> {
     let mut completed_keys = BTreeSet::new();
     let mut pending = BTreeMap::new();
     for line in contents.lines() {
-        let value = match serde_json::from_str::<serde_json::Value>(line) {
-            Ok(value) => value,
-            Err(_) => continue,
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
         };
         if value.get("kind").and_then(serde_json::Value::as_str) != Some("driver_event") {
             continue;
@@ -544,11 +551,7 @@ pub fn parse_gate_runs_from_jsonl(path: &Path) -> Vec<GateRun> {
     completed
 }
 
-fn gate_run_lifecycle_events(
-    path: &Path,
-    run: &GateRun,
-    seq_start: u64,
-) -> Result<Vec<AgentEvent>, std::io::Error> {
+fn gate_run_lifecycle_events(path: &Path, run: &GateRun, seq_start: u64) -> Vec<AgentEvent> {
     let mut builder = gate_log_envelope_builder(path, seq_start);
     let phase = gate_phase_wire(run.phase);
     let payload = gate_run_payload(path, run);
@@ -589,7 +592,7 @@ fn gate_run_lifecycle_events(
         format!("{phase} gate run {}", gate_status_wire(run.status)),
         payload,
     ));
-    Ok(events)
+    events
 }
 
 fn gate_driver_event(
@@ -657,7 +660,9 @@ fn gate_log_envelope_builder(path: &Path, seq_start: u64) -> EnvelopeBuilder {
         clock
             .wall_now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_millis() as i64)
+            .map_or(0, |duration| {
+                i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+            })
     })
 }
 
@@ -704,9 +709,8 @@ fn next_seq_in_log(path: &Path) -> u64 {
     };
     let mut max_seq: Option<u64> = None;
     for line in contents.lines() {
-        let value = match serde_json::from_str::<serde_json::Value>(line) {
-            Ok(value) => value,
-            Err(_) => continue,
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
         };
         let Some(seq) = value.get("seq").and_then(serde_json::Value::as_u64) else {
             continue;
@@ -816,7 +820,7 @@ fn gate_run_from_payload_with_status(
     })
 }
 
-fn gate_phase_wire(phase: GatePhase) -> &'static str {
+const fn gate_phase_wire(phase: GatePhase) -> &'static str {
     match phase {
         GatePhase::Verify => "verify",
         GatePhase::Review => "review",
@@ -831,7 +835,7 @@ fn gate_phase_from_wire(phase: &str) -> Option<GatePhase> {
     }
 }
 
-fn gate_status_wire(status: GateRunStatus) -> &'static str {
+const fn gate_status_wire(status: GateRunStatus) -> &'static str {
     match status {
         GateRunStatus::Success => "success",
         GateRunStatus::Failed => "failed",
@@ -1050,8 +1054,7 @@ mod tests {
             log.path().to_path_buf(),
             vec![hook("pre-push", "loom gate verify --diff @{u}..HEAD")],
         );
-        let events =
-            gate_run_lifecycle_events(log.path(), &verify, 0).expect("build lifecycle events");
+        let events = gate_run_lifecycle_events(log.path(), &verify, 0);
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(log.path())
@@ -1129,7 +1132,7 @@ mod tests {
             other => panic!("expected missing typed scope to fail, got {other:?}"),
         }
 
-        let mut missing_coverage = evidence.clone();
+        let mut missing_coverage = evidence;
         missing_coverage.pre_push = None;
         match GateSuccess::new(&missing_coverage, 1) {
             Err(GateFail {

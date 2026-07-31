@@ -12,7 +12,7 @@
 
 use std::process::Command;
 
-fn loom_bin() -> &'static str {
+const fn loom_bin() -> &'static str {
     env!("CARGO_BIN_EXE_loom")
 }
 

@@ -25,19 +25,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// assert_eq!(format_utc_timestamp(t), "20260503T123045Z");
 /// ```
 pub fn format_utc_timestamp(t: SystemTime) -> String {
-    let secs = t
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = t.duration_since(UNIX_EPOCH).map_or(0, |duration| {
+        i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+    });
     let (year, month, day, hour, minute, second) = utc_parts(secs);
     format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
 }
 
 /// Decompose seconds-since-epoch into `(year, month, day, hour, minute,
 /// second)` UTC components.
-fn utc_parts(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
-    let days = (secs / 86_400) as i64;
-    let time_of_day = (secs % 86_400) as u32;
+const fn utc_parts(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
+    let days = secs / 86_400;
+    let time_of_day = secs % 86_400;
     let hour = time_of_day / 3600;
     let minute = (time_of_day % 3600) / 60;
     let second = time_of_day % 60;
@@ -50,22 +49,18 @@ fn utc_parts(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
 /// Algorithm by Howard Hinnant
 /// (<https://howardhinnant.github.io/date_algorithms.html#civil_from_days>),
 /// shifted from a 0000-03-01 era origin to 1970-01-01.
-fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
+const fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let z = days_since_epoch + 719_468;
     let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097) as u64; // [0, 146096]
+    let doe = z.rem_euclid(146_097); // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = (yoe as i64) + era * 400;
+    let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 {
-        (mp + 3) as u32
-    } else {
-        (mp - 9) as u32
-    }; // [1, 12]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     let year = if m <= 2 { y + 1 } else { y };
-    (year as i32, m, d)
+    (year, m, d)
 }
 
 #[cfg(test)]
@@ -80,27 +75,27 @@ mod tests {
     #[test]
     fn known_timestamp_2026_05_03() {
         // 2026-05-03 12:30:45 UTC.
-        let t = UNIX_EPOCH + std::time::Duration::from_secs(1777811445);
+        let t = UNIX_EPOCH + std::time::Duration::from_secs(1_777_811_445);
         assert_eq!(format_utc_timestamp(t), "20260503T123045Z");
     }
 
     #[test]
     fn leap_day_2024_02_29() {
         // 2024-02-29 00:00:00 UTC = 1709164800.
-        let t = UNIX_EPOCH + std::time::Duration::from_secs(1709164800);
+        let t = UNIX_EPOCH + std::time::Duration::from_hours(474_768);
         assert_eq!(format_utc_timestamp(t), "20240229T000000Z");
     }
 
     #[test]
     fn end_of_year_rollover() {
         // 2025-12-31 23:59:59 UTC = 1767225599.
-        let t = UNIX_EPOCH + std::time::Duration::from_secs(1767225599);
+        let t = UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_599);
         assert_eq!(format_utc_timestamp(t), "20251231T235959Z");
     }
 
     #[test]
     fn pre_epoch_saturates_to_epoch() {
-        let t = UNIX_EPOCH - std::time::Duration::from_secs(60);
+        let t = UNIX_EPOCH - std::time::Duration::from_mins(1);
         assert_eq!(format_utc_timestamp(t), "19700101T000000Z");
     }
 
@@ -108,8 +103,7 @@ mod tests {
     fn timestamps_lex_sort_in_chronological_order() {
         let earlier =
             format_utc_timestamp(UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000));
-        let later =
-            format_utc_timestamp(UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000));
+        let later = format_utc_timestamp(UNIX_EPOCH + std::time::Duration::from_hours(500_000));
         assert!(earlier < later);
     }
 }

@@ -23,6 +23,11 @@ pub struct GitOid(String);
 impl GitOid {
     /// Parse a git OID from a raw string. Validates the canonical
     /// lowercase-hex shape (40 or 64 characters).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseGitOidError`] unless `s` is a 40- or 64-character
+    /// lowercase hexadecimal object identifier.
     pub fn new(s: &str) -> Result<Self, ParseGitOidError> {
         let len = s.len();
         if !(len == 40 || len == 64) {

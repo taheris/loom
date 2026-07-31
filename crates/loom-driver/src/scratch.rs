@@ -31,6 +31,7 @@ use crate::identifier::{BeadId, SpecLabel};
 const SCRATCH_SUBDIR: &str = ".loom/scratch";
 
 /// Resolve the per-session scratch-dir key for a phase.
+///
 /// Plan sessions use joined anchor labels or `plan`; todo passes the work
 /// epic as `bead_id`; loop, gate review, and inbox pass the bead under discussion.
 pub fn resolve_scratch_key(
@@ -90,6 +91,10 @@ impl ScratchSession {
     /// `banner` is the fixed preamble emitted by `repin.sh` ahead of the
     /// `prompt.txt` and `scratch.md` contents — typically a short
     /// orientation string like `loom loop @ <bead-id>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when scratch workspace state cannot be created or inspected.
     pub fn open(workspace: &Path, key: &str, prompt: &str, banner: &str) -> io::Result<Self> {
         if key.is_empty() || key.contains('/') || key.contains("..") {
             return Err(io::Error::new(
@@ -128,6 +133,10 @@ impl ScratchSession {
     /// surfaces I/O errors instead of swallowing them. Idempotent — a
     /// second call (or a follow-on Drop) on a missing directory is a
     /// no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when scratch workspace state cannot be created or inspected.
     pub fn close(self) -> io::Result<()> {
         let path = self.path.clone();
         // Suppress the Drop-time cleanup so we own the error path.
@@ -238,8 +247,7 @@ mod tests {
         std::process::Command::new("jq")
             .arg("--version")
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     }
 
     fn repin_context(prompt: &str, scratch: &str) -> Option<String> {

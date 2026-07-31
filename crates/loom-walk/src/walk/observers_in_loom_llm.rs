@@ -25,12 +25,13 @@ pub fn run(_input: &WalkInput) -> Verdict {
     let llm_files = rs_files_recursive(&llm_src);
 
     for observer in OBSERVERS {
-        let in_llm: Vec<String> = llm_files
+        let defined_in_llm = llm_files
             .iter()
             .filter(|p| defines_struct(p, observer))
             .map(|p| rel(&root, p))
-            .collect();
-        if in_llm.is_empty() {
+            .next()
+            .is_some();
+        if !defined_in_llm {
             violations.push(format!(
                 "{LLM_SRC}/observer.rs:1 `{observer}` not defined in loom-llm — it must ship in loom-llm's observer module",
             ));

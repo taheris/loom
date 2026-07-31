@@ -256,25 +256,22 @@ fn run_single_event_channel() {
     let mut violations: Vec<String> = Vec::new();
     if !found_emit {
         violations.push(format!(
-            "{}:1 LogSink::emit method not found — the tee-style sink is \
+            "{rel_path}:1 LogSink::emit method not found — the tee-style sink is \
              the single subscriber that both the renderer and the on-disk \
-             log share",
-            rel_path
+             log share"
         ));
     }
     if found_emit && !writes_file {
         violations.push(format!(
-            "{}:1 LogSink::emit must write to `self.file` so the on-disk \
-             log subscribes to the same event call as the renderer",
-            rel_path
+            "{rel_path}:1 LogSink::emit must write to `self.file` so the on-disk \
+             log subscribes to the same event call as the renderer"
         ));
     }
     if found_emit && !drives_renderer {
         violations.push(format!(
-            "{}:1 LogSink::emit must drive the renderer in the same call \
+            "{rel_path}:1 LogSink::emit must drive the renderer in the same call \
              as the on-disk write — fan-out from a separate task would \
-             create two independent subscribers",
-            rel_path
+             create two independent subscribers"
         ));
     }
     assert_violations(
@@ -565,18 +562,16 @@ fn no_envelope_default_outside_parser() {
                 || line.contains("AgentEvent::placeholder(")
             {
                 violations.push(format!(
-                    "{}:{} `*::placeholder()` — RS-12 removed sentinel \
+                    "{rel_path}:{line_no} `*::placeholder()` — RS-12 removed sentinel \
                      constructors; parser emits `ParsedAgentEvent` and \
                      session layer joins via `AgentEvent::from_parsed`",
-                    rel_path, line_no,
                 ));
             }
             if line.contains("EventEnvelope::default(") {
                 violations.push(format!(
-                    "{}:{} `EventEnvelope::default()` — `impl Default` was \
+                    "{rel_path}:{line_no} `EventEnvelope::default()` — `impl Default` was \
                      removed (RS-13); construct an `EventEnvelope` via \
                      `EnvelopeBuilder` or struct-literal in test fixtures",
-                    rel_path, line_no,
                 ));
             }
         }
@@ -769,7 +764,7 @@ fn rs_files_recursive(dir: &Path) -> Vec<PathBuf> {
 
 fn is_comment(line: &str) -> bool {
     let trimmed = line.trim_start();
-    trimmed.starts_with("//") || trimmed.starts_with("*") || trimmed.starts_with("/*")
+    trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*")
 }
 
 fn line_of<T: syn::spanned::Spanned>(node: &T) -> usize {

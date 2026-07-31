@@ -61,7 +61,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Phase::Plan => "plan",
             Phase::Todo => "todo",
@@ -146,11 +146,11 @@ impl AgentSelection {
             }
             AgentKind::Claude => {
                 if let Some(settings) = &self.claude_settings {
-                    spawn.denied_tools = settings.denied_tools.clone();
+                    spawn.denied_tools.clone_from(&settings.denied_tools);
                 }
             }
             AgentKind::Direct => {
-                spawn.model_id = self.model_id.clone();
+                spawn.model_id.clone_from(&self.model_id);
                 spawn.output_limits = Some(direct_output_limits);
             }
         }
@@ -279,12 +279,16 @@ pub enum AgentSelectionError {
     },
     /// unknown agent backend `{name}` in config (expected `claude`, `pi`, or `direct`)
     UnknownBackend { name: String },
-    /// unknown agent.thinking_level `{name}` in config (expected one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`)
+    /// unknown `agent.thinking_level` `{name}` in config (expected one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`)
     UnknownThinkingLevel { name: String },
 }
 
 /// Convert a backend name string (from `[phase.<name>] agent.backend` or
 /// `[phase.default] agent.backend`) into the typed [`AgentKind`].
+///
+/// # Errors
+///
+/// Returns an error when configuration cannot be read, merged, or validated.
 pub fn parse_backend_name(name: &str) -> Result<AgentKind, AgentSelectionError> {
     name.parse()
         .map_err(|_| AgentSelectionError::UnknownBackend {
@@ -292,11 +296,16 @@ pub fn parse_backend_name(name: &str) -> Result<AgentKind, AgentSelectionError> 
         })
 }
 
-/// Convert a `agent.thinking_level` TOML string into the typed
-/// [`ThinkingLevel`]. The accepted vocabulary matches `specs/agent.md`'s
+/// Convert an `agent.thinking_level` TOML string into a [`ThinkingLevel`].
+///
+/// The accepted vocabulary matches `specs/agent.md`'s
 /// Pi command table; typos surface as
 /// [`AgentSelectionError::UnknownThinkingLevel`] rather than silently
 /// dropping the override.
+///
+/// # Errors
+///
+/// Returns an error when configuration cannot be read, merged, or validated.
 pub fn parse_thinking_level_name(name: &str) -> Result<ThinkingLevel, AgentSelectionError> {
     match name {
         "off" => Ok(ThinkingLevel::Off),
@@ -372,7 +381,7 @@ mod tests {
             model_id: None,
             model: None,
             thinking_level: None,
-            observers: Default::default(),
+            observers: crate::config::AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),

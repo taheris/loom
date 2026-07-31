@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use loom_agent::pi::backend::spawn_with_handshake;
 use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
-use loom_driver::agent::{AgentBackend, ProtocolError, RePinContent, SessionOutcome, SpawnConfig};
+use loom_driver::agent::{AgentBackend, ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::clock::SystemClock;
 use loom_events::ParsedAgentEvent;
 use tokio::process::Command;
@@ -42,6 +42,10 @@ async fn run_agent<B: AgentBackend>(config: &SpawnConfig) -> Result<SessionOutco
 
 #[test]
 fn all_backends_dispatch_through_run_agent() {
+    fn assert_dispatch<B: AgentBackend>() {
+        std::hint::black_box(run_agent::<B>);
+    }
+
     // The bound `B: AgentBackend` is the dispatch contract — instantiating
     // it at every concrete type is what monomorphizes `run_agent` and proves
     // the trait surface accepts each backend.
@@ -50,55 +54,11 @@ fn all_backends_dispatch_through_run_agent() {
     assert_backend::<ClaudeBackend>();
     assert_backend::<DirectBackend>();
 
-    // Reference the generic function at each backend so the test binary
-    // pulls in `run_agent::<PiBackend>`, `run_agent::<ClaudeBackend>`, and
-    // `run_agent::<DirectBackend>` monomorphizations rather than only the
-    // trait-bound check above.
-    let _pi_fut = async {
-        let cfg = sample_config();
-        run_agent::<PiBackend>(&cfg).await
-    };
-    let _claude_fut = async {
-        let cfg = sample_config();
-        run_agent::<ClaudeBackend>(&cfg).await
-    };
-    let _direct_fut = async {
-        let cfg = sample_config();
-        run_agent::<DirectBackend>(&cfg).await
-    };
-}
-
-fn sample_config() -> SpawnConfig {
-    SpawnConfig {
-        image_ref: String::new(),
-        image_source: PathBuf::new(),
-        image_source_kind: None,
-        wrix_launcher: None,
-        profile_config: None,
-        workspace: PathBuf::new(),
-        env: Vec::new(),
-        mounts: Vec::new(),
-        initial_prompt: String::new(),
-        agent_args: Vec::new(),
-        repin: RePinContent {
-            orientation: String::new(),
-            pinned_context: String::new(),
-            partial_bodies: Vec::new(),
-        },
-        skills: None,
-        event_metadata: None,
-        scratch_dir: PathBuf::new(),
-        model_id: None,
-        model: None,
-        thinking_level: None,
-        observers: Default::default(),
-        output_limits: None,
-        shutdown_grace: None,
-        denied_tools: Vec::new(),
-        handshake_timeout: None,
-        stall_warn_interval: None,
-        launcher_env: Vec::new(),
-    }
+    // Reference each generic function item so the test binary pulls in all
+    // three monomorphizations without launching subprocesses.
+    assert_dispatch::<PiBackend>();
+    assert_dispatch::<ClaudeBackend>();
+    assert_dispatch::<DirectBackend>();
 }
 
 //---------------------------------------------------------------------------
@@ -157,7 +117,7 @@ async fn pi_startup_probe_succeeds_with_valid_get_state() {
     loop {
         match session.next_event().await.expect("event ok") {
             Some(ParsedAgentEvent::SessionComplete { .. }) => return,
-            Some(_) => continue,
+            Some(_) => {}
             None => panic!("unexpected EOF before SessionComplete"),
         }
     }

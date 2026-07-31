@@ -157,7 +157,9 @@ impl InfraDiagnostic {
 }
 
 /// Final state of one bead after retries have been exhausted (or the agent
-/// succeeded on first try). Drives the bd-side cleanup: success → driver
+/// succeeded on first try).
+///
+/// Drives the bd-side cleanup: success → driver
 /// observes the agent's own `bd close` (no driver-side close), clarified →
 /// `bd update --add-label loom:clarify --notes <question>`, blocked →
 /// `bd update --add-label loom:blocked --notes <cause>`, infra →

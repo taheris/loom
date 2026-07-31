@@ -1,12 +1,4 @@
-//! `DoomLoopObserver` — detects when the agent calls the same tool
-//! with the same params *and* the same result repeated, then escalates
-//! via a two-stage `Steer` -> `Abort` response.
-//!
-//! Detection keys on `(CallKey, ResultHash)` where `CallKey =
-//! (tool_name, canonical_params)` (canonical JSON per RFC 8785 JCS,
-//! normalized numbers) and `ResultHash` is `BLAKE3-16(canonical
-//! result)` — shared with `DuplicateResultObserver` via
-//! [`super::result_hasher::ResultHasher`].
+//! Detect repeated identical tool calls and escalate from steer to abort.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -18,12 +10,9 @@ use super::result_hasher::{
     CallKey, Error as ResultHasherError, ResultFingerprint, ResultHash, ResultHasher,
 };
 
-/// Per-observer configuration. Mirrors the `[agent.doom_loop]` TOML block
-/// the binary's `LoomConfig` exposes — consumers driving
-/// [`crate::Conversation`] directly construct the same shape and pass it
-/// in via [`crate::Conversation::doom_loop`] (or rely on
-/// [`DoomLoopConfig::default`] which matches the spec defaults).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Configuration for [`DoomLoopObserver`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
 pub struct DoomLoopConfig {
     /// When false, the observer is omitted from
     /// [`crate::Conversation`]'s default sink chain entirely.
@@ -67,11 +56,7 @@ impl DoomLoopStage {
     }
 }
 
-/// Observability payload drained by [`DoomLoopObserver::take_pending`]
-/// and lifted into a `DriverKind::DoomLoopTripped` `AgentEvent` by the
-/// sink-chain wiring. The observer cannot synthesize the wire event
-/// itself — it carries no `EnvelopeBuilder` — so it surfaces the
-/// payload-shaped struct and lets the chain assemble the event.
+/// Pending doom-loop event drained by [`DoomLoopObserver::take_pending`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoomLoopTripped {
     /// Stage that fired.
@@ -142,19 +127,22 @@ impl DoomLoopObserver {
     }
 
     /// Override the sliding-window size.
-    pub fn with_window(mut self, n: u32) -> Self {
+    #[must_use]
+    pub const fn with_window(mut self, n: u32) -> Self {
         self.window = n;
         self
     }
 
     /// Override the identical-pair threshold for stage 1.
-    pub fn with_threshold(mut self, n: u32) -> Self {
+    #[must_use]
+    pub const fn with_threshold(mut self, n: u32) -> Self {
         self.threshold = n;
         self
     }
 
     /// Override the additional-pair gap before stage 2 fires.
-    pub fn with_stage_2_after_stage_1(mut self, n: u32) -> Self {
+    #[must_use]
+    pub const fn with_stage_2_after_stage_1(mut self, n: u32) -> Self {
         self.stage_2_after_stage_1 = n;
         self
     }
@@ -163,7 +151,7 @@ impl DoomLoopObserver {
     /// `enabled` flag is consulted by [`crate::Conversation`]'s builder —
     /// it's irrelevant here because the caller already decided to
     /// materialise the observer.
-    pub fn from_config(config: &DoomLoopConfig) -> Self {
+    pub fn from_config(config: DoomLoopConfig) -> Self {
         Self::new()
             .with_window(config.window)
             .with_threshold(config.threshold)
@@ -171,22 +159,22 @@ impl DoomLoopObserver {
     }
 
     /// Borrow the shared hasher.
-    pub fn hasher(&self) -> &ResultHasher {
+    pub const fn hasher(&self) -> &ResultHasher {
         &self.hasher
     }
 
     /// Read-only access to the configured window size.
-    pub fn window(&self) -> u32 {
+    pub const fn window(&self) -> u32 {
         self.window
     }
 
     /// Read-only access to the configured stage-1 threshold.
-    pub fn threshold(&self) -> u32 {
+    pub const fn threshold(&self) -> u32 {
         self.threshold
     }
 
     /// Read-only access to the configured stage-2 gap.
-    pub fn stage_2_after_stage_1(&self) -> u32 {
+    pub const fn stage_2_after_stage_1(&self) -> u32 {
         self.stage_2_after_stage_1
     }
 
@@ -216,6 +204,11 @@ impl DoomLoopObserver {
 
     /// Observe a tool result whose canonical fingerprint was computed
     /// by the conversation loop's shared hashing pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResultHasherError`] when the matching call parameters
+    /// cannot be canonicalized.
     pub fn observe_tool_result(
         &mut self,
         id: &ToolCallId,
@@ -392,7 +385,7 @@ mod tests {
             molecule_id: None,
             iteration: Some(0),
             source: Source::Agent,
-            ts_ms: seq as i64,
+            ts_ms: i64::try_from(seq).expect("test sequence fits i64"),
             seq,
         }
     }
@@ -456,8 +449,8 @@ mod tests {
         let result_b = r#"{"b":2,"a":1}"#;
 
         drive_call(&mut obs, &mut seq, "call-1", params_a.clone(), result_a);
-        drive_call(&mut obs, &mut seq, "call-2", params_b.clone(), result_b);
-        drive_call(&mut obs, &mut seq, "call-3", params_a.clone(), result_a);
+        drive_call(&mut obs, &mut seq, "call-2", params_b, result_b);
+        drive_call(&mut obs, &mut seq, "call-3", params_a, result_a);
 
         let commands = obs.react();
         assert_eq!(commands.len(), 1, "stage 1 fires under canonical equality");
@@ -479,7 +472,7 @@ mod tests {
         assert!(obs.react().is_empty(), "1 identical pair never trips");
         drive_call(&mut obs, &mut seq, "call-3", params.clone(), same);
         assert!(obs.react().is_empty(), "2 identical pairs never trips");
-        drive_call(&mut obs, &mut seq, "call-4", params.clone(), same);
+        drive_call(&mut obs, &mut seq, "call-4", params, same);
         let commands = obs.react();
         assert_eq!(commands.len(), 1, "third identical pair trips stage 1");
         assert!(matches!(commands[0], SessionCommand::Steer(_)));
@@ -561,14 +554,14 @@ mod tests {
             "one extra identical pair must not fire stage 2 (need 2): {after_one:?}",
         );
 
-        drive_call(&mut obs, &mut seq, "c5", params.clone(), same);
+        drive_call(&mut obs, &mut seq, "c5", params, same);
         let stage_2 = obs.react();
         assert_eq!(stage_2.len(), 1);
         match &stage_2[0] {
             SessionCommand::Abort(reason) => {
                 assert_eq!(reason, "doom-loop: read_file");
             }
-            other => panic!("expected Abort, got {other:?}"),
+            other @ SessionCommand::Steer(_) => panic!("expected Abort, got {other:?}"),
         }
     }
 
@@ -622,7 +615,7 @@ mod tests {
             obs.react().is_empty(),
             "post-CompactionEnd: 2 identical pairs must not trip yet",
         );
-        drive_call(&mut obs, &mut seq, "c6", params.clone(), same);
+        drive_call(&mut obs, &mut seq, "c6", params, same);
         let post_compaction = obs.react();
         assert!(
             matches!(post_compaction.as_slice(), [SessionCommand::Steer(_)]),
@@ -667,7 +660,7 @@ mod tests {
         let _ = obs.react();
         let _ = obs.take_pending();
 
-        drive_call(&mut obs, &mut seq, "c5", params.clone(), same);
+        drive_call(&mut obs, &mut seq, "c5", params, same);
         assert!(
             obs.react().is_empty(),
             "stage 2 already fired — further identical pairs must not re-abort",

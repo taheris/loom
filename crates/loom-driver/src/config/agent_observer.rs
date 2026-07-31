@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn deserializes_spec_example_toml() {
-        let src = r#"
+        let src = r"
 [doom_loop]
 enabled = true
 window = 5
@@ -95,7 +95,7 @@ stage_2_after_stage_1 = 3
 [duplicate_result]
 enabled = true
 min_bytes = 256
-"#;
+";
         let cfg: AgentObserversConfig = toml::from_str(src).expect("parse");
         assert_eq!(cfg, AgentObserversConfig::default());
     }
@@ -109,13 +109,13 @@ min_bytes = 256
 
     #[test]
     fn enabled_false_is_respected() {
-        let src = r#"
+        let src = r"
 [doom_loop]
 enabled = false
 
 [duplicate_result]
 enabled = false
-"#;
+";
         let cfg: AgentObserversConfig = toml::from_str(src).expect("parse");
         assert!(!cfg.doom_loop.enabled);
         assert!(!cfg.duplicate_result.enabled);

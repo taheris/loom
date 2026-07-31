@@ -128,7 +128,7 @@ impl IntegrityFinding {
     /// [`Self::InputsProtocolError`] refuse the push and raise
     /// `loom:clarify`. The remaining variants surface as warnings
     /// elsewhere.
-    pub fn is_push_gate_terminal(&self) -> bool {
+    pub const fn is_push_gate_terminal(&self) -> bool {
         matches!(
             self,
             Self::UnresolvedAnnotation { .. }
@@ -470,13 +470,18 @@ fn is_excluded_under_root(path: &Path, repo_root: &Path) -> bool {
         .any(|c| matches!(c.as_os_str().to_str(), Some("target" | ".loom")))
 }
 
-/// Walk `repo_root` once and produce both the test-leaf index and the
-/// stub-leaf index in a single pass — every `.rs` file is read exactly
+/// Build both test-leaf indexes in one repository walk.
+///
+/// Every `.rs` file is read exactly
 /// once and both extractors run on the same string. Callers that need
 /// both resolvers (the integrity gate, `loom gate review`, the mint
 /// walker) should use this instead of calling each `::scan` separately,
 /// since back-to-back scans walk the same 300+ workspace files twice
 /// and re-read every byte.
+///
+/// # Errors
+///
+/// Returns an error when repository or verifier integrity cannot be established.
 pub fn scan_workspace_pair(
     repo_root: &Path,
 ) -> Result<(RustWorkspaceTestResolver, RustWorkspaceStubScanner), IntegrityError> {
@@ -525,6 +530,10 @@ pub struct RustWorkspaceTestResolver {
 
 impl RustWorkspaceTestResolver {
     /// Walk `repo_root` and index every test function leaf name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository or verifier integrity cannot be established.
     pub fn scan(repo_root: &Path) -> Result<Self, IntegrityError> {
         let mut known_leaves: HashSet<String> = HashSet::new();
         for entry in WalkDir::new(repo_root).follow_links(false) {
@@ -589,6 +598,10 @@ pub struct RustWorkspaceStubScanner {
 impl RustWorkspaceStubScanner {
     /// Walk `repo_root` and index every test function whose body calls
     /// `_pending_stub`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when repository or verifier integrity cannot be established.
     pub fn scan(repo_root: &Path) -> Result<Self, IntegrityError> {
         let mut stub_leaves: HashSet<String> = HashSet::new();
         for entry in WalkDir::new(repo_root).follow_links(false) {
@@ -773,7 +786,7 @@ fn body_calls_pending_stub(body: &[u8]) -> bool {
     false
 }
 
-fn is_ident_continue(b: u8) -> bool {
+const fn is_ident_continue(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
@@ -822,7 +835,7 @@ fn starts_with_fn_keyword(bytes: &[u8], i: usize) -> bool {
 /// A separator byte between a `#[test]` attribute and the function it
 /// applies to: a closing `}` or a semicolon means the attribute is no
 /// longer in scope for a following `fn`.
-fn is_fn_separator(b: u8) -> bool {
+const fn is_fn_separator(b: u8) -> bool {
     b == b'}' || b == b';'
 }
 
@@ -919,8 +932,9 @@ fn find_proptest_bodies(bytes: &[u8]) -> Vec<Range<usize>> {
     out
 }
 
-/// Compose the cap-exhausted `loom:clarify` notes block for a
-/// molecule's integrity findings, per `specs/gate.md` § *Integrity gate*
+/// Compose a cap-exhausted `loom:clarify` notes block.
+///
+/// Follows `specs/gate.md` § *Integrity gate*
 /// (Cap-exhausted fallback). Emits **one** composed `## Options — …`
 /// block: one `### Option N` per integrity finding kind present, in the
 /// spec's kind order (`UnresolvedAnnotation`, `StubTestFunction`,
@@ -1013,8 +1027,9 @@ pub fn compose_clarify_options(findings: &[IntegrityFinding]) -> String {
     out
 }
 
-/// Run every integrity direction and return all findings: forward
-/// resolution (with stub-pointing), atomic acceptance, and inputs-protocol
+/// Run every integrity direction and return all findings.
+///
+/// Covers forward resolution (with stub-pointing), atomic acceptance, and inputs-protocol
 /// honesty. The inputs-protocol direction's [`InputResolver`] is built from
 /// `runner_specs` + `repo_root` — the runner `inputs` queries determine
 /// which `[check]` / `[system]` targets are opted in.
@@ -1043,8 +1058,9 @@ pub fn check(
     findings
 }
 
-/// Inputs-protocol direction: every *opted-in* input-query must run to
-/// completion and emit a well-formed inputs document. Emits one
+/// Validate every opted-in input query.
+///
+/// Each query must run to completion and emit a well-formed inputs document. Emits one
 /// [`IntegrityFinding::InputsProtocolError`] per opted-in annotation whose
 /// query exits non-zero or returns a malformed document, per
 /// `specs/gate.md` § Integrity gate (Direction 4). Opt-in is explicit (a
@@ -1074,8 +1090,9 @@ pub fn check_inputs_protocol(
     out
 }
 
-/// Forward direction: every annotation's target must resolve for its
-/// tier, and any resolved Rust test target must not be a stub. Emits
+/// Validate forward annotation resolution.
+///
+/// Every annotation's target must resolve for its tier, and any resolved Rust test target must not be a stub. Emits
 /// at most one finding per annotation: an
 /// [`IntegrityFinding::UnresolvedAnnotation`] if the target fails to
 /// resolve, otherwise (for `[check](cargo test ... <name>)`) an
@@ -1238,8 +1255,9 @@ pub fn check_atomic_acceptance(annotations: &[Annotation]) -> Vec<IntegrityFindi
     out
 }
 
-/// True iff some runner in `specs` belongs to `tier` and `match`es
-/// `target` — the runner owns the annotation, so forward-resolution
+/// Whether a runner in `specs` owns `target` for `tier`.
+///
+/// A matching runner owns the annotation, so forward-resolution
 /// succeeds because a runner claims it, not because `tokens[0]` is on PATH.
 /// Reuses [`RunnerSpec::matches`] (the same compiled match regex
 /// `dispatch::group_by_runner` keys on) so resolution and dispatch agree
@@ -1263,8 +1281,9 @@ fn resolves_command(target: &str, command_resolver: &dyn CommandResolver) -> boo
     command_resolver.resolves(path_part)
 }
 
-/// True iff `target`'s first token is a bare binary name (no path
-/// separators) that does not resolve via `command_resolver`. Path-shaped
+/// Whether `target` starts with a missing bare binary name.
+///
+/// Path-shaped
 /// first tokens (containing `/` or absolute) never qualify: those name
 /// a concrete file in the repo and a missing file is a real finding.
 ///

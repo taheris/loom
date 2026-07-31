@@ -117,7 +117,7 @@ fn render_type(ty: &syn::Type) -> String {
 fn render_path_segment(seg: &syn::PathSegment) -> String {
     let name = seg.ident.to_string();
     match &seg.arguments {
-        syn::PathArguments::None => name,
+        syn::PathArguments::None | syn::PathArguments::Parenthesized(_) => name,
         syn::PathArguments::AngleBracketed(ab) => {
             let inner: Vec<String> = ab
                 .args
@@ -129,7 +129,6 @@ fn render_path_segment(seg: &syn::PathSegment) -> String {
                 .collect();
             format!("{name}<{}>", inner.join(","))
         }
-        syn::PathArguments::Parenthesized(_) => name,
     }
 }
 

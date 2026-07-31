@@ -1,6 +1,7 @@
 //! `Grep` — regex search over workspace files, returning the matching
 //! lines with `path:line:text` framing.
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use loom_llm::{Tool, ToolOutput, tool::InvokeFuture};
@@ -24,7 +25,7 @@ pub struct Grep {
 }
 
 impl Grep {
-    pub fn new(ctx: ToolContext) -> Self {
+    pub const fn new(ctx: ToolContext) -> Self {
         Self { ctx }
     }
 }
@@ -47,11 +48,11 @@ pub struct Args {
 }
 
 impl Tool for Grep {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Grep"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Search files for a regex `pattern`. Optional `path` restricts \
          the search root; optional `glob` filters file names."
     }
@@ -60,18 +61,18 @@ impl Tool for Grep {
         schema_for::<Args>()
     }
 
-    fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
+    fn invoke(&self, args: Value) -> InvokeFuture<'_> {
         Box::pin(async move {
             let parsed: Args = parse_args(args)?;
             let ctx = self.ctx.clone();
-            task::spawn_blocking(move || search(parsed, ctx))
+            task::spawn_blocking(move || search(parsed, &ctx))
                 .await
                 .unwrap_or_else(|err| Ok(error(format!("join: {err}"))))
         })
     }
 }
 
-fn search(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError> {
+fn search(args: Args, ctx: &ToolContext) -> Result<ToolOutput, loom_llm::LlmError> {
     let regex = match Regex::new(&args.pattern) {
         Ok(r) => r,
         Err(err) => return Ok(error(format!("invalid regex: {err}"))),
@@ -123,15 +124,15 @@ fn search(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError
         if !content.is_empty() {
             content.push('\n');
         }
-        content.push_str(&format!("[truncated at {max} matches]"));
+        let _ = write!(content, "[truncated at {max} matches]");
     }
     Ok(ToolOutput {
-        content: ctx.cap_or_offload("Grep", content)?,
+        content: ctx.cap_or_offload("Grep", &content)?,
         is_error: false,
     })
 }
 
-fn error(message: String) -> ToolOutput {
+const fn error(message: String) -> ToolOutput {
     ToolOutput {
         content: Value::String(message),
         is_error: true,
@@ -194,7 +195,10 @@ mod tests {
     #[tokio::test]
     async fn grep_caps_results_at_max_matches() {
         let dir = tempdir().unwrap();
-        let lines: String = (0..10).map(|i| format!("match {i}\n")).collect();
+        let mut lines = String::new();
+        for index in 0..10 {
+            let _ = writeln!(lines, "match {index}");
+        }
         std::fs::write(dir.path().join("big.txt"), lines).unwrap();
 
         let out = grep_with(&dir)

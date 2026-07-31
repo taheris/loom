@@ -29,6 +29,10 @@ pub struct CriterionStatus {
 pub struct CriterionId(String);
 
 impl CriterionId {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the criterion status cannot be parsed or validated.
     pub fn new(value: impl Into<String>) -> Result<Self, ParseCriterionIdError> {
         let value = value.into();
         if !is_criterion_id(&value) {
@@ -111,7 +115,7 @@ pub enum AnnotationTier {
 }
 
 impl AnnotationTier {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Check => "check",
             Self::Test => "test",
@@ -160,7 +164,7 @@ pub enum EvidenceState {
 }
 
 impl EvidenceState {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Current { .. } => "Current",
             Self::Missing => "Missing",
@@ -168,11 +172,10 @@ impl EvidenceState {
         }
     }
 
-    pub fn result_label(&self) -> &'static str {
+    pub const fn result_label(&self) -> &'static str {
         match self {
             Self::Current { result, .. } => result.as_str(),
-            Self::Missing => "—",
-            Self::StaleAnnotation { .. } => "—",
+            Self::Missing | Self::StaleAnnotation { .. } => "—",
         }
     }
 
@@ -225,7 +228,7 @@ pub enum CriterionResult {
 }
 
 impl CriterionResult {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Pass => "Pass",
             Self::Fail => "Fail",

@@ -1,7 +1,4 @@
-//! `CacheControl` — typed per-content-block prompt-cache markers. The
-//! TTL set matches Anthropic's prompt-cache breakpoint API; providers
-//! that do not support typed per-block cache markers no-op the marker
-//! without error.
+//! Typed per-content-block prompt-cache markers.
 
 /// Cache-control marker attached per content block. `None` is the
 /// default; `Ephemeral(CacheTtl)` requests a cache breakpoint with the

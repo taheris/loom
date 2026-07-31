@@ -29,6 +29,7 @@ pub struct PiEnvelope {
 }
 
 /// Response envelope — one of these is emitted for commands sent on stdin.
+///
 /// Request/response handshake commands carry `id`; current Pi prompt acks do
 /// not. The `command` field echoes back the command name; `success`
 /// discriminates between a successful `data` payload and a failure carried
@@ -45,8 +46,9 @@ pub struct PiResponse {
     pub error: Option<String>,
 }
 
-/// Streaming event from pi (no `id` field). Discriminated by the wire
-/// `type` value via serde's internally-tagged enum form. Variants whose
+/// Streaming event from pi with no `id` field.
+///
+/// Discriminated by the wire `type` value via serde's internally-tagged enum form. Variants whose
 /// payload Loom does not consume (retry telemetry, extension errors) are
 /// unit forms — serde drops their extra fields.
 #[derive(Debug, Deserialize)]
@@ -167,8 +169,9 @@ pub enum PiEvent {
     Unknown,
 }
 
-/// Inner `assistantMessageEvent` delta carried by
-/// [`PiEvent::MessageUpdate`]. Dispatched on the nested `type` field.
+/// Inner `assistantMessageEvent` delta carried by [`PiEvent::MessageUpdate`].
+///
+/// Dispatched on the nested `type` field.
 /// Each variant maps to an [`AgentEvent`](loom_driver::agent::AgentEvent)
 /// the renderer / log replayer consumes; the `Unknown` catch-all keeps
 /// forward-compat for delta types pi adds later.
@@ -222,8 +225,9 @@ pub enum AssistantMessageDelta {
     Unknown,
 }
 
-/// Extension UI request (`type: "extension_ui_request"`). Loom replies
-/// with an auto-cancel for response-required methods (`select`,
+/// Extension UI request (`type: "extension_ui_request"`).
+///
+/// Loom replies with an auto-cancel for response-required methods (`select`,
 /// `confirm`, `input`, `editor`); methods that do not need a response
 /// (`notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`)
 /// are skipped silently.
@@ -276,8 +280,9 @@ pub struct AbortCommand {
     pub kind: &'static str,
 }
 
-/// `set_thinking_level` command body — best-effort post-handshake hint
-/// per `specs/agent.md`'s Pi command table. The `level` field carries
+/// Best-effort post-handshake `set_thinking_level` command body.
+///
+/// Follows `specs/agent.md`'s Pi command table. The `level` field carries
 /// the lowercase wire token; pi rejection is downgraded to a `warn!` in
 /// the driver so providers without thinking support continue uninterrupted.
 #[derive(Debug, Serialize)]
@@ -301,7 +306,12 @@ mod tests {
         let line =
             r#"{"type":"response","id":"r-1","command":"prompt","success":true,"data":{"k":"v"}}"#;
         let resp: PiResponse = serde_json::from_str(line).expect("parse");
-        assert_eq!(resp.id.as_ref().map(|id| id.as_str()), Some("r-1"));
+        assert_eq!(
+            resp.id
+                .as_ref()
+                .map(loom_driver::identifier::RequestId::as_str),
+            Some("r-1")
+        );
         assert_eq!(resp.command, "prompt");
         assert!(resp.success);
         let data = resp.data.expect("data present on success");
@@ -315,7 +325,12 @@ mod tests {
     fn pi_response_failure_populates_error_field() {
         let line = r#"{"type":"response","id":"r-2","command":"set_model","success":false,"error":"unsupported provider"}"#;
         let resp: PiResponse = serde_json::from_str(line).expect("parse");
-        assert_eq!(resp.id.as_ref().map(|id| id.as_str()), Some("r-2"));
+        assert_eq!(
+            resp.id
+                .as_ref()
+                .map(loom_driver::identifier::RequestId::as_str),
+            Some("r-2")
+        );
         assert_eq!(resp.command, "set_model");
         assert!(!resp.success);
         assert_eq!(resp.error.as_deref(), Some("unsupported provider"));
@@ -328,7 +343,12 @@ mod tests {
     fn pi_response_minimal_shape_omits_data_and_error() {
         let line = r#"{"type":"response","id":"r-3","command":"abort","success":true}"#;
         let resp: PiResponse = serde_json::from_str(line).expect("parse");
-        assert_eq!(resp.id.as_ref().map(|id| id.as_str()), Some("r-3"));
+        assert_eq!(
+            resp.id
+                .as_ref()
+                .map(loom_driver::identifier::RequestId::as_str),
+            Some("r-3")
+        );
         assert!(resp.data.is_none());
         assert!(resp.error.is_none());
     }
@@ -733,7 +753,12 @@ mod tests {
                 tool_call_id,
                 delta,
             } => {
-                assert_eq!(tool_call_id.as_ref().map(|id| id.as_str()), Some("tc-1"));
+                assert_eq!(
+                    tool_call_id
+                        .as_ref()
+                        .map(loom_driver::identifier::ToolCallId::as_str),
+                    Some("tc-1")
+                );
                 assert_eq!(delta, "chunk");
             }
             other => panic!("expected ToolcallDelta, got {other:?}"),

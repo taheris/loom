@@ -102,7 +102,7 @@ impl WorkspaceFindingValidator {
         path_exists_from(&base, target)
     }
 
-    fn criterion_anchor_matches(&self, spec: &SpecLabel, anchor: &str, body: &str) -> bool {
+    fn criterion_anchor_matches(spec: &SpecLabel, anchor: &str, body: &str) -> bool {
         let normalized_anchor = markdown_slug(anchor);
         body.lines()
             .filter_map(markdown_heading_anchor)
@@ -122,7 +122,7 @@ impl FindingValidator for WorkspaceFindingValidator {
         let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
             return false;
         };
-        self.criterion_anchor_matches(spec, anchor, &body)
+        Self::criterion_anchor_matches(spec, anchor, &body)
     }
 
     fn annotation_resolves(&self, target_string: &str) -> bool {
@@ -285,6 +285,7 @@ fn markdown_slug(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
     use std::os::unix::fs::PermissionsExt;
 
     use loom_gate::{DispatchOptions, TierCwds, run_check, run_system};
@@ -418,7 +419,7 @@ mod tests {
                 "target": {"kind": "Annotation", "target_string": target},
                 "evidence": "configured verifier completed before review",
             });
-            output.push_str(&format!("LOOM_FINDING: {payload}\n"));
+            let _ = writeln!(output, "LOOM_FINDING: {payload}");
         }
         output.push_str("LOOM_CONCERN: {\"summary\":\"Logical runner targets remain valid\"}\n");
         let validator = WorkspaceFindingValidator::new(tmp.path());

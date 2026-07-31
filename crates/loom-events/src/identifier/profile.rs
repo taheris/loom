@@ -9,6 +9,11 @@ use thiserror::Error;
 pub struct ProfileName(String);
 
 impl ProfileName {
+    /// Parses a canonical profile name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseProfileNameError`] when the input is malformed.
     pub fn new(s: impl AsRef<str>) -> Result<Self, ParseProfileNameError> {
         s.as_ref().parse()
     }

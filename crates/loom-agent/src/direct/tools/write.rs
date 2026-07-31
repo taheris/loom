@@ -17,7 +17,7 @@ pub struct Write {
 }
 
 impl Write {
-    pub fn new(ctx: ToolContext) -> Self {
+    pub const fn new(ctx: ToolContext) -> Self {
         Self { ctx }
     }
 }
@@ -31,11 +31,11 @@ pub struct Args {
 }
 
 impl Tool for Write {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Write"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Write `content` to `file_path`, overwriting any existing file. \
          Creates parent directories as needed."
     }
@@ -44,7 +44,7 @@ impl Tool for Write {
         schema_for::<Args>()
     }
 
-    fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
+    fn invoke(&self, args: Value) -> InvokeFuture<'_> {
         Box::pin(async move {
             let parsed: Args = parse_args(args)?;
             Ok(write_file(parsed, self.ctx.clone()).await)
@@ -71,7 +71,7 @@ async fn write_file(args: Args, ctx: ToolContext) -> ToolOutput {
     }
 }
 
-fn error(message: String) -> ToolOutput {
+const fn error(message: String) -> ToolOutput {
     ToolOutput {
         content: Value::String(message),
         is_error: true,

@@ -2,11 +2,11 @@ use loom_driver::agent::{ProtocolError, SpawnConfig};
 use loom_skills::disclosure::DisclosureMode;
 use loom_skills::registry::MaterializedRegistry;
 
-pub(crate) trait NativeRegistrar {
+pub trait NativeRegistrar {
     fn register(registry: &MaterializedRegistry) -> Result<(), ProtocolError>;
 }
 
-pub(crate) struct NoNativeRegistrar;
+pub struct NoNativeRegistrar;
 
 impl NativeRegistrar for NoNativeRegistrar {
     fn register(_registry: &MaterializedRegistry) -> Result<(), ProtocolError> {
@@ -14,7 +14,7 @@ impl NativeRegistrar for NoNativeRegistrar {
     }
 }
 
-pub(crate) fn register_native_skills<R: NativeRegistrar>(
+pub fn register_native_skills<R: NativeRegistrar>(
     config: &SpawnConfig,
 ) -> Result<(), ProtocolError> {
     let Some(skills) = config.skills.as_ref() else {
@@ -84,7 +84,7 @@ mod tests {
             model_id: None,
             model: None,
             thinking_level: None,
-            observers: Default::default(),
+            observers: loom_driver::config::AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),

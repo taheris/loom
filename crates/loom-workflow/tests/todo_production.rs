@@ -228,8 +228,8 @@ impl StatefulRunner {
 }
 
 impl CommandRunner for StatefulRunner {
-    async fn run(&self, args: Vec<OsString>, _timeout: Duration) -> Result<RunOutput, BdError> {
-        let argv = args
+    async fn run(&self, raw_args: Vec<OsString>, _timeout: Duration) -> Result<RunOutput, BdError> {
+        let argv = raw_args
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -239,14 +239,16 @@ impl CommandRunner for StatefulRunner {
             stderr: "stateful runner lock poisoned".to_string(),
         })?;
         state.calls.push(argv.clone());
-        match argv.first().map(String::as_str) {
+        let result = match argv.first().map(String::as_str) {
             Some("list") => stateful_list(&state, &argv),
             Some("show") => stateful_show(&state, &argv),
             Some("create") => stateful_create(&mut state, &argv),
-            Some("close") => stateful_close(&mut state, &argv),
-            Some("update") => stateful_update(&mut state, &argv),
+            Some("close") => Ok(stateful_close(&mut state, &argv)),
+            Some("update") => Ok(stateful_update(&mut state, &argv)),
             command => Ok(failed(&format!("unsupported fake bd command {command:?}"))),
-        }
+        };
+        drop(state);
+        result
     }
 }
 
@@ -324,22 +326,22 @@ fn stateful_create(state: &mut StatefulBd, argv: &[String]) -> Result<RunOutput,
     Ok(created(id))
 }
 
-fn stateful_close(state: &mut StatefulBd, argv: &[String]) -> Result<RunOutput, BdError> {
+fn stateful_close(state: &mut StatefulBd, argv: &[String]) -> RunOutput {
     let Some(bead) = argv.get(1).and_then(|id| state.beads.get_mut(id)) else {
-        return Ok(failed("missing fake bead"));
+        return failed("missing fake bead");
     };
     bead.status = "closed".to_string();
-    Ok(closed())
+    closed()
 }
 
-fn stateful_update(state: &mut StatefulBd, argv: &[String]) -> Result<RunOutput, BdError> {
+fn stateful_update(state: &mut StatefulBd, argv: &[String]) -> RunOutput {
     state.update_attempt += 1;
     if state.fail_update == Some(state.update_attempt) {
         state.fail_update = None;
-        return Ok(failed("injected update failure"));
+        return failed("injected update failure");
     }
     let Some(bead) = argv.get(1).and_then(|id| state.beads.get_mut(id)) else {
-        return Ok(failed("missing fake bead"));
+        return failed("missing fake bead");
     };
     let mut index = 2;
     while index < argv.len() {
@@ -365,11 +367,11 @@ fn stateful_update(state: &mut StatefulBd, argv: &[String]) -> Result<RunOutput,
             "--unset-metadata" => {
                 bead.metadata.remove(&value);
             }
-            _ => return Ok(failed("unsupported fake update flag")),
+            _ => return failed("unsupported fake update flag"),
         }
         index += 2;
     }
-    Ok(empty_json())
+    empty_json()
 }
 
 fn prefixed_value<'a>(argv: &'a [String], prefix: &str) -> Option<&'a str> {
@@ -767,9 +769,8 @@ async fn todo_preflight_rejects_unindexed_spec_file() -> Result<()> {
     std::fs::write(dir.path().join("specs/services.md"), "# Services\n")?;
     let mut ctrl = controller(dir.path(), CapturingRunner::new(Vec::<RunOutput>::new()))?;
 
-    let err = match ctrl.build_session().await {
-        Ok(_) => return Err(anyhow!("unindexed spec file was accepted")),
-        Err(err) => err,
+    let Err(err) = ctrl.build_session().await else {
+        return Err(anyhow!("unindexed spec file was accepted"));
     };
 
     match err {
@@ -790,7 +791,7 @@ async fn generic_todo_marker_is_rejected_without_advancing() -> Result<()> {
     let mut ctrl = controller(dir.path(), runner)?;
     let _session = ctrl.build_session().await?;
 
-    let err = match ctrl
+    let Err(err) = ctrl
         .record_outcome(
             &SessionOutcome {
                 exit_code: 0,
@@ -800,9 +801,8 @@ async fn generic_todo_marker_is_rejected_without_advancing() -> Result<()> {
             None,
         )
         .await
-    {
-        Ok(_) => return Err(anyhow!("generic marker was accepted")),
-        Err(err) => err,
+    else {
+        return Err(anyhow!("generic marker was accepted"));
     };
 
     assert!(matches!(err, TodoError::GenericTodoMarker));
@@ -818,7 +818,7 @@ async fn missing_todo_success_marker_fails_without_advancing() -> Result<()> {
     let mut ctrl = controller(dir.path(), runner)?;
     let _session = ctrl.build_session().await?;
 
-    let err = match ctrl
+    let Err(err) = ctrl
         .record_outcome(
             &SessionOutcome {
                 exit_code: 0,
@@ -828,9 +828,8 @@ async fn missing_todo_success_marker_fails_without_advancing() -> Result<()> {
             None,
         )
         .await
-    {
-        Ok(_) => return Err(anyhow!("missing LOOM_TODO marker was accepted")),
-        Err(err) => err,
+    else {
+        return Err(anyhow!("missing LOOM_TODO marker was accepted"));
     };
 
     assert!(matches!(err, TodoError::MissingExitSignal));
@@ -869,7 +868,7 @@ async fn assert_todo_validation_failure_leaves_pending_without_advancing() -> Re
     let session = ctrl.build_session().await?;
     let success = todo_success(&session.config.initial_prompt, &["alpha"])?;
 
-    let err = match ctrl
+    let Err(err) = ctrl
         .record_outcome(
             &SessionOutcome {
                 exit_code: 0,
@@ -879,9 +878,8 @@ async fn assert_todo_validation_failure_leaves_pending_without_advancing() -> Re
             Some(&success),
         )
         .await
-    {
-        Ok(_) => return Err(anyhow!("omitted spec payload was accepted")),
-        Err(err) => err,
+    else {
+        return Err(anyhow!("omitted spec payload was accepted"));
     };
 
     assert!(matches!(err, TodoError::TodoValidation { .. }));
@@ -950,7 +948,7 @@ async fn assert_todo_validation_case(case: ValidationCase) -> Result<()> {
         )?,
     };
 
-    let error = match ctrl
+    let Err(error) = ctrl
         .record_outcome(
             &SessionOutcome {
                 exit_code: 0,
@@ -960,9 +958,8 @@ async fn assert_todo_validation_case(case: ValidationCase) -> Result<()> {
             Some(&success),
         )
         .await
-    {
-        Ok(_) => return Err(anyhow!("invalid todo success was accepted")),
-        Err(error) => error,
+    else {
+        return Err(anyhow!("invalid todo success was accepted"));
     };
     assert!(
         matches!(error, TodoError::TodoValidation { .. }),
@@ -1098,7 +1095,7 @@ async fn assert_atomic_finalization_failure(
         state.inject_todo_finalization_failure(1)?;
     }
 
-    let error = match ctrl
+    let Err(error) = ctrl
         .record_outcome(
             &SessionOutcome {
                 exit_code: 0,
@@ -1108,9 +1105,8 @@ async fn assert_atomic_finalization_failure(
             Some(&success),
         )
         .await
-    {
-        Ok(_) => return Err(anyhow!("injected finalization failure was ignored")),
-        Err(error) => error,
+    else {
+        return Err(anyhow!("injected finalization failure was ignored"));
     };
     assert!(
         matches!(error, TodoError::Bd(_) | TodoError::State(_)),
@@ -1206,9 +1202,8 @@ async fn todo_reuses_matching_pending_work_epic_else_blocks() -> Result<()> {
     ));
     let mut ctrl = controller(conflict_dir.path(), CapturingRunner::new(responses))?;
 
-    let err = match ctrl.build_session().await {
-        Ok(_) => panic!("pending mismatch should block"),
-        Err(err) => err,
+    let Err(err) = ctrl.build_session().await else {
+        panic!("pending mismatch should block");
     };
 
     match err {
@@ -1240,9 +1235,8 @@ async fn todo_missing_spec_epic_initializes_existing_missing_cursor_blocks() -> 
     let (_blocked_base, _blocked_head) = init_workspace(blocked_dir.path())?;
     let responses = vec![spec_epic_without_cursor("lm-alpha", "alpha")];
     let mut ctrl = controller(blocked_dir.path(), CapturingRunner::new(responses))?;
-    let err = match ctrl.build_session().await {
-        Ok(_) => return Err(anyhow!("missing existing cursor was accepted")),
-        Err(err) => err,
+    let Err(err) = ctrl.build_session().await else {
+        return Err(anyhow!("missing existing cursor was accepted"));
     };
     match err {
         TodoError::MissingSpecCursor { label, epic_id } => {
@@ -1261,9 +1255,8 @@ async fn todo_invalid_spec_cursor_blocks_loudly() -> Result<()> {
     let responses = vec![spec_epic("lm-alpha", "alpha", "not-a-sha")];
     let mut ctrl = controller(dir.path(), CapturingRunner::new(responses))?;
 
-    let err = match ctrl.build_session().await {
-        Ok(_) => return Err(anyhow!("invalid cursor was accepted")),
-        Err(err) => err,
+    let Err(err) = ctrl.build_session().await else {
+        return Err(anyhow!("invalid cursor was accepted"));
     };
 
     match err {

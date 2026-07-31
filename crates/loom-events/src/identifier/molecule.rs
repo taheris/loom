@@ -9,6 +9,11 @@ use thiserror::Error;
 pub struct MoleculeId(String);
 
 impl MoleculeId {
+    /// Parses a canonical molecule id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseMoleculeIdError`] when the input is malformed.
     pub fn new(s: impl AsRef<str>) -> Result<Self, ParseMoleculeIdError> {
         s.as_ref().parse()
     }

@@ -5,12 +5,12 @@ use loom_driver::config::AgentSelection;
 
 use crate::spawn::container_workspace_path;
 
-pub(crate) struct Launch {
+pub struct Launch {
     pub(crate) argv: Vec<String>,
     pub(crate) session_dir: PathBuf,
 }
 
-pub(crate) fn prepare_launch(
+pub fn prepare_launch(
     workspace: &Path,
     selection: &AgentSelection,
     scratch_dir: &Path,
@@ -38,7 +38,7 @@ pub(crate) fn prepare_launch(
     Ok(Launch { argv, session_dir })
 }
 
-pub(crate) fn repin_extension_source(prompt_path: &Path, scratchpad_path: &Path) -> String {
+pub fn repin_extension_source(prompt_path: &Path, scratchpad_path: &Path) -> String {
     let prompt_path = json_string(prompt_path);
     let scratchpad_path = json_string(scratchpad_path);
     format!(
@@ -109,7 +109,7 @@ export default function(pi) {{
     )
 }
 
-pub(crate) fn build_wrix_argv(
+pub fn build_wrix_argv(
     workspace: &Path,
     prompt_path: &Path,
     selection: &AgentSelection,

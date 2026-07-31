@@ -31,13 +31,7 @@ use std::io::{self, IsTerminal, Write};
 /// updated text.
 pub const CLEAR_TO_EOL: &str = "\x1b[K";
 
-/// Probe stdout for TTY-attached + size-reachable state. The CLI flips
-/// the in-place running indicator on when this returns `true` and the
-/// user did not pass `--plain`/`--json`/`--raw`. We use crossterm's
-/// `terminal::size` rather than just `IsTerminal::is_terminal` because
-/// some CI runners attach a pseudo-tty but report a 0-width terminal —
-/// the indicator's `\r` overwrite pattern requires a real width to
-/// avoid mangling output.
+/// Report whether stdout can safely display an in-place indicator.
 pub fn stdout_supports_indicator() -> bool {
     if !io::stdout().is_terminal() {
         return false;
@@ -45,10 +39,7 @@ pub fn stdout_supports_indicator() -> bool {
     matches!(crossterm::terminal::size(), Ok((cols, _)) if cols > 0)
 }
 
-/// Active in-place running indicator. Constructed when a tool starts
-/// running; the caller invokes [`tick`] to refresh the elapsed-time
-/// display and [`end`] when the tool result arrives (or on any exit
-/// path).
+/// In-place running indicator refreshed by [`RunningIndicator::tick`].
 pub struct RunningIndicator<W: Write> {
     out: W,
     /// `true` after the first `tick` — distinguishes "first write" from
@@ -67,7 +58,7 @@ impl<W: Write> RunningIndicator<W> {
     /// `enabled = false` for Plain/Json/Raw modes or `parallel > 1`;
     /// the indicator becomes a silent no-op without further branching
     /// in callers.
-    pub fn new(out: W, enabled: bool) -> Self {
+    pub const fn new(out: W, enabled: bool) -> Self {
         Self {
             out,
             written: false,
@@ -78,6 +69,10 @@ impl<W: Write> RunningIndicator<W> {
     /// Refresh the indicator with the current `text`. First call writes
     /// the text without a trailing newline; subsequent calls prepend
     /// `\r` + clear-to-EOL to overwrite the previous line.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when writing or flushing the owned stream fails.
     pub fn tick(&mut self, text: &str) -> io::Result<()> {
         if !self.enabled {
             return Ok(());
@@ -95,6 +90,10 @@ impl<W: Write> RunningIndicator<W> {
     /// Clear the in-place region. Idempotent — safe to call from
     /// panic / signal handlers without checking state first. The
     /// caller follows up with the final non-running line.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when clearing or flushing the owned stream fails.
     pub fn end(&mut self) -> io::Result<()> {
         if !self.enabled || !self.written {
             return Ok(());

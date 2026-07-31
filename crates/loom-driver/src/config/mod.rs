@@ -208,6 +208,10 @@ impl LoomConfig {
     /// are rejected when empty: blanking a config does not disable the
     /// pin — to genuinely drop a pin, remove the corresponding
     /// `{% include %}` from the relevant template.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when configuration cannot be read, merged, or validated.
     pub fn from_toml_str(src: &str) -> Result<Self, LoomConfigError> {
         let mut cfg: Self = toml::from_str(src)?;
         normalize_nested_phase_tables(src, &mut cfg)?;
@@ -235,14 +239,16 @@ impl LoomConfig {
     /// (per-phase or default) does not match `claude`, `pi`, or `direct` —
     /// surfacing the validation lazily lets the TOML parser stay schema-free
     /// for unknown `[phase.<phase>]` keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when configuration cannot be read, merged, or validated.
     pub fn agent_for(&self, phase: Phase) -> Result<AgentSelection, AgentSelectionError> {
         let key = phase.as_str();
         let profile_str = lookup_phase_field(&self.phase, key, |p| &p.profile)
-            .map(String::as_str)
-            .unwrap_or(BUILT_IN_PROFILE);
+            .map_or(BUILT_IN_PROFILE, String::as_str);
         let backend_str = lookup_phase_field(&self.phase, key, |p| &p.agent.backend)
-            .map(String::as_str)
-            .unwrap_or(BUILT_IN_BACKEND);
+            .map_or(BUILT_IN_BACKEND, String::as_str);
         let kind = parse_backend_name(backend_str)?;
         let provider = lookup_phase_field(&self.phase, key, |p| &p.agent.provider).cloned();
         let model_id = lookup_phase_field(&self.phase, key, |p| &p.agent.model_id).cloned();
@@ -273,7 +279,7 @@ impl LoomConfig {
     /// block, ready to install on [`crate::agent::SpawnConfig::output_limits`]
     /// when the direct backend is dispatched. `max_inline_bytes` falls back to
     /// the [`DirectConfig`] default (16384) when `[direct]` is absent.
-    pub fn direct_output_limits(&self) -> OutputLimits {
+    pub const fn direct_output_limits(&self) -> OutputLimits {
         OutputLimits {
             max_inline_bytes: self.direct.max_inline_bytes,
         }
@@ -293,6 +299,10 @@ impl LoomConfig {
 
     /// Load a config from disk. A missing file yields the default config so
     /// the file is optional.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when configuration cannot be read, merged, or validated.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, LoomConfigError> {
         let path = path.as_ref();
         match std::fs::read_to_string(path) {
@@ -477,7 +487,7 @@ post_result_grace_secs = 5
     /// `enabled = false` so the workflow's chain composition skips it.
     #[test]
     fn agent_observer_block_round_trips_via_loom_config() -> Result<()> {
-        let src = r#"
+        let src = r"
 [agent.doom_loop]
 enabled = false
 window = 8
@@ -487,7 +497,7 @@ stage_2_after_stage_1 = 2
 [agent.duplicate_result]
 enabled = false
 min_bytes = 1024
-"#;
+";
         let cfg = LoomConfig::from_toml_str(src)?;
         assert!(!cfg.agent.doom_loop.enabled);
         assert_eq!(cfg.agent.doom_loop.window, 8);
@@ -603,15 +613,15 @@ sccache_dir = "/var/cache/loom-sccache"
 
         let absent = LoomConfig::from_toml_str("")?;
         assert_eq!(absent.loom.git_hook_timeout_secs, 600);
-        assert_eq!(absent.loom.git_hook_timeout(), Duration::from_secs(600));
+        assert_eq!(absent.loom.git_hook_timeout(), Duration::from_mins(10));
 
-        let src = r#"
+        let src = r"
 [loom]
 git_hook_timeout_secs = 1200
-"#;
+";
         let cfg = LoomConfig::from_toml_str(src)?;
         assert_eq!(cfg.loom.git_hook_timeout_secs, 1200);
-        assert_eq!(cfg.loom.git_hook_timeout(), Duration::from_secs(1200));
+        assert_eq!(cfg.loom.git_hook_timeout(), Duration::from_mins(20));
         Ok(())
     }
 
@@ -640,10 +650,10 @@ max_retries = 5
 
     #[test]
     fn loop_infra_max_attempts_parses_nested_table() -> Result<()> {
-        let src = r#"
+        let src = r"
 [loop.infra]
 max_attempts = 7
-"#;
+";
         let cfg = LoomConfig::from_toml_str(src)?;
         assert_eq!(cfg.loop_.infra.max_attempts, 7);
         assert_eq!(cfg.loop_.max_retries, 2);
@@ -717,7 +727,7 @@ agent.backend = "claude"
                 model_id: None,
                 model: None,
                 thinking_level: None,
-                observers: Default::default(),
+                observers: AgentObserversConfig::default(),
                 output_limits: None,
                 shutdown_grace: None,
                 denied_tools: Vec::new(),
@@ -1003,7 +1013,7 @@ agent.model_id = "claude-sonnet-4-6"
     /// Empty config (no `[phase]` tables at all) resolves every phase to
     /// `claude` with the built-in `base` profile — the documented defaults.
     #[test]
-    fn agent_for_default_is_claude_when_config_empty() -> Result<()> {
+    fn agent_for_default_is_claude_when_config_empty() {
         let cfg = LoomConfig::default();
         for phase in [
             Phase::Plan,
@@ -1017,7 +1027,6 @@ agent.model_id = "claude-sonnet-4-6"
             assert_eq!(sel.profile.as_str(), BUILT_IN_PROFILE, "phase={phase:?}");
             assert!(sel.claude_settings.is_some());
         }
-        Ok(())
     }
 
     /// `[phase.default]` without `agent.backend` still resolves to the

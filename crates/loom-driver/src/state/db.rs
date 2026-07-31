@@ -68,7 +68,7 @@ DROP TABLE IF EXISTS specs;
 DROP TABLE IF EXISTS meta;
 ";
 
-/// Owned handle to the SQLite cache database. Wraps the connection in a
+/// Owned handle to the `SQLite` cache database. Wraps the connection in a
 /// `Mutex` so the type is `Send + Sync`; the underlying `rusqlite::Connection`
 /// is `!Sync`.
 pub struct CacheDb {
@@ -124,12 +124,13 @@ pub struct NoteRow {
     pub created_at_ms: i64,
 }
 
-/// Bead-metadata writer injected into
-/// [`CacheDb::consume_notes_and_refresh_base_commit`]. The callback
+/// Bead-metadata writer used by the productive-completion gate.
+///
+/// Injected into [`CacheDb::consume_notes_and_refresh_base_commit`]. The callback
 /// receives the molecule id whose epic carries `loom.base_commit` and
 /// the new commit value; failure surfaces as
 /// [`CacheError::BdUpdate`](super::error::CacheError::BdUpdate) and
-/// rolls back the SQLite writes that share the gate's transaction.
+/// rolls back the `SQLite` writes that share the gate's transaction.
 pub type BdUpdateFn = Box<dyn Fn(&MoleculeId, &str) -> Result<(), BdError>>;
 
 /// Compatibility projection for older work-epic call sites.
@@ -143,6 +144,10 @@ pub struct MoleculeRow {
 
 impl CacheDb {
     /// Open or create a cache DB at `path`, applying schema migrations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CacheError> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
@@ -162,6 +167,10 @@ impl CacheDb {
 
     /// Delete the file at `path` (if any) and re-open with a fresh schema.
     /// Used by `loom init --rebuild` to recover from a corrupted DB file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn recreate(path: impl AsRef<Path>) -> Result<Self, CacheError> {
         let path = path.as_ref();
         match std::fs::remove_file(path) {
@@ -173,6 +182,10 @@ impl CacheDb {
     }
 
     /// Look up a single spec row by label.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn spec(&self, label: &SpecLabel) -> Result<SpecRow, CacheError> {
         let conn = self.lock_conn()?;
         conn.query_row(
@@ -187,6 +200,10 @@ impl CacheDb {
     }
 
     /// Look up a cached work-epic projection by id, or `None` when no row matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn molecule(&self, id: &MoleculeId) -> Result<Option<MoleculeRow>, CacheError> {
         let conn = self.lock_conn()?;
         conn.query_row(
@@ -202,6 +219,10 @@ impl CacheDb {
     }
 
     /// Read the cached work-epic projection associated with a spec, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn molecule_for_spec(&self, label: &SpecLabel) -> Result<Option<MoleculeRow>, CacheError> {
         let conn = self.lock_conn()?;
         conn.query_row(
@@ -217,6 +238,10 @@ impl CacheDb {
     }
 
     /// Insert or update an indexed spec row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn upsert_spec(&self, label: &SpecLabel, spec_path: &str) -> Result<(), CacheError> {
         let conn = self.lock_conn()?;
         conn.execute(
@@ -224,10 +249,15 @@ impl CacheDb {
              ON CONFLICT(label) DO UPDATE SET spec_path = excluded.spec_path",
             params![label.as_str(), spec_path],
         )?;
+        drop(conn);
         Ok(())
     }
 
     /// Insert or update a cached spec-epic mirror row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn upsert_spec_epic(&self, row: &SpecEpicRow) -> Result<(), CacheError> {
         self.ensure_spec_row(&row.spec_label)?;
         let conn = self.lock_conn()?;
@@ -242,10 +272,15 @@ impl CacheDb {
                 row.todo_cursor.as_deref(),
             ],
         )?;
+        drop(conn);
         Ok(())
     }
 
     /// Read a cached spec-epic mirror row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn spec_epic(&self, label: &SpecLabel) -> Result<Option<SpecEpicRow>, CacheError> {
         let conn = self.lock_conn()?;
         conn.query_row(
@@ -258,6 +293,10 @@ impl CacheDb {
     }
 
     /// Insert or update a cached work-epic mirror row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn upsert_work_epic(&self, row: &WorkEpicRow) -> Result<(), CacheError> {
         let conn = self.lock_conn()?;
         conn.execute(
@@ -272,14 +311,19 @@ impl CacheDb {
                 row.epic_id.as_str(),
                 row.todo_head.as_deref(),
                 row.todo_fingerprint.as_deref(),
-                if row.is_active { 1_i64 } else { 0_i64 },
+                i64::from(row.is_active),
                 i64::from(row.iteration_count),
             ],
         )?;
+        drop(conn);
         Ok(())
     }
 
     /// Atomically mirror successful todo finalization and consume its notes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn finalize_todo(
         &self,
         spec_epics: &[SpecEpicRow],
@@ -321,16 +365,21 @@ impl CacheDb {
                 active_work_epic.epic_id.as_str(),
                 active_work_epic.todo_head.as_deref(),
                 active_work_epic.todo_fingerprint.as_deref(),
-                if active_work_epic.is_active { 1_i64 } else { 0_i64 },
+                i64::from(active_work_epic.is_active),
                 i64::from(active_work_epic.iteration_count),
             ],
         )?;
         tx.commit()?;
+        drop(conn);
         Ok(())
     }
 
     /// Inject a cache-write failure after `successful_cursor_writes` updates.
     #[cfg(feature = "test-support")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn inject_todo_finalization_failure(
         &self,
         successful_cursor_writes: u32,
@@ -338,20 +387,24 @@ impl CacheDb {
         let conn = self.lock_conn()?;
         conn.execute_batch(&format!(
             "CREATE TEMP TABLE todo_finalization_failures (remaining INTEGER NOT NULL);
-             INSERT INTO todo_finalization_failures VALUES ({});
+             INSERT INTO todo_finalization_failures VALUES ({successful_cursor_writes});
              CREATE TEMP TRIGGER fail_todo_finalization
              BEFORE UPDATE OF todo_cursor ON spec_epics
              BEGIN
                  UPDATE todo_finalization_failures SET remaining = remaining - 1;
                  SELECT CASE WHEN (SELECT remaining FROM todo_finalization_failures) < 0
                      THEN RAISE(FAIL, 'injected todo finalization failure') END;
-             END;",
-            successful_cursor_writes
+             END;"
         ))?;
+        drop(conn);
         Ok(())
     }
 
     /// Read a cached work-epic mirror row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn work_epic(&self, epic_id: &MoleculeId) -> Result<Option<WorkEpicRow>, CacheError> {
         let conn = self.lock_conn()?;
         conn.query_row(
@@ -365,6 +418,10 @@ impl CacheDb {
     }
 
     /// List cached work epics sorted by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn work_epics(&self) -> Result<Vec<WorkEpicRow>, CacheError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
@@ -374,10 +431,16 @@ impl CacheDb {
         let rows = stmt
             .query_map([], row_to_work_epic)?
             .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
         rows.into_iter().collect()
     }
 
     /// Insert or update cached criterion evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn upsert_criterion_evidence(&self, row: &CriterionEvidenceRow) -> Result<(), CacheError> {
         self.ensure_spec_row(&row.spec_label)?;
         let conn = self.lock_conn()?;
@@ -402,10 +465,15 @@ impl CacheDb {
                 row.evidence.as_deref(),
             ],
         )?;
+        drop(conn);
         Ok(())
     }
 
     /// Read all cached criterion evidence in stable spec/criterion order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn criterion_evidence(&self) -> Result<Vec<CriterionEvidenceRow>, CacheError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
@@ -416,10 +484,16 @@ impl CacheDb {
         let rows = stmt
             .query_map([], row_to_criterion_evidence)?
             .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
         rows.into_iter().collect()
     }
 
     /// Read cached criterion evidence for one spec.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn criterion_evidence_for_spec(
         &self,
         label: &SpecLabel,
@@ -433,6 +507,8 @@ impl CacheDb {
         let rows = stmt
             .query_map(params![label.as_str()], row_to_criterion_evidence)?
             .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
         rows.into_iter().collect()
     }
 
@@ -443,6 +519,10 @@ impl CacheDb {
     /// Used by `loom plan` after the interactive interview exits to land the
     /// declared `## Companions` paths in the cache DB without rebuilding the
     /// whole schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn replace_companions(
         &self,
         label: &SpecLabel,
@@ -464,6 +544,7 @@ impl CacheDb {
                 params![label.as_str(), path],
             )?;
         }
+        drop(conn);
         Ok(())
     }
 
@@ -474,6 +555,10 @@ impl CacheDb {
     /// Atomically replace every note for `(spec_label, kind)` with the
     /// supplied set. Performs `DELETE` + N `INSERT` in a single tx so a
     /// partial failure leaves the prior set intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn notes_set(
         &self,
         spec_label: &SpecLabel,
@@ -495,10 +580,15 @@ impl CacheDb {
             )?;
         }
         tx.commit()?;
+        drop(conn);
         Ok(())
     }
 
     /// Append a single note. Returns its row id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn notes_add(
         &self,
         spec_label: &SpecLabel,
@@ -512,11 +602,17 @@ impl CacheDb {
             "INSERT INTO notes(spec_label, kind, text, created_at) VALUES (?1, ?2, ?3, ?4)",
             params![spec_label.as_str(), kind, text, created_at_ms],
         )?;
-        Ok(conn.last_insert_rowid())
+        let row_id = conn.last_insert_rowid();
+        drop(conn);
+        Ok(row_id)
     }
 
     /// Delete every note for `(spec_label, kind)`. Pass `kind = None`
     /// to clear all kinds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn notes_clear(
         &self,
         spec_label: &SpecLabel,
@@ -534,12 +630,17 @@ impl CacheDb {
                 params![spec_label.as_str()],
             )?;
         }
+        drop(conn);
         Ok(())
     }
 
     /// List notes by `(spec_label, kind)`. `spec_label = None` widens
     /// to all specs; `kind = None` widens to all kinds. Always ordered
     /// by `id` ascending (chronological).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn notes_list(
         &self,
         spec_label: Option<&SpecLabel>,
@@ -580,22 +681,28 @@ impl CacheDb {
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
         Ok(rows)
     }
 
     /// Productive-completion gate: delete every implementation-kind note
     /// for `label`, advance the local `molecules.base_commit` cache for
     /// `mol_id` to `new_base_commit`, and run the durable bead-metadata
-    /// write through `bd_update` — all under one SQLite transaction. A
+    /// write through `bd_update` — all under one `SQLite` transaction. A
     /// closure failure (the bead-metadata write) propagates as
     /// [`CacheError::BdUpdate`] and the transaction rolls back so the
     /// local cache stays aligned with the pre-write Beads state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn consume_notes_and_refresh_base_commit(
         &self,
         label: &SpecLabel,
         mol_id: &MoleculeId,
         new_base_commit: &str,
-        bd_update: BdUpdateFn,
+        bd_update: &BdUpdateFn,
     ) -> Result<(), CacheError> {
         let mut conn = self.conn.lock().map_err(|_| CacheError::Poisoned)?;
         let tx = conn.transaction()?;
@@ -609,13 +716,19 @@ impl CacheDb {
         )?;
         bd_update(mol_id, new_base_commit)?;
         tx.commit()?;
+        drop(conn);
         Ok(())
     }
 
     /// Remove a single note by its row id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn notes_rm(&self, id: i64) -> Result<(), CacheError> {
         let conn = self.conn.lock().map_err(|_| CacheError::Poisoned)?;
         let n = conn.execute("DELETE FROM notes WHERE id = ?1", params![id])?;
+        drop(conn);
         if n == 0 {
             return Err(CacheError::SpecNotFound {
                 label: format!("note id {id}"),
@@ -632,10 +745,15 @@ impl CacheDb {
             "INSERT OR IGNORE INTO specs(label, spec_path) VALUES (?1, ?2)",
             params![label.as_str(), default_spec_path(label)],
         )?;
+        drop(conn);
         Ok(())
     }
 
     /// Read all companion paths recorded for `label` (sorted for determinism).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn companions(&self, label: &SpecLabel) -> Result<Vec<String>, CacheError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
@@ -647,10 +765,16 @@ impl CacheDb {
         for row in rows {
             out.push(row?);
         }
+        drop(stmt);
+        drop(conn);
         Ok(out)
     }
 
     /// Increment the iteration counter for `mol_id` and return the new value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn increment_iteration(&self, mol_id: &MoleculeId) -> Result<u32, CacheError> {
         let conn = self.lock_conn()?;
         let updated = conn.execute(
@@ -667,17 +791,23 @@ impl CacheDb {
             params![mol_id.as_str()],
             |r| r.get(0),
         )?;
-        Ok(count.max(0) as u32)
+        drop(conn);
+        Ok(iteration_count_from_sql(count))
     }
 
     /// Set the iteration counter for `mol_id` to `value`. Errors if no row
     /// matches (consistent with [`Self::increment_iteration`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn set_iteration(&self, mol_id: &MoleculeId, value: u32) -> Result<(), CacheError> {
         let conn = self.lock_conn()?;
         let updated = conn.execute(
             "UPDATE work_epics SET iteration_count = ?1 WHERE epic_id = ?2",
             params![value, mol_id.as_str()],
         )?;
+        drop(conn);
         if updated == 0 {
             return Err(CacheError::SpecNotFound {
                 label: mol_id.to_string(),
@@ -687,6 +817,10 @@ impl CacheDb {
     }
 
     /// Reset the iteration counter for `mol_id` to zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when database access, stored state, or state validation fails.
     pub fn reset_iteration(&self, mol_id: &MoleculeId) -> Result<(), CacheError> {
         self.set_iteration(mol_id, 0)
     }
@@ -783,7 +917,7 @@ fn row_to_work_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<WorkEpic
         todo_head,
         todo_fingerprint,
         is_active: is_active != 0,
-        iteration_count: iteration_count.max(0) as u32,
+        iteration_count: iteration_count_from_sql(iteration_count),
     }))
 }
 
@@ -820,9 +954,13 @@ fn row_to_molecule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MoleculeR
             id: parse_molecule_id(id)?,
             spec_label: parse_spec_label(spec_label)?,
             base_commit,
-            iteration_count: iteration_count.max(0) as u32,
+            iteration_count: iteration_count_from_sql(iteration_count),
         })
     })())
+}
+
+fn iteration_count_from_sql(value: i64) -> u32 {
+    u32::try_from(value.max(0)).unwrap_or(u32::MAX)
 }
 
 fn parse_spec_label(value: String) -> Result<SpecLabel, CacheError> {

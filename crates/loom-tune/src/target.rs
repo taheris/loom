@@ -16,7 +16,7 @@ pub enum Target {
 }
 
 impl Target {
-    pub fn kind(&self) -> Kind {
+    pub const fn kind(&self) -> Kind {
         match self {
             Self::Skill { .. } => Kind::Skill,
             Self::Phase { .. } => Kind::Phase,
@@ -115,6 +115,10 @@ pub enum Kind {
 pub struct PartialName(String);
 
 impl PartialName {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn new(value: impl Into<String>) -> Result<Self, ParsePartialNameError> {
         value.into().parse()
     }
@@ -214,6 +218,10 @@ impl Catalog {
         self.known.contains(target)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn require_known(&self, target: &Target) -> Result<(), TargetCatalogError> {
         if self.contains(target) {
             Ok(())

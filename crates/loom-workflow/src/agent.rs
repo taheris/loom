@@ -48,6 +48,10 @@ use crate::observer::DefaultObserverChain;
 /// `UnexpectedEof` is returned if the agent process closes its stdout
 /// without emitting a terminal event — this signals the caller that the
 /// session ended abnormally and the outcome is not trustworthy.
+///
+/// # Errors
+///
+/// Returns an error when workflow setup, execution, or state validation fails.
 pub async fn run_agent<B: AgentBackend>(
     config: &SpawnConfig,
     sink: Option<LogSink>,
@@ -72,7 +76,9 @@ pub async fn run_agent<B: AgentBackend>(
 }
 
 /// Same as [`run_agent`] but preserves the pre-stream vs interrupted
-/// infrastructure split in its return type. Used by the `loom loop` driver so
+/// infrastructure split in its return type.
+///
+/// Used by the `loom loop` driver so
 /// failures before the first canonical agent-sourced event route as
 /// `infra-preflight`, while failures after agent output but before
 /// `session_complete` route as interrupted infra.
@@ -433,7 +439,7 @@ enum DriverSeverity {
 }
 
 impl DriverSeverity {
-    fn as_wire(self) -> &'static str {
+    const fn as_wire(self) -> &'static str {
         match self {
             DriverSeverity::Warning => "warning",
         }
@@ -447,14 +453,14 @@ enum StallPhase {
 }
 
 impl StallPhase {
-    fn as_wire(self) -> &'static str {
+    const fn as_wire(self) -> &'static str {
         match self {
             StallPhase::PromptWrite => "prompt_write",
             StallPhase::AwaitEvent => "await_event",
         }
     }
 
-    fn summary(self) -> &'static str {
+    const fn summary(self) -> &'static str {
         match self {
             StallPhase::PromptWrite => {
                 "still writing initial prompt to agent — agent stdin not draining yet"
@@ -608,7 +614,9 @@ fn phase_envelope_builder() -> EnvelopeBuilder {
             clock
                 .wall_now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis() as i64)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                })
         },
     )
 }
@@ -785,7 +793,7 @@ impl InfraCause {
     }
 }
 
-fn stream_infra_phase(first_event_seen: bool) -> InfraPhase {
+const fn stream_infra_phase(first_event_seen: bool) -> InfraPhase {
     if first_event_seen {
         InfraPhase::Interrupted
     } else {
@@ -811,7 +819,7 @@ fn protocol_error_session_result(
     infra_session_result(first_event_seen, error)
 }
 
-fn infra_session_result(first_event_seen: bool, error: String) -> SessionResult {
+const fn infra_session_result(first_event_seen: bool, error: String) -> SessionResult {
     if first_event_seen {
         SessionResult::MidSessionFailed { error }
     } else {
@@ -928,7 +936,7 @@ fn protocol_infra_cause(err: &ProtocolError) -> InfraCause {
     }
 }
 
-fn protocol_exit_status(err: &ProtocolError) -> Option<i32> {
+const fn protocol_exit_status(err: &ProtocolError) -> Option<i32> {
     match err {
         ProtocolError::ProcessExit(code) => Some(*code),
         _ => None,
@@ -946,8 +954,8 @@ fn is_oom_error(error: &str) -> bool {
 /// Action the event loop should take after collecting `react()` commands
 /// from every sink in the chain. `Steer` commands are batched in
 /// registration order; the first `Abort` short-circuits the batch and
-/// becomes terminal — per `specs/harness.md` §"EventSink and
-/// SessionCommand · react() priority".
+/// becomes terminal — per `specs/harness.md` §"`EventSink` and
+/// `SessionCommand` · `react()` priority".
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ReactAction {
     Continue { steers: Vec<String> },
@@ -972,8 +980,8 @@ fn classify_react_commands(commands: Vec<SessionCommand>) -> ReactAction {
 /// Streaming events (`text_delta`, `thinking_delta`, `toolcall_delta`) do
 /// not trigger `react()`; observer state does not change on text bytes
 /// and polling them every fragment would be pure overhead. Spec contract
-/// (`specs/harness.md` §"EventSink and SessionCommand").
-fn is_non_streaming(event: &AgentEvent) -> bool {
+/// (`specs/harness.md` §"`EventSink` and `SessionCommand`").
+const fn is_non_streaming(event: &AgentEvent) -> bool {
     !matches!(
         event,
         AgentEvent::TextDelta { .. }
@@ -1016,7 +1024,7 @@ fn summarize_event(event: &AgentEvent) -> String {
             exit_code,
             cost_usd,
             ..
-        } => format!("session_complete (exit_code={exit_code}, cost_usd={cost_usd:?})",),
+        } => format!("session_complete (exit_code={exit_code}, cost_usd={cost_usd:?})"),
         AgentEvent::CompactionStart { reason, .. } => format!("compaction_start ({reason:?})"),
         AgentEvent::CompactionEnd { aborted, .. } => {
             format!("compaction_end (aborted={aborted})")
@@ -1285,7 +1293,7 @@ mod tests {
             model_id: None,
             model: None,
             thinking_level: None,
-            observers: Default::default(),
+            observers: loom_driver::config::AgentObserversConfig::default(),
             output_limits: None,
             shutdown_grace: None,
             denied_tools: Vec::new(),
@@ -1715,6 +1723,34 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
             }
         }
 
+        struct ObserverSteerBackend;
+        impl AgentBackend for ObserverSteerBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script_with_parser(
+                    "IFS= read -r _; printf 'call1\nresult1\n'; IFS= read -r _; printf 'complete\n'",
+                    Box::new(OrderingParser {
+                        state: ordering_state(),
+                    }),
+                )
+            }
+        }
+
+        struct RepinBackend;
+        impl AgentBackend for RepinBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script_with_parser(
+                    "IFS= read -r _; printf 'compaction\n'; IFS= read -r _; printf 'complete\n'",
+                    Box::new(OrderingParser {
+                        state: ordering_state(),
+                    }),
+                )
+            }
+
+            fn compaction_repin(_config: &SpawnConfig) -> Result<Option<String>, ProtocolError> {
+                Ok(Some(ORDERING_REPIN_PAYLOAD.to_string()))
+            }
+        }
+
         let dir = tempfile::tempdir().expect("tempdir");
         let (_state, sink, path) = install_ordering_renderer(dir.path());
         let cfg = sample_spawn_config(dir.path());
@@ -1728,18 +1764,6 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         );
         let events = read_jsonl(&path);
         assert_input_before(&events, "initial_prompt", "text_delta");
-
-        struct ObserverSteerBackend;
-        impl AgentBackend for ObserverSteerBackend {
-            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
-                spawn_script_with_parser(
-                    "IFS= read -r _; printf 'call1\nresult1\n'; IFS= read -r _; printf 'complete\n'",
-                    Box::new(OrderingParser {
-                        state: ordering_state(),
-                    }),
-                )
-            }
-        }
 
         let dir = tempfile::tempdir().expect("tempdir");
         let (_state, sink, path) = install_ordering_renderer(dir.path());
@@ -1774,22 +1798,6 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         let events = read_jsonl(&path);
         assert_input_before(&events, "initial_prompt", "tool_call");
         assert_input_before(&events, "steer", "session_complete");
-
-        struct RepinBackend;
-        impl AgentBackend for RepinBackend {
-            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
-                spawn_script_with_parser(
-                    "IFS= read -r _; printf 'compaction\n'; IFS= read -r _; printf 'complete\n'",
-                    Box::new(OrderingParser {
-                        state: ordering_state(),
-                    }),
-                )
-            }
-
-            fn compaction_repin(_config: &SpawnConfig) -> Result<Option<String>, ProtocolError> {
-                Ok(Some(ORDERING_REPIN_PAYLOAD.to_string()))
-            }
-        }
 
         let dir = tempfile::tempdir().expect("tempdir");
         let (_state, sink, path) = install_ordering_renderer(dir.path());
@@ -1906,7 +1914,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
             ReactAction::Continue { steers } => {
                 assert_eq!(steers, vec!["first".to_string(), "second".to_string()]);
             }
-            other => panic!("expected Continue, got {other:?}"),
+            other @ ReactAction::Abort { .. } => panic!("expected Continue, got {other:?}"),
         }
     }
 
@@ -1914,14 +1922,14 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
     fn classify_react_commands_empty_batch_is_continue_no_steers() {
         match classify_react_commands(vec![]) {
             ReactAction::Continue { steers } => assert!(steers.is_empty()),
-            other => panic!("expected Continue, got {other:?}"),
+            other @ ReactAction::Abort { .. } => panic!("expected Continue, got {other:?}"),
         }
     }
 
     /// Spec criterion: "Driver applies `react()` after every non-streaming
     /// event (not after `text_delta` / `thinking_delta` /
     /// `toolcall_delta`)" (`specs/harness.md` Success Criteria §
-    /// "EventSink and SessionCommand"). The driver gates its
+    /// "`EventSink` and `SessionCommand`"). The driver gates its
     /// `react()` poll on [`is_non_streaming`]; this verifies the delta
     /// trio is the only set excluded.
     #[test]
@@ -2053,7 +2061,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
     /// returned from `react()` as terminal: subsequent commands in the
     /// same batch are not applied, session is cancelled, recovery cause
     /// is `observer-abort`" (`specs/harness.md` Success Criteria §
-    /// "EventSink and SessionCommand"). Drives a mock observer that
+    /// "`EventSink` and `SessionCommand`"). Drives a mock observer that
     /// returns `Abort` on the third `tool_call`; verifies (a) `Abort`
     /// short-circuits subsequent `Steer`s in the same batch, and (b)
     /// the cause classifier maps a session aborted by an observer to
@@ -2111,7 +2119,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
                     "Abort's reason must round-trip verbatim",
                 );
             }
-            other => panic!(
+            other @ ReactAction::Continue { .. } => panic!(
                 "Abort must short-circuit the batch; got {other:?} — the trailing Steer leaked through",
             ),
         }

@@ -22,6 +22,7 @@ pub use walk::{
 };
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 
 use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, Label, ListOpts, UpdateOpts};
 use loom_driver::config::SuppressionConfig;
@@ -226,7 +227,7 @@ impl MaterializedStatus {
 impl BatchOutcome {
     /// Stable kebab-case wire name for log/summary surfaces.
     #[must_use]
-    pub fn kind(&self) -> &'static str {
+    pub const fn kind(&self) -> &'static str {
         match self {
             Self::Minted { .. } => "minted",
             Self::Planned { .. } => "planned",
@@ -336,6 +337,10 @@ impl FindingStatusRecord {
         }
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when finding validation, deduplication, or bead creation fails.
     pub fn render(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self).map(|json| format!("{LOOM_FINDING_STATUS_PREFIX} {json}"))
     }
@@ -507,12 +512,13 @@ impl MintSummary {
             BatchOutcome::WouldMint { .. } => self.would_mint += 1,
             BatchOutcome::PromotedDeferred { .. } => self.promoted_deferred += 1,
             BatchOutcome::WouldPromoteDeferred { .. } => self.would_promote_deferred += 1,
-            BatchOutcome::SkippedDedup { .. } => self.skipped += 1,
+            BatchOutcome::SkippedDedup { .. } | BatchOutcome::SkippedClosed { .. } => {
+                self.skipped += 1;
+            }
             BatchOutcome::Refused { .. } => self.refused += 1,
             BatchOutcome::Errored { .. } => self.errors += 1,
             BatchOutcome::StaleCandidate { .. } => self.stale_candidates += 1,
             BatchOutcome::PartialStaleCandidate { .. } => self.partial_stale_candidates += 1,
-            BatchOutcome::SkippedClosed { .. } => self.skipped += 1,
         }
         self.batches.push(outcome);
     }
@@ -541,35 +547,38 @@ impl MintSummary {
             self.errors,
         );
         if self.ineffective_suppressions > 0 {
-            out.push_str(&format!(
+            let _ = write!(
+                out,
                 ", ineffective suppressions {}",
                 self.ineffective_suppressions,
-            ));
+            );
         }
         if self.planned > 0 {
-            out.push_str(&format!(", planned {} tree batches", self.planned));
+            let _ = write!(out, ", planned {} tree batches", self.planned);
         }
         if self.would_mint > 0 {
-            out.push_str(&format!(", would-mint {} (dry-run)", self.would_mint));
+            let _ = write!(out, ", would-mint {} (dry-run)", self.would_mint);
         }
         if self.would_promote_deferred > 0 {
-            out.push_str(&format!(
+            let _ = write!(
+                out,
                 ", would-promote {} deferred (dry-run)",
                 self.would_promote_deferred
-            ));
+            );
         }
         if self.stale_candidates > 0 {
-            out.push_str(&format!(", stale candidates {}", self.stale_candidates));
+            let _ = write!(out, ", stale candidates {}", self.stale_candidates);
         }
         if self.partial_stale_candidates > 0 {
-            out.push_str(&format!(
+            let _ = write!(
+                out,
                 ", partial-stale candidates {}",
                 self.partial_stale_candidates
-            ));
+            );
         }
         out.push('\n');
         if let Some(epic) = &self.active_epic {
-            out.push_str(&format!("active remediation epic: {epic}\n"));
+            let _ = writeln!(out, "active remediation epic: {epic}");
             out.push_str("next: loom loop\n");
         }
         for status in &self.statuses {
@@ -579,7 +588,7 @@ impl MintSummary {
                     out.push('\n');
                 }
                 Err(err) => {
-                    out.push_str(&format!("  status serialization error: {err}\n"));
+                    let _ = writeln!(out, "  status serialization error: {err}");
                 }
             }
         }
@@ -592,93 +601,102 @@ impl MintSummary {
                     findings_count,
                     ..
                 } => {
-                    out.push_str(&format!(
-                        "  minted {fingerprint} → {bead_id} (spec:{lead_spec}, {findings_count} findings)\n",
-                    ));
+                    let _ = writeln!(
+                        out,
+                        "  minted {fingerprint} → {bead_id} (spec:{lead_spec}, {findings_count} findings)",
+                    );
                 }
                 BatchOutcome::Planned {
                     fingerprint,
                     lead_spec,
                     findings_count,
                 } => {
-                    out.push_str(&format!(
-                        "  planned {fingerprint} (spec:{lead_spec}, {findings_count} findings)\n",
-                    ));
+                    let _ = writeln!(
+                        out,
+                        "  planned {fingerprint} (spec:{lead_spec}, {findings_count} findings)",
+                    );
                 }
                 BatchOutcome::WouldMint {
                     fingerprint,
                     lead_spec,
                     findings_count,
                 } => {
-                    out.push_str(&format!(
-                        "  would-mint {fingerprint} (spec:{lead_spec}, {findings_count} findings)\n",
-                    ));
+                    let _ = writeln!(
+                        out,
+                        "  would-mint {fingerprint} (spec:{lead_spec}, {findings_count} findings)",
+                    );
                 }
                 BatchOutcome::SkippedDedup {
                     fingerprint,
                     existing_bead,
                     findings_count,
                 } => {
-                    out.push_str(&format!(
-                        "  skipped {fingerprint} (existing {existing_bead}, {findings_count} findings)\n",
-                    ));
+                    let _ = writeln!(
+                        out,
+                        "  skipped {fingerprint} (existing {existing_bead}, {findings_count} findings)",
+                    );
                 }
                 BatchOutcome::Refused {
                     fingerprint,
                     reason,
                 } => {
-                    out.push_str(&format!("  refused {fingerprint}: {reason}\n"));
+                    let _ = writeln!(out, "  refused {fingerprint}: {reason}");
                 }
                 BatchOutcome::PromotedDeferred {
                     bead_id,
                     findings_count,
                 } => {
-                    out.push_str(&format!(
-                        "  promoted deferred {bead_id} ({findings_count} findings)\n",
-                    ));
+                    let _ = writeln!(
+                        out,
+                        "  promoted deferred {bead_id} ({findings_count} findings)",
+                    );
                 }
                 BatchOutcome::WouldPromoteDeferred {
                     bead_id,
                     findings_count,
                 } => {
-                    out.push_str(&format!(
-                        "  would-promote deferred {bead_id} ({findings_count} findings)\n",
-                    ));
+                    let _ = writeln!(
+                        out,
+                        "  would-promote deferred {bead_id} ({findings_count} findings)",
+                    );
                 }
                 BatchOutcome::Errored {
                     fingerprint,
                     message,
                 } => {
-                    out.push_str(&format!("  error {fingerprint}: {message}\n"));
+                    let _ = writeln!(out, "  error {fingerprint}: {message}");
                 }
                 BatchOutcome::SkippedClosed {
                     fingerprint,
                     existing_bead,
                     findings_count,
                 } => {
-                    out.push_str(&format!(
-                        "  skipped {fingerprint} (closed same-molecule {existing_bead}, {findings_count} findings)\n",
-                    ));
+                    let _ = writeln!(
+                        out,
+                        "  skipped {fingerprint} (closed same-molecule {existing_bead}, {findings_count} findings)",
+                    );
                 }
                 BatchOutcome::StaleCandidate {
                     bead_id,
                     absent_hashes,
                 } => {
-                    out.push_str(&format!(
-                        "  stale-candidate {bead_id} (absent findings: {})\n",
+                    let _ = writeln!(
+                        out,
+                        "  stale-candidate {bead_id} (absent findings: {})",
                         absent_hashes.join(", ")
-                    ));
+                    );
                 }
                 BatchOutcome::PartialStaleCandidate {
                     bead_id,
                     current_hashes,
                     absent_hashes,
                 } => {
-                    out.push_str(&format!(
-                        "  partial-stale-candidate {bead_id} (current: {}; absent: {})\n",
+                    let _ = writeln!(
+                        out,
+                        "  partial-stale-candidate {bead_id} (current: {}; absent: {})",
                         current_hashes.join(", "),
                         absent_hashes.join(", ")
-                    ));
+                    );
                 }
             }
         }
@@ -699,7 +717,9 @@ pub async fn mint_findings<R: CommandRunner>(
 
 /// Dispatch a molecule's push-gate-terminal integrity findings through
 /// the standard mint pipeline, per `specs/gate.md` § *Integrity gate*
-/// (recovery branch). Each finding is normalized into a typed [`Finding`]
+/// (recovery branch).
+///
+/// Each finding is normalized into a typed [`Finding`]
 /// via [`IntegrityFinding::to_finding`] (non-terminal variants drop out)
 /// and the batch is minted against `head_commit`. The review push-gate
 /// reaches mint only through this seam so the `mint_findings_with_options`
@@ -732,7 +752,9 @@ enum MoleculeBatchState {
 }
 
 /// Materialize one molecule-completion review's findings under the explicit
-/// originating molecule. Blocking work becomes ready immediately, deferred
+/// originating molecule.
+///
+/// Blocking work becomes ready immediately, deferred
 /// work stays parked until stabilization, and clarify work is one bead per
 /// finding. Structural conflicts park the molecule for human resolution.
 pub async fn route_molecule_findings<R: CommandRunner>(
@@ -906,12 +928,10 @@ async fn route_molecule_findings_inner<R: CommandRunner>(
             (FindingRoute::Blocking, _) => MoleculeBatchState::Ready,
             (FindingRoute::Deferred, _) => MoleculeBatchState::Deferred,
             (FindingRoute::Clarify, FindingRouting::Clarify) => MoleculeBatchState::Clarify,
-            (FindingRoute::Clarify, FindingRouting::BlockedClarifyWithoutOptions) => {
-                MoleculeBatchState::BlockedClarifyWithoutOptions
-            }
-            (FindingRoute::Clarify, FindingRouting::Fixup) => {
-                MoleculeBatchState::BlockedClarifyWithoutOptions
-            }
+            (
+                FindingRoute::Clarify,
+                FindingRouting::BlockedClarifyWithoutOptions | FindingRouting::Fixup,
+            ) => MoleculeBatchState::BlockedClarifyWithoutOptions,
         };
         let outcome = if state == MoleculeBatchState::Deferred {
             merge_or_create_deferred_batch(
@@ -1162,7 +1182,7 @@ fn molecule_batch_labels(findings: &[Finding], state: MoleculeBatchState) -> Vec
 fn molecule_batch_description(findings: &[Finding], state: MoleculeBatchState) -> String {
     let mut description = String::new();
     if state == MoleculeBatchState::BlockedClarifyWithoutOptions {
-        description.push_str(&format!("Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n"));
+        let _ = write!(description, "Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n");
     }
     if state == MoleculeBatchState::Clarify {
         description.push_str(findings[0].evidence.trim_end());
@@ -1184,7 +1204,7 @@ impl TreeMintPlan {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.batches.is_empty()
     }
 }
@@ -1766,7 +1786,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
             summary.ineffective_suppressions += 1;
         }
         match dedup_live_finding(bd, finding).await {
-            FindingDedup::Untracked => {}
+            FindingDedup::Untracked | FindingDedup::Closed { .. } => {}
             FindingDedup::Tracked(existing_bead) => {
                 summary.record_status(finding, FindingStatusAction::SkippedLive);
                 summary.record(BatchOutcome::SkippedDedup {
@@ -1792,7 +1812,6 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 });
                 continue;
             }
-            FindingDedup::Closed { .. } => {}
         }
         let (lead_spec, lead_epic) = match resolver.resolve(&finding.bonds, opts.dry_run).await {
             Ok(lead) => lead,
@@ -1821,7 +1840,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
             && let Some(epic) = lead_epic.as_ref()
         {
             match dedup_closed_same_molecule(bd, finding, epic).await {
-                FindingDedup::Untracked => {}
+                FindingDedup::Untracked | FindingDedup::Tracked(_) => {}
                 FindingDedup::Closed(existing_bead) => {
                     summary.record_status(finding, FindingStatusAction::Reported);
                     summary.record(BatchOutcome::SkippedClosed {
@@ -1847,7 +1866,6 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                     });
                     continue;
                 }
-                FindingDedup::Tracked(_) => {}
             }
         }
         survivors.push((finding.clone(), lead_spec, lead_epic));
@@ -2431,7 +2449,7 @@ fn cap_bd_title(title: String) -> String {
 fn batch_description(findings: &[Finding], fingerprint: &str, routing: FindingRouting) -> String {
     let mut out = String::new();
     if matches!(routing, FindingRouting::BlockedClarifyWithoutOptions) {
-        out.push_str(&format!("Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n"));
+        let _ = write!(out, "Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n");
     }
     if matches!(routing, FindingRouting::Clarify) {
         out.push_str(findings[0].evidence.trim_end());
@@ -2444,10 +2462,8 @@ fn batch_description(findings: &[Finding], fingerprint: &str, routing: FindingRo
         .map(|finding| format!("`{}`", finding_label(finding)))
         .collect();
     finding_labels.sort();
-    out.push_str(&format!("Finding labels: {}\n", finding_labels.join(", ")));
-    out.push_str(&format!(
-        "Batch receipt: `{MINT_LABEL_PREFIX}{fingerprint}`\n"
-    ));
+    let _ = writeln!(out, "Finding labels: {}", finding_labels.join(", "));
+    let _ = writeln!(out, "Batch receipt: `{MINT_LABEL_PREFIX}{fingerprint}`");
     out
 }
 
@@ -2458,16 +2474,17 @@ fn append_findings_section(out: &mut String, findings: &[Finding]) {
         let kb = (b.token.as_wire(), b.target.canonical_form());
         ka.cmp(&kb)
     });
-    out.push_str(&format!("Findings ({}):\n\n", findings.len()));
+    let _ = write!(out, "Findings ({}):\n\n", findings.len());
     for (_, finding) in indexed {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "- **{token}** — `{target}`\n  id: `{id}`\n  hash: `{hash}`\n  evidence: {evidence}\n",
             token = finding.token.as_wire(),
             target = finding.target.canonical_form(),
             id = finding.id(),
             hash = finding.hash(),
             evidence = evidence_excerpt(&finding.evidence),
-        ));
+        );
     }
 }
 
@@ -2700,13 +2717,13 @@ mod tests {
     }
 
     impl CommandRunner for StatefulBdRunner {
-        async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
-            let argv = args
+        async fn run(&self, raw_args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
+            let argv = raw_args
                 .iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
             let mut state = self.state.lock().expect("state lock");
-            match argv.first().map(String::as_str) {
+            let result = match argv.first().map(String::as_str) {
                 Some("show") => {
                     let id = argv.get(1).map(String::as_str).unwrap_or_default();
                     let rows = state
@@ -2786,7 +2803,9 @@ mod tests {
                     stdout: Vec::new(),
                     stderr: format!("unsupported stateful bd command: {other:?}").into_bytes(),
                 }),
-            }
+            };
+            drop(state);
+            result
         }
     }
 
@@ -3909,7 +3928,7 @@ reason = "false positive"
 
         let tweaked_evidence = Finding {
             evidence: "tweaked prose".into(),
-            ..a.clone()
+            ..a
         };
         let with_tweaked_evidence = batch_fingerprint(&[tweaked_evidence, b, c]);
         assert_eq!(
@@ -4865,29 +4884,42 @@ reason = "false positive"
         // Three lead-specs ⇒ three batches: one minted (gate), one
         // skipped-dedup (harness), one refused (alpha, duplicate
         // finding label).
-        let f_mint_1 = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-A");
-        let f_mint_2 = style_finding(vec![spec("gate")], "RS-19", "evidence-B");
-        let f_skip = contract_finding(vec![spec("harness")], "contract-x", "evidence-C");
-        let f_refuse = contract_finding(vec![spec("alpha")], "contract-y", "evidence-D");
-        let fp_mint = batch_fingerprint(&[f_mint_1.clone(), f_mint_2.clone()]);
-        let fp_skip = f_skip.hash();
-        let fp_refuse = f_refuse.hash();
+        let minted_first = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-A");
+        let minted_second = style_finding(vec![spec("gate")], "RS-19", "evidence-B");
+        let skipped_finding = contract_finding(vec![spec("harness")], "contract-x", "evidence-C");
+        let refused_finding = contract_finding(vec![spec("alpha")], "contract-y", "evidence-D");
+        let minted_fingerprint = batch_fingerprint(&[minted_first.clone(), minted_second.clone()]);
+        let skipped_fingerprint = skipped_finding.hash();
+        let refused_fingerprint = refused_finding.hash();
 
         let responses = vec![
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("[]"),
-            ok_stdout(&format!("[{}]", fixup_row("lm-existing.2", &fp_skip))),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row("lm-existing.2", &skipped_fingerprint)
+            )),
             ok_stdout(&format!(
                 "[{},{}]",
-                fixup_row("lm-dup.1", &fp_refuse),
-                fixup_row("lm-dup.2", &fp_refuse),
+                fixup_row("lm-dup.1", &refused_fingerprint),
+                fixup_row("lm-dup.2", &refused_fingerprint),
             )),
             ok_stdout("lm-newfix.1\n"),
         ];
         let runner = ScriptedRunner::new(responses);
         let bd = BdClient::with_runner(runner);
-        let summary = mint_findings(&bd, &[f_mint_1, f_mint_2, f_skip, f_refuse], "head-sha").await;
+        let summary = mint_findings(
+            &bd,
+            &[
+                minted_first,
+                minted_second,
+                skipped_finding,
+                refused_finding,
+            ],
+            "head-sha",
+        )
+        .await;
         assert_eq!(summary.minted, 1, "one batch minted");
         assert_eq!(summary.skipped, 1, "one batch skipped-dedup");
         assert_eq!(summary.refused, 1, "one batch refused");
@@ -4915,15 +4947,15 @@ reason = "false positive"
             "status lines are emitted: {render}",
         );
         assert!(
-            render.contains(&fp_mint) && render.contains("lm-newfix.1"),
+            render.contains(&minted_fingerprint) && render.contains("lm-newfix.1"),
             "minted line names batch receipt + new bead id: {render}",
         );
         assert!(
-            render.contains(&fp_skip) && render.contains("lm-existing.2"),
+            render.contains(&skipped_fingerprint) && render.contains("lm-existing.2"),
             "skip line names finding hash + existing bead id: {render}",
         );
         assert!(
-            render.contains(&fp_refuse)
+            render.contains(&refused_fingerprint)
                 && render.contains("lm-dup.1")
                 && render.contains("lm-dup.2"),
             "refuse line names finding hash + conflicting ids: {render}",

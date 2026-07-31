@@ -8,15 +8,10 @@ use serde_json::Value;
 
 use crate::client::LlmError;
 
-/// Boxed future returned from [`Tool::invoke`]. Boxed so `dyn Tool` is
-/// dyn-compatible — concrete handlers compose into the loop's
-/// `Vec<Box<dyn Tool>>` registry without per-type monomorphisation.
+/// Boxed future returned by the object-safe [`Tool::invoke`].
 pub type InvokeFuture<'a> = Pin<Box<dyn Future<Output = Result<ToolOutput, LlmError>> + Send + 'a>>;
 
-/// The result a `Tool` returns from `invoke`. Carries a canonical JSON
-/// payload the loop forwards to the agent as a `tool_result` block; the
-/// payload is also the input to result-hashing observers
-/// (`DoomLoopObserver`, `DuplicateResultObserver`).
+/// Canonical tool-result payload and its error status.
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     /// Canonical result payload. Observers hash the canonical-JSON form;
@@ -27,10 +22,7 @@ pub struct ToolOutput {
     pub is_error: bool,
 }
 
-/// Static definition of a tool attached to a [`crate::request::CompletionRequest`].
-/// Carries the same `(name, description, input_schema)` triple a [`Tool`]
-/// exposes, decoupled from the handler so the surface that flows to the
-/// provider is plain data.
+/// Provider-facing definition of a tool without its handler.
 #[derive(Debug, Clone)]
 pub struct ToolDef {
     /// Stable tool name advertised to the model.
@@ -53,11 +45,7 @@ impl ToolDef {
     }
 }
 
-/// Handler trait every consumer-registered tool implements. The shape
-/// (name + description + JSON-Schema input + async invoke) is
-/// reasonably convertible to other Rust agent-loop crates' tool shapes
-/// — keeps the option of re-hosting `Conversation` on a different
-/// agent-loop crate later without breaking consumers.
+/// Handler contract for every consumer-registered tool.
 pub trait Tool: Send + Sync {
     /// Stable tool name advertised to the model. Matches the JSON-Schema
     /// tool identifier the model echoes in `tool_use` blocks.
@@ -74,7 +62,7 @@ pub trait Tool: Send + Sync {
     /// canonical result payload (or an error). Returns a boxed future
     /// so the trait is dyn-compatible — the loop holds handlers as
     /// `Vec<Box<dyn Tool>>`.
-    fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a>;
+    fn invoke(&self, args: Value) -> InvokeFuture<'_>;
 }
 
 #[cfg(test)]
@@ -92,11 +80,11 @@ mod tests {
     struct SampleEchoTool;
 
     impl Tool for SampleEchoTool {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "echo"
         }
 
-        fn description(&self) -> &str {
+        fn description(&self) -> &'static str {
             "Echo the given text payload back to the caller."
         }
 
@@ -111,7 +99,7 @@ mod tests {
             })
         }
 
-        fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
+        fn invoke(&self, args: Value) -> InvokeFuture<'_> {
             Box::pin(async move {
                 let text = args
                     .get("text")
@@ -144,7 +132,7 @@ mod tests {
 
     /// Forward-compat smoke test: a sample `Tool` impl generates the
     /// Anthropic tool-schema JSON, the JSON round-trips through
-    /// serde_json without loss, and the recovered fields match the
+    /// `serde_json` without loss, and the recovered fields match the
     /// trait surface. Pins three things at once:
     ///
     /// 1. The trait's read-side surface (`name`, `description`,
@@ -181,7 +169,7 @@ mod tests {
     }
 
     /// The public `Tool` contract exposes name, description,
-    /// input_schema, and async invoke(args) -> ToolOutput through one
+    /// `input_schema`, and async invoke(args) -> `ToolOutput` through one
     /// trait-object boundary.
     #[test]
     fn tool_trait_contract_methods_exist_and_invoke_returns_tool_output() {

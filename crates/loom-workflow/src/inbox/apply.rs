@@ -80,7 +80,7 @@ enum FailureKind {
 }
 
 impl FailureKind {
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::CherryPickConflict => "cherry_pick_conflict",
             Self::VerifyFailed => "verify_failed",
@@ -121,6 +121,10 @@ struct AttemptContext {
     log_path: PathBuf,
 }
 
+///
+/// # Errors
+///
+/// Returns an error when inbox state, interaction, or persistence fails.
 pub fn apply_proposals(
     workspace: &Path,
     proposal_ids: Vec<BeadId>,
@@ -132,6 +136,10 @@ pub fn apply_proposals(
     runtime.block_on(apply_proposals_async(workspace, proposal_ids))
 }
 
+///
+/// # Errors
+///
+/// Returns an error when inbox state, interaction, or persistence fails.
 pub fn ensure_integration_clean_after_chat(workspace: &Path) -> Result<(), ApplyError> {
     let integration = workspace.join(".loom/integration");
     if !integration.exists() {
@@ -174,7 +182,7 @@ async fn apply_proposals_async(
             mark_applied(&bd, &proposals, &log_path).await?;
             write_apply_log(
                 &log_path,
-                json!({
+                &json!({
                     "status": "applied",
                     "proposals": proposal_ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
                     "push_range": outcome.push_range.clone(),
@@ -471,7 +479,7 @@ async fn mark_apply_failed(
     });
     write_apply_log(
         log_path,
-        json!({
+        &json!({
             "status": "apply_failed",
             "kind": kind.as_str(),
             "detail": detail,
@@ -576,7 +584,7 @@ fn apply_log_path(workspace: &Path) -> Result<PathBuf, ApplyError> {
     Ok(dir.join(format!("apply-{millis}.jsonl")))
 }
 
-fn write_apply_log(path: &Path, value: serde_json::Value) -> Result<(), ApplyError> {
+fn write_apply_log(path: &Path, value: &serde_json::Value) -> Result<(), ApplyError> {
     use std::io::Write as _;
 
     if let Some(parent) = path.parent() {
@@ -593,7 +601,7 @@ fn write_apply_log(path: &Path, value: serde_json::Value) -> Result<(), ApplyErr
             path: path.to_path_buf(),
             source,
         })?;
-    serde_json::to_writer(&mut file, &value).map_err(|source| ApplyError::Io {
+    serde_json::to_writer(&mut file, value).map_err(|source| ApplyError::Io {
         path: path.to_path_buf(),
         source: std::io::Error::other(source),
     })?;

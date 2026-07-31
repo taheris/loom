@@ -164,6 +164,10 @@ impl MarkerProof {
     /// § *Mint trigger* (audit-pass → construct → write → push) routes
     /// audit + push outside this function; we own only the construct +
     /// write atom.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when marker state cannot be read, parsed, or validated.
     pub fn mint(
         success: GateSuccess,
         workspace: &Path,
@@ -184,6 +188,10 @@ impl MarkerProof {
     /// Returns `Ok` iff the marker's tree OID matches `HEAD`'s tree OID,
     /// porcelain is clean, the schema version is supported, and the
     /// referenced gate-log evidence still proves the recorded scopes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when marker state cannot be read, parsed, or validated.
     pub fn read_and_validate(path: &Path, workspace: &Path) -> Result<Self, MarkerError> {
         let bytes = fs::read(path).map_err(|source| match source.kind() {
             io::ErrorKind::NotFound => MarkerError::MissingMarker {
@@ -202,6 +210,10 @@ impl MarkerProof {
         marker.validate(workspace)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when marker state cannot be read, parsed, or validated.
     pub fn read_and_validate_for_hook(
         path: &Path,
         workspace: &Path,
@@ -226,18 +238,18 @@ impl MarkerProof {
     }
 
     /// Schema version this marker was minted under.
-    pub fn version(&self) -> u32 {
+    pub const fn version(&self) -> u32 {
         self.version
     }
 
     /// `HEAD` commit SHA recorded at mint time — informational only;
     /// the trust-bearing field is `tree_oid`.
-    pub fn commit_sha(&self) -> &GitOid {
+    pub const fn commit_sha(&self) -> &GitOid {
         &self.commit_sha
     }
 
     /// Tree OID the marker binds to — the load-bearing fingerprint.
-    pub fn tree_oid(&self) -> &GitOid {
+    pub const fn tree_oid(&self) -> &GitOid {
         &self.tree_oid
     }
 
@@ -266,7 +278,7 @@ impl ParsedMarkerProof {
         let current_tree = git_tree_oid_of_head(workspace)?;
         if current_tree != self.tree_oid {
             return Err(MarkerError::FingerprintMismatch {
-                marker_tree: self.tree_oid.clone(),
+                marker_tree: self.tree_oid,
                 head_tree: current_tree,
             });
         }
@@ -274,7 +286,7 @@ impl ParsedMarkerProof {
             .map_err(|source| MarkerError::ConfigDigestRead { source })?;
         if current_digest != self.pre_commit_config_digest {
             return Err(MarkerError::ConfigDigestMismatch {
-                marker_digest: self.pre_commit_config_digest.clone(),
+                marker_digest: self.pre_commit_config_digest,
                 current_digest,
             });
         }
@@ -359,11 +371,19 @@ impl ParsedMarkerProof {
 /// Validate the marker file at `<workspace>/.loom/marker.json` against
 /// the workspace's current `HEAD` tree. The `loom gate verify-marker`
 /// CLI subcommand maps `Ok` to exit code 0 and `Err` to non-zero.
+///
+/// # Errors
+///
+/// Returns an error when marker state cannot be read, parsed, or validated.
 pub fn verify_marker(workspace: &Path) -> Result<MarkerProof, MarkerError> {
     let path = workspace.join(MARKER_PATH);
     MarkerProof::read_and_validate(&path, workspace)
 }
 
+///
+/// # Errors
+///
+/// Returns an error when marker state cannot be read, parsed, or validated.
 pub fn verify_marker_for_hook(
     workspace: &Path,
     request: &MarkerValidationRequest,
@@ -816,7 +836,7 @@ mod tests {
 
     fn shell_single_quote(path: &Path) -> String {
         let raw = path.display().to_string();
-        format!("'{}'", raw.replace("'", "'\\''"))
+        format!("'{}'", raw.replace('\'', "'\\''"))
     }
 
     /// The wrapper resolves `loom` through `PATH`, so its live CLI seam needs

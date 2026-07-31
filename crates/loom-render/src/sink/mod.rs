@@ -59,6 +59,11 @@ impl LogSink {
     /// already claimed that timestamp, a numeric suffix is added before the
     /// extension. `renderer` is optional so non-interactive callers can write
     /// only the on-disk JSONL without instantiating a `TerminalRenderer`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogError`] when the log directory or a unique log file cannot
+    /// be created.
     pub fn open_in_at(
         logs_root: &Path,
         spec_label: &SpecLabel,
@@ -83,6 +88,11 @@ impl LogSink {
     ///
     /// `renderer` is optional because phase logs may run in non-interactive
     /// contexts where human output is not attached to the event stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogError`] when the parent directory or phase log cannot be
+    /// opened for append.
     pub fn open_phase_at(
         logs_root: &Path,
         phase: &str,
@@ -106,6 +116,10 @@ impl LogSink {
     /// to — the path is recovered by mtime rather than reconstructed
     /// from `(label, bead_id, when)`, so the sink-construction helper
     /// must accept the resolved path verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogError`] when `log_path` cannot be opened for append.
     pub fn open_at_path_append(log_path: &Path) -> Result<Self, LogError> {
         Self::open_append_at_path(log_path.to_path_buf(), None)
     }
@@ -123,7 +137,7 @@ impl LogSink {
                 .open(&candidate)
             {
                 Ok(file) => return Ok(Self::from_file(candidate, file, renderer.take())),
-                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(source) => {
                     return Err(LogError::OpenFile {
                         path: candidate,
@@ -184,6 +198,11 @@ impl LogSink {
     /// File-write order: serialize → append `\n` → write → flush. Renderer
     /// errors are surfaced with the same `LogError::Io` variant so the caller
     /// can decide whether one failure path should also fail the bead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogError`] when serialization, file output, or renderer output
+    /// fails.
     pub fn emit(&mut self, event: &AgentEvent) -> Result<(), LogError> {
         let line = serde_json::to_string(event)?;
         let path = self.log_path.clone();
@@ -206,6 +225,10 @@ impl LogSink {
     /// Print the renderer's closing line and flush the log file. Idempotent:
     /// a second call is a no-op so callers can defensively `finish` in both
     /// success and failure paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LogError`] when flushing the log or closing the renderer fails.
     pub fn finish(&mut self, outcome: BeadOutcome) -> Result<(), LogError> {
         if self.finished {
             return Ok(());
@@ -264,12 +287,12 @@ impl EventSink for LogSink {
 }
 
 #[cfg(test)]
-pub(crate) type SharedBuffer = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
+pub type SharedBuffer = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
 
 /// Helper used by tests in this crate. Opens a sink against an in-memory
 /// renderer that discards output.
 #[cfg(test)]
-pub(crate) fn open_sink_with_sink_writer(
+pub fn open_sink_with_sink_writer(
     logs_root: &Path,
     spec_label: &SpecLabel,
     bead_id: &BeadId,
@@ -277,9 +300,8 @@ pub(crate) fn open_sink_with_sink_writer(
 ) -> Result<(LogSink, SharedBuffer), LogError> {
     use std::io;
 
-    use crate::renderer::RenderMode;
-    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-    let writer_buf = buf.clone();
+    use crate::renderer::{RenderMode, TerminalRenderer};
+
     struct Sink {
         inner: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     }
@@ -295,7 +317,9 @@ pub(crate) fn open_sink_with_sink_writer(
             Ok(())
         }
     }
-    use crate::renderer::TerminalRenderer;
+
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let writer_buf = buf.clone();
     let renderer: Box<dyn Renderer> = Box::new(TerminalRenderer::new(
         Sink { inner: writer_buf },
         RenderMode::Default,
@@ -317,7 +341,7 @@ mod tests {
     use serde_json::{Value, json};
 
     /// Fixture envelope shared by the sink emission tests. Bead id is
-    /// `lm-test`; ts_ms / seq stay at zero so on-disk JSONL shapes are
+    /// `lm-test`; `ts_ms` / seq stay at zero so on-disk JSONL shapes are
     /// trivially comparable.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
@@ -373,6 +397,7 @@ mod tests {
         let term_str = std::str::from_utf8(&term).expect("utf-8");
         assert!(term_str.contains("Read"), "{term_str:?}");
         assert!(term_str.contains("done"));
+        drop(term);
     }
 
     #[test]

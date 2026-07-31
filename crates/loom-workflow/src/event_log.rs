@@ -6,7 +6,7 @@ use loom_events::identifier::SessionId;
 use loom_events::{AgentEvent, EnvelopeBuilder, SessionScope, Source};
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum RoutePhase {
+pub enum RoutePhase {
     Review,
     Todo,
 }
@@ -20,7 +20,7 @@ impl RoutePhase {
     }
 }
 
-pub(crate) fn resume_phase_driver_envelope(
+pub fn resume_phase_driver_envelope(
     path: &Path,
     phase: RoutePhase,
     when: SystemTime,
@@ -71,7 +71,9 @@ pub(crate) fn resume_phase_driver_envelope(
             clock
                 .wall_now()
                 .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis() as i64)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                })
         },
     )
 }

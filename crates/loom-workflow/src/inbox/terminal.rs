@@ -23,6 +23,10 @@ pub enum TerminalMarker {
     Apply { proposals: Vec<BeadId> },
 }
 
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
+)]
 #[derive(Debug, Display, Error)]
 pub enum TerminalMarkerError {
     /// inbox chat ended without LOOM_COMPLETE or LOOM_APPLY on the final non-empty line

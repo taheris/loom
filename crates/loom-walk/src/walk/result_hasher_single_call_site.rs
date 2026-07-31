@@ -122,7 +122,7 @@ fn section_between<'a>(body: &'a str, start: &str, end: &str) -> Option<&'a str>
     rest.get(..end_idx)
 }
 
-fn is_ident_byte(b: u8) -> bool {
+const fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 

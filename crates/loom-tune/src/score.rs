@@ -8,6 +8,10 @@ use thiserror::Error;
 pub struct Score(f64);
 
 impl Score {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tuning input, execution, or evidence validation fails.
     pub fn new(value: f64) -> Result<Self, ScoreError> {
         if value.is_finite() && (0.0..=1.0).contains(&value) {
             Ok(Self(value))
@@ -16,7 +20,7 @@ impl Score {
         }
     }
 
-    pub fn get(self) -> f64 {
+    pub const fn get(self) -> f64 {
         self.0
     }
 }
@@ -41,8 +45,14 @@ mod tests {
 
     #[test]
     fn score_accepts_inclusive_range() {
-        assert_eq!(Score::new(0.0).expect("lower bound").get(), 0.0);
-        assert_eq!(Score::new(1.0).expect("upper bound").get(), 1.0);
+        assert_eq!(
+            Score::new(0.0).expect("lower bound").get().to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            Score::new(1.0).expect("upper bound").get().to_bits(),
+            1.0_f64.to_bits()
+        );
     }
 
     #[test]

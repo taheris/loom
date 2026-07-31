@@ -53,10 +53,10 @@ mod tests {
     async fn now_advances_under_paused_runtime() {
         let clock = MockClock::new();
         let start = clock.now();
-        clock.sleep(Duration::from_secs(60)).await;
+        clock.sleep(Duration::from_mins(1)).await;
         let elapsed = clock.now().saturating_duration_since(start);
         assert!(
-            elapsed >= Duration::from_secs(60),
+            elapsed >= Duration::from_mins(1),
             "expected >=60s of paused-time advance, got {elapsed:?}"
         );
     }
@@ -65,10 +65,10 @@ mod tests {
     async fn manual_advance_moves_clock_without_pending_sleep() {
         let clock = MockClock::new();
         let start = clock.now();
-        tokio::time::advance(Duration::from_secs(3600)).await;
+        tokio::time::advance(Duration::from_hours(1)).await;
         let elapsed = clock.now().saturating_duration_since(start);
         assert!(
-            elapsed >= Duration::from_secs(3600),
+            elapsed >= Duration::from_hours(1),
             "expected >=1h of paused-time advance, got {elapsed:?}"
         );
     }
@@ -83,7 +83,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn timeout_returns_value_when_future_completes_first() {
         let clock = MockClock::new();
-        let result = clock.timeout(Duration::from_secs(60), async { 42 }).await;
+        let result = clock.timeout(Duration::from_mins(1), async { 42 }).await;
         assert_eq!(result.expect("future should complete"), 42);
     }
 

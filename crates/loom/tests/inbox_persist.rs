@@ -34,10 +34,10 @@ fn seed_bead(
     std::fs::write(bead_dir.join("labels"), labels.join("\n")).expect("write labels");
 }
 
-fn seed_metadata(state_dir: &Path, id: &str, metadata: serde_json::Value) {
+fn seed_metadata(state_dir: &Path, id: &str, metadata: &serde_json::Value) {
     std::fs::write(
         state_dir.join(id).join("metadata.json"),
-        serde_json::to_string(&metadata).expect("metadata json"),
+        serde_json::to_string(metadata).expect("metadata json"),
     )
     .expect("write metadata");
 }
@@ -51,14 +51,12 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
     let bd_path = bin_dir.join("bd");
     let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
-    match std::os::unix::fs::symlink(&source, &bd_path) {
-        Ok(()) => {}
-        Err(_) => {
-            std::fs::copy(&source, &bd_path).expect("copy bd-shim into bin dir");
-            let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
-        }
+    if matches!(std::os::unix::fs::symlink(&source, &bd_path), Ok(())) {
+    } else {
+        std::fs::copy(&source, &bd_path).expect("copy bd-shim into bin dir");
+        let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
     }
     bin_dir
 }
@@ -161,7 +159,7 @@ fn inbox_list_includes_infra_and_excludes_closed_items() {
     seed_metadata(
         &state_dir,
         "lm-infra",
-        serde_json::json!({
+        &serde_json::json!({
             "loom.infra.phase":"pre-stream",
             "loom.infra.first_event_seen":false,
             "loom.infra.attempt":3,
@@ -179,7 +177,7 @@ fn inbox_list_includes_infra_and_excludes_closed_items() {
     seed_metadata(
         &state_dir,
         "lm-corrupt",
-        serde_json::json!({"loom.tune.state":"not-a-state"}),
+        &serde_json::json!({"loom.tune.state":"not-a-state"}),
     );
     seed_bead(
         &state_dir,
@@ -192,7 +190,7 @@ fn inbox_list_includes_infra_and_excludes_closed_items() {
     seed_metadata(
         &state_dir,
         "lm-tune",
-        serde_json::json!({"loom.tune.state":"pending","loom.tune.id":"lm-tune"}),
+        &serde_json::json!({"loom.tune.state":"pending","loom.tune.id":"lm-tune"}),
     );
 
     let output = run_loom_inbox(workspace, &bin_dir, &state_dir, &["list"]);
@@ -280,7 +278,7 @@ fn inbox_kind_filter_narrows_list_including_infra() {
     seed_metadata(
         &state_dir,
         "lm-c",
-        serde_json::json!({"loom.tune.state":"apply_failed"}),
+        &serde_json::json!({"loom.tune.state":"apply_failed"}),
     );
     seed_bead(
         &state_dir,
@@ -370,7 +368,7 @@ fn inbox_view_modes_render_host_side_with_infra_diagnostics() {
     seed_metadata(
         &state_dir,
         "lm-infra",
-        serde_json::json!({
+        &serde_json::json!({
             "loom.infra.phase":"pre-stream",
             "loom.infra.first_event_seen":false,
             "loom.infra.attempt":3,
@@ -392,7 +390,7 @@ fn inbox_view_modes_render_host_side_with_infra_diagnostics() {
     seed_metadata(
         &state_dir,
         "lm-prop",
-        serde_json::json!({
+        &serde_json::json!({
             "loom.tune.state":"pending",
             "loom.tune.proposal_branch":"loom/tune/lm-prop",
             "loom.tune.proposal_head":"abc123"

@@ -260,6 +260,7 @@ where
 
     /// Hand the work-root lock to the controller so `exec_run` can drop it
     /// before spawning the `loom loop` child (which acquires the same lock).
+    #[must_use]
     pub fn with_handoff_lock(mut self, guard: LockGuard) -> Self {
         self.lock = Some(guard);
         self
@@ -268,16 +269,19 @@ where
     /// Override the style-rules pin used in the rendered review prompt.
     /// Production callers thread this from `LoomConfig.style_rules`; tests
     /// rely on the built-in default.
+    #[must_use]
     pub fn with_style_rules(mut self, path: String) -> Self {
         self.style_rules = path;
         self
     }
 
-    pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
+    #[must_use]
+    pub const fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
         self.runtime = runtime;
         self
     }
 
+    #[must_use]
     pub fn with_launcher_env(mut self, launcher_env: Vec<(String, String)>) -> Self {
         self.launcher_env = launcher_env;
         self
@@ -286,6 +290,7 @@ where
     /// Override the integration branch the gate's `git push` targets.
     /// Production callers thread `LoomConfig.loom.integration_branch`;
     /// tests rely on the `main` default.
+    #[must_use]
     pub fn with_integration_branch(mut self, branch: String) -> Self {
         self.integration_branch = branch;
         self
@@ -294,16 +299,19 @@ where
     /// Override the timeout for the gate's `git push`. Production callers
     /// thread `LoomConfig.loom.git_hook_timeout()`; tests rely on the
     /// built-in default.
-    pub fn with_hook_timeout(mut self, hook_timeout: Duration) -> Self {
+    #[must_use]
+    pub const fn with_hook_timeout(mut self, hook_timeout: Duration) -> Self {
         self.hook_timeout = hook_timeout;
         self
     }
 
+    #[must_use]
     pub fn with_push_range(mut self, range: Option<String>) -> Self {
         self.push_range = range;
         self
     }
 
+    #[must_use]
     pub fn with_verified_scope(mut self, scope: Option<VerifiedScope>) -> Self {
         self.verified_scope = scope;
         self
@@ -336,23 +344,27 @@ where
     /// `Both` keeps the full `loom gate review` path; `Judge`/`Rubric`
     /// narrow the rendered prompt to one lane per `loom gate judge` /
     /// `loom gate rubric`.
-    pub fn with_lane(mut self, lane: ReviewLane) -> Self {
+    #[must_use]
+    pub const fn with_lane(mut self, lane: ReviewLane) -> Self {
         self.lane = lane;
         self
     }
 
     /// Select the finding-token scope used while parsing reviewer stdout.
-    pub fn with_dispatch_scope(mut self, scope: DispatchScope) -> Self {
+    #[must_use]
+    pub const fn with_dispatch_scope(mut self, scope: DispatchScope) -> Self {
         self.dispatch_scope = scope;
         self
     }
 
     /// Override the rubric-finding suppressions used after walk-shape validation.
+    #[must_use]
     pub fn with_suppressions(mut self, suppressions: Vec<SuppressionConfig>) -> Self {
         self.suppressions = suppressions;
         self
     }
 
+    #[must_use]
     pub fn with_skills_config(mut self, cfg: SkillsConfig) -> Self {
         self.skills_cfg = cfg;
         self
@@ -363,6 +375,7 @@ where
     /// `when` when it opens its agent-event sink or the two writers
     /// land in separate files. Tests and the CLI share this via
     /// `phase_log_when()`.
+    #[must_use]
     pub fn with_phase_log(mut self, logs_root: PathBuf, when: SystemTime) -> Self {
         self.phase_log_root = Some(logs_root);
         self.phase_log_when = when;
@@ -372,7 +385,7 @@ where
     /// The pinned phase log timestamp — read by the binary's spawn
     /// closure so its agent-event `LogSink` lands in the same file
     /// the controller's driver events append to.
-    pub fn phase_log_when(&self) -> SystemTime {
+    pub const fn phase_log_when(&self) -> SystemTime {
         self.phase_log_when
     }
 
@@ -636,7 +649,7 @@ fn classify_review_phase_with_suppressions(
     }
 }
 
-fn review_outcome_route(outcome: &ReviewOutcome) -> &'static str {
+const fn review_outcome_route(outcome: &ReviewOutcome) -> &'static str {
     match outcome {
         ReviewOutcome::Complete => "complete",
         ReviewOutcome::Incomplete { .. } => "recovery",
@@ -726,7 +739,7 @@ fn phase_verdict_from_walk_with_suppressions(
             payload: from_term, ..
         } = walk.terminal()
         {
-            *payload = from_term.clone();
+            payload.clone_from(from_term);
         }
         if parsed_findings.is_empty() && !walk.findings().is_empty() {
             *parsed_findings = walk.findings().to_vec();
@@ -920,7 +933,7 @@ where
             if matches!(typed_outcome, ReviewOutcome::Complete) && suppressed_review_concern {
                 Some(ExitSignal::Complete)
             } else {
-                marker.clone()
+                marker
             };
         if let (Some(path), Some(range)) = (
             self.resolve_review_log_for_marker(),
@@ -951,7 +964,7 @@ where
             };
             append_gate_run_lifecycle_events(&path, &run)?;
         }
-        self.effective_review_marker = effective_marker.clone();
+        self.effective_review_marker.clone_from(&effective_marker);
         self.suppressed_review_concern = suppressed_review_concern;
         Ok(RunReviewOutput {
             outcome: typed_outcome,
@@ -1026,8 +1039,7 @@ where
         Ok(self
             .state
             .molecule(&mol_id)?
-            .map(|m| m.iteration_count)
-            .unwrap_or(0))
+            .map_or(0, |m| m.iteration_count))
     }
 
     async fn set_iteration_count(&mut self, next: u32) -> Result<(), ReviewError> {
@@ -1149,8 +1161,7 @@ where
         if let (Some(path), Some(range)) = (review_log_path.as_deref(), self.push_range.as_ref()) {
             let tree =
                 loom_driver::git::head_tree_oid_sync(&self.workspace.join(".loom/integration"))
-                    .map(|oid| oid.to_string())
-                    .unwrap_or_else(|_| String::new());
+                    .map_or_else(|_| String::new(), |oid| oid.to_string());
             let marker = self
                 .effective_review_marker
                 .clone()
@@ -1308,12 +1319,9 @@ where
         let Some(logs_root) = self.phase_log_root.clone() else {
             return;
         };
-        let mut guard = match self.envelope_builder.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                warn!("review controller: envelope builder mutex poisoned");
-                return;
-            }
+        let Ok(mut guard) = self.envelope_builder.lock() else {
+            warn!("review controller: envelope builder mutex poisoned");
+            return;
         };
         if guard.is_none() {
             *guard = Some(crate::event_log::resume_phase_driver_envelope(
@@ -1454,7 +1462,7 @@ mod tests {
                 detail.contains("LOOM_BLOCKED") && detail.contains("missing schema"),
                 "blocked detail missing reason: {detail}",
             ),
-            other => panic!("expected Incomplete, got {other:?}"),
+            other @ ReviewOutcome::Complete => panic!("expected Incomplete, got {other:?}"),
         }
         // `RETRY` routes to an incomplete recovery outcome instead of a
         // clean empty review.
@@ -1468,7 +1476,7 @@ mod tests {
                 detail.contains("agent-retry"),
                 "retry detail should name recovery cause: {detail}",
             ),
-            other => panic!("expected Incomplete, got {other:?}"),
+            other @ ReviewOutcome::Complete => panic!("expected Incomplete, got {other:?}"),
         }
         // Direct `CLARIFY` is the wrong review path: review clarifications
         // must route through finding evidence and terminate with CONCERN.
@@ -1485,7 +1493,7 @@ mod tests {
                     && detail.contains("LOOM_CONCERN"),
                 "clarify detail should explain the review-only route: {detail}",
             ),
-            other => panic!("expected Incomplete, got {other:?}"),
+            other @ ReviewOutcome::Complete => panic!("expected Incomplete, got {other:?}"),
         }
         // Missing terminal → `Recovery::SwallowedMarker` → `Incomplete` carrying
         // the swallowed-marker phrasing.
@@ -1494,7 +1502,7 @@ mod tests {
                 detail.contains("swallowed marker"),
                 "swallowed-marker text missing: {detail}",
             ),
-            other => panic!("expected Incomplete, got {other:?}"),
+            other @ ReviewOutcome::Complete => panic!("expected Incomplete, got {other:?}"),
         }
         // Missing + non-zero exit → exit code surfaces in detail.
         match classify_review_phase(&walk_with_terminal(TerminalSurface::Missing), 7) {
@@ -1502,7 +1510,7 @@ mod tests {
                 detail.contains('7'),
                 "exit code missing from detail: {detail}",
             ),
-            other => panic!("expected Incomplete, got {other:?}"),
+            other @ ReviewOutcome::Complete => panic!("expected Incomplete, got {other:?}"),
         }
     }
 
@@ -1532,7 +1540,7 @@ mod tests {
                     "pairing-rule cue missing from detail: {detail}",
                 );
             }
-            other => panic!("expected Incomplete, got {other:?}"),
+            other @ ReviewOutcome::Complete => panic!("expected Incomplete, got {other:?}"),
         }
     }
 
@@ -1569,7 +1577,7 @@ mod tests {
                     "structured concern was misclassified: {detail}",
                 );
             }
-            other => panic!("expected review concern, got {other:?}"),
+            other @ ReviewOutcome::Complete => panic!("expected review concern, got {other:?}"),
         }
     }
 
@@ -1624,7 +1632,7 @@ mod tests {
     /// `BadWalk::ConcernWithoutFindings`. Without the wiring, the
     /// `..GateInputs::default()` shape leaves the streamed-findings vec
     /// empty and the `LOOM_CONCERN` collapses to the
-    /// `ConcernWithoutFindings` BadWalk variant.
+    /// `ConcernWithoutFindings` `BadWalk` variant.
     #[test]
     fn classify_review_phase_invokes_parse_walk_output_and_threads_findings_through_gate_inputs() {
         let finding_line = r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["harness"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
@@ -1657,7 +1665,9 @@ mod tests {
                      streamed_findings were threaded through GateInputs: {detail}",
                 );
             }
-            other => panic!("expected Incomplete (ReviewConcern), got {other:?}"),
+            other @ ReviewOutcome::Complete => {
+                panic!("expected Incomplete (ReviewConcern), got {other:?}");
+            }
         }
     }
 
@@ -1697,8 +1707,8 @@ mod tests {
             );
             let verdict = phase_verdict_from_walk(&walk);
             match (&cell.expect, &verdict) {
-                (CellExpect::Done, PhaseVerdict::Done) => {}
-                (
+                (CellExpect::Done, PhaseVerdict::Done)
+                | (
                     CellExpect::SwallowedMarker,
                     PhaseVerdict::Recovery {
                         cause: RecoveryCause::SwallowedMarker,
@@ -1872,7 +1882,6 @@ mod tests {
     /// skips Display rendering for those cells.
     fn render_for_display_check(verdict: &PhaseVerdict) -> Option<String> {
         match verdict {
-            PhaseVerdict::Done | PhaseVerdict::Waiting => None,
             PhaseVerdict::Blocked { reason } => Some(format!("LOOM_BLOCKED: {reason}")),
             PhaseVerdict::Clarify { question } => Some(format!("LOOM_CLARIFY: {question}")),
             PhaseVerdict::Recovery {
@@ -1888,16 +1897,13 @@ mod tests {
                 cause: RecoveryCause::BadWalk(badwalk),
             } => Some(PreviousFailure::BadWalk(badwalk.clone()).to_string()),
             PhaseVerdict::Recovery {
-                cause: RecoveryCause::SwallowedMarker,
-            } => None,
-            PhaseVerdict::Recovery {
                 cause:
                     RecoveryCause::WrongPhaseMarker {
                         marker_name,
                         phase_kind,
                     },
             } => Some(wrong_phase_marker_detail(marker_name, phase_kind)),
-            PhaseVerdict::Recovery { .. } => None,
+            PhaseVerdict::Done | PhaseVerdict::Waiting | PhaseVerdict::Recovery { .. } => None,
         }
     }
 
@@ -3152,7 +3158,7 @@ mod tests {
     }
 
     /// `loom review` must dispatch with the rendered `ReviewContext`
-    /// template — `# Post-Epic Review` heading, spec_path, and
+    /// template — `# Post-Epic Review` heading, `spec_path`, and
     /// scratchpad path all reach the agent prompt — and the same body
     /// must land in `<scratch_dir>/prompt.txt` so post-compaction
     /// `repin.sh` can re-emit the actual phase prompt. Mirror of the
@@ -3389,6 +3395,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        drop(captured);
         assert_eq!(update_argv[0], "update");
         assert_eq!(update_argv[1], "lm-clarify.2");
         assert!(
@@ -3486,6 +3493,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        drop(captured);
         assert!(
             argv.iter().any(|a| a == "loom:clarify"),
             "missing loom:clarify in argv: {argv:?}",

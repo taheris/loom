@@ -546,9 +546,9 @@ fn parallel_live_log_sink_renders_prefixed_output() -> Result<()> {
 #[test]
 fn log_retention_sweep() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-    let stale = now - Duration::from_secs(20 * 86_400);
-    let recent = now - Duration::from_secs(2 * 86_400);
+    let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
+    let stale = now - Duration::from_hours(480);
+    let recent = now - Duration::from_hours(48);
 
     let p_stale = dir.path().join("alpha/lm-stale.jsonl");
     let p_recent = dir.path().join("alpha/lm-recent.jsonl");
@@ -576,8 +576,8 @@ fn log_retention_sweep() -> Result<()> {
 #[test]
 fn log_retention_disabled() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-    let very_old = now - Duration::from_secs(365 * 86_400);
+    let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
+    let very_old = now - Duration::from_hours(8760);
     let p = dir.path().join("alpha/lm-1.jsonl");
     touch(&p, "ancient");
     set_mtime(&p, very_old);
@@ -600,8 +600,8 @@ fn log_retention_disabled() -> Result<()> {
 #[test]
 fn log_retention_failure_tolerance() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-    let stale = now - Duration::from_secs(60 * 86_400);
+    let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
+    let stale = now - Duration::from_hours(1440);
 
     // Two files in two subdirs. We'll lock the first subdir read-only so
     // unlink fails for that file; the second subdir remains writable.

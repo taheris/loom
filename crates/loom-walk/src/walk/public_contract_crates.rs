@@ -19,6 +19,13 @@ const PUBLIC_CRATES: &[&str] = &[
     "loom-skills",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicContractFlag {
+    InvalidManifest,
+    Missing,
+    Value(bool),
+}
+
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();
     let mut violations = Vec::new();
@@ -30,13 +37,14 @@ pub fn run(_input: &WalkInput) -> Verdict {
             violations.push(format!("{manifest_rel}:1 manifest not found"));
             continue;
         };
-        let Some(flag) = public_contract_flag(&body, &manifest_rel, &mut violations) else {
-            continue;
-        };
-        if flag != Some(true) {
-            violations.push(format!(
-                "{manifest_rel}:1 missing `[package.metadata.loom] public_contract = true` (found {flag:?})",
-            ));
+        let flag = public_contract_flag(&body, &manifest_rel, &mut violations);
+        match flag {
+            PublicContractFlag::Value(true) | PublicContractFlag::InvalidManifest => {}
+            PublicContractFlag::Missing | PublicContractFlag::Value(false) => {
+                violations.push(format!(
+                    "{manifest_rel}:1 missing `[package.metadata.loom] public_contract = true` (found {flag:?})",
+                ));
+            }
         }
     }
 
@@ -64,7 +72,9 @@ pub fn run(_input: &WalkInput) -> Verdict {
                 let Some(body) = read_to_string(&manifest) else {
                     continue;
                 };
-                if public_contract_flag(&body, &manifest_rel, &mut violations) == Some(Some(true)) {
+                if public_contract_flag(&body, &manifest_rel, &mut violations)
+                    == PublicContractFlag::Value(true)
+                {
                     violations.push(format!(
                         "{manifest_rel}:1 unexpected `[package.metadata.loom] public_contract = true`; expected set is {}",
                         PUBLIC_CRATES.join(", "),
@@ -82,17 +92,16 @@ fn public_contract_flag(
     body: &str,
     manifest_rel: &str,
     violations: &mut Vec<String>,
-) -> Option<Option<bool>> {
+) -> PublicContractFlag {
     let Ok(value) = toml::from_str::<toml::Value>(body) else {
         violations.push(format!("{manifest_rel}:1 manifest not valid TOML"));
-        return None;
+        return PublicContractFlag::InvalidManifest;
     };
-    Some(
-        value
-            .get("package")
-            .and_then(|p| p.get("metadata"))
-            .and_then(|m| m.get("loom"))
-            .and_then(|l| l.get("public_contract"))
-            .and_then(|v| v.as_bool()),
-    )
+    value
+        .get("package")
+        .and_then(|p| p.get("metadata"))
+        .and_then(|m| m.get("loom"))
+        .and_then(|l| l.get("public_contract"))
+        .and_then(toml::Value::as_bool)
+        .map_or(PublicContractFlag::Missing, PublicContractFlag::Value)
 }

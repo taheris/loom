@@ -325,7 +325,7 @@ async fn merge_branch_non_conflicting_returns_ok() -> Result<()> {
     Ok(())
 }
 
-/// merge_branch rejects creating non-fast-forward history: when the bead
+/// `merge_branch` rejects creating non-fast-forward history: when the bead
 /// branch and the integration branch have both moved beyond their shared
 /// base with non-overlapping changes, the resulting `HEAD` in the loom
 /// workspace contains no merge commits — the rebase + `--ff-only` path
@@ -366,7 +366,7 @@ async fn merge_branch_uses_ff_only_and_rejects_non_ff_history() -> Result<()> {
     Ok(())
 }
 
-/// merge_branch rebases the bead branch onto `HEAD` before fast-forwarding —
+/// `merge_branch` rebases the bead branch onto `HEAD` before fast-forwarding —
 /// the parallel-dispatch case where an earlier bead has already landed on
 /// the integration branch and a second bead, forked from the original
 /// base, must land on the moved `HEAD` of the loom workspace.
@@ -1584,7 +1584,7 @@ async fn driver_rebase_signs_with_wrix_key() -> Result<()> {
 }
 
 /// A driver-rebased commit verifies against the configured repository signer:
-/// `git log` prints `Good "git" signature` using the derived allowed_signers
+/// `git log` prints `Good "git" signature` using the derived `allowed_signers`
 /// file, and the typed pass-2 path (`verify_commit_range`) agrees that the
 /// rewritten range verifies.
 /// Criterion: `rebased_commits_verify_via_derived_allowed_signers`.
@@ -1997,8 +1997,8 @@ impl ScriptedBd {
 }
 
 impl CommandRunner for ScriptedBd {
-    async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
-        let argv: Vec<String> = args
+    async fn run(&self, raw_args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
+        let argv: Vec<String> = raw_args
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
@@ -2093,7 +2093,7 @@ async fn loop_startup_gc_skips_closed_bead_workspaces_from_other_molecules() -> 
 }
 
 /// Spec gate (`specs/harness.md` § Garbage collection): bead workspaces
-/// whose bead is in any non-closed state (open, in_progress, blocked) MUST
+/// whose bead is in any non-closed state (open, `in_progress`, blocked) MUST
 /// survive the sweep. The startup GC reaps closed orphans only.
 #[tokio::test]
 async fn loop_startup_gc_skips_open_bead_workspaces() -> Result<()> {

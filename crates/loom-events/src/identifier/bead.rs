@@ -18,6 +18,10 @@ impl BeadId {
     /// `<prefix>` is one or more lowercase ASCII letters, `<base32>` is
     /// one or more lowercase ASCII alphanumerics, and the optional
     /// `.<digits>` suffix scopes a sub-issue under a molecule.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseBeadIdError`] when the input is not a canonical bead id.
     pub fn new(s: &str) -> Result<Self, ParseBeadIdError> {
         let (prefix, rest) = s
             .split_once('-')

@@ -13,10 +13,12 @@ use super::error::ProfileError;
 /// time.
 pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 
-/// One manifest entry: the podman ref to spawn, the Nix store path of the
-/// image source that materializes it, the source kind selecting the wrix
+/// One profile-image manifest entry.
+///
+/// Contains the podman ref to spawn, the Nix store path of the image source
+/// that materializes it, the source kind selecting the wrix
 /// install path, the raw wrix launcher that accepts a per-spawn
-/// ProfileConfig, the wrix ProfileConfig path matching that image variant,
+/// `ProfileConfig`, the wrix `ProfileConfig` path matching that image variant,
 /// and (when produced by the flake glue) the image content-digest file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
@@ -33,13 +35,13 @@ pub struct ImageEntry {
     /// already injects its own `--profile-config`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher: Option<PathBuf>,
-    /// Optional Nix store path of the wrix ProfileConfig matching this image.
+    /// Optional Nix store path of the wrix `ProfileConfig` matching this image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_config: Option<PathBuf>,
     /// Optional Nix store path containing the image content digest. The
-    /// matching ProfileConfig carries the digest to wrix; Loom parses this
+    /// matching `ProfileConfig` carries the digest to wrix; Loom parses this
     /// manifest field for compatibility and must not serialize it as a
-    /// per-launch SpawnConfig override.
+    /// per-launch `SpawnConfig` override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<PathBuf>,
     /// Optional typed runtime metadata emitted by newer manifest builders.
@@ -79,6 +81,10 @@ fn validate_runtime_metadata(
 
 impl ProfileImageManifest {
     /// Read the manifest path from `LOOM_PROFILES_MANIFEST` and parse it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the profile manifest cannot be read, parsed, or validated.
     pub fn from_env() -> Result<Self, ProfileError> {
         let raw = std::env::var_os(ENV_VAR).ok_or(ProfileError::ManifestEnvUnset)?;
         Self::from_path(Path::new(&raw))
@@ -87,6 +93,10 @@ impl ProfileImageManifest {
     /// Parse a manifest from `path`. Read errors map to
     /// [`ProfileError::ManifestNotFound`]; JSON-shape errors map to
     /// [`ProfileError::ManifestMalformed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the profile manifest cannot be read, parsed, or validated.
     pub fn from_path(path: &Path) -> Result<Self, ProfileError> {
         let bytes = std::fs::read(path).map_err(|source| ProfileError::ManifestNotFound {
             path: path.to_path_buf(),
@@ -105,6 +115,10 @@ impl ProfileImageManifest {
     }
 
     /// Look up a profile/runtime image entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the profile manifest cannot be read, parsed, or validated.
     pub fn lookup(
         &self,
         profile: &ProfileName,
@@ -285,9 +299,8 @@ mod tests {
             dir.path(),
             r#"{ "rust": { "pi": { "ref": "r", "source": "/s" } } }"#,
         )?;
-        let err = match ProfileImageManifest::from_path(&path) {
-            Err(e) => e,
-            Ok(_) => return Err(anyhow!("expected malformed manifest without source_kind")),
+        let Err(err) = ProfileImageManifest::from_path(&path) else {
+            return Err(anyhow!("expected malformed manifest without source_kind"));
         };
         if let ProfileError::ManifestMalformed {
             path: errored_path, ..
@@ -332,9 +345,8 @@ mod tests {
           }
         }"#;
         let path = write_manifest(dir.path(), body)?;
-        let err = match ProfileImageManifest::from_path(&path) {
-            Err(e) => e,
-            Ok(_) => return Err(anyhow!("expected runtime metadata mismatch")),
+        let Err(err) = ProfileImageManifest::from_path(&path) else {
+            return Err(anyhow!("expected runtime metadata mismatch"));
         };
         if let ProfileError::RuntimeMetadataMismatch {
             profile,
@@ -360,9 +372,8 @@ mod tests {
             dir.path(),
             r#"{ "base": { "gpt": { "ref": "r", "source": "/s", "source_kind": "nix-descriptor" } } }"#,
         )?;
-        let err = match ProfileImageManifest::from_path(&path) {
-            Err(e) => e,
-            Ok(_) => return Err(anyhow!("expected malformed-manifest error")),
+        let Err(err) = ProfileImageManifest::from_path(&path) else {
+            return Err(anyhow!("expected malformed-manifest error"));
         };
         if let ProfileError::ManifestMalformed {
             path: errored_path, ..
@@ -378,9 +389,8 @@ mod tests {
     #[test]
     fn from_path_missing_file_returns_manifest_not_found() -> Result<()> {
         let missing = Path::new("/does/not/exist.json");
-        let err = match ProfileImageManifest::from_path(missing) {
-            Err(e) => e,
-            Ok(_) => return Err(anyhow!("expected error for missing manifest")),
+        let Err(err) = ProfileImageManifest::from_path(missing) else {
+            return Err(anyhow!("expected error for missing manifest"));
         };
         if let ProfileError::ManifestNotFound { path, .. } = err {
             assert_eq!(path, missing);
@@ -394,9 +404,8 @@ mod tests {
     fn from_path_malformed_json_returns_manifest_malformed() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = write_manifest(dir.path(), "{ not json")?;
-        let err = match ProfileImageManifest::from_path(&path) {
-            Err(e) => e,
-            Ok(_) => return Err(anyhow!("expected malformed-json error")),
+        let Err(err) = ProfileImageManifest::from_path(&path) else {
+            return Err(anyhow!("expected malformed-json error"));
         };
         if let ProfileError::ManifestMalformed {
             path: errored_path, ..
@@ -433,9 +442,8 @@ mod tests {
         let body = r#"{ "base": { "pi": { "ref": "r", "source": "/s", "source_kind": "nix-descriptor" } } }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let err = match manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Pi) {
-            Err(e) => e,
-            Ok(_) => return Err(anyhow!("expected unknown-profile error")),
+        let Err(err) = manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Pi) else {
+            return Err(anyhow!("expected unknown-profile error"));
         };
         if let ProfileError::UnknownProfile {
             name,
@@ -461,9 +469,9 @@ mod tests {
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let err = match manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Direct) {
-            Err(e) => e,
-            Ok(_) => return Err(anyhow!("expected unknown-runtime error")),
+        let Err(err) = manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Direct)
+        else {
+            return Err(anyhow!("expected unknown-runtime error"));
         };
         if let ProfileError::UnknownRuntimeForProfile {
             profile,

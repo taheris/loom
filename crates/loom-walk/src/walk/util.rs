@@ -222,6 +222,10 @@ pub fn pass(description: &str) -> Verdict {
 /// Build a failing verdict whose `evidence` is the joined violation
 /// lines plus the rule citation. Returns a passing verdict when
 /// `violations` is empty.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the completed violation buffer is handed off by 99 callers and consumed here as the terminal verdict"
+)]
 pub fn verdict_from(rule: &str, violations: Vec<String>) -> Verdict {
     if violations.is_empty() {
         return pass(rule);

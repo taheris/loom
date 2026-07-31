@@ -38,14 +38,12 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
     let bd_path = bin_dir.join("bd");
     let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
-    match std::os::unix::fs::symlink(&source, &bd_path) {
-        Ok(()) => {}
-        Err(_) => {
-            std::fs::copy(&source, &bd_path).expect("copy bd-shim");
-            let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
-        }
+    if matches!(std::os::unix::fs::symlink(&source, &bd_path), Ok(())) {
+    } else {
+        std::fs::copy(&source, &bd_path).expect("copy bd-shim");
+        let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
     }
     bin_dir
 }

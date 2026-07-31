@@ -19,7 +19,7 @@ pub struct Scores {
 }
 
 impl Scores {
-    pub fn new(hard: Score, soft: Score) -> Self {
+    pub const fn new(hard: Score, soft: Score) -> Self {
         Self { hard, soft }
     }
 }
@@ -92,6 +92,10 @@ pub struct Report {
 }
 
 /// Evaluate selected behavioral cases against the frozen checker plan.
+///
+/// # Errors
+///
+/// Returns an error when tuning input, execution, or evidence validation fails.
 pub fn evaluate(
     plan: &FrozenPlan,
     results: impl IntoIterator<Item = CaseResult>,
@@ -180,11 +184,18 @@ fn average_scores(scores: impl Iterator<Item = Scores>) -> Result<Scores, ScoreE
         soft += score.soft.get();
         count += 1;
     }
-    let divisor = count as f64;
+    let divisor = count_as_f64(count);
     Ok(Scores {
         hard: Score::new(hard / divisor)?,
         soft: Score::new(soft / divisor)?,
     })
+}
+
+fn count_as_f64(value: usize) -> f64 {
+    let value = u64::try_from(value).unwrap_or(u64::MAX);
+    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
 }
 
 fn classify(current: Scores, candidate: Scores, epsilon: f64) -> Outcome {

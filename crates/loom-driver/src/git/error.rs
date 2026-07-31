@@ -7,6 +7,10 @@ use thiserror::Error;
 
 use loom_protocol::oid::ParseGitOidError;
 
+#[expect(
+    clippy::doc_markdown,
+    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
+)]
 #[derive(Debug, Display, Error)]
 pub enum GitError {
     /// failed to open repository at {path}

@@ -50,14 +50,12 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
     let bd_path = bin_dir.join("bd");
     let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
-    match std::os::unix::fs::symlink(&source, &bd_path) {
-        Ok(_) => {}
-        Err(_) => {
-            std::fs::copy(&source, &bd_path).expect("copy bd-shim");
-            let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
-        }
+    if matches!(std::os::unix::fs::symlink(&source, &bd_path), Ok(())) {
+    } else {
+        std::fs::copy(&source, &bd_path).expect("copy bd-shim");
+        let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
     }
     bin_dir
 }
@@ -444,7 +442,7 @@ fn direct_emit_clarify_without_options_block_falls_back_to_blocked() {
 /// the dispatched bead — closure is the agent's responsibility per
 /// the verdict-gate decision table.
 ///
-/// For LOOM_COMPLETE specifically: the mock agent does NOT call
+/// For `LOOM_COMPLETE` specifically: the mock agent does NOT call
 /// `bd close` itself (that's outside its mocked surface area). The
 /// bead is expected to remain open after the run. The point of the
 /// test is the driver's restraint, not the bd-closed observable.

@@ -36,8 +36,9 @@ pub use event::{
 /// selection a runtime choice.
 pub type EventStream = Pin<Box<dyn Stream<Item = AgentEvent> + Send>>;
 
-/// Coarse-grained session mode the workflow can switch between
-/// mid-session. Backends translate this into backend-specific protocol
+/// Coarse-grained mode switch for a running session.
+///
+/// Backends translate this into backend-specific protocol
 /// calls; the variant set is `#[non_exhaustive]` so future modes can
 /// land additively without breaking consumers that exhaustively match.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,8 +79,9 @@ pub trait Session: Send {
     fn set_mode(&mut self, mode: SessionMode);
 }
 
-/// Universal `AgentEvent` consumer interface. Renderers, log writers,
-/// and observers all implement this trait; the driver fans the live
+/// Universal [`AgentEvent`] consumer interface.
+///
+/// Renderers, log writers, and observers implement this trait; the driver fans the live
 /// event stream into a chain of `EventSink`s composed via
 /// [`EventSinkExt::tee`].
 ///
@@ -106,8 +108,9 @@ pub trait EventSink: Send {
     }
 }
 
-/// Commands an [`EventSink`] returns from `react()`. Variants are
-/// deliberately narrower than `Session`'s full surface — observers
+/// Commands an [`EventSink`] returns from `react()`.
+///
+/// Variants are deliberately narrower than [`Session`]'s full surface — observers
 /// only have two levers, both safety-relevant. Direct callers of
 /// `Session` retain the full surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,8 +124,9 @@ pub enum SessionCommand {
     Abort(String),
 }
 
-/// Composition combinator returned by [`EventSinkExt::tee`]. Forwards
-/// `emit`/`react` to the left sink first, then the right, preserving
+/// Composition combinator returned by [`EventSinkExt::tee`].
+///
+/// Forwards `emit`/`react` to the left sink first, then the right, preserving
 /// registration order so observers fire in the order the workflow
 /// chained them.
 pub struct TeeSink<S, O> {
@@ -143,8 +147,9 @@ impl<S: EventSink, O: EventSink> EventSink for TeeSink<S, O> {
     }
 }
 
-/// Chainable builder for sink composition. The driver constructs the
-/// per-session sink chain with `LogSink::new(path).tee(observer_a)
+/// Chainable builder for sink composition.
+///
+/// The driver constructs the per-session sink chain with `LogSink::new(path).tee(observer_a)
 /// .tee(observer_b)`; registration order equals the `react()`
 /// invocation order.
 pub trait EventSinkExt: EventSink + Sized {

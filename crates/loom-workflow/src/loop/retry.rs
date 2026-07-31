@@ -52,11 +52,11 @@ mod tests {
         let p = RetryPolicy { max_retries: 2 };
         match p.decide(0, "boom".to_string()) {
             RetryDecision::Retry { previous_failure } => assert_eq!(previous_failure, "boom"),
-            other => panic!("expected Retry, got {other:?}"),
+            other @ RetryDecision::GiveUp => panic!("expected Retry, got {other:?}"),
         }
         match p.decide(1, "boom2".to_string()) {
             RetryDecision::Retry { previous_failure } => assert_eq!(previous_failure, "boom2"),
-            other => panic!("expected Retry, got {other:?}"),
+            other @ RetryDecision::GiveUp => panic!("expected Retry, got {other:?}"),
         }
     }
 

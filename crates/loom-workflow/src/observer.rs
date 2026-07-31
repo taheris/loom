@@ -26,7 +26,9 @@ use loom_llm::observer::{
 use serde_json::Value;
 
 /// One observability payload drained from the chain, ready to be lifted
-/// into an `AgentEvent::DriverEvent` by the event-loop wiring. Carries
+/// into an `AgentEvent::DriverEvent` by the event-loop wiring.
+///
+/// Carries
 /// the wire `kind`, a human-readable `summary`, and the structured
 /// `payload` body — the same triple shape `emit_driver_event` writes for
 /// lifecycle driver events.
@@ -37,7 +39,9 @@ pub struct ObserverDriverEvent {
     pub payload: Value,
 }
 
-/// Observer chain composed in `run_agent_classified`. Wraps each
+/// Observer chain composed in `run_agent_classified`.
+///
+/// Wraps each
 /// optional `llm` observer and forwards `EventSink` calls in
 /// registration order so the driver's `react()` priority rule applies
 /// to the combined batch.
@@ -67,13 +71,13 @@ impl DefaultObserverChain {
     }
 
     /// Whether the doom-loop observer is composed into this chain.
-    pub fn doom_loop_enabled(&self) -> bool {
+    pub const fn doom_loop_enabled(&self) -> bool {
         self.doom_loop.is_some()
     }
 
     /// Whether the duplicate-result observer is composed into this
     /// chain.
-    pub fn duplicate_result_enabled(&self) -> bool {
+    pub const fn duplicate_result_enabled(&self) -> bool {
         self.duplicate_result.is_some()
     }
 
@@ -180,7 +184,7 @@ fn build_doom_loop(config: &DriverDoomLoopConfig) -> Option<DoomLoopObserver> {
     if !config.enabled {
         return None;
     }
-    Some(DoomLoopObserver::from_config(&LlmDoomLoopConfig {
+    Some(DoomLoopObserver::from_config(LlmDoomLoopConfig {
         enabled: config.enabled,
         window: config.window,
         threshold: config.threshold,
@@ -193,7 +197,7 @@ fn build_duplicate_result(config: &DriverDuplicateResultConfig) -> Option<Duplic
         return None;
     }
     Some(DuplicateResultObserver::from_config(
-        &LlmDuplicateResultConfig {
+        LlmDuplicateResultConfig {
             enabled: config.enabled,
             min_bytes: config.min_bytes,
         },
@@ -215,7 +219,7 @@ mod tests {
             molecule_id: None,
             iteration: Some(0),
             source: Source::Agent,
-            ts_ms: seq as i64,
+            ts_ms: i64::try_from(seq).unwrap_or(i64::MAX),
             seq,
         }
     }
@@ -351,7 +355,7 @@ mod tests {
 
     /// `take_pending_driver_events` lifts the doom-loop observability
     /// payload into a `DriverKind::DoomLoopTripped` entry once stage 1
-    /// fires, carrying the originating tool/params/call_id so a replay
+    /// fires, carrying the originating `tool/params/call_id` so a replay
     /// can reconstruct the trigger.
     #[test]
     fn take_pending_driver_events_lifts_doom_loop_stage_1() {

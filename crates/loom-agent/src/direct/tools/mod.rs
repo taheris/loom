@@ -117,8 +117,12 @@ impl ToolContext {
     }
 
     /// Return `content` inline when it fits, otherwise offload the full payload.
-    pub fn cap_or_offload(&self, tool: &str, content: String) -> Result<Value, ToolContextError> {
-        let outcome = self.capabilities.offload.cap_or_offload(&content);
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent startup, protocol handling, or tool execution fails.
+    pub fn cap_or_offload(&self, tool: &str, content: &str) -> Result<Value, ToolContextError> {
+        let outcome = self.capabilities.offload.cap_or_offload(content);
         if let Some(total_bytes) = outcome.total_bytes {
             self.capabilities
                 .records
@@ -133,6 +137,10 @@ impl ToolContext {
     }
 
     /// Drain successful offloads recorded since the prior drain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when agent startup, protocol handling, or tool execution fails.
     pub fn drain_offloads(&self) -> Result<Vec<OffloadRecord>, ToolContextError> {
         let mut records = self
             .capabilities
@@ -205,7 +213,7 @@ impl OffloadSink {
             Err(_) => CapOutcome {
                 value: Value::String(append_marker(
                     head.content,
-                    &format!("[truncated: showing {} of {total_lines} lines]", head.lines,),
+                    &format!("[truncated: showing {} of {total_lines} lines]", head.lines),
                 )),
                 total_bytes: None,
             },
@@ -243,7 +251,7 @@ fn write_unique_temp(dir: &Path, hash: &str, content: &str) -> io::Result<PathBu
                 file.write_all(content.as_bytes())?;
                 return Ok(tmp);
             }
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
             Err(err) => return Err(err),
         }
     }
@@ -395,17 +403,16 @@ mod tests {
         let ctx = ToolContext::new(dir.path().join("offload"), 1);
         let body = "alpha\nbeta\ngamma\n".to_string();
         let barrier = Arc::new(Barrier::new(16));
-        let handles = (0..16)
-            .map(|_| {
-                let ctx = ctx.clone();
-                let body = body.clone();
-                let barrier = barrier.clone();
-                thread::spawn(move || {
-                    barrier.wait();
-                    ctx.cap_or_offload("Read", body).expect("offload")
-                })
-            })
-            .collect::<Vec<_>>();
+        let mut handles = Vec::with_capacity(16);
+        for _ in 0..16 {
+            let ctx = ctx.clone();
+            let body = body.clone();
+            let barrier = barrier.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                ctx.cap_or_offload("Read", &body).expect("offload")
+            }));
+        }
 
         let outputs = handles
             .into_iter()

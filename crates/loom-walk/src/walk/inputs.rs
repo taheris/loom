@@ -98,16 +98,6 @@ const MEMBER_CRATES: &[&str] = &[
 /// a freshly registered walk never silently declares an empty input set.
 pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
     match name {
-        // Whole-tree production-source scans: `narrow_to_loom_files(src_files(..))`.
-        "audit_makes_no_bd_writes_outside_mint_module"
-        | "git_client_encapsulation"
-        | "loom_does_not_invoke_podman"
-        | "no_allow_dead_code"
-        | "no_derive_from_on_newtypes"
-        | "no_inline_suppression_comment_contract"
-        | "no_panics_in_production"
-        | "observers_in_loom_llm" => src_files(root),
-
         // Production source + tests: `narrow_to_loom_files(all_rs_files(..))`.
         "finding_no_duplicate_definitions"
         | "no_hardcoded_tmp_paths"
@@ -138,11 +128,12 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         | "loom_templates_public_types"
         | "loom_templates_workflow_templates_not_exported"
         | "todo_contexts_carry_criterion_status" => crate_src(root, "loom-templates"),
-        "session_trait_does_not_expose_typestate" => crate_src(root, "loom-events"),
+        "session_trait_does_not_expose_typestate" | "event_sink_in_loom_events" => {
+            crate_src(root, "loom-events")
+        }
         "direct_tools_net_new" => {
             rs_files_recursive(&root.join("crates/loom-agent/src/direct/tools"))
         }
-        "event_sink_in_loom_events" => crate_src(root, "loom-events"),
         // Scans `crates/loom-driver/src/identifier/`, which may not exist
         // yet; declare the host crate's `src` so the walk is never skipped
         // and re-triggers once the identifier module lands.
@@ -155,7 +146,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "loom_llm_mime_type_no_raw_strings" => {
             vec![root.join("crates/loom-llm/src/request.rs")]
         }
-        "tune_surface_conformance" => vec![
+        "tune_surface_conformance" | "surface_conformance" => vec![
             root.join("specs/harness.md"),
             root.join("crates/loom/src/main.rs"),
         ],
@@ -179,10 +170,6 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             root.join("tests/default.nix"),
             root.join("tests/loom/default.nix"),
             root.join("tests/run-tests.sh"),
-        ],
-        "surface_conformance" => vec![
-            root.join("specs/harness.md"),
-            root.join("crates/loom/src/main.rs"),
         ],
         "phase_verdict_decide_called_from_production" => vec![
             root.join("crates/loom-workflow/src/loop/production.rs"),
@@ -273,10 +260,7 @@ fn files_under(dir: &Path, ext: Option<&str>) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
         .map(|e| e.path().to_path_buf())
-        .filter(|p| match ext {
-            Some(want) => p.extension().and_then(|s| s.to_str()) == Some(want),
-            None => true,
-        })
+        .filter(|p| ext.is_none_or(|want| p.extension().and_then(|s| s.to_str()) == Some(want)))
         .collect()
 }
 

@@ -223,14 +223,12 @@ fn install_path_shims(workspace: &Path, want_beads_push: bool) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
     let bd_path = bin_dir.join("bd");
     let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
-    match std::os::unix::fs::symlink(&source, &bd_path) {
-        Ok(_) => {}
-        Err(_) => {
-            std::fs::copy(&source, &bd_path).expect("copy bd-shim");
-            let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
-        }
+    if matches!(std::os::unix::fs::symlink(&source, &bd_path), Ok(())) {
+    } else {
+        std::fs::copy(&source, &bd_path).expect("copy bd-shim");
+        let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
     }
     if want_beads_push {
         let beads_push = bin_dir.join("beads-push");
@@ -366,9 +364,8 @@ fn read_labels(state_dir: &Path, id: &str) -> Vec<String> {
 /// or no `emit_driver_event` call landed for this phase).
 fn read_driver_events(workspace: &Path, _label: &str) -> Vec<serde_json::Value> {
     let logs_dir = workspace.join(".loom/logs/review");
-    let entries = match std::fs::read_dir(&logs_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
+    let Ok(entries) = std::fs::read_dir(&logs_dir) else {
+        return Vec::new();
     };
     let mut paths: Vec<PathBuf> = entries
         .flatten()

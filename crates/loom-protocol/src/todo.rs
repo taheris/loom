@@ -24,6 +24,12 @@ pub type GitSha = GitOid;
 pub struct TodoFingerprint(String);
 
 impl TodoFingerprint {
+    /// Parse a canonical todo-input fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseTodoFingerprintError`] unless `s` contains exactly
+    /// 64 lowercase hexadecimal characters.
     pub fn new(s: &str) -> Result<Self, ParseTodoFingerprintError> {
         if s.len() != 64 {
             return Err(ParseTodoFingerprintError(s.to_owned()));
@@ -71,6 +77,12 @@ pub struct ParseTodoFingerprintError(pub String);
 pub struct NonEmptyString(String);
 
 impl NonEmptyString {
+    /// Construct a string whose trimmed contents are non-empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseNonEmptyStringError`] when the value is empty or
+    /// contains only whitespace.
     pub fn new(s: impl Into<String>) -> Result<Self, ParseNonEmptyStringError> {
         let s = s.into();
         if s.trim().is_empty() {
@@ -111,6 +123,11 @@ pub struct ParseNonEmptyStringError;
 pub struct NonEmptyVec<T>(Vec<T>);
 
 impl<T> NonEmptyVec<T> {
+    /// Construct a vector containing at least one element.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseNonEmptyVecError`] when `values` is empty.
     pub fn new(values: Vec<T>) -> Result<Self, ParseNonEmptyVecError> {
         if values.is_empty() {
             return Err(ParseNonEmptyVecError);
@@ -126,11 +143,11 @@ impl<T> NonEmptyVec<T> {
         self.0
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.0.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         false
     }
 }
@@ -210,6 +227,12 @@ impl<'de> Deserialize<'de> for TodoSpecOutcome {
     }
 }
 
+/// Parse the canonical final `LOOM_TODO` success marker.
+///
+/// # Errors
+///
+/// Returns [`ParseTodoSuccessError`] when the prefix, JSON payload, or
+/// typed success fields violate the todo wire contract.
 pub fn parse_todo_success(final_line: &str) -> Result<TodoSuccess, ParseTodoSuccessError> {
     let payload = todo_payload(final_line)?;
     let raw: RawTodoSuccess = serde_json::from_str(payload)
@@ -217,6 +240,12 @@ pub fn parse_todo_success(final_line: &str) -> Result<TodoSuccess, ParseTodoSucc
     raw.try_into()
 }
 
+/// Alias for [`parse_todo_success`].
+///
+/// # Errors
+///
+/// Returns [`ParseTodoSuccessError`] under the same conditions as
+/// [`parse_todo_success`].
 pub fn parse_success_marker(final_line: &str) -> Result<TodoSuccess, ParseTodoSuccessError> {
     parse_todo_success(final_line)
 }
