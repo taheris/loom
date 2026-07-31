@@ -176,7 +176,7 @@ Absolute paths are invalid in consumer tuning docs.
 
 ## Checker Registry
 
-The checker registry is internal and machine-readable. `loom-skills` does not
+The checker registry is internal and machine-readable. `loom-skill` does not
 expose it. In the target v1 layout, the authoritative registry is typed Rust
 metadata in the internal `loom-tune` crate; docs describe the shape, but
 generated/snapshot metadata from the crate is the source of truth. Conceptual

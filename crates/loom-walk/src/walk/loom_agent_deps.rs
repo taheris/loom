@@ -1,15 +1,15 @@
 //! `loom-agent::direct` wraps `loom-llm::Conversation` to satisfy the
 //! `Session` trait; the backend setup path also consumes the materialized
 //! skill registry. `loom-agent` must therefore depend on `loom-llm`,
-//! `loom-events`, and `loom-skills` directly.
+//! `loom-events`, and `loom-skill` directly.
 
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
 const RULE: &str =
-    "loom_agent_deps — `loom-agent` depends on `loom-llm`, `loom-events`, and `loom-skills`";
+    "loom_agent_deps — `loom-agent` depends on `loom-llm`, `loom-events`, and `loom-skill`";
 
-const REQUIRED: &[&str] = &["loom-llm", "loom-events", "loom-skills"];
+const REQUIRED: &[&str] = &["loom-llm", "loom-events", "loom-skill"];
 
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();
@@ -31,7 +31,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
     for required in REQUIRED {
         if !keys.iter().any(|k| k == required) {
             violations.push(format!(
-                "crates/loom-agent/Cargo.toml:1 missing required dependency `{required}` — `loom-agent` must depend on `loom-llm`, `loom-events`, and `loom-skills`",
+                "crates/loom-agent/Cargo.toml:1 missing required dependency `{required}` — `loom-agent` must depend on `loom-llm`, `loom-events`, and `loom-skill`",
             ));
         }
     }

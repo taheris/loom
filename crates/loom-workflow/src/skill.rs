@@ -5,13 +5,11 @@ use loom_driver::agent::AgentRuntime;
 use loom_driver::config::{SkillPathDisplay, SkillRegistration, SkillsConfig};
 use loom_driver::git::{GitClient, GitError};
 use loom_driver::identifier::ProfileName;
-use loom_skills::builtin::CatalogError;
-use loom_skills::disclosure::{
-    DisclosureMode, NativeRegistration, PathDisplay, RegistrationPolicy,
-};
-use loom_skills::discovery::{DiscoveryError, load_workspace};
-use loom_skills::identity::{ParsePhaseNameError, PhaseName};
-use loom_skills::registry::{
+use loom_skill::builtin::CatalogError;
+use loom_skill::disclosure::{DisclosureMode, NativeRegistration, PathDisplay, RegistrationPolicy};
+use loom_skill::discovery::{DiscoveryError, load_workspace};
+use loom_skill::identity::{ParsePhaseNameError, PhaseName};
+use loom_skill::registry::{
     ApplicableRegistry, DisclosureRegistry, MaterializeError, MaterializedRegistry,
     RegisteredSkills, RegistryError, SkillRegistry,
 };
@@ -97,7 +95,7 @@ impl SkillPlan {
         runtime: AgentRuntime,
         config: &SkillsConfig,
     ) -> Result<Self, SkillError> {
-        let mut set = loom_skills::builtin::catalog()?;
+        let mut set = loom_skill::builtin::catalog()?;
         let report = load_workspace(workspace, tracked_files, &config.paths)?;
         for warning in report.warnings() {
             warn!(
@@ -215,9 +213,9 @@ mod tests {
     use loom_driver::agent::{ImageSourceKind, RePinContent, SpawnConfig};
     use loom_driver::config::{SkillRegistration, SkillsConfig};
     use loom_driver::git::{commit_all_in, init_test_repo};
-    use loom_skills::disclosure::PathDisplay;
-    use loom_skills::identity::{SkillDescription, SkillName};
-    use loom_skills::registry::{DisclosureSkill, RegisteredSkills};
+    use loom_skill::disclosure::PathDisplay;
+    use loom_skill::identity::{SkillDescription, SkillName};
+    use loom_skill::registry::{DisclosureSkill, RegisteredSkills};
 
     fn disclosure(mode: DisclosureMode, path: Option<PathBuf>) -> DisclosureRegistry {
         DisclosureRegistry {

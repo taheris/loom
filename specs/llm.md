@@ -52,7 +52,7 @@ regardless of which consumer is driving.
 ### Skill Boundary
 
 `loom-llm` has no native skill registry. Skills are a Loom agent/workflow
-concern owned by `loom-skills` and `loom-agent`:
+concern owned by `loom-skill` and `loom-agent`:
 
 - Pi/Claude native skill registration, when available, is backend setup outside
   `Conversation`.
@@ -60,7 +60,7 @@ concern owned by `loom-skills` and `loom-agent`:
   descriptions, and readable paths, and Direct's `Read` tool loads full skill
   bodies on demand.
 - External consumers using `Conversation` directly may implement their own skill
-  conventions, but `loom-llm` does not expose or depend on `loom-skills` in v1.
+  conventions, but `loom-llm` does not expose or depend on `loom-skill` in v1.
 
 This keeps the LLM primitive crate provider/tool-loop focused and prevents the
 skill optimization engine from becoming part of the public LLM API by accident.
@@ -775,7 +775,7 @@ and `--no-default-features` to catch feature-gating regressions.
   [check](cargo run -p loom-walk -- loom_llm_no_underlying_crate_reexports)
 - No Client constructor or public method signature references `genai::Client`, `genai::Error`, or any other `genai` type — `genai` remains an internal implementation dependency
   [check](cargo run -p loom-walk -- loom_llm_no_public_genai_types)
-- No `loom-llm` public type or dependency exposes `loom-skills` or native skill
+- No `loom-llm` public type or dependency exposes `loom-skill` or native skill
       registration; Direct skill support is prompt/path content owned by
       `loom-agent`
   [check](cargo run -p loom-walk -- loom_llm_has_no_skill_registry_surface)
@@ -901,7 +901,7 @@ and `--no-default-features` to catch feature-gating regressions.
     internal-implementation dependency, swappable without
     consumer breaking changes. No public Client constructor or
     method signature mentions `genai::Client` or other `genai`
-    types. `llm` also has no public `loom-skills` dependency or native skill
+    types. `llm` also has no public `loom-skill` dependency or native skill
     registry surface; skills are prompt/backend concerns above this crate.
 11. **`SchemaKind` discrimination.** `#[non_exhaustive]` enum
     with one variant per supported wire-format family
@@ -981,7 +981,7 @@ and `--no-default-features` to catch feature-gating regressions.
 
 1. **Public-contract crate.** `llm` is one of five
    public-contract crates in the loom workspace (alongside
-   `loom-events`, `loom-protocol`, `loom-templates`, and `loom-skills`). External
+   `loom-events`, `loom-protocol`, `loom-templates`, and `loom-skill`). External
    Rust consumers depend on it directly. Stability rules: additive type / variant
    changes are minor bumps; removing or renaming public types,
    methods, or `ModelId` variants is a major bump.

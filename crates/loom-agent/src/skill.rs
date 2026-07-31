@@ -1,6 +1,6 @@
 use loom_driver::agent::{ProtocolError, SpawnConfig};
-use loom_skills::disclosure::DisclosureMode;
-use loom_skills::registry::MaterializedRegistry;
+use loom_skill::disclosure::DisclosureMode;
+use loom_skill::registry::MaterializedRegistry;
 
 pub trait NativeRegistrar {
     fn register(registry: &MaterializedRegistry) -> Result<(), ProtocolError>;
@@ -33,7 +33,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use loom_driver::agent::{ImageSourceKind, RePinContent, SpawnConfig};
-    use loom_skills::registry::RegisteredSkills;
+    use loom_skill::registry::RegisteredSkills;
 
     use super::*;
 

@@ -2457,7 +2457,7 @@ dependencies = [
  "loom-driver",
  "loom-events",
  "loom-llm",
- "loom-skills",
+ "loom-skill",
  "loom-test-support",
  "nix",
  "proptest",
@@ -2505,7 +2505,7 @@ dependencies = [
  "loom-events",
  "loom-protocol",
  "loom-render",
- "loom-skills",
+ "loom-skill",
  "loom-test-support",
  "proptest",
  "pulldown-cmark",
@@ -2611,7 +2611,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "loom-skills"
+name = "loom-skill"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -2658,7 +2658,7 @@ dependencies = [
  "displaydoc",
  "loom-events",
  "loom-protocol",
- "loom-skills",
+ "loom-skill",
  "serde",
  "serde_json",
  "sha2",
@@ -2699,7 +2699,7 @@ dependencies = [
  "loom-llm",
  "loom-protocol",
  "loom-render",
- "loom-skills",
+ "loom-skill",
  "loom-templates",
  "loom-test-support",
  "loom-tune",

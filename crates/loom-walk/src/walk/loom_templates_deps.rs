@@ -1,7 +1,7 @@
 //! `templates` is a public-contract near-leaf alongside `loom-events`,
 //! `loom-protocol`, and `llm`. Its `[dependencies]` table may depend on no
 //! internal crate other than `loom-events` and `loom-protocol` — references to
-//! `loom-driver`, `agent`, `loom-workflow`, `llm`, `loom-skills`, `loom-tune`,
+//! `loom-driver`, `agent`, `loom-workflow`, `llm`, `loom-skill`, `loom-tune`,
 //! etc. would either re-shape the consumer-facing dependency graph or pull the
 //! runtime into the template surface.
 
@@ -16,7 +16,7 @@ const FORBIDDEN: &[&str] = &[
     "loom-workflow",
     "loom-render",
     "loom-llm",
-    "loom-skills",
+    "loom-skill",
     "loom-tune",
     "loom-gate",
 ];

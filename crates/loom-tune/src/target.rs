@@ -3,7 +3,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use displaydoc::Display;
-use loom_skills::identity::{PhaseName, SkillName};
+use loom_skill::identity::{PhaseName, SkillName};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
@@ -185,13 +185,13 @@ pub enum ParseTargetError {
     InvalidSkill {
         value: String,
         #[source]
-        source: loom_skills::identity::ParseSkillNameError,
+        source: loom_skill::identity::ParseSkillNameError,
     },
     /// tune target `{value}` has an invalid phase name
     InvalidPhase {
         value: String,
         #[source]
-        source: loom_skills::identity::ParsePhaseNameError,
+        source: loom_skill::identity::ParsePhaseNameError,
     },
     /// tune target `{value}` has an invalid partial name
     InvalidPartial {

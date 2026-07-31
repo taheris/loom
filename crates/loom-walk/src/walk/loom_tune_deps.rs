@@ -1,14 +1,14 @@
 //! `loom-tune` is an internal tuning crate. It may depend on
-//! `loom-events`, `loom-skills`, and third-party parsing/scoring crates,
+//! `loom-events`, `loom-skill`, and third-party parsing/scoring crates,
 //! but not on runtime, agent, or workflow crates.
 
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
 const RULE: &str =
-    "loom_tune_deps — `loom-tune` depends on `loom-events` and `loom-skills`, not runtime crates";
+    "loom_tune_deps — `loom-tune` depends on `loom-events` and `loom-skill`, not runtime crates";
 
-const REQUIRED: &[&str] = &["loom-events", "loom-skills"];
+const REQUIRED: &[&str] = &["loom-events", "loom-skill"];
 
 const FORBIDDEN: &[&str] = &[
     "loom-driver",
@@ -47,7 +47,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
     for forbidden in FORBIDDEN {
         if keys.iter().any(|k| k == forbidden) {
             violations.push(format!(
-                "crates/loom-tune/Cargo.toml:1 forbidden internal dep `{forbidden}` — `loom-tune` may depend only on `loom-events` and `loom-skills` among internal crates",
+                "crates/loom-tune/Cargo.toml:1 forbidden internal dep `{forbidden}` — `loom-tune` may depend only on `loom-events` and `loom-skill` among internal crates",
             ));
         }
     }

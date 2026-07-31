@@ -320,7 +320,7 @@ The fixed workspace separates public contracts from internal orchestration:
   (public contract).
 - `loom-llm` — provider-neutral LLM and conversation primitives (public
   contract).
-- `loom-skills` — skill artifacts, discovery, resolution, and materialization
+- `loom-skill` — skill artifacts, discovery, resolution, and materialization
   (public contract).
 - `loom-tune` — tuning cases, evidence, scoring, and proposal metadata
   (internal).
@@ -341,7 +341,7 @@ The fixed workspace separates public contracts from internal orchestration:
 
 Public contracts stay at the bottom of the graph. `loom-events` is the base
 contract and imports no internal crate. `loom-protocol`, `loom-llm`, and
-`loom-skills` build only on their documented public-contract dependencies;
+`loom-skill` build only on their documented public-contract dependencies;
 `loom-templates` builds on `loom-events` and `loom-protocol`. They do not import
 runtime orchestration.
 
@@ -494,12 +494,12 @@ and three infra attempts.
 - Workspace builds with `cargo build` from `loom/` root
   [check](cargo build --workspace)
 - Target v1 crate set matches the fixed workspace members exactly: loom,
-      loom-driver, loom-events, loom-llm, loom-skills, loom-tune,
+      loom-driver, loom-events, loom-llm, loom-skill, loom-tune,
       loom-render, loom-agent, loom-direct-runner, loom-gate,
       loom-protocol, loom-workflow, loom-templates, loom-test-support,
       and loom-walk
   [check](cargo run -p loom-walk -- crate_structure_includes_loom_tune)
-- Five public-contract crates declared in workspace manifest metadata: loom-events, loom-protocol, loom-llm, loom-templates, loom-skills; no other crate declares the marker
+- Five public-contract crates declared in workspace manifest metadata: loom-events, loom-protocol, loom-llm, loom-templates, loom-skill; no other crate declares the marker
   [check](cargo run -p loom-walk -- public_contract_crates)
 - Workspace uses edition 2024 and resolver "3"
   [check](cargo run -p loom-walk -- workspace_edition)
@@ -607,17 +607,17 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 
 ### Dependency graph
 
-- `loom-events` is a leaf crate — no internal deps on `loom-driver` / `loom-render` / `loom-workflow` / `loom-templates` / `loom-llm` / `loom-agent` / `loom-skills` / `loom-tune`
+- `loom-events` is a leaf crate — no internal deps on `loom-driver` / `loom-render` / `loom-workflow` / `loom-templates` / `loom-llm` / `loom-agent` / `loom-skill` / `loom-tune`
   [check](cargo run -p loom-walk -- loom_events_is_leaf)
-- `loom-llm` depends on `loom-events` only (no `loom-driver` / `loom-agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
+- `loom-llm` depends on `loom-events` only (no `loom-driver` / `loom-agent` / `loom-workflow` / `loom-skill` / `loom-tune` import)
   [check](cargo run -p loom-walk -- loom_llm_deps)
-- `loom-templates` depends on `loom-events` and `loom-protocol` only among internal crates (no `loom-driver` / `loom-llm` / `loom-agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
+- `loom-templates` depends on `loom-events` and `loom-protocol` only among internal crates (no `loom-driver` / `loom-llm` / `loom-agent` / `loom-workflow` / `loom-skill` / `loom-tune` import)
   [check](cargo run -p loom-walk -- loom_templates_deps)
-- `loom-skills` depends on `loom-events` but not `loom-driver` / `loom-agent` / `loom-templates` / `loom-tune` / `loom-workflow`
-  [check](cargo run -p loom-walk -- loom_skills_deps)
-- `loom-tune` depends on `loom-events` and `loom-skills`, but not `loom-driver` / `loom-agent` / `loom-workflow`
+- `loom-skill` depends on `loom-events` but not `loom-driver` / `loom-agent` / `loom-templates` / `loom-tune` / `loom-workflow`
+  [check](cargo run -p loom-walk -- loom_skill_deps)
+- `loom-tune` depends on `loom-events` and `loom-skill`, but not `loom-driver` / `loom-agent` / `loom-workflow`
   [check](cargo run -p loom-walk -- loom_tune_deps)
-- `loom-agent` depends on `loom-llm`, `loom-events`, and `loom-skills`; its `direct` backend wraps `loom-llm::Conversation`
+- `loom-agent` depends on `loom-llm`, `loom-events`, and `loom-skill`; its `direct` backend wraps `loom-llm::Conversation`
   [check](cargo run -p loom-walk -- loom_agent_deps)
 
 ### Bead dispatch

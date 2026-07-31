@@ -130,7 +130,7 @@ judge_tool_context_shape() {
 
 skills_template_boundary_review() {
   judge_files \
-    "crates/loom-skills/builtin/**/skill.md" \
+    "crates/loom-skill/builtin/**/skill.md" \
     "crates/loom-templates/templates/partial/skill_index.md" \
     "crates/loom-tune/src/checker.rs" \
     "crates/loom-tune/src/checker/protocol_boundary.rs" \

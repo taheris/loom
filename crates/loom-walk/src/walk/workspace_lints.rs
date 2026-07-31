@@ -131,7 +131,7 @@ const LIBRARY_CRATES: &[&str] = &[
     "loom-driver",
     "loom-events",
     "loom-llm",
-    "loom-skills",
+    "loom-skill",
     "loom-tune",
     "loom-render",
     "loom-agent",

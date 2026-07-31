@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use displaydoc::Display;
 use loom_events::identifier::{BeadId, SpecLabel};
-use loom_skills::identity::SkillName;
+use loom_skill::identity::SkillName;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;

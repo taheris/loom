@@ -16,11 +16,11 @@ use loom_driver::lock::{LockError, LockManager, PhaseLock};
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::ScratchSession;
 use loom_driver::state::{CacheDb, CacheError};
-use loom_skills::builtin::{self, CatalogError};
-use loom_skills::discovery::{DiscoveryError, load_workspace};
-use loom_skills::identity::{PhaseName, SkillName};
-use loom_skills::registry::{NamedSkill, RegistryError, SkillRegistry};
-use loom_skills::source::SkillSource;
+use loom_skill::builtin::{self, CatalogError};
+use loom_skill::discovery::{DiscoveryError, load_workspace};
+use loom_skill::identity::{PhaseName, SkillName};
+use loom_skill::registry::{NamedSkill, RegistryError, SkillRegistry};
+use loom_skill::source::SkillSource;
 use loom_tune::case::{Document, Input, LoadContext, LoadError, LoadedCases, load_documents};
 use loom_tune::checker::{
     CheckerId, Domain as CheckerDomain, Level, Registry as CheckerRegistry,
@@ -2343,13 +2343,13 @@ pub enum TuneError {
     SkillName {
         name: String,
         #[source]
-        source: loom_skills::identity::ParseSkillNameError,
+        source: loom_skill::identity::ParseSkillNameError,
     },
     /// invalid phase target name `{name}`
     PhaseName {
         name: String,
         #[source]
-        source: loom_skills::identity::ParsePhaseNameError,
+        source: loom_skill::identity::ParsePhaseNameError,
     },
     /// invalid partial target name `{name}`
     PartialName {

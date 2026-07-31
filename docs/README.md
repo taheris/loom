@@ -23,7 +23,7 @@ sessions.
 | [harness.md](../specs/harness.md) | [`crates/`](../crates/) | `lm-9ehh` | Platform: crate structure, workspace lints, process architecture, cache store, command set |
 | [llm.md](../specs/llm.md) | [`crates/loom-llm/`](../crates/loom-llm/) | `lm-ywph` | Public-contract LLM primitives: `LlmClient`, typed `CacheControl`, `Conversation` with built-in tool-use loop, agent-loop observers (doom-loop, duplicate-result) |
 | [pre-commit.md](../specs/pre-commit.md) | [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) | `lm-q50m` | Hook composition policy: pre-commit (fast, ~1s) + pre-push (slow, ~10s + smoke) staged via `.pre-commit-config.yaml`; plumbing (lock, shim, install) delegated to `wrix.prekHooks` |
-| [skills.md](../specs/skills.md) | [`crates/loom-skills/`](../crates/loom-skills/) plus planned internal crate `loom-tune` | — | Dynamic agent skill registry, built-in/profile-scoped skills, internal SkillOpt-style tuning engine, and `loom inbox` human review for tuned artifacts |
+| [skills.md](../specs/skills.md) | [`crates/loom-skill/`](../crates/loom-skill/) plus planned internal crate `loom-tune` | — | Dynamic agent skill registry, built-in/profile-scoped skills, internal SkillOpt-style tuning engine, and `loom inbox` human review for tuned artifacts |
 | [templates.md](../specs/templates.md) | [`crates/loom-templates/`](../crates/loom-templates/) | `lm-pe00` | Askama templates, partials inventory, per-phase pinning policy |
 | [tests.md](../specs/tests.md) | [`tests/`](../tests/) | `lm-lsyj` | Test strategy: unit, integration, system tests |
 

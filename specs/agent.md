@@ -1151,7 +1151,7 @@ the entrypoint run the wrong runtime.
 - `registration = "prompt"` disables native registration globally and renders
       prompt-disclosure paths for Pi, Claude, and Direct
   [test](prompt_skill_registration_policy_disables_native)
-- Direct sessions consume the prompt-disclosure result produced by `loom-skills`,
+- Direct sessions consume the prompt-disclosure result produced by `loom-skill`,
       and disclosed skill bodies are loadable through Direct's `Read` tool
   [test](direct_skill_disclosure_uses_readable_paths)
 

@@ -258,7 +258,7 @@ mod tests {
             workspace_path: "/workspace".into(),
             plan: &plan,
             state: State::Pending,
-            target_files: vec!["crates/loom-skills/builtin/base/example/skill.md".into()],
+            target_files: vec!["crates/loom-skill/builtin/base/example/skill.md".into()],
             base_commit: "base".into(),
             proposal_branch: "loom/tune/lm-tune.1".into(),
             proposal_head: "head".into(),

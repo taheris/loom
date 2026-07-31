@@ -1,4 +1,4 @@
-//! `loom-skills` is a public-contract crate for skill artifacts and
+//! `loom-skill` is a public-contract crate for skill artifacts and
 //! registry stages. It may depend on `loom-events` for shared newtypes,
 //! but not on runtime, agent, template, tune, or workflow crates.
 
@@ -6,7 +6,7 @@ use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
 const RULE: &str =
-    "loom_skills_deps — `loom-skills` depends on `loom-events` and not on runtime crates";
+    "loom_skill_deps — `loom-skill` depends on `loom-events` and not on runtime crates";
 
 const REQUIRED: &[&str] = &["loom-events"];
 
@@ -23,17 +23,17 @@ const FORBIDDEN: &[&str] = &[
 
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();
-    let manifest = root.join("crates/loom-skills/Cargo.toml");
+    let manifest = root.join("crates/loom-skill/Cargo.toml");
     let mut violations = Vec::new();
 
     let Some(body) = read_to_string(&manifest) else {
-        violations.push("crates/loom-skills/Cargo.toml:1 manifest not readable".to_string());
+        violations.push("crates/loom-skill/Cargo.toml:1 manifest not readable".to_string());
         return verdict_from(RULE, violations);
     };
 
     let Some(section) = section_body(&body, "[dependencies]") else {
         violations
-            .push("crates/loom-skills/Cargo.toml:1 [dependencies] section missing".to_string());
+            .push("crates/loom-skill/Cargo.toml:1 [dependencies] section missing".to_string());
         return verdict_from(RULE, violations);
     };
     let keys = section_keys(section);
@@ -41,7 +41,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
     for required in REQUIRED {
         if !keys.iter().any(|k| k == required) {
             violations.push(format!(
-                "crates/loom-skills/Cargo.toml:1 missing required dependency `{required}`",
+                "crates/loom-skill/Cargo.toml:1 missing required dependency `{required}`",
             ));
         }
     }
@@ -49,7 +49,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
     for forbidden in FORBIDDEN {
         if keys.iter().any(|k| k == forbidden) {
             violations.push(format!(
-                "crates/loom-skills/Cargo.toml:1 forbidden internal dep `{forbidden}` — `loom-skills` may depend only on `loom-events` among internal crates",
+                "crates/loom-skill/Cargo.toml:1 forbidden internal dep `{forbidden}` — `loom-skill` may depend only on `loom-events` among internal crates",
             ));
         }
     }

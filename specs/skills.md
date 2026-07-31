@@ -40,7 +40,7 @@ compiled workflow templates.
 
 ### Public Crate and Type Pipeline
 
-`loom-skills` is a public-contract crate. It owns the skill artifact model and
+`loom-skill` is a public-contract crate. It owns the skill artifact model and
 registry surface that downstream consumers can reuse. The SkillOpt-style tuning
 engine is internal in v1 and belongs to the internal `loom-tune` crate in the
 target v1 layout; it can become a separate public surface only after the
@@ -348,7 +348,7 @@ validated at every level, including `fast` and `--dry-run`.
 
 Tune validation uses an internal machine-readable checker registry rather than
 ad-hoc checks invented after a candidate diff exists. The registry is not part of
-the public `loom-skills` crate. In v1 the authoritative registry is typed Rust
+the public `loom-skill` crate. In v1 the authoritative registry is typed Rust
 metadata in the internal `loom-tune` crate and is serializable for docs,
 snapshots, and `loom tune checker` output. Checker metadata includes id, title,
 summary, status, applicable target kinds, supported levels, cost,
@@ -724,7 +724,7 @@ driver without making tuning a second resolution authority.
 ### Functional
 
 1. **Public skill registry.** Loom exposes skill parsing, discovery,
-   resolution, filtering, and materialization through a public `loom-skills`
+   resolution, filtering, and materialization through a public `loom-skill`
    crate. Consumers can use the same registry model outside the Loom binary.
 2. **Internal tuning engine.** The SkillOpt-style tuning engine remains internal
    in v1, with registry/case/evidence/scoring/metadata types housed in the
@@ -797,7 +797,7 @@ driver without making tuning a second resolution authority.
    names/frontmatter. Directory packages remain available for assets and helper
    files; loose files are allowed only where explicitly configured or under the
    override root.
-5. **SemVer.** Removing or renaming public `loom-skills` types or fields is a
+5. **SemVer.** Removing or renaming public `loom-skill` types or fields is a
    major version change; adding new optional metadata or diagnostics is minor.
 
 ## Out of Scope

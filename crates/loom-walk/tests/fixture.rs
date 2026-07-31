@@ -1040,7 +1040,7 @@ const STRUCTURE_CRATE_NAMES: &[&str] = &[
     "loom-driver",
     "loom-events",
     "loom-llm",
-    "loom-skills",
+    "loom-skill",
     "loom-tune",
     "loom-render",
     "loom-agent",
@@ -1057,7 +1057,7 @@ const STRUCTURE_LIB_NAMES: &[&str] = &[
     "loom-driver",
     "loom-events",
     "loom-llm",
-    "loom-skills",
+    "loom-skill",
     "loom-tune",
     "loom-render",
     "loom-agent",
@@ -2473,7 +2473,7 @@ fn public_contract_crates_pass() {
     seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", true);
     seed_contract_manifest(&ws, "loom-templates", true);
-    seed_contract_manifest(&ws, "loom-skills", true);
+    seed_contract_manifest(&ws, "loom-skill", true);
     let out = invoke(&["public_contract_crates"], Some(ws.path()), None);
     assert_pass(&out);
 }
@@ -2485,7 +2485,7 @@ fn public_contract_crates_fail_when_missing_marker() {
     seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", false);
     seed_contract_manifest(&ws, "loom-templates", true);
-    seed_contract_manifest(&ws, "loom-skills", true);
+    seed_contract_manifest(&ws, "loom-skill", true);
     let out = invoke(&["public_contract_crates"], Some(ws.path()), None);
     assert_fail(&out, "loom-llm");
 }
@@ -2498,7 +2498,7 @@ fn public_contract_crates_fail_when_manifest_missing() {
     seed_contract_manifest(&ws, "loom-llm", true);
     seed_contract_manifest(&ws, "loom-templates", true);
     let out = invoke(&["public_contract_crates"], Some(ws.path()), None);
-    assert_fail(&out, "loom-skills");
+    assert_fail(&out, "loom-skill");
 }
 
 #[test]
@@ -2508,7 +2508,7 @@ fn public_contract_crates_fail_when_extra_crate_declares_marker() {
     seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", true);
     seed_contract_manifest(&ws, "loom-templates", true);
-    seed_contract_manifest(&ws, "loom-skills", true);
+    seed_contract_manifest(&ws, "loom-skill", true);
     seed_contract_manifest(&ws, "loom-gate", true);
     let out = invoke(&["public_contract_crates"], Some(ws.path()), None);
     assert_fail(&out, "unexpected");
@@ -2813,12 +2813,12 @@ fn loom_llm_has_no_skill_registry_surface_pass_when_clean() {
 }
 
 #[test]
-fn loom_llm_has_no_skill_registry_surface_fail_on_loom_skills_dep() {
+fn loom_llm_has_no_skill_registry_surface_fail_on_loom_skill_dep() {
     let ws = make_workspace();
     seed(
         ws.path(),
         "crates/loom-llm/Cargo.toml",
-        "[package]\nname = \"loom-llm\"\n[dependencies]\nloom-skills = { workspace = true }\n",
+        "[package]\nname = \"loom-llm\"\n[dependencies]\nloom-skill = { workspace = true }\n",
     );
     seed(
         ws.path(),
@@ -2830,7 +2830,7 @@ fn loom_llm_has_no_skill_registry_surface_fail_on_loom_skills_dep() {
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "loom-skills");
+    assert_fail(&out, "loom-skill");
 }
 
 #[test]
@@ -3365,7 +3365,7 @@ fn loom_agent_deps_pass_when_required_present() {
         ws.path(),
         "crates/loom-agent/Cargo.toml",
         "[package]\nname = \"loom-agent\"\n\
-         [dependencies]\nloom-events = { workspace = true }\nloom-llm = { workspace = true }\nloom-skills = { workspace = true }\n",
+         [dependencies]\nloom-events = { workspace = true }\nloom-llm = { workspace = true }\nloom-skill = { workspace = true }\n",
     );
     let out = invoke(&["loom_agent_deps"], Some(ws.path()), None);
     assert_pass(&out);
@@ -3378,7 +3378,7 @@ fn loom_agent_deps_fail_when_loom_llm_missing() {
         ws.path(),
         "crates/loom-agent/Cargo.toml",
         "[package]\nname = \"loom-agent\"\n\
-         [dependencies]\nloom-events = { workspace = true }\nloom-skills = { workspace = true }\n",
+         [dependencies]\nloom-events = { workspace = true }\nloom-skill = { workspace = true }\n",
     );
     let out = invoke(&["loom_agent_deps"], Some(ws.path()), None);
     assert_fail(&out, "llm");
@@ -3391,14 +3391,14 @@ fn loom_agent_deps_fail_when_loom_events_missing() {
         ws.path(),
         "crates/loom-agent/Cargo.toml",
         "[package]\nname = \"loom-agent\"\n\
-         [dependencies]\nloom-llm = { workspace = true }\nloom-skills = { workspace = true }\n",
+         [dependencies]\nloom-llm = { workspace = true }\nloom-skill = { workspace = true }\n",
     );
     let out = invoke(&["loom_agent_deps"], Some(ws.path()), None);
     assert_fail(&out, "loom-events");
 }
 
 #[test]
-fn loom_agent_deps_fail_when_loom_skills_missing() {
+fn loom_agent_deps_fail_when_loom_skill_missing() {
     let ws = make_workspace();
     seed(
         ws.path(),
@@ -3407,48 +3407,48 @@ fn loom_agent_deps_fail_when_loom_skills_missing() {
          [dependencies]\nloom-events = { workspace = true }\nloom-llm = { workspace = true }\n",
     );
     let out = invoke(&["loom_agent_deps"], Some(ws.path()), None);
-    assert_fail(&out, "loom-skills");
+    assert_fail(&out, "loom-skill");
 }
 
 // ---------------------------------------------------------------------------
-// loom_skills_deps
+// loom_skill_deps
 // ---------------------------------------------------------------------------
 
 #[test]
-fn loom_skills_deps_pass_with_only_allowed_internal_dep() {
+fn loom_skill_deps_pass_with_only_allowed_internal_dep() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-skills/Cargo.toml",
-        "[package]\nname = \"loom-skills\"\n\
+        "crates/loom-skill/Cargo.toml",
+        "[package]\nname = \"loom-skill\"\n\
          [dependencies]\nloom-events = { workspace = true }\nserde = \"1\"\n",
     );
-    let out = invoke(&["loom_skills_deps"], Some(ws.path()), None);
+    let out = invoke(&["loom_skill_deps"], Some(ws.path()), None);
     assert_pass(&out);
 }
 
 #[test]
-fn loom_skills_deps_fail_when_loom_events_missing() {
+fn loom_skill_deps_fail_when_loom_events_missing() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-skills/Cargo.toml",
-        "[package]\nname = \"loom-skills\"\n[dependencies]\nserde = \"1\"\n",
+        "crates/loom-skill/Cargo.toml",
+        "[package]\nname = \"loom-skill\"\n[dependencies]\nserde = \"1\"\n",
     );
-    let out = invoke(&["loom_skills_deps"], Some(ws.path()), None);
+    let out = invoke(&["loom_skill_deps"], Some(ws.path()), None);
     assert_fail(&out, "loom-events");
 }
 
 #[test]
-fn loom_skills_deps_fail_on_runtime_dep() {
+fn loom_skill_deps_fail_on_runtime_dep() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-skills/Cargo.toml",
-        "[package]\nname = \"loom-skills\"\n\
+        "crates/loom-skill/Cargo.toml",
+        "[package]\nname = \"loom-skill\"\n\
          [dependencies]\nloom-events = { workspace = true }\nloom-agent = { workspace = true }\n",
     );
-    let out = invoke(&["loom_skills_deps"], Some(ws.path()), None);
+    let out = invoke(&["loom_skill_deps"], Some(ws.path()), None);
     assert_fail(&out, "loom-agent");
 }
 
@@ -3463,14 +3463,14 @@ fn loom_tune_deps_pass_with_required_internal_deps() {
         ws.path(),
         "crates/loom-tune/Cargo.toml",
         "[package]\nname = \"loom-tune\"\n\
-         [dependencies]\nloom-events = { workspace = true }\nloom-skills = { workspace = true }\ntoml = \"1\"\n",
+         [dependencies]\nloom-events = { workspace = true }\nloom-skill = { workspace = true }\ntoml = \"1\"\n",
     );
     let out = invoke(&["loom_tune_deps"], Some(ws.path()), None);
     assert_pass(&out);
 }
 
 #[test]
-fn loom_tune_deps_fail_when_loom_skills_missing() {
+fn loom_tune_deps_fail_when_loom_skill_missing() {
     let ws = make_workspace();
     seed(
         ws.path(),
@@ -3479,7 +3479,7 @@ fn loom_tune_deps_fail_when_loom_skills_missing() {
          [dependencies]\nloom-events = { workspace = true }\ntoml = \"1\"\n",
     );
     let out = invoke(&["loom_tune_deps"], Some(ws.path()), None);
-    assert_fail(&out, "loom-skills");
+    assert_fail(&out, "loom-skill");
 }
 
 #[test]
@@ -3489,7 +3489,7 @@ fn loom_tune_deps_fail_on_workflow_dep() {
         ws.path(),
         "crates/loom-tune/Cargo.toml",
         "[package]\nname = \"loom-tune\"\n\
-         [dependencies]\nloom-events = { workspace = true }\nloom-skills = { workspace = true }\nloom-workflow = { workspace = true }\n",
+         [dependencies]\nloom-events = { workspace = true }\nloom-skill = { workspace = true }\nloom-workflow = { workspace = true }\n",
     );
     let out = invoke(&["loom_tune_deps"], Some(ws.path()), None);
     assert_fail(&out, "loom-workflow");

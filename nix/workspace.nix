@@ -34,7 +34,7 @@ let
     path: type:
     (craneLib.filterCargoSources path type)
     || (hasInfix "/loom-templates/templates/" path)
-    || (hasInfix "/loom-skills/builtin/" path)
+    || (hasInfix "/loom-skill/builtin/" path)
     || (hasSuffix ".snap" path);
 
   cleanedSrc = cleanSourceWith {

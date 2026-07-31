@@ -39,7 +39,7 @@ mod loom_llm_no_public_genai_types;
 mod loom_llm_no_underlying_crate_reexports;
 mod loom_llm_public_surface;
 mod loom_render_deps;
-mod loom_skills_deps;
+mod loom_skill_deps;
 mod loom_templates_deps;
 mod loom_templates_public_partial_constants;
 mod loom_templates_public_types;
@@ -235,8 +235,8 @@ pub static REGISTRY: &[Walk] = &[
         run: loom_render_deps::run,
     },
     Walk {
-        name: "loom_skills_deps",
-        run: loom_skills_deps::run,
+        name: "loom_skill_deps",
+        run: loom_skill_deps::run,
     },
     Walk {
         name: "loom_templates_deps",
@@ -460,7 +460,7 @@ mod tests {
             "loom_llm_no_underlying_crate_reexports",
             "loom_llm_public_surface",
             "loom_render_deps",
-            "loom_skills_deps",
+            "loom_skill_deps",
             "no_derive_from_on_newtypes",
             "no_types_or_error_files",
             "no_allow_dead_code",

@@ -5,7 +5,7 @@ members = [
     "crates/loom-driver",
     "crates/loom-events",
     "crates/loom-llm",
-    "crates/loom-skills",
+    "crates/loom-skill",
     "crates/loom-tune",
     "crates/loom-render",
     "crates/loom-agent",
@@ -86,7 +86,7 @@ wiremock = "0.6"
 loom-driver = { path = "crates/loom-driver" }
 loom-events = { path = "crates/loom-events" }
 loom-llm = { path = "crates/loom-llm" }
-loom-skills = { path = "crates/loom-skills" }
+loom-skill = { path = "crates/loom-skill" }
 loom-tune = { path = "crates/loom-tune" }
 loom-render = { path = "crates/loom-render" }
 loom-agent = { path = "crates/loom-agent" }

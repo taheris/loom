@@ -232,7 +232,7 @@ mod tests {
         let repo = workspace();
         let source_path = repo
             .path()
-            .join("crates/loom-skills/builtin/base/loom-context-before-edit/skill.md");
+            .join("crates/loom-skill/builtin/base/loom-context-before-edit/skill.md");
         write(
             &source_path,
             &skill_markdown(
@@ -244,8 +244,8 @@ mod tests {
         let report = load_workspace(
             repo.path(),
             &[
-                PathBuf::from("crates/loom-skills/src/builtin.rs"),
-                PathBuf::from("crates/loom-skills/builtin/base/loom-context-before-edit/skill.md"),
+                PathBuf::from("crates/loom-skill/src/builtin.rs"),
+                PathBuf::from("crates/loom-skill/builtin/base/loom-context-before-edit/skill.md"),
             ],
             &[],
         )

@@ -1,5 +1,5 @@
 //! `loom-llm` owns provider/tool-loop primitives only. Skill discovery,
-//! native registration, and materialized registries belong to `loom-skills`
+//! native registration, and materialized registries belong to `loom-skill`
 //! and `loom-agent`, so the public LLM surface must not expose skill
 //! registry names, features, or dependencies.
 
@@ -10,7 +10,7 @@ use super::util::{
 };
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "loom_llm_has_no_skill_registry_surface — `loom-llm` exposes no `loom-skills` dependency or native skill registry surface";
+const RULE: &str = "loom_llm_has_no_skill_registry_surface — `loom-llm` exposes no `loom-skill` dependency or native skill registry surface";
 
 const MANIFEST_REL: &str = "crates/loom-llm/Cargo.toml";
 const SRC_DIR: &str = "crates/loom-llm/src";
@@ -45,10 +45,10 @@ fn check_manifest(root: &std::path::Path, violations: &mut Vec<String>) {
         if value
             .get(section)
             .and_then(toml::Value::as_table)
-            .is_some_and(|deps| deps.contains_key("loom-skills"))
+            .is_some_and(|deps| deps.contains_key("loom-skill"))
         {
             violations.push(format!(
-                "{MANIFEST_REL}:1 forbidden `{section}` entry `loom-skills` — skill registries stay outside `loom-llm`",
+                "{MANIFEST_REL}:1 forbidden `{section}` entry `loom-skill` — skill registries stay outside `loom-llm`",
             ));
         }
     }

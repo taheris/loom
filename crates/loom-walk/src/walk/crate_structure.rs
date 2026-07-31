@@ -33,7 +33,7 @@ const CRATES: &[CrateSpec] = &[
         entries: &["src/lib.rs"],
     },
     CrateSpec {
-        name: "loom-skills",
+        name: "loom-skill",
         entries: &["src/lib.rs"],
     },
     CrateSpec {

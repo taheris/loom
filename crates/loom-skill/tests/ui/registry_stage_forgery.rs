@@ -1,4 +1,4 @@
-use loom_skills::registry::{ApplicableRegistry, MaterializedRegistry, SkillRegistry};
+use loom_skill::registry::{ApplicableRegistry, MaterializedRegistry, SkillRegistry};
 
 fn forge(registry: SkillRegistry) {
     let _ = ApplicableRegistry::from_registry(registry);

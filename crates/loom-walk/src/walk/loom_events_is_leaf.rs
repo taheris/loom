@@ -1,6 +1,6 @@
 //! `loom-events` is a leaf crate — no internal dependency on
 //! `loom-driver`, `loom-render`, `agent`, `loom-workflow`, `templates`,
-//! `loom-llm`, `loom-skills`, or `loom-tune`. Frontends and log analyzers
+//! `loom-llm`, `loom-skill`, or `loom-tune`. Frontends and log analyzers
 //! must be able to consume the event contract without pulling in the driver
 //! runtime (rusqlite, gix, tokio). The walk reads `loom-events/Cargo.toml`
 //! and flags any internal-crate key that appears anywhere in the manifest.
@@ -18,7 +18,7 @@ const FORBIDDEN: &[&str] = &[
     "loom-workflow",
     "loom-templates",
     "loom-llm",
-    "loom-skills",
+    "loom-skill",
     "loom-tune",
 ];
 

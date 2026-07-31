@@ -13,7 +13,7 @@ glob = { workspace = true }
 loom-driver = { workspace = true }
 loom-events = { workspace = true }
 loom-llm = { workspace = true }
-loom-skills = { workspace = true }
+loom-skill = { workspace = true }
 nix = { workspace = true }
 regex = { workspace = true }
 schemars = { workspace = true }
