@@ -216,7 +216,10 @@ run_happy_path() {
         fi
         git config user.email smoke@example.com
         git config user.name "Loom Smoke"
-        git config commit.gpgsign false
+        if [[ "$(git config --get commit.gpgsign)" != "true" ]]; then
+            echo "mock-pi: smoke workspace did not enable commit signing" >&2
+            exit 6
+        fi
         printf 'implemented by mock pi\n' > loom-smoke-result.txt
         git add loom-smoke-result.txt
         git commit -q -m "Implement smoke bead"

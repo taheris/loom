@@ -95,7 +95,7 @@ pub trait ReviewController: Send {
     /// [`ReviewError::GitPushFailed`] or [`ReviewError::DetachedHead`].
     fn git_push(&mut self) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
 
-    /// `beads-push` (Dolt branch sync). Errors map to
+    /// `wrix beads push` (Dolt branch sync). Errors map to
     /// [`ReviewError::BeadsPushFailed`] — `git push` already succeeded by
     /// the time this runs, so the caller treats this as a separate exit.
     fn beads_push(&mut self) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
@@ -1170,7 +1170,7 @@ mod tests {
             other => panic!("expected PushBlocked, got {other:?}"),
         }
         assert_eq!(c.git_push_calls, 0, "clarify never pushes");
-        assert_eq!(c.beads_push_calls, 0, "clarify never beads-pushes");
+        assert_eq!(c.beads_push_calls, 0, "clarify never publishes Beads");
         assert_eq!(c.exec_run_calls, 0, "clarify never auto-iterates");
         Ok(())
     }
@@ -1213,7 +1213,7 @@ mod tests {
             other => panic!("expected PushBlocked, got {other:?}"),
         }
         assert_eq!(c.git_push_calls, 0, "blocked never pushes");
-        assert_eq!(c.beads_push_calls, 0, "blocked never beads-pushes");
+        assert_eq!(c.beads_push_calls, 0, "blocked never publishes Beads");
         assert_eq!(c.exec_run_calls, 0, "blocked never auto-iterates");
         Ok(())
     }

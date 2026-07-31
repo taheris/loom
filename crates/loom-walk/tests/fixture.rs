@@ -4631,7 +4631,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "nix/flake/apps.nix",
-        "test = {\nsmoke = {\nfuzz-loom = {\ntext = builtins.readFile ../../scripts/full-test.sh;\n",
+        "test = {\nsmoke = {\nfuzz-loom = {\nsmokePrekHooks = wrixLib.prekHooks;\ntext = builtins.readFile ../../scripts/full-test.sh;\n",
     );
     seed(root, "nix/flake/checks.nix", "checks = { };\n");
     seed(
@@ -4642,7 +4642,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "tests/loom/default.nix",
-        "loom gate check --tree\nloom gate test --tree\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_WRIX_SPAWN_BIN\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
+        "loom gate check --tree\nloom gate test --tree\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nLOOM_WRIX_BIN\nLOOM_WRIX_SPAWN_BIN\nWRIX_PREK_HOOKS\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
     );
     seed(
         root,
@@ -4652,7 +4652,12 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "tests/run-tests.sh",
-        "LOOM_TEST_PROFILE_CONFIG\nunset WRIX_AGENT\nloom --host-key --agent pi loop \"$BEAD_ID\"\nif [[ \"$ELAPSED\" -gt 30 ]]; then\n",
+        "LOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nunset WRIX_AGENT\nWRIX_DEPLOY_KEY\nWRIX_SIGNING_KEY\nWRIX_PI_AUTH_FILE\n.pre-commit-config.yaml\nloom --agent pi loop \"$BEAD_ID\"\n.loom/\nbin/pre-push-checks --hook-id smoke-noop\nif [[ \"$ELAPSED\" -gt 30 ]]; then\n",
+    );
+    seed(
+        root,
+        "tests/mock-pi/pi.sh",
+        "git config --get commit.gpgsign\nbd close \"$bead_id\"\n",
     );
 }
 

@@ -57,7 +57,7 @@ Use the full merged array each time: keep still-relevant notes, drop notes inval
 2. Clarify the problem, requirements, constraints, success criteria, and likely verifier tiers.
 3. Read any existing anchor specs and any sibling specs needed to evaluate cross-cutting scope.
 4. When requirements are clear, edit the relevant `specs/*.md` file(s) and `docs/README.md` index rows directly.
-5. Do not `git add`, `git commit`, `git push`, or `beads-push` unless the user gives an explicit close trigger such as "commit", "push it", or "land the plane".
+5. Do not `git add`, `git commit`, `git push`, or `wrix beads push` unless the user gives an explicit close trigger such as "commit", "push it", or "land the plane".
 6. Acknowledgements like "ok", "yes", "looks good", "sounds right", "go ahead", or "done" approve the current discussion only; they are not close triggers. If unclear, ask "Ready to land the plane?" and wait.
 7. On an explicit close trigger, run the session-close flow from `AGENTS.md` for markdown/index/note changes only, then output `LOOM_COMPLETE`.
 

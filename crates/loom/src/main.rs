@@ -39,9 +39,9 @@ use loom_workflow::inbox::{
 };
 use loom_workflow::r#loop::{
     BatchInfraFailure, BatchResult, GateOutcome, InfraDiagnostic, InfraRetryPolicy, LoopOutcome,
-    NoGateReason, Parallelism, ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV,
-    REVIEW_INSPECTION_ONLY_ENV, REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV,
-    REVIEW_VERIFIED_LOG_ENV, RetryPolicy, SessionResult, classify_session,
+    MoleculePushGateCommands, NoGateReason, Parallelism, ProductionAgentLoopController,
+    REVIEW_EMIT_STDOUT_ENV, REVIEW_INSPECTION_ONLY_ENV, REVIEW_PHASE_WHEN_ENV,
+    REVIEW_SPEC_LABEL_ENV, REVIEW_VERIFIED_LOG_ENV, RetryPolicy, SessionResult, classify_session,
     execute_molecule_push_gate, format_unknown_profile_error,
     format_unknown_runtime_for_profile_error, run_loop_with_infra_policy,
 };
@@ -2941,6 +2941,8 @@ fn run_loop_cmd(
     let phase_default = selection.profile.clone();
     let cli_profile = profile.map(|profile| profile.parse()).transpose()?;
     let loom_bin = current_loom_bin()?;
+    let wrix_bin =
+        std::env::var_os("LOOM_WRIX_BIN").map_or_else(|| PathBuf::from("wrix"), PathBuf::from);
     let shutdown_grace = resolve_shutdown_grace(&selection);
     let direct_output_limits = config.direct_output_limits();
     let repo_git_policy = prepare_wrix_git_policy(&workspace.join(".loom/integration"), host_key)?;
@@ -2970,6 +2972,8 @@ fn run_loop_cmd(
                 root,
                 parallel_n,
                 selection.kind,
+                agent_override,
+                wrix_bin.clone(),
                 selection.clone(),
                 direct_output_limits,
                 shutdown_grace,
@@ -3006,6 +3010,8 @@ fn run_loop_cmd(
             cli_profile.clone(),
             phase_default.clone(),
             selection.kind,
+            agent_override,
+            wrix_bin.clone(),
             selection.clone(),
             direct_output_limits,
             shutdown_grace,
@@ -3102,6 +3108,8 @@ fn run_parallel_loop_root(
     root: &LoopWorkRoot,
     parallel_n: u32,
     kind: AgentKind,
+    agent_override: Option<AgentKind>,
+    wrix_bin: PathBuf,
     selection: loom_driver::config::AgentSelection,
     direct_output_limits: loom_driver::agent::OutputLimits,
     shutdown_grace: Option<Duration>,
@@ -3135,6 +3143,8 @@ fn run_parallel_loop_root(
             ready_parent_for_async,
             parallel_n,
             kind,
+            agent_override,
+            wrix_bin,
             selection,
             direct_output_limits,
             shutdown_grace,
@@ -3163,6 +3173,8 @@ fn run_sequential_loop_root(
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
     kind: AgentKind,
+    agent_override: Option<AgentKind>,
+    wrix_bin: PathBuf,
     selection: loom_driver::config::AgentSelection,
     direct_output_limits: loom_driver::agent::OutputLimits,
     shutdown_grace: Option<Duration>,
@@ -3271,6 +3283,8 @@ fn run_sequential_loop_root(
         )
         .with_style_rules(style_rules_for_run)
         .with_agent_runtime(kind)
+        .with_agent_override(agent_override)
+        .with_wrix_bin(wrix_bin)
         .with_loom_config(loom_cfg_for_run)
         .with_skills_config(skills_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
@@ -3468,6 +3482,8 @@ async fn run_parallel_loop(
     ready_parent: Option<BeadId>,
     parallel_n: u32,
     kind: AgentKind,
+    agent_override: Option<AgentKind>,
+    wrix_bin: PathBuf,
     selection: loom_driver::config::AgentSelection,
     direct_output_limits: loom_driver::agent::OutputLimits,
     shutdown_grace: Option<Duration>,
@@ -3875,8 +3891,7 @@ async fn run_parallel_loop(
             &bd,
             &label,
             molecule.as_ref(),
-            &loom_bin,
-            Path::new("beads-push"),
+            MoleculePushGateCommands::new(agent_override, &loom_bin, &wrix_bin),
             &workspace,
             &git,
         )
@@ -5060,6 +5075,8 @@ fn run_review(
     host_key: bool,
 ) -> anyhow::Result<()> {
     let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
+    let wrix_bin =
+        std::env::var_os("LOOM_WRIX_BIN").map_or_else(|| PathBuf::from("wrix"), PathBuf::from);
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_review_label(workspace, spec, opts.tree)?;
     let runtime = tokio::runtime::Runtime::new()?;
@@ -5165,6 +5182,7 @@ fn run_review(
         let mut controller = controller
             .with_phase_log(logs_root, phase_when)
             .with_agent_runtime(kind)
+            .with_wrix_bin(wrix_bin)
             .with_launcher_env(launcher_env)
             .with_style_rules(style_rules_for_review)
             .with_integration_branch(integration_branch_for_review)

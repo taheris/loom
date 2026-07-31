@@ -10,6 +10,7 @@
   pkgs,
   loomPackage,
   smokeProfileManifest ? null,
+  smokePrekHooks ? null,
   smokeSandbox ? null,
   smokeServiceImage ? null,
   ...
@@ -21,6 +22,7 @@ let
       pkgs
       loomPackage
       smokeProfileManifest
+      smokePrekHooks
       smokeSandbox
       smokeServiceImage
       ;

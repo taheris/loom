@@ -21,6 +21,10 @@ set -euo pipefail
 #   LOOM_TEST_IMAGE_REF      — image ref tag (e.g. localhost/wrix-test:smoke)
 #   LOOM_TEST_IMAGE_SOURCE_KIND — wrix image source kind (default: nix-descriptor)
 #   LOOM_TEST_PROFILE_CONFIG — immutable wrix ProfileConfig for the mock image
+#   LOOM_TEST_PRE_PUSH_CHECKS — canonical repository pre-push wrapper
+#   WRIX_PREK_HOOKS          — canonical packaged wrix prek hook directory
+#   LOOM_SMOKE_KEEP          — set to 1 to preserve the temp workspace after
+#                              a failed run for diagnosis
 #   LOOM_WRIX_SERVICE_BIN    — profiled wrix launcher used for service setup
 #   LOOM_WRIX_SPAWN_BIN      — raw wrix launcher used by SpawnConfig
 #   LOOM_TEST_MOCK_PI_PATH   — host path to tests/mock-pi/pi.sh; sourced for
@@ -40,7 +44,9 @@ cleanup() {
     if [[ "${DOLT_SERVICE_STARTED:-0}" == "1" && -n "${WORKSPACE:-}" && -d "$WORKSPACE" ]]; then
         (cd "$WORKSPACE" && "$LOOM_WRIX_SERVICE_BIN" service stop >/dev/null 2>&1) || true # best-effort: cleanup must not mask the test result.
     fi
-    if [[ -n "${SMOKE_ROOT:-}" && -d "$SMOKE_ROOT" ]]; then
+    if [[ "$ec" -ne 0 && "${LOOM_SMOKE_KEEP:-0}" == "1" ]]; then
+        log "preserved failed workspace: $SMOKE_ROOT"
+    elif [[ -n "${SMOKE_ROOT:-}" && -d "$SMOKE_ROOT" ]]; then
         rm -rf "$SMOKE_ROOT"
     fi
     exit "$ec"
@@ -100,6 +106,12 @@ LOOM_TEST_IMAGE_SOURCE_KIND="${LOOM_TEST_IMAGE_SOURCE_KIND:-nix-descriptor}"
 SMOKE_ROOT="$(mktemp -d -t loom-smoke.XXXXXX)"
 WORKSPACE="$SMOKE_ROOT/workspace"
 ORIGIN="$SMOKE_ROOT/origin.git"
+export WRIX_DEPLOY_KEY="$SMOKE_ROOT/deploy-key"
+export WRIX_SIGNING_KEY="$SMOKE_ROOT/signing-key"
+export WRIX_PI_AUTH_FILE="$SMOKE_ROOT/pi-auth.json"
+ssh-keygen -q -t ed25519 -N "" -f "$WRIX_DEPLOY_KEY"
+ssh-keygen -q -t ed25519 -N "" -f "$WRIX_SIGNING_KEY"
+printf '{}\n' >"$WRIX_PI_AUTH_FILE"
 log "workspace: $WORKSPACE"
 
 scrub_git_local_env
@@ -110,7 +122,9 @@ git config user.email smoke@example.com
 git config user.name "Loom Smoke"
 git branch -M main
 
-mkdir -p docs specs .loom
+mkdir -p bin docs specs .loom
+cp "$LOOM_TEST_PRE_PUSH_CHECKS" bin/pre-push-checks
+chmod +x bin/pre-push-checks
 cat >specs/smoke.md <<'SPEC'
 # Smoke
 
@@ -123,7 +137,23 @@ cat >docs/README.md <<'DOCS'
 |------|------|------|---------|
 | [smoke.md](../specs/smoke.md) | — | — | Container smoke fixture |
 DOCS
-git add docs/README.md specs/smoke.md
+cat >.pre-commit-config.yaml <<'YAML'
+repos:
+  - repo: local
+    hooks:
+      - id: smoke-noop
+        name: smoke fixture no-op
+        entry: bin/pre-push-checks --hook-id smoke-noop --hook-entry true -- true
+        language: system
+        stages: [pre-commit, pre-push]
+        always_run: true
+        pass_filenames: false
+YAML
+cat >.gitignore <<'IGNORE'
+.loom/
+.wrix/
+IGNORE
+git add .gitignore .pre-commit-config.yaml bin/pre-push-checks docs/README.md specs/smoke.md
 git commit -q -m "Initialize smoke workspace"
 git remote add origin "$ORIGIN"
 git push -q -u origin main
@@ -191,7 +221,7 @@ log "seeded bead: $BEAD_ID"
 unset WRIX_AGENT
 set +e
 LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
-"$LOOM_BIN" --workspace "$WORKSPACE" --host-key --agent pi loop "$BEAD_ID"
+"$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID"
 RC=$?
 set -e
 

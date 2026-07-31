@@ -20,6 +20,7 @@ _:
       smokeProfileManifest,
       smokeSandbox,
       smokeServiceImage,
+      wrixLib,
       ...
     }:
     let
@@ -33,6 +34,7 @@ _:
           smokeServiceImage
           ;
         loomPackage = loom;
+        smokePrekHooks = wrixLib.prekHooks;
       };
 
       smokeRuntime = testsDeriv.loom-smoke;

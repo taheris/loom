@@ -1411,7 +1411,7 @@ populates that validated host-only state:
       means the agent ended without a marker on its own, not under
       driver cancel)
   [test](observer_abort_routes_to_observer_abort_distinct_from_swallowed_marker)
-- After the push-gate `Clean` branch's `git push` + `beads-push`
+- After the push-gate `Clean` branch's `git push` + `wrix beads push`
       both succeed, the driver walks the molecule's spec-bead
       parents and closes every ancestor epic whose direct children
       are all `status == "closed"` via `bd close --reason="all
@@ -1419,6 +1419,13 @@ populates that validated host-only state:
       emits one `DriverKind::EpicAutoClosed` driver event carrying
       the epic id.
   [test](epic_auto_closes_when_all_children_closed_and_review_passes)
+- Standalone review publishes Beads through the current `wrix beads push` CLI,
+      never the removed `beads-push` helper or `bd dolt push`
+  [test](beads_push_argv_invokes_wrix_beads_push_not_bd_dolt_push)
+- Loop-owned molecule handoff publishes Beads through the current
+      `wrix beads push` CLI, never the removed `beads-push` helper or
+      `bd dolt push`
+  [test](molecule_handoff_publishes_beads_through_wrix_cli)
 - Epic auto-close does not fire while any direct child of the
       candidate epic carries `status != "closed"` (`open`,
       `in_progress`, or `deferred`).
@@ -1890,7 +1897,7 @@ owned by [agent.md § Compaction Handling](agent.md#compaction-handling).
    **Epic auto-close on Clean push.** After the `Clean` branch of
    the push gate completes (verify pass + review `LOOM_COMPLETE` +
    integrity clean + every bead in scope `[done]`) **and both
-   `git push` and `beads-push` succeed**, the driver walks up from
+   `git push` and `wrix beads push` succeed**, the driver walks up from
    the molecule's spec beads to find every ancestor epic whose
    direct children are all `status == "closed"` and closes them via
    `bd close <epic-id> --reason="all children complete; auto-closed
@@ -1901,7 +1908,7 @@ owned by [agent.md § Compaction Handling](agent.md#compaction-handling).
    `DriverKind::EpicAutoClosed` driver event carrying the epic id
    in its payload — visible in the JSONL log alongside the push-
    gate trace. The walk is **strictly post-push**: a `git push` or
-   `beads-push` failure returns early through the `Clean` arm and
+   `wrix beads push` failure returns early through the `Clean` arm and
    skips the walk, so a closed-locally / open-on-remote split
    cannot arise. The walk does **not** fire on any non-Clean
    verdict (`LOOM_CONCERN`, `LOOM_BLOCKED`, `LOOM_CLARIFY`,

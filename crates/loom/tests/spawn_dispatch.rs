@@ -128,6 +128,10 @@ fn install_wrix_shim(
          MOCK_AGENT='{mock}'\n\
          MOCK_AGENT_MODE='{mode}'\n\
          \n\
+         if [[ \"${{1:-}}\" == 'beads' && \"${{2:-}}\" == 'push' ]]; then\n\
+             exit 0\n\
+         fi\n\
+         \n\
          {{ for a in \"$@\"; do printf '%s\\n' \"$a\"; done; }} > \"$ARGV_FILE\"\n\
          \n\
          {{ if [[ -t 0 ]]; then echo 'stdin_is_tty=1'; else echo 'stdin_is_tty=0'; fi\n\
@@ -247,6 +251,9 @@ fn install_wrix_commit_shim(dir: &Path, mock_agent: &Path) -> PathBuf {
         "#!{bash}\n\
          set -euo pipefail\n\
          MOCK_AGENT='{mock}'\n\
+         if [[ \"${{1:-}}\" == 'beads' && \"${{2:-}}\" == 'push' ]]; then\n\
+             exit 0\n\
+         fi\n\
          spawn_config=''\n\
          prev=''\n\
          for a in \"$@\"; do\n\
@@ -888,15 +895,6 @@ __BD_READY_JSON__\n\
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
-    let beads_push = bin_dir.join("beads-push");
-    std::fs::write(
-        &beads_push,
-        loom_test_support::bash_script("set -euo pipefail\nexit 0\n"),
-    )
-    .unwrap();
-    let mut perm = std::fs::metadata(&beads_push).unwrap().permissions();
-    perm.set_mode(0o755);
-    std::fs::set_permissions(&beads_push, perm).unwrap();
     bin_dir
 }
 
@@ -1621,15 +1619,6 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
-    let beads_push = bin_dir.join("beads-push");
-    std::fs::write(
-        &beads_push,
-        loom_test_support::bash_script("set -euo pipefail\nexit 0\n"),
-    )
-    .unwrap();
-    let mut perm = std::fs::metadata(&beads_push).unwrap().permissions();
-    perm.set_mode(0o755);
-    std::fs::set_permissions(&beads_push, perm).unwrap();
     bin_dir
 }
 
@@ -1669,15 +1658,6 @@ __BD_BEAD_JSON__\n\
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
-    let beads_push = bin_dir.join("beads-push");
-    std::fs::write(
-        &beads_push,
-        loom_test_support::bash_script("set -euo pipefail\nexit 0\n"),
-    )
-    .unwrap();
-    let mut perm = std::fs::metadata(&beads_push).unwrap().permissions();
-    perm.set_mode(0o755);
-    std::fs::set_permissions(&beads_push, perm).unwrap();
     bin_dir
 }
 

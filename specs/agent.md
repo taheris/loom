@@ -1121,6 +1121,10 @@ the entrypoint run the wrong runtime.
   [test](agent_for_per_phase_resolves_override_and_default)
 - `--agent` CLI flag accepts `pi`, `claude`, and `direct` and overrides all phase config for the invocation
   [test](loom_accepts_agent_backend_values)
+- A loop invocation forwards its global `--agent` override to the nested
+  molecule-review subprocess; without an override, review keeps its independent
+  phase configuration
+  [test](review_subprocess_inherits_agent_override)
 - Default (no phase config, no flag) selects claude
   [test](agent_for_default_is_claude_when_config_empty)
 - Invalid backend name produces clear error

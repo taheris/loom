@@ -45,7 +45,7 @@ pub enum ReviewError {
     /// `git push` failed: {0}
     GitPushFailed(String),
 
-    /// `beads-push` failed after `git push` succeeded: {0}
+    /// `wrix beads push` failed after `git push` succeeded: {0}
     BeadsPushFailed(String),
 
     /// detached HEAD — refuse to push

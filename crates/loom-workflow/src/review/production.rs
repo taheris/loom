@@ -1,7 +1,7 @@
 //! Production [`ReviewController`] used by the `loom review` binary.
 //!
 //! Wires `BdClient` for spec-bead snapshots and clarify,
-//! `tokio::process::Command` shell-outs for `git push`, `beads-push`, and
+//! `tokio::process::Command` shell-outs for `git push`, `wrix beads push`, and
 //! the auto-iterate `loom loop` handoff, and a caller-provided dispatch
 //! closure for the reviewer agent invocation. The closure pattern keeps
 //! review backend selection (`PiBackend`, `ClaudeBackend`, or `DirectBackend`)
@@ -112,6 +112,7 @@ where
     bd: BdClient<R>,
     label: SpecLabel,
     loom_bin: PathBuf,
+    wrix_bin: PathBuf,
     workspace: PathBuf,
     state: Arc<CacheDb>,
     manifest: Arc<ProfileImageManifest>,
@@ -233,6 +234,7 @@ where
             bd,
             label,
             loom_bin,
+            wrix_bin: PathBuf::from("wrix"),
             workspace,
             state,
             manifest,
@@ -278,6 +280,12 @@ where
     #[must_use]
     pub const fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
         self.runtime = runtime;
+        self
+    }
+
+    #[must_use]
+    pub fn with_wrix_bin(mut self, wrix_bin: PathBuf) -> Self {
+        self.wrix_bin = wrix_bin;
         self
     }
 
@@ -393,11 +401,11 @@ where
         format!("spec:{}", self.label.as_str())
     }
 
-    /// Push gate must invoke `beads-push`, NOT `bd dolt push` — only
-    /// `beads-push` syncs the `beads` git branch to GitHub.
+    /// Push gate delegates Beads publication to Wrix, which owns the
+    /// server-backed branch synchronization protocol.
     fn beads_push_command(&self) -> Command {
-        let mut cmd = Command::new("beads-push");
-        cmd.current_dir(&self.workspace);
+        let mut cmd = Command::new(&self.wrix_bin);
+        cmd.current_dir(&self.workspace).arg("beads").arg("push");
         cmd
     }
 
@@ -2356,7 +2364,7 @@ mod tests {
     }
 
     #[test]
-    fn beads_push_argv_invokes_beads_push_not_bd_dolt_push() {
+    fn beads_push_argv_invokes_wrix_beads_push_not_bd_dolt_push() {
         let dir = tempfile::tempdir().unwrap();
         let ctrl = controller(dir.path().to_path_buf());
         let cmd = ctrl.beads_push_command();
@@ -2364,14 +2372,11 @@ mod tests {
 
         assert_eq!(
             std_cmd.get_program(),
-            OsStr::new("beads-push"),
-            "push gate must shell out to beads-push, not bd",
+            OsStr::new("wrix"),
+            "push gate must shell out to wrix, not bd",
         );
         let argv: Vec<&OsStr> = std_cmd.get_args().collect();
-        assert!(
-            argv.is_empty(),
-            "no extra args; `bd dolt push` would surface as program=bd args=[dolt, push]: argv={argv:?}",
-        );
+        assert_eq!(argv, [OsStr::new("beads"), OsStr::new("push")]);
         assert_eq!(std_cmd.get_current_dir(), Some(dir.path()));
     }
 

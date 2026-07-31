@@ -937,7 +937,7 @@ the planning agent:
    "accept") authorize the next interview step, not a commit.
    Commits happen only on unambiguous trigger ("commit", "land the
    plane", "push it"). The same discipline applies to `git push`,
-   `beads-push`, and any operation that mutates shared state.
+   `wrix beads push`, and any operation that mutates shared state.
 
 ### Public Surface for Consumers
 

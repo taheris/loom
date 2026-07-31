@@ -215,10 +215,10 @@ fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels:
     std::fs::write(bead_dir.join("labels"), labels.join("\n")).expect("write labels");
 }
 
-/// Install the `bd-shim` binary as `bd` on a fresh PATH entry, plus
-/// stub `beads-push` / `git` shims as requested. Returns the directory
-/// the caller prepends to `PATH`.
-fn install_path_shims(workspace: &Path, want_beads_push: bool) -> PathBuf {
+/// Install the `bd-shim` binary as `bd` on a fresh PATH entry. Returns the
+/// directory the caller prepends to `PATH`; mock-loom-agent handles both Wrix
+/// spawn and `wrix beads push` calls through `LOOM_WRIX_BIN`.
+fn install_path_shims(workspace: &Path) -> PathBuf {
     let bin_dir = workspace.join("bd-bin");
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
     let bd_path = bin_dir.join("bd");
@@ -229,19 +229,6 @@ fn install_path_shims(workspace: &Path, want_beads_push: bool) -> PathBuf {
         let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
         perm.set_mode(0o755);
         std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
-    }
-    if want_beads_push {
-        let beads_push = bin_dir.join("beads-push");
-        std::fs::write(
-            &beads_push,
-            "#!/bin/sh\necho beads-push stub: $@ >&2\nexit 0\n",
-        )
-        .expect("write beads-push stub");
-        let mut perm = std::fs::metadata(&beads_push)
-            .expect("stat beads-push")
-            .permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&beads_push, perm).expect("chmod beads-push");
     }
     bin_dir
 }
@@ -456,7 +443,7 @@ fn push_gate_refuses_on_review_concern_via_live_path() {
 
     seed_active_molecule(workspace, label, "lm-mol", &base_sha);
 
-    let bin_dir = install_path_shims(workspace, false);
+    let bin_dir = install_path_shims(workspace);
     let manifest = write_minimal_manifest(workspace);
 
     let output = run_loom_gate_review(
@@ -546,7 +533,7 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
     // re-entering the loop (which would spawn live subprocesses).
     seed_iteration_at_cap(workspace, "lm-mol");
 
-    let bin_dir = install_path_shims(workspace, false);
+    let bin_dir = install_path_shims(workspace);
     let manifest = write_minimal_manifest(workspace);
 
     let output = run_loom_gate_review(
@@ -651,7 +638,7 @@ fn live_llm_commands_use_shared_renderer_pipeline() {
         &["spec:reviewrender"],
     );
     seed_active_molecule(workspace, label, "lm-mol", &base_sha);
-    let bin_dir = install_path_shims(workspace, true);
+    let bin_dir = install_path_shims(workspace);
     let manifest = write_minimal_manifest(workspace);
 
     let output = run_loom_gate_review(
@@ -685,9 +672,9 @@ fn live_llm_commands_use_shared_renderer_pipeline() {
 
 /// Clean push: `LOOM_COMPLETE`, no `loom:blocked` / `loom:clarify`
 /// beads, no integrity findings → the gate must reach `push_gate_clean`
-/// and invoke `git_push` + `beads_push`. A bare git remote stands in
-/// for `origin` so `git push` can succeed without network access; a
-/// `beads-push` stub on PATH lets the second push exit 0.
+/// and invoke `git_push` + `wrix beads push`. A bare git remote stands in
+/// for `origin` so `git push` can succeed without network access; the Wrix
+/// mock accepts the second publication step.
 #[test]
 fn push_gate_fires_clean_when_all_conditions_pass_via_live_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -714,7 +701,7 @@ fn push_gate_fires_clean_when_all_conditions_pass_via_live_path() {
 
     seed_active_molecule(workspace, label, "lm-mol", &base_sha);
 
-    let bin_dir = install_path_shims(workspace, true);
+    let bin_dir = install_path_shims(workspace);
     let manifest = write_minimal_manifest(workspace);
 
     let output = run_loom_gate_review(
@@ -793,7 +780,7 @@ fn concern_then_complete_live_path_resolves_to_clean_push() {
     );
     seed_active_molecule(workspace, label, "lm-mol", &base_sha);
 
-    let bin_dir = install_path_shims(workspace, true);
+    let bin_dir = install_path_shims(workspace);
     let manifest = write_minimal_manifest(workspace);
 
     let output = run_loom_gate_review(

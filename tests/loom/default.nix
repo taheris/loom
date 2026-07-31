@@ -24,6 +24,7 @@
   pkgs,
   loomPackage,
   smokeProfileManifest ? null,
+  smokePrekHooks ? null,
   smokeSandbox ? null,
   smokeServiceImage ? null,
   ...
@@ -162,6 +163,7 @@ let
       pkgs.git
       pkgs.jq
       pkgs.nix
+      pkgs.openssh
       pkgs.podman
       pkgs.skopeo
     ];
@@ -170,10 +172,13 @@ let
       export LOOM_TEST_IMAGE_REF=${smokeEntry.ref}
       export LOOM_TEST_IMAGE_SOURCE_KIND=${smokeEntry.source_kind}
       export LOOM_TEST_PROFILE_CONFIG=${smokeEntry.profile_config}
+      export LOOM_TEST_PRE_PUSH_CHECKS=${../../bin/pre-push-checks}
+      export WRIX_PREK_HOOKS=${smokePrekHooks}
       export WRIX_SERVICE_IMAGE=${smokeServiceImage.ref}
       export WRIX_SERVICE_IMAGE_SOURCE=${smokeServiceImage.source}
       export WRIX_SERVICE_IMAGE_SOURCE_KIND=${smokeServiceImage.source_kind}
       export WRIX_SERVICE_IMAGE_DIGEST=${smokeServiceImage.digest}
+      export LOOM_WRIX_BIN=${smokeSandbox.package}/bin/wrix
       export LOOM_WRIX_SERVICE_BIN=${smokeSandbox.package}/bin/wrix
       export LOOM_WRIX_SPAWN_BIN=${smokeSandbox.launcher}/bin/wrix
       ${builtins.readFile ../run-tests.sh}

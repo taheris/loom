@@ -201,13 +201,16 @@ where
     bd: BdClient<R>,
     label: SpecLabel,
     loom_bin: PathBuf,
-    beads_push_bin: PathBuf,
+    wrix_bin: PathBuf,
     workspace: PathBuf,
     git: GitClient,
     manifest: Arc<ProfileImageManifest>,
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
     runtime: AgentRuntime,
+    /// Global `--agent` override to propagate into the molecule-review child.
+    /// `None` preserves the review phase's independent config selection.
+    agent_override: Option<AgentRuntime>,
     spawn: S,
     /// Spec lock dropped before exec'ing child `loom gate` commands.
     lock: Option<LockGuard>,
@@ -297,13 +300,14 @@ where
             bd,
             label,
             loom_bin,
-            beads_push_bin: PathBuf::from("beads-push"),
+            wrix_bin: PathBuf::from("wrix"),
             workspace,
             git,
             manifest,
             cli_profile,
             phase_default,
             runtime: AgentRuntime::Pi,
+            agent_override: None,
             spawn,
             lock: None,
             style_rules: "docs/style-rules.md".to_string(),
@@ -325,8 +329,8 @@ where
     }
 
     #[must_use]
-    pub fn with_beads_push_bin(mut self, path: PathBuf) -> Self {
-        self.beads_push_bin = path;
+    pub fn with_wrix_bin(mut self, path: PathBuf) -> Self {
+        self.wrix_bin = path;
         self
     }
 
@@ -421,6 +425,12 @@ where
     #[must_use]
     pub const fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
         self.runtime = runtime;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_agent_override(mut self, agent_override: Option<AgentRuntime>) -> Self {
+        self.agent_override = agent_override;
         self
     }
 
@@ -1244,8 +1254,7 @@ where
             &self.bd,
             &self.label,
             self.handoff_molecule.as_ref(),
-            &self.loom_bin,
-            &self.beads_push_bin,
+            MoleculePushGateCommands::new(self.agent_override, &self.loom_bin, &self.wrix_bin),
             &self.workspace,
             &self.git,
         )
@@ -1391,6 +1400,27 @@ pub struct MoleculeGateHandoff {
     pub mint_summary: Option<crate::mint::MintSummary>,
 }
 
+/// Executables and global runtime selection used by molecule handoff children.
+pub struct MoleculePushGateCommands<'a> {
+    review_agent: Option<AgentRuntime>,
+    loom_bin: &'a Path,
+    wrix_bin: &'a Path,
+}
+
+impl<'a> MoleculePushGateCommands<'a> {
+    pub const fn new(
+        review_agent: Option<AgentRuntime>,
+        loom_bin: &'a Path,
+        wrix_bin: &'a Path,
+    ) -> Self {
+        Self {
+            review_agent,
+            loom_bin,
+            wrix_bin,
+        }
+    }
+}
+
 ///
 /// # Errors
 ///
@@ -1399,8 +1429,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
     bd: &BdClient<R>,
     label: &SpecLabel,
     selected_molecule: Option<&MoleculeId>,
-    loom_bin: &Path,
-    beads_push_bin: &Path,
+    commands: MoleculePushGateCommands<'_>,
     workspace: &Path,
     git: &GitClient,
 ) -> Result<MoleculeGateHandoff, LoopError> {
@@ -1472,7 +1501,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
     let phase_when_millis = phase_when
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
-    let mut review_command = Command::new(loom_bin);
+    let mut review_command = Command::new(commands.loom_bin);
     review_command
         .current_dir(&gate_workspace)
         .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
@@ -1480,6 +1509,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         .env(REVIEW_INSPECTION_ONLY_ENV, "1")
         .env(REVIEW_VERIFIED_LOG_ENV, &verify_log_path)
         .env(REVIEW_SPEC_LABEL_ENV, label.as_str());
+    append_agent_override(&mut review_command, commands.review_agent);
     if git.uses_host_key() {
         review_command.arg("--host-key");
     }
@@ -1589,14 +1619,13 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         }
     })?;
     git.push().await?;
-    let beads_output = Command::new(beads_push_bin)
-        .current_dir(workspace)
+    let beads_output = wrix_beads_push_command(commands.wrix_bin, workspace)
         .output()
         .await?;
     if !beads_output.status.success() {
         return Err(LoopError::ReviewHandoff {
             detail: format!(
-                "beads-push failed after git push: {}",
+                "wrix beads push failed after git push: {}",
                 String::from_utf8_lossy(&beads_output.stderr),
             ),
         });
@@ -1606,6 +1635,18 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         review_concern,
         mint_summary,
     })
+}
+
+fn wrix_beads_push_command(wrix_bin: &Path, workspace: &Path) -> Command {
+    let mut command = Command::new(wrix_bin);
+    command.current_dir(workspace).arg("beads").arg("push");
+    command
+}
+
+fn append_agent_override(command: &mut Command, agent_override: Option<AgentRuntime>) {
+    if let Some(agent) = agent_override {
+        command.arg("--agent").arg(agent.as_str());
+    }
 }
 
 async fn molecule_state<R: CommandRunner>(
@@ -2438,6 +2479,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn review_subprocess_inherits_agent_override() {
+        let mut command = Command::new("loom");
+        append_agent_override(&mut command, Some(AgentRuntime::Pi));
+        command.arg("gate").arg("review");
+
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args, ["--agent", "pi", "gate", "review"]);
+
+        let mut configured_command = Command::new("loom");
+        append_agent_override(&mut configured_command, None);
+        assert!(configured_command.as_std().get_args().next().is_none());
+    }
+
+    #[test]
+    fn molecule_handoff_publishes_beads_through_wrix_cli() {
+        let command = wrix_beads_push_command(Path::new("wrix"), Path::new("/workspace"));
+        let std_command = command.as_std();
+        assert_eq!(std_command.get_program(), "wrix");
+        assert_eq!(
+            std_command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["beads", "push"],
+        );
+        assert_eq!(std_command.get_current_dir(), Some(Path::new("/workspace")));
+    }
+
     #[tokio::test]
     async fn clarify_or_infra_present_stops_without_pushing() {
         for label in ["loom:clarify", "loom:infra"] {
@@ -2476,8 +2550,11 @@ mod tests {
                 &bd,
                 &SpecLabel::new("alpha").unwrap(),
                 None,
-                Path::new("must-not-run-review"),
-                Path::new("must-not-run-beads-push"),
+                MoleculePushGateCommands::new(
+                    None,
+                    Path::new("must-not-run-review"),
+                    Path::new("must-not-run-wrix"),
+                ),
                 &workspace,
                 &git,
             )
@@ -3752,9 +3829,9 @@ mod tests {
             "lm-mol9",
             "abc12345",
         ));
-        let beads_push = dir.path().join("beads-push.sh");
-        loom_test_support::write_executable_bash_script(&beads_push, "set -euo pipefail\nexit 0\n")
-            .expect("write beads-push stub");
+        let wrix = dir.path().join("wrix.sh");
+        loom_test_support::write_executable_bash_script(&wrix, "set -euo pipefail\nexit 0\n")
+            .expect("write wrix stub");
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label.clone(),
@@ -3774,7 +3851,7 @@ mod tests {
                 )
             },
         )
-        .with_beads_push_bin(beads_push);
+        .with_wrix_bin(wrix);
 
         let handoff = controller
             .exec_review()

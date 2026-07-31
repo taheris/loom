@@ -12,7 +12,7 @@
 //!    [`AgentEvent`](loom_driver::agent::AgentEvent) stream into the
 //!    terminal renderer + per-bead JSONL log;
 //! 3. snapshots beads again, computes new bead IDs and clarify membership;
-//! 4. branches: clean → `git push` + `beads-push`; clarify → stop;
+//! 4. branches: clean → `git push` + `wrix beads push`; clarify → stop;
 //!    fix-up + under cap → `exec loom loop`; fix-up + at cap → escalate the
 //!    newest fix-up bead to `loom:clarify`.
 //!

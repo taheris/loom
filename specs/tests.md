@@ -646,7 +646,7 @@ owns:
       nextest, and system verifiers
   [check](cargo run -p loom-walk -- workspace_compile_checks_are_full_test_app_only)
 - `nix run .#smoke` carries a concrete mock-Pi image, immutable ProfileConfig,
-      Linux implementation, and Darwin stub
+      canonical `wrix.prekHooks` directory, Linux implementation, and Darwin stub
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
 - `nix run .#fuzz-loom` is on-demand and absent from flake checks
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
@@ -919,8 +919,18 @@ owns:
    host↔container plumbing that the integration tier cannot reach. A temporary
    workspace is seeded with one ready `profile:base` bead, and a concrete test
    image carries mock Pi through the [agent-owned container launch
-   boundary](agent.md#container-integration). The smoke asserts the container
-   exits cleanly and the bead closes.
+   boundary](agent.md#container-integration). The harness generates isolated
+   ephemeral deploy and signing keys plus non-secret mock Pi auth, so it
+   exercises repository-scoped Wrix spawn without ambient host credentials.
+   The temporary repository carries an explicit no-op prek configuration for
+   `pre-commit` and `pre-push`, so the canonical Wrix hook bundle is exercised
+   without bypass flags. Its pre-push entry uses the real repository
+   `bin/pre-push-checks` wrapper and required hook metadata. The fixture ignores
+   Loom/Wrix-owned `.loom/` and `.wrix/` runtime state so cleanliness and marker
+   minting cover only repository changes. The mock worker
+   inherits Wrix's SSH signing policy, so its commit must pass Loom's worker-side
+   signature verification. The smoke asserts the container exits cleanly and
+   the bead closes.
    Workflow-level coverage (plan/todo/loop/gate/inbox/tune, profile/runtime
    selection, agent switching) lives in inline
    `#[cfg(test)] mod tests` blocks under `loom-workflow/src/` — those

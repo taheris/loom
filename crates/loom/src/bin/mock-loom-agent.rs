@@ -83,6 +83,11 @@ const FINDING_CONCERN_LINE: &str = concat!(
     reason = "the test-only mock reproduces wrix startup and protocol diagnostics"
 )]
 fn main() -> ExitCode {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if args == ["beads", "push"] {
+        eprintln!("[wrix] beads push (mock)");
+        return ExitCode::SUCCESS;
+    }
     let mode = env::var("LOOM_TEST_AGENT_MODE").unwrap_or_else(|_| MODE_COMPLETE.to_string());
 
     let stdin = io::stdin();
