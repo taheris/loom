@@ -69,8 +69,8 @@ in
 
   perSystem =
     {
-      config,
       inputs',
+      mkTreefmtConfig,
       pkgs,
       system,
       ...
@@ -96,6 +96,14 @@ in
         config.allowUnfree = true;
       };
 
+      imageRustToolchain = inputs.fenix.packages.${linuxSystem}.fromToolchainFile {
+        file = rustToolchainFile;
+        sha256 = rustToolchainSha256;
+      };
+      imageTreefmtWrapper = inputs.treefmt-nix.lib.mkWrapper wrixLinuxPkgs (
+        mkTreefmtConfig imageRustToolchain
+      );
+
       patchedWrixSrc = pkgs.applyPatches {
         name = "wrix-src-loom-agent";
         src = inputs.wrix;
@@ -106,13 +114,13 @@ in
         inherit (inputs) crane fenix;
         pkgs = wrixPkgs;
         linuxPkgs = wrixLinuxPkgs;
-        treefmt = config.treefmt.build.wrapper;
+        treefmt = imageTreefmtWrapper;
       };
-      piCodingAgent = pkgs.pi-coding-agent;
-      smokeMockPi = pkgs.writeShellScriptBin "pi" ''
+      imagePiCodingAgent = wrixLinuxPkgs.pi-coding-agent;
+      smokeMockPi = wrixLinuxPkgs.writeShellScriptBin "pi" ''
         export MOCK_PI_SCENARIO=happy-path
         export LOOM_SMOKE_WORKER=1
-        exec ${pkgs.bash}/bin/bash ${../../tests/mock-pi/pi.sh} "$@"
+        exec ${wrixLinuxPkgs.bash}/bin/bash ${../../tests/mock-pi/pi.sh} "$@"
       '';
 
       # The same file + hash pin the toolchain for the wrix sandbox
@@ -138,20 +146,27 @@ in
         src = loomSrc;
       };
 
+      imageLoom = loomLib.mkLoom {
+        pkgs = wrixLinuxPkgs;
+        inherit (inputs) crane fenix;
+        toolchain = imageRustToolchain;
+        src = loomSrc;
+      };
+
       sandbox = wrixLib.mkSandbox {
         profile = workerRustProfile;
         agent = "pi";
-        agentPkg = piCodingAgent;
-        packages = [ loom.bin ];
+        agentPkg = imagePiCodingAgent;
+        packages = [ imageLoom.bin ];
       };
 
       debugSandbox = wrixLib.mkSandbox {
         profile = workerRustProfile;
         agent = "pi";
-        agentPkg = piCodingAgent;
+        agentPkg = imagePiCodingAgent;
         packages = [
-          loom.bin
-          pkgs.podman
+          imageLoom.bin
+          wrixLinuxPkgs.podman
         ];
       };
 
@@ -159,15 +174,15 @@ in
         profile = workerProfile wrixLib.profiles.base;
         agent = "pi";
         agentPkg = smokeMockPi;
-        packages = [ loom.bin ];
+        packages = [ imageLoom.bin ];
       };
 
       smokeProfileManifest = wrixLib.mkProfileImages { base = smokeSandbox.image; };
 
       profileManifest = loomLib.mkProfileManifest {
         inherit pkgs wrixLib;
-        loomBin = loom.bin;
-        agentPkg = piCodingAgent;
+        loomBin = imageLoom.bin;
+        agentPkg = imagePiCodingAgent;
       };
 
       loomBin = loomLib.mkLoomBin {
@@ -180,6 +195,8 @@ in
       _module.args = {
         inherit
           debugSandbox
+          imagePiCodingAgent
+          imageTreefmtWrapper
           loom
           loomBin
           patchedWrixSrc
@@ -190,6 +207,7 @@ in
           smokeProfileManifest
           smokeSandbox
           wrixLib
+          wrixLinuxPkgs
           ;
         smokeServiceImage = wrixLib.serviceImage;
       };

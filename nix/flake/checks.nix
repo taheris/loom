@@ -4,9 +4,12 @@ _:
   perSystem =
     {
       pkgs,
+      imagePiCodingAgent,
+      imageTreefmtWrapper,
       loom,
       sandbox,
       profileManifest,
+      wrixLinuxPkgs,
       ...
     }:
     let
@@ -59,7 +62,7 @@ _:
       };
 
       wrixProfilePackages = filter (pkg: (pkg.meta.mainProgram or "") == "wrix") sandbox.profile.packages;
-      sandboxProfileEnv = pkgs.buildEnv {
+      sandboxProfileEnv = wrixLinuxPkgs.buildEnv {
         name = "loom-sandbox-profile-env-check";
         paths = sandbox.profile.packages;
         pathsToLink = [ "/bin" ];
@@ -67,7 +70,7 @@ _:
 
       sandbox-profile-env-has-wrix =
         assert length wrixProfilePackages == 1;
-        pkgs.runCommand "sandbox-profile-env-has-wrix" { } ''
+        wrixLinuxPkgs.runCommand "sandbox-profile-env-has-wrix" { } ''
           set -euo pipefail
           if [[ ! -x ${sandboxProfileEnv}/bin/wrix ]]; then
             printf 'expected sandbox profile PATH to include real wrix at %s/bin/wrix\n' ${sandboxProfileEnv} >&2
@@ -77,7 +80,7 @@ _:
           touch "$out"
         '';
 
-      sandbox-profile-env-has-loom = pkgs.runCommand "sandbox-profile-env-has-loom" { } ''
+      sandbox-profile-env-has-loom = wrixLinuxPkgs.runCommand "sandbox-profile-env-has-loom" { } ''
         set -euo pipefail
         if [[ ! -x ${sandboxProfileEnv}/bin/loom ]]; then
           printf 'expected worker sandbox profile PATH to include loom at %s/bin/loom\n' ${sandboxProfileEnv} >&2
@@ -87,12 +90,22 @@ _:
         touch "$out"
       '';
 
-      sandbox-profile-env-omits-nix = pkgs.runCommand "sandbox-profile-env-omits-nix" { } ''
+      sandbox-profile-env-omits-nix = wrixLinuxPkgs.runCommand "sandbox-profile-env-omits-nix" { } ''
         set -euo pipefail
         if [[ -e ${sandboxProfileEnv}/bin/nix ]]; then
           printf 'worker sandbox profile PATH unexpectedly includes nix at %s/bin/nix\n' ${sandboxProfileEnv} >&2
           exit 1
         fi
+        touch "$out"
+      '';
+
+      image-runtime-binaries-launch = wrixLinuxPkgs.runCommand "image-runtime-binaries-launch" { } ''
+        set -euo pipefail
+        export HOME="$TMPDIR/home"
+        mkdir -p "$HOME"
+        ${imagePiCodingAgent}/bin/pi --version >/dev/null
+        ${imageTreefmtWrapper}/bin/treefmt --version >/dev/null
+        ${wrixLinuxPkgs.podman}/bin/podman --version >/dev/null
         touch "$out"
       '';
 
@@ -453,6 +466,7 @@ _:
         inherit
           loom-gate-check
           loom-wrix-uses-unprofiled-spawn-launcher
+          image-runtime-binaries-launch
           profile-manifest-keeps-runtime-path-context
           sandbox-profile-env-has-loom
           sandbox-profile-env-has-wrix
