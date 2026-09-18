@@ -1,0 +1,8 @@
+/target/
+/result
+/result-*
+.claude/
+.direnv/
+.loom/
+.pi/
+.wrix/
