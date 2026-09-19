@@ -9,6 +9,7 @@ export GIT_CONFIG_SYSTEM=/dev/null
 unset WRIX_SIGNING_KEY
 
 nix flake check --no-warn-dirty
+cargo clippy --workspace -- -D warnings
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 loom gate system --tree

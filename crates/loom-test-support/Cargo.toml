@@ -11,6 +11,7 @@ publish.workspace = true
 # code never reaches the items it exposes.
 [dependencies]
 proptest = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

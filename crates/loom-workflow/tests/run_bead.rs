@@ -99,8 +99,14 @@ fn setup() -> (
     let dir = tempfile::tempdir().expect("tempdir");
     let manifest = write_manifest(dir.path());
     let workspace = dir.path().join("ws");
-    let mut git = init_test_repo_with_integration(&workspace).expect("init repo");
-    git.disable_signing_key_resolution();
+    let git = init_test_repo_with_integration(&workspace).expect("init repo");
+    let policy = loom_driver::git::RepoGitPolicy::resolve(
+        &workspace,
+        "unused-wrix".into(),
+        loom_driver::git::KeyMode::Host,
+    )
+    .expect("explicit host-key policy");
+    let git = git.with_repo_git_policy(policy);
     (dir, workspace, manifest, git)
 }
 

@@ -28,9 +28,10 @@ use anyhow::{Context, Result};
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::{
     BeadCloneAlignment, FastForwardOutcome, GitClient, GitError, KeyMode, MergeResult,
-    RebaseOutcome, RepoGitPolicy, SignatureCheck, StatusKind, write_signing_config,
+    RebaseOutcome, RepoGitPolicy, SignatureCheck, StatusKind,
 };
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_test_support::git_policy::Fixture as GitPolicyFixture;
 use tempfile::TempDir;
 
 fn git_command() -> Command {
@@ -59,6 +60,13 @@ fn init_repo() -> Result<TempDir> {
 /// Loom-integration-workspace path under a repo created by [`init_repo`].
 fn loom_path(repo: &Path) -> std::path::PathBuf {
     repo.join(".loom/integration")
+}
+
+fn repository_client(repo: &Path, fixture: &GitPolicyFixture) -> Result<GitClient> {
+    let workspace = loom_path(repo);
+    let policy = RepoGitPolicy::resolve(&workspace, fixture.wrix(), KeyMode::Repository)?;
+    policy.apply(&workspace)?;
+    Ok(GitClient::open(repo)?.with_repo_git_policy(policy))
 }
 
 fn fake_prek_hooks(repo: &Path) -> Result<PathBuf> {
@@ -387,9 +395,7 @@ async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
     git(&loom, &["commit", "-q", "-m", "bead b commit"])?;
 
     git(&loom, &["checkout", "-q", "main"])?;
-    let key = gen_signing_key(repo.path())?;
-    let mut client = GitClient::open(repo.path())?;
-    client.set_signing_key_override(key);
+    let client = GitClient::open(repo.path())?;
     assert_eq!(client.merge_branch("bead-a").await?, MergeResult::Ok);
 
     let bead_b_pre = String::from_utf8(
@@ -512,9 +518,7 @@ async fn merge_branch_replays_recorded_rerere_resolution() -> Result<()> {
     git(&loom, &["checkout", "-q", "main"])?;
     git(&loom, &["branch", "-f", "feature", &feature_base])?;
 
-    let key = gen_signing_key(repo.path())?;
-    let mut client = GitClient::open(repo.path())?;
-    client.set_signing_key_override(key);
+    let client = GitClient::open(repo.path())?;
     let result = client.merge_branch("feature").await?;
 
     assert_eq!(
@@ -1411,14 +1415,15 @@ async fn driver_fetches_bead_branch_from_workspace_path() -> Result<()> {
 
 #[tokio::test]
 async fn repository_policy_does_not_skip_when_allowed_signers_disappears() -> Result<()> {
+    let Some(fixture) =
+        GitPolicyFixture::enter("repository_policy_does_not_skip_when_allowed_signers_disappears")?
+    else {
+        return Ok(());
+    };
     let repo = init_repo()?;
-    let policy = RepoGitPolicy::for_test(
-        "unused-wrix".into(),
-        "repo-key".into(),
-        repo.path().join("repo-key"),
-        repo.path().join("repo-key-signing"),
-    );
-    let client = GitClient::open(repo.path())?.with_repo_git_policy(policy);
+    let client = repository_client(repo.path(), &fixture)?;
+    assert!(client.signing_verification_enabled().await?);
+    std::fs::remove_file(loom_path(repo.path()).join(".git/wrix/allowed_signers"))?;
 
     let error = client
         .signing_verification_enabled()
@@ -1465,61 +1470,22 @@ async fn host_key_policy_skips_repository_signature_verification() -> Result<()>
     Ok(())
 }
 
-/// Repository-signing counterpart to
-/// [`host_key_policy_skips_repository_signature_verification`]: with a
-/// loom-workspace `.git/loom-allowed-signers` file present, a signed bead
-/// commit verifies as [`SignatureCheck::Verified`], not `Skipped`.
+/// Repository policy verifies signed bead commits rather than skipping them.
 #[tokio::test]
 async fn signature_verification_runs_when_key_present() -> Result<()> {
+    let Some(fixture) = GitPolicyFixture::enter("signature_verification_runs_when_key_present")?
+    else {
+        return Ok(());
+    };
     let repo = init_repo()?;
-    let loom = loom_path(repo.path());
-    let key = gen_signing_key(repo.path())?;
-
-    // Materialize a host-only signing fixture for the lower-level verifier.
-    write_signing_config(&loom, &key)?;
-    let signers_file = loom.join(".git").join("loom-allowed-signers");
-    assert!(
-        signers_file.is_file(),
-        "precondition: allowed_signers file present (key configured)",
-    );
-    // verify-commit matches the committer email against the allowed_signers
-    // principal — derive it so the signed bead commit lines up.
-    let signers = std::fs::read_to_string(&signers_file)?;
-    let identity = signers
-        .split_whitespace()
-        .next()
-        .context("allowed_signers principal")?
-        .to_string();
-
-    // Sign the bead commit with the key trusted by this host-only verifier
-    // fixture; production clones use Wrix context-stable helper tokens.
-    let mut client = GitClient::open(repo.path())?;
-    client.set_signing_key_override(key.clone());
+    let client = repository_client(repo.path(), &fixture)?;
     let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-sig.1")?;
     let created = client.create_worktree(&label, &bead).await?;
     std::fs::write(created.path.join("agent-change.txt"), "agent work\n")?;
     git(&created.path, &["add", "agent-change.txt"])?;
-    let email_arg = format!("user.email={identity}");
-    let signingkey_arg = format!("user.signingkey={}", key.to_string_lossy());
-    git(
-        &created.path,
-        &[
-            "-c",
-            email_arg.as_str(),
-            "-c",
-            "user.name=loom",
-            "-c",
-            "gpg.format=ssh",
-            "-c",
-            signingkey_arg.as_str(),
-            "commit",
-            "-S",
-            "-q",
-            "-m",
-            "signed agent work",
-        ],
-    )?;
+    git(&created.path, &["commit", "-q", "-m", "signed agent work"])?;
+    assert!(commit_has_gpgsig(&created.path, "HEAD")?);
     client.fetch_bead_branch(&created.path, &bead).await?;
 
     assert!(
@@ -1545,9 +1511,11 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
 /// Criterion: `driver_rebase_signs_with_wrix_key`.
 #[tokio::test]
 async fn driver_rebase_signs_with_wrix_key() -> Result<()> {
+    let Some(fixture) = GitPolicyFixture::enter("driver_rebase_signs_with_wrix_key")? else {
+        return Ok(());
+    };
     let repo = init_repo()?;
     let loom = loom_path(repo.path());
-    let key = gen_signing_key(repo.path())?;
 
     // Worker commit on the bead branch BEFORE any signing block is written,
     // so the rewrite is the only place a signature can appear.
@@ -1565,11 +1533,7 @@ async fn driver_rebase_signs_with_wrix_key() -> Result<()> {
     git(&loom, &["add", "main.txt"])?;
     git(&loom, &["commit", "-q", "-m", "main commit"])?;
 
-    // Install a host-only signing fixture for this lower-level rebase test.
-    write_signing_config(&loom, &key)?;
-
-    let mut client = GitClient::open(repo.path())?;
-    client.set_signing_key_override(key.clone());
+    let client = repository_client(repo.path(), &fixture)?;
     let outcome = client.rebase_onto_integration("feature").await?;
     assert!(
         matches!(outcome, RebaseOutcome::Rebased),
@@ -1590,9 +1554,13 @@ async fn driver_rebase_signs_with_wrix_key() -> Result<()> {
 /// Criterion: `rebased_commits_verify_via_derived_allowed_signers`.
 #[tokio::test]
 async fn rebased_commits_verify_via_derived_allowed_signers() -> Result<()> {
+    let Some(fixture) =
+        GitPolicyFixture::enter("rebased_commits_verify_via_derived_allowed_signers")?
+    else {
+        return Ok(());
+    };
     let repo = init_repo()?;
     let loom = loom_path(repo.path());
-    let key = gen_signing_key(repo.path())?;
 
     git(&loom, &["checkout", "-q", "-b", "feature"])?;
     std::fs::write(loom.join("feature.txt"), "feature side\n")?;
@@ -1604,10 +1572,7 @@ async fn rebased_commits_verify_via_derived_allowed_signers() -> Result<()> {
     git(&loom, &["add", "main.txt"])?;
     git(&loom, &["commit", "-q", "-m", "main commit"])?;
 
-    write_signing_config(&loom, &key)?;
-
-    let mut client = GitClient::open(repo.path())?;
-    client.set_signing_key_override(key.clone());
+    let client = repository_client(repo.path(), &fixture)?;
     assert!(
         matches!(
             client.rebase_onto_integration("feature").await?,
@@ -1616,9 +1581,6 @@ async fn rebased_commits_verify_via_derived_allowed_signers() -> Result<()> {
         "rebase must rewrite the worker commit onto the integration tip",
     );
 
-    // `git log --show-signature` reads `gpg.ssh.allowedSignersFile` from the
-    // block `write_signing_config` wrote and reports a good signature on its
-    // stdout for the rewritten commit.
     let shown = String::from_utf8(
         git_command()
             .arg("-C")
@@ -2182,17 +2144,6 @@ async fn loop_startup_gc_no_op_when_base_dir_missing() -> Result<()> {
     Ok(())
 }
 
-fn gen_signing_key(dir: &Path) -> Result<std::path::PathBuf> {
-    let key = dir.join("signing-key");
-    let status = Command::new("ssh-keygen")
-        .args(["-t", "ed25519", "-N", "", "-q", "-C", "", "-f"])
-        .arg(&key)
-        .status()
-        .context("spawn ssh-keygen")?;
-    anyhow::ensure!(status.success(), "ssh-keygen exited with {status}");
-    Ok(key)
-}
-
 /// Whether `rev`'s commit object carries a `gpgsig` header — the structural
 /// marker of a signed commit, present regardless of which key signed it.
 fn commit_has_gpgsig(repo: &Path, rev: &str) -> Result<bool> {
@@ -2226,34 +2177,15 @@ fn local_config(repo: &Path, key: &str) -> Result<Option<String>> {
 /// host private-key path, so the same clone remains valid in-container.
 #[tokio::test]
 async fn create_worktree_applies_context_stable_wrix_git_policy() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
+    let Some(fixture) =
+        GitPolicyFixture::enter("create_worktree_applies_context_stable_wrix_git_policy")?
+    else {
+        return Ok(());
+    };
     let repo = init_repo()?;
-    let deploy_key = repo.path().join("repo-key");
-    let signing_key = repo.path().join("repo-key-signing");
-    std::fs::write(&deploy_key, "deploy")?;
-    std::fs::write(&signing_key, "signing")?;
-    let wrix = repo.path().join("fake-wrix");
-    std::fs::write(
-        &wrix,
-        "#!/bin/sh\nset -eu\ntest \"$*\" = \"init --offline --no-hooks --key repo-key\"\n\
-         git config --local gpg.format ssh\n\
-         git config --local gpg.ssh.program wrix-git-sign\n\
-         git config --local gpg.ssh.allowedSignersFile wrix/allowed_signers\n\
-         git config --local user.signingkey wrix/signing-key/repo-key-signing\n\
-         git config --local commit.gpgsign true\n\
-         git config --local core.sshCommand wrix/git-ssh\n\
-         mkdir -p .git/wrix\nprintf allowed > .git/wrix/allowed_signers\n\
-         printf '#!/bin/sh\\n' > .git/wrix/git-ssh\nchmod +x .git/wrix/git-ssh\n",
-    )?;
-    std::fs::set_permissions(&wrix, std::fs::Permissions::from_mode(0o755))?;
-    let policy = RepoGitPolicy::for_test(
-        wrix,
-        "repo-key".to_string(),
-        deploy_key.clone(),
-        signing_key.clone(),
-    );
-    let client = GitClient::open(repo.path())?.with_repo_git_policy(policy);
+    let deploy_key = fixture.deploy_key();
+    let signing_key = fixture.signing_key();
+    let client = repository_client(repo.path(), &fixture)?;
 
     let label = SpecLabel::new("harness").unwrap();
     let bead = BeadId::new("lm-sign.1")?;
@@ -2286,41 +2218,23 @@ async fn create_worktree_applies_context_stable_wrix_git_policy() -> Result<()> 
     Ok(())
 }
 
-/// `GitClient::launcher_key_env` surfaces the resolved signing key as a
-/// `WRIX_SIGNING_KEY` → HOST-path pair so loom can hand it to the `wrix
-/// spawn` launcher (loop agents otherwise boot with no git keys).
-/// Unlike the bead-clone gitconfig (which maps to in-container paths), the
-/// launcher env carries the host path verbatim — wrix performs the
-/// host→container mapping itself. Driven through the signing-key override
-/// seam; the deploy key is absent because the test repo's origin is a local
-/// path (not GitHub), so the deploy-key fallback is skipped.
+/// Startup-resolved key paths reach the launcher without being written to Git config.
 #[tokio::test]
 async fn launcher_key_env_exposes_signing_key_host_path() -> Result<()> {
-    if std::env::var_os("WRIX_DEPLOY_KEY").is_some() {
-        // Ambient env would inject a deploy-key entry; skip to keep the
-        // assertion on the absent-deploy-key path deterministic.
+    let Some(fixture) = GitPolicyFixture::enter("launcher_key_env_exposes_signing_key_host_path")?
+    else {
         return Ok(());
-    }
+    };
     let repo = init_repo()?;
-    let key = gen_signing_key(repo.path())?;
-    let mut client = GitClient::open(repo.path())?;
-    client.set_signing_key_override(key.clone());
-
+    let client = repository_client(repo.path(), &fixture)?;
     let env = client.launcher_key_env()?;
-
-    let signing = env
-        .iter()
-        .find(|(k, _)| k == "WRIX_SIGNING_KEY")
-        .expect("WRIX_SIGNING_KEY must be present");
-    assert_eq!(
-        signing.1,
-        key.to_string_lossy(),
-        "launcher env must carry the HOST signing-key path verbatim",
-    );
-    assert!(
-        !env.iter().any(|(k, _)| k == "WRIX_DEPLOY_KEY"),
-        "no deploy key resolves for a non-GitHub origin: {env:?}",
-    );
+    assert_eq!(env.len(), 2);
+    for (name, path) in [
+        ("WRIX_DEPLOY_KEY", fixture.deploy_key()),
+        ("WRIX_SIGNING_KEY", fixture.signing_key()),
+    ] {
+        assert!(env.contains(&(name.to_string(), path.to_string_lossy().into_owned())));
+    }
     Ok(())
 }
 

@@ -124,3 +124,5 @@ option_if_let_else = "allow"
 too_many_lines = "allow"
 # Explicit enum names can be clearer than `Self` in large variant matches.
 use_self = "allow"
+# Async trait signatures also require async implementations that need no await.
+unused_async_trait_impl = "allow"

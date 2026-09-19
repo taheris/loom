@@ -4,6 +4,7 @@
 //! module turns that into a concrete file set, parses Rust syntax, and
 //! materialises [`Verdict`] envelopes from accumulated violation lines.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use syn::Attribute;
@@ -121,9 +122,15 @@ pub fn narrow_to_loom_files(scope: Vec<PathBuf>, input: &WalkInput, root: &Path)
     let Some(filter) = resolve_input_files(root, input) else {
         return scope;
     };
+    let filter: HashSet<PathBuf> = filter
+        .into_iter()
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .collect();
     scope
         .into_iter()
-        .filter(|p| filter.iter().any(|q| q == p))
+        .filter(|path| {
+            filter.contains(&std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+        })
         .collect()
 }
 

@@ -56,11 +56,15 @@ worktree; do not run broad worktree pruning.
 
 ## Verify
 
+Run both Clippy commands separately: `--all-targets` enables test-only dependency
+features and does not cover the production-only configuration.
+
 ```bash
 nix fmt
 nix build
 nix flake check
 cargo build
+cargo clippy --workspace -- -D warnings
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run
 ```

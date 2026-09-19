@@ -395,7 +395,7 @@ fn normalize_whitespace(value: &str) -> String {
 }
 
 /// Walk forward from an opening `(` and return the matching `)` byte index.
-fn find_balanced_close(bytes: &[u8], lparen: usize) -> Option<usize> {
+const fn find_balanced_close(bytes: &[u8], lparen: usize) -> Option<usize> {
     let mut depth = 1usize;
     let mut j = lparen + 1;
     let mut blank_line_count = 0usize;

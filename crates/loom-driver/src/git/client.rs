@@ -64,15 +64,6 @@ const SIGPIPE_SIGNAL: i32 = 13;
 const DEFAULT_INTEGRATION_BRANCH: &str = "main";
 const RECOVERY_STASH_SELECTOR: &str = "stash@{0}";
 
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Clone, Default)]
-enum SigningKeyOverride {
-    #[default]
-    Resolve,
-    Disabled,
-    Key(PathBuf),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActualPushRange {
     pub range: String,
@@ -100,10 +91,6 @@ pub struct GitClient {
     hook_timeout: Duration,
     /// Context-stable repository Git policy selected at `loom loop` startup.
     repo_git_policy: Option<super::signing::RepoGitPolicy>,
-    /// Test-only seam for legacy host-only signing fixtures. Production loop
-    /// signing is exclusively configured by [`Self::repo_git_policy`].
-    #[cfg(any(test, feature = "test-support"))]
-    signing_key_override: SigningKeyOverride,
     #[cfg(any(test, feature = "test-support"))]
     prek_hooks_path_override: Option<PathBuf>,
 }
@@ -170,8 +157,6 @@ impl GitClient {
             hook_timeout: GIT_HOOK_TIMEOUT,
             repo_git_policy: None,
             #[cfg(any(test, feature = "test-support"))]
-            signing_key_override: SigningKeyOverride::Resolve,
-            #[cfg(any(test, feature = "test-support"))]
             prek_hooks_path_override: None,
         })
     }
@@ -209,20 +194,6 @@ impl GitClient {
         Ok(())
     }
 
-    /// Test-only: configure a host-only signing fixture and launcher key.
-    /// Gated behind `cfg(test)` / the `test-support` feature (RS-14).
-    #[cfg(any(test, feature = "test-support"))]
-    #[doc(hidden)]
-    pub fn set_signing_key_override(&mut self, key: PathBuf) {
-        self.signing_key_override = SigningKeyOverride::Key(key);
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    #[doc(hidden)]
-    pub fn disable_signing_key_resolution(&mut self) {
-        self.signing_key_override = SigningKeyOverride::Disabled;
-    }
-
     /// Test-only: force [`Self::create_worktree`] / push-gate hook
     /// validation to use `path` instead of resolving `$WRIX_PREK_HOOKS`.
     /// Gated behind `cfg(test)` / the `test-support` feature (RS-14).
@@ -232,65 +203,18 @@ impl GitClient {
         self.prek_hooks_path_override = Some(path);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    fn prek_hooks_override(&self) -> Option<PathBuf> {
-        self.prek_hooks_path_override.clone()
-    }
-
-    #[cfg(not(any(test, feature = "test-support")))]
-    fn prek_hooks_override(&self) -> Option<PathBuf> {
-        None
-    }
-
     fn resolve_prek_hooks_path(&self) -> Result<PathBuf, GitError> {
-        match self.prek_hooks_override() {
-            Some(path) => {
-                super::hooks::ensure_prek_hooks_dir(&path)?;
-                Ok(path)
-            }
-            None => self.resolve_default_prek_hooks_path(),
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(path) = &self.prek_hooks_path_override {
+            super::hooks::ensure_prek_hooks_dir(path)?;
+            return Ok(path.clone());
         }
-    }
-
-    fn resolve_default_prek_hooks_path(&self) -> Result<PathBuf, GitError> {
         let test_hooks = self.workdir.join(".loom/test-prek-hooks");
         if test_hooks.exists() {
             super::hooks::ensure_prek_hooks_dir(&test_hooks)?;
             return Ok(test_hooks);
         }
         super::hooks::resolve_prek_hooks_path_for_workspace(&self.workdir)
-    }
-
-    fn resolve_signing_key(&self) -> Result<Option<PathBuf>, GitError> {
-        #[cfg(any(test, feature = "test-support"))]
-        match &self.signing_key_override {
-            SigningKeyOverride::Resolve => {
-                super::signing::resolve_signing_key(&self.loom_workspace())
-            }
-            SigningKeyOverride::Disabled => Ok(None),
-            SigningKeyOverride::Key(key) => Ok(Some(key.clone())),
-        }
-        #[cfg(not(any(test, feature = "test-support")))]
-        {
-            super::signing::resolve_signing_key(&self.loom_workspace())
-        }
-    }
-
-    fn refresh_loom_signing_config(&self) -> Result<(), GitError> {
-        if self.repo_git_policy.is_some() {
-            return Ok(());
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        match &self.signing_key_override {
-            SigningKeyOverride::Resolve => {}
-            SigningKeyOverride::Disabled => {
-                super::signing::reconcile_signing_config(&self.loom_workspace(), None)?;
-            }
-            SigningKeyOverride::Key(key) => {
-                super::signing::reconcile_signing_config(&self.loom_workspace(), Some(key))?;
-            }
-        }
-        Ok(())
     }
 
     /// Name of the integration branch this client targets (the branch
@@ -548,7 +472,7 @@ impl GitClient {
         }
         let loom_workspace = self.loom_workspace();
         let mut env = Vec::new();
-        let signing = self.resolve_signing_key()?;
+        let signing = super::signing::resolve_signing_key(&loom_workspace)?;
         if let Some(key) = signing {
             env.push((
                 super::signing::WRIX_SIGNING_KEY_ENV.to_string(),
@@ -1123,9 +1047,8 @@ impl GitClient {
     /// non-fast-forward races and hook failures, surface as
     /// [`GitError::GitCli`] for the verdict gate to classify.
     ///
-    /// Refreshes the loom-workspace signing config before invoking git so
-    /// stale host-key paths are replaced by the current repo signing key.
-    /// Uses [`Self::hook_timeout`] (configurable via
+    /// Uses the repository Git policy installed at startup and
+    /// [`Self::hook_timeout`] (configurable via
     /// `[loom] git_hook_timeout_secs`, default [`GIT_HOOK_TIMEOUT`])
     /// because the remote's pre-push hook (or loom's own pre-push hook on
     /// the GitHub publish) runs the workspace's pre-push CI stage.
@@ -1148,7 +1071,6 @@ impl GitClient {
     /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn prepare_actual_push_range(&self) -> Result<ActualPushRange, GitError> {
         self.validate_loom_hooks_path_configured().await?;
-        self.refresh_loom_signing_config()?;
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
         let remote_ref = format!("origin/{integration_branch}");
@@ -1236,7 +1158,6 @@ impl GitClient {
         args: [&str; N],
     ) -> Result<std::process::Output, GitError> {
         self.validate_loom_hooks_path_configured().await?;
-        self.refresh_loom_signing_config()?;
         let workdir = self.loom_workspace();
         run_git_raw_with_timeout(&workdir, self.clock.as_ref(), self.hook_timeout, args, None).await
     }
@@ -1710,7 +1631,6 @@ impl GitClient {
     ///
     /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn rebase_onto_integration(&self, branch: &str) -> Result<RebaseOutcome, GitError> {
-        self.refresh_loom_signing_config()?;
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
 
@@ -2042,7 +1962,6 @@ impl GitClient {
     ///
     /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn verify_commit_range(&self, range: &str) -> Result<SignatureCheck, GitError> {
-        self.refresh_loom_signing_config()?;
         if !self.signing_verification_enabled().await? {
             return Ok(SignatureCheck::Skipped);
         }

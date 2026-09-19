@@ -914,9 +914,15 @@ mod tests {
     #[tokio::test]
     async fn parallel_waiting_outcome_preserves_workspace_without_merge() {
         let dir = tempfile::tempdir().expect("temporary repository");
-        let mut git = loom_driver::git::init_test_repo_with_integration(dir.path())
+        let git = loom_driver::git::init_test_repo_with_integration(dir.path())
             .expect("initialize integration repository");
-        git.disable_signing_key_resolution();
+        let policy = loom_driver::git::RepoGitPolicy::resolve(
+            dir.path(),
+            "unused-wrix".into(),
+            loom_driver::git::KeyMode::Host,
+        )
+        .expect("explicit host-key policy");
+        let git = git.with_repo_git_policy(policy);
         let before = git
             .integration_commit_sha()
             .await

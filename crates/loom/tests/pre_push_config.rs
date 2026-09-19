@@ -77,17 +77,26 @@ impl Fixture {
         self.head()
     }
 
-    fn run_hooks(&self, hooks: &[&str], from_ref: &str, to_ref: &str) -> Vec<String> {
+    fn recording_command(&self, executable: &str) -> Command {
         std::fs::write(&self.log, "").expect("clear invocation log");
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut entries = vec![self.tools.clone()];
         entries.extend(std::env::split_paths(&path));
         let path = std::env::join_paths(entries).expect("join PATH");
 
-        let mut command = Command::new("prek");
+        let mut command = Command::new(executable);
         loom_test_support::scrub_git_local_env(&mut command);
-        let output = command
+        command
             .current_dir(&self.workspace)
+            .env("PATH", path)
+            .env("PRE_PUSH_TEST_LOG", &self.log)
+            .env_remove("LOOM_VERIFY_TIERS");
+        command
+    }
+
+    fn run_hooks(&self, hooks: &[&str], from_ref: &str, to_ref: &str) -> Vec<String> {
+        let output = self
+            .recording_command("prek")
             .args(["run"])
             .args(hooks)
             .args([
@@ -98,9 +107,6 @@ impl Fixture {
                 "--to-ref",
                 to_ref,
             ])
-            .env("PATH", path)
-            .env("PRE_PUSH_TEST_LOG", &self.log)
-            .env_remove("LOOM_VERIFY_TIERS")
             .output()
             .expect("spawn prek");
         assert_success(&output, "prek pre-push");
@@ -196,7 +202,11 @@ fn pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers() {
     let text_head = fixture.commit("notes.txt", "text only\n", "Add text fixture");
 
     let text_lines = fixture.run_hooks(
-        &["cargo-clippy", "loom-gate-verify-diff"],
+        &[
+            "cargo-clippy-production",
+            "cargo-clippy",
+            "loom-gate-verify-diff",
+        ],
         &text_base,
         &text_head,
     );
@@ -211,18 +221,82 @@ fn pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers() {
     let rust_base = text_head;
     let rust_head = fixture.commit("src/lib.rs", "pub fn live() {}\n", "Add Rust fixture");
     let rust_lines = fixture.run_hooks(
-        &["cargo-clippy", "loom-gate-verify-diff"],
+        &[
+            "cargo-clippy-production",
+            "cargo-clippy",
+            "loom-gate-verify-diff",
+        ],
         &rust_base,
         &rust_head,
     );
-    assert_eq!(rust_lines.len(), 2, "Rust pushes must run both hooks");
+    assert_eq!(
+        rust_lines.len(),
+        3,
+        "Rust pushes must check both feature configurations"
+    );
     assert_eq!(
         rust_lines[0],
-        "cargo\tclippy\t--workspace\t--all-targets\t--\t-D\twarnings\ttiers=<unset>",
+        "cargo\tclippy\t--workspace\t--\t-D\twarnings\ttiers=<unset>",
     );
     assert_eq!(
         rust_lines[1],
+        "cargo\tclippy\t--workspace\t--all-targets\t--\t-D\twarnings\ttiers=<unset>",
+    );
+    assert_eq!(
+        rust_lines[2],
         format!("loom\tgate\tverify\t--diff\t{rust_base}..{rust_head}\ttiers=<unset>"),
+    );
+}
+
+#[test]
+fn clippy_hooks_run_for_manifest_and_toolchain_changes() {
+    let fixture = Fixture::new();
+    for path in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/example/Cargo.toml",
+        "rust-toolchain.toml",
+        "clippy.toml",
+    ] {
+        let base = fixture.head();
+        let head = fixture.commit(
+            path,
+            "# changed configuration\n",
+            "Change Rust configuration",
+        );
+        let lines = fixture.run_hooks(&["cargo-clippy-production", "cargo-clippy"], &base, &head);
+        assert_eq!(
+            lines,
+            [
+                "cargo\tclippy\t--workspace\t--\t-D\twarnings\ttiers=<unset>",
+                "cargo\tclippy\t--workspace\t--all-targets\t--\t-D\twarnings\ttiers=<unset>",
+            ],
+            "{path} must trigger both Clippy configurations",
+        );
+    }
+}
+
+#[test]
+fn full_suite_checks_production_and_test_feature_configurations() {
+    let fixture = Fixture::new();
+    install_recording_command(&fixture.tools, "nix");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/full-test.sh");
+    let output = fixture
+        .recording_command("bash")
+        .arg(script)
+        .output()
+        .expect("run full suite");
+    assert_success(&output, "full suite");
+    let log = std::fs::read_to_string(&fixture.log).expect("invocation log");
+    assert_eq!(
+        log.lines().collect::<Vec<_>>(),
+        [
+            "nix\tflake\tcheck\t--no-warn-dirty\ttiers=<unset>",
+            "cargo\tclippy\t--workspace\t--\t-D\twarnings\ttiers=<unset>",
+            "cargo\tclippy\t--workspace\t--all-targets\t--\t-D\twarnings\ttiers=<unset>",
+            "cargo\tnextest\trun\t--workspace\ttiers=<unset>",
+            "loom\tgate\tsystem\t--tree\ttiers=<unset>",
+        ],
     );
 }
 

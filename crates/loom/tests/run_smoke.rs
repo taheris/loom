@@ -400,7 +400,11 @@ chmod +x .git/wrix/git-ssh
     assert!(
         log.contains(&format!(
             "cwd={}",
-            workspace.join(".loom/integration").display()
+            workspace
+                .join(".loom/integration")
+                .canonicalize()
+                .expect("integration checkout exists")
+                .display()
         )),
         "wrix init must target the integration clone: {log}",
     );

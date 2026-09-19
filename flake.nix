@@ -2,7 +2,7 @@
   description = "Loom — workflow orchestrator for spec-driven AI development";
 
   inputs = {
-    nixpkgs.url = "git+https://github.com/NixOS/nixpkgs.git?ref=nixos-unstable&shallow=1";
+    nixpkgs.url = "git+https://github.com/NixOS/nixpkgs.git?ref=nixpkgs-unstable&shallow=1";
 
     wrix = {
       url = "git+https://github.com/taheris/wrix.git?ref=main&shallow=1";

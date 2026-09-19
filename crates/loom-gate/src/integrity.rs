@@ -800,7 +800,7 @@ fn is_test_attr_start(s: &[u8]) -> bool {
 /// pairs so attribute arguments containing nested brackets round-trip.
 /// Returns the index of the byte after the closing `]`, or `bytes.len()`
 /// when the attribute never closes.
-fn skip_attr_block(bytes: &[u8], i: usize) -> usize {
+const fn skip_attr_block(bytes: &[u8], i: usize) -> usize {
     let mut depth = 0usize;
     let mut j = i;
     while j < bytes.len() {
@@ -881,7 +881,7 @@ fn extract_fn_name_and_body(bytes: &[u8], fn_at: usize) -> Option<(&str, Range<u
 /// never balances before end-of-input. Naïve byte-counter — strings and
 /// comments may produce false matches; integrity-gate parsing has
 /// accepted that trade-off elsewhere.
-fn balance_close(bytes: &[u8], lparen: usize, open: u8, close: u8) -> Option<usize> {
+const fn balance_close(bytes: &[u8], lparen: usize, open: u8, close: u8) -> Option<usize> {
     let mut depth = 0usize;
     let mut k = lparen;
     while k < bytes.len() {

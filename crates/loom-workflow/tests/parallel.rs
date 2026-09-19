@@ -18,8 +18,9 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use loom_driver::bd::{Bead, Label};
-use loom_driver::git::GitClient;
+use loom_driver::git::{GitClient, KeyMode, RepoGitPolicy};
 use loom_driver::identifier::{BeadId, SpecLabel};
+use loom_test_support::git_policy::Fixture as GitPolicyFixture;
 use loom_workflow::r#loop::{
     AgentOutcome, BatchInfraFailure, BatchResult, BatchSlot, CONFLICT_RETRY_LABEL, Parallelism,
     ParallelismError, create_worktrees, merge_back,
@@ -67,9 +68,15 @@ fn init_repo() -> Result<TempDir> {
 }
 
 fn unsigned_client(repo: &Path) -> Result<GitClient> {
-    let mut client = GitClient::open(repo)?;
-    client.disable_signing_key_resolution();
-    Ok(client)
+    let policy = RepoGitPolicy::resolve(repo, "unused-wrix".into(), KeyMode::Host)?;
+    Ok(GitClient::open(repo)?.with_repo_git_policy(policy))
+}
+
+fn repository_client(repo: &Path, fixture: &GitPolicyFixture) -> Result<GitClient> {
+    let workspace = loom_path(repo);
+    let policy = RepoGitPolicy::resolve(&workspace, fixture.wrix(), KeyMode::Repository)?;
+    policy.apply(&workspace)?;
+    Ok(GitClient::open(repo)?.with_repo_git_policy(policy))
 }
 
 fn loom_path(repo: &Path) -> std::path::PathBuf {
@@ -88,24 +95,6 @@ fn fake_bead(id: &str) -> Bead {
         parent: None,
         metadata: std::collections::BTreeMap::default(),
         notes: None,
-    }
-}
-
-/// Generate a passphrase-less ed25519 signing key under `dir`. Returns
-/// `Ok(None)` when `ssh-keygen` is not on `PATH` so the signing tests
-/// degrade to a skip on hosts without OpenSSH (the criterion is annotated
-/// `[test?]`).
-fn gen_signing_key(dir: &Path) -> Result<Option<std::path::PathBuf>> {
-    let key = dir.join("signing-key");
-    let spawned = Command::new("ssh-keygen")
-        .args(["-t", "ed25519", "-N", "", "-q", "-C", "", "-f"])
-        .arg(&key)
-        .status();
-    match spawned {
-        Ok(status) if status.success() => Ok(Some(key)),
-        Ok(status) => anyhow::bail!("ssh-keygen exited with {status}"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).context("spawn ssh-keygen"),
     }
 }
 
@@ -739,38 +728,14 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
     Ok(())
 }
 
-/// Spec criterion (`specs/harness.md` § Verdict Gate, phases 2 & 4 —
-/// `integration_step_verifies_signatures_in_two_passes`): the **parallel**
-/// merge-back path runs `git verify-commit` over BOTH halves of the seam,
-/// exactly as the sequential `run_bead` path does. With a signing key
-/// resolved in the loom workspace (an `allowed_signers` file present) the
-/// test drives both failure routings:
-///
-/// - **Pass 1 (worker-side):** an UNSIGNED bead commit is rejected over the
-///   fetched commits BEFORE any rebase and routes the bead to
-///   `loom:blocked` carrying `signature-verification-failed (worker-side)`
-///   — NOT merged silently. (Before the fix the parallel path called
-///   `merge_branch` with zero verification, so an unsigned/tampered commit
-///   landed on every host where wrix signing is configured.)
-/// - **Pass 2 (driver-side):** a worker commit signed by a TRUSTED key
-///   clears pass 1, and a stale local loom signing key is refreshed before
-///   the driver-side rebase/verification path. The rewritten commit is
-///   signed with the resolved trusted key, pass 2 verifies it, and the
-///   integration branch advances.
 #[tokio::test]
-async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
-    let repo = init_repo()?;
-    let Some(key) = gen_signing_key(repo.path())? else {
-        // No `ssh-keygen` on PATH — the signing path cannot be exercised.
+async fn integration_step_rejects_unsigned_worker() -> Result<()> {
+    let Some(fixture) = GitPolicyFixture::enter("integration_step_rejects_unsigned_worker")? else {
         return Ok(());
     };
-    let mut client = GitClient::open(repo.path())?;
+    let repo = init_repo()?;
+    let client = repository_client(repo.path(), &fixture)?;
     let loom = loom_path(repo.path());
-    client.set_signing_key_override(key.clone());
-
-    // Enable verification in the loom workspace: write the allowed_signers
-    // file + ssh-verify config the way `loom init` does when a key resolves.
-    loom_driver::git::write_signing_config(&loom, &key)?;
     assert!(
         client.signing_verification_enabled().await?,
         "precondition: verification must be enabled once allowed_signers resolves",
@@ -823,82 +788,37 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
         slot.worktree.branch,
     );
 
-    // ---- Pass 2 (driver-side) ----
-    // A worker commit signed by a TRUSTED key clears pass 1. The loom
-    // workspace starts with a stale/untrusted local signing key, but the
-    // driver refreshes that config before rebasing and before pass 2, so the
-    // rewritten commit verifies and merges.
+    Ok(())
+}
 
-    // `verify-commit` matches the committer email against the allowed_signers
-    // principal — derive it so the signed worker commit lines up at pass 1.
-    let signers = std::fs::read_to_string(loom.join(".git/loom-allowed-signers"))?;
-    let identity = signers
-        .split_whitespace()
-        .next()
-        .context("allowed_signers principal")?
-        .to_string();
-    // A second key left in the loom workspace config models the stale
-    // host-specific signing setup that the merge path must repair before
-    // driver-side rebase/signature verification.
-    let untrusted_key = repo.path().join("untrusted-key");
-    let kg = Command::new("ssh-keygen")
-        .args(["-t", "ed25519", "-N", "", "-q", "-C", "", "-f"])
-        .arg(&untrusted_key)
-        .status()?;
-    anyhow::ensure!(kg.success(), "ssh-keygen for untrusted key exited {kg}");
+/// Repository policy verifies both the fetched worker commit and its signed rewrite.
+#[tokio::test]
+async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
+    let Some(fixture) =
+        GitPolicyFixture::enter("integration_step_verifies_signatures_in_two_passes")?
+    else {
+        return Ok(());
+    };
+    let repo = init_repo()?;
+    let client = repository_client(repo.path(), &fixture)?;
+    let loom = loom_path(repo.path());
+    let label = SpecLabel::new("harness")?;
 
     let bead2 = fake_bead("lm-driverside.1");
     let driver_slots = create_worktrees(&client, &label, vec![bead2.clone()]).await?;
     let driver_slot = driver_slots.into_iter().next().expect("one slot");
 
-    // Worker commit signed with the trusted key + the matching principal so
-    // pass 1 verifies. (`commit -S` forces signing regardless of the bead
-    // clone's own config; the explicit `-c` block supplies the key.)
     std::fs::write(
         driver_slot.worktree.path.join("worker.txt"),
         b"worker work\n",
     )?;
     git(&driver_slot.worktree.path, &["add", "worker.txt"])?;
-    let signingkey_arg = format!("user.signingkey={}", key.display());
-    let email_arg = format!("user.email={identity}");
-    let status = git_command()
-        .arg("-C")
-        .arg(&driver_slot.worktree.path)
-        .args([
-            "-c",
-            "gpg.format=ssh",
-            "-c",
-            signingkey_arg.as_str(),
-            "-c",
-            "commit.gpgsign=true",
-            "-c",
-            email_arg.as_str(),
-            "-c",
-            "user.name=loom",
-            "commit",
-            "-S",
-            "-q",
-            "-m",
-            "signed worker work",
-        ])
-        .env("GIT_AUTHOR_EMAIL", &identity)
-        .env("GIT_COMMITTER_EMAIL", &identity)
-        .env("GIT_AUTHOR_NAME", "loom")
-        .env("GIT_COMMITTER_NAME", "loom")
-        .status()?;
-    anyhow::ensure!(status.success(), "signed worker commit exited {status}");
-
-    // Point the loom workspace at the UNTRUSTED key. The client override
-    // models the key that should resolve from wrix, so the merge path must
-    // repair this stale local config before signing the rebased commit.
     git(
-        &loom,
-        &[
-            "config",
-            "user.signingkey",
-            &untrusted_key.to_string_lossy(),
-        ],
+        &driver_slot.worktree.path,
+        &["commit", "-S", "-q", "-m", "signed worker work"],
     )?;
+    git(&driver_slot.worktree.path, &["verify-commit", "HEAD"])?;
+    let worker_tip = git_capture(&driver_slot.worktree.path, &["rev-parse", "HEAD"])?;
     // Advance the integration branch (distinct file) so the rebase actually
     // rewrites — and re-signs — the worker commit rather than fast-forwarding
     // it with its original signature intact.
@@ -919,20 +839,22 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
     assert_eq!(outcome2.results.len(), 1);
     let r2 = &outcome2.results[0];
     let BatchResult::Merged { bead: bid2 } = r2 else {
-        panic!("stale driver signing config must be repaired and merged, got {r2:?}");
+        panic!("trusted worker and driver signatures must merge, got {r2:?}");
     };
     assert_eq!(*bid2, bead2.id);
     assert_ne!(
         git_capture(&loom, &["rev-parse", "main"])?.trim(),
         main_tip,
-        "a repaired driver signing config must allow the integration branch to advance",
+        "verified rebased work must advance the integration branch",
     );
     assert!(
         loom.join("worker.txt").exists(),
         "the verified worker change must reach the integration branch",
     );
+    assert_ne!(git_capture(&loom, &["rev-parse", "main"])?, worker_tip);
+    git(&loom, &["verify-commit", "main"])?;
     let configured_key = git_capture(&loom, &["config", "user.signingkey"])?;
-    assert_eq!(configured_key.trim(), key.to_string_lossy().as_ref());
+    assert_eq!(configured_key.trim(), "wrix/signing-key/repo-key-signing");
     // The transient `loom/<id>` ref was deleted on the merge path after the
     // successful rebase left the workspace on the bead branch.
     let leaked2 = git_capture(&loom, &["branch", "--list", &driver_slot.worktree.branch])?;
@@ -940,6 +862,79 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
         leaked2.trim().is_empty(),
         "transient ref {} must be deleted after merge (got: {leaked2:?})",
         driver_slot.worktree.branch,
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_step_rejects_untrusted_driver_signature() -> Result<()> {
+    let Some(fixture) =
+        GitPolicyFixture::enter("integration_step_rejects_untrusted_driver_signature")?
+    else {
+        return Ok(());
+    };
+    let repo = init_repo()?;
+    let client = repository_client(repo.path(), &fixture)?;
+    let loom = loom_path(repo.path());
+    let bead = fake_bead("lm-untrusted.1");
+    let label = SpecLabel::new("harness")?;
+    let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
+    let slot = slots.into_iter().next().context("one worker slot")?;
+
+    std::fs::write(slot.worktree.path.join("worker.txt"), "trusted work\n")?;
+    git(&slot.worktree.path, &["add", "worker.txt"])?;
+    git(
+        &slot.worktree.path,
+        &["commit", "-S", "-q", "-m", "trusted worker"],
+    )?;
+    git(&slot.worktree.path, &["verify-commit", "HEAD"])?;
+    std::fs::write(loom.join("integration.txt"), "force rebase\n")?;
+    git(&loom, &["add", "integration.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "advance integration"])?;
+    let main_tip = git_capture(&loom, &["rev-parse", "main"])?;
+    git(
+        &loom,
+        &[
+            "config",
+            "user.signingkey",
+            &fixture.untrusted_key().to_string_lossy(),
+        ],
+    )?;
+
+    let branch = slot.worktree.branch.clone();
+    let batch = BatchSlot {
+        bead: slot.bead,
+        worktree: slot.worktree,
+        outcome: AgentOutcome::Success,
+    };
+    let outcome = merge_back(&client, vec![batch]).await?;
+    assert_eq!(outcome.results.len(), 1);
+    let BatchResult::AgentBlocked {
+        bead: actual,
+        reason,
+    } = &outcome.results[0]
+    else {
+        anyhow::bail!(
+            "untrusted driver signature must block: {:?}",
+            outcome.results
+        );
+    };
+    assert_eq!(actual, &bead.id);
+    assert!(
+        reason.contains("signature-verification-failed (driver-side)"),
+        "{reason}"
+    );
+    assert_eq!(git_capture(&loom, &["rev-parse", "main"])?, main_tip);
+    assert!(!loom.join("worker.txt").exists());
+    assert!(
+        git_capture(&loom, &["branch", "--list", &branch])?
+            .trim()
+            .is_empty()
+    );
+    assert_eq!(
+        git_capture(&loom, &["config", "user.signingkey"])?.trim(),
+        fixture.untrusted_key().to_string_lossy(),
+        "verification must not conceal an invalid signing policy by repairing it",
     );
     Ok(())
 }

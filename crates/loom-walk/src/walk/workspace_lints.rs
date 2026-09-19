@@ -118,6 +118,11 @@ const REQUIRED_CLIPPY_LINTS: &[RequiredLint] = &[
         level: "allow",
         priority: None,
     },
+    RequiredLint {
+        name: "unused_async_trait_impl",
+        level: "allow",
+        priority: None,
+    },
 ];
 
 const REVIEWED_CLIPPY_ALLOWS: &[&str] = &[
@@ -125,6 +130,7 @@ const REVIEWED_CLIPPY_ALLOWS: &[&str] = &[
     "option_if_let_else",
     "too_many_lines",
     "use_self",
+    "unused_async_trait_impl",
 ];
 
 const LIBRARY_CRATES: &[&str] = &[

@@ -29,6 +29,7 @@ _:
         config.treefmt.build.wrapper
         loom.bin
         pkgs.cargo-nextest
+        pkgs.flock
         rustToolchain
         sandbox.package
       ]

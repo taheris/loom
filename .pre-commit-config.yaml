@@ -45,12 +45,20 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: cargo-clippy-production
+        name: cargo clippy --workspace -- -D warnings
+        entry: bin/pre-push-checks --hook-id cargo-clippy-production --hook-entry 'cargo clippy --workspace -- -D warnings' -- cargo clippy --workspace -- -D warnings
+        language: system
+        stages: [pre-push]
+        files: '(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^clippy\.toml$)'
+        pass_filenames: false
+
       - id: cargo-clippy
         name: cargo clippy --workspace --all-targets -- -D warnings
         entry: bin/pre-push-checks --hook-id cargo-clippy --hook-entry 'cargo clippy --workspace --all-targets -- -D warnings' -- cargo clippy --workspace --all-targets -- -D warnings
         language: system
         stages: [pre-push]
-        files: '\.rs$'
+        files: '(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^clippy\.toml$)'
         pass_filenames: false
 
       - id: loom-gate-verify-diff

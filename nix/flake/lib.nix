@@ -88,6 +88,11 @@ in
 
       wrixPkgs = import nixpkgs {
         inherit system;
+        overlays = [
+          (_final: _prev: {
+            beads = inputs.wrix.packages.${system}.beads;
+          })
+        ];
         config.allowUnfree = true;
       };
 
@@ -126,7 +131,7 @@ in
       # The same file + hash pin the toolchain for the wrix sandbox
       # profile, the loom workspace build, and the devshell.
       rustToolchainFile = ../../rust-toolchain.toml;
-      rustToolchainSha256 = "sha256-mvUGEOHYJpn3ikC5hckneuGixaC+yGrkMM/liDIDgoU=";
+      rustToolchainSha256 = "sha256-p8h3Sl/YRByZfZTAKXdsvF6xEenXKrXSVvpphmZENH4=";
 
       rustToolchain = inputs'.fenix.packages.fromToolchainFile {
         file = rustToolchainFile;

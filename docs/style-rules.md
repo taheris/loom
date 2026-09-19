@@ -142,7 +142,8 @@ the Mayor via `bd human` instead.
   - Set `unsafe_code = "forbid"` under `[workspace.lints.rust]`.
   - `= "allow"` pedantic/nursery lints that don't earn their keep
     (`use_self`, `must_use_candidate`, `option_if_let_else`,
-    `too_many_lines`).
+    `too_many_lines`, `unused_async_trait_impl`; async trait signatures
+    require async implementations even when a method needs no await).
 
   Every member declares `[lints] workspace = true`. No crate-root
   `#![warn(...)]` / `#![deny(...)]`. CI runs

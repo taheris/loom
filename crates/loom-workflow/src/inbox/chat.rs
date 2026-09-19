@@ -828,7 +828,7 @@ fn select_visible(
     Ok(vec![item.clone()])
 }
 
-fn single_bead(items: &[InboxItem]) -> Option<&BeadId> {
+const fn single_bead(items: &[InboxItem]) -> Option<&BeadId> {
     if items.len() == 1 {
         Some(&items[0].bead.id)
     } else {

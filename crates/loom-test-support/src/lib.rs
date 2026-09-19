@@ -4,6 +4,8 @@
 //! case counts come from one shared configuration rather than literals
 //! scattered across `proptest!` blocks.
 
+pub mod git_policy;
+
 use proptest::test_runner::Config as ProptestConfig;
 
 /// Number of cases each property runs when `PROPTEST_CASES` is absent or

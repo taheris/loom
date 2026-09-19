@@ -2564,10 +2564,15 @@ mod tests {
     /// controller-construction site so `run_bead`'s per-bead worktree
     /// dispatch has a real repo to bind against.
     fn git_workspace(workspace: &std::path::Path) -> loom_driver::git::GitClient {
-        let mut git =
+        let git =
             loom_driver::git::init_test_repo_with_integration(workspace).expect("init test repo");
-        git.disable_signing_key_resolution();
-        git
+        let policy = loom_driver::git::RepoGitPolicy::resolve(
+            workspace,
+            "unused-wrix".into(),
+            loom_driver::git::KeyMode::Host,
+        )
+        .expect("explicit host-key policy");
+        git.with_repo_git_policy(policy)
     }
 
     fn bead(id: &str) -> Bead {
@@ -3829,8 +3834,11 @@ mod tests {
         assert_eq!(
             lines,
             vec![format!(
-                "{}\talpha\tgate review --diff {from_oid}..{to_oid}",
-                gate_workspace.display()
+                "{}\talpha\t--host-key gate review --diff {from_oid}..{to_oid}",
+                gate_workspace
+                    .canonicalize()
+                    .expect("integration checkout exists")
+                    .display()
             )],
             "review must run from the integration checkout over the actual origin push range; the spec label travels as env context, not as a gate filter: {recorded:?}",
         );
@@ -3939,6 +3947,8 @@ mod tests {
         let stub_body = format!(
             "set -euo pipefail\n\
              printf '%s\\n' \"$*\" >> {argv}\n\
+             [[ \"$1\" == --host-key ]]\n\
+             shift\n\
              range=\"$4\"\n\
              tree_oid=$(git rev-parse 'HEAD^{{tree}}')\n\
              verify_log=\"${{LOOM_REVIEW_VERIFIED_LOG:?}}\"\n\
@@ -4000,7 +4010,15 @@ mod tests {
         assert_eq!(handoff.gate_log_paths.len(), 2);
         for log_path in &handoff.gate_log_paths {
             assert!(
-                log_path.starts_with(gate_workspace.join(".loom/logs")),
+                log_path
+                    .canonicalize()
+                    .expect("gate log exists")
+                    .starts_with(
+                        gate_workspace
+                            .join(".loom/logs")
+                            .canonicalize()
+                            .expect("gate log directory exists")
+                    ),
                 "gate evidence must live with the integration checkout: {log_path:?}",
             );
             let body = std::fs::read_to_string(log_path).expect("log readable");
@@ -4040,8 +4058,6 @@ mod tests {
     /// unsuppressed siblings live.
     #[tokio::test(flavor = "multi_thread")]
     async fn molecule_completion_review_stashes_only_unsuppressed_findings() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("alpha").unwrap();
@@ -4083,16 +4099,14 @@ mod tests {
         let unsuppressed_payload = serde_json::to_string(&unsuppressed).unwrap();
         let concern_payload = r#"{"summary":"reviewer flagged mixed findings"}"#;
         let stub_body = format!(
-            "#!/bin/sh\n\
-             case \"$1 $2\" in\n  \
-               'gate review')\n    \
-                 printf 'LOOM_FINDING: {suppressed_payload}\nLOOM_FINDING: {unsuppressed_payload}\nLOOM_CONCERN: {concern_payload}\n'\n    \
-                 ;;\n\
-             esac\n\
-             exit 0\n",
+            "set -euo pipefail\n\
+             [[ \"$1\" == --host-key ]]\n\
+             shift\n\
+             [[ \"$1\" == gate && \"$2\" == review ]]\n\
+             printf 'LOOM_FINDING: {suppressed_payload}\nLOOM_FINDING: {unsuppressed_payload}\nLOOM_CONCERN: {concern_payload}\n'\n",
         );
-        std::fs::write(&stub, stub_body).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        loom_test_support::write_executable_bash_script(&stub, &stub_body)
+            .expect("write host-key review stub");
 
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
@@ -4169,8 +4183,6 @@ mod tests {
     /// prompt context in one controller invocation.
     #[tokio::test(flavor = "multi_thread")]
     async fn molecule_completion_review_routes_findings_to_stabilization_or_clarify() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("alpha").unwrap();
@@ -4188,20 +4200,18 @@ mod tests {
         .unwrap();
         let concern_payload = r#"{"summary":"reviewer flagged a verifier-bypass"}"#;
         let stub_body = format!(
-            "#!/bin/sh\n\
+            "set -euo pipefail\n\
              printf '%s\\n' \"$*\" >> {argv}\n\
-             case \"$1 $2\" in\n  \
-               'gate review')\n    \
-                 printf 'LOOM_FINDING: {finding}\\nLOOM_CONCERN: {concern}\\n'\n    \
-                 ;;\n\
-             esac\n\
-             exit 0\n",
+             [[ \"$1\" == --host-key ]]\n\
+             shift\n\
+             [[ \"$1\" == gate && \"$2\" == review ]]\n\
+             printf 'LOOM_FINDING: {finding}\\nLOOM_CONCERN: {concern}\\n'\n",
             argv = argv_log.to_string_lossy(),
             finding = finding_payload,
             concern = concern_payload,
         );
-        std::fs::write(&stub, stub_body).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        loom_test_support::write_executable_bash_script(&stub, &stub_body)
+            .expect("write host-key review stub");
 
         let bd_runner = molecule_lookup_script(dir.path(), "alpha", "lm-mol1", "deadbeef");
         let bd_calls = bd_runner.calls_handle();

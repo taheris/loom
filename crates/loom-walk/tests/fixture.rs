@@ -1302,7 +1302,8 @@ const COMPLIANT_WORKSPACE_LINTS: &str = "[workspace]\nresolver = \"3\"\nmembers 
      must_use_candidate = \"allow\"\n\
      option_if_let_else = \"allow\"\n\
      too_many_lines = \"allow\"\n\
-     use_self = \"allow\"\n";
+     use_self = \"allow\"\n\
+     unused_async_trait_impl = \"allow\"\n";
 
 #[test]
 fn workspace_lints_pass_inheritance_present() {

@@ -6,6 +6,9 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "pre_push_config_marker_wrapper_contract — pre-commit policy bindings must be complete, the first pre-push hook must be nix flake check, every pre-push hook must use bin/pre-push-checks with matching metadata, and nix commands must use skip-if-missing nix --";
 
+const CLIPPY_FILES: &str =
+    r"(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^clippy\.toml$)";
+
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Hook {
     repo: String,
@@ -177,6 +180,7 @@ fn validate_pre_push(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
 
     for id in [
         "nix-flake-check",
+        "cargo-clippy-production",
         "cargo-clippy",
         "loom-gate-verify-diff",
         "full-test-suite",
@@ -220,18 +224,24 @@ fn validate_pre_push_policy_fields(path: &str, hooks: &[Hook], violations: &mut 
             violations,
         );
     }
-    if let Some(hook) = unique_hook(hooks, "cargo-clippy") {
-        validate_wrapped_command(
-            path,
-            hook,
+    for (id, command) in [
+        (
+            "cargo-clippy-production",
+            "cargo clippy --workspace -- -D warnings",
+        ),
+        (
+            "cargo-clippy",
             "cargo clippy --workspace --all-targets -- -D warnings",
-            violations,
-        );
-        if hook.files.as_deref() != Some(r"\.rs$") {
-            violations.push(format!(
-                "{path}:{} cargo-clippy must be selected only for Rust files",
-                hook.line
-            ));
+        ),
+    ] {
+        if let Some(hook) = unique_hook(hooks, id) {
+            validate_wrapped_command(path, hook, command, violations);
+            if hook.files.as_deref() != Some(CLIPPY_FILES) {
+                violations.push(format!(
+                    "{path}:{} {id} must select Rust source and Cargo, toolchain, and Clippy configuration",
+                    hook.line
+                ));
+            }
         }
     }
     if let Some(hook) = unique_hook(hooks, "loom-gate-verify-diff") {
@@ -605,6 +615,45 @@ mod tests {
     fn accepts_complete_hook_policy() {
         let got = violations(".pre-commit-config.yaml", &valid_config());
         assert!(got.is_empty(), "got: {got:?}");
+    }
+
+    #[test]
+    fn rejects_missing_production_clippy_hook() {
+        let config = valid_config().replace("cargo-clippy-production", "unrelated-hook");
+        let got = violations(".pre-commit-config.yaml", &config);
+        assert!(
+            got.iter()
+                .any(|line| line.contains("required hook `cargo-clippy-production` is missing")),
+            "got: {got:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_production_clippy_with_test_features() {
+        let config = valid_config().replace(
+            "cargo clippy --workspace -- -D warnings",
+            "cargo clippy --workspace --all-targets -- -D warnings",
+        );
+        let got = violations(".pre-commit-config.yaml", &config);
+        assert!(
+            got.iter().any(|line| line.contains(
+                "cargo-clippy-production` must wrap `cargo clippy --workspace -- -D warnings`"
+            )),
+            "got: {got:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_clippy_that_skips_configuration_changes() {
+        let config = valid_config().replace(CLIPPY_FILES, r"\.rs$");
+        let got = violations(".pre-commit-config.yaml", &config);
+        for id in ["cargo-clippy-production", "cargo-clippy"] {
+            assert!(
+                got.iter()
+                    .any(|line| line.contains(&format!("{id} must select Rust source and Cargo"))),
+                "got: {got:?}",
+            );
+        }
     }
 
     #[test]
