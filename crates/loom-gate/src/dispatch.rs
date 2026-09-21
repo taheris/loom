@@ -358,7 +358,7 @@ pub fn run_test_in(
     }
     let targets: Vec<&str> = filtered.iter().map(|a| a.target.as_str()).collect();
     let command = template.render(&targets);
-    let verdict = run_with_fallback(&command, options, true, cwd)?;
+    let verdict = run_with_fallback(&command, options, Some(&targets), cwd)?;
     Ok(Some(DispatchOutcome {
         annotations: filtered.into_iter().cloned().collect(),
         verdict,
@@ -450,7 +450,7 @@ pub fn run_judge(
     }
     let targets: Vec<&str> = judges.iter().map(|a| a.target.as_str()).collect();
     let command = template.render(&targets);
-    let verdict = run_with_fallback(&command, options, false, None)?;
+    let verdict = run_with_fallback(&command, options, None, None)?;
     Ok(Some(DispatchOutcome {
         annotations: judges.into_iter().cloned().collect(),
         verdict,
@@ -631,7 +631,7 @@ fn run_single_in(
             tier: annotation.tier,
         });
     }
-    let verdict = run_with_fallback(command, options, false, cwd)?;
+    let verdict = run_with_fallback(command, options, None, cwd)?;
     Ok(DispatchOutcome {
         annotations: vec![annotation.clone()],
         verdict,
@@ -641,7 +641,7 @@ fn run_single_in(
 fn run_with_fallback(
     command: &str,
     options: &DispatchOptions,
-    sniff_zero_match: bool,
+    test_targets: Option<&[&str]>,
     cwd: Option<&Path>,
 ) -> Result<VerifierVerdict, DispatchError> {
     let output = spawn_in(command, options, cwd)?;
@@ -649,9 +649,18 @@ fn run_with_fallback(
     let stderr = String::from_utf8_lossy(&output.stderr);
     let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
     let reported = parse_verdict_optional(command, &stdout)?;
-    if sniff_zero_match && !skipped {
+    if let Some(targets) = test_targets.filter(|_| !skipped) {
+        let filtered_nextest_skips = crate::runner::RunnerKind::classify(command)
+            == crate::runner::RunnerKind::CargoNextest
+            && command
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|pair| pair == ["--status-level", "skip"])
+            && crate::runner::nextest_targets_passed(targets, &stdout, &stderr);
         if let Some((outcome, evidence)) =
             crate::runner::unstructured_test_outcome(command, &stdout, &stderr)
+            && !(outcome == Verdict::Skipped && filtered_nextest_skips)
             && (outcome == Verdict::Fail
                 || (output.status.success()
                     && !reported

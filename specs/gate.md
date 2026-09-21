@@ -874,6 +874,10 @@ promotion errors or blocking on structural bd state — is owned by
 - Known unstructured test summaries cannot certify a whole batch when
   some tests were skipped; failures still take precedence over skips
   [test](unstructured_cargo_skips_do_not_certify_every_target)
+- Nextest's filtered-out test count does not mark selected passing targets as
+  skipped when explicit receipts certify every target; a selected ignored test
+  still prevents an aggregate pass
+  [test](nextest_dispatch_distinguishes_filtered_tests_from_selected_ignored_tests)
 - Empty doctest suites do not turn executed unit tests into a zero-match
   dispatch error
   [test](empty_doctest_suite_does_not_erase_executed_unit_tests)
@@ -2781,6 +2785,10 @@ runner (use a tier-default runner for the remainder). Command-only legacy test
 configurations and toolchain discovery retain their aggregate exit-code/JSON
 contract. When a known unstructured test summary reports skips, that aggregate
 is recorded as skipped: it cannot establish which targets actually passed.
+The discovered nextest runner requests `--status-level skip`: its summary
+counts filtered-out tests as skipped, so explicit `PASS` receipts for every
+requested target, without any matching skip/failure receipt, permit an aggregate
+pass. Missing receipts and selected ignored tests remain conservatively skipped.
 Failures in the summary or process status are not demoted by the presence of
 skips. Use a per-target parser for precise mixed-batch evidence.
 

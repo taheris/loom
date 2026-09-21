@@ -167,7 +167,7 @@ pub(crate) fn unstructured_test_outcome(
     for line in stdout.lines().chain(stderr.lines()).map(str::trim) {
         let summary = match kind {
             RunnerKind::CargoTest => line.starts_with("test result:"),
-            RunnerKind::CargoNextest => line.contains("tests run:"),
+            RunnerKind::CargoNextest => line.contains("tests run:") || line.contains("test run:"),
             RunnerKind::Pytest => line.starts_with('=') && line.ends_with('='),
             RunnerKind::Unknown => false,
         };
@@ -188,6 +188,36 @@ pub(crate) fn unstructured_test_outcome(
         }
     }
     skipped
+}
+
+/// Human nextest summaries count filtered tests as skips. Only explicit pass
+/// receipts for every requested target can discharge that conservative fallback.
+pub(crate) fn nextest_targets_passed(targets: &[&str], stdout: &str, stderr: &str) -> bool {
+    !targets.is_empty()
+        && targets.iter().all(|target| {
+            let mut passed = false;
+            for line in stdout.lines().chain(stderr.lines()).map(str::trim) {
+                let Some((status, rest)) = line.split_once(" [") else {
+                    continue;
+                };
+                let Some(name) = rest.split_whitespace().last() else {
+                    continue;
+                };
+                if name != *target
+                    && !name
+                        .strip_suffix(target)
+                        .is_some_and(|prefix| prefix.ends_with("::"))
+                {
+                    continue;
+                }
+                match status {
+                    "PASS" => passed = true,
+                    "SKIP" | "FAIL" | "TIMEOUT" | "LEAK" => return false,
+                    _ => {}
+                }
+            }
+            passed
+        })
 }
 
 fn detect_zero_match(kind: RunnerKind, stdout: &str, stderr: &str) -> Option<String> {
@@ -233,7 +263,9 @@ fn detect_zero_match(kind: RunnerKind, stdout: &str, stderr: &str) -> Option<Str
 
 fn detect_default(repo_root: &Path) -> Option<RunnerTemplate> {
     if repo_root.join("Cargo.toml").is_file() {
-        return Some(RunnerTemplate::new("cargo nextest run -E 'test({paths})'"));
+        return Some(RunnerTemplate::new(
+            "cargo nextest run --status-level skip -E 'test({paths})'",
+        ));
     }
     if repo_root.join("pyproject.toml").is_file() {
         return Some(RunnerTemplate::new("pytest -k '{paths_or}'"));
@@ -1096,10 +1128,16 @@ mod tests {
         fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
 
         let template = discover(dir.path(), Tier::Test).unwrap();
-        assert_eq!(template.command, "cargo nextest run -E 'test({paths})'");
+        assert_eq!(
+            template.command,
+            "cargo nextest run --status-level skip -E 'test({paths})'"
+        );
 
         let judge = discover(dir.path(), Tier::Judge).unwrap();
-        assert_eq!(judge.command, "cargo nextest run -E 'test({paths})'");
+        assert_eq!(
+            judge.command,
+            "cargo nextest run --status-level skip -E 'test({paths})'"
+        );
     }
 
     #[test]
@@ -1148,7 +1186,7 @@ mod tests {
 
         let template = discover(dir.path(), Tier::Test).unwrap();
         assert_eq!(
-            template.command, "cargo nextest run -E 'test({paths})'",
+            template.command, "cargo nextest run --status-level skip -E 'test({paths})'",
             "discover must use toolchain detection only; .loom/config.toml is retired"
         );
     }
@@ -1847,6 +1885,32 @@ test result: ok. 3 passed; 0 failed
             .is_ok()
         );
         assert!(check_zero_match("cargo test", "running 0 tests\nrunning 0 tests\n", "").is_err());
+    }
+
+    #[test]
+    fn nextest_filtered_skips_require_receipts_for_every_selected_target() {
+        let receipts = "PASS [0.01s] (1/2) crate mod::first\nPASS [0.01s] (2/2) crate mod::second\nSKIP [ ] (---) crate mod::unselected\nSummary [0.02s] 2 tests run: 2 passed, 500 skipped";
+        assert!(nextest_targets_passed(
+            &["first", "mod::second"],
+            "",
+            receipts
+        ));
+        assert!(!nextest_targets_passed(&["first", "missing"], "", receipts));
+        assert!(!nextest_targets_passed(
+            &["first", "unselected"],
+            "",
+            receipts
+        ));
+        assert!(!nextest_targets_passed(
+            &["first"],
+            "",
+            "Summary [0.01s] 1 tests run: 1 passed, 500 skipped"
+        ));
+        assert!(!nextest_targets_passed(
+            &["first"],
+            receipts,
+            "SKIP [ ] (---) other-crate mod::first"
+        ));
     }
 
     #[test]

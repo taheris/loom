@@ -1003,6 +1003,36 @@ fn run_system_resolves_matched_runner_cwd() {
 }
 
 #[test]
+fn nextest_dispatch_distinguishes_filtered_tests_from_selected_ignored_tests() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("Cargo.toml"), "[package]\nname = 'gate-nextest-receipts'\nversion = '0.0.0'\nedition = '2024'\n[workspace]\n").unwrap();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "#[test] fn selected() {}\n#[test] fn filtered() {}\n#[test] #[ignore] fn unavailable() {}\n").unwrap();
+    let template = RunnerTemplate::new("cargo nextest run --status-level skip -E 'test({paths})'");
+    let options = DispatchOptions::default();
+    for (names, pass) in [
+        (vec!["selected"], true),
+        (vec!["selected", "unavailable"], false),
+    ] {
+        let annotations = names
+            .iter()
+            .map(|name| ann(Tier::Test, name))
+            .collect::<Vec<_>>();
+        let outcome = loom_gate::dispatch::run_test_in(
+            &annotations,
+            &options,
+            &template,
+            &EmptyScope,
+            Some(dir.path()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(outcome.verdict.pass, pass, "{:?}", outcome.verdict);
+        assert_eq!(outcome.verdict.skipped, !pass);
+    }
+}
+
+#[test]
 fn run_with_runners_libtest_json_maps_test_names_back_to_annotations() {
     let dir = fixture_dir();
     let runner = write_script(
