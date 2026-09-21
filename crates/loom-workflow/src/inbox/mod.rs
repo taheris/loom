@@ -10,7 +10,7 @@ mod context;
 mod error;
 mod list;
 mod options;
-mod terminal;
+use loom_protocol::inbox as terminal;
 
 pub use apply::{ApplyError, ApplyReport, apply_proposals, ensure_integration_clean_after_chat};
 pub use context::build_inbox_context;

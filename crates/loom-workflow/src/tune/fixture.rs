@@ -113,6 +113,55 @@ impl Snapshot {
         Ok((Self { files }, input))
     }
 
+    pub(super) fn changed_paths(&self, root: &Path) -> Result<BTreeSet<String>, TuneError> {
+        let mut paths = self.files.keys().cloned().collect::<BTreeSet<_>>();
+        for entry in walkdir::WalkDir::new(root)
+            .into_iter()
+            .filter_entry(|entry| {
+                entry.path().strip_prefix(root).is_ok_and(|relative| {
+                    !relative.starts_with(".git") && !relative.starts_with(".loom/scratch")
+                })
+            })
+        {
+            let entry = entry.map_err(|source| invalid(root, &source.to_string()))?;
+            if !entry.file_type().is_dir() {
+                let relative = entry
+                    .path()
+                    .strip_prefix(root)
+                    .map_err(|source| invalid(root, &source.to_string()))?;
+                paths.insert(relative.to_owned());
+            }
+        }
+        let mut changed = BTreeSet::new();
+        for path in paths {
+            let current = root.join(&path);
+            let same = match (self.files.get(&path), fs::symlink_metadata(&current)) {
+                (Some(before), Ok(metadata)) if metadata.is_file() => {
+                    let bytes = fs::read(&current).map_err(|source| TuneError::ReadFile {
+                        path: current,
+                        source,
+                    })?;
+                    bytes == before.bytes && metadata.permissions() == before.permissions
+                }
+                (_, Err(source)) if source.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(TuneError::ReadFile {
+                        path: current,
+                        source,
+                    });
+                }
+                _ => false,
+            };
+            if !same {
+                changed.insert(
+                    path.to_str()
+                        .ok_or_else(|| invalid(&path, "changed path is not UTF-8"))?
+                        .to_owned(),
+                );
+            }
+        }
+        Ok(changed)
+    }
+
     pub(super) async fn checkout(&self, budget: &Budget<'_>) -> Result<Checkout, TuneError> {
         budget.remaining()?;
         let directory = tempfile::Builder::new()

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use displaydoc::Display;
-use loom_driver::identifier::BeadId;
+use loom_events::identifier::BeadId;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -45,6 +45,10 @@ struct ApplyPayload {
     proposals: Vec<BeadId>,
 }
 
+/// Parse exactly one final inbox terminal and its constrained proposal IDs.
+///
+/// # Errors
+/// Returns an error for missing, paired, wrong-phase, or malformed markers.
 pub fn parse(output: &str) -> Result<TerminalMarker, TerminalMarkerError> {
     let lines: Vec<&str> = output.lines().collect();
     let final_idx = lines

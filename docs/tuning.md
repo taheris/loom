@@ -226,6 +226,23 @@ They are not valid `loom-case.checker` values. V1 starts with coarse stable ids:
 
 ## Behavioral Checker Set
 
+Scores consume actual replay observations, never descriptions of intended actions.
+Repository changes compare frozen bytes and permissions, including untracked files
+and edits hidden by agent commits. Ordered checks use paired successful backend
+tool-call/result events for audited read/edit/write/bash tools. Missing traces,
+unknown tools, or opaque shell commands that could conceal relevant operations
+are unavailable, not a fabricated pass. Verify commands must exactly match a
+configured expected command and finish successfully after the final relevant edit.
+Scope and protocol checks are deterministic; non-review hard/soft scores are
+binary. Review soft scores retain matched-predicate fractions and penalize extras.
+
+State-dependent evidence is deliberately limited: `must_update_beads` cannot be
+certified until isolated state transitions are captured. Push/forbidden-command
+flags inspect tool events and refuse to certify opaque shell execution; apply
+proposal IDs use the same strict terminal parser as inbox chat. Integration
+cleanliness uses observed repository changes. Malformed or wrong-phase protocol
+output fails, even when its text contains all expected words.
+
 Initial v1 behavioral checker families use strict checker-specific TOML structs.
 Schemas are defined one checker at a time in code and kept minimal; v1 does not
 allow repo-authored checker implementations, fixture scripts, or arbitrary
@@ -341,7 +358,7 @@ fixture = "tuning/cases/accepted-tune-proposal"
 user_response = "Accept this proposal."
 
 [expected]
-apply_proposals = ["lm-fixture-1"]
+apply_proposals = ["lm-fixture.1"]
 must_emit_apply = true
 must_not_push = true
 must_not_dirty_integration = true
@@ -483,6 +500,13 @@ not depend on the tune-run seed. Reports/manifests also record the split
 algorithm version and selection fraction. Train evidence may be shown to
 candidate generation. Selection evidence is withheld and used for checking/gating.
 V1 has no mined `test` split.
+
+Harvested selection text currently has no executable expected-result oracle.
+Selecting such an item blocks validation as **not evaluated**, before agent launch;
+nonempty model output is never treated as a passing mined result. Training text
+can still guide candidate generation. `fast` runs preflights only; behavioral
+runs need supported declared cases, and any selected unavailable evidence blocks
+rather than being silently dropped.
 
 Declared `loom-case` cases are tracked regression cases. They are not secret
 selection evidence.

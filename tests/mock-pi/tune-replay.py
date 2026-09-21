@@ -29,6 +29,11 @@ assert "fixture task context" in prompt["message"]
 assert "original fixture" not in prompt["message"]
 (workspace / "src/lib.rs").write_text("mutated\n")
 (workspace / "other-side").write_text("private\n")
+if mode == "regress" and "Tuned Guidance" in prompt["message"]:
+    (workspace / "forbidden").write_text("unreported unrelated edit\n")
+    subprocess.run(["git", "add", "src/lib.rs", "other-side", "forbidden"], cwd=workspace, check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgSign=false", "commit", "-qm", "hide changes from status"], cwd=workspace, check=True)
 entry = {"workspace": str(workspace), "head": head, "pid": os.getpid()}
 if mode == "hang":
     child = os.fork()

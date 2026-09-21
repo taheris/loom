@@ -27,5 +27,6 @@
 //! consumers the same guarantees loom's own internal pipeline has.
 
 pub mod gate;
+pub mod inbox;
 pub mod oid;
 pub mod todo;

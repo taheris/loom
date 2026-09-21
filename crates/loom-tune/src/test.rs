@@ -239,8 +239,8 @@ contains = ["missing test"]
             &cases,
             &[Replay::new(
                 selected_case,
-                "LOOM_COMPLETE",
-                "LOOM_FINDING: {\"token\":\"spec-coherence-fail\",\"route\":\"blocking\",\"bonds\":[\"skills\"],\"target\":{\"kind\":\"Criterion\",\"spec\":\"skills\",\"anchor\":\"fixture\"},\"evidence\":\"missing test\"}\nLOOM_CONCERN: {\"summary\":\"missing test\"}",
+                crate::executor::Evidence::text("LOOM_COMPLETE"),
+                crate::executor::Evidence::text("LOOM_FINDING: {\"token\":\"spec-coherence-fail\",\"route\":\"blocking\",\"bonds\":[\"skills\"],\"target\":{\"kind\":\"Criterion\",\"spec\":\"skills\",\"anchor\":\"fixture\"},\"evidence\":\"missing test\"}\nLOOM_CONCERN: {\"summary\":\"missing test\"}"),
             )],
             &registry,
             &AcceptAllFindings,

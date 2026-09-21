@@ -2659,6 +2659,7 @@ name = "loom-tune"
 version = "0.1.0"
 dependencies = [
  "displaydoc",
+ "glob",
  "loom-events",
  "loom-protocol",
  "loom-skill",

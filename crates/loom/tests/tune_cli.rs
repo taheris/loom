@@ -411,6 +411,16 @@ fn tune_replay_launches_independent_fixtures_and_preserves_events() {
 }
 
 #[test]
+fn tune_scope_regression_uses_repository_bytes_even_after_agent_commits() {
+    let fixture = ReplayFixture::new(2, 60, "regress", "Use observable task evidence.");
+    let manifest = fixture.run();
+    assert_eq!(manifest["state"], "blocked", "{manifest}");
+    assert_eq!(manifest["outcome_counts"]["failed"], 1, "{manifest}");
+    assert_eq!(fixture.starts().len(), 2);
+    fixture.assert_clean();
+}
+
+#[test]
 fn tune_evaluation_cap_reserves_each_side_and_blocks_incomplete_results() {
     for cap in [0, 1] {
         let fixture = ReplayFixture::new(cap, 60, "complete", "Use observable task evidence.");

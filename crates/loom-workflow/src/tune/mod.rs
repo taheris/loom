@@ -1593,8 +1593,22 @@ async fn validate_behavioral_cases(
                 check: "behavioral-cases".to_owned(),
                 status: gate_validation_status(report.state),
                 detail: format!(
-                    "{} selected behavioral case(s) evaluated",
-                    report.cases.len()
+                    "{} selected behavioral case(s) evaluated: {}",
+                    report.cases.len(),
+                    report
+                        .cases
+                        .iter()
+                        .map(|case| format!(
+                            "{} {:?} (hard {} -> {}, soft {} -> {})",
+                            case.case_id,
+                            case.outcome,
+                            case.current.hard.get(),
+                            case.candidate.hard.get(),
+                            case.current.soft.get(),
+                            case.candidate.soft.get(),
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; "),
                 ),
             }],
             outcome_counts: outcome_counts_from_gate(&report),
@@ -1623,6 +1637,7 @@ async fn replay_selected_cases(
     budget: &mut Budget<'_>,
 ) -> Result<Vec<Replay>, TuneError> {
     budget.remaining()?;
+    tune_executor::require_checkable(plan)?;
     let source = Snapshot::capture(&context.workspace, &context.tracked_files)?;
     let manifest = ProfileImageManifest::from_env()?;
     let mut replays = Vec::with_capacity(plan.selected_cases.len());
@@ -1783,7 +1798,7 @@ async fn run_replay_agent(
     prompt: String,
     snapshot: &Snapshot,
     budget: &mut Budget<'_>,
-) -> Result<String, TuneError> {
+) -> Result<tune_executor::Evidence, TuneError> {
     budget.reserve_call()?;
     let checkout = snapshot.checkout(budget).await?;
     let phase = checker_phase(selected.checker.domain());
@@ -1820,21 +1835,35 @@ async fn run_replay_agent(
         None,
         budget.clock().wall_now(),
     )?;
+    let log_path = sink.log_path().to_owned();
     let mut output = String::new();
     let result = budget
         .run(async { Ok(dispatch_replay_agent(selection.kind, &spawn, sink, &mut output).await?) })
         .await;
+    let evidence = result.and_then(|outcome| {
+        if outcome.exit_code != 0 {
+            return Err(TuneError::ReplayExit {
+                case_id: selected.case_id.clone(),
+                side,
+                exit_code: outcome.exit_code,
+            });
+        }
+        let events = read_to_string(&log_path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<Vec<loom_events::AgentEvent>, _>>()?;
+        Ok(tune_executor::Evidence {
+            output,
+            recorded: Some(tune_executor::Recorded {
+                events,
+                changed_paths: snapshot.changed_paths(checkout.path())?,
+                workspace: checkout.path().to_owned(),
+            }),
+        })
+    });
     drop(scratch);
     checkout.cleanup()?;
-    let outcome = result?;
-    if outcome.exit_code != 0 {
-        return Err(TuneError::ReplayExit {
-            case_id: selected.case_id.clone(),
-            side,
-            exit_code: outcome.exit_code,
-        });
-    }
-    Ok(output)
+    evidence
 }
 
 async fn dispatch_replay_agent(
@@ -2408,6 +2437,8 @@ pub enum TuneError {
     CaseLoad(#[from] LoadError),
     /// checker planning error
     Plan(#[from] PlanError),
+    /// behavioral evidence cannot be evaluated
+    Executor(#[from] tune_executor::Error),
     /// evidence split error
     Split(#[from] SplitError),
     /// evidence item id error

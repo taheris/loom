@@ -408,6 +408,28 @@ Initial behavioral checker families are:
 - `behavior.agent.context-before-edit` — run a fixture and verify required
   context files were read before the first relevant edit.
 
+Behavioral scores use parsed review/todo/apply protocols, final repository
+byte/permission changes (including untracked and agent-committed edits), and
+paired backend tool-call/result events. Final-answer claims are not execution
+evidence. Read/edit ordering requires completed reads before edit starts;
+verification requires successful commands after the last successful relevant
+edit. Unknown tools, opaque shell execution where safety/ordering is required,
+and mutations without corresponding edit events are reported unavailable, not
+certified. Scope checks enforce allowed/forbidden globs and file-count limits.
+Inbox `must_update_beads` is currently unavailable without isolated state
+transition evidence. Mined text currently has no expected-result oracle: selected
+mined cases block as not evaluated before launching a replay, rather than awarding
+nonempty text a passing score. Checker IDs and schemas remain accepted so this
+limitation is explicit rather than silently skipping selected cases.
+[test](scope_scores_observed_paths_not_positive_or_forbidden_text)
+[test](verify_requires_successful_command_after_final_observed_edit)
+[test](context_requires_completed_reads_before_the_first_edit)
+[test](inbox_safety_flags_never_accept_command_or_bead_update_claims)
+[test](apply_requires_parsed_ids_and_honors_push_and_integration_flags)
+[test](todo_counts_parsed_beads_and_checks_required_and_forbidden_specs)
+[test](mined_nonempty_text_is_explicitly_not_evaluated)
+[test](tune_scope_regression_uses_repository_bytes_even_after_agent_commits)
+
 Checker-specific `loom-case` schemas are strict typed TOML structs defined one
 checker at a time. V1 schemas stay minimal and deterministic; they do not expose
 arbitrary shell scripts, command DSLs, or repo-authored checker implementations.
