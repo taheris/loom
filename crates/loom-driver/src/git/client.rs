@@ -2788,17 +2788,88 @@ where
         cmd.arg(t);
     }
 
-    let fut = cmd.output();
-    let sleep = clock.sleep(timeout);
-    tokio::select! {
-        result = fut => match result {
-            Ok(output) => Ok(output),
-            Err(e) => Err(GitError::Spawn(e)),
-        },
-        () = sleep => Err(GitError::GitTimeout {
-            args: argv_for_log.join(" "),
-            timeout_secs: timeout.as_secs(),
-            workdir: workdir.to_path_buf(),
-        }),
+    crate::process::output(&mut cmd, clock, timeout)
+        .await
+        .map_err(|error| match error {
+            crate::process::Error::Io(error) => GitError::Spawn(error),
+            crate::process::Error::Cleanup(error) => GitError::Io(error),
+            crate::process::Error::Timeout => GitError::GitTimeout {
+                args: argv_for_log.join(" "),
+                timeout_secs: timeout.as_secs(),
+                workdir: workdir.to_path_buf(),
+            },
+        })
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod timeout_tests {
+    use super::*;
+    use crate::process::tests::{Fixture, TriggerClock, bounded};
+
+    /// A real Git shell alias models hooks/helpers whose descendants inherit its process group.
+    #[tokio::test]
+    async fn git_timeout_terminates_descendants_before_returning() {
+        bounded(async {
+            let fixture = Fixture::new().await;
+            let directory = tempfile::tempdir().expect("git working directory");
+            let mut args = vec!["-c".to_owned(), "alias.loom-fixture=!exec bash".to_owned(), "loom-fixture".to_owned()];
+            args.extend(fixture.args());
+            let (result, peers) = tokio::join!(
+                run_git_raw_with_timeout(directory.path(), fixture.clock.as_ref(), Duration::from_secs(60), &args, None),
+                async {
+                    let peers = fixture.ready(2).await;
+                    fixture.clock.expire();
+                    peers
+                },
+            );
+            assert!(matches!(result, Err(GitError::GitTimeout { args: actual, timeout_secs: 60, workdir }) if actual == args.join(" ") && workdir == directory.path()));
+            fixture.assert_stopped(peers).await;
+        }).await;
+    }
+
+    /// Real Git capture must preserve successful command output.
+    #[tokio::test]
+    async fn git_timeout_boundary_preserves_success() {
+        bounded(async {
+            let directory = tempfile::tempdir().expect("git working directory");
+            let result = run_git_raw_with_timeout(
+                directory.path(),
+                &TriggerClock::default(),
+                Duration::from_secs(60),
+                ["--version"],
+                None,
+            )
+            .await
+            .expect("git version");
+            assert!(result.status.success());
+            assert!(result.stdout.starts_with(b"git version "));
+        })
+        .await;
+    }
+
+    /// A nonzero Git exit must retain its status and diagnostic pipes.
+    #[tokio::test]
+    async fn git_timeout_boundary_preserves_nonzero_exit() {
+        bounded(async {
+            let directory = tempfile::tempdir().expect("git working directory");
+            let result = run_git_raw_with_timeout(
+                directory.path(),
+                &TriggerClock::default(),
+                Duration::from_secs(60),
+                [
+                    "-c",
+                    "alias.loom-fixture=!printf stdout; printf stderr >&2; exit 9",
+                    "loom-fixture",
+                ],
+                None,
+            )
+            .await
+            .expect("git output");
+            assert_eq!(result.status.code(), Some(9));
+            assert_eq!(result.stdout, b"stdout");
+            assert_eq!(result.stderr, b"stderr");
+        })
+        .await;
     }
 }

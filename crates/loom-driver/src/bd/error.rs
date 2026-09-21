@@ -13,6 +13,9 @@ pub enum BdError {
     /// `bd` did not finish within the configured timeout: bd {args}
     Timeout { args: String },
 
+    /// failed to terminate or reap `bd`
+    Cleanup(#[source] io::Error),
+
     /// `bd` exited with status {status}: {stderr}
     Cli {
         status: i32,

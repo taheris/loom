@@ -100,6 +100,17 @@ const CLOCK_BOUNDARIES: &[Permit] = &[
 
 const EXCEPTIONS: &[Exception] = &[
     Exception {
+        path: "crates/loom-driver/src/process/mod.rs",
+        function: "bounded",
+        operation: Operation::TokioTimeout,
+        occurrences: 1,
+        boundary: Boundary::ProcessLifecycle,
+        justification: "Real subprocess group termination and pipe closure need an OS handshake.",
+        upper_deadline: "Each lifecycle fixture has a five-second watchdog without real sleeps.",
+        cleanup: "Dropping the operation kills its group; peer guards kill remaining fixture processes.",
+        deterministic_companion: "subprocess_timeout_uses_mock_clock",
+    },
+    Exception {
         path: "crates/loom-driver/tests/lock_manager.rs",
         function: "second_acquire_times_out_with_work_root_busy",
         operation: Operation::RealClockRead,

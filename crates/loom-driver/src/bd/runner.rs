@@ -41,7 +41,9 @@ pub trait CommandRunner: Send + Sync + 'static {
 ///
 /// Each argument is passed through `.arg()` so no shell is involved. The subprocess timeout is
 /// driven by the injected [`Clock`] so tests can substitute
-/// [`crate::clock::MockClock`].
+/// [`crate::clock::MockClock`]. Timeouts terminate the process group and reap the child;
+/// cancellation kills the group and lets Tokio reap the child in the background.
+/// Neither outcome implies that earlier mutations were rolled back.
 #[derive(Clone)]
 pub struct TokioRunner {
     clock: Arc<dyn Clock>,
@@ -51,6 +53,28 @@ impl TokioRunner {
     /// Build a runner that uses `clock` for the per-call timeout.
     pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self { clock }
+    }
+
+    async fn run_command(
+        &self,
+        command: &mut Command,
+        args: &[OsString],
+        timeout: Duration,
+    ) -> Result<RunOutput, BdError> {
+        let output = crate::process::output(command, self.clock.as_ref(), timeout)
+            .await
+            .map_err(|error| match error {
+                crate::process::Error::Io(error) => BdError::Spawn(error),
+                crate::process::Error::Cleanup(error) => BdError::Cleanup(error),
+                crate::process::Error::Timeout => BdError::Timeout {
+                    args: render_args(args),
+                },
+            })?;
+        Ok(RunOutput {
+            status: output.status.code().unwrap_or(-1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
     }
 }
 
@@ -72,21 +96,7 @@ impl CommandRunner for TokioRunner {
         for arg in &args {
             cmd.arg(arg);
         }
-        let fut = cmd.output();
-        let sleep = self.clock.sleep(t);
-        tokio::select! {
-            output = fut => match output {
-                Ok(output) => Ok(RunOutput {
-                    status: output.status.code().unwrap_or(-1),
-                    stdout: output.stdout,
-                    stderr: output.stderr,
-                }),
-                Err(e) => Err(BdError::Spawn(e)),
-            },
-            () = sleep => Err(BdError::Timeout {
-                args: render_args(&args),
-            }),
-        }
+        self.run_command(&mut cmd, &args, t).await
     }
 }
 
@@ -95,4 +105,69 @@ pub(super) fn render_args(args: &[OsString]) -> String {
         .map(|a| a.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod tests {
+    use super::*;
+    use crate::process::tests::{Fixture, TriggerClock, bounded};
+
+    /// An OS process and descendant expose writes that would otherwise outlive the bd timeout.
+    #[tokio::test]
+    async fn bd_timeout_terminates_descendants_before_returning() {
+        bounded(async {
+            let fixture = Fixture::new().await;
+            let runner = TokioRunner::with_clock(fixture.clock.clone());
+            let mut command = fixture.command();
+            let args = [OsString::from("update"), OsString::from("lm-1")];
+            let (result, peers) = tokio::join!(
+                runner.run_command(&mut command, &args, Duration::from_secs(60)),
+                async {
+                    let peers = fixture.ready(2).await;
+                    fixture.clock.expire();
+                    peers
+                },
+            );
+            assert!(matches!(result, Err(BdError::Timeout { args }) if args == "update lm-1"));
+            fixture.assert_stopped(peers).await;
+        })
+        .await;
+    }
+
+    /// Real pipes verify that normal capture survives the cancellation-safe execution boundary.
+    #[tokio::test]
+    async fn bd_runner_preserves_success_and_output() {
+        bounded(async {
+            let runner = TokioRunner::with_clock(Arc::new(TriggerClock::default()));
+            let mut command = Command::new("bash");
+            command.args(["-c", "printf 'stdout'; printf 'stderr' >&2"]);
+            let result = runner
+                .run_command(&mut command, &[], Duration::from_secs(60))
+                .await
+                .expect("run");
+            assert!(result.success());
+            assert_eq!(result.stdout, b"stdout");
+            assert_eq!(result.stderr, b"stderr");
+        })
+        .await;
+    }
+
+    /// Nonzero process exit is output, not a timeout or spawn failure.
+    #[tokio::test]
+    async fn bd_runner_preserves_nonzero_exit_status() {
+        bounded(async {
+            let runner = TokioRunner::with_clock(Arc::new(TriggerClock::default()));
+            let mut command = Command::new("bash");
+            command.args(["-c", "printf 'failed' >&2; exit 7"]);
+            let result = runner
+                .run_command(&mut command, &[], Duration::from_secs(60))
+                .await
+                .expect("run");
+            assert_eq!(result.status, 7);
+            assert_eq!(result.stderr, b"failed");
+            assert!(!result.success());
+        })
+        .await;
+    }
 }

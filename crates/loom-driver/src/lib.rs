@@ -13,6 +13,7 @@ pub mod git;
 pub mod lock;
 pub mod logging;
 pub mod markdown;
+mod process;
 pub mod profile_manifest;
 pub mod scratch;
 pub mod state;

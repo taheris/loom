@@ -391,6 +391,17 @@ passed without shell interpolation; errors and timeouts remain typed. The
 workflow uses create, show, close, update, list, dependency, bond, and progress
 operations against the shared Dolt service.
 
+Beads and Git subprocess timeouts terminate and reap the direct child before
+returning. On Unix, termination includes descendants in the command's process
+group; deliberately detached processes are outside that boundary. Cancelling
+the operation kills that group and delegates direct-child reaping to Tokio.
+Neither timeout nor cancellation proves that earlier mutations were rolled
+back; effects completed before termination may still be durable.
+[test](bd_timeout_terminates_descendants_before_returning)
+[test](git_timeout_terminates_descendants_before_returning)
+[test](subprocess_timeout_kills_group_and_reaps_child)
+[test](subprocess_cancellation_kills_group_and_eventually_reaps_child)
+
 ### SQLite Cache Store
 
 `.loom/cache.db` is disposable, reconstructable workflow cache. Git, Beads
