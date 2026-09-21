@@ -17,10 +17,7 @@ use loom_protocol::todo::TodoSuccess;
 use super::ExitSignal;
 use super::error::TodoError;
 
-/// Bundle of the spawn config and the scratch-session guard that owns
-/// `.loom/scratch/<label>/` for the duration of the dispatch. The
-/// runner drops the guard after the agent returns so cleanup runs on
-/// every exit path (success, failure, panic).
+/// Spawn configuration and scratch guard kept alive for one agent dispatch.
 pub struct TodoSession {
     pub config: SpawnConfig,
     pub scratch: ScratchSession,

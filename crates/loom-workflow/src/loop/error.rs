@@ -11,10 +11,6 @@ use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::CacheError;
 
 /// Errors raised by the `loom loop` driver.
-#[expect(
-    clippy::doc_markdown,
-    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
-)]
 #[derive(Debug, Display, Error)]
 pub enum LoopError {
     /// agent backend protocol failure during `loom loop`
@@ -62,10 +58,10 @@ pub enum LoopError {
     /// molecule-completion review failed: {detail}
     ReviewHandoff { detail: String },
 
-    /// active molecule {id} has no `loom.base_commit` metadata and no parent to inherit from — set it with: bd update {id} --set-metadata loom.base_commit=<sha>
+    /// active molecule {id} has no `loom.base_commit` metadata and no parent to inherit from — set it with: `bd update {id} --set-metadata loom.base_commit=<sha>`
     MoleculeMissingBaseCommit { id: String },
 
-    /// active molecule {id} has no `loom.base_commit` metadata and its parent {parent} also lacks it — set it with: bd update {id} --set-metadata loom.base_commit=<sha>
+    /// active molecule {id} has no `loom.base_commit` metadata and its parent {parent} also lacks it — set it with: `bd update {id} --set-metadata loom.base_commit=<sha>`
     MoleculeMissingBaseCommitNoParentMetadata { id: String, parent: String },
 
     /// internal invariant violated: {context}

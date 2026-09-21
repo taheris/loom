@@ -694,7 +694,7 @@ and `--no-default-features` to catch feature-gating regressions.
 - Providers that require a filename synthesize a safe generic filename from `MimeType` when `BinaryContent::name` is absent
   [test](provider_filename_synthesized_when_binary_name_absent)
 - `OpenAiCompatClient` rejects binary parts with `LlmError::UnsupportedCapability` before network I/O while preserving text-only Chat-Completions compatibility
-  [test](openai_compat_multimodal_returns_unsupported_without_network)
+  [check](cargo nextest run -p loom-llm --features openai-compat -E 'test(=client::openai_compat::tests::openai_compat_multimodal_returns_unsupported_without_network)')
 - Unsupported multimodal MIME/provider combinations return typed `LlmError::UnsupportedCapability` and never panic
   [test](unsupported_multimodal_request_returns_typed_error_not_panic)
 - Empty binary payloads return `LlmError::IncompatibleRequest` before network I/O
@@ -722,15 +722,15 @@ and `--no-default-features` to catch feature-gating regressions.
 ### OpenAI-compatible adapter
 
 - `OpenAiCompatClient::new(base_url, api_key)` builds a Client routed at `base_url`; calls send OpenAI Chat-Completions-shaped JSON over HTTP
-  [test](openai_compat_client_sends_chat_completions_shape_to_configured_url)
+  [check](cargo nextest run -p loom-llm --features openai-compat -E 'test(=client::openai_compat::tests::openai_compat_client_sends_chat_completions_shape_to_configured_url)')
 - `OpenAiCompatClient` accepts `ModelId::OpenAiCompat(_)` only; rejects every other `ModelId` variant with `IncompatibleModel`
-  [test](openai_compat_client_rejects_non_compat_modelids)
+  [check](cargo nextest run -p loom-llm --features openai-compat -E 'test(=client::openai_compat::tests::openai_compat_client_rejects_non_compat_modelids)')
 - Adapter compiles under `--features openai-compat`
   [check](cargo check -p loom-llm --features openai-compat)
 - Default build (`--no-default-features`) compiles cleanly; the openai-compat adapter, `ModelId::OpenAiCompat`, and `SchemaKind::OpenAiCompat` are all gated behind `#[cfg(feature = "openai-compat")]`
   [check](cargo check -p loom-llm --no-default-features)
 - Wiremock contract test exercises a 200 happy path, 401, 429 + Retry-After, 500, and a malformed-JSON response against `OpenAiCompatClient`; each maps to the expected `LlmError` variant and `retry_advice`
-  [test](openai_compat_wiremock_contract_covers_status_classes)
+  [check](cargo nextest run -p loom-llm --features openai-compat -E 'test(=client::openai_compat::tests::openai_compat_wiremock_contract_covers_status_classes)')
 
 ### `LlmError`
 

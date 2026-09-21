@@ -197,7 +197,7 @@ pub struct GateInputs {
     /// Dirty entries reported by `git status --porcelain` on the bead's
     /// worktree, **already capped** (up to 30 entries with an extra
     /// `"+N more"` element when the underlying set was larger; see
-    /// [`crate::r#loop::dirty_paths_from_porcelain`]). Empty when the tree
+    /// [`crate::loop::dirty_paths_from_porcelain`]). Empty when the tree
     /// is clean. Non-empty drives the gate to
     /// [`RecoveryCause::TreeNotClean`] BEFORE verify-fail /
     /// review-concern, so verifiers do not run against a half-staged

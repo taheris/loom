@@ -21,7 +21,7 @@
 //!
 //! Cleanup-on-drop is **not** sufficient because a panic during a
 //! held lock or a Tokio-cancelled future may not reliably run `Drop`.
-//! Callers must call [`end`] explicitly from every exit path; the
+//! Callers must call [`RunningIndicator::end`] explicitly from every exit path; the
 //! renderer's outer shutdown sequence is the right place.
 
 use std::io::{self, IsTerminal, Write};

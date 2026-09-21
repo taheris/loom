@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 
 use tracing::debug;
 
-/// Outcome of one [`sweep_retention`] invocation. Caller is welcome to
+/// Outcome of one [`sweep_retention_at`] invocation. Caller is welcome to
 /// discard it; the sweep itself is best-effort and tolerates errors.
 #[derive(Debug, Default, Clone)]
 pub struct RetentionReport {

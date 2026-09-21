@@ -164,7 +164,7 @@ impl GitClient {
     /// Override the timeout used for hook-running git operations
     /// (currently [`Self::push`]). Production threads
     /// `[loom] git_hook_timeout_secs` here; absent an override the client
-    /// uses [`GIT_HOOK_TIMEOUT`].
+    /// uses the default hook timeout.
     #[must_use]
     pub const fn with_hook_timeout(mut self, hook_timeout: Duration) -> Self {
         self.hook_timeout = hook_timeout;
@@ -450,7 +450,7 @@ impl GitClient {
 
     /// Resolve the host key paths loom must hand to `wrix spawn` through
     /// the **launcher** environment (the child-process env, not the
-    /// in-container [`SpawnConfig::env`] allowlist) so the wrapper can
+    /// in-container [`SpawnConfig::env`](crate::agent::SpawnConfig::env) allowlist) so the wrapper can
     /// bind-mount the deploy + signing keys into the bead container.
     ///
     /// In repository mode, startup has already required both keys and this
@@ -1048,8 +1048,7 @@ impl GitClient {
     /// [`GitError::GitCli`] for the verdict gate to classify.
     ///
     /// Uses the repository Git policy installed at startup and
-    /// [`Self::hook_timeout`] (configurable via
-    /// `[loom] git_hook_timeout_secs`, default [`GIT_HOOK_TIMEOUT`])
+    /// the hook timeout (configurable via `[loom] git_hook_timeout_secs`)
     /// because the remote's pre-push hook (or loom's own pre-push hook on
     /// the GitHub publish) runs the workspace's pre-push CI stage.
     ///
@@ -1501,7 +1500,7 @@ impl GitClient {
     /// `git -C <workdir> status --porcelain` against an arbitrary linked
     /// worktree under this repo. Returns the raw porcelain output verbatim
     /// so callers can route it through
-    /// [`crate::run::dirty_paths_from_porcelain`] (or equivalent) without
+    /// the workflow's porcelain status parser without
     /// reopening a [`GitClient`] per worktree. Used by the run-phase
     /// verdict-gate tree-not-clean dispatcher.
     ///
@@ -2367,7 +2366,7 @@ pub fn head_tree_oid_sync(workspace: &Path) -> Result<GitOid, GitError> {
 }
 
 /// Synchronous `git -C <workspace> rev-parse HEAD`. The informational
-/// commit SHA stamped onto a freshly minted [`crate::marker`] proof
+/// commit SHA stamped onto a freshly minted gate marker proof
 /// (the load-bearing fingerprint is the tree OID, not the commit SHA).
 ///
 /// # Errors

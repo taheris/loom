@@ -221,7 +221,7 @@ pub enum DocumentError {
     /// frontmatter opening marker has no closing marker
     UnterminatedFrontmatter,
     /// frontmatter is not valid YAML
-    InvalidFrontmatter(#[source] serde_yaml::Error),
+    InvalidFrontmatter(#[source] serde_yaml_ng::Error),
 }
 
 /// Typed frontmatter extraction failures.
@@ -280,7 +280,7 @@ fn trim_line_end(line: &str) -> &str {
 }
 
 fn parse_raw_frontmatter(block: &str) -> Result<RawSkillFrontmatter, DocumentError> {
-    let mut raw = serde_yaml::from_str::<RawSkillFrontmatter>(block)
+    let mut raw = serde_yaml_ng::from_str::<RawSkillFrontmatter>(block)
         .map_err(DocumentError::InvalidFrontmatter)?;
     raw.present = true;
     Ok(raw)
@@ -387,6 +387,48 @@ Body
         ))
         .expect_err("malformed YAML rejects");
         assert!(matches!(error, DocumentError::InvalidFrontmatter(_)));
+    }
+
+    #[test]
+    fn yaml_frontmatter_preserves_aliases_literal_unicode_and_unknown_metadata() {
+        let document = SkillDocument::parse(raw("---\r\nname: &skill rust-review\r\ndescription: |\r\n  Review café code.\r\n  Keep line breaks.\r\nmetadata:\r\n  vendor: {alias: *skill}\r\n  loom:\r\n    phases: [loop, gate.review]\r\n    profiles: rust\r\n...\r\nBody\r\n")).unwrap();
+        let parsed = document.typed_frontmatter().unwrap();
+        assert_eq!(parsed.name.as_str(), "rust-review");
+        assert_eq!(
+            parsed.description.as_str(),
+            "Review café code.\nKeep line breaks.\n"
+        );
+        let filters = parsed.metadata.unwrap().loom.unwrap();
+        assert_eq!(
+            filters
+                .phases
+                .iter()
+                .map(PhaseName::as_str)
+                .collect::<Vec<_>>(),
+            ["loop", "gate.review"]
+        );
+        assert_eq!(filters.profiles[0].as_str(), "rust");
+        assert_eq!(document.body(), "Body\r\n");
+    }
+
+    #[test]
+    fn yaml_frontmatter_rejects_duplicate_fields_and_wrong_filter_shapes() {
+        for fields in [
+            "name: rust-review\nname: other\ndescription: review\n",
+            "name: rust-review\ndescription: review\nmetadata:\n  loom:\n    phases: {bad: value}\n",
+        ] {
+            let error =
+                SkillDocument::parse(raw(&format!("---\n{fields}---\nBody\n"))).unwrap_err();
+            assert!(matches!(error, DocumentError::InvalidFrontmatter(_)));
+        }
+    }
+
+    #[test]
+    fn yaml_frontmatter_distinguishes_null_filters_and_escaped_scalars() {
+        let document = SkillDocument::parse(raw("---\nname: rust-review\ndescription: \"Line one\\nLine two\\u0021\"\nmetadata:\n  loom:\n    phases: null\n    profiles: []\n---\nBody\n")).unwrap();
+        let parsed = document.typed_frontmatter().unwrap();
+        assert_eq!(parsed.description.as_str(), "Line one\nLine two!");
+        assert!(parsed.metadata.is_none());
     }
 
     #[test]

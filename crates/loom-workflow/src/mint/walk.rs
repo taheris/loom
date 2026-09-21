@@ -134,7 +134,7 @@ pub enum WalkError {
 /// in tests.
 ///
 /// Production wires `run_rubric` to the existing review-agent
-/// invocation in [`crate::review::runner`] and `run_verifiers` to the
+/// invocation in [`crate::review::review_loop`] and `run_verifiers` to the
 /// deterministic dispatcher in [`loom_gate::dispatch`] plus the
 /// integrity gate's resolver chain.
 pub trait MintWalker: Send {

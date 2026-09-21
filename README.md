@@ -22,6 +22,7 @@ works without extra environment setup:
 ```bash
 cargo build
 cargo nextest run
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 loom loop
 ```
 
@@ -98,10 +99,11 @@ manifests. Add that explicit package to a wrix devshell when you want
 exporting their own manifest wins. Build one via `lib.mkProfileManifest`:
 
 ```nix
+{ inputs, inputs', pkgs, ... }:
 let
   wrixLib = inputs'.wrix.legacyPackages.lib;
-  manifest  = inputs.loom.lib.mkProfileManifest {
-    inherit wrixLib;
+  manifest = inputs.loom.lib.mkProfileManifest {
+    inherit pkgs wrixLib;
     profiles = { inherit (wrixLib.profiles) base rust; };
   };
 in

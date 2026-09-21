@@ -109,7 +109,7 @@ impl AnthropicClient {
 
     /// Attach an [`EventSink`] to this Client's chain. Each call
     /// appends; multiple calls compose. Every successful `complete*`
-    /// call fans a [`DriverKind::TokenUsage`] [`AgentEvent`] into every
+    /// call fans a [`loom_events::DriverKind::TokenUsage`] [`AgentEvent`] into every
     /// attached sink in registration order.
     pub fn with_event_sink<S>(self, sink: S) -> Self
     where

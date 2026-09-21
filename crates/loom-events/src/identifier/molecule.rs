@@ -34,7 +34,7 @@ impl FromStr for MoleculeId {
 
     /// Parse a molecule id: `<prefix>-<base32>`, where `<prefix>` is one
     /// or more lowercase ASCII letters and `<base32>` is one or more
-    /// lowercase ASCII alphanumerics. Same shape as a [`BeadId`] without
+    /// lowercase ASCII alphanumerics. Same shape as a [`BeadId`](crate::identifier::BeadId) without
     /// the `.<digits>` sub-issue suffix, which mirrors how `bd` emits
     /// molecule ids (`lm-3hhwq`, `lm-mol42`).
     fn from_str(s: &str) -> Result<Self, Self::Err> {

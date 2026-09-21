@@ -14,7 +14,7 @@ blake3 = { workspace = true }
 displaydoc = { workspace = true }
 loom-events = { workspace = true }
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde_yaml_ng = { workspace = true }
 thiserror = { workspace = true }
 walkdir = { workspace = true }
 

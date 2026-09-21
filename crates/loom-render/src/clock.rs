@@ -1,6 +1,6 @@
 //! Minimal monotonic-clock surface the renderer needs.
 //!
-//! `loom-driver` ships a richer [`Clock`](loom_driver::clock::Clock) trait
+//! `loom-driver` ships a richer `loom_driver::clock::Clock` trait
 //! that also exposes async `sleep` / `timeout` via `tokio`. The renderer
 //! only needs the monotonic `now()` instant for the elapsed-time line at
 //! finish, so this crate defines its own tiny trait and stays free of the

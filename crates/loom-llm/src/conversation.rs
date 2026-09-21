@@ -1,6 +1,6 @@
 //! `Conversation` — multi-turn builder + built-in tool-use loop.
 //!
-//! Consumers register handlers via the [`Tool`](crate::tool::Tool)
+//! Consumers register handlers via the [`Tool`]
 //! trait, configure budget and exhaustion behaviour, then call
 //! [`Conversation::run`]. The loop iterates
 //! `complete -> tool_calls? -> dispatch -> tool_results -> complete`

@@ -349,12 +349,7 @@ pub fn synthesize_integration_conflict_options(
     )
 }
 
-/// Outcome of [`AgentLoopController::exec_per_bead_gate`]. Routes per
-/// `specs/gate.md` § *Per-diff stage checks* / `specs/harness.md`
-/// § *Functional* — the runner's per-bead state machine consumes this
-/// after [`AgentOutcome::Success`] to decide between Done, Blocked, or
-/// re-entering the agent retry loop with the gate's error detail as
-/// `previous_failure`.
+/// Post-success gate result: done, blocked, or agent retry with diagnostic context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PerBeadGateOutcome {
     /// `loom gate verify --diff <pre-integration-head>..HEAD` exited 0.
@@ -363,7 +358,7 @@ pub enum PerBeadGateOutcome {
     /// The per-bead gate saw a structural invariant violation that the
     /// agent cannot resolve from inside the loop. Routes to
     /// [`BeadResult::Blocked`] with cause
-    /// [`MINT_STRUCTURAL_VIOLATION_CAUSE`]; the bead's run-phase commit
+    /// `MINT_STRUCTURAL_VIOLATION_CAUSE`; the bead's run-phase commit
     /// is NOT unwound — the integration is already durable. `detail`
     /// carries operator-facing diagnostics for `bd update --notes`.
     StructuralViolation { detail: String },

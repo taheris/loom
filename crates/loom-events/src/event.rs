@@ -464,8 +464,7 @@ pub struct AgentStartMetadata {
 /// which backend produced it.
 ///
 /// `Serialize` is derived so the on-disk JSONL log file is the same
-/// event stream the terminal renderer consumes (see [`crate::lib`]
-/// consumers). The matching `Deserialize` impl lets `loom logs` replay
+/// event stream the terminal renderer consumes. The matching `Deserialize` impl lets `loom logs` replay
 /// its own JSONL output through the same enum it wrote. Each variant
 /// is a struct-style `#[serde(flatten)]`-onto-envelope, so the wire
 /// shape is flat and every consumer dispatches on `kind`. Unknown

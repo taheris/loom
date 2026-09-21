@@ -28,5 +28,5 @@ pub use exit::{ExitSignal, parse_exit_signal};
 pub use fanout::{FanoutOutcome, SpecResolution, classify_touched_set, render_collision_options};
 pub use production::ProductionTodoController;
 pub use resolve::{ResolverOutcome, resolve_molecule};
-pub use runner::{TodoController, TodoSummary, run};
+pub use runner::{TodoController, TodoSession, TodoSummary, run};
 pub use touched::{TouchedSpec, render_fanout_block, touched_specs};

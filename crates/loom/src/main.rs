@@ -2207,7 +2207,8 @@ fn current_commit(workspace: &Path) -> anyhow::Result<String> {
 /// `LOOM_INSIDE` guard (delegated to the top-level main check via
 /// [`Command::refused_inside_loom`]), filter passthrough, and exit-code
 /// mapping. Tree-scope findings are produced by dispatching
-/// [`MintScope::Tree`] through the production [`ProductionMintWalker`];
+/// [`loom_workflow::mint::walk::MintScope::Tree`] through the production
+/// [`loom_workflow::mint::walk::ProductionMintWalker`];
 /// molecule scope promotes existing deferred remediation beads.
 #[expect(
     clippy::print_stdout,
@@ -4148,7 +4149,7 @@ fn emit_parallel_route_event(
 /// which let the sequential and parallel paths drift if the on-disk config
 /// changed mid-run. A missing manifest entry surfaces as
 /// [`ProfileError::UnknownProfile`] and sibling static diagnostics become
-/// typed [`AgentOutcome`] variants so the caller can apply infra routing
+/// typed [`loom_workflow::loop::AgentOutcome`] variants so the caller can apply infra routing
 /// without falling back to a silent default.
 ///
 /// [`ProfileError::UnknownProfile`]: loom_driver::profile_manifest::ProfileError::UnknownProfile
@@ -4333,7 +4334,7 @@ async fn dispatch_for_slot(
 /// path. Pass `None` from sites that have not yet been wired.
 ///
 /// `shutdown_grace` is the configured `[claude] post_result_grace_secs`
-/// resolved from [`AgentSelection::claude_settings`]. It is patched into
+/// resolved from [`loom_driver::config::AgentSelection::claude_settings`]. It is patched into
 /// `spawn.shutdown_grace` only when the dispatched backend is claude and
 /// the field is not already set — pi exits naturally on `agent_end`, and
 /// upstream callers that pre-populate the field (tests, future per-bead
@@ -5050,7 +5051,7 @@ fn build_renderer_with_writer(
 
 /// Resolve `phase`'s [`AgentKind`] honoring the global `--agent` override.
 /// CLI override wins over `[phase.<phase>] agent.backend` and
-/// `[phase.default] agent.backend`. Returns the full [`AgentSelection`] so
+/// `[phase.default] agent.backend`. Returns the full [`loom_driver::config::AgentSelection`] so
 /// callers retain access to profile / provider / model / `claude_settings`.
 fn resolved_agent_for(
     config: &LoomConfig,

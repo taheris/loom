@@ -219,7 +219,7 @@ pub enum DirectCommand {
 /// JSONL event frame from `loom-direct-runner` to the host driver.
 ///
 /// The host-side [`DirectParser`] decodes this and joins it with the per-spawn
-/// envelope on the way out to the workflow's [`AgentEvent`] stream.
+/// envelope on the way out to the workflow's [`loom_events::AgentEvent`] stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DirectEvent {

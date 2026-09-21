@@ -18,7 +18,7 @@ const DOLT_SOCKET_REL_PATH: &str = ".wrix/dolt.sock";
 const DOLT_SOCKET_CONTAINER_PATH: &str = "/workspace/.wrix/dolt.sock";
 
 /// Build the [`MountSpec`] that projects the loom workspace's `wrix-beads`
-/// dolt socket into a bead container at [`DOLT_SOCKET_CONTAINER_PATH`].
+/// dolt socket into a bead container at `DOLT_SOCKET_CONTAINER_PATH`.
 ///
 /// Returns `None` when the host socket is absent (e.g. test fixtures that do
 /// not stand up the wrix-beads server), so the resulting spawn config has

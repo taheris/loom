@@ -54,7 +54,7 @@ pub struct BeadSnapshot {
     /// IDs of beads currently labelled `loom:infra` within the spec.
     pub infra_ids: Vec<BeadId>,
     /// IDs that appeared after the reviewer ran. Only populated for the
-    /// post-snapshot — set is computed by [`super::diff_snapshots`].
+    /// post-snapshot — set is computed by [`super::diff_new_bead_ids`].
     pub new_bead_ids: Vec<BeadId>,
 }
 

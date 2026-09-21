@@ -1,7 +1,7 @@
 //! Per-schema Client constructors take typed credentials, not raw
 //! strings. `AnthropicClient::new`, `OpenAiClient::new`,
-//! `GeminiClient::new` accept [`ApiKey`]; `OpenAiCompatClient::new`
-//! accepts [`url::Url`] + `Option<ApiKey>`. No constructor parameter
+//! `GeminiClient::new` accept `ApiKey`; `OpenAiCompatClient::new`
+//! accepts `url::Url` + `Option<ApiKey>`. No constructor parameter
 //! is allowed to be `String` or `&str` for a credential or base URL.
 //!
 //! The walk parses `crates/loom-llm/src/client/`, locates every `pub

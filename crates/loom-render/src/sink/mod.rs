@@ -37,7 +37,7 @@ fn suffixed_log_path(base: &Path, suffix: u16) -> PathBuf {
 }
 
 /// Tee-style sink that drives the per-bead JSONL log file *and* the
-/// [`TerminalRenderer`] from the same `emit` call.
+/// [`TerminalRenderer`](crate::renderer::TerminalRenderer) from the same `emit` call.
 ///
 /// Spec contract (`Run UX & Logging`): "the terminal renderer consumes the
 /// same `AgentEvent` stream that's written to disk — there's a single

@@ -26,7 +26,7 @@
 //!    `bd ready` and iterates on any newly-ready fix-up beads, bounded by
 //!    `[loop] max_iterations`.
 //!
-//! `--parallel N > 1` (worktree parallelism) lives in [`parallel`]. The
+//! `--parallel N > 1` (worktree parallelism) lives in the parallel runner. The
 //! sequential and parallel paths share the [`AgentOutcome`] / retry vocabulary
 //! but split on dispatch: sequential spawns one container on the driver
 //! branch; parallel spawns N containers in disjoint worktrees and merges
@@ -71,7 +71,7 @@ pub use retry::{RetryDecision, RetryPolicy};
 pub use runner::{
     AgentLoopController, CONFLICT_RETRY_LABEL, GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE,
     INFRA_INTERRUPTED_CAUSE, INFRA_PREFLIGHT_CAUSE, INVALID_SPAWN_CONFIG_CAUSE, InfraRetryPolicy,
-    MISSING_AGENT_BINARY_CAUSE, StabilizationOutcome, UNKNOWN_PROFILE_CAUSE,
+    MISSING_AGENT_BINARY_CAUSE, PerBeadGateOutcome, StabilizationOutcome, UNKNOWN_PROFILE_CAUSE,
     UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, WORKSPACE_RECOVERY_FAILED_CAUSE, run_loop,
     run_loop_with_infra_policy,
 };

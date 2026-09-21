@@ -136,16 +136,14 @@ pub fn parse_options(description: &str) -> OptionsParse {
 /// The reviewer promotes a previously `loom:blocked` bead to
 /// `loom:clarify` by writing the options into `--notes`; new clarify
 /// beads carry their options in `--description`. The inbox queue must
-/// surface both, so [`to_clarify_bead`] / [`build_rows`] call this
-/// wrapper instead of [`parse_options`] directly.
+/// surface both, so inbox context and [`build_rows`](super::list::build_rows)
+/// use this wrapper instead of [`parse_options`] directly.
 ///
 /// Behaviour: parse `notes` first; if it produces any summary or option
 /// rows, return that parse. Otherwise fall back to parsing
 /// `description`. An empty options block in either source yields the
 /// default (empty) parse.
 ///
-/// [`to_clarify_bead`]: super::context
-/// [`build_rows`]: super::list::build_rows
 pub fn parse_options_in(notes: Option<&str>, description: &str) -> OptionsParse {
     if let Some(n) = notes {
         let parsed = parse_options(n);
@@ -213,8 +211,7 @@ pub fn find_options_block_range(text: &str) -> Option<Range<usize>> {
 ///
 /// Returns the input unchanged when no `## Options` H2 heading is present.
 /// Adjacent trailing whitespace from the spliced range is preserved; callers
-/// typically `trim_end` the result before stitching it back to a resolution
-/// note (see [`super::reply::compose_resolved_notes`]).
+/// typically `trim_end` the result before stitching it back to a resolution note.
 pub fn strip_options_block(text: &str) -> String {
     match find_options_block_range(text) {
         Some(range) => {

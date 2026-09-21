@@ -13,9 +13,9 @@
 //! | Write     | `<path>   +<lines>   new file`                      |
 //! | Grep      | `"<pattern>" in <path>   <N> files`                 |
 //! | Glob      | `"<pattern>" in <path>   <N> files`                 |
-//! | Bash      | `<cmd-truncated>   <duration> <✓|✗ exit=N>`         |
-//! | WebFetch  | `<url>   <bytes> <duration> <✓|✗>`                  |
-//! | WebSearch | `"<query>"   <N> results`                           |
+//! | Bash      | `<cmd-truncated>   <duration> <✓\|✗ exit=N>`         |
+//! | `WebFetch`  | `<url>   <bytes> <duration> <✓\|✗>`                |
+//! | `WebSearch` | `"<query>"   <N> results`                         |
 //! | Task      | `<description>   [agent:<subagent>]   <duration>`   |
 //!
 //! Unknown tools fall through to a generic `<tool>` cell.
@@ -62,7 +62,7 @@ impl Osc8Context {
         }
     }
 
-    /// Set the workspace root on a context built via [`disabled`]. Used
+    /// Set the workspace root on a context built via [`Self::disabled`]. Used
     /// when OSC 8 is unsupported but path normalization should still
     /// strip the workspace prefix from absolute paths in summary cells.
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {

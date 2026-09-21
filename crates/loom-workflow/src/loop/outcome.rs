@@ -64,7 +64,7 @@ pub enum AgentOutcome {
     /// rebase was aborted and the loom workspace returned to its
     /// pre-rebase state. `files` are the unmerged paths and
     /// `new_base_sha` the integration tip the rebase targeted. Routed by
-    /// [`super::runner::process_one_bead`] through a **single**
+    /// the bead runner through a **single**
     /// integration-conflict retry (distinct from `[loop] max_retries`):
     /// the agent's next attempt rebases its bead-workspace branch onto
     /// `new_base_sha`, resolves, and re-commits. A second conflict
@@ -200,7 +200,7 @@ pub enum BeadResult {
 }
 
 /// Output of one classified agent dispatch. The run-loop closure produces
-/// this so [`super::runner::process_one_bead`] can route pre-stream vs
+/// this so the bead runner can route pre-stream vs
 /// interrupted infra failures to the right verdict-gate path.
 #[derive(Debug, Clone)]
 pub enum SessionResult {

@@ -524,9 +524,9 @@ struct LifecycleFlags {
 /// Per-bead terminal renderer.
 ///
 /// One renderer is constructed per bead spawn. The driver creates it via
-/// [`TerminalRenderer::new`], emits the header, drives [`render_event`] for
+/// [`TerminalRenderer::new`], emits the header, drives [`TerminalRenderer::render_event`] for
 /// every [`AgentEvent`], and finally emits the closing line via
-/// [`finish`]. With `--parallel N > 1`, the renderer is constructed in
+/// [`TerminalRenderer::finish`]. With `--parallel N > 1`, the renderer is constructed in
 /// `Parallel` mode so tool-call lines carry a `[bead-id]` prefix for
 /// attribution.
 #[must_use]
@@ -637,7 +637,7 @@ impl TerminalRenderer {
     }
 
     /// Build a renderer with an explicit clock. Tests inject
-    /// [`crate::clock::MockClock`] so the elapsed-time output is deterministic
+    /// the test-only mock clock so the elapsed-time output is deterministic
     /// without wall-clock dependence.
     pub fn with_clock(
         out: impl Write + Send + 'static,
@@ -1426,7 +1426,7 @@ impl Drop for TerminalRenderer {
     /// Best-effort cleanup of any open in-place running line so a
     /// panicking / dropped renderer never leaves a dangling `\r`
     /// region. The explicit cleanup contract still lives in
-    /// [`finish`] — Drop is the safety net.
+    /// [`Self::finish`] — Drop is the safety net.
     fn drop(&mut self) {
         if self.stream.text_needs_newline || self.stream.thinking_needs_newline {
             let _ = self.close_stream_lines();

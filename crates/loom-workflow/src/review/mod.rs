@@ -16,8 +16,7 @@
 //!    fix-up + under cap → `exec loom loop`; fix-up + at cap → escalate the
 //!    newest fix-up bead to `loom:clarify`.
 //!
-//! `loom loop`'s molecule-complete handoff (`exec_review` in [`super::run`])
-//! is wired by the binary to invoke this module.
+//! `loom loop`'s molecule-complete handoff invokes this module's review controller.
 
 mod context;
 mod error;

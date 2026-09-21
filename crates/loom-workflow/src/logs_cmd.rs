@@ -136,9 +136,10 @@ fn missing(root: &Path, bead: Option<&BeadId>) -> Result<PathBuf, LogsError> {
     }
 }
 
-/// Replay mode dispatched by [`replay`]. `Render(_)` parses each JSONL
-/// line into an [`AgentEvent`] and drives a [`Renderer`]; `Raw` copies
-/// the file's bytes verbatim without parsing.
+/// Playback format: rendered events or raw file bytes.
+///
+/// [`replay`] sends parsed [`AgentEvent`] values to a
+/// [`Renderer`](loom_render::Renderer), or copies raw bytes without parsing.
 #[derive(Debug, Clone, Copy)]
 pub enum ReplayMode {
     /// Parse + render through a `Box<dyn Renderer>`. The wrapped
@@ -162,7 +163,7 @@ pub struct ReplayOpts<'a> {
     /// Tail mode — block on EOF rather than return.
     pub follow: bool,
     /// Polling interval when `follow=true`. Defaults to
-    /// [`DEFAULT_FOLLOW_POLL`] when `None`.
+    /// the default polling interval when `None`.
     pub follow_poll: Option<Duration>,
     /// Optional poll-iteration cap for `follow`. Tests set this so the
     /// tail loop returns deterministically (after `N` sleep cycles);

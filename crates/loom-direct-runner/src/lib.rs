@@ -76,7 +76,7 @@ pub fn six_tools(ctx: ToolContext) -> Vec<Box<dyn Tool>> {
 /// Construct the [`Conversation`] driven by `loom-direct-runner`.
 ///
 /// The model is resolved from [`SpawnConfig::model_id`] via [`ModelId::from_str`]; when
-/// absent the runner falls back to [`DEFAULT_MODEL`]. The six sandbox-aware
+/// absent the runner falls back to `DEFAULT_MODEL`. The six sandbox-aware
 /// tools are registered in the canonical order, and observer settings come
 /// from [`SpawnConfig::observers`].
 pub fn build_conversation(config: &SpawnConfig) -> Conversation {

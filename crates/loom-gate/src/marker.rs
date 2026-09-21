@@ -6,8 +6,8 @@
 //! it through `loom gate verify-marker` to short-circuit redundant work
 //! on driver-loop integration pushes. See `specs/gate.md` § Marker.
 //!
-//! The mint path ([`MarkerProof::from_gate_success`] +
-//! [`MarkerProof::write_to`], both `pub(crate)`) is wrapped by the public
+//! The mint path (`MarkerProof::from_gate_success` +
+//! `MarkerProof::write_to`, both `pub(crate)`) is wrapped by the public
 //! [`MarkerProof::mint`] helper that the push-gate calls inside its
 //! `index.lock` critical section. Acceptance of a sealed [`GateSuccess`]
 //! is the structural defense against forgery: only `loom-gate` can mint
@@ -157,8 +157,8 @@ impl MarkerProof {
     /// Public mint wrapper the driver-side push gate calls inside its
     /// `index.lock` critical section.
     ///
-    /// Sequences [`MarkerProof::from_gate_success`] +
-    /// [`MarkerProof::write_to`] so the `pub(crate)` mint primitives stay
+    /// Sequences `MarkerProof::from_gate_success` +
+    /// `MarkerProof::write_to` so the `pub(crate)` mint primitives stay
     /// crate-private while the push-gate (in `loom-workflow`) has a
     /// single typed entry point. The mint sequence per `specs/gate.md`
     /// § *Mint trigger* (audit-pass → construct → write → push) routes
@@ -400,7 +400,7 @@ fn workspace_path(workspace: &Path, path: &Path) -> PathBuf {
     }
 }
 
-/// Failure modes of [`MarkerProof::mint`] / [`MarkerProof::from_gate_success`].
+/// Failure modes of [`MarkerProof::mint`].
 ///
 /// Each variant points at the smallest unit of work that failed so the
 /// push-gate log can name the specific failure without scanning the

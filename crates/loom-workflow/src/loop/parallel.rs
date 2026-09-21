@@ -317,7 +317,7 @@ pub async fn create_worktrees(
 /// `spawn` is the per-slot dispatcher. The driver passes a closure that
 /// builds a `SpawnConfig` with the worktree path as the workspace mount
 /// and runs `wrix spawn --spawn-config <file> --stdio` against an
-/// `AgentBackend` — see [`super::spawn::build_spawn_config`]. Tests pass
+/// `AgentBackend` — see [`super::build_spawn_config_from_manifest`]. Tests pass
 /// closures that resolve immediately so the join logic can be exercised
 /// without a real container.
 pub async fn run_concurrent_spawns<S, F>(slots: Vec<WorktreeBead>, spawn: S) -> Vec<BatchSlot>

@@ -1,9 +1,9 @@
-//! OpenAI Chat-Completions-shaped HTTP adapter.
+//! `OpenAI` Chat-Completions-shaped HTTP adapter.
 //!
 //! [`OpenAiCompatClient`] routes requests at a consumer-supplied
-//! [`url::Url`] and serializes them in the OpenAI Chat-Completions wire
+//! [`url::Url`] and serializes them in the `OpenAI` Chat-Completions wire
 //! format. The schema family covers local runners (vLLM, llama.cpp, LM
-//! Studio, Ollama's `/v1`), proxies (LiteLLM), and commercial
+//! Studio, Ollama's `/v1`), proxies (`LiteLLM`), and commercial
 //! OpenAI-compatible providers. The adapter does not retry, throttle,
 //! or fall back: it classifies HTTP / network outcomes into
 //! [`crate::client::LlmError`] variants and hands retry policy to the
@@ -34,11 +34,7 @@ use crate::model_id::{ModelId, SchemaKind};
 use crate::request::{CompletionRequest, Message, MessageContent, Role};
 use crate::usage::TokenUsage;
 
-/// Client targeting [`SchemaKind::OpenAiCompat`]. Carries a
-/// [`reqwest::Client`] sized for repeated calls, the configured
-/// `base_url`, and an optional bearer credential. Constructed via
-/// [`OpenAiCompatClient::new`]; sinks attach through
-/// [`OpenAiCompatClient::with_event_sink`].
+/// Reusable client for [`SchemaKind::OpenAiCompat`] endpoints with an optional bearer credential.
 pub struct OpenAiCompatClient {
     http: reqwest::Client,
     base_url: Url,
@@ -52,9 +48,9 @@ impl OpenAiCompatClient {
     pub const SCHEMA: SchemaKind = SchemaKind::OpenAiCompat;
 
     /// Construct a Client routed at `base_url`. The URL is the root the
-    /// provider exposes the OpenAI Chat-Completions surface under (e.g.
+    /// provider exposes the `OpenAI` Chat-Completions surface under (e.g.
     /// `http://localhost:11434/v1` for Ollama); the adapter appends
-    /// `/chat/completions` per OpenAI's published path layout.
+    /// `/chat/completions` per `OpenAI`'s published path layout.
     pub fn new(base_url: Url, api_key: Option<ApiKey>) -> Self {
         Self {
             http: reqwest::Client::new(),
@@ -69,6 +65,7 @@ impl OpenAiCompatClient {
     /// appends; multiple calls compose. Every successful `complete*`
     /// call fans a `DriverKind::TokenUsage` event into every attached
     /// sink in registration order.
+    #[must_use]
     pub fn with_event_sink<S>(self, sink: S) -> Self
     where
         S: EventSink + 'static,
@@ -79,20 +76,21 @@ impl OpenAiCompatClient {
 
     /// Replace the synthetic [`EnvelopeBuilder`] with one that stamps
     /// the caller's identity onto every emitted event.
+    #[must_use]
     pub fn with_envelope_builder(self, envelope_builder: EnvelopeBuilder) -> Self {
         set_envelope_builder(&self.envelope_builder, envelope_builder);
         self
     }
 
     /// Borrow the configured base URL.
-    pub fn base_url(&self) -> &Url {
+    pub const fn base_url(&self) -> &Url {
         &self.base_url
     }
 
     /// Borrow the optional credential the Client was constructed with.
     /// Callers SHOULD NOT log or emit this value; per RS-15 the wrapped
     /// string is meant for wire-level auth resolvers only.
-    pub fn api_key(&self) -> Option<&ApiKey> {
+    pub const fn api_key(&self) -> Option<&ApiKey> {
         self.api_key.as_ref()
     }
 
@@ -130,10 +128,10 @@ impl LlmClient for OpenAiCompatClient {
         emit_event_to_chain(&self.sinks, event);
     }
 
-    fn complete<'a>(
-        &'a self,
+    fn complete(
+        &self,
         req: CompletionRequest,
-    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+    ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
         let model = req.model.clone();
         if model.schema() != Self::SCHEMA {
             return Box::pin(async move {
@@ -161,7 +159,10 @@ impl LlmClient for OpenAiCompatClient {
             if let Some(key) = self.api_key.as_ref() {
                 request = request.bearer_auth(key.expose());
             }
-            let response = request.send().await.map_err(reqwest_error_to_llm)?;
+            let response = request
+                .send()
+                .await
+                .map_err(|error| reqwest_error_to_llm(&error))?;
             let status = response.status();
             let retry_after_header = match response.headers().get(reqwest::header::RETRY_AFTER) {
                 Some(value) => match value.to_str() {
@@ -170,7 +171,10 @@ impl LlmClient for OpenAiCompatClient {
                 },
                 None => None,
             };
-            let body_bytes = response.bytes().await.map_err(reqwest_error_to_llm)?;
+            let body_bytes = response
+                .bytes()
+                .await
+                .map_err(|error| reqwest_error_to_llm(&error))?;
             classify_status(
                 status,
                 retry_after_header.as_deref(),
@@ -185,12 +189,12 @@ impl LlmClient for OpenAiCompatClient {
         })
     }
 
-    fn complete_structured_raw<'a>(
-        &'a self,
+    fn complete_structured_raw(
+        &self,
         req: CompletionRequest,
         _schema: serde_json::Value,
         _type_name: String,
-    ) -> BoxFuture<'a, Result<String, LlmError>> {
+    ) -> BoxFuture<'_, Result<String, LlmError>> {
         let model = req.model.clone();
         if model.schema() != Self::SCHEMA {
             return Box::pin(async move {
@@ -350,7 +354,7 @@ fn current_system_time() -> SystemTime {
     now()
 }
 
-fn reqwest_error_to_llm(err: reqwest::Error) -> LlmError {
+fn reqwest_error_to_llm(err: &reqwest::Error) -> LlmError {
     if err.is_timeout() {
         return LlmError::Timeout;
     }
@@ -425,7 +429,7 @@ mod tests {
     }
 
     /// Issuing a `complete` call against an `OpenAiCompat` `ModelId`
-    /// posts an OpenAI Chat-Completions-shaped JSON body to
+    /// posts an `OpenAI` Chat-Completions-shaped JSON body to
     /// `<base_url>/chat/completions` with the model name, the messages
     /// array (including the system prefix when set), `max_tokens` when
     /// supplied, and the Bearer credential when configured. The
@@ -629,7 +633,7 @@ mod tests {
         fn emit(&mut self, event: &loom_events::AgentEvent) {
             self.events
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(event.clone());
         }
     }
@@ -766,6 +770,7 @@ mod tests {
                 other => panic!("expected DriverEvent, got {other:?}"),
             })
             .collect::<Vec<_>>();
+        drop(events);
         sequences.sort_unstable();
         assert_eq!(sequences, (0..expected_calls).collect::<Vec<_>>());
     }

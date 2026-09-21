@@ -45,7 +45,7 @@ const PRINT_INPUTS_FLAG: &str = "--print-inputs";
 /// said no" from "verifier did not run".
 #[derive(Debug, Display, Error)]
 enum DispatchError {
-    /// usage: loom-walk <walk-name> [<walk-name>...]; available walks: {available}
+    /// usage: `loom-walk <walk-name> [<walk-name>...]`; available walks: {available}
     MissingWalkName { available: String },
     /// unknown walk `{name}`; available walks: {available}
     UnknownWalk { name: String, available: String },

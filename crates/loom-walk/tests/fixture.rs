@@ -106,7 +106,10 @@ fn missing_walk_name_exits_two_and_names_available_walks() {
     let code = out.status.code().unwrap();
     assert_eq!(code, 2, "stderr={}", String::from_utf8_lossy(&out.stderr));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("usage: loom-walk"), "stderr={stderr}");
+    assert!(
+        stderr.contains("usage: `loom-walk <walk-name> [<walk-name>...]`"),
+        "stderr={stderr}"
+    );
     assert!(
         stderr.contains("available walks"),
         "must enumerate available walks; stderr={stderr}"
