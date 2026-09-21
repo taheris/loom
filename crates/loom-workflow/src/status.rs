@@ -32,7 +32,7 @@ pub fn load(db: &CacheDb, integration_branch: String) -> Result<StatusReport, St
     let active_work_epic = work_epics.iter().find(|row| row.is_active).cloned();
     let pending_todo = work_epics
         .into_iter()
-        .filter(|row| !row.is_active && row.todo_head.is_some())
+        .filter(|row| !row.is_active && row.todo_fingerprint.is_some())
         .collect();
     Ok(StatusReport {
         active_work_epic,
@@ -65,7 +65,7 @@ pub fn render(report: &StatusReport) -> String {
                 out,
                 "pending loom:todo: {} head={} iteration={}",
                 epic.epic_id,
-                epic.todo_head.as_deref().unwrap_or("<unset>"),
+                epic.base_commit.as_deref().unwrap_or("<unset>"),
                 epic.iteration_count,
             );
         }
@@ -103,14 +103,14 @@ mod tests {
         let db = fresh_db(dir.path())?;
         db.upsert_work_epic(&loom_driver::state::WorkEpicRow {
             epic_id: MoleculeId::new("lm-active").unwrap(),
-            todo_head: Some("abc".to_string()),
+            base_commit: Some("abc".to_string()),
             todo_fingerprint: Some("fp".to_string()),
             is_active: true,
             iteration_count: 3,
         })?;
         db.upsert_work_epic(&loom_driver::state::WorkEpicRow {
             epic_id: MoleculeId::new("lm-todo").unwrap(),
-            todo_head: Some("def".to_string()),
+            base_commit: Some("def".to_string()),
             todo_fingerprint: Some("fp2".to_string()),
             is_active: false,
             iteration_count: 0,

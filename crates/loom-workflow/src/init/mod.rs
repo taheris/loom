@@ -3,22 +3,16 @@
 //! Acquires the workspace lock (errors immediately if any phase or work-root
 //! lock is held), ensures `<workspace>/loom.toml` and `.loom/cache.db`
 //! exist, and — when `--rebuild` is passed — drops/recreates the cache DB
-//! and repopulates it from `specs/*.md` plus a caller-supplied slice of
-//! active molecules.
-//!
-//! Subprocess work (calling `bd list --status=open --type=epic` to
-//! enumerate epic beads, then filtering by `spec:<label>`) is split out
-//! into [`fetch_active_molecules`] so the core init function stays sync
-//! and unit-testable without a real `bd` binary.
+//! and repopulates it from specs and independent durable spec/work epics.
 
+mod epic;
 mod error;
+
+pub use epic::fetch_epics;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tracing::info;
-
-use loom_driver::bd::{BdClient, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::config::LoomConfig;
 use loom_driver::git::{
     clone_loom_workspace, enable_rerere, fast_forward_loom_workspace_to_origin, read_origin_url,
@@ -27,7 +21,7 @@ use loom_driver::git::{
 #[cfg(test)]
 use loom_driver::identifier::MoleculeId;
 use loom_driver::lock::{LockGuard, LockManager};
-use loom_driver::state::{ActiveMolecule, CacheDb, RebuildReport};
+use loom_driver::state::{CacheDb, RebuildEpic, RebuildReport};
 
 pub use error::InitError;
 
@@ -84,7 +78,7 @@ pub struct MaterializedIntegration {
 pub fn run(
     workspace: &Path,
     opts: InitOpts,
-    molecules: &[ActiveMolecule],
+    molecules: &[RebuildEpic],
 ) -> Result<InitReport, InitError> {
     run_with_hooks_resolver(
         workspace,
@@ -97,7 +91,7 @@ pub fn run(
 fn run_with_hooks_resolver(
     workspace: &Path,
     opts: InitOpts,
-    molecules: &[ActiveMolecule],
+    molecules: &[RebuildEpic],
     resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<InitReport, InitError> {
     let lock_mgr = LockManager::new(workspace)?;
@@ -108,7 +102,7 @@ fn run_with_hooks_resolver(
 fn run_locked(
     workspace: &Path,
     opts: InitOpts,
-    molecules: &[ActiveMolecule],
+    molecules: &[RebuildEpic],
     _guard: LockGuard,
     resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<InitReport, InitError> {
@@ -209,180 +203,14 @@ fn materialize_integration_workspace(
     }))
 }
 
-/// Enumerate active molecules via `bd list --status=open --type=epic`.
-///
-/// Each returned bead's `spec:<label>` label resolves the [`SpecLabel`] for
-/// the rebuilt row; beads without a `spec:` label produce
-/// [`InitError::MissingSpecLabel`]. For each active bead, `bd show <id>
-/// --json` is read for the `loom.base_commit` metadata key.
-///
-/// `loom plan` sets the key unconditionally on every molecule it creates.
-/// Beads created via `bd create` (out-of-band) may inherit `loom.base_commit`
-/// from their parent: if the bead lacks the metadata, the parent (via
-/// `bd show <parent> --json`) is consulted; a present value is written back
-/// to the child via `bd update --set-metadata` and surfaced as the child's
-/// `base_commit`. Beads with neither own metadata nor an inheritable parent
-/// produce [`InitError::MoleculeMissingBaseCommit`], whose `Display` includes
-/// the `bd update` fix command.
-///
-/// # Errors
-///
-/// Returns an error when workspace initialization or validation fails.
-pub async fn fetch_active_molecules<R: CommandRunner>(
-    bd: &BdClient<R>,
-) -> Result<Vec<ActiveMolecule>, InitError> {
-    let beads = bd
-        .list(ListOpts {
-            status: Some("open".into()),
-            issue_type: Some("epic".into()),
-            ..ListOpts::default()
-        })
-        .await?;
-    let mut out = Vec::with_capacity(beads.len());
-    for bead in beads {
-        let spec_label = bead
-            .labels
-            .iter()
-            .find_map(loom_driver::bd::Label::spec_label)
-            .ok_or_else(|| InitError::MissingSpecLabel {
-                id: bead.id.to_string(),
-            })?;
-        let detail = bd.show(&bead.id).await?;
-        let base_commit = resolve_base_commit(bd, &detail).await?;
-        out.push(ActiveMolecule {
-            id: bead
-                .id
-                .as_str()
-                .parse()
-                .map_err(|source| InitError::InvalidMoleculeId { source })?,
-            spec_label,
-            base_commit: Some(base_commit),
-        });
-    }
-    Ok(out)
-}
-
-/// Read `loom.base_commit` from `detail.metadata`, or inherit from parent.
-///
-/// When the child lacks the metadata but its parent carries it, write the
-/// value back to the child via `bd update --set-metadata` so subsequent
-/// reads are self-sufficient, then log the inheritance.
-///
-/// Shared between the init/rebuild path ([`fetch_active_molecules`]) and the
-/// run-phase epic lookup ([`crate::r#loop::production::fetch_molecule_base_commit`])
-/// so both surface the same inheritance behaviour the spec mandates.
-pub(crate) async fn resolve_base_commit<R: CommandRunner>(
-    bd: &BdClient<R>,
-    detail: &loom_driver::bd::Bead,
-) -> Result<String, InitError> {
-    if let Some(v) = detail
-        .metadata
-        .get("loom.base_commit")
-        .and_then(serde_json::Value::as_str)
-    {
-        return Ok(v.to_owned());
-    }
-    let parent_id = detail
-        .parent
-        .as_ref()
-        .ok_or_else(|| InitError::MoleculeMissingBaseCommit {
-            id: detail.id.to_string(),
-        })?;
-    let parent = bd.show(parent_id).await?;
-    let inherited = parent
-        .metadata
-        .get("loom.base_commit")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| InitError::MoleculeMissingBaseCommitNoParentMetadata {
-            id: detail.id.to_string(),
-            parent: parent_id.to_string(),
-        })?
-        .to_owned();
-    bd.update(
-        &detail.id,
-        UpdateOpts {
-            set_metadata: vec![("loom.base_commit".to_string(), inherited.clone())],
-            ..UpdateOpts::default()
-        },
-    )
-    .await?;
-    info!(
-        bead_id = %detail.id,
-        parent_id = %parent_id,
-        base_commit = %inherited,
-        "loom init: inherited `loom.base_commit` from parent molecule",
-    );
-    Ok(inherited)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::{Result, anyhow};
-    use loom_driver::bd::{BdError, CommandRunner, RunOutput};
     use loom_driver::config::{LoomConfig, Phase};
     use loom_driver::identifier::SpecLabel;
     use loom_driver::lock::LockError;
-    use std::collections::VecDeque;
-    use std::ffi::OsString;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    #[derive(Clone, Default)]
-    struct CapturingRunner {
-        responses: Arc<Mutex<VecDeque<RunOutput>>>,
-        calls: Arc<Mutex<Vec<Vec<OsString>>>>,
-    }
-
-    impl CapturingRunner {
-        fn new(responses: impl IntoIterator<Item = RunOutput>) -> Self {
-            Self {
-                responses: Arc::new(Mutex::new(responses.into_iter().collect())),
-                calls: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-
-        fn calls(&self) -> Vec<Vec<String>> {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|argv| {
-                    argv.iter()
-                        .map(|a| a.to_string_lossy().into_owned())
-                        .collect()
-                })
-                .collect()
-        }
-    }
-
-    impl CommandRunner for CapturingRunner {
-        async fn run(
-            &self,
-            args: Vec<OsString>,
-            _timeout: Duration,
-        ) -> std::result::Result<RunOutput, BdError> {
-            self.calls.lock().unwrap().push(args);
-            Ok(self
-                .responses
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or(RunOutput {
-                    status: 0,
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                }))
-        }
-    }
-
-    fn ok(stdout: &[u8]) -> RunOutput {
-        RunOutput {
-            status: 0,
-            stdout: stdout.to_vec(),
-            stderr: Vec::new(),
-        }
-    }
+    use loom_driver::testing::epic_fixture;
 
     fn temp_workspace() -> Result<tempfile::TempDir> {
         let dir = tempfile::tempdir()?;
@@ -629,26 +457,18 @@ mod tests {
         // First init seeds the DB and bumps an iteration so we can prove
         // rebuild wiped it.
         run(dir.path(), InitOpts::default(), &[])?;
-        let molecules = vec![ActiveMolecule {
-            id: MoleculeId::new("lm-mol1").unwrap(),
-            spec_label: SpecLabel::new("alpha").unwrap(),
-            base_commit: None,
-        }];
+        let molecules = epic_fixture(
+            MoleculeId::new("lm-mol1").unwrap(),
+            SpecLabel::new("alpha").unwrap(),
+            None,
+        )?;
         let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
         db.rebuild(dir.path(), &molecules)?;
         let post = db.increment_iteration(&MoleculeId::new("lm-mol1").unwrap())?;
         assert_eq!(post, 1);
         drop(db);
 
-        let report = run(
-            dir.path(),
-            InitOpts { rebuild: true },
-            &[ActiveMolecule {
-                id: MoleculeId::new("lm-mol1").unwrap(),
-                spec_label: SpecLabel::new("alpha").unwrap(),
-                base_commit: None,
-            }],
-        )?;
+        let report = run(dir.path(), InitOpts { rebuild: true }, &molecules)?;
         let rb = report
             .rebuild
             .ok_or_else(|| anyhow::anyhow!("rebuild must produce a report"))?;
@@ -658,8 +478,8 @@ mod tests {
         // Iteration counter reset to 0 after rebuild.
         let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
         let row = db
-            .molecule_for_spec(&SpecLabel::new("alpha").unwrap())?
-            .ok_or_else(|| anyhow::anyhow!("active molecule must exist"))?;
+            .work_epic(&MoleculeId::new("lm-mol1").unwrap())?
+            .ok_or_else(|| anyhow::anyhow!("active work epic must exist"))?;
         assert_eq!(row.iteration_count, 0);
         Ok(())
     }
@@ -684,7 +504,7 @@ mod tests {
                 ));
             }
         }
-        assert!(db.molecule_for_spec(&probe)?.is_none());
+        assert!(db.spec_epic(&probe)?.is_none());
         assert!(db.companions(&probe)?.is_empty());
         assert!(db.work_epics()?.is_empty());
         Ok(())
@@ -703,11 +523,11 @@ mod tests {
         let db = CacheDb::open(&db_path)?;
         db.rebuild(
             dir.path(),
-            &[ActiveMolecule {
-                id: MoleculeId::new("lm-mol1").unwrap(),
-                spec_label: SpecLabel::new("alpha").unwrap(),
-                base_commit: Some("deadbeef".into()),
-            }],
+            &epic_fixture(
+                MoleculeId::new("lm-mol1").unwrap(),
+                SpecLabel::new("alpha").unwrap(),
+                Some("deadbeef".into()),
+            )?,
         )?;
         let bumped = db.increment_iteration(&MoleculeId::new("lm-mol1").unwrap())?;
         assert_eq!(bumped, 1);
@@ -717,9 +537,9 @@ mod tests {
         assert!(report.rebuild.is_none(), "plain init must not run rebuild");
         let db = CacheDb::open(&db_path)?;
         let row = db
-            .molecule_for_spec(&SpecLabel::new("alpha").unwrap())?
-            .ok_or_else(|| anyhow!("molecule row was clobbered"))?;
-        assert_eq!(row.id.as_str(), "lm-mol1");
+            .work_epic(&MoleculeId::new("lm-mol1").unwrap())?
+            .ok_or_else(|| anyhow!("work epic row was clobbered"))?;
+        assert_eq!(row.epic_id.as_str(), "lm-mol1");
         assert_eq!(
             row.iteration_count, 1,
             "iteration counter must survive a plain init"
@@ -740,233 +560,5 @@ mod tests {
             }
             other => Err(anyhow::anyhow!("expected WorkspaceBusy, got {other:?}")),
         }
-    }
-
-    /// Spec contract `[test]` annotation
-    /// (`specs/harness.md` § Success Criteria · Cache DB):
-    /// `loom init --rebuild` populates `molecules.base_commit` from
-    /// `bd show <id> --json` reading `loom.base_commit` metadata; an
-    /// active molecule without the key surfaces as
-    /// `InitError::MoleculeMissingBaseCommit`.
-    #[tokio::test]
-    async fn rebuild_reads_base_commit_from_bead_metadata() -> Result<()> {
-        let list_json = br#"[
-            {
-                "id": "lm-mol1",
-                "title": "loom-harness: pending decomposition",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "epic",
-                "labels": ["spec:harness"]
-            }
-        ]"#;
-        let show_json = br#"[
-            {
-                "id": "lm-mol1",
-                "title": "loom-harness: pending decomposition",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "epic",
-                "labels": ["spec:harness"],
-                "metadata": {"loom.base_commit": "7c226fef"}
-            }
-        ]"#;
-        let runner = CapturingRunner::new([ok(list_json), ok(show_json)]);
-        let handle = runner.clone();
-        let client = BdClient::with_runner(runner);
-        let molecules = fetch_active_molecules(&client).await?;
-        assert_eq!(molecules.len(), 1);
-        assert_eq!(molecules[0].id.as_str(), "lm-mol1");
-        assert_eq!(molecules[0].spec_label.as_str(), "harness");
-        assert_eq!(molecules[0].base_commit.as_deref(), Some("7c226fef"));
-
-        let calls = handle.calls();
-        assert_eq!(calls.len(), 2, "expected list+show calls: {calls:?}");
-        assert_eq!(calls[0][0], "list");
-        assert!(calls[0].contains(&"--type=epic".to_string()));
-        assert!(calls[0].contains(&"--status=open".to_string()));
-        assert_eq!(calls[1][0], "show");
-        assert_eq!(calls[1][1], "lm-mol1");
-        assert!(calls[1].contains(&"--json".to_string()));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn rebuild_errors_when_active_molecule_lacks_base_commit_metadata() -> Result<()> {
-        let list_json = br#"[
-            {
-                "id": "lm-mol2",
-                "title": "loom-harness: pending decomposition",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "epic",
-                "labels": ["spec:harness"]
-            }
-        ]"#;
-        let show_json = br#"[
-            {
-                "id": "lm-mol2",
-                "title": "loom-harness: pending decomposition",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "epic",
-                "labels": ["spec:harness"]
-            }
-        ]"#;
-        let runner = CapturingRunner::new([ok(list_json), ok(show_json)]);
-        let client = BdClient::with_runner(runner);
-        let err = fetch_active_molecules(&client)
-            .await
-            .err()
-            .ok_or_else(|| anyhow!("expected MoleculeMissingBaseCommit"))?;
-        let msg = err.to_string();
-        assert!(
-            msg.contains("bd update lm-mol2 --set-metadata loom.base_commit="),
-            "error must surface the fix command: {msg}",
-        );
-        match err {
-            InitError::MoleculeMissingBaseCommit { id } => assert_eq!(id, "lm-mol2"),
-            other => return Err(anyhow!("expected MoleculeMissingBaseCommit, got {other:?}")),
-        }
-        Ok(())
-    }
-
-    /// Spec contract `[test]` annotation
-    /// (`specs/harness.md` § Success Criteria · Cache DB):
-    /// An epic created via `bd create --parent=<epic>` without its own
-    /// `loom.base_commit` metadata inherits the value from the parent
-    /// epic. `fetch_active_molecules` writes the inherited value back via
-    /// `bd update --set-metadata` so subsequent reads are self-sufficient.
-    #[tokio::test]
-    async fn rebuild_inherits_base_commit_from_parent_when_missing() -> Result<()> {
-        let list_json = br#"[
-            {
-                "id": "lm-child1",
-                "title": "follow-up",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "bug",
-                "labels": ["spec:harness"]
-            }
-        ]"#;
-        let child_show = br#"[
-            {
-                "id": "lm-child1",
-                "title": "follow-up",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "bug",
-                "labels": ["spec:harness"],
-                "parent": "lm-epic",
-                "metadata": {}
-            }
-        ]"#;
-        let parent_show = br#"[
-            {
-                "id": "lm-epic",
-                "title": "loom-harness: pending decomposition",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "epic",
-                "labels": ["spec:harness"],
-                "metadata": {"loom.base_commit": "40d21b79"}
-            }
-        ]"#;
-        let runner = CapturingRunner::new([
-            ok(list_json),
-            ok(child_show),
-            ok(parent_show),
-            ok(b""), // bd update
-        ]);
-        let handle = runner.clone();
-        let client = BdClient::with_runner(runner);
-        let molecules = fetch_active_molecules(&client).await?;
-
-        assert_eq!(molecules.len(), 1);
-        assert_eq!(molecules[0].id.as_str(), "lm-child1");
-        assert_eq!(molecules[0].base_commit.as_deref(), Some("40d21b79"));
-
-        let calls = handle.calls();
-        assert_eq!(
-            calls.len(),
-            4,
-            "expected list + show(child) + show(parent) + update(child) calls: {calls:?}",
-        );
-        assert_eq!(calls[1][0], "show");
-        assert_eq!(calls[1][1], "lm-child1");
-        assert_eq!(calls[2][0], "show");
-        assert_eq!(calls[2][1], "lm-epic");
-        assert_eq!(calls[3][0], "update");
-        assert_eq!(calls[3][1], "lm-child1");
-        assert!(
-            calls[3].contains(&"--set-metadata".to_string()),
-            "inherited value must be persisted back to the child: {:?}",
-            calls[3],
-        );
-        assert!(
-            calls[3].contains(&"loom.base_commit=40d21b79".to_string()),
-            "inherited value must round-trip as the set-metadata pair: {:?}",
-            calls[3],
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn rebuild_errors_when_parent_also_lacks_base_commit_metadata() -> Result<()> {
-        let list_json = br#"[
-            {
-                "id": "lm-child2",
-                "title": "follow-up",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "bug",
-                "labels": ["spec:harness"]
-            }
-        ]"#;
-        let child_show = br#"[
-            {
-                "id": "lm-child2",
-                "title": "follow-up",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "bug",
-                "labels": ["spec:harness"],
-                "parent": "lm-epic2",
-                "metadata": {}
-            }
-        ]"#;
-        let parent_show = br#"[
-            {
-                "id": "lm-epic2",
-                "title": "loom-harness: pending decomposition",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "epic",
-                "labels": ["spec:harness"]
-            }
-        ]"#;
-        let runner = CapturingRunner::new([ok(list_json), ok(child_show), ok(parent_show)]);
-        let client = BdClient::with_runner(runner);
-        let err = fetch_active_molecules(&client)
-            .await
-            .err()
-            .ok_or_else(|| anyhow!("expected MoleculeMissingBaseCommitNoParentMetadata"))?;
-        let msg = err.to_string();
-        assert!(
-            msg.contains("bd update lm-child2 --set-metadata loom.base_commit="),
-            "error must surface the fix command: {msg}",
-        );
-        match err {
-            InitError::MoleculeMissingBaseCommitNoParentMetadata { id, parent } => {
-                assert_eq!(id, "lm-child2");
-                assert_eq!(parent, "lm-epic2");
-            }
-            other => {
-                return Err(anyhow!(
-                    "expected MoleculeMissingBaseCommitNoParentMetadata, got {other:?}"
-                ));
-            }
-        }
-        Ok(())
     }
 }

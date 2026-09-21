@@ -1076,7 +1076,7 @@ async fn assert_atomic_finalization_failure(
     let state = Arc::new(CacheDb::open(dir.path().join(".loom/cache.db"))?);
     state.upsert_work_epic(&WorkEpicRow {
         epic_id: MoleculeId::new("lm-oldactive").unwrap(),
-        todo_head: Some(base.clone()),
+        base_commit: Some(base.clone()),
         todo_fingerprint: None,
         is_active: true,
         iteration_count: 3,

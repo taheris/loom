@@ -8,7 +8,7 @@ use crate::identifier::{MoleculeId, SpecLabel};
 
 use super::error::CacheError;
 
-const SCHEMA_VERSION: &str = "8";
+const SCHEMA_VERSION: &str = "9";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS specs (
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS spec_epics (
 );
 CREATE TABLE IF NOT EXISTS work_epics (
     epic_id          TEXT PRIMARY KEY,
-    todo_head        TEXT,
+    base_commit      TEXT,
     todo_fingerprint TEXT,
     is_active        INTEGER NOT NULL DEFAULT 0,
     iteration_count  INTEGER NOT NULL DEFAULT 0
@@ -94,7 +94,7 @@ pub struct SpecEpicRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkEpicRow {
     pub epic_id: MoleculeId,
-    pub todo_head: Option<String>,
+    pub base_commit: Option<String>,
     pub todo_fingerprint: Option<String>,
     pub is_active: bool,
     pub iteration_count: u32,
@@ -132,15 +132,6 @@ pub struct NoteRow {
 /// [`CacheError::BdUpdate`](super::error::CacheError::BdUpdate) and
 /// rolls back the `SQLite` writes that share the gate's transaction.
 pub type BdUpdateFn = Box<dyn Fn(&MoleculeId, &str) -> Result<(), BdError>>;
-
-/// Compatibility projection for older work-epic call sites.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MoleculeRow {
-    pub id: MoleculeId,
-    pub spec_label: SpecLabel,
-    pub base_commit: Option<String>,
-    pub iteration_count: u32,
-}
 
 impl CacheDb {
     /// Open or create a cache DB at `path`, applying schema migrations.
@@ -197,44 +188,6 @@ impl CacheDb {
         .ok_or_else(|| CacheError::SpecNotFound {
             label: label.to_string(),
         })
-    }
-
-    /// Look up a cached work-epic projection by id, or `None` when no row matches.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when database access, stored state, or state validation fails.
-    pub fn molecule(&self, id: &MoleculeId) -> Result<Option<MoleculeRow>, CacheError> {
-        let conn = self.lock_conn()?;
-        conn.query_row(
-            "SELECT w.epic_id, s.spec_label, w.todo_head, w.iteration_count
-             FROM work_epics w
-             JOIN spec_epics s ON s.epic_id = w.epic_id
-             WHERE w.epic_id = ?1",
-            params![id.as_str()],
-            row_to_molecule,
-        )
-        .optional()?
-        .transpose()
-    }
-
-    /// Read the cached work-epic projection associated with a spec, if any.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when database access, stored state, or state validation fails.
-    pub fn molecule_for_spec(&self, label: &SpecLabel) -> Result<Option<MoleculeRow>, CacheError> {
-        let conn = self.lock_conn()?;
-        conn.query_row(
-            "SELECT w.epic_id, s.spec_label, w.todo_head, w.iteration_count
-             FROM spec_epics s
-             JOIN work_epics w ON w.epic_id = s.epic_id
-             WHERE s.spec_label = ?1",
-            params![label.as_str()],
-            row_to_molecule,
-        )
-        .optional()?
-        .transpose()
     }
 
     /// Insert or update an indexed spec row.
@@ -300,16 +253,16 @@ impl CacheDb {
     pub fn upsert_work_epic(&self, row: &WorkEpicRow) -> Result<(), CacheError> {
         let conn = self.lock_conn()?;
         conn.execute(
-            "INSERT INTO work_epics(epic_id, todo_head, todo_fingerprint, is_active, iteration_count)
+            "INSERT INTO work_epics(epic_id, base_commit, todo_fingerprint, is_active, iteration_count)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(epic_id) DO UPDATE SET
-                 todo_head = excluded.todo_head,
+                 base_commit = excluded.base_commit,
                  todo_fingerprint = excluded.todo_fingerprint,
                  is_active = excluded.is_active,
                  iteration_count = excluded.iteration_count",
             params![
                 row.epic_id.as_str(),
-                row.todo_head.as_deref(),
+                row.base_commit.as_deref(),
                 row.todo_fingerprint.as_deref(),
                 i64::from(row.is_active),
                 i64::from(row.iteration_count),
@@ -354,16 +307,16 @@ impl CacheDb {
         }
         tx.execute("UPDATE work_epics SET is_active = 0", [])?;
         tx.execute(
-            "INSERT INTO work_epics(epic_id, todo_head, todo_fingerprint, is_active, iteration_count)
+            "INSERT INTO work_epics(epic_id, base_commit, todo_fingerprint, is_active, iteration_count)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(epic_id) DO UPDATE SET
-                 todo_head = excluded.todo_head,
+                 base_commit = excluded.base_commit,
                  todo_fingerprint = excluded.todo_fingerprint,
                  is_active = excluded.is_active,
                  iteration_count = excluded.iteration_count",
             params![
                 active_work_epic.epic_id.as_str(),
-                active_work_epic.todo_head.as_deref(),
+                active_work_epic.base_commit.as_deref(),
                 active_work_epic.todo_fingerprint.as_deref(),
                 i64::from(active_work_epic.is_active),
                 i64::from(active_work_epic.iteration_count),
@@ -408,7 +361,7 @@ impl CacheDb {
     pub fn work_epic(&self, epic_id: &MoleculeId) -> Result<Option<WorkEpicRow>, CacheError> {
         let conn = self.lock_conn()?;
         conn.query_row(
-            "SELECT epic_id, todo_head, todo_fingerprint, is_active, iteration_count
+            "SELECT epic_id, base_commit, todo_fingerprint, is_active, iteration_count
              FROM work_epics WHERE epic_id = ?1",
             params![epic_id.as_str()],
             row_to_work_epic,
@@ -425,7 +378,7 @@ impl CacheDb {
     pub fn work_epics(&self) -> Result<Vec<WorkEpicRow>, CacheError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT epic_id, todo_head, todo_fingerprint, is_active, iteration_count
+            "SELECT epic_id, base_commit, todo_fingerprint, is_active, iteration_count
              FROM work_epics ORDER BY epic_id",
         )?;
         let rows = stmt
@@ -711,7 +664,7 @@ impl CacheDb {
             params![label.as_str()],
         )?;
         tx.execute(
-            "UPDATE work_epics SET todo_head = ?1 WHERE epic_id = ?2",
+            "UPDATE work_epics SET base_commit = ?1 WHERE epic_id = ?2",
             params![new_base_commit, mol_id.as_str()],
         )?;
         bd_update(mol_id, new_base_commit)?;
@@ -851,7 +804,7 @@ fn apply_migrations(conn: &Connection) -> Result<(), CacheError> {
     match from.as_deref() {
         None => write_schema_version(conn, SCHEMA_VERSION)?,
         Some(SCHEMA_VERSION) => {}
-        Some("1" | "2" | "3" | "4" | "5" | "6" | "7") => drop_and_recreate(conn)?,
+        Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") => drop_and_recreate(conn)?,
         Some(other) => {
             return Err(CacheError::UnknownSchemaVersion {
                 version: other.to_string(),
@@ -908,13 +861,13 @@ fn row_to_spec_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<SpecEpic
 
 fn row_to_work_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<WorkEpicRow, CacheError>> {
     let epic_id: String = row.get(0)?;
-    let todo_head: Option<String> = row.get(1)?;
+    let base_commit: Option<String> = row.get(1)?;
     let todo_fingerprint: Option<String> = row.get(2)?;
     let is_active: i64 = row.get(3)?;
     let iteration_count: i64 = row.get(4)?;
     Ok(parse_molecule_id(epic_id).map(|epic_id| WorkEpicRow {
         epic_id,
-        todo_head,
+        base_commit,
         todo_fingerprint,
         is_active: is_active != 0,
         iteration_count: iteration_count_from_sql(iteration_count),
@@ -942,21 +895,6 @@ fn row_to_criterion_evidence(
             evidence,
         }),
     )
-}
-
-fn row_to_molecule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MoleculeRow, CacheError>> {
-    let id: String = row.get(0)?;
-    let spec_label: String = row.get(1)?;
-    let base_commit: Option<String> = row.get(2)?;
-    let iteration_count: i64 = row.get(3)?;
-    Ok((|| {
-        Ok(MoleculeRow {
-            id: parse_molecule_id(id)?,
-            spec_label: parse_spec_label(spec_label)?,
-            base_commit,
-            iteration_count: iteration_count_from_sql(iteration_count),
-        })
-    })())
 }
 
 fn iteration_count_from_sql(value: i64) -> u32 {

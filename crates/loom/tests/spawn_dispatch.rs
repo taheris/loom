@@ -1642,16 +1642,28 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     assert!(set_origin.success(), "set origin failed: {set_origin}");
 
     {
-        use loom_driver::identifier::SpecLabel;
-        use loom_driver::state::CacheDb;
+        use loom_driver::identifier::{MoleculeId, SpecLabel};
+        use loom_driver::state::{CacheDb, WorkEpicRow};
         let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache db");
-        db.upsert_spec(&SpecLabel::new("agent").unwrap(), "specs/agent.md")
-            .expect("seed spec");
+        let label = SpecLabel::new("agent").unwrap();
+        db.upsert_spec(&label, "specs/agent.md").expect("seed spec");
+        db.upsert_work_epic(&WorkEpicRow {
+            epic_id: MoleculeId::new("lm-reviewtest").unwrap(),
+            base_commit: Some(
+                loom_driver::git::sync_head_commit_sha(workspace)
+                    .unwrap()
+                    .to_string(),
+            ),
+            todo_fingerprint: None,
+            iteration_count: 0,
+            is_active: true,
+        })
+        .expect("seed selected work epic counter");
     }
 
     // `loom:clarify` on the post-snapshot bead → ReviewVerdict::PushBlocked →
     // ReviewResult::PushBlocked, no push gates fire.
-    let bead_json = r#"[{"id":"lm-reviewtest","title":"review gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","loom:clarify"]}]"#;
+    let bead_json = r#"[{"id":"lm-reviewtest","title":"review gate epic","description":"","status":"open","priority":2,"issue_type":"epic","labels":["spec:agent","loom:active","loom:clarify"]}]"#;
     let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
     let hostname = bd_bin_dir.join("hostname");
     std::fs::write(

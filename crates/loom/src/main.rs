@@ -999,7 +999,7 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
     let molecules = if rebuild {
         runtime.block_on(async {
             let bd = BdClient::new();
-            init::fetch_active_molecules(&bd).await
+            init::fetch_epics(&bd).await
         })?
     } else {
         Vec::new()

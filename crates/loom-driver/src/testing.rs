@@ -35,3 +35,30 @@ where
 {
     f(MockClock::new()).await
 }
+
+/// Independent spec/work epics for cache tests, never a shared-id legacy molecule.
+///
+/// # Errors
+/// Returns an identifier error if the derived metadata-epic id cannot be represented.
+#[cfg(feature = "test-support")]
+pub fn epic_fixture(
+    work_id: crate::identifier::MoleculeId,
+    spec_label: crate::identifier::SpecLabel,
+    base_commit: Option<String>,
+) -> Result<[crate::state::RebuildEpic; 2], crate::identifier::ParseMoleculeIdError> {
+    use crate::state::{RebuildEpic, SpecEpicRow, WorkEpicRow};
+    Ok([
+        RebuildEpic::Spec(SpecEpicRow {
+            spec_label,
+            epic_id: format!("{work_id}spec").parse()?,
+            todo_cursor: base_commit.clone(),
+        }),
+        RebuildEpic::Work(WorkEpicRow {
+            epic_id: work_id,
+            base_commit,
+            todo_fingerprint: None,
+            is_active: true,
+            iteration_count: 0,
+        }),
+    ])
+}

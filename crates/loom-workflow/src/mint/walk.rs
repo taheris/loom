@@ -396,7 +396,7 @@ where
         let base_commit = match molecule_id.as_ref() {
             Some(id) => self
                 .state
-                .molecule(id)
+                .work_epic(id)
                 .map_err(|e| WalkError::Rubric(e.to_string()))?
                 .and_then(|m| m.base_commit),
             None => None,

@@ -226,6 +226,12 @@ impl<R: CommandRunner> BdClient<R> {
     /// Returns an error when the `bd` command fails or its response cannot be decoded.
     pub async fn list(&self, opts: ListOpts) -> Result<Vec<Bead>, BdError> {
         let mut args: Vec<OsString> = vec!["list".into(), "--json".into()];
+        if opts.all {
+            args.push("--all".into());
+        }
+        if let Some(limit) = opts.limit {
+            args.push(format!("--limit={limit}").into());
+        }
         if let Some(status) = opts.status {
             args.push(format!("--status={status}").into());
         }
@@ -404,11 +410,17 @@ pub struct UpdateOpts {
     pub unset_metadata: Vec<String>,
 }
 
-/// Filters accepted by `bd list`. All fields are optional; passing none
-/// lists every open bead (matching the CLI default). `label` (AND
+/// Filters accepted by `bd list`.
+///
+/// Defaults to the CLI's limited open-issue selection; use `all` and
+/// `limit: Some(0)` for all issues. `label` (AND
 /// semantics) and `label_any` (OR semantics) compose as `bd` does.
 #[derive(Debug, Clone, Default)]
 pub struct ListOpts {
+    /// Include all statuses, including closed and custom statuses.
+    pub all: bool,
+    /// Maximum number of rows; zero requests all matching rows.
+    pub limit: Option<u32>,
     pub status: Option<String>,
     pub label: Option<String>,
     /// `bd list --label-any=<L>` — beads carrying at least one of these

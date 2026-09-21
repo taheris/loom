@@ -1,25 +1,19 @@
 use std::path::Path;
 
 use rusqlite::params;
-use tracing::{debug, warn};
+use tracing::debug;
 
-use crate::identifier::{MoleculeId, SpecLabel};
+use crate::identifier::SpecLabel;
 
 use super::companions::parse_companions;
-use super::db::{CacheDb, drop_and_recreate};
+use super::db::{CacheDb, SpecEpicRow, WorkEpicRow, drop_and_recreate};
 use super::error::CacheError;
 
-/// One active molecule from `bd list --status=open --type=epic`.
-///
-/// `rebuild` consumes pre-fetched values rather than calling `bd` itself —
-/// the caller (e.g. `loom init --rebuild` wiring `BdClient`) is responsible
-/// for issuing the CLI calls. Keeps `loom-driver` free of subprocess
-/// orchestration and makes rebuild testable without a real `bd` binary.
+/// A durable metadata carrier or an independent pending/active work epic.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveMolecule {
-    pub id: MoleculeId,
-    pub spec_label: SpecLabel,
-    pub base_commit: Option<String>,
+pub enum RebuildEpic {
+    Spec(SpecEpicRow),
+    Work(WorkEpicRow),
 }
 
 /// Counts of rows written by [`CacheDb::rebuild`].
@@ -36,7 +30,7 @@ impl CacheDb {
     ///
     /// 1. `<workspace>/specs/*.md` — one `specs` row per file (label = file
     ///    stem; path = repo-relative POSIX).
-    /// 2. `molecules` argument — one `molecules` row per active molecule.
+    /// 2. `epics` — independent spec metadata and work-epic rows.
     /// 3. Each spec's `## Companions` section — one `companions` row per
     ///    listed path. Specs without the section contribute zero rows.
     ///
@@ -48,30 +42,43 @@ impl CacheDb {
     pub fn rebuild(
         &self,
         workspace: &Path,
-        molecules: &[ActiveMolecule],
+        epics: &[RebuildEpic],
     ) -> Result<RebuildReport, CacheError> {
         let specs_dir = workspace.join("specs");
         let spec_files = collect_spec_files(&specs_dir)?;
         let indexed_specs = collect_indexed_specs(workspace)?;
-        let spec_rows = if indexed_specs.is_empty() {
+        let spec_rows = if workspace.join("docs/README.md").try_exists()? {
+            cross_check_index_and_files(&indexed_specs, &spec_files)?
+        } else {
             spec_files
                 .iter()
                 .map(|(label, content)| (label.clone(), default_spec_path(label), content.clone()))
                 .collect::<Vec<_>>()
-        } else {
-            cross_check_index_and_files(&indexed_specs, &spec_files)?
         };
 
         let mut by_spec: std::collections::BTreeMap<&str, Vec<&str>> =
             std::collections::BTreeMap::new();
-        for mol in molecules {
-            by_spec
-                .entry(mol.spec_label.as_str())
-                .or_default()
-                .push(mol.id.as_str());
+        for epic in epics {
+            if let RebuildEpic::Spec(row) = epic {
+                by_spec
+                    .entry(row.spec_label.as_str())
+                    .or_default()
+                    .push(row.epic_id.as_str());
+                if !spec_rows
+                    .iter()
+                    .any(|(label, _, _)| label == &row.spec_label)
+                {
+                    return Err(CacheError::SpecIndexMismatch {
+                        detail: format!(
+                            "spec epic `{}` refers to missing spec `{}`",
+                            row.epic_id, row.spec_label
+                        ),
+                    });
+                }
+            }
         }
         if let Some((label, ids)) = by_spec.iter().find(|(_, ids)| ids.len() > 1) {
-            return Err(CacheError::DuplicateSpecMolecules {
+            return Err(CacheError::DuplicateSpecEpics {
                 label: (*label).to_string(),
                 ids: ids.join(", "),
             });
@@ -88,18 +95,19 @@ impl CacheDb {
         }
 
         self.with_conn(|conn| {
-            drop_and_recreate(conn)?;
+            let tx = conn.unchecked_transaction()?;
+            drop_and_recreate(&tx)?;
             let mut report = RebuildReport::default();
 
             for (label, spec_path, content) in &spec_rows {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO specs(label, spec_path) VALUES (?1, ?2)",
                     params![label.as_str(), spec_path],
                 )?;
                 report.specs += 1;
 
                 for path in parse_companions(content) {
-                    conn.execute(
+                    tx.execute(
                         "INSERT OR IGNORE INTO companions(spec_label, companion_path)
                          VALUES (?1, ?2)",
                         params![label.as_str(), path],
@@ -108,29 +116,26 @@ impl CacheDb {
                 }
             }
 
-            for mol in molecules {
-                if !spec_rows.iter().any(|(l, _, _)| l == &mol.spec_label) {
-                    warn!(
-                        molecule = %mol.id,
-                        spec = %mol.spec_label,
-                        "skipping molecule whose spec_label has no spec file",
-                    );
-                    continue;
+            for epic in epics {
+                match epic {
+                    RebuildEpic::Spec(row) => {
+                        tx.execute(
+                            "INSERT INTO spec_epics(spec_label, epic_id, todo_cursor) VALUES (?1, ?2, ?3)",
+                            params![row.spec_label.as_str(), row.epic_id.as_str(), row.todo_cursor],
+                        )?;
+                        report.spec_epics += 1;
+                    }
+                    RebuildEpic::Work(row) => {
+                        tx.execute(
+                            "INSERT INTO work_epics(epic_id, base_commit, todo_fingerprint, is_active, iteration_count)
+                             VALUES (?1, ?2, ?3, ?4, 0)",
+                            params![row.epic_id.as_str(), row.base_commit, row.todo_fingerprint, row.is_active],
+                        )?;
+                        report.work_epics += 1;
+                    }
                 }
-                conn.execute(
-                    "INSERT INTO spec_epics(spec_label, epic_id, todo_cursor)
-                     VALUES (?1, ?2, ?3)",
-                    params![mol.spec_label.as_str(), mol.id.as_str(), mol.base_commit],
-                )?;
-                conn.execute(
-                    "INSERT INTO work_epics(epic_id, todo_head, is_active, iteration_count)
-                     VALUES (?1, ?2, 1, 0)",
-                    params![mol.id.as_str(), mol.base_commit],
-                )?;
-                report.spec_epics += 1;
-                report.work_epics += 1;
             }
-
+            tx.commit()?;
             debug!(?report, "cache-db rebuild complete");
             Ok(report)
         })

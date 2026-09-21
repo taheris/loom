@@ -11,11 +11,7 @@ use loom_driver::identifier::ParseMoleculeIdError;
 use loom_driver::lock::LockError;
 use loom_driver::state::CacheError;
 
-/// Failures raised by [`super::run`] and [`super::fetch_active_molecules`].
-#[expect(
-    clippy::doc_markdown,
-    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
-)]
+/// Failures raised by [`super::run`] and [`super::fetch_epics`].
 #[derive(Debug, Display, Error)]
 pub enum InitError {
     /// failed to create directory at {path}
@@ -53,12 +49,10 @@ pub enum InitError {
         source: ParseMoleculeIdError,
     },
 
-    /// active molecule {id} carries no `spec:<label>` label
-    MissingSpecLabel { id: String },
-
-    /// active molecule {id} has no `loom.base_commit` metadata and no parent to inherit from — set it with: bd update {id} --set-metadata loom.base_commit=<sha>
-    MoleculeMissingBaseCommit { id: String },
-
-    /// active molecule {id} has no `loom.base_commit` metadata and its parent {parent} also lacks it — set it with: bd update {id} --set-metadata loom.base_commit=<sha>
-    MoleculeMissingBaseCommitNoParentMetadata { id: String, parent: String },
+    /// epic `{id}` has invalid `{key}` metadata: {detail}; repair the durable epic before rebuilding
+    InvalidEpicMetadata {
+        id: String,
+        key: &'static str,
+        detail: String,
+    },
 }

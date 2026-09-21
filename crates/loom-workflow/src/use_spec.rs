@@ -54,7 +54,7 @@ pub fn run_with_timeout(
 mod tests {
     use super::*;
     use anyhow::Result;
-    use loom_driver::state::{ActiveMolecule, CacheError};
+    use loom_driver::state::CacheError;
 
     fn db_path(workspace: &std::path::Path) -> std::path::PathBuf {
         workspace.join(".loom/cache.db")
@@ -65,7 +65,7 @@ mod tests {
         std::fs::create_dir_all(&specs_dir)?;
         std::fs::write(specs_dir.join(format!("{label}.md")), "# x\n")?;
         let db = CacheDb::open(db_path(workspace))?;
-        db.rebuild(workspace, &[] as &[ActiveMolecule])?;
+        db.rebuild(workspace, &[])?;
         Ok(db)
     }
 

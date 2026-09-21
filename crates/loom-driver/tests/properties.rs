@@ -12,7 +12,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_driver::state::{ActiveMolecule, CacheDb, CacheError};
+use loom_driver::state::{CacheDb, CacheError, RebuildEpic};
+use loom_driver::testing::epic_fixture;
 use loom_test_support::proptest_config;
 use proptest::prelude::*;
 
@@ -167,28 +168,22 @@ proptest! {
             std::fs::write(&path, "# spec\n").unwrap();
         }
 
-        let molecules: Vec<ActiveMolecule> = unique
-            .iter()
-            .enumerate()
-            .map(|(i, label)| ActiveMolecule {
-                id: MoleculeId::new(format!("lm-{i}")).unwrap(),
-                spec_label: SpecLabel::new(label.clone()).unwrap(),
-                base_commit: Some(format!("commit-{i}")),
-            })
+        let molecules: Vec<RebuildEpic> = unique.iter().enumerate()
+            .flat_map(|(i, label)| epic_fixture(MoleculeId::new(format!("lm-{i}")).unwrap(), SpecLabel::new(label.clone()).unwrap(), Some(format!("commit-{i}"))).unwrap())
             .collect();
 
         let db_path = workspace.join(".loom/cache.db");
         let db = CacheDb::open(&db_path).unwrap();
         let report = db.rebuild(workspace, &molecules).unwrap();
         prop_assert_eq!(report.specs, unique.len());
-        prop_assert_eq!(report.work_epics, molecules.len());
+        prop_assert_eq!(report.work_epics, unique.len());
+        prop_assert_eq!(report.spec_epics, unique.len());
 
-        for mol in &molecules {
-            let row = db.molecule_for_spec(&mol.spec_label).unwrap()
-                .expect("molecule should round-trip");
-            prop_assert_eq!(row.id.as_str(), mol.id.as_str());
-            prop_assert_eq!(&row.base_commit, &mol.base_commit);
-            prop_assert_eq!(row.iteration_count, 0);
+        for epic in &molecules {
+            match epic {
+                RebuildEpic::Spec(row) => prop_assert_eq!(db.spec_epic(&row.spec_label).unwrap(), Some(row.clone())),
+                RebuildEpic::Work(row) => prop_assert_eq!(db.work_epic(&row.epic_id).unwrap(), Some(row.clone())),
+            }
         }
     }
 }

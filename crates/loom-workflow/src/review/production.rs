@@ -445,12 +445,13 @@ where
         let Some(mol_id) = self.resolve_molecule_id().await? else {
             return Ok(vec![]);
         };
-        let Some(mol) = self.state.molecule(&mol_id)? else {
-            return Ok(vec![]);
-        };
-        let Some(base) = mol.base_commit else {
-            return Ok(vec![]);
-        };
+        let base = self
+            .state
+            .work_epic(&mol_id)?
+            .and_then(|row| row.base_commit)
+            .ok_or_else(|| loom_driver::state::CacheError::WorkEpicMissing {
+                id: mol_id.to_string(),
+            })?;
         let git = GitClient::open(&self.workspace)
             .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
         let changed_specs = git
@@ -517,9 +518,21 @@ where
             })
             .await?;
         let molecule_id = self.resolve_molecule_id().await?;
-        let base_commit = match molecule_id.as_ref() {
-            Some(id) => self.state.molecule(id)?.and_then(|m| m.base_commit),
-            None => None,
+        let base_commit = if self.push_range.is_some() || self.dispatch_scope == DispatchScope::Tree
+        {
+            None
+        } else {
+            match molecule_id.as_ref() {
+                Some(id) => Some(
+                    self.state
+                        .work_epic(id)?
+                        .and_then(|row| row.base_commit)
+                        .ok_or_else(|| loom_driver::state::CacheError::WorkEpicMissing {
+                            id: id.to_string(),
+                        })?,
+                ),
+                None => None,
+            }
         };
         let spec_path = format!("specs/{}.md", self.label.as_str());
         let (test_sources, judge_rubrics) = load_review_sources_for_lane(
@@ -1046,8 +1059,11 @@ where
         };
         Ok(self
             .state
-            .molecule(&mol_id)?
-            .map_or(0, |m| m.iteration_count))
+            .work_epic(&mol_id)?
+            .ok_or_else(|| loom_driver::state::CacheError::WorkEpicMissing {
+                id: mol_id.to_string(),
+            })?
+            .iteration_count)
     }
 
     async fn set_iteration_count(&mut self, next: u32) -> Result<(), ReviewError> {
@@ -1406,7 +1422,7 @@ mod tests {
     use crate::review::runner::ReviewController;
     use loom_driver::bd::RunOutput;
     use loom_driver::identifier::MoleculeId;
-    use loom_driver::state::ActiveMolecule;
+    use loom_driver::testing::epic_fixture;
     use std::ffi::OsStr;
     use std::future::Ready;
 
@@ -2297,11 +2313,12 @@ mod tests {
         let db = CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
         db.rebuild(
             workspace,
-            &[ActiveMolecule {
-                id: MoleculeId::new(mol).unwrap(),
-                spec_label: SpecLabel::new(label).unwrap(),
-                base_commit: None,
-            }],
+            &epic_fixture(
+                MoleculeId::new(mol).unwrap(),
+                SpecLabel::new(label).unwrap(),
+                None,
+            )
+            .unwrap(),
         )
         .unwrap();
         Arc::new(db)
@@ -2446,19 +2463,37 @@ mod tests {
         assert!(findings.is_empty(), "no active molecule => no findings");
     }
 
-    /// `integrity_findings` returns an empty list when the active molecule
-    /// has no recorded `base_commit` — there is no diff range to walk so the
-    /// integrity input is vacuously empty. Avoids fabricating a `HEAD..HEAD`
-    /// scope that would parse every spec file in the tree.
+    /// Lost cache evidence cannot certify an active work epic as clean.
     #[tokio::test]
-    async fn integrity_findings_empty_when_molecule_lacks_base_commit() {
+    async fn integrity_findings_rejects_work_epic_without_range() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
         let state = seeded_state(workspace, "alpha", "lm-alpha");
         let epic = epic_body("lm-alpha", "alpha");
         let mut ctrl = scripted_controller(workspace.to_path_buf(), "alpha", state, [epic]);
-        let findings = ctrl.integrity_findings().await.unwrap();
-        assert!(findings.is_empty(), "no base_commit => no findings");
+        let error = ctrl.integrity_findings().await.unwrap_err();
+        assert!(matches!(
+            error,
+            ReviewError::State(loom_driver::state::CacheError::WorkEpicMissing { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn iteration_count_rejects_missing_work_epic_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = empty_state(dir.path());
+        let mut ctrl = scripted_controller(
+            dir.path().to_path_buf(),
+            "alpha",
+            state,
+            [epic_body("lm-work", "alpha")],
+        );
+        assert!(matches!(
+            ctrl.iteration_count().await,
+            Err(ReviewError::State(
+                loom_driver::state::CacheError::WorkEpicMissing { .. }
+            ))
+        ));
     }
 
     /// Spec contract `specs/gate.md` § Runners, *Runner-owned resolution*:
@@ -2503,11 +2538,12 @@ mod tests {
         let db = CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
         db.rebuild(
             &workspace,
-            &[ActiveMolecule {
-                id: MoleculeId::new("lm-alpha").unwrap(),
-                spec_label: SpecLabel::new("alpha").unwrap(),
-                base_commit: Some(base),
-            }],
+            &epic_fixture(
+                MoleculeId::new("lm-alpha").unwrap(),
+                SpecLabel::new("alpha").unwrap(),
+                Some(base),
+            )
+            .unwrap(),
         )
         .unwrap();
         let state = Arc::new(db);

@@ -535,7 +535,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .await?;
         self.state.upsert_work_epic(&WorkEpicRow {
             epic_id: work_epic.as_str().parse()?,
-            todo_head: Some(head.to_string()),
+            base_commit: Some(head.to_string()),
             todo_fingerprint: Some(fingerprint.to_string()),
             is_active: false,
             iteration_count: 0,
@@ -983,7 +983,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .collect::<Result<Vec<_>, TodoError>>()?;
         let work_epic = WorkEpicRow {
             epic_id: preflight.work_epic.as_str().parse()?,
-            todo_head: Some(preflight.head.to_string()),
+            base_commit: Some(preflight.head.to_string()),
             todo_fingerprint: Some(preflight.fingerprint.to_string()),
             is_active: true,
             iteration_count: 0,

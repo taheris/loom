@@ -50,6 +50,9 @@ pub enum CacheError {
     /// cache rebuild found an invalid spec index: {detail}
     SpecIndexMismatch { detail: String },
 
-    /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running rebuild
-    DuplicateSpecMolecules { label: String, ids: String },
+    /// multiple spec metadata epics found for `{label}`: {ids}; relabel all but one before re-running rebuild
+    DuplicateSpecEpics { label: String, ids: String },
+
+    /// work epic `{id}` is missing its cached range or state; run `loom init --rebuild`
+    WorkEpicMissing { id: String },
 }

@@ -16,8 +16,7 @@ mod rebuild;
 
 pub use companions::parse_companions;
 pub use db::{
-    BdUpdateFn, CacheDb, CriterionEvidenceRow, MoleculeRow, NoteRow, SpecEpicRow, SpecRow,
-    WorkEpicRow,
+    BdUpdateFn, CacheDb, CriterionEvidenceRow, NoteRow, SpecEpicRow, SpecRow, WorkEpicRow,
 };
 pub use error::CacheError;
-pub use rebuild::{ActiveMolecule, RebuildReport};
+pub use rebuild::{RebuildEpic, RebuildReport};

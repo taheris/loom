@@ -10,7 +10,8 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow};
 use loom_driver::bd::BdError;
 use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_driver::state::{ActiveMolecule, BdUpdateFn, CacheDb, CacheError};
+use loom_driver::state::{BdUpdateFn, CacheDb, CacheError, RebuildEpic, SpecEpicRow};
+use loom_driver::testing::epic_fixture;
 
 fn write_spec(workspace: &Path, label: &str, body: &str) -> Result<()> {
     let specs = workspace.join("specs");
@@ -79,7 +80,7 @@ fn cache_db_init_creates_tables() -> Result<()> {
     )?;
     assert_eq!(
         meta,
-        vec![vec!["schema_version".to_string(), "8".to_string()]]
+        vec![vec!["schema_version".to_string(), "9".to_string()]]
     );
     Ok(())
 }
@@ -92,11 +93,11 @@ fn cache_db_rebuild_populates_specs_and_molecules() -> Result<()> {
     write_spec(workspace, "beta", "# beta\n\nbody\n")?;
 
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
-    let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("lm-alpha").unwrap(),
-        spec_label: SpecLabel::new("alpha").unwrap(),
-        base_commit: Some("abc123".to_string()),
-    }];
+    let molecules = epic_fixture(
+        MoleculeId::new("lm-alpha").unwrap(),
+        SpecLabel::new("alpha").unwrap(),
+        Some("abc123".to_string()),
+    )?;
 
     let report = db.rebuild(workspace, &molecules)?;
     assert_eq!(report.specs, 2);
@@ -106,16 +107,13 @@ fn cache_db_rebuild_populates_specs_and_molecules() -> Result<()> {
     assert_eq!(alpha.label.as_str(), "alpha");
 
     let mol = db
-        .molecule_for_spec(&SpecLabel::new("alpha").unwrap())?
-        .context("molecule should be present after rebuild")?;
-    assert_eq!(mol.id.as_str(), "lm-alpha");
+        .work_epic(&MoleculeId::new("lm-alpha").unwrap())?
+        .context("work epic should be present after rebuild")?;
+    assert_eq!(mol.epic_id.as_str(), "lm-alpha");
     assert_eq!(mol.base_commit.as_deref(), Some("abc123"));
     assert_eq!(mol.iteration_count, 0);
 
-    assert!(
-        db.molecule_for_spec(&SpecLabel::new("beta").unwrap())?
-            .is_none()
-    );
+    assert!(db.spec_epic(&SpecLabel::new("beta").unwrap())?.is_none());
     Ok(())
 }
 
@@ -159,11 +157,11 @@ fn cache_db_rebuild_resets_counters() -> Result<()> {
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
-    let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("lm-alpha").unwrap(),
-        spec_label: SpecLabel::new("alpha").unwrap(),
-        base_commit: None,
-    }];
+    let molecules = epic_fixture(
+        MoleculeId::new("lm-alpha").unwrap(),
+        SpecLabel::new("alpha").unwrap(),
+        None,
+    )?;
     db.rebuild(workspace, &molecules)?;
 
     let mol_id = MoleculeId::new("lm-alpha").unwrap();
@@ -172,8 +170,8 @@ fn cache_db_rebuild_resets_counters() -> Result<()> {
 
     db.rebuild(workspace, &molecules)?;
     let mol = db
-        .molecule_for_spec(&SpecLabel::new("alpha").unwrap())?
-        .context("molecule still present after rebuild")?;
+        .work_epic(&MoleculeId::new("lm-alpha").unwrap())?
+        .context("work epic still present after rebuild")?;
     assert_eq!(mol.iteration_count, 0);
     Ok(())
 }
@@ -261,8 +259,8 @@ fn cache_db_open_migrates_v6_drops_current_molecule() -> Result<()> {
     )?;
     assert_eq!(
         version,
-        vec![vec!["8".to_string()]],
-        "schema_version must advance to 8",
+        vec![vec!["9".to_string()]],
+        "schema_version must advance to 9",
     );
 
     let surviving = list_table(
@@ -287,11 +285,11 @@ fn cache_increment_iteration_returns_updated_count() -> Result<()> {
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
-    let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("lm-alpha").unwrap(),
-        spec_label: SpecLabel::new("alpha").unwrap(),
-        base_commit: None,
-    }];
+    let molecules = epic_fixture(
+        MoleculeId::new("lm-alpha").unwrap(),
+        SpecLabel::new("alpha").unwrap(),
+        None,
+    )?;
     db.rebuild(workspace, &molecules)?;
 
     let mol_id = MoleculeId::new("lm-alpha").unwrap();
@@ -307,26 +305,26 @@ fn cache_set_and_reset_iteration_round_trip() -> Result<()> {
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
-    let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("lm-alpha").unwrap(),
-        spec_label: SpecLabel::new("alpha").unwrap(),
-        base_commit: None,
-    }];
+    let molecules = epic_fixture(
+        MoleculeId::new("lm-alpha").unwrap(),
+        SpecLabel::new("alpha").unwrap(),
+        None,
+    )?;
     db.rebuild(workspace, &molecules)?;
 
     let mol_id = MoleculeId::new("lm-alpha").unwrap();
     db.set_iteration(&mol_id, 3)?;
     assert_eq!(
-        db.molecule_for_spec(&SpecLabel::new("alpha").unwrap())?
-            .context("molecule present")?
+        db.work_epic(&mol_id)?
+            .context("work epic present")?
             .iteration_count,
         3
     );
 
     db.reset_iteration(&mol_id)?;
     assert_eq!(
-        db.molecule_for_spec(&SpecLabel::new("alpha").unwrap())?
-            .context("molecule present")?
+        db.work_epic(&mol_id)?
+            .context("work epic present")?
             .iteration_count,
         0
     );
@@ -382,7 +380,7 @@ fn cache_db_open_migrates_v1_to_v2() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(meta, vec![vec!["8".to_string()]]);
+    assert_eq!(meta, vec![vec!["9".to_string()]]);
 
     let cols = list_table(&db_path, "PRAGMA table_info(specs)")?;
     let names: Vec<&str> = cols.iter().map(|r| r[1].as_str()).collect();
@@ -416,7 +414,7 @@ fn cache_db_open_is_idempotent_after_migration() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(meta, vec![vec!["8".to_string()]]);
+    assert_eq!(meta, vec![vec!["9".to_string()]]);
     Ok(())
 }
 
@@ -426,11 +424,11 @@ fn routine_commands_never_delete_spec_row() -> Result<()> {
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
-    let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("lm-alpha").unwrap(),
-        spec_label: SpecLabel::new("alpha").unwrap(),
-        base_commit: None,
-    }];
+    let molecules = epic_fixture(
+        MoleculeId::new("lm-alpha").unwrap(),
+        SpecLabel::new("alpha").unwrap(),
+        None,
+    )?;
     db.rebuild(workspace, &molecules)?;
     let label = SpecLabel::new("alpha").unwrap();
     let mol_id = MoleculeId::new("lm-alpha").unwrap();
@@ -689,7 +687,7 @@ fn open_wipes_legacy_todo_cursor_meta_keys() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(version, vec![vec!["8".to_string()]]);
+    assert_eq!(version, vec![vec!["9".to_string()]]);
 
     let legacy = list_table(
         &db_path,
@@ -717,11 +715,7 @@ fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
     let mol_id = MoleculeId::new("lm-alpha").unwrap();
     db.rebuild(
         workspace,
-        &[ActiveMolecule {
-            id: mol_id.clone(),
-            spec_label: label.clone(),
-            base_commit: Some("old-sha".to_string()),
-        }],
+        &epic_fixture(mol_id.clone(), label.clone(), Some("old-sha".to_string()))?,
     )?;
     db.notes_add(&label, "implementation", "impl 1", 100)?;
     db.notes_add(&label, "implementation", "impl 2", 200)?;
@@ -742,8 +736,8 @@ fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
         "rollback must keep the implementation notes intact",
     );
     let mol = db
-        .molecule_for_spec(&label)?
-        .context("molecule must survive rollback")?;
+        .work_epic(&mol_id)?
+        .context("work epic must survive rollback")?;
     assert_eq!(
         mol.base_commit,
         Some("old-sha".to_string()),
@@ -764,8 +758,8 @@ fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
         "non-implementation kinds must survive the gate",
     );
     let mol = db
-        .molecule_for_spec(&label)?
-        .context("molecule lookup after commit")?;
+        .work_epic(&mol_id)?
+        .context("work epic lookup after commit")?;
     assert_eq!(
         mol.base_commit,
         Some("new-sha".to_string()),
@@ -788,11 +782,7 @@ fn consume_notes_and_refresh_base_commit_invokes_closure_with_args() -> Result<(
     let mol_id = MoleculeId::new("lm-alpha").unwrap();
     db.rebuild(
         workspace,
-        &[ActiveMolecule {
-            id: mol_id.clone(),
-            spec_label: label.clone(),
-            base_commit: None,
-        }],
+        &epic_fixture(mol_id.clone(), label.clone(), None)?,
     )?;
 
     let captured: std::sync::Arc<Mutex<Vec<(String, String)>>> =
@@ -819,7 +809,7 @@ fn consume_notes_and_refresh_base_commit_invokes_closure_with_args() -> Result<(
 /// At the state-DB layer, `rebuild` mirrors the single-query resolver's
 /// invariant: a spec may carry at most one active molecule. When the input
 /// list pairs two molecules with the same `spec_label`, rebuild MUST refuse
-/// with [`CacheError::DuplicateSpecMolecules`] naming every conflicting id,
+/// with [`CacheError::DuplicateSpecEpics`] naming every conflicting id,
 /// not silently insert both. Spec: `harness.md` *Auxiliary commands*
 /// `loom init --rebuild` aborts on this case rather than papering over the
 /// invariant break.
@@ -830,28 +820,23 @@ fn todo_resolution_is_single_query_with_invariant_violation_refusal() -> Result<
     write_spec(workspace, "alpha", "# alpha\n")?;
 
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
-    let molecules = vec![
-        ActiveMolecule {
-            id: MoleculeId::new("lm-aaa").unwrap(),
+    let molecules = ["lm-aaa", "lm-bbb"].map(|id| {
+        RebuildEpic::Spec(SpecEpicRow {
+            epic_id: MoleculeId::new(id).unwrap(),
             spec_label: SpecLabel::new("alpha").unwrap(),
-            base_commit: None,
-        },
-        ActiveMolecule {
-            id: MoleculeId::new("lm-bbb").unwrap(),
-            spec_label: SpecLabel::new("alpha").unwrap(),
-            base_commit: None,
-        },
-    ];
+            todo_cursor: None,
+        })
+    });
     let err = db.rebuild(workspace, &molecules).unwrap_err();
     match err {
-        CacheError::DuplicateSpecMolecules { label, ids } => {
+        CacheError::DuplicateSpecEpics { label, ids } => {
             assert_eq!(label, "alpha");
             assert!(
                 ids.contains("lm-aaa") && ids.contains("lm-bbb"),
                 "expected every conflicting id in the error, got {ids:?}",
             );
         }
-        other => return Err(anyhow!("expected DuplicateSpecMolecules, got {other:?}")),
+        other => return Err(anyhow!("expected DuplicateSpecEpics, got {other:?}")),
     }
     Ok(())
 }
@@ -872,7 +857,7 @@ fn cache_db_round_trips_specs_epics_notes_and_criteria() -> Result<()> {
     };
     let work_epic = loom_driver::state::WorkEpicRow {
         epic_id: MoleculeId::new("lm-work").unwrap(),
-        todo_head: Some("def456".to_string()),
+        base_commit: Some("def456".to_string()),
         todo_fingerprint: Some("fp".to_string()),
         is_active: true,
         iteration_count: 2,
@@ -964,11 +949,11 @@ fn cache_db_rebuild_populates_specs_epics_and_companions() -> Result<()> {
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
     let report = db.rebuild(
         workspace,
-        &[ActiveMolecule {
-            id: MoleculeId::new("lm-alpha").unwrap(),
-            spec_label: SpecLabel::new("alpha").unwrap(),
-            base_commit: Some("abc".to_string()),
-        }],
+        &epic_fixture(
+            MoleculeId::new("lm-alpha").unwrap(),
+            SpecLabel::new("alpha").unwrap(),
+            Some("abc".to_string()),
+        )?,
     )?;
     assert_eq!(report.specs, 1);
     assert_eq!(report.spec_epics, 1);
@@ -978,7 +963,7 @@ fn cache_db_rebuild_populates_specs_epics_and_companions() -> Result<()> {
             .context("spec epic")?
             .epic_id
             .as_str(),
-        "lm-alpha"
+        "lm-alphaspec"
     );
     Ok(())
 }
@@ -989,11 +974,11 @@ fn cache_rebuild_resets_work_epic_counters() -> Result<()> {
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
-    let molecules = [ActiveMolecule {
-        id: MoleculeId::new("lm-alpha").unwrap(),
-        spec_label: SpecLabel::new("alpha").unwrap(),
-        base_commit: None,
-    }];
+    let molecules = epic_fixture(
+        MoleculeId::new("lm-alpha").unwrap(),
+        SpecLabel::new("alpha").unwrap(),
+        None,
+    )?;
     db.rebuild(workspace, &molecules)?;
     db.increment_iteration(&MoleculeId::new("lm-alpha").unwrap())?;
     db.rebuild(workspace, &molecules)?;
@@ -1003,6 +988,43 @@ fn cache_rebuild_resets_work_epic_counters() -> Result<()> {
             .iteration_count,
         0
     );
+    Ok(())
+}
+
+#[test]
+fn cache_rebuild_rolls_back_partial_replacement_on_duplicate_work_ids() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    write_spec(directory.path(), "alpha", "# alpha")?;
+    let db = CacheDb::open(directory.path().join("cache.db"))?;
+    let id = MoleculeId::new("lm-work")?;
+    let label = SpecLabel::new("alpha")?;
+    let mut epics = epic_fixture(id.clone(), label.clone(), Some("anchor".into()))?.to_vec();
+    db.rebuild(directory.path(), &epics)?;
+    db.set_iteration(&id, 7)?;
+    db.notes_add(&label, "implementation", "keep on failure", 1)?;
+    epics.push(epics[1].clone());
+    assert!(db.rebuild(directory.path(), &epics).is_err());
+    assert_eq!(
+        db.work_epic(&id)?
+            .context("preserved work epic")?
+            .iteration_count,
+        7
+    );
+    assert_eq!(db.notes_list(Some(&label), None)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn cache_rebuild_rejects_empty_present_index() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    write_spec(directory.path(), "alpha", "# alpha")?;
+    std::fs::create_dir(directory.path().join("docs"))?;
+    std::fs::write(directory.path().join("docs/README.md"), "# empty index")?;
+    let db = CacheDb::open(directory.path().join("cache.db"))?;
+    assert!(matches!(
+        db.rebuild(directory.path(), &[]),
+        Err(CacheError::SpecIndexMismatch { .. })
+    ));
     Ok(())
 }
 

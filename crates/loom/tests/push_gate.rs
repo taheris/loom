@@ -35,7 +35,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_driver::state::{ActiveMolecule, CacheDb};
+use loom_driver::state::CacheDb;
+use loom_driver::testing::epic_fixture;
 use loom_workflow::review::DEFAULT_MAX_ITERATIONS;
 
 fn git_command() -> Command {
@@ -261,11 +262,12 @@ fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &
     let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache.db");
     db.rebuild(
         workspace,
-        &[ActiveMolecule {
-            id: MoleculeId::new(mol_id).unwrap(),
-            spec_label: SpecLabel::new(label).unwrap(),
-            base_commit: Some(base_sha.to_string()),
-        }],
+        &epic_fixture(
+            MoleculeId::new(mol_id).unwrap(),
+            SpecLabel::new(label).unwrap(),
+            Some(base_sha.to_string()),
+        )
+        .unwrap(),
     )
     .expect("rebuild cache.db");
     db.upsert_spec(
@@ -288,9 +290,9 @@ fn run_loom_gate_review(
 ) -> std::process::Output {
     let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open state db");
     let base = db
-        .molecule_for_spec(&SpecLabel::new(spec_label).unwrap())
-        .expect("molecule lookup")
-        .and_then(|row| row.base_commit)
+        .spec_epic(&SpecLabel::new(spec_label).unwrap())
+        .expect("fixture spec epic lookup")
+        .and_then(|row| row.todo_cursor)
         .expect("base commit");
     let diff_range = format!("{base}..HEAD");
     let path_var = std::env::var_os("PATH").unwrap_or_default();

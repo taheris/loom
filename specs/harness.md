@@ -1499,6 +1499,23 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       epic per indexed spec, regardless of epic status; duplicates fail
       with conflicting IDs
   [test](cache_rebuild_requires_one_spec_epic_per_indexed_spec)
+- Cache reconstruction keeps spec cursors separate from work-epic range
+      anchors: todo batches use `loom.todo_head`, and pending batches retain
+      their fingerprint independently of the closed spec metadata carriers.
+  [test](rebuild_discovers_closed_spec_carriers_and_independent_work_batches)
+- Cache reconstruction uses a remediation batch's own `loom.base_commit`
+      without fabricating spec metadata from the work epic.
+  [test](rebuild_preserves_remediation_anchor_without_fabricating_spec_epic)
+- Malformed durable metadata fails reconstruction without inheritance or
+      Beads writes.
+  [test](rebuild_rejects_malformed_metadata_instead_of_inheriting_it)
+- Review that depends on a work-epic range refuses missing cache state
+      rather than interpreting it as clean work. Explicit diff/tree review
+      scopes remain independent of work-epic range context.
+  [test](integrity_findings_rejects_work_epic_without_range)
+- Review refuses a missing selected work-epic counter cache row rather
+      than interpreting it as a zero iteration count.
+  [test](iteration_count_rejects_missing_work_epic_cache)
 - `loom todo` creates a missing spec epic during preflight, treats the
       spec as uninitialized/changed, and blocks when an existing spec
       epic lacks `loom.todo_cursor` metadata
