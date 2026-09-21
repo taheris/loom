@@ -79,6 +79,71 @@ fn fixture_dir() -> TempDir {
 }
 
 #[test]
+fn batch_exit_77_preserves_skips_even_with_a_pass_on_stdout() {
+    let dir = fixture_dir();
+    let command = write_script(
+        dir.path(),
+        "skip.sh",
+        "printf '%s\\n' '{\"target\":\"a\",\"pass\":true,\"evidence\":\"needs service\"}'\nexit 77\n",
+    );
+    let fallback = run_system(
+        &[ann(Tier::System, &command)],
+        &[],
+        &DispatchOptions::default(),
+        dir.path(),
+        &TierCwds::default(),
+    );
+    let fallback = fallback[0].as_ref().unwrap();
+    assert!(fallback.verdict.skipped);
+    assert!(!fallback.verdict.pass);
+    for parser in [
+        BuiltinParser::ExitCode,
+        BuiltinParser::JsonLines,
+        BuiltinParser::LibtestJson,
+        BuiltinParser::JunitXml,
+    ] {
+        let runner =
+            RunnerSpec::compile("skip", None, &command, "{name}", " ", parser, None).unwrap();
+        let annotations = [ann(Tier::Test, "a"), ann(Tier::Test, "b")];
+        let outcomes = run_with_runners(
+            &annotations,
+            &[runner],
+            &DispatchOptions::default(),
+            dir.path(),
+            &TierCwds::default(),
+        );
+        assert_eq!(outcomes.len(), 2);
+        for outcome in outcomes {
+            let outcome = outcome.unwrap();
+            assert!(outcome.verdict.skipped);
+            assert!(!outcome.verdict.pass);
+            assert!(outcome.verdict.evidence.contains("needs service"));
+        }
+    }
+}
+
+#[test]
+fn configured_test_dispatch_preserves_empty_scoped_selection() {
+    let dir = fixture_dir();
+    let config = loom_driver::config::LoomConfig::load(dir.path().join("loom.toml")).unwrap();
+    let outcomes = loom_gate::dispatch::run_configured_tests(
+        &[ann(Tier::Test, "unselected")],
+        &DispatchOptions {
+            files: vec!["other.rs".into()],
+            ..DispatchOptions::default()
+        },
+        &config,
+        dir.path(),
+        &EmptyScope,
+    )
+    .unwrap();
+    assert!(
+        outcomes.is_empty(),
+        "no toolchain exists: discovery must not run for an empty scope"
+    );
+}
+
+#[test]
 fn dispatcher_spawns_one_subprocess_per_unmatched_check_annotation() {
     let dir = fixture_dir();
     let counter = dir.path().join("spawns.txt");

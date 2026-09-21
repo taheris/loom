@@ -1704,20 +1704,6 @@ fn run_gate_single_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> a
     Ok(())
 }
 
-/// Resolve the `[test]`-tier runner template. `[runner.test] command =
-/// "..."` from `<workspace>/loom.toml` (the consolidated `LoomConfig`)
-/// wins; absent that override, fall back to toolchain detection in
-/// `loom_gate::runner::discover`.
-fn resolve_test_runner_template(workspace: &Path) -> anyhow::Result<loom_gate::RunnerTemplate> {
-    let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
-    if let Some(tier) = config.runner.tier("test")
-        && let Some(command) = tier.command.as_deref()
-    {
-        return Ok(loom_gate::RunnerTemplate::new(command));
-    }
-    Ok(loom_gate::runner::discover(workspace, Tier::Test)?)
-}
-
 /// Tier-default cwds for all four tiers, read from `<workspace>/loom.toml`'s
 /// `[runner.<tier>] cwd` entries. Independent of the runner-spec list, so
 /// every runner-context resolver shares one copy.
@@ -1736,8 +1722,8 @@ fn all_tier_cwds(config: &LoomConfig) -> TierCwds {
 /// `[system]` carries its `[runner.system.<name>]` blocks, so a
 /// `[system](target)` resolves its inputs end-to-end through the matching
 /// runner per `specs/gate.md` § Target resolution — execution stays
-/// per-annotation. `[test]` / `[judge]` batch through their own templates
-/// and consult no `RunnerSpec` list. Targets matching no configured runner
+/// per-annotation. `[test]` uses `run_configured_tests`; `[judge]` owns its
+/// review path. Neither consults this resolver. Targets matching no configured runner
 /// fall through to per-annotation spawn / the `tokens[0]`-on-PATH fallback.
 fn resolve_runner_context(
     workspace: &Path,
@@ -1838,27 +1824,32 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
             );
         }
         Tier::Test => {
-            let template = resolve_test_runner_template(workspace)?;
+            let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
             let scope = SelectedTestScope {
                 files: options.files.clone(),
             };
-            match loom_gate::run_test(&selected, &options, &template, &scope) {
-                Ok(Some(outcome)) => {
-                    let verdict = if outcome.verdict.skipped {
-                        Verdict::Skipped
-                    } else if outcome.verdict.pass {
-                        Verdict::Pass
-                    } else {
-                        eprintln!("loom gate [test] failed:\n{}", outcome.verdict.evidence);
+            for result in loom_gate::dispatch::run_configured_tests(
+                &selected, &options, &config, workspace, &scope,
+            )? {
+                match result {
+                    Ok(outcome) => {
+                        let verdict = outcome.verdict.outcome();
+                        match verdict {
+                            Verdict::Pass => {}
+                            Verdict::Skipped => {
+                                eprintln!("loom gate [test] SKIP: {}", outcome.verdict.evidence);
+                            }
+                            Verdict::Fail => {
+                                eprintln!("loom gate [test] failed:\n{}", outcome.verdict.evidence);
+                                combined = combined.max(1);
+                            }
+                        }
+                        persist_outcome(workspace, &cache, &outcome, verdict, now_ms, &commit);
+                    }
+                    Err(err) => {
+                        eprintln!("loom gate [test]: {err:#}");
                         combined = combined.max(1);
-                        Verdict::Fail
-                    };
-                    persist_outcome(workspace, &cache, &outcome, verdict, now_ms, &commit);
-                }
-                Ok(None) => eprintln!("loom gate [test]: no annotations matched scope filter"),
-                Err(err) => {
-                    eprintln!("loom gate [test]: {err:#}");
-                    combined = combined.max(1);
+                    }
                 }
             }
         }

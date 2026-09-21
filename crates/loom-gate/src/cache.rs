@@ -21,12 +21,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use displaydoc::Display;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Deserialize;
 use thiserror::Error;
 
 use crate::annotation::{Annotation, ParsedSpecs, Tier};
 use crate::integrity::IntegrityFinding;
+
+// Earlier parsers recorded ignored tests as passes. Their evidence cannot be
+// distinguished from real passes, so invalidate unversioned rows once.
+const EVIDENCE_VERSION: &str = "1";
+const EVIDENCE_VERSION_KEY: &str = "verifier_evidence_version";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS specs (
@@ -55,8 +60,8 @@ CREATE TABLE IF NOT EXISTS meta (
 
 /// Per-criterion verdict recorded by the most recent verifier run.
 ///
-/// `Skipped` carries the scope reason (e.g. "annotation outside `--files`
-/// set") in the row's `evidence` field; consumers display it alongside the
+/// `Skipped` carries the scope, ignored-test or unmet-prerequisite reason
+/// in the row's `evidence` field; consumers display it alongside the
 /// failing rows so a stale skip is visible in the report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
@@ -129,12 +134,28 @@ impl StatusCache {
                 source,
             })?;
         }
-        let conn = Connection::open(path).map_err(|source| CacheError::Open {
+        let mut conn = Connection::open(path).map_err(|source| CacheError::Open {
             path: path.to_path_buf(),
             source,
         })?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000;")?;
         conn.execute_batch(SCHEMA)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                [EVIDENCE_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if version.as_deref() != Some(EVIDENCE_VERSION) {
+            tx.execute("DELETE FROM criterion_status", [])?;
+            tx.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
+                params![EVIDENCE_VERSION_KEY, EVIDENCE_VERSION],
+            )?;
+        }
+        tx.commit()?;
         Ok(Self {
             conn: Mutex::new(conn),
         })

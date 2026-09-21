@@ -54,6 +54,42 @@ fn status_cache_open_preserves_unified_cache_db_schema_version() {
 }
 
 #[test]
+fn unversioned_verifier_evidence_is_invalidated_once() {
+    let dir = tempdir().unwrap();
+    let path = cache_path(&dir);
+    let cache = StatusCache::open(&path).unwrap();
+    cache
+        .upsert(&cache_row("gate", "old", Tier::Test, Verdict::Pass))
+        .unwrap();
+    drop(cache);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "DELETE FROM meta WHERE key = 'verifier_evidence_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let cache = StatusCache::open(&path).unwrap();
+    assert!(
+        cache.read_all().unwrap().is_empty(),
+        "old passes may be ignored tests"
+    );
+    let skipped = cache_row("gate", "new", Tier::Test, Verdict::Skipped);
+    cache.upsert(&skipped).unwrap();
+    drop(cache);
+    let cache = StatusCache::open(&path).unwrap();
+    assert_eq!(cache.read_all().unwrap(), vec![skipped]);
+    let db = CacheDb::open(&path).unwrap();
+    assert_eq!(
+        db.spec(&"gate".parse().unwrap()).unwrap().spec_path,
+        "specs/gate.md",
+        "only evidence was invalidated"
+    );
+}
+
+#[test]
 fn round_trip_through_sqlite_preserves_every_field() {
     let dir = tempdir().unwrap();
     let cache = StatusCache::open(&cache_path(&dir)).unwrap();

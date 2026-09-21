@@ -34,10 +34,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use displaydoc::Display;
+use loom_driver::config::LoomConfig;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::annotation::{Annotation, Tier};
+use crate::cache::Verdict;
 use crate::runner::{
     BuiltinParser, RunnerError, RunnerGroup, RunnerSpec, RunnerTemplate, check_zero_match,
     group_by_runner, parse_runner_output,
@@ -53,11 +55,51 @@ use crate::runner::{
 /// for running was not met — the dispatcher surfaces those as the
 /// third verdict alongside pass/fail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "WireVerifierVerdict")]
 pub struct VerifierVerdict {
     pub pass: bool,
     pub evidence: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skipped: bool,
+}
+
+#[derive(Deserialize)]
+struct WireVerifierVerdict {
+    pass: bool,
+    evidence: String,
+    #[serde(default)]
+    skipped: bool,
+}
+
+impl From<WireVerifierVerdict> for VerifierVerdict {
+    fn from(wire: WireVerifierVerdict) -> Self {
+        Self {
+            pass: wire.pass && !wire.skipped,
+            evidence: wire.evidence,
+            skipped: wire.skipped,
+        }
+    }
+}
+
+impl VerifierVerdict {
+    /// Semantic outcome of the backward-compatible JSON flag representation.
+    pub const fn outcome(&self) -> Verdict {
+        if self.skipped {
+            Verdict::Skipped
+        } else if self.pass {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        }
+    }
+
+    pub fn from_outcome(outcome: Verdict, evidence: String) -> Self {
+        Self {
+            pass: outcome == Verdict::Pass,
+            skipped: outcome == Verdict::Skipped,
+            evidence,
+        }
+    }
 }
 
 /// GNU test-suite skip exit code (`AM_TESTS_ENVIRONMENT` / TAP-13).
@@ -86,6 +128,12 @@ pub enum DispatchError {
     },
     /// runner zero-match: {source}
     ZeroMatch {
+        #[source]
+        source: RunnerError,
+    },
+    /// runner `{runner}` produced an invalid report: {source}
+    RunnerOutput {
+        runner: String,
         #[source]
         source: RunnerError,
     },
@@ -317,6 +365,70 @@ pub fn run_test_in(
     }))
 }
 
+/// Run test annotations with configured per-target parsers or legacy batch templates.
+///
+/// Explicit parsers and named runners retain individual test outcomes. Command-only
+/// legacy configurations keep their aggregate wire contract and toolchain discovery.
+/// Empty scoped selections do not discover runners or spawn processes.
+///
+/// # Errors
+/// Returns an error for invalid runner configuration or an unclaimed test target.
+pub fn run_configured_tests(
+    annotations: &[Annotation],
+    options: &DispatchOptions,
+    config: &LoomConfig,
+    repo_root: &Path,
+    scope: &dyn TestScope,
+) -> Result<Vec<Result<DispatchOutcome, DispatchError>>, RunnerError> {
+    let candidates = annotations
+        .iter()
+        .filter(|ann| ann.tier == Tier::Test && !ann.pending)
+        .collect::<Vec<_>>();
+    let selected = filter_by_files(&candidates, &options.files, scope)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tier = config.runner.tier("test");
+    let tier_cwds = TierCwds {
+        test: tier.and_then(|tier| tier.cwd.as_ref()).map(PathBuf::from),
+        ..TierCwds::default()
+    };
+    let structured = tier.is_some_and(|tier| {
+        tier.parse.is_some()
+            || tier.target.is_some()
+            || tier.join.is_some()
+            || tier.match_regex.is_some()
+            || !tier.runners.is_empty()
+    });
+    if structured {
+        let specs = crate::runner::compile_tier_runners(config, "test")?;
+        let (_, unmatched) = group_by_runner(&specs, &selected);
+        if let Some(annotation) = unmatched.first() {
+            return Err(RunnerError::UnclaimedTestTarget {
+                target: annotation.target.clone(),
+            });
+        }
+        return Ok(run_with_runners(
+            &selected, &specs, options, repo_root, &tier_cwds,
+        ));
+    }
+    let template = match tier.and_then(|tier| tier.command.as_ref()) {
+        Some(command) => RunnerTemplate::new(command),
+        None => crate::runner::discover(repo_root, Tier::Test)?,
+    };
+    let cwd = resolve_cwd(None, tier_cwds.test.as_deref(), repo_root);
+    Ok(
+        match run_test_in(&selected, options, &template, scope, Some(&cwd)) {
+            Ok(Some(outcome)) => vec![Ok(outcome)],
+            Ok(None) => Vec::new(),
+            Err(error) => vec![Err(error)],
+        },
+    )
+}
+
 /// Dispatch every `[judge]`-tier annotation in `annotations` as one
 /// batched runner subprocess. Judges aren't `--files`-filterable, so
 /// every judge annotation is included.
@@ -452,11 +564,10 @@ fn dispatch_group(
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let parsed = parse_runner_output(group.spec.parse, &stdout, &stderr, output.status.success());
-
-    if matches!(group.spec.parse, BuiltinParser::ExitCode) {
+    let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
+    if matches!(group.spec.parse, BuiltinParser::ExitCode) || skipped {
         let pass = output.status.success();
-        let evidence = if pass {
+        let evidence = if pass || (skipped && stderr.trim().is_empty()) {
             stdout.trim().to_string()
         } else {
             stderr.trim().to_string()
@@ -470,24 +581,36 @@ fn dispatch_group(
                     verdict: VerifierVerdict {
                         pass,
                         evidence: evidence.clone(),
-                        skipped: false,
+                        skipped,
                     },
                 })
             })
             .collect();
     }
 
+    let parsed =
+        match parse_runner_output(group.spec.parse, &stdout, &stderr, output.status.success()) {
+            Ok(parsed) => parsed,
+            Err(source) => {
+                return group
+                    .matched
+                    .iter()
+                    .map(|_| {
+                        Err(DispatchError::RunnerOutput {
+                            runner: group.spec.name.clone(),
+                            source: source.clone(),
+                        })
+                    })
+                    .collect();
+            }
+        };
     group
         .matched
         .iter()
         .map(|matched| match parsed.get(&matched.rendered_target) {
             Some(verdict) => Ok(DispatchOutcome {
                 annotations: vec![matched.annotation.clone()],
-                verdict: VerifierVerdict {
-                    pass: verdict.pass,
-                    evidence: verdict.evidence.clone(),
-                    skipped: false,
-                },
+                verdict: VerifierVerdict::from_outcome(verdict.outcome, verdict.evidence.clone()),
             }),
             None => Err(DispatchError::MissingFromBatchOutput {
                 runner: group.spec.name.clone(),
@@ -524,15 +647,30 @@ fn run_with_fallback(
     let output = spawn_in(command, options, cwd)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if sniff_zero_match {
+    let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
+    let reported = parse_verdict_optional(command, &stdout)?;
+    if sniff_zero_match && !skipped {
+        if let Some((outcome, evidence)) =
+            crate::runner::unstructured_test_outcome(command, &stdout, &stderr)
+            && (outcome == Verdict::Fail
+                || (output.status.success()
+                    && !reported
+                        .as_ref()
+                        .is_some_and(|verdict| verdict.outcome() == Verdict::Fail)))
+        {
+            return Ok(VerifierVerdict::from_outcome(outcome, evidence));
+        }
         check_zero_match(command, &stdout, &stderr)
             .map_err(|e| DispatchError::ZeroMatch { source: e })?;
     }
-    if let Some(verdict) = parse_verdict_optional(command, &stdout)? {
-        return Ok(verdict);
+    if let Some(verdict) = reported {
+        return Ok(if skipped {
+            VerifierVerdict::from_outcome(Verdict::Skipped, verdict.evidence)
+        } else {
+            verdict
+        });
     }
-    let exit_code = output.status.code();
-    if exit_code == Some(SKIP_EXIT_CODE) {
+    if skipped {
         let evidence = if stderr.trim().is_empty() {
             stdout.into_owned()
         } else {
@@ -663,6 +801,18 @@ mod tests {
             criterion_line: 1,
             pending: false,
         }
+    }
+
+    #[test]
+    fn skipped_wire_verdict_cannot_claim_an_observed_pass() {
+        let verdict: VerifierVerdict =
+            serde_json::from_str(r#"{"pass":true,"evidence":"not run","skipped":true}"#).unwrap();
+        assert!(!verdict.pass);
+        assert!(verdict.skipped);
+        assert_eq!(verdict.outcome(), Verdict::Skipped);
+        let serialized = serde_json::to_value(&verdict).unwrap();
+        assert_eq!(serialized["pass"], false);
+        assert_eq!(serialized["skipped"], true);
     }
 
     #[test]

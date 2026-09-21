@@ -698,6 +698,10 @@ promotion errors or blocking on structural bd state — is owned by
 - The `row_for` helper writes a row that round-trips through the unified
   cache
   [test](row_for_helper_writes_round_trip_row)
+- Unversioned verifier evidence is invalidated once because historical
+  passing rows may represent ignored tests; subsequent cache opens preserve
+  new evidence and unrelated cache state
+  [test](unversioned_verifier_evidence_is_invalidated_once)
 - Report rendered from on-disk rows summarises pass/fail per tier
   [test](render_report_reads_from_disk_and_summarises_per_tier)
 - Broken-annotation entries in the report come from integrity findings,
@@ -863,6 +867,29 @@ promotion errors or blocking on structural bd state — is owned by
 - `libtest-json` parser maps test-event names back to annotation
   targets
   [test](run_with_runners_libtest_json_maps_test_names_back_to_annotations)
+- Ignored libtest tests and skipped JUnit cases remain skipped through
+  CLI dispatch, cache persistence and todo criterion evidence; mixed and
+  all-skipped batches never turn skips into observed passes
+  [test](skipped_tests_survive_cli_cache_and_criterion_evidence)
+- Known unstructured test summaries cannot certify a whole batch when
+  some tests were skipped; failures still take precedence over skips
+  [test](unstructured_cargo_skips_do_not_certify_every_target)
+- Empty doctest suites do not turn executed unit tests into a zero-match
+  dispatch error
+  [test](empty_doctest_suite_does_not_erase_executed_unit_tests)
+- JUnit parsing respects XML quoting, entities and CDATA rather than
+  guessing outcomes from tag-shaped text
+  [test](junit_preserves_skips_entities_and_cdata_without_textual_tag_guessing)
+- Malformed, unsupported or duplicate-identity JUnit reports fail closed
+  [test](junit_rejects_malformed_unsupported_and_ambiguous_reports)
+- Malformed JUnit output cannot persist partial passing evidence
+  [test](malformed_junit_fails_without_persisting_partial_passes)
+- Skip exit code 77 applies to every target in a matched runner batch,
+  even if stdout contains a passing verdict
+  [test](batch_exit_77_preserves_skips_even_with_a_pass_on_stdout)
+- The existing JSON verdict shape remains accepted; `skipped: true`
+  takes precedence over `pass` and normalizes it to false
+  [test](skipped_wire_verdict_cannot_claim_an_observed_pass)
 - `exit-code` parser shares a single per-runner verdict across every
   target in the group
   [test](run_with_runners_exit_code_parser_shares_verdict_across_group)
@@ -2729,17 +2756,33 @@ results, and where to run from.
 emit one of these formats, rather than authoring custom parsers:
 
 - `libtest-json` — Rust `cargo test`/`nextest` `--message-format`
-  output: one event per test with `name` + `outcome`.
-- `junitxml` — JUnit-XML reports (pytest, others). Parses
-  `<testcase>` elements for pass/fail and message.
+  output: test events with `name` and `event` (`ok`, `failed`, `ignored`).
+  Ignored tests produce a skipped result, not a pass.
+- `junit-xml` — JUnit-XML reports (pytest, others). Parses XML under
+  `testsuite` / `testsuites` roots; testcase identity is `classname.name`
+  (or `name` without a classname). Direct `failure`/`error` children fail,
+  `skipped` children skip, and otherwise the case passes. Failure takes
+  precedence over skip. Malformed XML, missing names, duplicate identities,
+  unsupported testcase children and unrecognized status/result attributes
+  without an explicit failure/skip are dispatch errors.
 - `nix-build-status` — `nix build`'s per-derivation success/failure
   output.
 - `json-lines` — one `{"target":"<name>","pass":bool,"evidence":"<msg>"}`
-  per line on stdout. The simplest format for consumers writing
-  custom batched runners: emit one line per target.
+  per line on stdout, optionally including `"skipped":true`. The simplest
+  format for consumers writing custom batched runners: emit one line per
+  target. A skip always takes precedence over a passing flag.
 - `exit-code` — single per-runner verdict from the process exit
   code. Only useful for non-batched runners (one annotation per
   invocation).
+
+Configured `[test]` parsers and named runners are used by both CLI verification
+and the mint verifier walk. Every selected target must match a configured
+runner (use a tier-default runner for the remainder). Command-only legacy test
+configurations and toolchain discovery retain their aggregate exit-code/JSON
+contract. When a known unstructured test summary reports skips, that aggregate
+is recorded as skipped: it cannot establish which targets actually passed.
+Failures in the summary or process status are not demoted by the presence of
+skips. Use a per-target parser for precise mixed-batch evidence.
 
 **Tier-default cwd.** A `[runner.<tier>]` block (no `.<name>` suffix)
 sets the default cwd for unmatched annotations in that tier:
@@ -2940,7 +2983,7 @@ conforms to:
 - **Output:** a JSON line on stdout matching the typed-verdict
   shape — `{"pass": bool, "evidence": "<message>"}`. Batched runners
   emit one such line per target via the `json-lines` parser, or use
-  one of the other built-in parsers (`libtest-json`, `junitxml`,
+  one of the other built-in parsers (`libtest-json`, `junit-xml`,
   `nix-build-status`).
 - **Exit code:** `0` for pass, `1` for fail, `2` for dispatch error
   (unknown verifier, command not found, missing prerequisite).
@@ -2970,7 +3013,14 @@ exit as `pass=false` (stderr surfaced as evidence). The third
 verdict propagates through dispatch as `skipped=true` on
 `VerifierVerdict` and persists as `Verdict::Skipped` in the status
 cache, so a verifier that legitimately cannot run does not count
-as a failure against the molecule. Verifiers that emit a JSON line
+as a failure against the molecule. It also cannot satisfy an observed-pass
+criterion. Exit 77 applies to configured batches as well as fallback commands;
+explicit `skipped: true` JSON retains the same meaning with either exit zero or
+77. The JSON wire shape and cache verdict strings remain unchanged. Previously
+unversioned criterion evidence is discarded once because old parsers conflated
+ignored tests with passes; other cache state is retained.
+
+Verifiers that emit a JSON line
 are preferred — the explicit evidence string clicks straight to the
 violation site — but the exit-code fallback keeps simple
 presence/absence checks viable without wrapping each one in a Rust

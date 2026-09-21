@@ -37,6 +37,7 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 insta = { workspace = true }
 loom-driver = { workspace = true, features = ["test-support"] }
+loom-templates = { workspace = true }
 loom-test-support = { workspace = true }
 nix = { workspace = true }
 proc-macro2 = { version = "1", features = ["span-locations"] }

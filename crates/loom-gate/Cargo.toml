@@ -19,6 +19,7 @@ loom-events = { workspace = true }
 loom-protocol = { workspace = true }
 pulldown-cmark = { workspace = true }
 regex = { workspace = true }
+roxmltree = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

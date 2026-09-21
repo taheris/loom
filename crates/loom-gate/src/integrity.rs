@@ -453,7 +453,7 @@ impl PendingCommandExecutor for DispatchPendingExecutor<'_> {
         );
         matches!(
             results.into_iter().next(),
-            Some(Ok(outcome)) if outcome.verdict.pass
+            Some(Ok(outcome)) if outcome.verdict.outcome() == crate::cache::Verdict::Pass
         )
     }
 }

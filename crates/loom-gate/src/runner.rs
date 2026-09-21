@@ -19,6 +19,7 @@ use regex::Regex;
 use thiserror::Error;
 
 use crate::annotation::{Annotation, Tier};
+use crate::cache::Verdict;
 
 /// Template string for a batched-tier runner.
 ///
@@ -153,12 +154,63 @@ pub fn check_zero_match(command: &str, stdout: &str, stderr: &str) -> Result<(),
     Ok(())
 }
 
+/// A legacy, unstructured test batch containing skips cannot certify every target.
+/// Per-target parser configurations avoid this conservative batch-wide result.
+pub(crate) fn unstructured_test_outcome(
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+) -> Option<(Verdict, String)> {
+    let kind = RunnerKind::classify(command);
+    let count = Regex::new(r"\b[1-9][0-9]* (failed|skipped|ignored)\b").ok()?;
+    let mut skipped = None;
+    for line in stdout.lines().chain(stderr.lines()).map(str::trim) {
+        let summary = match kind {
+            RunnerKind::CargoTest => line.starts_with("test result:"),
+            RunnerKind::CargoNextest => line.contains("tests run:"),
+            RunnerKind::Pytest => line.starts_with('=') && line.ends_with('='),
+            RunnerKind::Unknown => false,
+        };
+        if !summary {
+            continue;
+        }
+        for captures in count.captures_iter(line) {
+            if captures
+                .get(1)
+                .is_some_and(|kind| kind.as_str() == "failed")
+            {
+                return Some((Verdict::Fail, line.to_string()));
+            }
+            skipped = Some((
+                Verdict::Skipped,
+                format!("per-target outcomes unavailable; test batch contains skips: {line}"),
+            ));
+        }
+    }
+    skipped
+}
+
 fn detect_zero_match(kind: RunnerKind, stdout: &str, stderr: &str) -> Option<String> {
     match kind {
-        RunnerKind::CargoTest => stdout
-            .lines()
-            .find(|l| l.trim() == "running 0 tests")
-            .map(|l| l.trim().to_string()),
+        RunnerKind::CargoTest => {
+            let ran_tests = stdout.lines().map(str::trim).any(|line| {
+                line.strip_prefix("running ")
+                    .and_then(|rest| {
+                        rest.strip_suffix(" tests")
+                            .or_else(|| rest.strip_suffix(" test"))
+                    })
+                    .and_then(|count| count.parse::<usize>().ok())
+                    .is_some_and(|count| count > 0)
+            });
+            if ran_tests {
+                None
+            } else {
+                stdout
+                    .lines()
+                    .find(|line| line.trim() == "running 0 tests")
+                    .map(|line| line.trim().to_string())
+            }
+        }
         RunnerKind::CargoNextest => stdout
             .lines()
             .chain(stderr.lines())
@@ -247,8 +299,15 @@ fn starts_with_token(input: &str, token: &str) -> bool {
 }
 
 /// Failures surfaced by runner discovery and zero-match sniffing.
-#[derive(Debug, Display, Error)]
+#[derive(Debug, Clone, Display, Error)]
 pub enum RunnerError {
+    /// invalid {parser} runner output: {detail}
+    InvalidOutput {
+        parser: &'static str,
+        detail: String,
+    },
+    /// no configured test runner claims target `{target}`; configure a tier-default runner
+    UnclaimedTestTarget { target: String },
     /// runner discovery only applies to batched tiers (test, judge); got [{tier}]
     NotBatched { tier: Tier },
     /// no Cargo.toml / pyproject.toml / go.mod under {root}
@@ -283,7 +342,7 @@ pub enum RunnerError {
 ///   into a per-target verdict.
 /// - [`Self::JunitXml`] — JUnit-XML reports. Each `<testcase classname="..."
 ///   name="...">` becomes one verdict; a nested `<failure>` / `<error>`
-///   produces `pass = false`.
+///   produces a failure, and `<skipped>` preserves an unevaluated result.
 /// - [`Self::NixBuildStatus`] — `nix build`'s per-derivation output.
 /// - [`Self::JsonLines`] — one
 ///   `{"target":"<name>","pass":bool,"evidence":"<msg>"}` per line.
@@ -308,7 +367,7 @@ pub enum BuiltinParser {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedVerdict {
     pub target: String,
-    pub pass: bool,
+    pub outcome: Verdict,
     pub evidence: String,
 }
 
@@ -721,23 +780,24 @@ fn substitute_captures(template: &str, re: &Regex, target: &str) -> String {
 
 /// Parse per-target verdicts from batched runner output.
 ///
-/// Uses the runner's built-in parser tag. Each parser is a
-/// best-effort recovery layer; targets the parser cannot find are
-/// returned as missing so the dispatcher can flag them as dispatch
-/// failures.
+/// Missing targets remain dispatch failures. Structured test reports retain
+/// passes, failures and skips separately; a skip is never an observed pass.
+///
+/// # Errors
+/// Returns an error for malformed or unsupported `JUnit` reports.
 pub fn parse_runner_output(
     parser: BuiltinParser,
     stdout: &str,
     stderr: &str,
     exit_success: bool,
-) -> HashMap<String, ParsedVerdict> {
-    match parser {
+) -> Result<HashMap<String, ParsedVerdict>, RunnerError> {
+    Ok(match parser {
         BuiltinParser::JsonLines => parse_json_lines(stdout),
         BuiltinParser::LibtestJson => parse_libtest_json(stdout),
-        BuiltinParser::JunitXml => parse_junit_xml(stdout),
+        BuiltinParser::JunitXml => parse_junit_xml(stdout)?,
         BuiltinParser::NixBuildStatus => parse_nix_build_status(stdout, stderr),
         BuiltinParser::ExitCode => parse_exit_code(stdout, stderr, exit_success),
-    }
+    })
 }
 
 fn parse_json_lines(stdout: &str) -> HashMap<String, ParsedVerdict> {
@@ -763,12 +823,19 @@ fn parse_json_lines(stdout: &str) -> HashMap<String, ParsedVerdict> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        if let (Some(target), Some(pass)) = (target, pass) {
+        let skipped = obj
+            .get("skipped")
+            .map_or(Some(false), serde_json::Value::as_bool);
+        if let (Some(target), Some(pass), Some(skipped)) = (target, pass, skipped) {
             out.insert(
                 target.clone(),
                 ParsedVerdict {
                     target,
-                    pass,
+                    outcome: if skipped {
+                        Verdict::Skipped
+                    } else {
+                        pass_outcome(pass)
+                    },
                     evidence,
                 },
             );
@@ -797,24 +864,30 @@ fn parse_libtest_json(stdout: &str) -> HashMap<String, ParsedVerdict> {
             continue;
         };
         let event = obj.get("event").and_then(|v| v.as_str()).unwrap_or("");
-        let (pass, evidence) = match event {
-            "ok" => (true, String::from("ok")),
+        let (outcome, evidence) = match event {
+            "ok" => (Verdict::Pass, String::from("ok")),
             "failed" => {
                 let stdout_field = obj
                     .get("stdout")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                (false, stdout_field)
+                (Verdict::Fail, stdout_field)
             }
-            "ignored" => (true, String::from("ignored")),
+            "ignored" => (
+                Verdict::Skipped,
+                obj.get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("ignored")
+                    .to_string(),
+            ),
             _ => continue,
         };
         out.insert(
             name.to_string(),
             ParsedVerdict {
                 target: name.to_string(),
-                pass,
+                outcome,
                 evidence,
             },
         );
@@ -822,61 +895,112 @@ fn parse_libtest_json(stdout: &str) -> HashMap<String, ParsedVerdict> {
     out
 }
 
-fn parse_junit_xml(stdout: &str) -> HashMap<String, ParsedVerdict> {
+fn parse_junit_xml(stdout: &str) -> Result<HashMap<String, ParsedVerdict>, RunnerError> {
+    let invalid = |detail: String| RunnerError::InvalidOutput {
+        parser: "junit-xml",
+        detail,
+    };
+    let document =
+        roxmltree::Document::parse(stdout).map_err(|error| invalid(error.to_string()))?;
+    let root = document.root_element();
+    if !root.has_tag_name("testsuites") && !root.has_tag_name("testsuite") {
+        return Err(invalid("expected a testsuite or testsuites root".into()));
+    }
     let mut out = HashMap::new();
-    let Ok(testcase_re) = Regex::new(r"(?s)<testcase\b([^>]*?)(?:/>|>(.*?)</testcase>)") else {
-        return out;
-    };
-    let Ok(classname_re) = Regex::new(r#"\bclassname\s*=\s*"([^"]*)""#) else {
-        return out;
-    };
-    let Ok(name_re) = Regex::new(r#"\bname\s*=\s*"([^"]*)""#) else {
-        return out;
-    };
-    for cap in testcase_re.captures_iter(stdout) {
-        let Some(attrs) = cap.get(1) else { continue };
-        let body = cap.get(2).map_or("", |m| m.as_str());
-        let classname = classname_re
-            .captures(attrs.as_str())
-            .and_then(|c| c.get(1))
-            .map_or("", |m| m.as_str());
-        let Some(name) = name_re
-            .captures(attrs.as_str())
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str())
-        else {
-            continue;
-        };
+    for case in document
+        .descendants()
+        .filter(|node| node.has_tag_name("testcase"))
+    {
+        if !case
+            .parent()
+            .is_some_and(|parent| parent.has_tag_name("testsuite"))
+        {
+            return Err(invalid(
+                "testcase must be a direct child of testsuite".into(),
+            ));
+        }
+        let name = case
+            .attribute("name")
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| invalid("testcase has no nonempty name".into()))?;
+        let classname = case.attribute("classname").unwrap_or("");
         let key = if classname.is_empty() {
             name.to_string()
         } else {
             format!("{classname}.{name}")
         };
-        let failed = body.contains("<failure") || body.contains("<error");
-        let evidence = if failed {
-            extract_first_attr(body, "message").unwrap_or_else(|| "failed".to_string())
+        let children = case
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .collect::<Vec<_>>();
+        if children.iter().any(|node| {
+            node.tag_name().namespace().is_some()
+                || !matches!(
+                    node.tag_name().name(),
+                    "failure" | "error" | "skipped" | "system-out" | "system-err" | "properties"
+                )
+        }) {
+            return Err(invalid(format!("unsupported testcase child in `{key}`")));
+        }
+        let failed = children
+            .iter()
+            .find(|node| node.has_tag_name("failure") || node.has_tag_name("error"));
+        let skipped = children.iter().find(|node| node.has_tag_name("skipped"));
+        let (outcome, reason) = if let Some(node) = failed {
+            (Verdict::Fail, Some(node))
+        } else if let Some(node) = skipped {
+            (Verdict::Skipped, Some(node))
         } else {
-            String::from("ok")
+            if case
+                .attribute("status")
+                .is_some_and(|status| status != "run")
+                || case
+                    .attribute("result")
+                    .is_some_and(|result| result != "completed")
+            {
+                return Err(invalid(format!(
+                    "unsupported testcase status/result in `{key}`"
+                )));
+            }
+            (Verdict::Pass, None)
         };
-        out.insert(
-            key.clone(),
-            ParsedVerdict {
-                target: key,
-                pass: !failed,
-                evidence,
+        let evidence = reason.map_or_else(
+            || "ok".to_string(),
+            |node| {
+                node.attribute("message")
+                    .filter(|message| !message.trim().is_empty())
+                    .map_or_else(
+                        || {
+                            let text = node
+                                .descendants()
+                                .filter(roxmltree::Node::is_text)
+                                .filter_map(|part| part.text())
+                                .collect::<String>();
+                            if text.trim().is_empty() {
+                                outcome.as_wire().to_string()
+                            } else {
+                                text.trim().to_string()
+                            }
+                        },
+                        str::to_string,
+                    )
             },
         );
+        if out
+            .insert(
+                key.clone(),
+                ParsedVerdict {
+                    target: key.clone(),
+                    outcome,
+                    evidence,
+                },
+            )
+            .is_some()
+        {
+            return Err(invalid(format!("duplicate testcase identity `{key}`")));
+        }
     }
-    out
-}
-
-fn extract_first_attr(body: &str, attr: &str) -> Option<String> {
-    let pattern = format!(r#"\b{attr}\s*=\s*"([^"]*)""#);
-    Regex::new(&pattern)
-        .ok()?
-        .captures(body)?
-        .get(1)
-        .map(|m| m.as_str().to_string())
+    Ok(out)
 }
 
 fn parse_nix_build_status(stdout: &str, stderr: &str) -> HashMap<String, ParsedVerdict> {
@@ -912,7 +1036,7 @@ fn parse_nix_build_status(stdout: &str, stderr: &str) -> HashMap<String, ParsedV
             name.clone(),
             ParsedVerdict {
                 target: name.clone(),
-                pass,
+                outcome: pass_outcome(pass),
                 evidence,
             },
         );
@@ -920,11 +1044,15 @@ fn parse_nix_build_status(stdout: &str, stderr: &str) -> HashMap<String, ParsedV
     for (name, line) in failed {
         out.entry(name.clone()).or_insert(ParsedVerdict {
             target: name,
-            pass: false,
+            outcome: Verdict::Fail,
             evidence: line,
         });
     }
     out
+}
+
+const fn pass_outcome(pass: bool) -> Verdict {
+    if pass { Verdict::Pass } else { Verdict::Fail }
 }
 
 fn parse_exit_code(
@@ -942,7 +1070,7 @@ fn parse_exit_code(
         String::new(),
         ParsedVerdict {
             target: String::new(),
-            pass: exit_success,
+            outcome: pass_outcome(exit_success),
             evidence,
         },
     );
@@ -1577,11 +1705,11 @@ test result: ok. 3 passed; 0 failed
             "noise line\n",
             "{\"target\":\"b\",\"pass\":false,\"evidence\":\"bad\"}\n",
         );
-        let map = parse_runner_output(BuiltinParser::JsonLines, stdout, "", true);
+        let map = parse_runner_output(BuiltinParser::JsonLines, stdout, "", true).unwrap();
         assert_eq!(map.len(), 2);
-        assert!(map["a"].pass);
+        assert_eq!(map["a"].outcome, Verdict::Pass);
         assert_eq!(map["a"].evidence, "ok");
-        assert!(!map["b"].pass);
+        assert_eq!(map["b"].outcome, Verdict::Fail);
         assert_eq!(map["b"].evidence, "bad");
     }
 
@@ -1592,7 +1720,7 @@ test result: ok. 3 passed; 0 failed
             "{\"target\":\"missing_pass\"}\n",
             "{\"pass\":true,\"evidence\":\"no target\"}\n",
         );
-        let map = parse_runner_output(BuiltinParser::JsonLines, stdout, "", true);
+        let map = parse_runner_output(BuiltinParser::JsonLines, stdout, "", true).unwrap();
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("a"));
         assert_eq!(map["a"].evidence, "");
@@ -1607,11 +1735,11 @@ test result: ok. 3 passed; 0 failed
             "{\"type\":\"test\",\"event\":\"failed\",\"name\":\"crate::b::two\",\"stdout\":\"boom\"}\n",
             "{\"type\":\"test\",\"event\":\"ignored\",\"name\":\"crate::c::three\"}\n",
         );
-        let map = parse_runner_output(BuiltinParser::LibtestJson, stdout, "", true);
-        assert!(map["crate::a::one"].pass);
-        assert!(!map["crate::b::two"].pass);
+        let map = parse_runner_output(BuiltinParser::LibtestJson, stdout, "", true).unwrap();
+        assert_eq!(map["crate::a::one"].outcome, Verdict::Pass);
+        assert_eq!(map["crate::b::two"].outcome, Verdict::Fail);
         assert_eq!(map["crate::b::two"].evidence, "boom");
-        assert!(map["crate::c::three"].pass, "ignored counts as pass");
+        assert_eq!(map["crate::c::three"].outcome, Verdict::Skipped);
     }
 
     #[test]
@@ -1625,10 +1753,10 @@ test result: ok. 3 passed; 0 failed
             "  </testcase>\n",
             "</testsuite>\n",
         );
-        let map = parse_runner_output(BuiltinParser::JunitXml, stdout, "", false);
+        let map = parse_runner_output(BuiltinParser::JunitXml, stdout, "", false).unwrap();
         assert_eq!(map.len(), 2);
-        assert!(map["mod.ok_one"].pass);
-        assert!(!map["mod.fail_two"].pass);
+        assert_eq!(map["mod.ok_one"].outcome, Verdict::Pass);
+        assert_eq!(map["mod.fail_two"].outcome, Verdict::Fail);
         assert_eq!(map["mod.fail_two"].evidence, "oops");
     }
 
@@ -1639,24 +1767,126 @@ test result: ok. 3 passed; 0 failed
             "building '/nix/store/bbb-pkg-bad.drv'...\n",
             "error: builder for '/nix/store/bbb-pkg-bad.drv' failed with exit code 1\n",
         );
-        let map = parse_runner_output(BuiltinParser::NixBuildStatus, "", stderr, false);
+        let map = parse_runner_output(BuiltinParser::NixBuildStatus, "", stderr, false).unwrap();
         assert_eq!(map.len(), 2);
-        assert!(map["pkg-good"].pass);
-        assert!(!map["pkg-bad"].pass);
+        assert_eq!(map["pkg-good"].outcome, Verdict::Pass);
+        assert_eq!(map["pkg-bad"].outcome, Verdict::Fail);
     }
 
     #[test]
     fn parse_exit_code_uses_status_for_single_verdict() {
-        let map = parse_runner_output(BuiltinParser::ExitCode, "stdout body", "", true);
+        let map = parse_runner_output(BuiltinParser::ExitCode, "stdout body", "", true).unwrap();
         assert_eq!(map.len(), 1);
         let only = map.values().next().unwrap();
-        assert!(only.pass);
+        assert_eq!(only.outcome, Verdict::Pass);
         assert_eq!(only.evidence, "stdout body");
 
-        let fail = parse_runner_output(BuiltinParser::ExitCode, "", "stderr body", false);
+        let fail = parse_runner_output(BuiltinParser::ExitCode, "", "stderr body", false).unwrap();
         let only = fail.values().next().unwrap();
-        assert!(!only.pass);
+        assert_eq!(only.outcome, Verdict::Fail);
         assert_eq!(only.evidence, "stderr body");
+    }
+
+    #[test]
+    fn junit_preserves_skips_entities_and_cdata_without_textual_tag_guessing() {
+        let report = r"<testsuites><testsuite>
+          <testcase classname='mod' name='skipped'><skipped message='needs A&amp;B &gt; C'/></testcase>
+          <testcase name='pass'><system-out><![CDATA[<failure message='not a verdict'/>]]></system-out></testcase>
+          <testcase name='fail'><error><![CDATA[broken <resource>]]></error></testcase>
+        </testsuite></testsuites>";
+        let verdicts = parse_runner_output(BuiltinParser::JunitXml, report, "", false).unwrap();
+        assert_eq!(verdicts.len(), 3);
+        assert_eq!(verdicts["mod.skipped"].outcome, Verdict::Skipped);
+        assert_eq!(verdicts["mod.skipped"].evidence, "needs A&B > C");
+        assert_eq!(verdicts["pass"].outcome, Verdict::Pass);
+        assert_eq!(verdicts["fail"].outcome, Verdict::Fail);
+        assert_eq!(verdicts["fail"].evidence, "broken <resource>");
+    }
+
+    #[test]
+    fn junit_rejects_malformed_unsupported_and_ambiguous_reports() {
+        for report in [
+            "<testsuite><testcase name='a'/>",
+            "<report><testcase name='a'/></report>",
+            "<testsuite><testcase/></testsuite>",
+            "<testsuite><testcase name='a'><ignored/></testcase></testsuite>",
+            "<testsuite><testcase name='a' status='notrun'/></testsuite>",
+            "<testsuite><testcase name='a'><skip:skipped xmlns:skip='urn:x'/></testcase></testsuite>",
+            "<testsuite><testcase name='a'><failure/></testcase><testcase name='a'/></testsuite>",
+        ] {
+            assert!(
+                matches!(
+                    parse_runner_output(BuiltinParser::JunitXml, report, "", true),
+                    Err(RunnerError::InvalidOutput { .. })
+                ),
+                "{report}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_lines_skips_override_legacy_pass_flag() {
+        let verdicts = parse_runner_output(
+            BuiltinParser::JsonLines,
+            "{\"target\":\"a\",\"pass\":true,\"skipped\":true,\"evidence\":\"unavailable\"}",
+            "",
+            true,
+        )
+        .unwrap();
+        assert_eq!(verdicts["a"].outcome, Verdict::Skipped);
+    }
+
+    #[test]
+    fn empty_doctest_suite_does_not_erase_executed_unit_tests() {
+        assert!(
+            check_zero_match(
+                "cargo test",
+                "running 1 test\ntest example ... ok\nrunning 0 tests\n",
+                ""
+            )
+            .is_ok()
+        );
+        assert!(check_zero_match("cargo test", "running 0 tests\nrunning 0 tests\n", "").is_err());
+    }
+
+    #[test]
+    fn unstructured_test_skip_summaries_do_not_certify_a_whole_batch() {
+        for (command, summary) in [
+            (
+                "cargo test",
+                "test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured",
+            ),
+            (
+                "cargo nextest run",
+                "Summary [0.1s] 2 tests run: 1 passed, 1 skipped",
+            ),
+            ("pytest", "==== 1 passed, 1 skipped in 0.1s ===="),
+        ] {
+            assert!(
+                matches!(
+                    unstructured_test_outcome(command, "", summary),
+                    Some((Verdict::Skipped, _))
+                ),
+                "{command}"
+            );
+        }
+        assert!(
+            unstructured_test_outcome(
+                "cargo test",
+                "test result: ok. 1 passed; 0 failed; 0 ignored",
+                ""
+            )
+            .is_none()
+        );
+        assert!(unstructured_test_outcome("cargo test", "test output: 10 ignored", "").is_none());
+        assert!(matches!(
+            unstructured_test_outcome(
+                "cargo test",
+                "test result: FAILED. 0 passed; 1 failed; 1 ignored",
+                ""
+            ),
+            Some((Verdict::Fail, _))
+        ));
     }
 
     fn config_with_check_and_system_runners() -> LoomConfig {

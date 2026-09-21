@@ -30,7 +30,7 @@ use loom_driver::state::CacheDb;
 use loom_gate::{
     Annotation, DispatchOptions, DispatchPendingExecutor, EmptyScope, FsCommandResolver,
     IntegrityFinding, Tier, TierCwds, annotation as gate_annotation, integrity, run_check,
-    run_system, run_test_in,
+    run_system,
 };
 use loom_templates::SkillIndexMarkdown;
 use loom_templates::review::{ReviewContext, ReviewLane};
@@ -268,30 +268,6 @@ fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
         .tier(tier)
         .and_then(|t| t.cwd.clone())
         .map(PathBuf::from)
-}
-
-fn test_runner_template(
-    config: &LoomConfig,
-    workspace: &Path,
-) -> Result<Option<loom_gate::RunnerTemplate>, WalkError> {
-    if let Some(tier) = config.runner.tier("test")
-        && let Some(command) = tier.command.as_deref()
-    {
-        return Ok(Some(loom_gate::RunnerTemplate::new(command)));
-    }
-    match loom_gate::runner::discover(workspace, Tier::Test) {
-        Ok(template) => Ok(Some(template)),
-        Err(loom_gate::RunnerError::UnknownToolchain { .. }) => Ok(None),
-        Err(e) => Err(WalkError::Verifiers(e.to_string())),
-    }
-}
-
-fn resolved_cwd(cwd: Option<&Path>, workspace: &Path) -> PathBuf {
-    match cwd {
-        Some(path) if path.is_absolute() => path.to_path_buf(),
-        Some(path) => workspace.join(path),
-        None => workspace.to_path_buf(),
-    }
 }
 
 /// Production [`MintWalker`] used by the `loom gate mint` CLI arm.
@@ -545,19 +521,16 @@ where
         ) {
             failures.extend(dispatch_outcome_to_failures(outcome));
         }
-        if let Some(template) = test_runner_template(&config, &self.workspace)? {
-            let test_cwd = resolved_cwd(tier_cwds.for_tier(Tier::Test), &self.workspace);
-            match run_test_in(
-                &annotations,
-                &options,
-                &template,
-                &EmptyScope,
-                Some(&test_cwd),
-            ) {
-                Ok(Some(outcome)) => failures.extend(dispatch_outcome_to_failures(Ok(outcome))),
-                Ok(None) => {}
-                Err(e) => return Err(WalkError::Verifiers(e.to_string())),
-            }
+        for result in loom_gate::dispatch::run_configured_tests(
+            &annotations,
+            &options,
+            &config,
+            &self.workspace,
+            &EmptyScope,
+        )
+        .map_err(|error| WalkError::Verifiers(error.to_string()))?
+        {
+            failures.extend(dispatch_outcome_to_failures(result));
         }
         Ok(failures)
     }
@@ -724,7 +697,8 @@ fn dispatch_error_annotation(err: &loom_gate::DispatchError) -> Annotation {
         | loom_gate::DispatchError::MalformedVerdict { command, .. } => command.clone(),
         loom_gate::DispatchError::MissingFromBatchOutput { target, .. } => target.clone(),
         loom_gate::DispatchError::EmptyTarget { .. }
-        | loom_gate::DispatchError::ZeroMatch { .. } => String::new(),
+        | loom_gate::DispatchError::ZeroMatch { .. }
+        | loom_gate::DispatchError::RunnerOutput { .. } => String::new(),
     };
     Annotation {
         tier: Tier::Check,
