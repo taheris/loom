@@ -89,3 +89,22 @@ Loom's state lives under `.loom/` in the workspace:
 The cache DB is rebuildable from the workspace (`loom init --rebuild`) by
 replaying the spec index, spec files, bd epics, and git history — so it carries
 no load-bearing information that doesn't already live in those sources.
+
+## Compatibility and Retired Internals
+
+Review recovery uses parsed `LOOM_FINDING` records and typed `PreviousFailure`
+values. The never-populated workflow `ReviewFlag` / `review_flag` channel and
+its verify-failure `review_notes` formatter have been removed. Direct template
+callers can still supply `LoopContext.review_notes`; workflow drivers leave it
+unset. The `ReviewConcern` display vocabulary also remains available.
+
+The following unused workspace-internal APIs have been retired:
+
+- `GateError::Unimplemented`: implemented gate modules expose their own errors.
+- `BdUpdateFn` and `CacheDb::consume_notes_and_refresh_base_commit`: current todo
+  finalization owns durable metadata updates and compensation, then mirrors
+  cursors/work state and consumes implementation notes via `CacheDb::finalize_todo`.
+- `resolve_or_mint_open_epics`: the mint path uses the singular resolver.
+
+No user command or agent wire alias is removed by this cleanup. In particular,
+`loom use` and Pi's documented legacy `text` delta fields remain supported.

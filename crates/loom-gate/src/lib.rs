@@ -6,17 +6,6 @@
 //! under the rules in `specs/gate.md`, persists per-criterion verdicts
 //! in a sqlite-backed status cache, and self-checks the annotation set via
 //! the integrity gate.
-//!
-//! This crate currently exposes the public type surface only; module-level
-//! implementations land in their own beads (annotation parser, runner
-//! discovery, status cache, integrity gate, per-tier dispatcher). Stub
-//! entry points return [`GateError::Unimplemented`] so dependent crates can
-//! build against the surface before the implementations land. Each bead
-//! that implements a module replaces the shared scaffold error with its
-//! own per-module error enum per RS-4.
-
-use displaydoc::Display;
-use thiserror::Error;
 
 pub mod annotation;
 pub mod cache;
@@ -64,16 +53,3 @@ pub use runner::{
     RunnerSpec, RunnerTemplate, check_zero_match, group_by_runner, parse_runner_output,
 };
 pub use scope::{CargoMetadataScope, ScopeError};
-
-/// Scaffold error for unimplemented entry points.
-///
-/// Per RS-9, stubs return a typed error rather
-/// than panicking via `todo!()` / `unimplemented!()`. Per RS-4, each
-/// implementation bead replaces this shared sentinel with its own
-/// per-module error enum (`annotation::ParseError`, `cache::CacheError`,
-/// …) carrying meaningful failure variants.
-#[derive(Debug, Display, Error)]
-pub enum GateError {
-    /// not yet implemented: {what}
-    Unimplemented { what: &'static str },
-}

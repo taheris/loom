@@ -159,28 +159,6 @@ pub struct ResolvedEpic {
     pub was_minted: bool,
 }
 
-/// Per-spec resolve-or-mint loop for legacy molecule-scoped recovery.
-///
-/// Calls [`resolve_or_mint_open_epic`] for every label in `labels` and
-/// returns the resolved epics in the same order. Stops on the first
-/// [`ResolveError::InvariantViolation`] so the operator sees the
-/// conflicting epic IDs before any further work happens.
-///
-/// # Errors
-///
-/// Returns an error when workflow setup, execution, or state validation fails.
-pub async fn resolve_or_mint_open_epics<R: CommandRunner>(
-    bd: &BdClient<R>,
-    labels: &[SpecLabel],
-    head_commit: &str,
-) -> Result<Vec<ResolvedEpic>, ResolveError> {
-    let mut resolved = Vec::with_capacity(labels.len());
-    for label in labels {
-        resolved.push(resolve_or_mint_open_epic(bd, label, head_commit).await?);
-    }
-    Ok(resolved)
-}
-
 /// Resolve or mint one legacy work epic for a spec.
 ///
 /// Runs the same `bd find --type=epic --label=spec:<X> --status=open`

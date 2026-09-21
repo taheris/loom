@@ -21,10 +21,6 @@ pub struct LoopContextInputs {
     pub previous_failure: Option<PreviousFailure>,
     /// Unapplied dirty-workspace stash context from pre-dispatch recovery.
     pub workspace_recovery: Option<WorkspaceRecovery>,
-    /// `Review notes:` companion body — only populated when
-    /// `previous_failure` is `VerifyFailures` and the reviewer also raised a
-    /// concern.
-    pub review_notes: Option<String>,
     /// In-session per-bead retry counter. `0` on fresh dispatch; `loop.md`
     /// omits the retry line when zero (see `specs/templates.md` §
     /// Attempt Counter).
@@ -54,7 +50,7 @@ pub fn build_loop_context(inputs: LoopContextInputs) -> LoopContext {
         description: Some(inputs.description),
         previous_failure: inputs.previous_failure,
         workspace_recovery: inputs.workspace_recovery,
-        review_notes: inputs.review_notes,
+        review_notes: None,
         attempt: inputs.attempt,
         scratchpad_path: inputs.scratchpad_path,
         style_rules: inputs.style_rules,
@@ -89,7 +85,6 @@ mod tests {
             description: "Per-bead loop".into(),
             previous_failure: None,
             workspace_recovery: None,
-            review_notes: None,
             attempt: 0,
             scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.15/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
@@ -116,6 +111,10 @@ mod tests {
     fn fresh_dispatch_omits_previous_failure_and_attempt_is_zero() {
         let ctx = build_loop_context(inputs());
         assert!(ctx.previous_failure.is_none());
+        assert!(
+            ctx.review_notes.is_none(),
+            "driver uses typed finding recovery, not caller-supplied legacy notes"
+        );
         assert_eq!(ctx.attempt, 0);
     }
 

@@ -15,8 +15,6 @@ mod error;
 mod rebuild;
 
 pub use companions::parse_companions;
-pub use db::{
-    BdUpdateFn, CacheDb, CriterionEvidenceRow, NoteRow, SpecEpicRow, SpecRow, WorkEpicRow,
-};
+pub use db::{CacheDb, CriterionEvidenceRow, NoteRow, SpecEpicRow, SpecRow, WorkEpicRow};
 pub use error::CacheError;
 pub use rebuild::{RebuildEpic, RebuildReport};

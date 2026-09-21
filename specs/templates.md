@@ -570,8 +570,10 @@ routing is decided by `loom gate mint`.
   (~1500 chars) before the per-variant total is split across
   multiple failures (later failures truncated first when the
   total exceeds budget)
-- `review_notes` has a separate ~1000-char budget, independent
-  of `previous_failure`
+- `review_notes` remains a caller-supplied compatibility field; direct
+  template callers own its budget (about 1000 chars is recommended).
+  Workflow drivers leave it unset and carry reviewer evidence through
+  typed `PreviousFailure` findings.
 
 **Template framing.** Each variant renders distinctly:
 
@@ -1367,8 +1369,8 @@ documents in front of the agent with zero configuration.
   `ConcernWithoutFindings { summary: String }`,
   `FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> }`,
   and `MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }`;
-  the wrapped pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)` at the
-  type level
+  the wrapped pattern preserves parsed context just as
+  `RecoveryCause::ReviewConcern { summary, findings }` does
   [test](bad_walk_variants_preserve_max_context_invariant_by_struct_shape)
 - Maximum-context preservation invariant: `BadWalk::Concern` carries
   `parsed_findings` (any well-formed findings streamed ahead of the
@@ -1430,11 +1432,10 @@ documents in front of the agent with zero configuration.
   `PREVIOUS_FAILURE_MAX_LEN = 4000` chars; multi-block variants
   split budget across entries with later entries truncated first
   [test](verify_failures_split_budget_truncates_later_first)
-- `review_notes` field is separate from `previous_failure`, has
-  its own ~1000-char budget, and is populated only when
-  `previous_failure` is `VerifyFailures` and review also raised a
-  concern
-  [test](review_notes_populated_only_on_verify_fail_plus_review_concern)
+- Direct template callers may supply the compatibility `review_notes`
+  field alongside `previous_failure`; its content still renders under
+  `Review notes:`. The workflow does not synthesize legacy review flags.
+  [test](run_template_renders_review_notes_block_when_set)
 - Each `PreviousFailure` variant renders with its documented
   framing prefix (`DriverNotice` → "Previous attempt:",
   `VerifyFailures` → "Verifier failures from previous attempt:",
@@ -1610,7 +1611,8 @@ documents in front of the agent with zero configuration.
    classification. Each variant renders with distinct framing per
    *Typed `PreviousFailure`* above. Caps:
    `PREVIOUS_FAILURE_MAX_LEN = 4000` total; per-block stderr tail
-   ~1500 chars; `review_notes` separate ~1000-char budget.
+   ~1500 chars. Optional caller-supplied `review_notes` is outside this
+   typed channel and its caller owns the budget.
    `AgentRetry.reason` shares the per-block budget cap.
 12. **Attempt counter.** `LoopContext.attempt: u32` is the per-bead
     in-session retry counter, bounded by `[loop] max_retries`

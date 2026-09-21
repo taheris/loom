@@ -4213,7 +4213,6 @@ async fn dispatch_for_slot(
         description: slot.bead.description.clone(),
         previous_failure: None,
         workspace_recovery: None,
-        review_notes: None,
         attempt: 0,
         scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
         style_rules: style_rules.to_string(),

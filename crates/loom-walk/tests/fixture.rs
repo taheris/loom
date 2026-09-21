@@ -1653,7 +1653,7 @@ fn phase_verdict_decide_called_from_production_pass_with_multiline_import() {
     seed(
         ws.path(),
         "crates/loom-workflow/src/review/production.rs",
-        "use super::phase_verdict::{\n    GateInputs, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,\n};\npub fn review() { let _ = decide(&None, ()); }\n",
+        "use super::phase_verdict::{\n    GateInputs, PhaseVerdict, RecoveryCause, ReviewConcern, decide,\n};\npub fn review() { let _ = decide(&None, ()); }\n",
     );
     let out = invoke(
         &["phase_verdict_decide_called_from_production"],

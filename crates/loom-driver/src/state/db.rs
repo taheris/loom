@@ -3,7 +3,6 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::bd::BdError;
 use crate::identifier::{MoleculeId, SpecLabel};
 
 use super::error::CacheError;
@@ -123,15 +122,6 @@ pub struct NoteRow {
     pub text: String,
     pub created_at_ms: i64,
 }
-
-/// Bead-metadata writer used by the productive-completion gate.
-///
-/// Injected into [`CacheDb::consume_notes_and_refresh_base_commit`]. The callback
-/// receives the molecule id whose epic carries `loom.base_commit` and
-/// the new commit value; failure surfaces as
-/// [`CacheError::BdUpdate`](super::error::CacheError::BdUpdate) and
-/// rolls back the `SQLite` writes that share the gate's transaction.
-pub type BdUpdateFn = Box<dyn Fn(&MoleculeId, &str) -> Result<(), BdError>>;
 
 impl CacheDb {
     /// Open or create a cache DB at `path`, applying schema migrations.
@@ -637,40 +627,6 @@ impl CacheDb {
         drop(stmt);
         drop(conn);
         Ok(rows)
-    }
-
-    /// Productive-completion gate: delete every implementation-kind note
-    /// for `label`, advance the local `molecules.base_commit` cache for
-    /// `mol_id` to `new_base_commit`, and run the durable bead-metadata
-    /// write through `bd_update` — all under one `SQLite` transaction. A
-    /// closure failure (the bead-metadata write) propagates as
-    /// [`CacheError::BdUpdate`] and the transaction rolls back so the
-    /// local cache stays aligned with the pre-write Beads state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when database access, stored state, or state validation fails.
-    pub fn consume_notes_and_refresh_base_commit(
-        &self,
-        label: &SpecLabel,
-        mol_id: &MoleculeId,
-        new_base_commit: &str,
-        bd_update: &BdUpdateFn,
-    ) -> Result<(), CacheError> {
-        let mut conn = self.conn.lock().map_err(|_| CacheError::Poisoned)?;
-        let tx = conn.transaction()?;
-        tx.execute(
-            "DELETE FROM notes WHERE spec_label = ?1 AND kind = 'implementation'",
-            params![label.as_str()],
-        )?;
-        tx.execute(
-            "UPDATE work_epics SET base_commit = ?1 WHERE epic_id = ?2",
-            params![new_base_commit, mol_id.as_str()],
-        )?;
-        bd_update(mol_id, new_base_commit)?;
-        tx.commit()?;
-        drop(conn);
-        Ok(())
     }
 
     /// Remove a single note by its row id.

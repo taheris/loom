@@ -1074,6 +1074,8 @@ async fn assert_atomic_finalization_failure(
     let (base, _head) = init_two_changed_workspace(dir.path())?;
     let runner = StatefulRunner::new(&base, fail_update);
     let state = Arc::new(CacheDb::open(dir.path().join(".loom/cache.db"))?);
+    let note_label = SpecLabel::new("alpha")?;
+    state.notes_add(&note_label, "implementation", "keep until finalized", 1)?;
     state.upsert_work_epic(&WorkEpicRow {
         epic_id: MoleculeId::new("lm-oldactive").unwrap(),
         base_commit: Some(base.clone()),
@@ -1156,6 +1158,11 @@ async fn assert_atomic_finalization_failure(
         .ok_or_else(|| anyhow!("pending cache row missing"))?;
     assert!(old_cached.is_active);
     assert!(!pending_cached.is_active);
+    assert_eq!(
+        state.notes_list(Some(&note_label), Some("implementation"))?[0].text,
+        "keep until finalized",
+        "durable-write or cache failure must preserve notes"
+    );
     Ok(())
 }
 
@@ -1474,6 +1481,18 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
         "carry this hint",
         1,
     )?;
+    state.notes_add(
+        &SpecLabel::new("alpha")?,
+        "design",
+        "keep design context",
+        2,
+    )?;
+    state.notes_add(
+        &SpecLabel::new("beta")?,
+        "implementation",
+        "unrelated scope",
+        3,
+    )?;
     let mut responses = preflight_responses(&base, &head);
     responses.push(child_bead("lm-child", "lm-work", None));
     responses.push(child_bead("lm-child", "lm-work", Some("existing note")));
@@ -1517,6 +1536,22 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
         argv.iter()
             .any(|arg| arg.contains("existing note\n\nImplementation notes:\n\n- carry this hint"))
     }));
+    assert_eq!(
+        state.notes_list(Some(&SpecLabel::new("alpha")?), Some("design"))?[0].text,
+        "keep design context"
+    );
+    assert_eq!(
+        state.notes_list(Some(&SpecLabel::new("beta")?), Some("implementation"))?[0].text,
+        "unrelated scope"
+    );
+    assert_eq!(
+        state
+            .work_epic(&MoleculeId::new("lm-work")?)?
+            .ok_or_else(|| anyhow!("finalized work epic missing"))?
+            .base_commit
+            .as_deref(),
+        Some(head.as_str())
+    );
 
     let invalid_dir = tempfile::tempdir()?;
     let (invalid_base, invalid_head) = init_workspace(invalid_dir.path())?;

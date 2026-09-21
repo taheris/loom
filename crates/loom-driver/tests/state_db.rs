@@ -8,9 +8,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
-use loom_driver::bd::BdError;
 use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_driver::state::{BdUpdateFn, CacheDb, CacheError, RebuildEpic, SpecEpicRow};
+use loom_driver::state::{CacheDb, CacheError, RebuildEpic, SpecEpicRow};
 use loom_driver::testing::epic_fixture;
 
 fn write_spec(workspace: &Path, label: &str, body: &str) -> Result<()> {
@@ -698,111 +697,6 @@ fn open_wipes_legacy_todo_cursor_meta_keys() -> Result<()> {
         "v4→v5 migration must wipe legacy todo_cursor:<label> rows: {legacy:?}",
     );
 
-    Ok(())
-}
-
-#[test]
-fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
-    // Productive-completion gate: the implementation-notes delete, the
-    // `molecules.base_commit` cache refresh, and the bd-update closure
-    // happen as one transaction. A closure failure aborts the whole gate
-    // so the local cache and the durable Beads state stay aligned.
-    let dir = tempfile::tempdir()?;
-    let workspace = dir.path();
-    write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
-    let label = SpecLabel::new("alpha").unwrap();
-    let mol_id = MoleculeId::new("lm-alpha").unwrap();
-    db.rebuild(
-        workspace,
-        &epic_fixture(mol_id.clone(), label.clone(), Some("old-sha".to_string()))?,
-    )?;
-    db.notes_add(&label, "implementation", "impl 1", 100)?;
-    db.notes_add(&label, "implementation", "impl 2", 200)?;
-    db.notes_add(&label, "design", "design 1", 300)?;
-
-    let bd_fail: BdUpdateFn = Box::new(|_, _| Err(BdError::CreateMissingId));
-    let err = db
-        .consume_notes_and_refresh_base_commit(&label, &mol_id, "new-sha", &bd_fail)
-        .expect_err("closure failure must propagate");
-    assert!(
-        matches!(err, CacheError::BdUpdate(BdError::CreateMissingId)),
-        "expected CacheError::BdUpdate, got {err:?}",
-    );
-
-    assert_eq!(
-        db.notes_list(Some(&label), Some("implementation"))?.len(),
-        2,
-        "rollback must keep the implementation notes intact",
-    );
-    let mol = db
-        .work_epic(&mol_id)?
-        .context("work epic must survive rollback")?;
-    assert_eq!(
-        mol.base_commit,
-        Some("old-sha".to_string()),
-        "rollback must keep the molecules.base_commit cache at its pre-write value",
-    );
-
-    let bd_ok: BdUpdateFn = Box::new(|_, _| Ok(()));
-    db.consume_notes_and_refresh_base_commit(&label, &mol_id, "new-sha", &bd_ok)?;
-
-    assert!(
-        db.notes_list(Some(&label), Some("implementation"))?
-            .is_empty(),
-        "productive completion must delete every implementation-kind note",
-    );
-    assert_eq!(
-        db.notes_list(Some(&label), Some("design"))?.len(),
-        1,
-        "non-implementation kinds must survive the gate",
-    );
-    let mol = db
-        .work_epic(&mol_id)?
-        .context("work epic lookup after commit")?;
-    assert_eq!(
-        mol.base_commit,
-        Some("new-sha".to_string()),
-        "molecules.base_commit cache must advance atomically with the notes delete",
-    );
-    Ok(())
-}
-
-#[test]
-fn consume_notes_and_refresh_base_commit_invokes_closure_with_args() -> Result<()> {
-    // The closure receives the molecule id and the new base_commit
-    // verbatim; the gate is the single-pointed surface that wires the
-    // SQLite writes to the durable bead-metadata write.
-    use std::sync::Mutex;
-    let dir = tempfile::tempdir()?;
-    let workspace = dir.path();
-    write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
-    let label = SpecLabel::new("alpha").unwrap();
-    let mol_id = MoleculeId::new("lm-alpha").unwrap();
-    db.rebuild(
-        workspace,
-        &epic_fixture(mol_id.clone(), label.clone(), None)?,
-    )?;
-
-    let captured: std::sync::Arc<Mutex<Vec<(String, String)>>> =
-        std::sync::Arc::new(Mutex::new(Vec::new()));
-    let probe = std::sync::Arc::clone(&captured);
-    let bd_capture: BdUpdateFn = Box::new(move |mol_id, new_base_commit| {
-        probe
-            .lock()
-            .unwrap()
-            .push((mol_id.as_str().to_owned(), new_base_commit.to_owned()));
-        Ok(())
-    });
-    db.consume_notes_and_refresh_base_commit(&label, &mol_id, "fresh-head", &bd_capture)?;
-
-    let calls = captured.lock().unwrap().clone();
-    assert_eq!(
-        calls,
-        vec![("lm-alpha".to_string(), "fresh-head".to_string())],
-        "closure must receive the molecule id and new base_commit unchanged",
-    );
     Ok(())
 }
 

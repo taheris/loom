@@ -739,7 +739,6 @@ where
             description: bead.description.clone(),
             previous_failure: typed_previous_failure,
             workspace_recovery,
-            review_notes: None,
             attempt,
             scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
             style_rules: self.style_rules.clone(),
@@ -2160,7 +2159,6 @@ fn neutral_gate_inputs() -> GateInputs {
         bd_closed: true,
         diff_empty: false,
         verify_failures: vec![],
-        review_flag: None,
         ..GateInputs::default()
     }
 }

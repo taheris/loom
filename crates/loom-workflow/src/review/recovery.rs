@@ -23,19 +23,14 @@
 use loom_templates::finding::Finding;
 use loom_templates::run::{DriverNoticeCause, PreviousFailure, VerifierFailure};
 
-use super::phase_verdict::{RecoveryCause, ReviewConcern};
+use super::phase_verdict::RecoveryCause;
 use super::verify_fail::{VerifyFailure, format_previous_failure};
 
 /// Derive a human-readable concern label from the streamed-findings vec.
 ///
-/// Returns the [`ReviewConcern`] enum string for the homogeneous case
-/// (every finding shares one `ConcernToken` whose wire string matches a
-/// [`ReviewConcern`] variant), `"multiple"` for the heterogeneous case,
-/// and the singleton's wire string when the token isn't in
-/// [`ReviewConcern`] (a finding-only token like `spec-coherence-fail`).
-/// Per `specs/gate.md` § *Findings and Minting* — `ReviewConcern`
-/// survives as a display vocabulary only; the human label comes from
-/// `findings`, never from the terminal `summary`. Exported so the
+/// Returns the shared typed token's wire string for homogeneous findings,
+/// `"multiple"` for heterogeneous tokens, or `"review-concern"` for no findings.
+/// The human label comes from findings, never the terminal summary. Exported so the
 /// review controller's `bd update --notes` writer and verdict-log
 /// surfaces consume one canonical derivation.
 pub fn concern_label_from_findings(findings: &[Finding]) -> String {
@@ -45,8 +40,7 @@ pub fn concern_label_from_findings(findings: &[Finding]) -> String {
     if findings.iter().any(|f| f.token != first.token) {
         return "multiple".to_owned();
     }
-    let wire = first.token.as_wire();
-    ReviewConcern::parse(wire).map_or_else(|| wire.to_owned(), |c| c.as_str().to_owned())
+    first.token.as_wire().to_owned()
 }
 
 /// Render a [`RecoveryCause`] into a `previous_failure` body suitable for
@@ -65,10 +59,7 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
             "Marker `LOOM_COMPLETE` emitted with empty diff. Use `LOOM_NOOP` if no work was needed."
                 .to_string()
         }
-        RecoveryCause::VerifyFail {
-            failures,
-            review_notes,
-        } => format_previous_failure(failures, review_notes.as_ref()),
+        RecoveryCause::VerifyFail { failures } => format_previous_failure(failures),
         RecoveryCause::ReviewConcern { summary, findings } => PreviousFailure::ReviewConcern {
             summary: summary.clone(),
             findings: findings.clone(),
@@ -103,14 +94,10 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
 /// - `SwallowedMarker` / `IncompleteSignaling` / `ZeroProgress` →
 ///   `DriverNotice` with the corresponding `DriverNoticeCause` + detail.
 /// - `ObserverAbort` → `DriverNotice { cause: ObserverAbort, detail }`.
-/// - `VerifyFail` → `VerifyFailures(Vec<VerifierFailure>)`. The companion
-///   `review_notes` flag, when present, must be carried separately on
-///   `LoopContext.review_notes` (this function does not embed it inline).
+/// - `VerifyFail` → `VerifyFailures(Vec<VerifierFailure>)`.
 /// - `ReviewConcern` → `ReviewConcern { summary, findings }`. The structured
-///   `LOOM_FINDING:` stream is not yet wired through this codepath, so a
-///   degenerate empty `findings` vector is produced; `summary` carries the
-///   `[token] detail` formatted form so the rendered prompt still names
-///   the firing concern.
+///   findings and summary pass through unchanged; rendering derives the
+///   concern label from the typed finding tokens.
 /// - `TreeNotClean` → `TreeNotClean { dirty_paths }`. The capped path list
 ///   passes through verbatim; the variant's `Display` impl emits the
 ///   spec-pinned framing + per-path enumeration + `"+N more"` suffix.
@@ -218,7 +205,6 @@ pub fn resolve_recovery(cause: &RecoveryCause, iter: u32, max: u32) -> RecoveryR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::phase_verdict::ReviewConcern;
     use crate::review::verify_fail::VerifyFailure;
     use loom_events::identifier::SpecLabel;
     use loom_templates::finding::{ConcernToken, Finding, FindingRoute, FindingTarget};
@@ -305,7 +291,6 @@ mod tests {
                     stderr: "boom-b".into(),
                 },
             ],
-            review_notes: None,
         };
         match cause_to_previous_failure(&cause) {
             PreviousFailure::VerifyFailures(failures) => {
@@ -454,7 +439,6 @@ mod tests {
                 exit_code: 1,
                 stderr: "boom\n".into(),
             }],
-            review_notes: None,
         }
     }
 
@@ -562,8 +546,6 @@ mod tests {
                 panic!("expected Blocked, got {other:?}");
             }
         }
-        // Silence unused-import warning in the test module.
-        let _ = ReviewConcern::VerifierBypass;
     }
 
     #[test]

@@ -28,10 +28,9 @@ pub struct LoopContext {
     pub previous_failure: Option<PreviousFailure>,
     /// Dirty-workspace recovery stash context, independent of retry state.
     pub workspace_recovery: Option<WorkspaceRecovery>,
-    /// Companion ~1000-char review-notes block appended under
-    /// `Review notes:` when `previous_failure` is `VerifyFailures` and the
-    /// reviewer also raised a concern. Independent of the `previous_failure`
-    /// budget so review reasoning never crowds out mechanical failure detail.
+    /// Optional caller-supplied compatibility block rendered as `Review notes:`.
+    /// Workflow drivers leave this unset; reviewer evidence travels in typed
+    /// `PreviousFailure` findings. Direct template callers own this block's budget.
     pub review_notes: Option<String>,
     /// In-session per-bead retry counter, populated by the driver. `0` on
     /// fresh dispatch; `loop.md` omits the retry line when zero.

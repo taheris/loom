@@ -4,8 +4,6 @@ use std::path::PathBuf;
 use displaydoc::Display;
 use thiserror::Error;
 
-use crate::bd::BdError;
-
 #[expect(
     clippy::doc_markdown,
     reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
@@ -40,9 +38,6 @@ pub enum CacheError {
 
     /// io failure
     Io(#[from] io::Error),
-
-    /// bead-metadata write inside productive-completion gate failed
-    BdUpdate(#[from] BdError),
 
     /// cache contained an invalid {kind} identifier `{value}`
     InvalidIdentifier { kind: &'static str, value: String },

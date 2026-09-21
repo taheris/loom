@@ -47,8 +47,7 @@ pub use iteration::{DEFAULT_MAX_ITERATIONS, IterationCap};
 pub use loom_templates::previous_failure::BadWalk;
 pub use loom_templates::review::ReviewLane;
 pub use phase_verdict::{
-    GateInputs, PhaseKind, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,
-    decide_for_phase,
+    GateInputs, PhaseKind, PhaseVerdict, RecoveryCause, ReviewConcern, decide, decide_for_phase,
 };
 pub use production::{AcceptAllFindingValidator, ProductionReviewController};
 pub use recovery::{
@@ -58,7 +57,6 @@ pub use recovery::{
 pub use runner::{ReviewController, ReviewOutcome, ReviewResult, review_loop};
 pub use verdict::{BeadSnapshot, PushGateRefuseCause, ReviewVerdict, diff_new_bead_ids};
 pub use verify_fail::{
-    PREVIOUS_FAILURE_BUDGET, REVIEW_NOTES_BUDGET, STDERR_TAIL_LINES, VerifyFailure,
-    format_previous_failure,
+    PREVIOUS_FAILURE_BUDGET, STDERR_TAIL_LINES, VerifyFailure, format_previous_failure,
 };
 pub use workspace_validator::WorkspaceFindingValidator;

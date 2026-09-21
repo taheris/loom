@@ -463,7 +463,7 @@ finding and recovery semantics at that boundary.
   [test](no_path_constructs_concern_without_bead_deltas_in_production)
 - Review classification accepts typed finding records rather than parsing a
   free-form token-and-reason line from whole stdout
-  [test](parse_review_flag_is_not_defined_or_called_in_production)
+  [test](streamed_findings_reach_recovery_without_legacy_flags)
 - An unrecognized terminal summary accompanied by at least one typed finding
   routes to `RecoveryCause::ReviewConcern { summary, findings }`, not
   `SwallowedMarker`

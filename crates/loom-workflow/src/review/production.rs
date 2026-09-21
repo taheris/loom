@@ -594,7 +594,7 @@ where
 ///
 /// Marker → outcome routing goes through the canonical [`decide`] gate
 /// function. The review phase isn't bead-scoped, so `bd_closed` /
-/// `diff_empty` / `verify_failures` / `review_flag` reduce to neutral
+/// `diff_empty` / `verify_failures` reduce to neutral
 /// defaults; per-finding routing now flows through
 /// [`GateInputs::streamed_findings`]. The
 /// pairing-rule fail cases (
@@ -743,7 +743,6 @@ fn phase_verdict_from_walk_with_suppressions(
         bd_closed: true,
         diff_empty: false,
         verify_failures: vec![],
-        review_flag: None,
         streamed_findings: walk.findings().to_vec(),
         ..GateInputs::default()
     };

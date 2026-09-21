@@ -16,15 +16,10 @@ use loom_templates::previous_failure::BadWalk;
 use super::verify_fail::VerifyFailure;
 use crate::todo::ExitSignal;
 
-/// Which concern in the review LLM's structured response triggered the flag.
+/// Compatibility vocabulary for consumers displaying legacy concern labels.
 ///
-/// Mirrors the per-diff rubric flag causes enumerated in
-/// `specs/gate.md` ("Per-diff stage checks") and the flag-emission
-/// schema in `loom-templates/templates/review.md`: the four verifier-honesty
-/// sub-checks, mock discipline, scope appropriateness, `[judge]` rubric
-/// satisfaction, style-rule conformance, plus the standing/tree-scope
-/// concerns (surface drift, cross-spec clash, template-vs-spec drift,
-/// spec-conventions violation).
+/// Current review protocol classification uses each [`Finding`]'s typed token,
+/// not this smaller display vocabulary or free-form terminal-summary parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewConcern {
     VerifierBypass,
@@ -78,18 +73,6 @@ impl ReviewConcern {
     }
 }
 
-/// Parsed contents of the review LLM's structured flag emission.
-///
-/// The detail
-/// string carried here is what feeds the `review-concern` row of
-/// `previous_failure` (`specs/harness.md` §"Recovery context") — sourced
-/// from the structured emission, not regex-extracted from prose.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewFlag {
-    pub concern: ReviewConcern,
-    pub detail: String,
-}
-
 /// Why the gate routes to recovery. Mirrors the cause strings in the spec
 /// table so they show up unchanged in `bd update --notes` when retries are
 /// exhausted.
@@ -102,19 +85,9 @@ pub enum RecoveryCause {
     /// `LOOM_COMPLETE` with an empty worktree diff. `LOOM_NOOP` is the
     /// legitimate path for an empty diff and never produces this cause.
     ZeroProgress,
-    /// At least one deterministic-tier verifier failed. Carries every failure so the
-    /// downstream `previous_failure` builder can format them into a single
-    /// budget-bounded body — none short-circuit each other. `review_notes`
-    /// holds the review LLM's flag, if any: review still runs on verify-fail
-    /// (`specs/harness.md` §"Push gate · Review always runs") so the
-    /// agent gets verify failures *and* live-path/mock/scope/judge feedback in
-    /// one `previous_failure` round trip — appended under a `Review notes:`
-    /// heading by the formatter. The cause label stays `verify-fail`
-    /// (mechanical trumps semantic).
-    VerifyFail {
-        failures: Vec<VerifyFailure>,
-        review_notes: Option<ReviewFlag>,
-    },
+    /// Deterministic-tier failures retained for the bounded recovery body.
+    /// Review findings use the independent typed `ReviewConcern` path.
+    VerifyFail { failures: Vec<VerifyFailure> },
     /// Verify passed but the reviewer raised a concern. Carries the parsed
     /// `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}`
     /// marker and the buffered list of streamed `LOOM_FINDING:` records so
@@ -235,13 +208,6 @@ pub struct GateInputs {
     /// [`RecoveryCause::VerifyFail`] when this is non-empty and threads the
     /// list through so downstream surfaces can format `previous_failure`.
     pub verify_failures: Vec<VerifyFailure>,
-    /// Legacy reviewer flag carried by [`RecoveryCause::VerifyFail`]'s
-    /// `review_notes` channel — kept for the verify-fail row where the
-    /// review LLM's flag still needs to ride alongside the mechanical
-    /// failure. `None` for the streaming-finding contract path; the
-    /// terminal `LOOM_CONCERN: {"summary": "..."}` payload no longer
-    /// fans out via this field.
-    pub review_flag: Option<ReviewFlag>,
     /// Typed `LOOM_FINDING:` records the review walk streamed before
     /// the terminator. Drives the *Streaming + terminator pairing rule*
     /// in `specs/gate.md`: `LOOM_COMPLETE` with `≥1` findings routes to
@@ -464,7 +430,6 @@ fn decide_progress_marker(is_noop: bool, inputs: GateInputs) -> PhaseVerdict {
         return PhaseVerdict::Recovery {
             cause: RecoveryCause::VerifyFail {
                 failures: inputs.verify_failures,
-                review_notes: inputs.review_flag,
             },
         };
     }
@@ -481,12 +446,7 @@ mod tests {
     use loom_events::identifier::SpecLabel;
     use loom_templates::finding::{ConcernToken, FindingTarget};
 
-    fn inputs(
-        bd_closed: bool,
-        diff_empty: bool,
-        verify_pass: bool,
-        review_flag: Option<ReviewFlag>,
-    ) -> GateInputs {
+    fn inputs(bd_closed: bool, diff_empty: bool, verify_pass: bool) -> GateInputs {
         let verify_failures = if verify_pass {
             Vec::new()
         } else {
@@ -496,7 +456,6 @@ mod tests {
             bd_closed,
             diff_empty,
             verify_failures,
-            review_flag,
             ..GateInputs::default()
         }
     }
@@ -506,13 +465,6 @@ mod tests {
             script_path: std::path::PathBuf::from("tests/sample.sh"),
             exit_code: 1,
             stderr: "boom\n".into(),
-        }
-    }
-
-    fn flag(concern: ReviewConcern, detail: &str) -> ReviewFlag {
-        ReviewFlag {
-            concern,
-            detail: detail.to_string(),
         }
     }
 
@@ -541,7 +493,7 @@ mod tests {
         };
         let g = GateInputs {
             streamed_findings: vec![streamed_finding(ConcernToken::VerifierBypass)],
-            ..inputs(true, false, true, None)
+            ..inputs(true, false, true)
         };
         match decide(Some(&m), g) {
             PhaseVerdict::Recovery {
@@ -569,7 +521,7 @@ mod tests {
         };
         let g = GateInputs {
             streamed_findings: vec![streamed_finding(ConcernToken::WeakAssertion)],
-            ..inputs(true, false, true, None)
+            ..inputs(true, false, true)
         };
         match decide(Some(&m), g) {
             PhaseVerdict::Recovery {
@@ -592,10 +544,6 @@ mod tests {
         };
         let g = GateInputs {
             streamed_findings: Vec::new(),
-            review_flag: Some(flag(
-                ReviewConcern::Scope,
-                "ignored when pairing rule fires",
-            )),
             ..GateInputs::default()
         };
         match decide(Some(&m), g) {
@@ -642,7 +590,7 @@ mod tests {
             payload: "verifier-bypass -- legacy wire format".into(),
             parsed_findings: Vec::new(),
         });
-        match decide(Some(&m), inputs(true, false, true, None)) {
+        match decide(Some(&m), inputs(true, false, true)) {
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::BadWalk(BadWalk::Concern { payload, .. }),
             } => {
@@ -657,10 +605,7 @@ mod tests {
         let m = ExitSignal::Blocked {
             reason: "missing schema".into(),
         };
-        match decide(
-            Some(&m),
-            inputs(false, true, false, Some(flag(ReviewConcern::Mock, "x"))),
-        ) {
+        match decide(Some(&m), inputs(false, true, false)) {
             PhaseVerdict::Blocked { reason } => assert_eq!(reason, "missing schema"),
             other => panic!("expected Blocked, got {other:?}"),
         }
@@ -684,7 +629,7 @@ mod tests {
         let m = ExitSignal::Clarify {
             question: "additive only?".into(),
         };
-        match decide(Some(&m), inputs(true, false, true, None)) {
+        match decide(Some(&m), inputs(true, false, true)) {
             PhaseVerdict::Clarify { question } => assert_eq!(question, "additive only?"),
             other => panic!("expected Clarify, got {other:?}"),
         }
@@ -693,7 +638,7 @@ mod tests {
     #[test]
     fn missing_marker_routes_to_swallowed_marker_recovery() {
         assert_eq!(
-            decide(None, inputs(true, false, true, None)),
+            decide(None, inputs(true, false, true)),
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::SwallowedMarker,
             },
@@ -705,10 +650,7 @@ mod tests {
     #[test]
     fn complete_without_bd_closed_routes_to_incomplete_signaling() {
         assert_eq!(
-            decide(
-                Some(&ExitSignal::Complete),
-                inputs(false, false, true, None)
-            ),
+            decide(Some(&ExitSignal::Complete), inputs(false, false, true)),
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::IncompleteSignaling,
             },
@@ -718,7 +660,7 @@ mod tests {
     #[test]
     fn phase_verdict_complete_with_empty_diff_routes_to_zero_progress() {
         assert_eq!(
-            decide(Some(&ExitSignal::Complete), inputs(true, true, true, None)),
+            decide(Some(&ExitSignal::Complete), inputs(true, true, true)),
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::ZeroProgress,
             },
@@ -727,53 +669,15 @@ mod tests {
 
     #[test]
     fn complete_with_verify_fail_routes_to_verify_fail() {
-        let result = decide(
-            Some(&ExitSignal::Complete),
-            inputs(true, false, false, None),
-        );
+        let result = decide(Some(&ExitSignal::Complete), inputs(true, false, false));
         match result {
             PhaseVerdict::Recovery {
-                cause:
-                    RecoveryCause::VerifyFail {
-                        failures,
-                        review_notes,
-                    },
+                cause: RecoveryCause::VerifyFail { failures },
             } => {
                 assert_eq!(failures.len(), 1, "carries every failure block");
                 assert_eq!(failures[0].exit_code, 1);
-                assert!(review_notes.is_none(), "no review flag in this row");
             }
             other => panic!("expected Recovery::VerifyFail, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn complete_with_verify_fail_and_review_flag_threads_both_into_recovery_cause() {
-        // Spec rule: when verify fails, the cause is `verify-fail` (mechanical
-        // trumps semantic) but review's reasoning still has to ride along so
-        // the downstream formatter can append it under `Review notes:`.
-        let detail = "test mocks the agent backend instead of spawning it";
-        let g = GateInputs {
-            bd_closed: true,
-            diff_empty: false,
-            verify_failures: vec![sample_failure()],
-            review_flag: Some(flag(ReviewConcern::VerifierBypass, detail)),
-            ..GateInputs::default()
-        };
-        match decide(Some(&ExitSignal::Complete), g) {
-            PhaseVerdict::Recovery {
-                cause:
-                    RecoveryCause::VerifyFail {
-                        failures,
-                        review_notes,
-                    },
-            } => {
-                assert_eq!(failures.len(), 1);
-                let notes = review_notes.expect("review flag threaded into cause");
-                assert_eq!(notes.concern, ReviewConcern::VerifierBypass);
-                assert_eq!(notes.detail, detail);
-            }
-            other => panic!("expected Recovery::VerifyFail with review_notes, got {other:?}"),
         }
     }
 
@@ -798,7 +702,6 @@ mod tests {
             bd_closed: true,
             diff_empty: false,
             verify_failures: failures.clone(),
-            review_flag: None,
             ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Complete), g) {
@@ -815,24 +718,17 @@ mod tests {
     }
 
     /// Under the streaming-finding contract `LOOM_COMPLETE` plus
-    /// `streamed_findings` ≥ 1 trips the pairing rule before any
-    /// review-flag fallthrough — the agent disagreed with itself
+    /// `streamed_findings` ≥ 1 trips the pairing rule — the agent disagreed with itself
     /// (terminator says clean, stream says concern). The parsed
     /// findings ride through the `BadWalk::FindingsWithoutConcern`
     /// variant so the next iteration can name them.
     #[test]
     fn complete_with_streamed_findings_routes_to_badwalk_not_review_concern() {
-        let detail = "test mocks the agent backend instead of spawning it";
         let result = decide(
             Some(&ExitSignal::Complete),
             GateInputs {
                 streamed_findings: vec![streamed_finding(ConcernToken::VerifierBypass)],
-                ..inputs(
-                    true,
-                    false,
-                    true,
-                    Some(flag(ReviewConcern::VerifierBypass, detail)),
-                )
+                ..inputs(true, false, true)
             },
         );
         match result {
@@ -853,7 +749,7 @@ mod tests {
     #[test]
     fn complete_clean_routes_to_done() {
         assert_eq!(
-            decide(Some(&ExitSignal::Complete), inputs(true, false, true, None)),
+            decide(Some(&ExitSignal::Complete), inputs(true, false, true)),
             PhaseVerdict::Done,
         );
     }
@@ -863,7 +759,7 @@ mod tests {
     #[test]
     fn noop_without_bd_closed_routes_to_incomplete_signaling() {
         assert_eq!(
-            decide(Some(&ExitSignal::Noop), inputs(false, true, true, None)),
+            decide(Some(&ExitSignal::Noop), inputs(false, true, true)),
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::IncompleteSignaling,
             },
@@ -874,10 +770,7 @@ mod tests {
     fn noop_with_verify_fail_routes_to_verify_fail() {
         // Empty diff allowed under Noop; verify failure still recovers.
         for diff_empty in [true, false] {
-            let result = decide(
-                Some(&ExitSignal::Noop),
-                inputs(true, diff_empty, false, None),
-            );
+            let result = decide(Some(&ExitSignal::Noop), inputs(true, diff_empty, false));
             match result {
                 PhaseVerdict::Recovery {
                     cause: RecoveryCause::VerifyFail { failures, .. },
@@ -889,16 +782,11 @@ mod tests {
         }
     }
 
-    /// `LOOM_NOOP` + zero streamed findings is a clean review under
-    /// the streaming-finding contract — the legacy `review_flag`
-    /// fallthrough is gone. A NOOP with non-empty findings would have
-    /// routed to `BadWalk::FindingsWithoutConcern` first; this row
-    /// pins the residual `Done` case where verify passes and no
-    /// findings are streamed.
+    /// A worker NOOP with no findings and successful verification is done.
     #[test]
     fn noop_without_findings_routes_to_done_under_streaming_contract() {
         assert_eq!(
-            decide(Some(&ExitSignal::Noop), inputs(true, true, true, None)),
+            decide(Some(&ExitSignal::Noop), inputs(true, true, true)),
             PhaseVerdict::Done,
         );
     }
@@ -908,7 +796,7 @@ mod tests {
         // The reason this gate exists: empty diff + Noop must NOT trip
         // zero-progress recovery — the work was already in tree.
         assert_eq!(
-            decide(Some(&ExitSignal::Noop), inputs(true, true, true, None)),
+            decide(Some(&ExitSignal::Noop), inputs(true, true, true)),
             PhaseVerdict::Done,
         );
     }
@@ -916,7 +804,7 @@ mod tests {
     #[test]
     fn noop_with_non_empty_diff_and_clean_review_is_done() {
         assert_eq!(
-            decide(Some(&ExitSignal::Noop), inputs(true, false, true, None)),
+            decide(Some(&ExitSignal::Noop), inputs(true, false, true)),
             PhaseVerdict::Done,
         );
     }
@@ -929,15 +817,13 @@ mod tests {
         // when the worktree is dirty after the bead bd-closed, the gate
         // routes to `tree-not-clean` recovery BEFORE verify-fail /
         // review-concern. Verifiers do not run against a half-staged tree.
-        // Set BOTH verify_failures and review_flag to non-default values so
-        // the test pins precedence — tree-not-clean wins over both.
+        // Also supply verify failures to pin the tree-clean precedence.
         let dirty = vec![" M src/foo.rs".to_string(), "?? scratch.tmp".to_string()];
         let g = GateInputs {
             bd_closed: true,
             diff_empty: false,
             tree_dirty_paths: dirty.clone(),
             verify_failures: vec![sample_failure()],
-            review_flag: Some(flag(ReviewConcern::Scope, "out of scope")),
             ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Complete), g) {
@@ -967,7 +853,6 @@ mod tests {
             diff_empty: true,
             tree_dirty_paths: dirty.clone(),
             verify_failures: vec![],
-            review_flag: None,
             ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Noop), g) {
@@ -1025,7 +910,6 @@ mod tests {
             diff_empty: false,
             tree_dirty_paths: capped.clone(),
             verify_failures: vec![],
-            review_flag: None,
             ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Complete), g) {
@@ -1050,21 +934,8 @@ mod tests {
         );
         assert_eq!(RecoveryCause::ZeroProgress.as_str(), "zero-progress");
         assert_eq!(
-            RecoveryCause::VerifyFail {
-                failures: vec![],
-                review_notes: None,
-            }
-            .as_str(),
+            RecoveryCause::VerifyFail { failures: vec![] }.as_str(),
             "verify-fail",
-        );
-        assert_eq!(
-            RecoveryCause::VerifyFail {
-                failures: vec![],
-                review_notes: Some(flag(ReviewConcern::Mock, "x")),
-            }
-            .as_str(),
-            "verify-fail",
-            "label is mechanical-only — review-notes piggyback never relabels",
         );
         assert_eq!(
             RecoveryCause::ReviewConcern {
@@ -1286,7 +1157,7 @@ mod tests {
     /// self-report set.
     #[test]
     fn complete_admitted_under_interactive_phase() {
-        let inputs = inputs(true, false, true, None);
+        let inputs = inputs(true, false, true);
         match decide_for_phase(Some(&ExitSignal::Complete), inputs, PhaseKind::Interactive) {
             PhaseVerdict::Done => {}
             other => panic!("expected Done, got {other:?}"),
@@ -1341,25 +1212,49 @@ mod tests {
         }
     }
 
-    /// Per criterion `parse_review_flag_is_not_defined_or_called_in_production`:
-    /// the legacy `parse_review_flag` whole-stdout scanner (legacy
-    /// `LOOM_CONCERN: <token> -- <reason>` shape) is excised. This test
-    /// pins the absence: any code that references
-    /// `parse_review_flag` at module scope will fail to compile here.
-    /// The use-statement is the load-bearing assertion — `use` of a
-    /// non-existent path is a compile error.
     #[test]
-    fn parse_review_flag_is_not_defined_or_called_in_production() {
-        // Per `specs/gate.md` § *Findings and Minting*, per-finding
-        // routing is handled on streamed `LOOM_FINDING:` JSON via the
-        // mint pipeline; the legacy whole-stdout scanner has no
-        // production caller. A re-introduction would need to bring
-        // back this `pub fn` declaration in phase_verdict, which the
-        // diff in lm-ymh5.3 removed. The check that follows is
-        // intentionally minimal — its compile-time presence is the
-        // assertion.
-        fn ensure_no_parse_review_flag_in_phase_verdict() {}
-        ensure_no_parse_review_flag_in_phase_verdict();
+    fn streamed_findings_reach_recovery_without_legacy_flags() {
+        use crate::review::{
+            AcceptAllFindingValidator, DispatchScope, WalkOutputError, parse_walk_output,
+        };
+        let validator = AcceptAllFindingValidator;
+        assert!(matches!(
+            parse_walk_output(
+                "LOOM_CONCERN: scope -- legacy flag",
+                DispatchScope::Tree,
+                &validator
+            ),
+            Err(WalkOutputError::BadWalk {
+                bad_walk: BadWalk::Concern { .. }
+            })
+        ));
+        let output = concat!(
+            "LOOM_FINDING: {\"token\":\"weak-assertion\",\"route\":\"deferred\",\"bonds\":[\"gate\"],\"target\":{\"kind\":\"Annotation\",\"target_string\":\"cargo test\"},\"evidence\":\"assertion never reaches the changed branch\"}\n",
+            "LOOM_CONCERN: {\"summary\":\"Summary is not a concern token\"}\n",
+        );
+        let findings = parse_walk_output(output, DispatchScope::Tree, &validator).unwrap();
+        let marker = crate::todo::parse_exit_signal(output).unwrap();
+        let PhaseVerdict::Recovery { cause } = decide_for_phase(
+            Some(&marker),
+            GateInputs {
+                streamed_findings: findings,
+                ..GateInputs::default()
+            },
+            PhaseKind::Review,
+        ) else {
+            panic!("valid findings must reach recovery");
+        };
+        let body = crate::review::cause_to_previous_failure(&cause).to_string();
+        assert!(
+            body.contains("Review raised a concern (weak-assertion)"),
+            "{body}"
+        );
+        assert!(body.contains("Summary is not a concern token"), "{body}");
+        assert!(
+            body.contains("assertion never reaches the changed branch"),
+            "{body}"
+        );
+        assert!(!body.contains("Review notes:"), "{body}");
     }
 
     #[test]
