@@ -3,6 +3,13 @@
 
 issue-prefix: "lm"
 
+# Dolt is authoritative; checkout hooks must not import legacy JSONL.
+import.auto: false
+
+# Wrix owns the shared Dolt server. Never start a competing host-side server.
+dolt.mode: server
+dolt.auto-start: false
+
 # Git branch for beads data (used by bd dolt pull/push)
 sync-branch: "beads"
 
@@ -14,4 +21,6 @@ sync:
 
 sync.remote: ".git/beads-worktrees/beads/.beads/dolt-remote"
 
+# Do not regenerate or stage legacy JSONL during normal Dolt workflows.
 export.auto: false
+export.git-add: false
