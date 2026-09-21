@@ -9,6 +9,7 @@ _:
       loom,
       sandbox,
       profileManifest,
+      system,
       wrixLinuxPkgs,
       ...
     }:
@@ -27,12 +28,33 @@ _:
         craneLib
         stagedSrc
         ;
-      inherit (pkgs.lib) makeBinPath;
+      inherit (pkgs.lib) assertMsg makeBinPath optionalAttrs;
       loomLib = import ../lib.nix;
       testsDeriv = import ../../tests/default.nix {
         inherit pkgs;
         loomPackage = loom;
       };
+
+      checkSystemsMatchHost = all (check: check.system == system) (attrValues checks);
+      checks-match-host-system =
+        assert assertMsg checkSystemsMatchHost "checks.${system} contains a foreign-platform derivation";
+        pkgs.runCommand "checks-match-host-system" { } ''
+          set -euo pipefail
+          touch "$out"
+        '';
+
+      workspace-source-includes-git-policy-scripts =
+        pkgs.runCommand "workspace-source-includes-git-policy-scripts" { }
+          ''
+            set -euo pipefail
+            for src in ${bin.src} ${stagedSrc}; do
+              for script in wrix.sh sign.sh; do
+                cmp "${../../crates/loom-test-support/src/git_policy}/$script" \
+                  "$src/crates/loom-test-support/src/git_policy/$script"
+              done
+            done
+            touch "$out"
+          '';
 
       loom-gate-check = craneLib.mkCargoDerivation {
         pname = "loom-gate-check";
@@ -460,17 +482,12 @@ _:
             fi
             touch "$out"
           '';
-    in
-    {
+
       checks = {
         inherit
           loom-gate-check
           loom-wrix-uses-unprofiled-spawn-launcher
-          image-runtime-binaries-launch
           profile-manifest-keeps-runtime-path-context
-          sandbox-profile-env-has-loom
-          sandbox-profile-env-has-wrix
-          sandbox-profile-env-omits-nix
           smoke-preflight-skips-runtime-build
           test-app-ignores-host-git-signing
           test-sandbox-disables-container-network
@@ -478,7 +495,21 @@ _:
           test-sandbox-needs-no-dolt-socket
           test-sandbox-skips-oci-permission-denied
           test-sandbox-skips-unsupported-runtime
+          workspace-source-includes-git-policy-scripts
           ;
+      }
+      // optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        inherit
+          image-runtime-binaries-launch
+          sandbox-profile-env-has-loom
+          sandbox-profile-env-has-wrix
+          sandbox-profile-env-omits-nix
+          ;
+      };
+    in
+    {
+      checks = checks // {
+        inherit checks-match-host-system;
       };
     };
 }

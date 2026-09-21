@@ -28,13 +28,14 @@ let
     if toolchain != null then toolchain else fenixPkgs.combine [ fenixPkgs.stable.defaultToolchain ];
   craneLib = (crane.mkLib pkgs).overrideToolchain (_: resolvedToolchain);
 
-  # Keep template assets, built-in skill packages, and snapshot files
+  # Keep template assets, built-in skills, embedded shell scripts, and snapshots
   # alongside the Cargo workspace — crane's default filter would exclude them.
   srcFilter =
     path: type:
     (craneLib.filterCargoSources path type)
     || (hasInfix "/loom-templates/templates/" path)
     || (hasInfix "/loom-skill/builtin/" path)
+    || (hasSuffix ".sh" path)
     || (hasSuffix ".snap" path);
 
   cleanedSrc = cleanSourceWith {
