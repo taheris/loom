@@ -134,7 +134,7 @@ pub(crate) fn spawn_session(mut cmd: Command) -> Result<AgentSession<Idle>, Prot
     cmd.stderr(Stdio::inherit());
     cmd.kill_on_drop(true);
 
-    let mut child = cmd.spawn().map_err(ProtocolError::Io)?;
+    let mut child = loom_driver::process::OwnedChild::spawn(&mut cmd).map_err(ProtocolError::Io)?;
     let stdin = child
         .stdin
         .take()

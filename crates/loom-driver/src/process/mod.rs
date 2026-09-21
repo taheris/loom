@@ -34,6 +34,10 @@ pub async fn output(
     clock: &dyn Clock,
     timeout: Duration,
 ) -> Result<Output, Error> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut process = OwnedChild::spawn(command)?;
     let result = tokio::select! {
         result = process.output() => result.map_err(Error::Io),
@@ -51,19 +55,24 @@ pub async fn output(
     }
 }
 
-struct OwnedChild {
+/// A launcher and its Unix process group, killed together on cancellation.
+///
+/// The direct child is reaped asynchronously by Tokio when this guard is dropped.
+/// Call `terminate` when cleanup must wait for reaping. Detached process groups
+/// and container daemons remain the launcher's responsibility.
+pub struct OwnedChild {
     child: Child,
     #[cfg(unix)]
     group: Option<Pid>,
 }
 
 impl OwnedChild {
-    fn spawn(command: &mut Command) -> io::Result<Self> {
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+    /// Spawn with the caller's I/O configuration and an owned process group.
+    ///
+    /// # Errors
+    /// Returns a process-spawn or process-ID error.
+    pub fn spawn(command: &mut Command) -> io::Result<Self> {
+        command.kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
         let child = command.spawn()?;
@@ -82,6 +91,28 @@ impl OwnedChild {
         })
     }
 
+    /// Wait for the launcher to exit and release its process-group identity.
+    ///
+    /// # Errors
+    /// Returns a process-wait error.
+    pub async fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        let status = self.child.wait().await?;
+        self.disarm();
+        Ok(status)
+    }
+
+    /// Check for launcher exit without retaining a reaped process-group identity.
+    ///
+    /// # Errors
+    /// Returns a process-wait error.
+    pub fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        let status = self.child.try_wait()?;
+        if status.is_some() {
+            self.disarm();
+        }
+        Ok(status)
+    }
+
     async fn output(&mut self) -> io::Result<Output> {
         let stdout = read_pipe(self.child.stdout.take());
         let stderr = read_pipe(self.child.stderr.take());
@@ -95,7 +126,11 @@ impl OwnedChild {
         })
     }
 
-    async fn terminate(&mut self) -> io::Result<()> {
+    /// Kill the process group and reap the direct child.
+    ///
+    /// # Errors
+    /// Returns a signal or process-wait error.
+    pub async fn terminate(&mut self) -> io::Result<()> {
         #[cfg(unix)]
         let group_result = self.kill_group();
         self.child.kill().await?;
@@ -121,6 +156,20 @@ impl OwnedChild {
             }
         }
         Ok(())
+    }
+}
+
+impl std::ops::Deref for OwnedChild {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for OwnedChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.child
     }
 }
 

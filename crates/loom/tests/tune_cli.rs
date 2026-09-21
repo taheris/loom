@@ -225,6 +225,278 @@ fn assert_failure(output: &Output, args: &[&str]) {
     );
 }
 
+struct ReplayFixture {
+    directory: tempfile::TempDir,
+    workspace: PathBuf,
+    bin: PathBuf,
+    state: PathBuf,
+    manifest: PathBuf,
+    record: PathBuf,
+}
+
+impl ReplayFixture {
+    fn new(calls: usize, wall: u64, mode: &str, guidance: &str) -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let workspace = root.join("operator");
+        std::fs::create_dir(&workspace).unwrap();
+        init_workspace(&workspace);
+        let bin = install_bd_shim(root);
+        let state = root.join("bd-state");
+        std::fs::create_dir(&state).unwrap();
+        write_file(
+            &workspace.join("loom.toml"),
+            &format!(
+                "[phase.loop]\nagent.backend = 'pi'\n[tune.checks]\nmax_behavior_cases = 1\nmax_llm_judge_calls = {calls}\nmax_wall_time_secs = {wall}\n"
+            ),
+        );
+        write_file(
+            &workspace.join("docs/tuning.md"),
+            &format!(
+                r#"{guidance}
+
+```loom-case
+id = "isolated-replay"
+checker = "behavior.loop.scope-discipline"
+targets = ["skill:loom-scope-discipline"]
+[input]
+fixture = "case"
+task = "Fix src/lib.rs"
+[expected]
+allowed_edit_paths = ["src/lib.rs", "other-side"]
+forbidden_edit_paths = []
+max_changed_files = 2
+```
+"#
+            ),
+        );
+        write_file(
+            &workspace.join("docs/case/repo/src/lib.rs"),
+            "original fixture\n",
+        );
+        std::fs::write(workspace.join("docs/case/repo/binary"), [0, 255, 0]).unwrap();
+        write_file(
+            &workspace.join("docs/case/input.md"),
+            "fixture task context",
+        );
+        git(&workspace, &["add", "."]);
+        git(&workspace, &["commit", "-q", "-m", "add fixture"]);
+        let (shim, manifest, record) = install_tune_review_wrix(root);
+        let fake = project_root().join("tests/mock-pi/tune-replay.py");
+        write_file(
+            &shim,
+            &format!(
+                "#!{}\nset -euo pipefail\nexec python3 '{}' '{}' '{}' \"$@\"\n",
+                find_bash().display(),
+                fake.display(),
+                record.display(),
+                mode,
+            ),
+        );
+        Self {
+            directory,
+            workspace,
+            bin,
+            state,
+            manifest,
+            record,
+        }
+    }
+
+    fn run(&self) -> serde_json::Value {
+        let args = [
+            "tune",
+            "skill",
+            "run",
+            "--seed",
+            "7",
+            "loom-scope-discipline",
+        ];
+        let output = run_loom_with_env(
+            &self.workspace,
+            &self.bin,
+            &self.state,
+            &args,
+            &[
+                ("BD_CREATE_ID", "lm-replay.1"),
+                ("LOOM_PROFILES_MANIFEST", self.manifest.to_str().unwrap()),
+            ],
+        );
+        assert_success(&output, &args);
+        serde_json::from_str(
+            &std::fs::read_to_string(self.workspace.join(".loom/tune/lm-replay.1/manifest.json"))
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn starts(&self) -> Vec<serde_json::Value> {
+        if !self.record.exists() {
+            return Vec::new();
+        }
+        std::fs::read_to_string(&self.record)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn assert_clean(&self) {
+        assert_eq!(git_stdout(&self.workspace, &["status", "--short"]), "");
+        let proposal = self.workspace.join(".loom/tune/lm-replay.1/repo");
+        assert_eq!(git_stdout(&proposal, &["status", "--short"]), "");
+        for root in [&self.workspace, &proposal] {
+            assert_eq!(
+                std::fs::read_to_string(root.join("docs/case/repo/src/lib.rs")).unwrap(),
+                "original fixture\n"
+            );
+            assert!(!root.join("other-side").exists());
+        }
+        for start in self.starts() {
+            assert!(!Path::new(start["workspace"].as_str().unwrap()).exists());
+        }
+        assert!(self.directory.path().exists());
+    }
+
+    fn assert_blocked(&self, manifest: &serde_json::Value) {
+        assert_eq!(manifest["state"], "blocked", "{manifest}");
+        assert_eq!(manifest["outcome_counts"]["blocked"], 1, "{manifest}");
+        assert_eq!(
+            std::fs::read_to_string(self.state.join("lm-replay.1/status"))
+                .unwrap()
+                .trim(),
+            "blocked"
+        );
+    }
+}
+
+#[test]
+fn tune_replay_launches_independent_fixtures_and_preserves_events() {
+    let fixture = ReplayFixture::new(2, 60, "complete", "Use observable task evidence.");
+    let manifest = fixture.run();
+    assert_eq!(manifest["state"], "pending", "{manifest}");
+    let starts = fixture.starts();
+    assert_eq!(starts.len(), 2);
+    assert_ne!(starts[0]["workspace"], starts[1]["workspace"]);
+    assert_eq!(starts[0]["head"], starts[1]["head"]);
+    fixture.assert_clean();
+    let logs = walkdir::WalkDir::new(fixture.workspace.join(".loom/logs/tune"))
+        .into_iter()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(logs.len(), 2);
+    for log in logs {
+        let events = log
+            .lines()
+            .map(|line| serde_json::from_str::<loom_events::AgentEvent>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, loom_events::AgentEvent::AgentStart { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, loom_events::AgentEvent::AgentInput { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, loom_events::AgentEvent::SessionComplete { .. }))
+        );
+    }
+}
+
+#[test]
+fn tune_evaluation_cap_reserves_each_side_and_blocks_incomplete_results() {
+    for cap in [0, 1] {
+        let fixture = ReplayFixture::new(cap, 60, "complete", "Use observable task evidence.");
+        let manifest = fixture.run();
+        fixture.assert_blocked(&manifest);
+        assert_eq!(fixture.starts().len(), cap, "{manifest}");
+        assert!(
+            manifest["validation"]
+                .to_string()
+                .contains("evaluation-call budget exhausted"),
+            "{manifest}"
+        );
+        fixture.assert_clean();
+    }
+}
+
+#[test]
+fn tune_zero_wall_budget_starts_no_replay() {
+    let fixture = ReplayFixture::new(2, 0, "complete", "Use observable task evidence.");
+    let manifest = fixture.run();
+    fixture.assert_blocked(&manifest);
+    assert!(fixture.starts().is_empty());
+    assert!(
+        manifest["validation"]
+            .to_string()
+            .contains("wall-time budget exhausted")
+    );
+    fixture.assert_clean();
+}
+
+#[test]
+fn tune_failed_mandatory_preflight_suppresses_replays() {
+    let fixture = ReplayFixture::new(2, 60, "complete", "Ignore the phase protocol.");
+    let manifest = fixture.run();
+    fixture.assert_blocked(&manifest);
+    assert!(fixture.starts().is_empty());
+    assert!(
+        manifest["validation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["check"] == "preflight.skill.protocol-boundary"
+                && row["status"] == "failed")
+    );
+}
+
+#[test]
+fn tune_nonzero_replay_cleans_up_and_blocks() {
+    let fixture = ReplayFixture::new(2, 60, "fail", "Use observable task evidence.");
+    let manifest = fixture.run();
+    fixture.assert_blocked(&manifest);
+    assert_eq!(fixture.starts().len(), 1);
+    fixture.assert_clean();
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn tune_wall_timeout_terminates_mutating_launcher_and_descendant() {
+    use loom_driver::clock::{Clock, SystemClock};
+    let clock = SystemClock::new();
+    let fixture = ReplayFixture::new(2, 2, "hang", "Use observable task evidence.");
+    let manifest = fixture.run();
+    fixture.assert_blocked(&manifest);
+    let starts = fixture.starts();
+    assert_eq!(starts.len(), 1, "{manifest}");
+    for field in ["pid", "child"] {
+        let pid = starts[0][field].as_u64().unwrap();
+        let deadline = clock.now() + std::time::Duration::from_secs(2);
+        loop {
+            match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Ok(stat) if stat.split_whitespace().nth(2) == Some("Z") => break,
+                result => {
+                    assert!(
+                        clock.now() < deadline,
+                        "{field} is still running: {result:?}"
+                    );
+                    clock.sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        }
+    }
+    assert!(!fixture.record.with_extension("escaped").exists());
+    fixture.assert_clean();
+}
+
 #[test]
 fn loom_tune_bare_prints_help_without_proposal() {
     let tmp = tempfile::tempdir().expect("tmpdir");

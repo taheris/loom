@@ -1437,13 +1437,14 @@ mod tests {
         script: &str,
         parser: Box<dyn LineParse + Send>,
     ) -> Result<AgentSession<Idle>, ProtocolError> {
-        let mut child = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+        let mut child = loom_driver::process::OwnedChild::spawn(
+            tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        )?;
         let stdin = child
             .stdin
             .take()

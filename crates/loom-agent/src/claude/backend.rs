@@ -19,10 +19,11 @@ use loom_driver::agent::{
 };
 use loom_driver::clock::Clock;
 use loom_driver::clock::SystemClock;
+use loom_driver::process::OwnedChild as Child;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use tokio::io::BufWriter;
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tracing::{debug, info, warn};
 
 use super::parser::ClaudeParser;
@@ -179,7 +180,7 @@ pub(crate) fn spawn_session(
     cmd.stderr(Stdio::inherit());
     cmd.kill_on_drop(true);
 
-    let mut child = cmd.spawn().map_err(ProtocolError::Io)?;
+    let mut child = Child::spawn(&mut cmd).map_err(ProtocolError::Io)?;
     let stdin = child
         .stdin
         .take()
@@ -577,11 +578,7 @@ mod tests {
         // Spawn a long-running child that will not exit on its own within the
         // grace window. We never actually wait wall-clock — the MockClock
         // sleep wins the select.
-        let mut child = Command::new("sleep")
-            .arg("60")
-            .kill_on_drop(true)
-            .spawn()
-            .expect("spawn sleep");
+        let mut child = Child::spawn(Command::new("sleep").arg("60")).expect("spawn sleep");
         let clock = MockClock::new();
         let result = wait_with_timeout(&mut child, &clock, Duration::from_millis(10))
             .await

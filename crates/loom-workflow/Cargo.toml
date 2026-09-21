@@ -28,6 +28,7 @@ displaydoc = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -35,7 +36,6 @@ loom-driver = { workspace = true, features = ["test-support"] }
 loom-test-support = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
-walkdir = { workspace = true }
 
 [lints]
 workspace = true

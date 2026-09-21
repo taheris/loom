@@ -84,10 +84,21 @@ fn candidate_registry(input: &ValidationInput<'_>) -> Result<SkillRegistry, Tune
             .document_path
             .strip_prefix(&input.context.workspace)
         {
-            builtins.push(read_skill(
-                &input.repo.join(relative),
-                SkillSource::BuiltIn,
-            )?);
+            let path = input.repo.join(relative);
+            require_inside(input.repo, &path)?;
+            let markdown = super::read_to_string(&path)?;
+            let bundle = skill
+                .provenance()
+                .built_in_bundle
+                .clone()
+                .ok_or_else(|| invalid("built-in skill has no bundle provenance"))?;
+            let provenance =
+                SkillProvenance::built_in(bundle, skill.name().clone(), path, &markdown);
+            let candidate = parse_skill(markdown, provenance)?;
+            if candidate.name() != skill.name() {
+                return Err(invalid("candidate renamed a built-in skill"));
+            }
+            builtins.push(candidate);
         } else {
             builtins.push(skill);
         }
@@ -109,10 +120,13 @@ fn candidate_registry(input: &ValidationInput<'_>) -> Result<SkillRegistry, Tune
                         ))
                     })
             } else {
-                Ok(path.clone())
+                Ok(input.repo.join(path))
             }
         })
         .collect::<Result<Vec<_>, TuneError>>()?;
+    for path in &configured {
+        require_tree_inside(input.repo, path)?;
+    }
     let tracked = candidate_tracked_files(input)?;
     let report = loom_skill::discovery::load_workspace(
         input.repo,
@@ -145,6 +159,7 @@ fn candidate_registry(input: &ValidationInput<'_>) -> Result<SkillRegistry, Tune
 fn materialize(input: &ValidationInput<'_>) -> Result<(), TuneError> {
     let registry = candidate_registry(input)?;
     let scratch = tempfile::tempdir().map_err(TuneError::ReplayWorkspace)?;
+    let mut contexts = BTreeSet::new();
     for skill in registry.skills() {
         let metadata = skill
             .frontmatter()
@@ -162,6 +177,9 @@ fn materialize(input: &ValidationInput<'_>) -> Result<(), TuneError> {
             .and_then(|metadata| metadata.profiles.first())
             .cloned()
             .unwrap_or_else(loom_driver::identifier::ProfileName::base);
+        contexts.insert((phase, profile));
+    }
+    for (phase, profile) in contexts {
         let applicable = ApplicableRegistry::filter(registry.clone(), &phase, &profile);
         let materialized = MaterializedRegistry::materialize(applicable, scratch.path())
             .map_err(|source| invalid(error_detail(&source)))?;
@@ -230,9 +248,28 @@ fn candidate_tracked_files(input: &ValidationInput<'_>) -> Result<BTreeSet<PathB
 fn read_skill(path: &Path, source: SkillSource) -> Result<NamedSkill, TuneError> {
     let markdown = super::read_to_string(path)?;
     let provenance = SkillProvenance::package(source, path, None, &markdown);
+    parse_skill(markdown, provenance)
+}
+
+fn parse_skill(markdown: String, provenance: SkillProvenance) -> Result<NamedSkill, TuneError> {
     let document = SkillDocument::parse(RawSkillDocument::new(markdown, provenance))
         .map_err(|source| invalid(error_detail(&source)))?;
     NamedSkill::from_document(document).map_err(|source| invalid(error_detail(&source)))
+}
+
+fn require_tree_inside(root: &Path, path: &Path) -> Result<(), TuneError> {
+    let root = std::fs::canonicalize(root).map_err(TuneError::ReplayWorkspace)?;
+    for entry in walkdir::WalkDir::new(path) {
+        let entry = entry.map_err(|source| invalid(error_detail(&source)))?;
+        let canonical = std::fs::canonicalize(entry.path()).map_err(TuneError::ReplayWorkspace)?;
+        if !canonical.starts_with(&root) || entry.file_type().is_symlink() {
+            return Err(invalid(format!(
+                "configured skill path {} escapes or links outside candidate inputs",
+                entry.path().display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn require_inside(root: &Path, path: &Path) -> Result<(), TuneError> {

@@ -381,7 +381,14 @@ fixture/
 ```
 
 Checker implementations own execution. Fixture files are evidence inputs, not
-programs to run.
+programs to run. Each side gets its own disposable Git checkout from frozen
+tracked bytes/permissions, with no remotes or live operator metadata. `repo/`
+becomes actual files; only `input.md` and the task become prompt context.
+Nonempty `state.toml` currently blocks evaluation because isolated state
+provisioning is unavailable. Unsafe symlink referents are rejected. Checkouts
+are removed on completion, failure, or cancellation; replay event logs remain
+under `.loom/logs/tune/`. Cancellation kills the launcher's Unix process group;
+detached processes and container teardown remain the launcher's responsibility.
 
 ## Levels, Planning, and Acceptance
 
@@ -414,7 +421,16 @@ applicable declared regression cases before sampling mined cases. Skipped
 declared regressions are reported with guidance to use `full` or increase caps.
 Only selected cases can block a proposal.
 
-Per selected case, Loom records one outcome category:
+`max_wall_time_secs` is a shared deadline starting at candidate checks, covering
+preflights, fixture setup, and both replay sides. It does not cover harvesting or
+candidate generation. The compatibility key `max_llm_judge_calls` counts
+**evaluation session starts**, not model turns or tokens: current and candidate
+each consume one credit before launch. Exhaustion blocks the proposal with
+incomplete validation. Zero wall budget starts no check; zero evaluation credits
+allows preflights but no replays. Failed mandatory preflight suppresses replays;
+all preflights inspect actual candidate files, including case-plan consistency.
+
+Per evaluated selected case, Loom records one outcome category:
 
 ```text
 improved

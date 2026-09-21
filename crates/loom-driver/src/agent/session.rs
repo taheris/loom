@@ -1,8 +1,9 @@
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 
+use crate::process::OwnedChild;
 use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::process::{Child, ChildStdin};
+use tokio::process::ChildStdin;
 
 use super::error::ProtocolError;
 use super::jsonl::JsonlReader;
@@ -23,7 +24,7 @@ pub struct Active;
 /// construct the session with [`Self::new`] and hand it back through
 /// `AgentBackend::spawn`.
 pub struct AgentSession<S> {
-    child: Child,
+    child: OwnedChild,
     stdin: BufWriter<ChildStdin>,
     reader: JsonlReader,
     parser: Box<dyn LineParse + Send>,
@@ -53,7 +54,7 @@ impl AgentSession<Idle> {
     /// Backends in `agent` call this immediately after launching the
     /// agent process and wiring its stdio.
     pub fn new(
-        child: Child,
+        child: OwnedChild,
         stdin: BufWriter<ChildStdin>,
         reader: JsonlReader,
         parser: Box<dyn LineParse + Send>,
@@ -227,7 +228,7 @@ impl AgentSession<Active> {
 impl<S> AgentSession<S> {
     /// Borrow the underlying child process — backends use this to wire up
     /// shutdown watchdogs without giving up ownership of the session.
-    pub const fn child_mut(&mut self) -> &mut Child {
+    pub const fn child_mut(&mut self) -> &mut OwnedChild {
         &mut self.child
     }
 
@@ -235,7 +236,7 @@ impl<S> AgentSession<S> {
     /// writer. Used by the claude backend's shutdown watchdog after a
     /// `result` event: it must drop the writer (closing the pipe so claude
     /// observes EOF) then wait/signal the child.
-    pub fn into_parts(self) -> (Child, BufWriter<ChildStdin>) {
+    pub fn into_parts(self) -> (OwnedChild, BufWriter<ChildStdin>) {
         (self.child, self.stdin)
     }
 }

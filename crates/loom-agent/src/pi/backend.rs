@@ -314,7 +314,7 @@ async fn spawn_with_handshake_inner(
     }
     cmd.kill_on_drop(true);
 
-    let mut child = cmd.spawn().map_err(ProtocolError::Io)?;
+    let mut child = loom_driver::process::OwnedChild::spawn(&mut cmd).map_err(ProtocolError::Io)?;
     let stdin = child
         .stdin
         .take()

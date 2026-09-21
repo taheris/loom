@@ -422,7 +422,20 @@ fixture/
 ```
 
 Checker implementations own execution. Fixture files are evidence inputs, not
-programs to run.
+programs to run. Current and candidate sessions receive independent disposable
+Git checkouts of the same frozen tracked-file bytes and permissions, without
+remotes or borrowed Git/Beads/Loom metadata. `repo/` is copied as files;
+`input.md` supplies task context, not flattened repository contents. Unsafe
+symlink referents are rejected. Nonempty `state.toml` currently blocks evaluation:
+isolated Beads/inbox/tune state provisioning is not implemented and operator
+state is never substituted. Replay events persist under `.loom/logs/tune/` after
+replay checkouts are removed, including failure/cancellation paths. Launcher
+cancellation kills its Unix process group; detached processes and container
+cleanup remain the sandbox launcher's responsibility.
+[test](tune_replay_launches_independent_fixtures_and_preserves_events)
+[test](tune_nonzero_replay_cleans_up_and_blocks)
+[test](tune_wall_timeout_terminates_mutating_launcher_and_descendant)
+[test](unsupported_fixture_state_is_not_silently_flattened_or_ignored)
 
 Checker levels:
 
@@ -448,6 +461,21 @@ external_roots = [
   # "~/.codex/archived_sessions",
 ]
 ```
+
+The wall cap is one deadline shared by candidate preflights, fixture setup, and
+behavioral replays, starting when candidate checks begin (not harvesting or
+candidate generation). `max_llm_judge_calls` retains its config spelling but
+counts evaluation session starts: current and candidate each reserve one credit
+before launch. It is not a model-turn/token cap. Exhaustion blocks the proposal
+and records incomplete validation, never success; no further evaluation starts.
+Every frozen mandatory preflight runs against candidate files, and any failure
+suppresses behavioral replay. Candidate tuning cases cannot change the frozen
+regressions.
+[test](tune_evaluation_cap_reserves_each_side_and_blocks_incomplete_results)
+[test](tune_zero_wall_budget_starts_no_replay)
+[test](wall_budget_is_shared_and_cancels_in_flight_work)
+[test](tune_failed_mandatory_preflight_suppresses_replays)
+[test](candidate_preflights_read_files_and_preserve_registry_and_case_invariants)
 
 Only optional checkers can be disabled. Disabling a mandatory preflight validator
 is a configuration error. A loaded `loom-case` that names a disabled behavioral
