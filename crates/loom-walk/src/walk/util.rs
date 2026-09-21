@@ -170,14 +170,6 @@ pub fn immediate_children(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// `.rs` files directly under `dir` (no recursion).
-pub fn rs_files_in(dir: &Path) -> Vec<PathBuf> {
-    immediate_children(dir)
-        .into_iter()
-        .filter(|p| p.is_file() && is_rust_file(p))
-        .collect()
-}
-
 /// `.rs` files anywhere under `dir`.
 pub fn rs_files_recursive(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)

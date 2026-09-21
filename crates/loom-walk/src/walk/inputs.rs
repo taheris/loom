@@ -134,10 +134,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "direct_tools_net_new" => {
             rs_files_recursive(&root.join("crates/loom-agent/src/direct/tools"))
         }
-        // Scans `crates/loom-driver/src/identifier/`, which may not exist
-        // yet; declare the host crate's `src` so the walk is never skipped
-        // and re-triggers once the identifier module lands.
-        "newtype_identifiers" => crate_src(root, "loom-driver"),
+        "newtype_identifiers" => crate_src(root, "loom-events"),
 
         // Single named source files.
         "loom_llm_error_variant_set_multimodal" => {

@@ -19,6 +19,10 @@ pub fn run(input: &WalkInput) -> Verdict {
     let mut violations = Vec::new();
     for path in scope {
         let Some(file) = parse_rs(&path) else {
+            violations.push(format!(
+                "{}: unable to read or parse Rust source",
+                rel(&root, &path)
+            ));
             continue;
         };
         let rel_path = rel(&root, &path);

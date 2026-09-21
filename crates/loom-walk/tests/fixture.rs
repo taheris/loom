@@ -394,7 +394,7 @@ fn newtype_identifiers_pass() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-driver/src/identifier/bead.rs",
+        "crates/loom-events/src/identifier/bead.rs",
         "pub struct BeadId(String);\npub struct ParseBeadIdError { pub raw: String }\n",
     );
     let out = invoke(&["newtype_identifiers"], Some(ws.path()), None);
@@ -406,11 +406,108 @@ fn newtype_identifiers_fail() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-driver/src/identifier/bead.rs",
+        "crates/loom-events/src/identifier/bead.rs",
         "pub struct BeadId { inner: String }\n",
     );
     let out = invoke(&["newtype_identifiers"], Some(ws.path()), None);
     assert_fail(&out, "BeadId");
+}
+
+#[test]
+fn newtype_identifiers_rejects_missing_directory() {
+    let ws = make_workspace();
+    assert_fail(
+        &invoke(&["newtype_identifiers"], Some(ws.path()), None),
+        "crates/loom-events/src/identifier",
+    );
+}
+
+#[test]
+fn newtype_identifiers_rejects_empty_directory() {
+    let ws = make_workspace();
+    std::fs::create_dir_all(ws.path().join("crates/loom-events/src/identifier")).unwrap();
+    assert_fail(
+        &invoke(&["newtype_identifiers"], Some(ws.path()), None),
+        "no identifier source files",
+    );
+}
+
+#[test]
+fn newtype_identifiers_rejects_empty_definitions() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-events/src/identifier/mod.rs",
+        "// no definitions\n",
+    );
+    assert_fail(
+        &invoke(&["newtype_identifiers"], Some(ws.path()), None),
+        "no identifier definitions",
+    );
+}
+
+#[test]
+fn newtype_identifiers_rejects_malformed_rust() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-events/src/identifier/bead.rs",
+        "pub struct BeadId(",
+    );
+    assert_fail(
+        &invoke(&["newtype_identifiers"], Some(ws.path()), None),
+        "unable to parse Rust source",
+    );
+}
+
+#[test]
+fn newtype_identifiers_rejects_unreadable_source() {
+    let ws = make_workspace();
+    std::fs::create_dir_all(ws.path().join("crates/loom-events/src/identifier/bead.rs")).unwrap();
+    assert_fail(
+        &invoke(&["newtype_identifiers"], Some(ws.path()), None),
+        "unable to read Rust source",
+    );
+}
+
+#[test]
+fn newtype_identifiers_preserves_empty_scoped_selection() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-events/src/identifier/bead.rs",
+        "pub struct BeadId { bad: String }",
+    );
+    assert_pass(&invoke(
+        &["newtype_identifiers"],
+        Some(ws.path()),
+        Some("README.md"),
+    ));
+}
+
+#[test]
+fn newtype_identifiers_reports_current_inputs() {
+    let ws = make_workspace();
+    let path = "crates/loom-events/src/identifier/bead.rs";
+    seed(ws.path(), path, "pub struct BeadId(String);");
+    let out = invoke(
+        &["newtype_identifiers", "--print-inputs"],
+        Some(ws.path()),
+        None,
+    );
+    assert!(out.status.success());
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["inputs"], serde_json::json!([path]));
+}
+
+#[test]
+fn newtype_derive_audit_rejects_malformed_rust() {
+    let ws = make_workspace();
+    seed(ws.path(), "crates/loom-driver/src/id.rs", "pub struct Id(");
+    assert_fail(
+        &invoke(&["no_derive_from_on_newtypes"], Some(ws.path()), None),
+        "unable to read or parse Rust source",
+    );
 }
 
 // ---------------------------------------------------------------------------
