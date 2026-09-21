@@ -117,7 +117,7 @@ fn run_gate_command(workspace: &Path, args: &[&str]) -> (std::process::Output, S
 }
 
 fn expected_finding() -> Finding {
-    Finding {
+    loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
         token: ConcernToken::SpecCoherenceFail,
         route: loom_workflow::review::FindingRoute::Deferred,
         bonds: vec![SpecLabel::new(SPEC_LABEL).unwrap()],
@@ -126,7 +126,8 @@ fn expected_finding() -> Finding {
             anchor: "finding-status-output".to_owned(),
         },
         evidence: "status output fixture".to_owned(),
-    }
+    })
+    .expect("valid fixture finding")
 }
 
 fn write_bead(state_dir: &Path, id: &str, status: &str, issue_type: &str, labels: &[&str]) {

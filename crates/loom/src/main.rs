@@ -2413,9 +2413,9 @@ fn run_gate_mint(
                                 let failure_count = failures.len();
                                 let mut normalized_count = 0_usize;
                                 for failure in failures {
-                                    match loom_workflow::mint::walk::verifier_failure_to_finding(
+                                    match loom_workflow::mint::walk::verifier_failure_to_raw_finding(
                                         failure,
-                                    ) {
+                                    ).and_then(|raw| raw.resolve(scope.dispatch_scope(), &validator).map_err(Into::into)) {
                                         Ok(finding) => {
                                             normalized_count += 1;
                                             findings.push(finding);
@@ -6661,7 +6661,7 @@ mod tests {
 
     #[test]
     fn review_status_records_report_unsuppressed_and_suppressed_findings() {
-        let reported = loom_workflow::review::Finding {
+        let reported = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: loom_workflow::review::ConcernToken::SpecCoherenceFail,
             route: loom_workflow::review::FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate").unwrap()],
@@ -6670,8 +6670,9 @@ mod tests {
                 anchor: "finding-status-output".to_owned(),
             },
             evidence: "live finding".to_owned(),
-        };
-        let suppressed = loom_workflow::review::Finding {
+        })
+        .expect("valid fixture finding");
+        let suppressed = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: loom_workflow::review::ConcernToken::VerifierBypass,
             route: loom_workflow::review::FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate").unwrap()],
@@ -6679,7 +6680,8 @@ mod tests {
                 target_string: "cargo test --lib sample".to_owned(),
             },
             evidence: "suppressed finding".to_owned(),
-        };
+        })
+        .expect("valid fixture finding");
         let stdout = format!(
             "LOOM_FINDING: {}\nLOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"two findings\"}}\n",
             serde_json::to_string(&reported).expect("finding json"),
@@ -6703,7 +6705,7 @@ mod tests {
 
     #[test]
     fn review_status_records_report_tree_scope_only_findings_at_tree_scope() {
-        let finding = loom_workflow::review::Finding {
+        let finding = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: loom_workflow::review::ConcernToken::CrossSpecClash,
             route: loom_workflow::review::FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate").unwrap()],
@@ -6712,7 +6714,8 @@ mod tests {
                 anchor: "standing-safety-net-checks".to_owned(),
             },
             evidence: "tree-scope cross-spec clash".to_owned(),
-        };
+        })
+        .expect("valid fixture finding");
         let stdout = format!(
             "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"tree finding\"}}\n",
             serde_json::to_string(&finding).expect("finding json"),
@@ -6973,7 +6976,7 @@ mod tests {
         .expect("reviewer target aliases should parse");
 
         assert_eq!(findings.len(), 2);
-        match &findings[1].target {
+        match &findings[1].target() {
             loom_workflow::review::FindingTarget::Annotation { target_string } => {
                 assert_eq!(target_string, "true");
             }
@@ -7015,7 +7018,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
         std::fs::write(tmp.path().join("specs/gate.md"), "# Gate\n").expect("write spec");
-        let finding = loom_workflow::review::Finding {
+        let finding = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: loom_workflow::review::ConcernToken::SpecCoherenceFail,
             route: loom_workflow::review::FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate").unwrap()],
@@ -7024,7 +7027,8 @@ mod tests {
                 anchor: "missing-anchor".to_owned(),
             },
             evidence: "missing anchor".to_owned(),
-        };
+        })
+        .expect("valid fixture finding");
         let stdout = format!(
             "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"missing\"}}\n",
             serde_json::to_string(&finding).expect("finding json"),

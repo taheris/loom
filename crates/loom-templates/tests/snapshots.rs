@@ -17,7 +17,7 @@ use loom_templates::criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
     CriterionStatus, EvidenceState,
 };
-use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
+use loom_templates::finding::{ConcernToken, FindingTarget};
 use loom_templates::inbox::{ClarifyOption, InboxContext, InboxItem, ItemKind};
 use loom_templates::plan::PlanContext;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
@@ -349,15 +349,19 @@ fn run_snapshot_review_concern() {
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::ReviewConcern {
             summary: "test mocks the agent backend instead of running the live driver".into(),
-            findings: vec![Finding {
-                token: ConcernToken::VerifierBypass,
-                route: loom_protocol::gate::FindingRoute::Deferred,
-                bonds: vec![SpecLabel::new("harness").unwrap()],
-                target: FindingTarget::Annotation {
-                    target_string: "cargo test --lib parse_walks_all_md_files".into(),
-                },
-                evidence: "test mocks the agent backend instead of running the live driver".into(),
-            }],
+            findings: vec![
+                loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
+                    token: ConcernToken::VerifierBypass,
+                    route: loom_protocol::gate::FindingRoute::Deferred,
+                    bonds: vec![SpecLabel::new("harness").unwrap()],
+                    target: FindingTarget::Annotation {
+                        target_string: "cargo test --lib parse_walks_all_md_files".into(),
+                    },
+                    evidence: "test mocks the agent backend instead of running the live driver"
+                        .into(),
+                })
+                .expect("valid fixture finding"),
+            ],
         }),
         workspace_recovery: None,
         review_notes: None,

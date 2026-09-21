@@ -473,15 +473,23 @@ mod tests {
     }
 
     fn streamed_finding(token: ConcernToken) -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec_label("gate")],
-            target: FindingTarget::Annotation {
-                target_string: "cargo test --lib sample".into(),
+            target: if token == ConcernToken::JudgeFlag {
+                FindingTarget::Criterion {
+                    spec: spec_label("gate"),
+                    anchor: "sample".into(),
+                }
+            } else {
+                FindingTarget::Annotation {
+                    target_string: "cargo test --lib sample".into(),
+                }
             },
             evidence: "streamed via LOOM_FINDING".to_owned(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     // --- Marker-only rows (bd/diff/review irrelevant). ---
@@ -501,7 +509,7 @@ mod tests {
             } => {
                 assert_eq!(summary, "verifier-bypass -- one finding");
                 assert_eq!(findings.len(), 1);
-                assert_eq!(findings[0].token, ConcernToken::VerifierBypass);
+                assert_eq!(findings[0].token(), ConcernToken::VerifierBypass);
             }
             other => panic!("expected Recovery::ReviewConcern, got {other:?}"),
         }
@@ -529,7 +537,7 @@ mod tests {
             } => {
                 assert_eq!(summary, "fictional-concern not in 12-variant enum");
                 assert_eq!(findings.len(), 1);
-                assert_eq!(findings[0].token, ConcernToken::WeakAssertion);
+                assert_eq!(findings[0].token(), ConcernToken::WeakAssertion);
             }
             other => {
                 panic!("expected Recovery::ReviewConcern (not SwallowedMarker), got {other:?}")
@@ -740,7 +748,7 @@ mod tests {
                     }),
             } => {
                 assert_eq!(finding_count, 1);
-                assert_eq!(findings[0].token, ConcernToken::VerifierBypass);
+                assert_eq!(findings[0].token(), ConcernToken::VerifierBypass);
             }
             other => panic!("expected Recovery::BadWalk(FindingsWithoutConcern), got {other:?}"),
         }

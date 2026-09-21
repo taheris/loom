@@ -2,14 +2,15 @@ use loom_driver::config::SuppressionConfig;
 use loom_templates::finding::{ConcernToken, Finding};
 
 pub fn suppresses_rubric_finding(suppressions: &[SuppressionConfig], finding: &Finding) -> bool {
-    is_rubric_suppressible(finding.token) && matching_suppression(suppressions, finding).is_some()
+    is_rubric_suppressible(finding.token()) && matching_suppression(suppressions, finding).is_some()
 }
 
 pub fn has_ineffective_suppression_match(
     suppressions: &[SuppressionConfig],
     finding: &Finding,
 ) -> bool {
-    !is_rubric_suppressible(finding.token) && matching_suppression(suppressions, finding).is_some()
+    !is_rubric_suppressible(finding.token())
+        && matching_suppression(suppressions, finding).is_some()
 }
 
 pub fn matching_suppression<'a>(
@@ -54,7 +55,7 @@ mod tests {
     }
 
     fn rubric_finding() -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::SpecCoherenceFail,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("gate")],
@@ -63,11 +64,12 @@ mod tests {
                 anchor: "verifier-honesty".to_owned(),
             },
             evidence: "evidence".to_owned(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     fn deterministic_finding() -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::VerifierFailed,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("gate")],
@@ -75,7 +77,8 @@ mod tests {
                 target_string: "cargo test --lib failing_verifier".to_owned(),
             },
             evidence: "failed".to_owned(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     #[test]

@@ -20,6 +20,7 @@ thiserror = { workspace = true }
 displaydoc = { workspace = true }
 
 [dev-dependencies]
+loom-test-support = { workspace = true }
 anyhow = { workspace = true }
 insta = { workspace = true }
 toml = { workspace = true }

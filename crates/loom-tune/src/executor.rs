@@ -455,10 +455,10 @@ fn score_review(
                     && expected
                         .contains
                         .iter()
-                        .all(|term| contains_case_insensitive(&finding.evidence, term))
+                        .all(|term| contains_case_insensitive(finding.evidence(), term))
                     && expected.file.as_ref().is_none_or(|file| {
-                        contains_case_insensitive(&finding.evidence, file)
-                            || match &finding.target {
+                        contains_case_insensitive(finding.evidence(), file)
+                            || match &finding.target() {
                                 loom_protocol::gate::FindingTarget::TestPath { path }
                                 | loom_protocol::gate::FindingTarget::Template { path } => {
                                     path == file

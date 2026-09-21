@@ -47,7 +47,7 @@ fn loom_templates_re_exports_finding_contract_from_loom_protocol() {
 
     let spec: SpecLabel = "gate".parse().expect("valid spec label");
 
-    let proto_finding = loom_protocol::gate::Finding {
+    let proto_finding = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
         token: loom_protocol::gate::ConcernToken::SpecCoherenceFail,
         route: loom_protocol::gate::FindingRoute::Deferred,
         bonds: vec![spec.clone()],
@@ -56,7 +56,8 @@ fn loom_templates_re_exports_finding_contract_from_loom_protocol() {
             anchor: "verifier-honesty".to_owned(),
         },
         evidence: "via loom-protocol".to_owned(),
-    };
+    })
+    .expect("valid fixture finding");
     let _: loom_templates::Finding = identity(proto_finding);
 
     let proto_token = loom_protocol::gate::ConcernToken::OrphanIntegration;

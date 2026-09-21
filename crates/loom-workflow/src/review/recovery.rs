@@ -37,10 +37,10 @@ pub fn concern_label_from_findings(findings: &[Finding]) -> String {
     let Some(first) = findings.first() else {
         return "review-concern".to_owned();
     };
-    if findings.iter().any(|f| f.token != first.token) {
+    if findings.iter().any(|f| f.token() != first.token()) {
         return "multiple".to_owned();
     }
-    first.token.as_wire().to_owned()
+    first.token().as_wire().to_owned()
 }
 
 /// Render a [`RecoveryCause`] into a `previous_failure` body suitable for
@@ -211,15 +211,23 @@ mod tests {
     use loom_templates::run::BadWalk;
 
     fn finding_with_token(token: ConcernToken) -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token,
             route: FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate").unwrap()],
-            target: FindingTarget::Annotation {
-                target_string: "cargo test --lib sample".into(),
+            target: if token == ConcernToken::SpecCoherenceFail {
+                FindingTarget::Criterion {
+                    spec: SpecLabel::new("gate").unwrap(),
+                    anchor: "sample".into(),
+                }
+            } else {
+                FindingTarget::Annotation {
+                    target_string: "cargo test --lib sample".into(),
+                }
             },
             evidence: "streamed via LOOM_FINDING".into(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     #[test]

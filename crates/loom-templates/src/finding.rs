@@ -12,5 +12,5 @@
 
 pub use loom_protocol::gate::{
     ConcernToken, Finding, FindingParseError, FindingRoute, FindingTarget, FindingValidator,
-    LOOM_FINDING_PREFIX, TargetKind,
+    LOOM_FINDING_PREFIX, RawFinding, TargetKind,
 };

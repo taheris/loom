@@ -98,6 +98,15 @@ its verify-failure `review_notes` formatter have been removed. Direct template
 callers can still supply `LoopContext.review_notes`; workflow drivers leave it
 unset. The `ReviewConcern` display vocabulary also remains available.
 
+`loom-protocol::gate::Finding` is a resolved, immutable value. External
+consumers migrate direct literals or serde input to `RawFinding::resolve`,
+and field reads to borrowed accessors; serialized JSON and finding IDs/hashes
+are unchanged. Deterministic normalization also produces raw records until
+they resolve against workspace declarations. `GateSuccess` likewise exposes
+read-only accessors, closing post-construction mutation of validated evidence.
+`WalkOutput`, `MarkerProof`, `VerifiedScope`, and `ReviewedScope` retain their
+existing sealed boundaries; ordinary wire DTOs are not gate authorization.
+
 The following unused workspace-internal APIs have been retired:
 
 - `GateError::Unimplemented`: implemented gate modules expose their own errors.

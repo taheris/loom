@@ -39,8 +39,8 @@ pub use context::{
 pub use error::ReviewError;
 pub use finding::{
     ConcernToken, DispatchScope, Finding, FindingParseError, FindingRoute, FindingTarget,
-    FindingValidator, LOOM_FINDING_PREFIX, ScopeKind, TargetKind, TerminalSurface, WalkOutput,
-    WalkOutputError, parse_walk_output,
+    FindingValidator, LOOM_FINDING_PREFIX, RawFinding, ScopeKind, TargetKind, TerminalSurface,
+    WalkOutput, WalkOutputError, parse_walk_output,
 };
 pub use fixup::{FixupContext, FixupOutcome, FixupRequest, spawn_fixup_bead};
 pub use iteration::{DEFAULT_MAX_ITERATIONS, IterationCap};

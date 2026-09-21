@@ -15,7 +15,7 @@ use loom_templates::criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
     CriterionStatus, EvidenceState,
 };
-use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
+use loom_templates::finding::{ConcernToken, FindingTarget};
 use loom_templates::inbox::{ClarifyOption, InboxContext, InboxItem, ItemKind, TuneItem};
 use loom_templates::plan::PlanContext;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
@@ -740,15 +740,18 @@ fn previous_failure_truncates_at_max_len() {
 fn previous_failure_renders_review_concern_with_summary_and_findings() {
     let pf = PreviousFailure::ReviewConcern {
         summary: "mock under test".into(),
-        findings: vec![Finding {
-            token: ConcernToken::MockDiscipline,
-            route: loom_protocol::gate::FindingRoute::Deferred,
-            bonds: vec![SpecLabel::new("harness").unwrap()],
-            target: FindingTarget::TestPath {
-                path: "tests/example.rs".into(),
-            },
-            evidence: "mock is the thing under test".into(),
-        }],
+        findings: vec![
+            loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
+                token: ConcernToken::MockDiscipline,
+                route: loom_protocol::gate::FindingRoute::Deferred,
+                bonds: vec![SpecLabel::new("harness").unwrap()],
+                target: FindingTarget::TestPath {
+                    path: "tests/example.rs".into(),
+                },
+                evidence: "mock is the thing under test".into(),
+            })
+            .expect("valid fixture finding"),
+        ],
     };
     let rendered = pf.to_string();
     assert!(

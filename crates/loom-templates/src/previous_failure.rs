@@ -295,10 +295,10 @@ fn render_review_concern(summary: &str, findings: &[Finding]) -> String {
     let mut out = format!("Review raised a concern ({label}): {summary}");
     for finding in findings {
         out.push_str("\n\n");
-        out.push_str(finding.token.as_wire());
+        out.push_str(finding.token().as_wire());
         out.push_str(" @ ");
-        out.push_str(&finding.target.canonical_form());
-        let evidence = finding.evidence.trim_end();
+        out.push_str(&finding.target().canonical_form());
+        let evidence = finding.evidence().trim_end();
         if !evidence.is_empty() {
             out.push('\n');
             out.push_str(evidence);
@@ -318,10 +318,10 @@ fn concern_label_from_findings(findings: &[Finding]) -> String {
     let Some(first) = findings.first() else {
         return "review-concern".to_owned();
     };
-    if findings.iter().any(|f| f.token != first.token) {
+    if findings.iter().any(|f| f.token() != first.token()) {
         return "multiple".to_owned();
     }
-    first.token.as_wire().to_owned()
+    first.token().as_wire().to_owned()
 }
 
 fn render_bad_walk(badwalk: &BadWalk) -> String {
@@ -385,10 +385,10 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
 
 fn append_finding_digest(out: &mut String, finding: &Finding) {
     out.push_str("\n- ");
-    out.push_str(finding.token.as_wire());
+    out.push_str(finding.token().as_wire());
     out.push_str(" @ ");
-    out.push_str(&finding.target.canonical_form());
-    let evidence = finding.evidence.trim_end();
+    out.push_str(&finding.target().canonical_form());
+    let evidence = finding.evidence().trim_end();
     if !evidence.is_empty() {
         out.push_str(" — ");
         out.push_str(evidence);
@@ -506,15 +506,23 @@ mod tests {
     }
 
     fn sample_finding(token: ConcernToken, evidence: &str) -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token,
             route: FindingRoute::Deferred,
             bonds: vec![spec_label("gate")],
-            target: FindingTarget::Annotation {
-                target_string: "cargo test --lib sample".into(),
+            target: if token == ConcernToken::JudgeFlag {
+                FindingTarget::Criterion {
+                    spec: spec_label("gate"),
+                    anchor: "sample".into(),
+                }
+            } else {
+                FindingTarget::Annotation {
+                    target_string: "cargo test --lib sample".into(),
+                }
             },
             evidence: evidence.to_owned(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     #[test]
@@ -633,7 +641,7 @@ mod tests {
             "label-prefixed framing missing: {review}",
         );
         assert!(
-            review.contains("judge-flag @ annotation:cargo test --lib sample"),
+            review.contains("judge-flag @ criterion:gate:sample"),
             "review finding token+target missing: {review}",
         );
         assert!(
@@ -871,7 +879,7 @@ mod tests {
             "first finding evidence missing: {rendered}",
         );
         assert!(
-            rendered.contains("judge-flag @ annotation:cargo test --lib sample"),
+            rendered.contains("judge-flag @ criterion:gate:sample"),
             "second finding digest missing: {rendered}",
         );
     }
@@ -905,7 +913,7 @@ mod tests {
             "first finding evidence missing: {rendered}",
         );
         assert!(
-            rendered.contains("judge-flag @ annotation:cargo test --lib sample"),
+            rendered.contains("judge-flag @ criterion:gate:sample"),
             "second finding digest missing: {rendered}",
         );
     }
@@ -1030,7 +1038,7 @@ mod tests {
             "count missing: {rendered}",
         );
         assert!(
-            rendered.contains("judge-flag @ annotation:cargo test --lib sample"),
+            rendered.contains("judge-flag @ criterion:gate:sample"),
             "per-finding digest missing: {rendered}",
         );
         assert!(

@@ -13,6 +13,6 @@
 
 pub use loom_protocol::gate::{
     ConcernToken, DispatchScope, Finding, FindingParseError, FindingRoute, FindingTarget,
-    FindingValidator, LOOM_FINDING_PREFIX, ScopeKind, TargetKind, TerminalSurface, WalkOutput,
-    WalkOutputError, parse_walk_output,
+    FindingValidator, LOOM_FINDING_PREFIX, RawFinding, ScopeKind, TargetKind, TerminalSurface,
+    WalkOutput, WalkOutputError, parse_walk_output,
 };

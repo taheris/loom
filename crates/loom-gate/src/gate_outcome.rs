@@ -251,23 +251,46 @@ pub struct PrePushCoverage {
     pub reviewed_scope_fingerprint: String,
 }
 
-#[expect(
-    clippy::manual_non_exhaustive,
-    reason = "spec mandates a structural seal stricter than #[non_exhaustive]"
-)]
+/// Read-only receipt that verification, review, and hook coverage agree.
+///
+/// ```compile_fail
+/// use loom_gate::gate_outcome::GateSuccess;
+/// fn forge(success: &mut GateSuccess) { success.tree_oid = "another-tree".into(); }
+/// ```
 #[derive(Debug, Clone)]
 pub struct GateSuccess {
-    pub verified: VerifiedScope,
-    pub reviewed: ReviewedScope,
-    pub pre_push: PrePushCoverage,
-    pub tree_oid: String,
-    pub push_range: String,
-    pub gate_log_paths: Vec<PathBuf>,
-    pub total_handoffs: u32,
-    _private: (),
+    pub(crate) verified: VerifiedScope,
+    pub(crate) reviewed: ReviewedScope,
+    pub(crate) pre_push: PrePushCoverage,
+    pub(crate) tree_oid: String,
+    pub(crate) push_range: String,
+    pub(crate) gate_log_paths: Vec<PathBuf>,
+    pub(crate) total_handoffs: u32,
 }
 
 impl GateSuccess {
+    pub const fn verified(&self) -> &VerifiedScope {
+        &self.verified
+    }
+    pub const fn reviewed(&self) -> &ReviewedScope {
+        &self.reviewed
+    }
+    pub const fn pre_push(&self) -> &PrePushCoverage {
+        &self.pre_push
+    }
+    pub fn tree_oid(&self) -> &str {
+        &self.tree_oid
+    }
+    pub fn push_range(&self) -> &str {
+        &self.push_range
+    }
+    pub fn gate_log_paths(&self) -> &[PathBuf] {
+        &self.gate_log_paths
+    }
+    pub const fn total_handoffs(&self) -> u32 {
+        self.total_handoffs
+    }
+
     #[expect(
         clippy::result_large_err,
         reason = "GateFail carries the verbatim evidence for triage"
@@ -395,7 +418,6 @@ impl GateSuccess {
             }),
             gate_log_paths: evidence.gate_log_paths.clone(),
             total_handoffs,
-            _private: (),
         })
     }
 }

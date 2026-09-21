@@ -136,6 +136,12 @@ impl FindingValidator for WorkspaceFindingValidator {
         self.command_target_resolves(target)
     }
 
+    fn annotation_is_declared(&self, target: &str) -> bool {
+        self.annotations
+            .iter()
+            .any(|annotation| annotation.target.trim() == target.trim())
+    }
+
     fn file_exists(&self, path: &str) -> bool {
         self.target_path_exists(path)
     }
@@ -430,7 +436,7 @@ mod tests {
         assert!(
             findings
                 .iter()
-                .all(|finding| matches!(&finding.target, FindingTarget::Annotation { .. }))
+                .all(|finding| matches!(&finding.target(), FindingTarget::Annotation { .. }))
         );
     }
 
@@ -536,7 +542,7 @@ mod tests {
 
         let targets: Vec<&str> = findings
             .iter()
-            .map(|finding| match &finding.target {
+            .map(|finding| match &finding.target() {
                 FindingTarget::Annotation { target_string } => target_string.as_str(),
                 other => panic!("expected annotation target, got {other:?}"),
             })

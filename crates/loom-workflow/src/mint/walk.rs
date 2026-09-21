@@ -64,7 +64,7 @@ impl MintScope {
 /// tree scope.
 ///
 /// The orchestration normalises each into a typed
-/// [`Finding`] via [`verifier_failure_to_finding`] per the mapping table
+/// [`Finding`] via [`verifier_failure_to_raw_finding`] per the mapping table
 /// at `specs/gate.md` § *Emit shape*.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifierFailure {
@@ -123,6 +123,8 @@ pub enum WalkError {
     Verifiers(String),
     /// rubric stdout parse failed
     Parse(#[from] WalkOutputError),
+    /// deterministic finding did not resolve in the active workspace
+    Finding(#[from] loom_protocol::gate::FindingParseError),
     /// owning spec file `{path}` has no parseable spec label
     SpecLabel { path: PathBuf },
 }
@@ -178,7 +180,9 @@ pub async fn walk<W: MintWalker, V: FindingValidator + Sync + ?Sized>(
     let mut findings = Vec::new();
     let failures = walker.run_verifiers(scope).await?;
     for failure in failures {
-        findings.push(verifier_failure_to_finding(failure)?);
+        findings.push(
+            verifier_failure_to_raw_finding(failure)?.resolve(scope.dispatch_scope(), validator)?,
+        );
     }
     let rubric_stdout = walker.run_rubric(scope).await?;
     let parsed = parse_walk_output(&rubric_stdout, scope.dispatch_scope(), validator)?;
@@ -196,8 +200,10 @@ pub async fn walk<W: MintWalker, V: FindingValidator + Sync + ?Sized>(
 ///
 /// # Errors
 ///
-/// Returns an error when finding validation, deduplication, or bead creation fails.
-pub fn verifier_failure_to_finding(failure: VerifierFailure) -> Result<Finding, WalkError> {
+/// Returns an error when the annotation's owning spec path has no valid label.
+pub fn verifier_failure_to_raw_finding(
+    failure: VerifierFailure,
+) -> Result<loom_protocol::gate::RawFinding, WalkError> {
     let owning = spec_label_from_path(&failure.annotation.source_spec)?;
     let target_string = failure.annotation.target.clone();
     let (token, target) = match failure.kind {
@@ -235,7 +241,7 @@ pub fn verifier_failure_to_finding(failure: VerifierFailure) -> Result<Finding, 
             },
         ),
     };
-    Ok(Finding {
+    Ok(loom_protocol::gate::RawFinding {
         token,
         route: FindingRoute::Deferred,
         bonds: vec![owning],
@@ -803,7 +809,7 @@ mod tests {
     #[tokio::test]
     async fn mint_tree_walk_accepts_blocking_route_as_ready_remediation() {
         let gate = spec("gate");
-        let finding = Finding {
+        let finding = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::StyleRuleViolation,
             route: FindingRoute::Blocking,
             bonds: vec![gate],
@@ -812,7 +818,8 @@ mod tests {
                 subject: "crates/wrix-beads/src/command/mod.rs::write_help".to_owned(),
             },
             evidence: "tree-scope rubric used blocking for mechanical remediation".to_owned(),
-        };
+        })
+        .expect("valid fixture finding");
         let mut walker = FakeWalker {
             rubric_stdout: format!(
                 "{}\nLOOM_CONCERN: {{\"summary\":\"tree blocking\"}}\n",
@@ -893,7 +900,7 @@ mod tests {
 
         assert!(
             findings.iter().any(|finding| matches!(
-                finding.token,
+                finding.token(),
                 ConcernToken::UnresolvedAnnotation | ConcernToken::DispatchError
             )),
             "production verifier path must contribute a deterministic finding: {findings:?}",
@@ -901,7 +908,7 @@ mod tests {
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.token == ConcernToken::OrphanIntegration),
+                .any(|finding| finding.token() == ConcernToken::OrphanIntegration),
             "production rubric path must contribute its streamed finding: {findings:?}",
         );
     }
@@ -998,15 +1005,15 @@ mod tests {
             3,
             "every LOOM_FINDING line becomes one Finding: {findings:?}",
         );
-        assert_eq!(findings[0].evidence, "first");
-        assert_eq!(findings[1].evidence, "second");
-        assert_eq!(findings[2].evidence, "third");
-        assert_eq!(findings[0].route, FindingRoute::Deferred);
-        assert_eq!(findings[1].route, FindingRoute::Deferred);
-        assert_eq!(findings[2].route, FindingRoute::Deferred);
-        assert_eq!(findings[0].target.kind(), TargetKind::Criterion);
-        assert_eq!(findings[1].target.kind(), TargetKind::Contract);
-        assert_eq!(findings[2].target.kind(), TargetKind::StyleRule);
+        assert_eq!(findings[0].evidence(), "first");
+        assert_eq!(findings[1].evidence(), "second");
+        assert_eq!(findings[2].evidence(), "third");
+        assert_eq!(findings[0].route(), FindingRoute::Deferred);
+        assert_eq!(findings[1].route(), FindingRoute::Deferred);
+        assert_eq!(findings[2].route(), FindingRoute::Deferred);
+        assert_eq!(findings[0].target().kind(), TargetKind::Criterion);
+        assert_eq!(findings[1].target().kind(), TargetKind::Contract);
+        assert_eq!(findings[2].target().kind(), TargetKind::StyleRule);
     }
 
     /// Bd runner that hands back canned [`RunOutput`]s in order and
@@ -1080,7 +1087,7 @@ mod tests {
     #[tokio::test]
     async fn mint_idempotent_after_partial_failure_retries_only_unfinished_batches() {
         // Three findings split across two lead specs ⇒ two batches.
-        let finding_a = Finding {
+        let finding_a = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::SpecCoherenceFail,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("gate")],
@@ -1089,8 +1096,9 @@ mod tests {
                 anchor: "verifier-honesty".into(),
             },
             evidence: "A".into(),
-        };
-        let finding_b = Finding {
+        })
+        .expect("valid fixture finding");
+        let finding_b = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::OrphanIntegration,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("harness")],
@@ -1098,8 +1106,9 @@ mod tests {
                 id: "molecule-lifecycle".into(),
             },
             evidence: "B".into(),
-        };
-        let finding_c = Finding {
+        })
+        .expect("valid fixture finding");
+        let finding_c = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::StyleRuleViolation,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("gate")],
@@ -1108,7 +1117,8 @@ mod tests {
                 subject: "crates/loom-workflow/src/mint/walk.rs".into(),
             },
             evidence: "C".into(),
-        };
+        })
+        .expect("valid fixture finding");
         let fp_gate_batch = batch_fingerprint(&[finding_a.clone(), finding_c.clone()]);
         let fp_harness_batch = batch_fingerprint(std::slice::from_ref(&finding_b));
         let findings = vec![finding_a.clone(), finding_b.clone(), finding_c.clone()];
@@ -1260,7 +1270,7 @@ mod tests {
         format!("{line_a}\n{line_b}\n{line_c}\nLOOM_CONCERN: {{\"summary\":\"three findings\"}}\n")
     }
 
-    /// `verifier_failure_to_finding` covers every spec-mandated mapping
+    /// `verifier_failure_to_raw_finding` covers every spec-mandated mapping
     /// row in *Concern tokens and target variants*. Pinned per-row so
     /// adding a new `VerifierFailureKind` variant without updating the
     /// mapping fails here rather than in a downstream consumer.
@@ -1295,7 +1305,7 @@ mod tests {
             ),
         ];
         for (kind, expected_token) in cases {
-            let finding = verifier_failure_to_finding(VerifierFailure {
+            let finding = verifier_failure_to_raw_finding(VerifierFailure {
                 annotation: ann.clone(),
                 kind,
                 evidence: "e".into(),
@@ -1306,7 +1316,7 @@ mod tests {
             assert_eq!(finding.bonds, vec![spec("gate")]);
         }
 
-        let finding = verifier_failure_to_finding(VerifierFailure {
+        let finding = verifier_failure_to_raw_finding(VerifierFailure {
             annotation: ann,
             kind: VerifierFailureKind::MultipleAnnotations {
                 count: 2,
@@ -1384,10 +1394,12 @@ mod tests {
         assert_eq!(failure.annotation.source_spec, ann_a.source_spec);
         assert!(failure.evidence.contains("criterion carries 2 annotations"));
 
-        let typed = verifier_failure_to_finding(failure).expect("normalises into Finding");
-        assert_eq!(typed.token, ConcernToken::MultipleAnnotations);
-        assert_eq!(typed.bonds, vec![spec("gate")]);
-        match &typed.target {
+        let typed =
+            loom_test_support::finding::resolve(verifier_failure_to_raw_finding(failure).unwrap())
+                .expect("normalises into Finding");
+        assert_eq!(typed.token(), ConcernToken::MultipleAnnotations);
+        assert_eq!(typed.bonds(), vec![spec("gate")]);
+        match &typed.target() {
             FindingTarget::Criterion { spec: s, anchor } => {
                 assert_eq!(s, &spec("gate"));
                 assert_eq!(anchor, "finding-id-finding-hash-suppression-and-dedup");
@@ -1521,9 +1533,9 @@ cwd = "verifier-cwd"
         let unresolved: Vec<&Finding> = findings
             .iter()
             .filter(|f| {
-                f.token == ConcernToken::UnresolvedAnnotation
+                f.token() == ConcernToken::UnresolvedAnnotation
                     && matches!(
-                        &f.target,
+                        &f.target(),
                         FindingTarget::Annotation { target_string }
                             if target_string == UNRESOLVED_TARGET
                     )
@@ -1535,7 +1547,7 @@ cwd = "verifier-cwd"
             "integrity dispatch must emit one UnresolvedAnnotation finding for the fixture target; got findings={findings:?}",
         );
         assert_eq!(
-            unresolved[0].bonds,
+            unresolved[0].bonds(),
             vec![spec("test-mint")],
             "unresolved-annotation finding must bond to its owning spec",
         );
@@ -1632,7 +1644,7 @@ cwd = "verifier-cwd"
             .iter()
             .filter(|f| {
                 matches!(
-                    &f.target,
+                    &f.target(),
                     FindingTarget::Annotation { target_string }
                         if target_string == RUNNER_OWNED_TARGET
                 )

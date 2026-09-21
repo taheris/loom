@@ -18,8 +18,38 @@ use thiserror::Error;
 /// route to); `target` is identity metadata (what the finding is
 /// about). The two are kept structurally separate so the driver can
 /// shift bonding without invalidating the finding id.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Trusted findings cannot be deserialized or mutated without resolution.
+///
+/// ```compile_fail
+/// use loom_protocol::gate::Finding;
+/// let _: Finding = serde_json::from_str("{}").unwrap();
+/// ```
+/// ```compile_fail
+/// use loom_protocol::gate::{Finding, ConcernToken, FindingRoute, FindingTarget};
+/// let _ = Finding {
+///     token: ConcernToken::VerifierBypass, route: FindingRoute::Deferred,
+///     bonds: vec!["gate".parse().unwrap()],
+///     target: FindingTarget::Annotation { target_string: "cargo test known".into() },
+///     evidence: "observed".into(),
+/// };
+/// ```
+/// ```compile_fail
+/// use loom_protocol::gate::{Finding, FindingRoute};
+/// fn forge(finding: &mut Finding) { finding.route = FindingRoute::Blocking; }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Finding {
+    token: ConcernToken,
+    route: FindingRoute,
+    bonds: Vec<SpecLabel>,
+    target: FindingTarget,
+    evidence: String,
+}
+
+/// Untrusted wire or driver-authored input. Resolve before minting or review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawFinding {
     pub token: ConcernToken,
     pub route: FindingRoute,
     pub bonds: Vec<SpecLabel>,
@@ -27,7 +57,48 @@ pub struct Finding {
     pub evidence: String,
 }
 
+impl RawFinding {
+    /// Check intrinsic invariants and context-dependent identity in one boundary.
+    ///
+    /// # Errors
+    /// Returns a typed finding error for malformed shape, scope, bonds, or unresolved identity.
+    pub fn resolve<V: FindingValidator + ?Sized>(
+        self,
+        scope: DispatchScope,
+        validator: &V,
+    ) -> Result<Finding, FindingParseError> {
+        Finding::resolve(self, 1, "driver-authored finding", scope, validator)
+    }
+}
+
 impl Finding {
+    pub const fn token(&self) -> ConcernToken {
+        self.token
+    }
+    pub const fn route(&self) -> FindingRoute {
+        self.route
+    }
+    pub fn bonds(&self) -> &[SpecLabel] {
+        &self.bonds
+    }
+    pub const fn target(&self) -> &FindingTarget {
+        &self.target
+    }
+    pub fn evidence(&self) -> &str {
+        &self.evidence
+    }
+
+    /// Return mutable wire data; changing it requires resolution again.
+    pub fn into_raw(self) -> RawFinding {
+        RawFinding {
+            token: self.token,
+            route: self.route,
+            bonds: self.bonds,
+            target: self.target,
+            evidence: self.evidence,
+        }
+    }
+
     /// Canonical versioned semantic identity for this finding.
     ///
     /// The id is target-centred, lower-kebab, and excludes volatile
@@ -663,6 +734,11 @@ pub trait FindingValidator {
     /// ad hoc command on PATH, test name in scope, judge file on disk).
     fn annotation_resolves(&self, target_string: &str) -> bool;
 
+    /// Deterministic failures name a declared annotation even when its command does not resolve.
+    fn annotation_is_declared(&self, target_string: &str) -> bool {
+        self.annotation_resolves(target_string)
+    }
+
     /// Layer 5 — `TestPath { path }` / `Template { path }` /
     /// `LockSite { file, .. }` resolve when the named file exists on
     /// disk (relative to repo root).
@@ -680,6 +756,8 @@ pub trait FindingValidator {
 )]
 #[derive(Debug, Display, Error, Clone, PartialEq, Eq)]
 pub enum FindingParseError {
+    /// line {line_number}: finding requires at least one bond — `{raw}`
+    EmptyBonds { line_number: usize, raw: String },
     /// line {line_number}: LOOM_FINDING payload is not valid JSON ({message}) — `{raw}`
     Json {
         line_number: usize,
@@ -737,13 +815,7 @@ pub enum FindingParseError {
 }
 
 impl Finding {
-    /// Pure parse for a single `LOOM_FINDING:` payload: JSON syntax
-    /// (Layer 1), token/kind closed-set membership (Layer 2; enforced
-    /// by `serde` deserialization since both are `#[serde(rename = ...)]`
-    /// enums), token/variant alignment (Layer 4), token-scope
-    /// admissibility against `scope`, and the "target.spec ∈ bonds"
-    /// rule. Layers 3 and 5 are deferred to [`Finding::validate`]
-    /// because they require I/O context.
+    /// Parse and resolve a single `LOOM_FINDING:` payload against its dispatch context.
     ///
     /// `line_number` is the 1-based line offset in the agent's stdout
     /// buffer; included in every error variant so the caller can quote
@@ -757,19 +829,37 @@ impl Finding {
     ///
     /// Returns [`FindingParseError`] when the payload is malformed or its
     /// token, target, bonds, route, or dispatch scope are inconsistent.
-    pub fn parse_payload(
+    fn parse_payload<V: FindingValidator + ?Sized>(
         payload: &str,
         line_number: usize,
         raw_line: &str,
         scope: DispatchScope,
+        validator: &V,
     ) -> Result<Self, FindingParseError> {
-        let mut finding: Finding =
+        let raw: RawFinding =
             serde_json::from_str(payload).map_err(|source| FindingParseError::Json {
                 line_number,
                 raw: raw_line.to_owned(),
                 message: source.to_string(),
             })?;
+        Self::resolve(raw, line_number, raw_line, scope, validator)
+    }
+
+    fn resolve<V: FindingValidator + ?Sized>(
+        raw: RawFinding,
+        line_number: usize,
+        raw_line: &str,
+        scope: DispatchScope,
+        validator: &V,
+    ) -> Result<Self, FindingParseError> {
+        let mut finding = raw;
         finding.target = finding.target.canonicalized();
+        if finding.bonds.is_empty() {
+            return Err(FindingParseError::EmptyBonds {
+                line_number,
+                raw: raw_line.to_owned(),
+            });
+        }
 
         let expected_kind = finding.token.expected_target_kind();
         let actual_kind = finding.target.kind();
@@ -824,9 +914,18 @@ impl Finding {
             });
         }
 
-        Ok(finding)
+        finding.validate(line_number, raw_line, validator)?;
+        Ok(Self {
+            token: finding.token,
+            route: finding.route,
+            bonds: finding.bonds,
+            target: finding.target,
+            evidence: finding.evidence,
+        })
     }
+}
 
+impl RawFinding {
     /// I/O-bearing validation: Layer 3 (every bond resolves to a known
     /// workspace spec) and Layer 5 (the target's identity-bearing
     /// fields resolve on disk). Pure JSON / closed-set / variant /
@@ -838,7 +937,7 @@ impl Finding {
     ///
     /// Returns [`FindingParseError`] when a bond is unknown or the target
     /// does not resolve through `validator`.
-    pub fn validate<V: FindingValidator + ?Sized>(
+    fn validate<V: FindingValidator + ?Sized>(
         &self,
         line_number: usize,
         raw_line: &str,
@@ -859,7 +958,19 @@ impl Finding {
                 validator.criterion_anchor_resolves(spec, anchor)
             }
             FindingTarget::Annotation { target_string } => {
-                validator.annotation_resolves(target_string)
+                if matches!(
+                    self.token,
+                    ConcernToken::VerifierFailed
+                        | ConcernToken::DispatchError
+                        | ConcernToken::UnresolvedAnnotation
+                        | ConcernToken::StubPointing
+                        | ConcernToken::UnneededPendingMarker
+                        | ConcernToken::InputsProtocolError
+                ) {
+                    validator.annotation_is_declared(target_string)
+                } else {
+                    validator.annotation_resolves(target_string)
+                }
             }
             FindingTarget::TestPath { path } | FindingTarget::Template { path } => {
                 validator.file_exists(path)
@@ -1603,11 +1714,13 @@ impl WalkOutput {
         let mut findings = Vec::new();
         let mut finding_errors = Vec::new();
         for record in finding_records(output) {
-            match Finding::parse_payload(&record.payload, record.line_number, &record.raw, scope)
-                .and_then(|f| {
-                    f.validate(record.line_number, &record.raw, validator)
-                        .map(|()| f)
-                }) {
+            match Finding::parse_payload(
+                &record.payload,
+                record.line_number,
+                &record.raw,
+                scope,
+                validator,
+            ) {
                 Ok(finding) => findings.push(finding),
                 Err(e) => finding_errors.push(e),
             }

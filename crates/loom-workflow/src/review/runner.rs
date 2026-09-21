@@ -361,7 +361,7 @@ fn emit_suppression_summary<C: ReviewController>(
         serde_json::json!({
             "id": finding.id(),
             "hash": finding.hash(),
-            "token": finding.token,
+            "token": finding.token(),
         })
     };
     controller.emit_driver_event(
@@ -994,7 +994,7 @@ mod tests {
     #[tokio::test]
     async fn review_loop_emits_suppression_summary_event() -> Result<(), ReviewError> {
         let spec = SpecLabel::new("gate").unwrap();
-        let finding = Finding {
+        let finding = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::SpecCoherenceFail,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec.clone()],
@@ -1003,7 +1003,8 @@ mod tests {
                 anchor: "suppression".to_owned(),
             },
             evidence: "false positive".to_owned(),
-        };
+        })
+        .expect("valid fixture finding");
         let mut c = FakeController {
             suppressed_findings: vec![finding],
             ..FakeController::default()

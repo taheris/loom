@@ -2091,9 +2091,9 @@ mod tests {
         let outcome_success = run_loop(&mut success, RetryPolicy::default(), 10).await?;
         match outcome_success.gate {
             GateOutcome::Success(receipt) => {
-                assert_eq!(receipt.push_range, "origin/main..HEAD");
-                assert_eq!(receipt.tree_oid, "tree-a");
-                assert!(receipt.total_handoffs >= 1);
+                assert_eq!(receipt.push_range(), "origin/main..HEAD");
+                assert_eq!(receipt.tree_oid(), "tree-a");
+                assert!(receipt.total_handoffs() >= 1);
             }
             other => panic!("expected Success(_), got {other:?}"),
         }
@@ -2120,7 +2120,7 @@ mod tests {
             GateOutcome::Success(r) => r,
             other => panic!("expected Success, got {other:?}"),
         };
-        assert_eq!(receipt.gate_log_paths, vec![path.clone()]);
+        assert_eq!(receipt.gate_log_paths(), vec![path.clone()]);
         let contents = std::fs::read_to_string(&path).expect("log readable");
         assert!(
             contents.contains("gate_run_start") && contents.contains("gate_run_end"),

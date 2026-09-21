@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use loom_events::identifier::SpecLabel;
 use loom_protocol::gate::{
-    ConcernToken, DispatchScope, Finding, FindingTarget, FindingValidator, TerminalSurface,
+    ConcernToken, DispatchScope, FindingTarget, FindingValidator, RawFinding, TerminalSurface,
     WalkOutput,
 };
 
@@ -134,7 +134,7 @@ fn walk_output_fields_private_only_constructor_is_from_stdout() {
 #[test]
 fn loom_protocol_wire_format_does_not_carry_protocol_version_field() {
     let spec: SpecLabel = "gate".parse().expect("valid spec label");
-    let finding = Finding {
+    let finding = RawFinding {
         token: ConcernToken::SpecCoherenceFail,
         route: loom_protocol::gate::FindingRoute::Deferred,
         bonds: vec![spec.clone()],

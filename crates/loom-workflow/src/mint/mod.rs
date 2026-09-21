@@ -61,10 +61,10 @@ enum FindingRouting {
 /// Classify a single finding for routing — fix-up vs clarify vs
 /// blocked-clarify.
 fn classify_routing(finding: &Finding) -> FindingRouting {
-    if finding.route != FindingRoute::Clarify {
+    if finding.route() != FindingRoute::Clarify {
         return FindingRouting::Fixup;
     }
-    if has_well_formed_block(&finding.evidence) {
+    if has_well_formed_block(finding.evidence()) {
         FindingRouting::Clarify
     } else {
         FindingRouting::BlockedClarifyWithoutOptions
@@ -287,8 +287,8 @@ pub struct FindingRoutingRecord {
 
 impl FindingRoutingRecord {
     fn new(finding: &Finding, action: FindingStatusAction) -> Self {
-        let options_parse_result = (finding.route == FindingRoute::Clarify).then(|| {
-            if has_well_formed_block(&finding.evidence) {
+        let options_parse_result = (finding.route() == FindingRoute::Clarify).then(|| {
+            if has_well_formed_block(finding.evidence()) {
                 OptionsParseResult::WellFormed
             } else {
                 OptionsParseResult::MissingOrMalformed
@@ -297,12 +297,12 @@ impl FindingRoutingRecord {
         Self {
             id: finding.id(),
             hash: finding.hash(),
-            token: finding.token,
-            requested_route: finding.route,
+            token: finding.token(),
+            requested_route: finding.route(),
             action,
             options_parse_result,
-            evidence_hash: evidence_hash(&finding.evidence),
-            evidence_excerpt: route_evidence_excerpt(&finding.evidence),
+            evidence_hash: evidence_hash(finding.evidence()),
+            evidence_excerpt: route_evidence_excerpt(finding.evidence()),
         }
     }
 
@@ -331,8 +331,8 @@ impl FindingStatusRecord {
             id: finding.id(),
             hash: finding.hash(),
             label: finding_label(finding),
-            token: finding.token,
-            target: finding.target.clone(),
+            token: finding.token(),
+            target: finding.target().clone(),
             action,
         }
     }
@@ -720,20 +720,24 @@ pub async fn mint_findings<R: CommandRunner>(
 /// (recovery branch).
 ///
 /// Each finding is normalized into a typed [`Finding`]
-/// via [`IntegrityFinding::to_finding`] (non-terminal variants drop out)
+/// via [`IntegrityFinding::to_raw_finding`] (non-terminal variants drop out)
 /// and the batch is minted against `head_commit`. The review push-gate
 /// reaches mint only through this seam so the `mint_findings_with_options`
 /// call stays inside the mint module.
+/// # Errors
+/// Rejects records that do not resolve against the active workspace before any mint.
 pub async fn mint_integrity_recovery<R: CommandRunner>(
     bd: &BdClient<R>,
     findings: &[IntegrityFinding],
     head_commit: &str,
-) -> MintSummary {
-    let typed: Vec<Finding> = findings
+    validator: &(impl loom_protocol::gate::FindingValidator + Sync + ?Sized),
+) -> Result<MintSummary, loom_protocol::gate::FindingParseError> {
+    let typed = findings
         .iter()
-        .filter_map(IntegrityFinding::to_finding)
-        .collect();
-    mint_findings_with_options(bd, &typed, head_commit, &MintOptions::default()).await
+        .filter_map(IntegrityFinding::to_raw_finding)
+        .map(|raw| raw.resolve(loom_protocol::gate::DispatchScope::PushGate, validator))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(mint_findings_with_options(bd, &typed, head_commit, &MintOptions::default()).await)
 }
 
 #[derive(Debug)]
@@ -974,26 +978,26 @@ async fn route_molecule_findings_inner<R: CommandRunner>(
 fn molecule_mint_groups(findings: Vec<Finding>) -> Vec<MoleculeMintGroup> {
     let mut groups: Vec<MoleculeMintGroup> = Vec::new();
     for finding in findings {
-        let Some(lead_spec) = finding.bonds.first().cloned() else {
+        let Some(lead_spec) = finding.bonds().first().cloned() else {
             continue;
         };
-        if finding.route == FindingRoute::Clarify {
+        if finding.route() == FindingRoute::Clarify {
             groups.push(MoleculeMintGroup {
                 lead_spec,
-                route: finding.route,
+                route: finding.route(),
                 findings: vec![finding],
             });
             continue;
         }
         if let Some(group) = groups
             .iter_mut()
-            .find(|group| group.lead_spec == lead_spec && group.route == finding.route)
+            .find(|group| group.lead_spec == lead_spec && group.route == finding.route())
         {
             group.findings.push(finding);
         } else {
             groups.push(MoleculeMintGroup {
                 lead_spec,
-                route: finding.route,
+                route: finding.route(),
                 findings: vec![finding],
             });
         }
@@ -1162,7 +1166,7 @@ fn molecule_batch_labels(findings: &[Finding], state: MoleculeBatchState) -> Vec
     let mut labels = findings.iter().map(finding_label).collect::<Vec<_>>();
     let mut specs = findings
         .iter()
-        .flat_map(|finding| finding.bonds.iter())
+        .flat_map(|finding| finding.bonds().iter())
         .map(|spec| format!("spec:{spec}"))
         .collect::<Vec<_>>();
     specs.sort();
@@ -1185,7 +1189,7 @@ fn molecule_batch_description(findings: &[Finding], state: MoleculeBatchState) -
         let _ = write!(description, "Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n");
     }
     if state == MoleculeBatchState::Clarify {
-        description.push_str(findings[0].evidence.trim_end());
+        description.push_str(findings[0].evidence().trim_end());
         description.push_str("\n\n---\n\n");
     }
     append_findings_section(&mut description, findings);
@@ -1395,7 +1399,7 @@ fn tree_remediation_epic_labels(plan: &TreeMintPlan) -> Vec<String> {
     let mut labels = Vec::new();
     for batch in &plan.batches {
         for finding in &batch.findings {
-            for spec in &finding.bonds {
+            for spec in finding.bonds() {
                 if seen.insert(spec.as_str().to_owned()) {
                     labels.push(format!("spec:{spec}"));
                 }
@@ -1550,7 +1554,7 @@ async fn ensure_tree_spec_metadata<R: CommandRunner>(
     let mut seen = HashSet::new();
     let mut specs = Vec::new();
     for finding in findings {
-        for spec in &finding.bonds {
+        for spec in finding.bonds() {
             if seen.insert(spec.as_str().to_owned()) {
                 specs.push(spec.clone());
             }
@@ -1582,7 +1586,7 @@ async fn ensure_tree_spec_metadata<R: CommandRunner>(
 fn tree_plan_batches(findings: Vec<Finding>) -> Vec<TreeMintBatch> {
     let mut by_spec: Vec<(SpecLabel, Vec<Finding>)> = Vec::new();
     for finding in findings {
-        let Some(lead_spec) = finding.bonds.first().cloned() else {
+        let Some(lead_spec) = finding.bonds().first().cloned() else {
             continue;
         };
         if let Some(slot) = by_spec.iter_mut().find(|(spec, _)| *spec == lead_spec) {
@@ -1813,7 +1817,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 continue;
             }
         }
-        let (lead_spec, lead_epic) = match resolver.resolve(&finding.bonds, opts.dry_run).await {
+        let (lead_spec, lead_epic) = match resolver.resolve(finding.bonds(), opts.dry_run).await {
             Ok(lead) => lead,
             Err(MintError::Resolve(ResolveError::InvariantViolation { label, ids })) => {
                 let fingerprint = batch_fingerprint(std::slice::from_ref(finding));
@@ -2358,7 +2362,7 @@ fn batch_labels(findings: &[Finding], mint_label: &str, routing: FindingRouting)
     let mut seen: HashSet<String> = HashSet::new();
     let mut ordered: Vec<&SpecLabel> = Vec::new();
     for finding in findings {
-        for spec in &finding.bonds {
+        for spec in finding.bonds() {
             if seen.insert(spec.as_str().to_owned()) {
                 ordered.push(spec);
             }
@@ -2392,8 +2396,8 @@ fn batch_title(findings: &[Finding], lead_spec: &SpecLabel) -> String {
         let f = &findings[0];
         format!(
             "{token}: {target}",
-            token = f.token.as_wire(),
-            target = f.target.canonical_form(),
+            token = f.token().as_wire(),
+            target = f.target().canonical_form(),
         )
     } else {
         format!(
@@ -2409,7 +2413,7 @@ fn batch_title(findings: &[Finding], lead_spec: &SpecLabel) -> String {
 fn concern_token_summary(findings: &[Finding]) -> String {
     let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
     for finding in findings {
-        *counts.entry(finding.token.as_wire()).or_default() += 1;
+        *counts.entry(finding.token().as_wire()).or_default() += 1;
     }
     let mut items = counts.into_iter().collect::<Vec<_>>();
     items.sort_by(|(token_a, count_a), (token_b, count_b)| {
@@ -2452,7 +2456,7 @@ fn batch_description(findings: &[Finding], fingerprint: &str, routing: FindingRo
         let _ = write!(out, "Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n");
     }
     if matches!(routing, FindingRouting::Clarify) {
-        out.push_str(findings[0].evidence.trim_end());
+        out.push_str(findings[0].evidence().trim_end());
         out.push_str("\n\n---\n\n");
     }
     append_findings_section(&mut out, findings);
@@ -2470,8 +2474,8 @@ fn batch_description(findings: &[Finding], fingerprint: &str, routing: FindingRo
 fn append_findings_section(out: &mut String, findings: &[Finding]) {
     let mut indexed: Vec<(usize, &Finding)> = findings.iter().enumerate().collect();
     indexed.sort_by(|(_, a), (_, b)| {
-        let ka = (a.token.as_wire(), a.target.canonical_form());
-        let kb = (b.token.as_wire(), b.target.canonical_form());
+        let ka = (a.token().as_wire(), a.target().canonical_form());
+        let kb = (b.token().as_wire(), b.target().canonical_form());
         ka.cmp(&kb)
     });
     let _ = write!(out, "Findings ({}):\n\n", findings.len());
@@ -2479,11 +2483,11 @@ fn append_findings_section(out: &mut String, findings: &[Finding]) {
         let _ = write!(
             out,
             "- **{token}** — `{target}`\n  id: `{id}`\n  hash: `{hash}`\n  evidence: {evidence}\n",
-            token = finding.token.as_wire(),
-            target = finding.target.canonical_form(),
+            token = finding.token().as_wire(),
+            target = finding.target().canonical_form(),
             id = finding.id(),
             hash = finding.hash(),
-            evidence = evidence_excerpt(&finding.evidence),
+            evidence = evidence_excerpt(finding.evidence()),
         );
     }
 }
@@ -2516,7 +2520,7 @@ mod tests {
     }
 
     fn coherence_finding(bonds: Vec<SpecLabel>, anchor: &str, evidence: &str) -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::SpecCoherenceFail,
             route: crate::review::FindingRoute::Deferred,
             target: FindingTarget::Criterion {
@@ -2525,21 +2529,23 @@ mod tests {
             },
             bonds,
             evidence: evidence.to_owned(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     fn contract_finding(bonds: Vec<SpecLabel>, id: &str, evidence: &str) -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::OrphanIntegration,
             route: crate::review::FindingRoute::Deferred,
             target: FindingTarget::Contract { id: id.to_owned() },
             bonds,
             evidence: evidence.to_owned(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     fn style_finding(bonds: Vec<SpecLabel>, rule_id: &str, evidence: &str) -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::StyleRuleViolation,
             route: crate::review::FindingRoute::Deferred,
             target: FindingTarget::StyleRule {
@@ -2548,7 +2554,8 @@ mod tests {
             },
             bonds,
             evidence: evidence.to_owned(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     fn invariant_clash_finding(
@@ -2558,7 +2565,7 @@ mod tests {
         tag: &str,
         evidence: &str,
     ) -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::InvariantClash,
             route: crate::review::FindingRoute::Clarify,
             target: FindingTarget::Invariant {
@@ -2568,7 +2575,8 @@ mod tests {
             },
             bonds,
             evidence: evidence.to_owned(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     fn deterministic_finding(bonds: Vec<SpecLabel>, target_string: &str) -> Finding {
@@ -2594,7 +2602,7 @@ mod tests {
         target_string: &str,
         evidence: &str,
     ) -> Finding {
-        Finding {
+        loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token,
             route: FindingRoute::Deferred,
             target: FindingTarget::Annotation {
@@ -2602,7 +2610,8 @@ mod tests {
             },
             bonds,
             evidence: evidence.to_owned(),
-        }
+        })
+        .expect("valid fixture finding")
     }
 
     struct ScriptedRunner {
@@ -3120,12 +3129,14 @@ mod tests {
 
     #[tokio::test]
     async fn molecule_review_blocking_finding_creates_same_molecule_remediation() {
-        let mut finding = contract_finding(
+        let finding = contract_finding(
             vec![spec("agent")],
             "blocking-acceptance-gap",
             "pushed behavior is incomplete",
         );
-        finding.route = FindingRoute::Blocking;
+        let mut raw = finding.into_raw();
+        raw.route = FindingRoute::Blocking;
+        let finding = loom_test_support::finding::resolve(raw).unwrap();
         let runner = StatefulBdRunner::molecule();
         let state = runner.clone();
         let bd = BdClient::with_runner(runner);
@@ -3533,8 +3544,8 @@ mod tests {
         let other = contract_finding(vec![spec("gate")], "molecule-lifecycle", "old evidence");
         let conflicting_description = format!(
             "Findings (1):\n\n- **{}** — `{}`\n  id: `{}`\n  hash: `{}`\n  evidence: old\n",
-            other.token.as_wire(),
-            other.target.canonical_form(),
+            other.token().as_wire(),
+            other.target().canonical_form(),
             other.id(),
             current.hash(),
         );
@@ -3916,20 +3927,24 @@ reason = "false positive"
             "stream order MUST NOT shift batch receipt: {original_order} vs {reversed_stream_order}",
         );
 
-        let reordered_bonds = Finding {
-            bonds: vec![spec("harness"), spec("gate")],
-            ..a.clone()
-        };
+        let reordered_bonds =
+            loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
+                bonds: vec![spec("harness"), spec("gate")],
+                ..a.clone().into_raw()
+            })
+            .expect("valid fixture finding");
         let with_reordered_bonds = batch_fingerprint(&[reordered_bonds, b.clone(), c.clone()]);
         assert_eq!(
             original_order, with_reordered_bonds,
             "bonds shifts MUST NOT change batch receipt",
         );
 
-        let tweaked_evidence = Finding {
-            evidence: "tweaked prose".into(),
-            ..a
-        };
+        let tweaked_evidence =
+            loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
+                evidence: "tweaked prose".into(),
+                ..a.into_raw()
+            })
+            .expect("valid fixture finding");
         let with_tweaked_evidence = batch_fingerprint(&[tweaked_evidence, b, c]);
         assert_eq!(
             original_order, with_tweaked_evidence,

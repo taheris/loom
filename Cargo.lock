@@ -2639,6 +2639,7 @@ dependencies = [
  "insta",
  "loom-events",
  "loom-protocol",
+ "loom-test-support",
  "serde",
  "serde_json",
  "thiserror",
@@ -2650,6 +2651,8 @@ name = "loom-test-support"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "loom-events",
+ "loom-protocol",
  "proptest",
  "tempfile",
 ]

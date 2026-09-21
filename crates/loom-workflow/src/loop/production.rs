@@ -4061,7 +4061,7 @@ mod tests {
         let label = SpecLabel::new("alpha").unwrap();
         let workspace = dir.path().to_path_buf();
         seed_spec(&workspace, "alpha");
-        let suppressed = crate::review::Finding {
+        let suppressed = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: crate::review::ConcernToken::VerifierBypass,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![label.clone()],
@@ -4069,8 +4069,9 @@ mod tests {
                 target_string: "cargo test --lib suppressed".to_owned(),
             },
             evidence: "suppressed finding".to_owned(),
-        };
-        let unsuppressed = crate::review::Finding {
+        })
+        .expect("valid fixture finding");
+        let unsuppressed = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: crate::review::ConcernToken::VerifierBypass,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![label.clone()],
@@ -4078,7 +4079,8 @@ mod tests {
                 target_string: "cargo test --lib live".to_owned(),
             },
             evidence: "live finding".to_owned(),
-        };
+        })
+        .expect("valid fixture finding");
         std::fs::write(
             workspace.join("loom.toml"),
             format!(
@@ -4302,10 +4304,10 @@ mod tests {
                 );
                 assert_eq!(findings.len(), 1, "one streamed finding parsed");
                 assert_eq!(
-                    findings[0].token,
+                    findings[0].token(),
                     crate::review::ConcernToken::VerifierBypass,
                 );
-                assert_eq!(findings[0].evidence, "test mocks the agent backend");
+                assert_eq!(findings[0].evidence(), "test mocks the agent backend");
             }
             other => panic!("expected ReviewConcern, got {other:?}"),
         }

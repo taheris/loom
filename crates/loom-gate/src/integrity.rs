@@ -41,7 +41,7 @@ use displaydoc::Display;
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use loom_protocol::gate::{ConcernToken, Finding, FindingRoute, FindingTarget};
+use loom_protocol::gate::{ConcernToken, FindingRoute, FindingTarget};
 
 use crate::annotation::{Annotation, Tier};
 use crate::dispatch::{DispatchOptions, TierCwds, run_with_runners};
@@ -139,7 +139,7 @@ impl IntegrityFinding {
     }
 
     /// Normalize a push-gate-terminal finding into the typed
-    /// [`Finding`] the mint pipeline consumes, per `specs/gate.md`
+    /// raw record to resolve before the mint pipeline, per `specs/gate.md`
     /// § *Concern tokens and target variants* (integrity-gate rows). The
     /// token follows that table (`unresolved-annotation` / `stub-pointing`
     /// / `unneeded-pending-marker` / `inputs-protocol-error`); the target
@@ -150,7 +150,7 @@ impl IntegrityFinding {
     /// ([`Self::is_push_gate_terminal`] false) and findings whose spec
     /// path has no file stem return `None`.
     #[must_use]
-    pub fn to_finding(&self) -> Option<Finding> {
+    pub fn to_raw_finding(&self) -> Option<loom_protocol::gate::RawFinding> {
         let (token, spec, target) = match self {
             Self::UnresolvedAnnotation { spec, target, .. } => {
                 (ConcernToken::UnresolvedAnnotation, spec, target)
@@ -170,7 +170,7 @@ impl IntegrityFinding {
         };
         let label = spec.file_stem().and_then(|s| s.to_str())?;
         let spec_label = label.parse().ok()?;
-        Some(Finding {
+        Some(loom_protocol::gate::RawFinding {
             token,
             route: FindingRoute::Deferred,
             bonds: vec![spec_label],
@@ -3080,7 +3080,7 @@ fn delta_helper() {
     }
 
     #[test]
-    fn to_finding_maps_terminal_variants_to_typed_findings() {
+    fn to_raw_finding_maps_terminal_variants_to_typed_findings() {
         let cases = [
             (
                 IntegrityFinding::UnresolvedAnnotation {
@@ -3112,7 +3112,7 @@ fn delta_helper() {
             ),
         ];
         for (finding, expected_token) in cases {
-            let mapped = finding.to_finding().expect("terminal finding maps");
+            let mapped = finding.to_raw_finding().expect("terminal finding maps");
             assert_eq!(mapped.token, expected_token, "token for {finding:?}");
             assert!(
                 matches!(mapped.target, FindingTarget::Annotation { .. }),
@@ -3128,14 +3128,14 @@ fn delta_helper() {
     }
 
     #[test]
-    fn to_finding_derives_lead_spec_from_path_stem() {
+    fn to_raw_finding_derives_lead_spec_from_path_stem() {
         let f = IntegrityFinding::UnresolvedAnnotation {
             spec: PathBuf::from("specs/templates.md"),
             line: 1,
             tier: Tier::Check,
             target: "x".into(),
         };
-        let mapped = f.to_finding().expect("terminal finding maps");
+        let mapped = f.to_raw_finding().expect("terminal finding maps");
         assert_eq!(mapped.bonds[0].as_str(), "templates");
         assert_eq!(
             mapped.target,
@@ -3146,20 +3146,26 @@ fn delta_helper() {
     }
 
     #[test]
-    fn to_finding_returns_none_for_non_terminal_variants() {
+    fn to_raw_finding_returns_none_for_non_terminal_variants() {
         let multi = IntegrityFinding::MultipleAnnotations {
             spec: PathBuf::from("specs/a.md"),
             line: 1,
             count: 2,
         };
-        assert!(multi.to_finding().is_none(), "non-terminal maps to None");
+        assert!(
+            multi.to_raw_finding().is_none(),
+            "non-terminal maps to None"
+        );
         let cargo = IntegrityFinding::UnresolvedCargoTestName {
             spec: PathBuf::from("specs/a.md"),
             line: 1,
             target: "cargo test --lib x".into(),
             test_name: "x".into(),
         };
-        assert!(cargo.to_finding().is_none(), "non-terminal maps to None");
+        assert!(
+            cargo.to_raw_finding().is_none(),
+            "non-terminal maps to None"
+        );
     }
 
     #[test]

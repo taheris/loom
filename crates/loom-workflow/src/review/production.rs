@@ -943,8 +943,8 @@ where
                     "source_route": "review-finding",
                     "identity": finding.id(),
                     "finding_hash": finding.hash(),
-                    "finding_token": finding.token,
-                    "requested_route": finding.route.as_wire(),
+                    "finding_token": finding.token(),
+                    "requested_route": finding.route().as_wire(),
                     "route": action,
                 }),
             );
@@ -1162,7 +1162,11 @@ where
             .head_commit_sha()
             .await
             .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
-        let summary = crate::mint::mint_integrity_recovery(&self.bd, findings, head.as_str()).await;
+        let validator = WorkspaceFindingValidator::new(&self.workspace);
+        let summary =
+            crate::mint::mint_integrity_recovery(&self.bd, findings, head.as_str(), &validator)
+                .await
+                .map_err(|source| ReviewError::Io(std::io::Error::other(source)))?;
         for event in summary.routing_events() {
             self.emit_driver_event(event.driver_kind, &event.summary, event.payload);
         }
@@ -1417,7 +1421,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::finding::{ConcernToken, Finding, FindingTarget};
+    use crate::review::finding::{ConcernToken, FindingTarget};
     use crate::review::runner::ReviewController;
     use loom_driver::bd::RunOutput;
     use loom_driver::identifier::MoleculeId;
@@ -1759,7 +1763,10 @@ mod tests {
                     },
                 ) => {
                     assert_eq!(payload, expected_payload, "[{}] payload", cell.name);
-                    let tokens: Vec<_> = parsed_findings.iter().map(|f| f.token).collect();
+                    let tokens: Vec<_> = parsed_findings
+                        .iter()
+                        .map(loom_protocol::gate::Finding::token)
+                        .collect();
                     assert_eq!(
                         &tokens, parsed_findings_tokens,
                         "[{}] parsed_findings tokens",
@@ -1779,7 +1786,10 @@ mod tests {
                     },
                 ) => {
                     assert_eq!(*finding_count, expected.len(), "[{}]", cell.name);
-                    let tokens: Vec<_> = findings.iter().map(|f| f.token).collect();
+                    let tokens: Vec<_> = findings
+                        .iter()
+                        .map(loom_protocol::gate::Finding::token)
+                        .collect();
                     assert_eq!(&tokens, expected, "[{}]", cell.name);
                 }
                 (
@@ -1808,7 +1818,10 @@ mod tests {
                     },
                 ) => {
                     assert_eq!(summary, expected_summary, "[{}] summary", cell.name);
-                    let tokens: Vec<_> = findings.iter().map(|f| f.token).collect();
+                    let tokens: Vec<_> = findings
+                        .iter()
+                        .map(loom_protocol::gate::Finding::token)
+                        .collect();
                     assert_eq!(&tokens, expected_tokens, "[{}] findings", cell.name);
                 }
                 (
@@ -2677,7 +2690,7 @@ mod tests {
         let manifest = stub_manifest(&workspace);
         let gate = SpecLabel::new("gate").unwrap();
         let findings = [
-            Finding {
+            loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
                 token: ConcernToken::TemplateSpecDrift,
                 route: crate::review::FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
@@ -2685,8 +2698,9 @@ mod tests {
                     path: "crates/loom-templates/templates/review.md".to_owned(),
                 },
                 evidence: "tree-scope template drift".to_owned(),
-            },
-            Finding {
+            })
+            .expect("valid fixture finding"),
+            loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
                 token: ConcernToken::CrossSpecClash,
                 route: crate::review::FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
@@ -2695,8 +2709,9 @@ mod tests {
                     anchor: "standing-safety-net-checks".to_owned(),
                 },
                 evidence: "tree-scope cross-spec clash".to_owned(),
-            },
-            Finding {
+            })
+            .expect("valid fixture finding"),
+            loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
                 token: ConcernToken::SpecConventionsViolation,
                 route: crate::review::FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
@@ -2705,7 +2720,8 @@ mod tests {
                     anchor: "standing-safety-net-checks".to_owned(),
                 },
                 evidence: "tree-scope spec convention violation".to_owned(),
-            },
+            })
+            .expect("valid fixture finding"),
         ];
         let finding_lines = findings
             .iter()
@@ -2779,7 +2795,7 @@ mod tests {
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
         let gate = SpecLabel::new("gate").unwrap();
-        let finding = Finding {
+        let finding = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
             token: ConcernToken::SpecCoherenceFail,
             route: crate::review::FindingRoute::Deferred,
             bonds: vec![gate.clone()],
@@ -2788,7 +2804,8 @@ mod tests {
                 anchor: "missing-anchor".to_owned(),
             },
             evidence: "anchor does not resolve".to_owned(),
-        };
+        })
+        .expect("valid fixture finding");
         let stdout = format!(
             "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"bad anchor\"}}\n",
             serde_json::to_string(&finding).expect("finding json"),

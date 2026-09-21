@@ -1889,6 +1889,29 @@ pipeline. This mirrors the sealed-`MarkerProof` pattern
 (`## Marker` below): validated construction through a single
 entry point is the type-shape contract for trust handoff.
 
+##### Resolved finding boundary
+
+`RawFinding` is the deserializable wire/driver DTO. `RawFinding::resolve`
+checks nonempty bonds, token/target alignment, scope, target/spec bonding,
+and contextual resolution together. Only the resulting `Finding` enters
+mint/review. Its fields are private, its accessors are read-only, and it
+implements `Serialize` but not `Deserialize`. Editing `into_raw()` output
+requires resolution again. Direct struct literals, deserialization into
+`Finding`, and field mutation are compile errors.
+[test](deserialized_raw_input_cannot_bypass_token_target_checks)
+
+This intentionally changes the Rust construction API, not the JSON wire
+shape or identity/hash algorithm: consumers deserialize `RawFinding`, then
+resolve it with their workspace context. The streaming parser does this
+internally and preserves its terminal/error/partial-findings matrix.
+[test](wire_roundtrip_preserves_canonical_identity_and_payload)
+
+Deterministic annotation failures resolve against the declared annotation,
+not successful command execution: an `unresolved-annotation` finding still
+names a real annotation even when its verifier cannot run. Rubric annotation
+findings continue to require executable/resolvable targets.
+[test](deterministic_failures_resolve_declared_not_executable_annotations)
+
 ##### Verification surface
 
 The runtime contract is verified at two layers — a behavioral

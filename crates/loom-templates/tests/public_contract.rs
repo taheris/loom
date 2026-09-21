@@ -12,16 +12,16 @@
 use anyhow::Result;
 use loom_templates::{
     AnnotationTarget, AnnotationTier, BadWalk, ConcernToken, CriterionAnnotation, CriterionId,
-    CriterionResult, CriterionStatus, DriverNoticeCause, EvidenceState, Finding, FindingTarget,
-    LoopContext, PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY, PARTIAL_COMPANIONS_CONTEXT,
-    PARTIAL_CONTEXT_PINNING, PARTIAL_DEPENDENCY_WAIT, PARTIAL_FINDINGS_WALK,
-    PARTIAL_INTERVIEW_MODES, PARTIAL_INVARIANT_CLASH, PARTIAL_PLAN_STAGE_RUBRIC,
-    PARTIAL_PROGRESS_MARKERS, PARTIAL_REVIEW_RUBRIC, PARTIAL_REVIEW_SELF_REPORT_MARKERS,
-    PARTIAL_SCRATCHPAD, PARTIAL_SELF_REPORT_MARKERS, PARTIAL_SIBLING_SPEC_EDITING,
-    PARTIAL_SKILL_INDEX, PARTIAL_SPEC_CONVENTIONS, PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES,
-    PARTIAL_TODO_SUCCESS, PARTIAL_WORKSPACE_RECOVERY, PinnedContext, PlanContext, PreviousFailure,
-    RecoveryStash, SkillIndexMarkdown, SpecImplementationNotes, TodoChangedSpec, TodoContext,
-    VerifierFailure, WorkspaceAlignment, WorkspaceRecovery,
+    CriterionResult, CriterionStatus, DriverNoticeCause, EvidenceState, FindingTarget, LoopContext,
+    PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY, PARTIAL_COMPANIONS_CONTEXT, PARTIAL_CONTEXT_PINNING,
+    PARTIAL_DEPENDENCY_WAIT, PARTIAL_FINDINGS_WALK, PARTIAL_INTERVIEW_MODES,
+    PARTIAL_INVARIANT_CLASH, PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS,
+    PARTIAL_REVIEW_RUBRIC, PARTIAL_REVIEW_SELF_REPORT_MARKERS, PARTIAL_SCRATCHPAD,
+    PARTIAL_SELF_REPORT_MARKERS, PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SKILL_INDEX,
+    PARTIAL_SPEC_CONVENTIONS, PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PARTIAL_TODO_SUCCESS,
+    PARTIAL_WORKSPACE_RECOVERY, PinnedContext, PlanContext, PreviousFailure, RecoveryStash,
+    SkillIndexMarkdown, SpecImplementationNotes, TodoChangedSpec, TodoContext, VerifierFailure,
+    WorkspaceAlignment, WorkspaceRecovery,
 };
 
 #[test]
@@ -180,7 +180,7 @@ fn criterion_status_public_shape_carries_annotation_and_evidence_states() -> Res
 #[test]
 fn previous_failure_public_variant_contract_is_constructible() {
     let spec = loom_events::identifier::SpecLabel::new("templates").unwrap();
-    let finding = Finding {
+    let finding = loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
         token: ConcernToken::SpecCoherenceFail,
         route: loom_protocol::gate::FindingRoute::Deferred,
         bonds: vec![spec.clone()],
@@ -189,7 +189,8 @@ fn previous_failure_public_variant_contract_is_constructible() {
             anchor: "typed-previousfailure".into(),
         },
         evidence: "typed retry context carries the finding".into(),
-    };
+    })
+    .expect("valid fixture finding");
     let verifier = VerifierFailure::new("cargo test -p loom-templates", 101, "compile error");
     let variants = vec![
         PreviousFailure::DriverNotice {
@@ -241,16 +242,19 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
 
     let review = PreviousFailure::ReviewConcern {
         summary: "spec coherence wobble".into(),
-        findings: vec![Finding {
-            token: ConcernToken::SpecCoherenceFail,
-            route: loom_protocol::gate::FindingRoute::Deferred,
-            bonds: vec![loom_events::identifier::SpecLabel::new("gate").unwrap()],
-            target: FindingTarget::Criterion {
-                spec: loom_events::identifier::SpecLabel::new("gate").unwrap(),
-                anchor: "verifier-honesty".into(),
-            },
-            evidence: "annotation does not exercise the contract".into(),
-        }],
+        findings: vec![
+            loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
+                token: ConcernToken::SpecCoherenceFail,
+                route: loom_protocol::gate::FindingRoute::Deferred,
+                bonds: vec![loom_events::identifier::SpecLabel::new("gate").unwrap()],
+                target: FindingTarget::Criterion {
+                    spec: loom_events::identifier::SpecLabel::new("gate").unwrap(),
+                    anchor: "verifier-honesty".into(),
+                },
+                evidence: "annotation does not exercise the contract".into(),
+            })
+            .expect("valid fixture finding"),
+        ],
     };
     let rendered = review.to_string();
     assert!(

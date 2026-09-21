@@ -4,6 +4,7 @@
 //! case counts come from one shared configuration rather than literals
 //! scattered across `proptest!` blocks.
 
+pub mod finding;
 pub mod git_policy;
 
 use proptest::test_runner::Config as ProptestConfig;
