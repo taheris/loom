@@ -2,7 +2,14 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use tokio::process::Command;
+
+mod budget;
+mod fixture;
+mod preflight;
+
+use budget::Budget;
+use fixture::Snapshot;
 
 use displaydoc::Display;
 use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
@@ -625,16 +632,19 @@ async fn create_proposal(
         let candidate_validation = match prepared.frozen.reject_if_changed(&rebuilt.frozen) {
             Ok(()) => {
                 let artifacts = target_artifacts(&context, &prepared.targets, &repo)?;
-                validate_candidate(ValidationInput {
-                    context: &context,
-                    repo: &repo,
-                    plan: &prepared.frozen,
-                    loaded_cases: &prepared.loaded_cases,
-                    registry: &context.checker_registry,
-                    targets: &prepared.targets,
-                    touched: &touched,
-                    artifacts: &artifacts,
-                })
+                validate_candidate(
+                    ValidationInput {
+                        context: &context,
+                        repo: &repo,
+                        plan: &prepared.frozen,
+                        loaded_cases: &prepared.loaded_cases,
+                        registry: &context.checker_registry,
+                        targets: &prepared.targets,
+                        touched: &touched,
+                        artifacts: &artifacts,
+                    },
+                    &clock,
+                )
                 .await?
             }
             Err(source) => changed_plan_validation(&prepared.frozen, &touched, &source),
@@ -1466,39 +1476,58 @@ struct ValidationInput<'a> {
     artifacts: &'a [TuneArtifact],
 }
 
-async fn validate_candidate(input: ValidationInput<'_>) -> Result<CandidateValidation, TuneError> {
+async fn validate_candidate(
+    input: ValidationInput<'_>,
+    clock: &dyn loom_driver::clock::Clock,
+) -> Result<CandidateValidation, TuneError> {
+    let mut budget = Budget::new(clock, &input.context.tune_config.checks);
     let mut rows = vec![ValidationRow {
         check: "candidate-files".to_owned(),
         status: ValidationStatus::Passed,
         detail: format!("{} target file(s) updated", input.touched.len()),
     }];
-    if input
-        .plan
-        .preflight_checkers
+    rows.extend(preflight::run(&input, &budget).await);
+    let outcome_counts = if rows
         .iter()
-        .any(|checker| checker.as_str() == protocol_boundary::CHECKER_ID)
+        .all(|row| row.status == ValidationStatus::Passed)
     {
-        rows.push(validate_skill_protocol_boundary(input.artifacts));
-    }
-    if input
-        .targets
-        .iter()
-        .any(|target| matches!(target, Target::Phase { .. } | Target::Partial { .. }))
-    {
-        rows.extend(validate_templates(input.repo));
-    }
-    let behavior = validate_behavioral_cases(
-        input.context,
-        input.plan,
-        input.loaded_cases,
-        input.registry,
-        input.artifacts,
-    )
-    .await;
-    rows.extend(behavior.rows);
+        let behavior = validate_behavioral_cases(
+            input.context,
+            input.plan,
+            input.loaded_cases,
+            input.registry,
+            input.artifacts,
+            &mut budget,
+        )
+        .await;
+        rows.extend(behavior.rows);
+        behavior.outcome_counts
+    } else {
+        OutcomeCounts {
+            pending: 0,
+            passed: 0,
+            failed: 0,
+            blocked: input.plan.selected_cases.len(),
+        }
+    };
+    let outcome_counts = if let Err(source) = budget.remaining() {
+        rows.push(ValidationRow {
+            check: "execution-budget".to_owned(),
+            status: ValidationStatus::Failed,
+            detail: source.to_string(),
+        });
+        OutcomeCounts {
+            pending: 0,
+            passed: 0,
+            failed: 0,
+            blocked: input.plan.selected_cases.len(),
+        }
+    } else {
+        outcome_counts
+    };
     Ok(CandidateValidation {
         rows,
-        outcome_counts: behavior.outcome_counts,
+        outcome_counts,
     })
 }
 
@@ -1508,6 +1537,7 @@ async fn validate_behavioral_cases(
     loaded_cases: &LoadedCases,
     registry: &CheckerRegistry,
     artifacts: &[TuneArtifact],
+    budget: &mut Budget<'_>,
 ) -> CandidateValidation {
     if plan.selected_cases.is_empty() {
         return CandidateValidation {
@@ -1515,7 +1545,8 @@ async fn validate_behavioral_cases(
             outcome_counts: OutcomeCounts::pending(0),
         };
     }
-    let replays = match replay_selected_cases(context, plan, loaded_cases, artifacts).await {
+    let replays = match replay_selected_cases(context, plan, loaded_cases, artifacts, budget).await
+    {
         Ok(replays) => replays,
         Err(source) => {
             return CandidateValidation {
@@ -1586,11 +1617,15 @@ async fn replay_selected_cases(
     plan: &FrozenPlan,
     loaded_cases: &LoadedCases,
     artifacts: &[TuneArtifact],
+    budget: &mut Budget<'_>,
 ) -> Result<Vec<Replay>, TuneError> {
+    budget.remaining()?;
+    let source = Snapshot::capture(&context.workspace, &context.tracked_files)?;
     let manifest = ProfileImageManifest::from_env()?;
     let mut replays = Vec::with_capacity(plan.selected_cases.len());
     for selected in &plan.selected_cases {
-        let (targets, input) = replay_input(context, loaded_cases, &selected.case_id)?;
+        let (targets, input, snapshot) =
+            replay_input(context, loaded_cases, &selected.case_id, &source)?;
         let current_prompt = replay_prompt(
             &selected.checker,
             &input,
@@ -1607,6 +1642,8 @@ async fn replay_selected_cases(
             selected,
             ReplaySide::Current,
             current_prompt,
+            &snapshot,
+            budget,
         )
         .await?;
         let candidate_output = run_replay_agent(
@@ -1615,6 +1652,8 @@ async fn replay_selected_cases(
             selected,
             ReplaySide::Candidate,
             candidate_prompt,
+            &snapshot,
+            budget,
         )
         .await?;
         replays.push(Replay::new(
@@ -1630,7 +1669,8 @@ fn replay_input(
     context: &HarvestedContext,
     loaded_cases: &LoadedCases,
     case_id: &loom_tune::plan::PlannedCaseId,
-) -> Result<(Vec<Target>, String), TuneError> {
+    source: &Snapshot,
+) -> Result<(Vec<Target>, String, Snapshot), TuneError> {
     match case_id {
         loom_tune::plan::PlannedCaseId::Declared(id) => {
             let case = loaded_cases
@@ -1640,7 +1680,8 @@ fn replay_input(
                 .ok_or_else(|| TuneError::MissingDeclaredCase {
                     case_id: case_id.clone(),
                 })?;
-            Ok((case.targets.clone(), declared_input(context, &case.input)?))
+            let (snapshot, prompt) = declared_input(source, &case.input)?;
+            Ok((case.targets.clone(), prompt, snapshot))
         }
         loom_tune::plan::PlannedCaseId::Mined(id) => {
             let item = context
@@ -1652,23 +1693,23 @@ fn replay_input(
                 .ok_or_else(|| TuneError::MissingEvidenceItem {
                     case_id: case_id.clone(),
                 })?;
-            Ok((item.targets.clone(), item.text().body.clone()))
+            Ok((
+                item.targets.clone(),
+                item.text().body.clone(),
+                source.clone(),
+            ))
         }
     }
 }
 
-fn declared_input(context: &Context, input: &Input) -> Result<String, TuneError> {
+fn declared_input(source: &Snapshot, input: &Input) -> Result<(Snapshot, String), TuneError> {
     match input {
-        Input::ReviewFindingRecall { patch } => {
-            read_to_string(&context.workspace.join(&patch.relative))
-        }
-        Input::TodoDecomposition { prompt } => {
-            read_to_string(&context.workspace.join(&prompt.relative))
-        }
+        Input::ReviewFindingRecall { patch } => Ok((source.clone(), source.text(&patch.relative)?)),
+        Input::TodoDecomposition { prompt } => Ok((source.clone(), source.text(&prompt.relative)?)),
         Input::LoopVerifyAfterEdit { fixture, task }
         | Input::LoopScopeDiscipline { fixture, task }
         | Input::AgentContextBeforeEdit { fixture, task } => {
-            fixture_input(context, &fixture.relative, task)
+            source.fixture(&fixture.relative, task)
         }
         Input::InboxResolutionPath {
             fixture,
@@ -1677,21 +1718,8 @@ fn declared_input(context: &Context, input: &Input) -> Result<String, TuneError>
         | Input::TuneApplyHandoff {
             fixture,
             user_response,
-        } => fixture_input(context, &fixture.relative, user_response),
+        } => source.fixture(&fixture.relative, user_response),
     }
-}
-
-fn fixture_input(context: &Context, fixture: &Path, request: &str) -> Result<String, TuneError> {
-    let mut out = format!("Request:\n{request}\n\nFixture files:\n");
-    for relative in context
-        .tracked_files
-        .iter()
-        .filter(|relative| relative.starts_with(fixture))
-    {
-        let body = read_to_string(&context.workspace.join(relative))?;
-        let _ = write!(out, "\n--- {} ---\n{body}\n", relative.display());
-    }
-    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1750,16 +1778,20 @@ async fn run_replay_agent(
     selected: &loom_tune::plan::SelectedCase,
     side: ReplaySide,
     prompt: String,
+    snapshot: &Snapshot,
+    budget: &mut Budget<'_>,
 ) -> Result<String, TuneError> {
+    budget.reserve_call()?;
+    let checkout = snapshot.checkout(budget).await?;
     let phase = checker_phase(selected.checker.domain());
     let selection = context.loom_config.agent_for(phase)?;
     let entry = manifest.lookup(&selection.profile, selection.kind)?;
     let key = format!("tune-{}-{side}", selected.case_id).replace(':', "-");
-    let scratch = ScratchSession::open(&context.workspace, &key, &prompt, "loom tune replay")?;
+    let scratch = ScratchSession::open(checkout.path(), &key, &prompt, "loom tune replay")?;
     let mut spawn = crate::spawn::build_spawn_config(
         entry,
         selection.kind,
-        context.workspace.clone(),
+        checkout.path().to_path_buf(),
         prompt,
         scratch.path().to_path_buf(),
         Vec::new(),
@@ -1770,7 +1802,12 @@ async fn run_replay_agent(
     selection.apply_to_spawn_config(&mut spawn, context.loom_config.direct_output_limits());
     spawn.observers = context.loom_config.agent.clone();
     let mut output = String::new();
-    let outcome = dispatch_replay_agent(selection.kind, &spawn, &mut output).await?;
+    let result = budget
+        .run(async { Ok(dispatch_replay_agent(selection.kind, &spawn, &mut output).await?) })
+        .await;
+    drop(scratch);
+    checkout.cleanup()?;
+    let outcome = result?;
     if outcome.exit_code != 0 {
         return Err(TuneError::ReplayExit {
             case_id: selected.case_id.clone(),
@@ -1778,7 +1815,6 @@ async fn run_replay_agent(
             exit_code: outcome.exit_code,
         });
     }
-    drop(scratch);
     Ok(output)
 }
 
@@ -1878,7 +1914,11 @@ fn validate_skill_protocol_boundary(artifacts: &[TuneArtifact]) -> ValidationRow
     }
 }
 
-fn validate_templates(repo: &Path) -> Vec<ValidationRow> {
+async fn validate_templates(
+    repo: &Path,
+    budget: &Budget<'_>,
+    implementation: loom_tune::checker::Implementation,
+) -> Vec<ValidationRow> {
     let commands = [
         (
             "askama-compile",
@@ -1909,6 +1949,13 @@ fn validate_templates(repo: &Path) -> Vec<ValidationRow> {
             ],
         ),
     ];
+    let commands = commands
+        .into_iter()
+        .filter(|(name, _)| {
+            (*name == "template-conformance")
+                == (implementation == loom_tune::checker::Implementation::TemplateConformance)
+        })
+        .collect::<Vec<_>>();
     if !repo.join("crates/loom-templates/Cargo.toml").exists() {
         return commands
             .iter()
@@ -1920,24 +1967,34 @@ fn validate_templates(repo: &Path) -> Vec<ValidationRow> {
             .collect();
     }
     let target_dir = repo.join("target/loom-tune-validation");
-    commands
-        .iter()
-        .map(|(name, args)| {
-            let mut command = Command::new("cargo");
-            command
-                .args(args)
-                .current_dir(repo)
-                .env("CARGO_TARGET_DIR", &target_dir);
-            if *name == "representative-renders" {
-                command.env("INSTA_UPDATE", "always");
-            }
-            validation_command(name, &mut command)
-        })
-        .collect()
+    let mut rows = Vec::new();
+    for (name, args) in commands {
+        let mut command = Command::new("cargo");
+        command
+            .args(args)
+            .current_dir(repo)
+            .env("CARGO_TARGET_DIR", &target_dir);
+        if name == "representative-renders" {
+            command.env("INSTA_UPDATE", "always");
+        }
+        rows.push(validation_command(name, &mut command, budget).await);
+    }
+    rows
 }
 
-fn validation_command(name: &str, command: &mut Command) -> ValidationRow {
-    match command.output() {
+async fn validation_command(
+    name: &str,
+    command: &mut Command,
+    budget: &Budget<'_>,
+) -> ValidationRow {
+    let result = async {
+        let remaining = budget.remaining()?;
+        loom_driver::process::output(command, budget.clock(), remaining)
+            .await
+            .map_err(TuneError::ValidationCommand)
+    }
+    .await;
+    match result {
         Ok(output) if output.status.success() => ValidationRow {
             check: name.to_owned(),
             status: ValidationStatus::Passed,
@@ -1951,7 +2008,7 @@ fn validation_command(name: &str, command: &mut Command) -> ValidationRow {
         Err(source) => ValidationRow {
             check: name.to_owned(),
             status: ValidationStatus::Failed,
-            detail: source.to_string(),
+            detail: preflight::error_detail(&source),
         },
     }
 }
@@ -2339,6 +2396,18 @@ pub enum TuneError {
     CheckerId(#[from] loom_tune::checker::ParseCheckerIdError),
     /// failed to prepare replay scratch state
     Scratch(#[from] std::io::Error),
+    /// failed to create or clean up a disposable replay workspace
+    ReplayWorkspace(#[source] std::io::Error),
+    /// candidate preflight failed: {detail}
+    CandidatePreflight { detail: String },
+    /// tuning validation command failed
+    ValidationCommand(#[from] loom_driver::process::Error),
+    /// invalid replay fixture `{path}`: {reason}
+    ReplayFixture { path: PathBuf, reason: String },
+    /// tuning wall-time budget exhausted (`{limit_secs}` seconds); validation is incomplete
+    WallTimeExceeded { limit_secs: u64 },
+    /// tuning evaluation-call budget exhausted ({limit} sessions); validation is incomplete
+    JudgeCallsExceeded { limit: usize },
     /// invalid skill target name `{name}`
     SkillName {
         name: String,
@@ -2471,16 +2540,20 @@ mod tests {
         );
         let candidate_repo = tempfile::tempdir().expect("candidate repo");
         let touched = vec![candidate_repo.path().join("skills/review/skill.md")];
-        let validation = validate_candidate(ValidationInput {
-            context: &context,
-            repo: candidate_repo.path(),
-            plan: &prepared.frozen,
-            loaded_cases: &prepared.loaded_cases,
-            registry: &context.checker_registry,
-            targets: &prepared.targets,
-            touched: &touched,
-            artifacts: &[artifact],
-        })
+        write_parented(&touched[0], &artifact.candidate).expect("write unsafe candidate");
+        let validation = validate_candidate(
+            ValidationInput {
+                context: &context,
+                repo: candidate_repo.path(),
+                plan: &prepared.frozen,
+                loaded_cases: &prepared.loaded_cases,
+                registry: &context.checker_registry,
+                targets: &prepared.targets,
+                touched: &touched,
+                artifacts: &[artifact],
+            },
+            &loom_driver::clock::MockClock::new(),
+        )
         .await
         .expect("validate candidate");
 

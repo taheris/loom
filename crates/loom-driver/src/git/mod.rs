@@ -14,7 +14,10 @@ mod client;
 mod environment;
 mod error;
 mod hooks;
+mod replay;
 mod signing;
+
+pub use replay::initialize_snapshot;
 
 pub use client::{
     ActualPushRange, BeadCloneAlignment, BeadClonePreparation, BeadCloneRecovery, CreatedWorktree,

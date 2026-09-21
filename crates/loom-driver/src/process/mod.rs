@@ -1,4 +1,4 @@
-//! Owned, bounded subprocess capture shared by the Beads and Git boundaries.
+//! Owned, bounded subprocess capture for driver and workflow command boundaries.
 
 use std::io;
 use std::process::{Output, Stdio};
@@ -22,9 +22,13 @@ pub enum Error {
 }
 
 /// Capture both pipes without deadlocking, terminating and reaping before returning a timeout.
+///
 /// Cancellation kills the Unix process group; Tokio reaps the dropped direct child in the background.
 /// Descendants that deliberately leave the group are outside this ownership boundary.
 /// Termination does not roll back effects already performed by the command.
+///
+/// # Errors
+/// Returns an error on spawning, pipe capture, timeout, or process cleanup failure.
 pub async fn output(
     command: &mut Command,
     clock: &dyn Clock,
@@ -139,7 +143,7 @@ async fn read_pipe(pipe: Option<impl AsyncRead + Unpin>) -> io::Result<Vec<u8>> 
 
 #[cfg(test)]
 #[cfg(unix)]
-pub mod tests {
+pub(crate) mod tests {
     //! Real processes are required to observe pipe closure, group termination and OS reaping.
 
     use std::future::Future;
