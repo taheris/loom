@@ -152,6 +152,7 @@ YAML
 cat >.gitignore <<'IGNORE'
 .loom/
 .wrix/
+*.gate.lock*
 IGNORE
 git add .gitignore .pre-commit-config.yaml bin/pre-push-checks docs/README.md specs/smoke.md
 git commit -q -m "Initialize smoke workspace"
@@ -160,10 +161,6 @@ git push -q -u origin main
 
 mkdir -p .beads/dolt
 chmod 700 .beads
-(
-    cd .beads/dolt
-    dolt init --name "Loom Smoke" --email smoke@example.com >/dev/null
-)
 "$LOOM_WRIX_SERVICE_BIN" service start >/dev/null
 DOLT_SERVICE_STARTED=1
 "$LOOM_WRIX_SERVICE_BIN" service dolt wait >/dev/null
@@ -171,19 +168,48 @@ DOLT_SOCKET=$("$LOOM_WRIX_SERVICE_BIN" service dolt socket)
 unset BEADS_DOLT_SERVER_HOST BEADS_DOLT_SERVER_PORT
 export BEADS_DOLT_SERVER_SOCKET="$DOLT_SOCKET"
 export BEADS_DOLT_AUTO_START=0
-bd init --prefix=smoke \
-    --skip-hooks \
-    --skip-agents \
-    --non-interactive \
-    --server \
-    --server-socket "$DOLT_SOCKET" \
-    --database smoke \
-    >/dev/null
+
+# Starting the Wrix service creates `.beads/dolt/.dolt` before project
+# metadata exists. Current bd correctly treats that shape as an ambiguous
+# pre-v1 server workspace and refuses to rewrite it. Initialize the database
+# through the external socket from a clean staging workspace, then install
+# bd's generated current-era metadata beside the Wrix-owned data root.
+BEADS_INIT_WORKSPACE="$SMOKE_ROOT/beads-init"
+mkdir -p "$BEADS_INIT_WORKSPACE"
+(
+    cd "$BEADS_INIT_WORKSPACE"
+    bd init --prefix=smoke \
+        --skip-hooks \
+        --skip-agents \
+        --non-interactive \
+        --server \
+        --external \
+        --server-socket "$DOLT_SOCKET" \
+        --database smoke \
+        >/dev/null
+)
+cp "$BEADS_INIT_WORKSPACE/.beads/.gitignore" \
+    "$BEADS_INIT_WORKSPACE/.beads/.local_version" \
+    "$BEADS_INIT_WORKSPACE/.beads/README.md" \
+    "$BEADS_INIT_WORKSPACE/.beads/config.yaml" \
+    "$BEADS_INIT_WORKSPACE/.beads/metadata.json" \
+    .beads/
+printf '\n/config.local.yaml\n' >>.beads/.gitignore
 chmod 700 .beads
 bd config set export.auto false >/dev/null
-git add .beads/config.yaml
+git add .beads/.gitignore .beads/README.md .beads/config.yaml .beads/metadata.json
 git commit -q -m "Configure smoke beads"
 git push -q origin main
+
+# Seed the Wrix-owned file remote in a real attached beads-branch worktree.
+# The first session-close push populates and commits the Dolt remote itself.
+BEADS_WORKTREE="$WORKSPACE/.git/beads-worktrees/beads"
+git worktree add --quiet --orphan -b beads "$BEADS_WORKTREE"
+mkdir -p "$BEADS_WORKTREE/.beads/dolt-remote"
+touch "$BEADS_WORKTREE/.beads/.gitkeep"
+git -C "$BEADS_WORKTREE" add .beads/.gitkeep
+git -C "$BEADS_WORKTREE" commit -q -m "Initialize beads branch"
+git -C "$BEADS_WORKTREE" push -q -u origin beads
 
 BASE_COMMIT=$(git rev-parse HEAD)
 MOLECULE_ID=$(bd create "smoke molecule" \
