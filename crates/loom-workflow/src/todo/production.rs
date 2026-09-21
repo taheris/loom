@@ -375,8 +375,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .create(CreateOpts {
                 title: format!("loom spec: {}", spec.label),
                 description: format!("Spec metadata epic for `{}`.", spec.label),
-                issue_type: Some("epic".to_string()),
-                priority: Some(2),
+                issue_type: Some(loom_driver::bd::IssueType::Epic),
+                priority: Some(loom_driver::bd::Priority::P2),
                 labels: vec!["loom:spec".to_string(), format!("spec:{}", spec.label)],
                 ..CreateOpts::default()
             })
@@ -398,13 +398,17 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         label: &SpecLabel,
     ) -> Result<Vec<loom_driver::bd::Bead>, TodoError> {
         let mut out = Vec::new();
-        for status in ["open", "in_progress", "closed"] {
+        for status in [
+            loom_driver::bd::Status::Open,
+            loom_driver::bd::Status::InProgress,
+            loom_driver::bd::Status::Closed,
+        ] {
             let beads = self
                 .bd
                 .list(ListOpts {
-                    issue_type: Some("epic".to_string()),
+                    issue_type: Some(loom_driver::bd::IssueType::Epic),
                     label: Some(format!("spec:{label}")),
-                    status: Some(status.to_string()),
+                    statuses: vec![status],
                     ..Default::default()
                 })
                 .await?;
@@ -526,8 +530,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 title: PENDING_WORK_EPIC_TITLE.to_string(),
                 description: "Driver-created work epic for deterministic loom todo decomposition."
                     .to_string(),
-                issue_type: Some("epic".to_string()),
-                priority: Some(2),
+                issue_type: Some(loom_driver::bd::IssueType::Epic),
+                priority: Some(loom_driver::bd::Priority::P2),
                 labels,
                 metadata: Some(metadata),
                 ..CreateOpts::default()
@@ -552,9 +556,9 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let beads = self
             .bd
             .list(ListOpts {
-                issue_type: Some("epic".to_string()),
+                issue_type: Some(loom_driver::bd::IssueType::Epic),
                 label: Some("loom:todo".to_string()),
-                status: Some("open".to_string()),
+                statuses: vec![loom_driver::bd::Status::Open],
                 ..Default::default()
             })
             .await?;
@@ -1040,7 +1044,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .update(
                 &preflight.work_epic,
                 UpdateOpts {
-                    status: Some("blocked".to_string()),
+                    status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:blocked".to_string()],
                     notes: Some(reason.to_string()),
                     ..UpdateOpts::default()
@@ -1071,9 +1075,9 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let beads = self
             .bd
             .list(ListOpts {
-                issue_type: Some("epic".to_string()),
+                issue_type: Some(loom_driver::bd::IssueType::Epic),
                 label: Some("loom:active".to_string()),
-                status: Some("open".to_string()),
+                statuses: vec![loom_driver::bd::Status::Open],
                 ..Default::default()
             })
             .await?;

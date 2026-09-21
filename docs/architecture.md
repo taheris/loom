@@ -114,6 +114,16 @@ read-only accessors, closing post-construction mutation of validated evidence.
 `WalkOutput`, `MarkerProof`, `VerifiedScope`, and `ReviewedScope` retain their
 existing sealed boundaries; ordinary wire DTOs are not gate authorization.
 
+Configuration parses phase keys and known values at ingestion; `agent_for`
+now applies fallback infallibly. `BackendSettings` carries runtime-specific
+settings, and checked suppressions expose only borrowed selectors/reasons.
+Beads status/type/priority values are shared by response models and command
+options, with unknown statuses/types rejected explicitly. Numeric/string wire
+formats and creation defaults remain unchanged. Open `ModelName`/`ProviderName`
+tokens live in `loom-events`; LLM fallback variants carry checked names instead
+of arbitrary strings. `ModelId` parsing and Direct conversation construction
+are fallible for malformed names, while valid unknown model routing is retained.
+
 The following unused workspace-internal APIs have been retired:
 
 - `GateError::Unimplemented`: implemented gate modules expose their own errors.

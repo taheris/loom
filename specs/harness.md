@@ -496,9 +496,61 @@ Phase values resolve from `[phase.<name>]`, then `[phase.default]`, then built-i
 defaults. A loop bead's `profile:X` label precedes phase profile defaults, while
 the CLI profile override has highest precedence. Default configuration selects
 the base profile, Claude backend, ten work-epic iterations, two worker retries,
-and three infra attempts.
+and three infra attempts. Beads creation defaults remain priority 2 and type
+`task`.
+
+Phase names (`default`, `plan`, `todo`, `loop`, `inbox`, `gate.review`) and
+phase/agent fields are closed: misspellings fail ingestion, even in an unused
+phase. Nested `[phase.gate.review]` and literal `[phase.'gate.review']` are
+equivalent, but declaring both is an error. Profile, backend, thinking-level,
+model, and provider values are checked during TOML or direct serde ingestion;
+phase selection then only applies fallback. Backend-specific settings travel
+with the selected backend, including CLI overrides. Model/provider registries
+remain open, but names must be nonempty and contain no whitespace or control
+characters.
+
+A suppression contains exactly one nonblank `id` or `hash` and a nonblank
+`reason`. Its checked Rust value cannot be mutated into an invalid combination.
+
+Beads statuses are `open`, `in_progress`, `blocked`, `deferred`, `closed`,
+`pinned`, or `tombstone`; issue types are `task`, `bug`, `feature`, `epic`, or
+`chore`. Unknown external status/type values are rejected, not collapsed into
+`other` or silently treated as an actionable state. Priorities are integers in
+`0..=4`. Reads and create/update/list options use these same domain values;
+string conversion happens at the subprocess boundary. Multi-status filters
+retain their comma-separated wire representation; an empty filter means no
+restriction. Extra fields in Beads responses remain forward-compatible. The
+partial bead projection defaults omitted priority/type fields to P0/task;
+status is required.
 
 ## Success Criteria
+
+### Configuration and Beads domains
+
+- Phase keys and known phase values reject typos at direct serde ingestion,
+      not when a particular phase is selected
+  [test](direct_serde_rejects_phase_typos_and_invalid_known_values)
+- Nested and literal review tables resolve the same typed fallback and cannot
+      both be declared
+  [test](nested_and_literal_review_tables_have_identical_typed_fallback)
+- Backend overrides carry only settings belonging to the selected backend
+  [test](backend_override_carries_only_its_own_settings)
+- Suppressions require one nonblank selector and a nonblank reason through
+      direct serde as well as explicit construction
+  [test](direct_serde_cannot_bypass_exclusive_nonempty_suppression)
+- Beads statuses/types preserve recognized wire values
+  [test](beads_domains_preserve_recognized_wire_values)
+- Unknown Beads statuses/types are rejected rather than collapsed into another state
+  [test](unknown_beads_statuses_and_types_are_rejected_not_collapsed)
+- Beads and configuration priorities share the checked 0–4 domain while
+      creation defaults remain P2/task
+  [test](beads_and_configuration_priorities_share_the_checked_boundary)
+- Typed list filters retain comma-separated and empty-filter semantics
+  [test](typed_list_statuses_keep_csv_and_empty_filter_semantics)
+- Model/provider names reject empty, whitespace-bearing, and control-bearing values
+  [test](external_names_reject_empty_tokens_at_all_boundaries)
+- Valid model/provider tokens preserve their wire spelling without closing external registries
+  [test](external_names_preserve_forward_compatible_provider_tokens)
 
 ### Crate structure
 

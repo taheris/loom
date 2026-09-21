@@ -16,7 +16,7 @@ use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
 use loom_driver::agent::{ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::bd::{BdClient, CreateOpts, ListOpts, UpdateOpts};
 use loom_driver::clock::SystemClock;
-use loom_driver::config::{AgentSelectionError, LoomConfig, LoomConfigError, Phase};
+use loom_driver::config::{LoomConfig, LoomConfigError, Phase};
 use loom_driver::git::{GitClient, GitError, GitOid, read_origin_url};
 use loom_driver::identifier::BeadId;
 use loom_driver::lock::{LockError, LockManager, PhaseLock};
@@ -48,6 +48,14 @@ use loom_tune::proposal::{
 use loom_tune::target::{Catalog as TargetCatalog, PartialName, Target};
 use thiserror::Error;
 use tracing::warn;
+
+const fn proposal_status(state: State) -> loom_driver::bd::Status {
+    match state {
+        State::Pending | State::Accepted => loom_driver::bd::Status::Open,
+        State::Blocked | State::ApplyFailed => loom_driver::bd::Status::Blocked,
+        State::Applied | State::Rejected => loom_driver::bd::Status::Closed,
+    }
+}
 
 /// Tune command requested by the CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -612,8 +620,8 @@ async fn create_proposal(
         .create(CreateOpts {
             title,
             description: "Tune proposal is being prepared.".to_owned(),
-            issue_type: Some("task".to_owned()),
-            priority: Some(2),
+            issue_type: Some(loom_driver::bd::IssueType::Task),
+            priority: Some(loom_driver::bd::Priority::P2),
             labels,
             parent: None,
             metadata: None,
@@ -711,7 +719,7 @@ async fn publish_preparation_failure(
         .update(
             bead_id,
             UpdateOpts {
-                status: Some("blocked".to_owned()),
+                status: Some(loom_driver::bd::Status::Blocked),
                 description: Some(format!(
                     "# Tune proposal {bead_id}\n\nState: `blocked`\n\n## Preparation failure\n\n{detail}\n\nReview, repair, or reject this proposal through `loom inbox`.\n"
                 )),
@@ -1802,13 +1810,13 @@ async fn run_replay_agent(
     budget.reserve_call()?;
     let checkout = snapshot.checkout(budget).await?;
     let phase = checker_phase(selected.checker.domain());
-    let selection = context.loom_config.agent_for(phase)?;
-    let entry = manifest.lookup(&selection.profile, selection.kind)?;
+    let selection = context.loom_config.agent_for(phase);
+    let entry = manifest.lookup(&selection.profile, selection.kind())?;
     let key = format!("tune-{}-{side}", selected.case_id).replace(':', "-");
     let scratch = ScratchSession::open(checkout.path(), &key, &prompt, "loom tune replay")?;
     let mut spawn = crate::spawn::build_spawn_config(
         entry,
-        selection.kind,
+        selection.kind(),
         checkout.path().to_path_buf(),
         prompt,
         scratch.path().to_path_buf(),
@@ -1838,7 +1846,9 @@ async fn run_replay_agent(
     let log_path = sink.log_path().to_owned();
     let mut output = String::new();
     let result = budget
-        .run(async { Ok(dispatch_replay_agent(selection.kind, &spawn, sink, &mut output).await?) })
+        .run(async {
+            Ok(dispatch_replay_agent(selection.kind(), &spawn, sink, &mut output).await?)
+        })
         .await;
     let evidence = result.and_then(|outcome| {
         if outcome.exit_code != 0 {
@@ -2161,7 +2171,7 @@ async fn update_tune_bead(update: BeadUpdate<'_>) -> Result<(), TuneError> {
         .update(
             update.bead_id,
             UpdateOpts {
-                status: Some(update.state.bead_status().to_owned()),
+                status: Some(proposal_status(update.state)),
                 description: Some(body),
                 add_labels: vec!["loom:tune".to_owned()],
                 set_metadata: metadata,
@@ -2427,8 +2437,6 @@ pub enum TuneError {
     CheckerRegistry(#[from] CheckerRegistryError),
     /// evidence harvesting error
     EvidenceHarvest(#[from] HarvestError),
-    /// phase agent selection error
-    AgentSelection(#[from] AgentSelectionError),
     /// profile-image manifest error
     Profile(#[from] ProfileError),
     /// replay agent protocol error
@@ -2543,6 +2551,21 @@ pub enum TuneError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn proposal_state_maps_to_bead_status() {
+        use super::{State, proposal_status};
+        use loom_driver::bd::Status;
+        for (state, expected) in [
+            (State::Pending, Status::Open),
+            (State::Accepted, Status::Open),
+            (State::Blocked, Status::Blocked),
+            (State::ApplyFailed, Status::Blocked),
+            (State::Applied, Status::Closed),
+            (State::Rejected, Status::Closed),
+        ] {
+            assert_eq!(proposal_status(state), expected);
+        }
+    }
     use super::*;
     use loom_driver::git::{commit_all_in, init_test_repo};
 

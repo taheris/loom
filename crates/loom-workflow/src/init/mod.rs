@@ -417,8 +417,8 @@ mod tests {
             Phase::Inbox,
         ] {
             assert_eq!(
-                parsed.agent_for(phase).map_err(anyhow::Error::from)?,
-                empty.agent_for(phase).map_err(anyhow::Error::from)?,
+                parsed.agent_for(phase),
+                empty.agent_for(phase),
                 "phase={phase:?}",
             );
         }

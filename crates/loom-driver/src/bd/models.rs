@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::label::Label;
+use super::{Priority, label::Label};
 use crate::identifier::{BeadId, MoleculeId};
 
 /// Dependency-relevant projection of `bd show --json`.
@@ -51,28 +51,76 @@ struct Dependency {
     kind: DependencyKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// Recognized external statuses; unknown values are rejected with their wire name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Status {
+pub enum Status {
     Open,
     InProgress,
     Blocked,
     Deferred,
     Closed,
-    #[serde(other)]
-    Other,
+    Pinned,
+    Tombstone,
 }
 
 impl Status {
-    const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
             Self::InProgress => "in_progress",
             Self::Blocked => "blocked",
             Self::Deferred => "deferred",
             Self::Closed => "closed",
-            Self::Other => "other",
+            Self::Pinned => "pinned",
+            Self::Tombstone => "tombstone",
         }
+    }
+}
+
+impl std::str::FromStr for Status {
+    type Err = serde::de::value::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::deserialize(serde::de::value::StrDeserializer::new(value))
+    }
+}
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Supported issue classes; unrecognized external types are rejected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueType {
+    #[default]
+    Task,
+    Bug,
+    Feature,
+    Epic,
+    Chore,
+}
+impl IssueType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::Bug => "bug",
+            Self::Feature => "feature",
+            Self::Epic => "epic",
+            Self::Chore => "chore",
+        }
+    }
+}
+impl std::str::FromStr for IssueType {
+    type Err = serde::de::value::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::deserialize(serde::de::value::StrDeserializer::new(value))
+    }
+}
+impl std::fmt::Display for IssueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -98,11 +146,11 @@ pub struct Bead {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    pub status: String,
+    pub status: Status,
     #[serde(default)]
-    pub priority: u8,
+    pub priority: Priority,
     #[serde(default, rename = "issue_type")]
-    pub issue_type: String,
+    pub issue_type: IssueType,
     #[serde(default)]
     pub labels: Vec<Label>,
     /// Parent bead id from `bd show --json`'s `parent` field. For a bead
@@ -134,8 +182,7 @@ pub struct Bead {
 pub struct Molecule {
     pub id: MoleculeId,
     pub title: String,
-    #[serde(default)]
-    pub status: String,
+    pub status: Status,
 }
 
 /// Output of `bd mol progress <id> --json`.

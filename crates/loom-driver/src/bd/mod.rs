@@ -13,10 +13,12 @@ mod client;
 mod error;
 mod label;
 mod models;
+mod priority;
 mod runner;
 
 pub use client::{BdClient, CreateOpts, ListOpts, ReadyOpts, UpdateOpts};
 pub use error::BdError;
 pub use label::{Label, ParseLabelError};
-pub use models::{Bead, DependencySnapshot, MolProgress, Molecule};
+pub use models::{Bead, DependencySnapshot, IssueType, MolProgress, Molecule, Status};
+pub use priority::{ParsePriorityError, Priority};
 pub use runner::{CommandRunner, RunOutput, TokioRunner};

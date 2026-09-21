@@ -34,7 +34,7 @@ pub struct FixupRequest {
     pub title: String,
     pub description: String,
     pub labels: Vec<String>,
-    pub priority: Option<u8>,
+    pub priority: Option<loom_driver::bd::Priority>,
 }
 
 /// Outcome of one [`spawn_fixup_bead`] invocation. Mutually exclusive:
@@ -187,9 +187,9 @@ mod tests {
             id: BeadId::new(id).expect("valid bead id"),
             title: format!("title for {id}"),
             description: String::new(),
-            status: "open".into(),
-            priority: 2,
-            issue_type: "task".into(),
+            status: loom_driver::bd::Status::Open,
+            priority: loom_driver::bd::Priority::P2,
+            issue_type: loom_driver::bd::IssueType::Task,
             labels: vec![Label::new("spec:harness").expect("valid Label")],
             parent: parent.map(|p| BeadId::new(p).expect("valid parent")),
             metadata: std::collections::BTreeMap::default(),
@@ -209,7 +209,7 @@ mod tests {
             title: "fix the leak".into(),
             description: "verify-fail recovery follow-up".into(),
             labels: vec!["spec:harness".into()],
-            priority: Some(2),
+            priority: Some(loom_driver::bd::Priority::P2),
         };
 
         let outcome = spawn_fixup_bead(&mut ctx, &origin, request.clone())

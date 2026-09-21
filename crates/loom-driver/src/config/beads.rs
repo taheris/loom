@@ -1,17 +1,18 @@
+use crate::bd::{IssueType, Priority};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct BeadsConfig {
-    pub priority: u8,
-    pub default_type: String,
+    pub priority: Priority,
+    pub default_type: IssueType,
 }
 
 impl Default for BeadsConfig {
     fn default() -> Self {
         Self {
-            priority: 2,
-            default_type: "task".to_string(),
+            priority: Priority::P2,
+            default_type: IssueType::Task,
         }
     }
 }

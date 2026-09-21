@@ -165,9 +165,17 @@ matchers.
 
 Hybrid nested enum: outer variant discriminates by `SchemaKind`,
 inner enum names known models within that schema with an
-`Other(String)` fallback for forward-compat. `OpenAiCompat` is
-flat-`String` because customer-hosted models have no
-loom-knowable name set.
+`Other(ModelName)` fallback for forward compatibility. `OpenAiCompat` carries
+`ModelName` directly because customer-hosted models have no loom-knowable name
+set. `ModelName` is an immutable, checked open token: empty names, whitespace,
+and control characters are rejected, including through serde.
+
+`ModelId` implements fallible `FromStr`. Known names select named variants;
+unknown names preserve their exact wire spelling and the existing prefix
+routing (`gpt`/`o1`/`o3` → OpenAI, `gemini` → Gemini, otherwise Anthropic).
+Unknown *names* remain valid; malformed tokens do not. Callers already holding
+a checked name use `ModelId::from_name` without parsing again. Explicit outer
+variants remain authoritative for schema selection.
 
 ```rust
 #[non_exhaustive]
@@ -176,7 +184,7 @@ pub enum ModelId {
     OpenAi(OpenAiModel),
     Gemini(GeminiModel),
     #[cfg(feature = "openai-compat")]
-    OpenAiCompat(String),
+    OpenAiCompat(ModelName),
 }
 
 pub enum AnthropicModel {
@@ -184,10 +192,10 @@ pub enum AnthropicModel {
     ClaudeSonnet46,
     ClaudeHaiku45,
     // … other known Anthropic models
-    Other(String),
+    Other(ModelName),
 }
-// OpenAiModel, GeminiModel: same shape — known variants + Other(String).
-// Inner enums are NOT #[non_exhaustive]: the `Other(String)` fallback
+// OpenAiModel, GeminiModel: same shape — known variants + Other(ModelName).
+// Inner enums are NOT #[non_exhaustive]: the `Other(ModelName)` fallback
 // already absorbs unknown names, and exhaustive matching from outside
 // the crate (model-picker UIs, etc.) is a supported pattern.
 
@@ -652,8 +660,15 @@ and `--no-default-features` to catch feature-gating regressions.
   [test](llm_client_trait_is_object_safe)
 - `CompletionRequest::new(ModelId)` requires model as positional argument; constructing a request without a model is a compile error
   [test](completion_request_requires_model_at_construction)
-- `ModelId` is a hybrid nested enum: outer `Anthropic | OpenAi | Gemini | OpenAiCompat` carries inner per-family enum (with `Other(String)` fallback) for the three genai-backed schemas, and `String` for `OpenAiCompat`
+- `ModelId` is a hybrid nested enum: outer `Anthropic | OpenAi | Gemini | OpenAiCompat` carries inner per-family enum (with `Other(ModelName)` fallback) for the three genai-backed schemas, and checked `ModelName` for `OpenAiCompat`
   [test](modelid_outer_variants_match_schema_kind_one_to_one)
+- Model parsing rejects empty, whitespace-bearing, and control-bearing names
+  [test](modelid_rejects_empty_and_malformed_names)
+- Unknown model names retain their exact spelling and documented family routing
+  [test](modelid_unknown_wire_strings_round_trip_through_other)
+- Direct runner rejects malformed wire model names before conversation or
+      credential setup
+  [test](malformed_wire_models_fail_before_conversation_or_credentials)
 - `SchemaKind` is `#[non_exhaustive]` with one variant per `ModelId` outer variant; `ModelId::schema(&self) -> SchemaKind` returns the matching tag for every variant
   [test](modelid_schema_method_returns_matching_schema_kind)
 - `LlmClientExt::complete_structured::<T>` hides provider mechanism: same call shape works for Anthropic native JSON schema (`output_config.format = json_schema`), OpenAI (`response_format`), and Gemini response schema; returned `T: DeserializeOwned + JsonSchema` is deserialized regardless of provider

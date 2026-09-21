@@ -467,10 +467,12 @@ mod tests {
             .await;
 
         let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()));
-        let req = CompletionRequest::new(ModelId::OpenAiCompat("llama-3.1-70b".to_string()))
-            .system("be terse")
-            .user("hi")
-            .max_tokens(256);
+        let req = CompletionRequest::new(ModelId::OpenAiCompat(
+            "llama-3.1-70b".parse().expect("model name"),
+        ))
+        .system("be terse")
+        .user("hi")
+        .max_tokens(256);
         let response = client.complete(req).await.expect("happy path succeeds");
         assert_eq!(response.text, "hello");
         assert_eq!(response.usage.input, 3);
@@ -510,9 +512,11 @@ mod tests {
     async fn openai_compat_multimodal_returns_unsupported_without_network() {
         let server = MockServer::start().await;
         let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()));
-        let req = CompletionRequest::new(ModelId::OpenAiCompat("llama-3.1-70b".to_string()))
-            .user("see attached")
-            .user_binary(crate::request::MimeType::IMAGE_PNG, vec![1_u8]);
+        let req = CompletionRequest::new(ModelId::OpenAiCompat(
+            "llama-3.1-70b".parse().expect("model name"),
+        ))
+        .user("see attached")
+        .user_binary(crate::request::MimeType::IMAGE_PNG, vec![1_u8]);
 
         match client.complete(req).await {
             Err(LlmError::UnsupportedCapability {
@@ -544,8 +548,10 @@ mod tests {
             .mount(&server)
             .await;
         let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()));
-        let req =
-            CompletionRequest::new(ModelId::OpenAiCompat("llama-3.1-70b".to_string())).user("hi");
+        let req = CompletionRequest::new(ModelId::OpenAiCompat(
+            "llama-3.1-70b".parse().expect("model name"),
+        ))
+        .user("hi");
         client.complete(req).await
     }
 
@@ -667,8 +673,10 @@ mod tests {
         let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()))
             .with_envelope_builder(test_envelope_builder())
             .with_event_sink(sink);
-        let req =
-            CompletionRequest::new(ModelId::OpenAiCompat("llama-3.1-70b".to_string())).user("hi");
+        let req = CompletionRequest::new(ModelId::OpenAiCompat(
+            "llama-3.1-70b".parse().expect("model name"),
+        ))
+        .user("hi");
         let response = client.complete(req).await.expect("call succeeds");
         assert_eq!(response.usage.input, 7);
         assert_eq!(response.usage.output, 11);
@@ -738,9 +746,10 @@ mod tests {
                 let client = client.clone();
                 tokio::spawn(async move {
                     barrier.wait().await;
-                    let request =
-                        CompletionRequest::new(ModelId::OpenAiCompat("llama-3.1-70b".to_string()))
-                            .user("hi");
+                    let request = CompletionRequest::new(ModelId::OpenAiCompat(
+                        "llama-3.1-70b".parse().expect("model name"),
+                    ))
+                    .user("hi");
                     client.complete(request).await
                 })
             })

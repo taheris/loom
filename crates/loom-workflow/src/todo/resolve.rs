@@ -39,9 +39,9 @@ pub async fn resolve_molecule<R: CommandRunner>(
 ) -> Result<ResolverOutcome, TodoError> {
     let beads = bd
         .list(ListOpts {
-            issue_type: Some("epic".to_string()),
+            issue_type: Some(loom_driver::bd::IssueType::Epic),
             label: Some(format!("spec:{}", label.as_str())),
-            status: Some("open".to_string()),
+            statuses: vec![loom_driver::bd::Status::Open],
             ..Default::default()
         })
         .await?;

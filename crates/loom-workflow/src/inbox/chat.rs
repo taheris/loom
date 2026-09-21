@@ -44,7 +44,12 @@ use super::list::{
 use super::terminal::{TerminalMarker, TerminalMarkerError, parse as parse_terminal_marker};
 use super::{ApplyError, apply_proposals, ensure_integration_clean_after_chat};
 
-const INBOX_NON_CLOSED_STATUSES: &str = "open,in_progress,blocked,deferred";
+const INBOX_NON_CLOSED_STATUSES: [loom_driver::bd::Status; 4] = [
+    loom_driver::bd::Status::Open,
+    loom_driver::bd::Status::InProgress,
+    loom_driver::bd::Status::Blocked,
+    loom_driver::bd::Status::Deferred,
+];
 
 /// Default name of the wrix launcher binary on PATH.
 pub const WRIX_BIN: &str = "wrix";
@@ -143,7 +148,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .map_err(|e| ChatError::Config(e.to_string()))?;
     let selection = resolve_chat_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
-    let image: &ImageEntry = opts.manifest.lookup(&selection.profile, selection.kind)?;
+    let image: &ImageEntry = opts.manifest.lookup(&selection.profile, selection.kind())?;
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -185,7 +190,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         workspace,
         Phase::Inbox.as_str(),
         &selection.profile,
-        selection.kind,
+        selection.kind(),
         &cfg.skills,
     )?;
     let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
@@ -213,21 +218,21 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         .or_else(|| std::env::var_os(LOOM_WRIX_BIN).map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(WRIX_BIN));
 
-    let stdout = match selection.kind {
+    let stdout = match selection.kind() {
         AgentKind::Claude => {
             let claude_settings_path =
                 container_workspace_path(workspace, &scratch.claude_settings());
             let argv = build_wrix_argv(
                 workspace,
                 &prompt_body,
-                selection.kind,
+                selection.kind(),
                 Some(&claude_settings_path),
             );
             info!(
                 wrix_bin = %bin.display(),
                 items_surfaced,
                 profile = %selection.profile,
-                agent = ?selection.kind,
+                agent = ?selection.kind(),
                 image_ref = %image.r#ref,
                 scratch_dir = %scratch.path().display(),
                 "loom inbox chat: shelling out to interactive wrix run",
@@ -239,7 +244,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                 .envs(opts.launcher_env.iter().map(|(key, value)| (key, value)))
                 .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
                 .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
-                .env("WRIX_AGENT", selection.kind.as_str());
+                .env("WRIX_AGENT", selection.kind().as_str());
             let output = run_wrix_and_capture_stdout(command).map_err(ChatError::Scratch)?;
             if !output.status.success() {
                 return Err(ChatError::WrixExit {
@@ -255,7 +260,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                     wrix_bin = %bin.display(),
                     items_surfaced,
                     profile = %selection.profile,
-                    agent = ?selection.kind,
+                    agent = ?selection.kind(),
                     image_ref = %image.r#ref,
                     scratch_dir = %scratch.path().display(),
                     "loom inbox chat: shelling out to native pi TUI",
@@ -266,7 +271,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                     .envs(opts.launcher_env.iter().map(|(key, value)| (key, value)))
                     .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
                     .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
-                    .env("WRIX_AGENT", selection.kind.as_str());
+                    .env("WRIX_AGENT", selection.kind().as_str());
                 run_pi_tui_shell_out(command, &launch.session_dir)?
             } else {
                 let mut spawn_config = build_pi_bridge_spawn_config(
@@ -283,7 +288,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                     wrix_bin = %spawn_bin.display(),
                     items_surfaced,
                     profile = %selection.profile,
-                    agent = ?selection.kind,
+                    agent = ?selection.kind(),
                     image_ref = %image.r#ref,
                     scratch_dir = %scratch.path().display(),
                     "loom inbox chat: starting controlled pi RPC bridge",
@@ -330,7 +335,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
 
 fn inbox_list_opts() -> ListOpts {
     ListOpts {
-        status: Some(INBOX_NON_CLOSED_STATUSES.to_string()),
+        statuses: INBOX_NON_CLOSED_STATUSES.to_vec(),
         ..ListOpts::default()
     }
 }
@@ -361,8 +366,8 @@ fn build_pi_bridge_spawn_config(
     );
     if let (Some(provider), Some(model_id)) = (&selection.provider, &selection.model_id) {
         spawn_config.model = Some(ModelSelection {
-            provider: provider.clone(),
-            model_id: model_id.clone(),
+            provider: provider.to_string(),
+            model_id: model_id.to_string(),
         });
     }
     spawn_config.thinking_level = selection.thinking_level;
@@ -867,16 +872,14 @@ fn resolve_chat_selection(
     agent_override: Option<AgentKind>,
     config: &LoomConfig,
 ) -> Result<AgentSelection, ChatError> {
-    let mut selection = config
-        .agent_for(Phase::Inbox)
-        .map_err(|e| ChatError::AgentSelection(e.to_string()))?;
+    let mut selection = config.agent_for(Phase::Inbox);
     if let Some(p) = cli_profile {
         selection.profile = p.clone();
     }
     if let Some(kind) = agent_override {
-        selection.kind = kind;
+        selection.backend = config.backend_settings(kind);
     }
-    if matches!(selection.kind, AgentKind::Direct) {
+    if matches!(selection.kind(), AgentKind::Direct) {
         return Err(ChatError::AgentSelection(
             "direct backend cannot run interactive `loom inbox chat`".to_string(),
         ));
@@ -895,9 +898,9 @@ mod tests {
             id: BeadId::new(id).expect("valid bead id"),
             title: id.to_string(),
             description: String::new(),
-            status: "open".into(),
-            priority: 2,
-            issue_type: "task".into(),
+            status: loom_driver::bd::Status::Open,
+            priority: loom_driver::bd::Priority::P2,
+            issue_type: loom_driver::bd::IssueType::Task,
             labels: labels
                 .iter()
                 .map(|label| Label::new(*label).expect("valid Label"))
@@ -958,11 +961,10 @@ mod tests {
     fn pi_tui_argv_uses_wrix_run_with_session_extension_and_model_args() {
         let selection = AgentSelection {
             profile: ProfileName::new("base").unwrap(),
-            kind: AgentKind::Pi,
-            provider: Some("openai".to_string()),
-            model_id: Some("gpt-4o".to_string()),
+            backend: loom_driver::config::BackendSettings::Pi,
+            provider: Some("openai".parse().unwrap()),
+            model_id: Some("gpt-4o".parse().unwrap()),
             thinking_level: Some(loom_driver::agent::ThinkingLevel::High),
-            claude_settings: None,
         };
         let argv = pi_tui::build_wrix_argv(
             &PathBuf::from("/work"),

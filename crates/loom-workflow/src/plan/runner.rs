@@ -93,7 +93,7 @@ pub fn run_with_timeout(
         .unwrap_or_else(|_| LoomConfig::default());
 
     let selection = resolve_plan_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
-    let image: &ImageEntry = opts.manifest.lookup(&selection.profile, selection.kind)?;
+    let image: &ImageEntry = opts.manifest.lookup(&selection.profile, selection.kind())?;
 
     let pinned_context = read_pinned_context(workspace, &cfg.pinned_context)?;
     let spec_index = read_pinned_context(workspace, "docs/README.md")?;
@@ -108,7 +108,7 @@ pub fn run_with_timeout(
         workspace,
         Phase::Plan.as_str(),
         &selection.profile,
-        selection.kind,
+        selection.kind(),
         &cfg.skills,
     )?;
     let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
@@ -129,14 +129,14 @@ pub fn run_with_timeout(
     let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
 
     let bin: PathBuf = opts.wrix_bin.unwrap_or_else(|| PathBuf::from(WRIX_BIN));
-    let argv = match selection.kind {
+    let argv = match selection.kind() {
         AgentKind::Claude => {
             let claude_settings_path =
                 container_workspace_path(workspace, &scratch.claude_settings());
             info!(
                 anchors = %key,
                 profile = %selection.profile,
-                agent = ?selection.kind,
+                agent = ?selection.kind(),
                 image_ref = %image.r#ref,
                 image_source = %image.source.display(),
                 wrix_bin = %bin.display(),
@@ -146,7 +146,7 @@ pub fn run_with_timeout(
             build_wrix_argv(
                 workspace,
                 &prompt_body,
-                selection.kind,
+                selection.kind(),
                 Some(&claude_settings_path),
             )
         }
@@ -156,7 +156,7 @@ pub fn run_with_timeout(
             info!(
                 anchors = %key,
                 profile = %selection.profile,
-                agent = ?selection.kind,
+                agent = ?selection.kind(),
                 image_ref = %image.r#ref,
                 image_source = %image.source.display(),
                 wrix_bin = %bin.display(),
@@ -173,7 +173,7 @@ pub fn run_with_timeout(
         .envs(opts.launcher_env)
         .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
         .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
-        .env("WRIX_AGENT", selection.kind.as_str())
+        .env("WRIX_AGENT", selection.kind().as_str())
         .status()
         .map_err(|source| PlanError::Spawn { source })?;
     drop(scratch);
@@ -206,14 +206,14 @@ fn resolve_plan_selection(
     agent_override: Option<AgentKind>,
     config: &LoomConfig,
 ) -> Result<AgentSelection, PlanError> {
-    let mut selection = config.agent_for(Phase::Plan)?;
+    let mut selection = config.agent_for(Phase::Plan);
     if let Some(p) = cli_profile {
         selection.profile = p.clone();
     }
     if let Some(kind) = agent_override {
-        selection.kind = kind;
+        selection.backend = config.backend_settings(kind);
     }
-    if matches!(selection.kind, AgentKind::Direct) {
+    if matches!(selection.kind(), AgentKind::Direct) {
         return Err(PlanError::DirectInteractive);
     }
     Ok(selection)

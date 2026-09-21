@@ -864,7 +864,7 @@ impl GitClient {
                 .parent
                 .as_ref()
                 .is_some_and(|parent| parent.as_str() == molecule.as_str());
-            if bead.status != "closed" || !in_current_molecule {
+            if bead.status != crate::bd::Status::Closed || !in_current_molecule {
                 continue;
             }
             match std::fs::remove_dir_all(&path) {

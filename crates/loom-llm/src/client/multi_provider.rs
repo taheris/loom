@@ -1087,11 +1087,11 @@ mod tests {
 
         let models = [
             ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
-            ModelId::Anthropic(AnthropicModel::Other("future".into())),
+            ModelId::Anthropic(AnthropicModel::Other("future".parse().expect("model name"))),
             ModelId::OpenAi(OpenAiModel::Gpt55),
-            ModelId::OpenAi(OpenAiModel::Other("future".into())),
+            ModelId::OpenAi(OpenAiModel::Other("future".parse().expect("model name"))),
             ModelId::Gemini(GeminiModel::Gemini31Pro),
-            ModelId::Gemini(GeminiModel::Other("future".into())),
+            ModelId::Gemini(GeminiModel::Other("future".parse().expect("model name"))),
         ];
 
         for model in &models {
@@ -1435,7 +1435,7 @@ mod tests {
         let custom = "claude-3-7-sonnet-future";
         assert_eq!(
             model_id_to_provider_name(&ModelId::Anthropic(AnthropicModel::Other(
-                custom.to_string()
+                custom.parse().expect("model name")
             ))),
             custom,
         );

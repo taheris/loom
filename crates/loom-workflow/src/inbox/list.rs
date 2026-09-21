@@ -212,7 +212,7 @@ pub fn frame_unavailable_tune_items(workspace: &Path, items: &mut [InboxItem]) {
             if tune.state == "pending" {
                 tune.state = "blocked".to_string();
             }
-            item.bead.status = "blocked".to_string();
+            item.bead.status = loom_driver::bd::Status::Blocked;
         }
     }
 }
@@ -328,7 +328,7 @@ pub fn build_rows(items: &[InboxItem], spec_filter: Option<&SpecLabel>) -> Vec<I
             },
             summary: item.summary.clone(),
             kind: item.kind,
-            status: item.bead.status.clone(),
+            status: item.bead.status.to_string(),
         })
         .collect()
 }
@@ -365,7 +365,7 @@ fn build_candidate(
     kind: Option<InboxKind>,
     include_epics: bool,
 ) -> Option<(usize, InboxItem)> {
-    if is_closed(bead) || (!include_epics && bead.issue_type == "epic") {
+    if is_closed(bead) || (!include_epics && bead.issue_type == loom_driver::bd::IssueType::Epic) {
         return None;
     }
     let classified = classify_visible(bead)?;
@@ -378,7 +378,7 @@ fn build_candidate(
         .as_ref()
         .is_some_and(|tune| matches!(tune.state.as_str(), "blocked" | "apply_failed"))
     {
-        visible_bead.status = "blocked".to_string();
+        visible_bead.status = loom_driver::bd::Status::Blocked;
     }
     Some((
         pos,
@@ -433,7 +433,7 @@ fn classify_visible(bead: &Bead) -> Option<Classified> {
 }
 
 fn is_closed(bead: &Bead) -> bool {
-    bead.status == "closed"
+    bead.status == loom_driver::bd::Status::Closed
 }
 
 fn is_tune_bead(bead: &Bead) -> bool {
@@ -563,9 +563,9 @@ mod tests {
             id: BeadId::new(id).expect("valid bead id"),
             title: title.into(),
             description: desc.into(),
-            status: "open".into(),
-            priority: 2,
-            issue_type: "task".into(),
+            status: loom_driver::bd::Status::Open,
+            priority: loom_driver::bd::Priority::P2,
+            issue_type: loom_driver::bd::IssueType::Task,
             labels: labels
                 .iter()
                 .map(|s| Label::new(*s).expect("valid Label"))
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn queue_excludes_closed_resolution_beads() {
         let mut closed = bead("lm-1", "closed", "", &["loom:infra"]);
-        closed.status = "closed".into();
+        closed.status = loom_driver::bd::Status::Closed;
         let open = bead("lm-2", "open", "", &["loom:blocked"]);
         let queue = build_queue(&[closed, open], None, None, true);
         assert_eq!(queue.len(), 1);
@@ -638,7 +638,7 @@ mod tests {
     #[test]
     fn chat_queue_drops_epic_beads_but_list_queue_keeps_them() {
         let mut epic = bead("lm-epic", "epic bead", "", &["loom:infra"]);
-        epic.issue_type = "epic".into();
+        epic.issue_type = loom_driver::bd::IssueType::Epic;
         let list = build_queue(&[epic.clone()], None, None, true);
         let chat = build_queue(&[epic], None, None, false);
         assert_eq!(list.len(), 1);
@@ -700,14 +700,14 @@ mod tests {
         let mut queue = build_queue(&[tune], None, None, true);
         frame_unavailable_tune_items(workspace.path(), &mut queue);
 
-        assert_eq!(queue[0].bead.status, "blocked");
+        assert_eq!(queue[0].bead.status, loom_driver::bd::Status::Blocked);
         assert_eq!(queue[0].tune.as_ref().expect("tune").state, "blocked");
     }
 
     #[test]
     fn tune_with_blocked_label_remains_tune_kind() {
         let mut tune = bead("lm-tune", "tune", "", &["loom:tune", "loom:blocked"]);
-        tune.status = "blocked".into();
+        tune.status = loom_driver::bd::Status::Blocked;
         let queue = build_queue(&[tune], None, None, true);
         assert_eq!(queue[0].kind, InboxKind::Tune);
         assert_eq!(queue[0].tune.as_ref().expect("tune").state, "blocked");

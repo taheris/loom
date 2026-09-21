@@ -749,7 +749,7 @@ mod tests {
         let wrix_dir = tempfile::tempdir().expect("tempdir");
         let wrix = install_wrix_pi_shim(wrix_dir.path());
         let cfg = LoomConfig::from_toml_str(config_toml).expect("parse config");
-        let selection = cfg.agent_for(Phase::Loop).expect("resolve loop agent");
+        let selection = cfg.agent_for(Phase::Loop);
         let mut spawn = sample_config(None);
         spawn.handshake_timeout = Some(TEST_HANDSHAKE_BUDGET);
         spawn.launcher_env = vec![

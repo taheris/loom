@@ -20,7 +20,7 @@ pub async fn fetch_epics<R: CommandRunner>(
     let beads = bd
         .list(ListOpts {
             all: true,
-            issue_type: Some("epic".into()),
+            issue_type: Some(loom_driver::bd::IssueType::Epic),
             limit: Some(0),
             ..ListOpts::default()
         })
@@ -78,7 +78,7 @@ fn parse_epic(bead: &Bead) -> Result<Option<RebuildEpic>, InitError> {
             todo_cursor: cursor.map(|cursor| cursor.to_string()),
         })));
     }
-    if bead.status == "closed" || (!pending && !active) {
+    if bead.status == loom_driver::bd::Status::Closed || (!pending && !active) {
         return Ok(None);
     }
     let head = metadata::<GitOid>(bead, "loom.todo_head")?;

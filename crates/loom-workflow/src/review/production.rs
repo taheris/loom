@@ -512,7 +512,7 @@ where
         let beads = self
             .bd
             .list(ListOpts {
-                status: None,
+                statuses: Vec::new(),
                 label: Some(self.spec_label_filter()),
                 ..ListOpts::default()
             })
@@ -998,7 +998,7 @@ where
         let beads = self
             .bd
             .list(ListOpts {
-                status: None,
+                statuses: Vec::new(),
                 label: Some(self.spec_label_filter()),
                 ..ListOpts::default()
             })
@@ -1021,14 +1021,14 @@ where
                 .parent
                 .as_ref()
                 .is_some_and(|parent| parent.as_str() == molecule_id.as_str());
-            if bead.status != "closed" || !in_molecule || !path.exists() {
+            if bead.status != loom_driver::bd::Status::Closed || !in_molecule || !path.exists() {
                 continue;
             }
             self.bd
                 .update(
                     &bead.id,
                     UpdateOpts {
-                        status: Some("blocked".to_string()),
+                        status: Some(loom_driver::bd::Status::Blocked),
                         add_labels: vec!["loom:blocked".to_string()],
                         notes: Some(push_refusal_note(bead.notes.as_deref(), cause)),
                         ..UpdateOpts::default()
@@ -1127,7 +1127,7 @@ where
             .update(
                 &epic.id,
                 UpdateOpts {
-                    status: Some("blocked".to_string()),
+                    status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:clarify".to_string()],
                     notes: Some(notes),
                     ..UpdateOpts::default()
@@ -1615,11 +1615,11 @@ mod tests {
         let stdout = format!("{finding_line}\n{concern_line}\n");
         let walk =
             WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &AcceptAllFindingValidator);
-        let suppression = SuppressionConfig {
-            id: Some(walk.findings()[0].id()),
-            hash: None,
-            reason: "false positive".to_owned(),
-        };
+        let suppression = SuppressionConfig::new(
+            loom_driver::config::SuppressionSelector::Id(walk.findings()[0].id()),
+            "false positive".to_owned(),
+        )
+        .unwrap();
         assert_eq!(
             classify_review_phase_with_suppressions(&walk, 0, &[suppression]),
             ReviewOutcome::Complete,
@@ -1631,11 +1631,11 @@ mod tests {
             DispatchScope::PerBead,
             &AcceptAllFindingValidator,
         );
-        let suppression = SuppressionConfig {
-            id: Some(mismatched.findings()[0].id()),
-            hash: None,
-            reason: "false positive".to_owned(),
-        };
+        let suppression = SuppressionConfig::new(
+            loom_driver::config::SuppressionSelector::Id(mismatched.findings()[0].id()),
+            "false positive".to_owned(),
+        )
+        .unwrap();
         assert!(
             matches!(
                 phase_verdict_from_walk_with_suppressions(&mismatched, &[suppression]),

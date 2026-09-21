@@ -75,24 +75,30 @@ pub fn six_tools(ctx: ToolContext) -> Vec<Box<dyn Tool>> {
 
 /// Construct the [`Conversation`] driven by `loom-direct-runner`.
 ///
-/// The model is resolved from [`SpawnConfig::model_id`] via [`ModelId::from_str`]; when
+/// The model is resolved from [`SpawnConfig::model_id`] via [`str::parse`]; when
 /// absent the runner falls back to `DEFAULT_MODEL`. The six sandbox-aware
 /// tools are registered in the canonical order, and observer settings come
 /// from [`SpawnConfig::observers`].
-pub fn build_conversation(config: &SpawnConfig) -> Conversation {
+///
+/// # Errors
+/// Returns an error when the wire configuration carries a malformed model name.
+pub fn build_conversation(config: &SpawnConfig) -> Result<Conversation, RunnerError> {
     build_conversation_with_context(config, tool_context(config))
 }
 
-fn build_conversation_with_context(config: &SpawnConfig, ctx: ToolContext) -> Conversation {
+fn build_conversation_with_context(
+    config: &SpawnConfig,
+    ctx: ToolContext,
+) -> Result<Conversation, RunnerError> {
     let mut conv = Conversation::with_observer_configs(
-        configured_model(config),
+        configured_model(config)?,
         llm_doom_loop_config(&config.observers.doom_loop),
         llm_duplicate_result_config(&config.observers.duplicate_result),
     );
     for tool in six_tools(ctx) {
         conv = conv.register_boxed(tool);
     }
-    conv
+    Ok(conv)
 }
 
 const fn llm_doom_loop_config(config: &loom_driver::config::DoomLoopConfig) -> LlmDoomLoopConfig {
@@ -120,16 +126,14 @@ fn tool_context(config: &SpawnConfig) -> ToolContext {
     ToolContext::new(config.scratch_dir.join("offload"), max_inline_bytes)
 }
 
-fn configured_model(config: &SpawnConfig) -> ModelId {
-    config.model_id.as_deref().map_or_else(
-        || {
-            config
-                .model
-                .as_ref()
-                .map_or(DEFAULT_MODEL, |sel| ModelId::from_str(&sel.model_id))
-        },
-        ModelId::from_str,
-    )
+fn configured_model(config: &SpawnConfig) -> Result<ModelId, RunnerError> {
+    config
+        .model_id
+        .as_deref()
+        .or_else(|| config.model.as_ref().map(|sel| sel.model_id.as_str()))
+        .map_or(Ok(DEFAULT_MODEL), |name| {
+            name.parse().map_err(RunnerError::ModelName)
+        })
 }
 
 /// Construct a client for the configured model schema.
@@ -144,7 +148,7 @@ fn configured_model(config: &SpawnConfig) -> ModelId {
 pub fn build_client_for_config(
     config: &SpawnConfig,
 ) -> Result<Box<dyn LlmClient + Send + Sync>, RunnerError> {
-    let model = configured_model(config);
+    let model = configured_model(config)?;
     match model.schema() {
         SchemaKind::Anthropic => {
             let api_key = read_api_key("ANTHROPIC_API_KEY")?;
@@ -215,7 +219,7 @@ where
 {
     let ctx = tool_context(&config);
     let mut conv =
-        build_conversation_with_context(&config, ctx.clone()).context_budget(context_budget);
+        build_conversation_with_context(&config, ctx.clone())?.context_budget(context_budget);
     let driver_events = Arc::new(Mutex::new(Vec::<DriverEventPayload>::new()));
     let recording = UsageRecordingClient {
         inner: client,
@@ -586,6 +590,8 @@ impl<W: AsyncWrite + Unpin> Emitter<W> {
 /// Errors the runner surfaces to its caller.
 #[derive(Debug, displaydoc::Display, thiserror::Error)]
 pub enum RunnerError {
+    /// invalid configured model: {0}
+    ModelName(#[source] loom_events::identifier::ParseModelNameError),
     /// stdin/stdout io failure: {0}
     Io(#[source] io::Error),
     /// failed to encode event frame: {0}
@@ -626,6 +632,31 @@ pub enum RunnerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_wire_models_fail_before_conversation_or_credentials() {
+        for name in ["", " ", "custom model", "bad\0model"] {
+            let mut config = sample_config(Some(name));
+            assert!(matches!(
+                build_conversation(&config),
+                Err(RunnerError::ModelName(_))
+            ));
+            assert!(matches!(
+                build_client_for_config(&config),
+                Err(RunnerError::ModelName(_))
+            ));
+            config.model_id = None;
+            config.model = Some(loom_driver::agent::ModelSelection {
+                provider: "custom".into(),
+                model_id: name.into(),
+            });
+            assert!(matches!(
+                build_conversation(&config),
+                Err(RunnerError::ModelName(_))
+            ));
+        }
+    }
+
     use loom_driver::agent::{LineParse, OutputLimits, RePinContent};
     use loom_driver::clock::{Clock, SystemClock};
     use loom_driver::config::{
@@ -798,7 +829,7 @@ mod tests {
     /// Conversation, matching `Conversation::new`'s defaults.
     #[test]
     fn direct_runner_composes_default_observers() {
-        let conv = build_conversation(&sample_config(None));
+        let conv = build_conversation(&sample_config(None)).expect("valid config");
         assert!(
             conv.doom_loop_enabled(),
             "DoomLoopObserver enabled by default in runner Conversation",
@@ -825,7 +856,7 @@ mod tests {
             },
         };
 
-        let conv = build_conversation(&cfg);
+        let conv = build_conversation(&cfg).expect("valid config");
         assert!(!conv.doom_loop_enabled());
         assert!(!conv.duplicate_result_enabled());
     }
@@ -839,11 +870,11 @@ mod tests {
             "[phase.gate.review]\nagent.backend = \"direct\"\nagent.model_id = \"claude-sonnet-4-6\"\n",
         )
         .expect("parse config");
-        let selection = cfg.agent_for(Phase::Review).expect("resolve review agent");
+        let selection = cfg.agent_for(Phase::Review);
         let mut spawn = sample_config(None);
         selection.apply_to_spawn_config(&mut spawn, cfg.direct_output_limits());
 
-        let conv = build_conversation(&spawn);
+        let conv = build_conversation(&spawn).expect("valid config");
         assert_eq!(
             *conv.model(),
             ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
@@ -857,19 +888,23 @@ mod tests {
     /// consumers can name not-yet-supported models without a minor bump.
     #[test]
     fn direct_runner_uses_spawn_config_model_id() {
-        let conv = build_conversation(&sample_config(Some("claude-sonnet-4-6")));
+        let conv =
+            build_conversation(&sample_config(Some("claude-sonnet-4-6"))).expect("valid config");
         assert_eq!(
             *conv.model(),
             ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
         );
 
-        let conv_unknown = build_conversation(&sample_config(Some("claude-future-x")));
+        let conv_unknown =
+            build_conversation(&sample_config(Some("claude-future-x"))).expect("valid config");
         assert_eq!(
             *conv_unknown.model(),
-            ModelId::Anthropic(AnthropicModel::Other("claude-future-x".to_string())),
+            ModelId::Anthropic(AnthropicModel::Other(
+                "claude-future-x".parse().expect("model name")
+            )),
         );
 
-        let conv_default = build_conversation(&sample_config(None));
+        let conv_default = build_conversation(&sample_config(None)).expect("valid config");
         assert_eq!(*conv_default.model(), DEFAULT_MODEL);
     }
 

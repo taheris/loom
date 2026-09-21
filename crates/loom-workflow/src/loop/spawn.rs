@@ -155,9 +155,9 @@ mod tests {
             id: BeadId::new(id).expect("valid bead id"),
             title: format!("title-{id}"),
             description: "desc".into(),
-            status: "open".into(),
-            priority: 2,
-            issue_type: "task".into(),
+            status: loom_driver::bd::Status::Open,
+            priority: loom_driver::bd::Priority::P2,
+            issue_type: loom_driver::bd::IssueType::Task,
             labels: labels
                 .iter()
                 .map(|s| Label::new(*s).expect("valid Label"))

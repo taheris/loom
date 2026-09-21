@@ -2271,9 +2271,9 @@ fn run_gate_mint(
                 suppress_closed_same_molecule: true,
                 report_stale: true,
             };
-            let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
+            let selection = resolved_agent_for(&config, agent_override, Phase::Review);
             let phase_default = selection.profile.clone();
-            let kind = selection.kind;
+            let kind = selection.kind();
             let shutdown_grace = resolve_shutdown_grace(&selection);
             let direct_output_limits = config.direct_output_limits();
             let observer_config = config.agent.clone();
@@ -2929,7 +2929,7 @@ fn run_loop_cmd(
     // the config (or via `--agent` — clap covers the latter) fails before
     // any work begins. The resolution itself is the wiring; the dispatch
     // closure handed to the parallel batch driver below is what consumes it.
-    let selection = resolved_agent_for(&config, agent_override, Phase::Loop)?;
+    let selection = resolved_agent_for(&config, agent_override, Phase::Loop);
     let phase_default = selection.profile.clone();
     let cli_profile = profile.map(|profile| profile.parse()).transpose()?;
     let loom_bin = current_loom_bin()?;
@@ -2963,7 +2963,7 @@ fn run_loop_cmd(
                 workspace,
                 root,
                 parallel_n,
-                selection.kind,
+                selection.kind(),
                 agent_override,
                 wrix_bin.clone(),
                 selection.clone(),
@@ -3001,7 +3001,7 @@ fn run_loop_cmd(
             Arc::clone(&manifest),
             cli_profile.clone(),
             phase_default.clone(),
-            selection.kind,
+            selection.kind(),
             agent_override,
             wrix_bin.clone(),
             selection.clone(),
@@ -3488,7 +3488,7 @@ const fn gate_label(gate: &GateOutcome) -> &'static str {
 /// `loom loop` re-dispatches it instead of parking for human resolution.
 fn parallel_park_update(label: &str, notes: Option<String>) -> UpdateOpts {
     UpdateOpts {
-        status: Some("blocked".to_string()),
+        status: Some(loom_driver::bd::Status::Blocked),
         add_labels: vec![label.to_string()],
         notes,
         ..UpdateOpts::default()
@@ -3869,7 +3869,7 @@ async fn run_parallel_loop(
                 bd.update(
                     &molecule_bead,
                     UpdateOpts {
-                        status: Some("blocked".to_string()),
+                        status: Some(loom_driver::bd::Status::Blocked),
                         add_labels: vec!["loom:blocked".to_string()],
                         notes: Some(format!(
                             "{}: {}",
@@ -4011,7 +4011,7 @@ async fn parallel_ready_batch(
         if deferred.iter().any(|id| id == &bead.id) || finished.contains(&bead.id) {
             continue;
         }
-        if bead.issue_type == "epic" {
+        if bead.issue_type == loom_driver::bd::IssueType::Epic {
             tracing::info!(
                 bead = %bead.id,
                 spec = %label,
@@ -4031,7 +4031,7 @@ async fn load_parallel_infra_queue(
 ) -> anyhow::Result<VecDeque<Bead>> {
     let beads = bd
         .list(ListOpts {
-            status: Some("blocked".to_string()),
+            statuses: vec![loom_driver::bd::Status::Blocked],
             label: ready_parent
                 .is_none()
                 .then(|| format!("spec:{}", label.as_str())),
@@ -4042,7 +4042,7 @@ async fn load_parallel_infra_queue(
         .await?;
     let mut queue = VecDeque::new();
     for bead in beads {
-        if bead.issue_type == "epic" {
+        if bead.issue_type == loom_driver::bd::IssueType::Epic {
             tracing::info!(
                 bead = %bead.id,
                 spec = %label,
@@ -4066,7 +4066,7 @@ async fn clear_parallel_infra_state(bd: &BdClient, beads: &[Bead]) -> anyhow::Re
 
 fn parallel_clear_infra_update() -> UpdateOpts {
     UpdateOpts {
-        status: Some("open".to_string()),
+        status: Some(loom_driver::bd::Status::Open),
         remove_labels: vec!["loom:infra".to_string()],
         ..UpdateOpts::default()
     }
@@ -4097,7 +4097,7 @@ fn parallel_infra_update(diagnostic: &InfraDiagnostic) -> UpdateOpts {
         ));
     }
     UpdateOpts {
-        status: Some("blocked".to_string()),
+        status: Some(loom_driver::bd::Status::Blocked),
         add_labels: vec!["loom:infra".to_string()],
         notes: Some(parallel_diagnostic_notes(
             &diagnostic.cause,
@@ -4863,7 +4863,7 @@ fn duration_env_ms(name: &str) -> Option<Duration> {
 /// claude sessions return the parsed `[claude] post_result_grace_secs`.
 fn resolve_shutdown_grace(selection: &loom_driver::config::AgentSelection) -> Option<Duration> {
     selection
-        .claude_settings
+        .claude_settings()
         .as_ref()
         .map(|s| Duration::from_secs(u64::from(s.post_result_grace_secs)))
 }
@@ -5057,19 +5057,12 @@ fn resolved_agent_for(
     config: &LoomConfig,
     agent_override: Option<AgentKind>,
     phase: Phase,
-) -> anyhow::Result<loom_driver::config::AgentSelection> {
-    let mut selection = config.agent_for(phase)?;
+) -> loom_driver::config::AgentSelection {
+    let mut selection = config.agent_for(phase);
     if let Some(kind) = agent_override {
-        selection.kind = kind;
-        selection.claude_settings = match kind {
-            AgentKind::Claude => Some(loom_driver::config::ClaudeSettings {
-                denied_tools: config.security.denied_tools.clone(),
-                post_result_grace_secs: config.claude.post_result_grace_secs,
-            }),
-            AgentKind::Pi | AgentKind::Direct => None,
-        };
+        selection.backend = config.backend_settings(kind);
     }
-    Ok(selection)
+    selection
 }
 
 struct ReviewOpts {
@@ -5108,9 +5101,9 @@ fn run_review(
     let verified_scope = verified_scope_from_env()?;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
-    let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
+    let selection = resolved_agent_for(&config, agent_override, Phase::Review);
     let phase_default = selection.profile.clone();
-    let kind = selection.kind;
+    let kind = selection.kind();
     let shutdown_grace = resolve_shutdown_grace(&selection);
     let direct_output_limits = config.direct_output_limits();
     let observer_config = config.agent.clone();
@@ -5274,9 +5267,7 @@ fn suppression_matches_finding(
 ) -> bool {
     let id = finding.id();
     let hash = finding.hash();
-    suppressions.iter().any(|entry| {
-        entry.id.as_deref() == Some(id.as_str()) || entry.hash.as_deref() == Some(hash.as_str())
-    })
+    suppressions.iter().any(|entry| entry.matches(&id, &hash))
 }
 
 fn verified_scope_from_env() -> anyhow::Result<Option<loom_gate::VerifiedScope>> {
@@ -5476,7 +5467,12 @@ fn load_inbox_beads() -> anyhow::Result<Vec<Bead>> {
     Ok(runtime.block_on(async {
         let bd = BdClient::new();
         bd.list(ListOpts {
-            status: Some("open,in_progress,blocked,deferred".to_string()),
+            statuses: vec![
+                loom_driver::bd::Status::Open,
+                loom_driver::bd::Status::InProgress,
+                loom_driver::bd::Status::Blocked,
+                loom_driver::bd::Status::Deferred,
+            ],
             ..ListOpts::default()
         })
         .await
@@ -5679,9 +5675,9 @@ fn run_todo(
     let _guard = lock_mgr.acquire_todo()?;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
-    let selection = resolved_agent_for(&config, agent_override, Phase::Todo)?;
+    let selection = resolved_agent_for(&config, agent_override, Phase::Todo);
     let phase_default = selection.profile.clone();
-    let kind = selection.kind;
+    let kind = selection.kind();
     let shutdown_grace = resolve_shutdown_grace(&selection);
     let direct_output_limits = config.direct_output_limits();
     let observer_config = config.agent.clone();
@@ -5854,9 +5850,9 @@ async fn resolve_active_loop_work_root<R: CommandRunner>(
 ) -> anyhow::Result<LoopWorkRoot> {
     let active = bd
         .list(ListOpts {
-            status: Some("open".to_string()),
+            statuses: vec![loom_driver::bd::Status::Open],
             label: Some("loom:active".to_string()),
-            issue_type: Some("epic".to_string()),
+            issue_type: Some(loom_driver::bd::IssueType::Epic),
             ..ListOpts::default()
         })
         .await?;
@@ -5883,7 +5879,7 @@ async fn resolve_explicit_loop_work_root<R: CommandRunner>(
     root: &str,
 ) -> anyhow::Result<LoopWorkRoot> {
     let bead = bd.show_selector(root).await?;
-    let kind = if bead.issue_type == "epic" {
+    let kind = if bead.issue_type == loom_driver::bd::IssueType::Epic {
         LoopWorkRootKind::Epic
     } else {
         LoopWorkRootKind::Task
@@ -6213,7 +6209,7 @@ mod tests {
         for label in ["loom:clarify", "loom:blocked"] {
             let opts = parallel_park_update(label, Some("a-note".to_string()));
             assert_eq!(
-                opts.status.as_deref(),
+                opts.status.map(loom_driver::bd::Status::as_str),
                 Some("blocked"),
                 "{label}: must transition status=blocked so `bd ready` excludes it",
             );
@@ -6271,7 +6267,10 @@ mod tests {
 
         let opts = parallel_infra_update(&diagnostic);
 
-        assert_eq!(opts.status.as_deref(), Some("blocked"));
+        assert_eq!(
+            opts.status.map(loom_driver::bd::Status::as_str),
+            Some("blocked")
+        );
         assert!(opts.add_labels.iter().any(|label| label == "loom:infra"));
         assert_eq!(opts.notes.as_deref(), Some("infra-interrupted: stream eof"),);
         assert!(opts.set_metadata.contains(&(
@@ -6296,7 +6295,10 @@ mod tests {
     fn parallel_clear_infra_update_reopens_and_removes_label() {
         let opts = parallel_clear_infra_update();
 
-        assert_eq!(opts.status.as_deref(), Some("open"));
+        assert_eq!(
+            opts.status.map(loom_driver::bd::Status::as_str),
+            Some("open")
+        );
         assert!(opts.remove_labels.iter().any(|label| label == "loom:infra"),);
     }
 
@@ -6319,9 +6321,9 @@ mod tests {
             id: BeadId::new("lm-infra").expect("valid bead id"),
             title: "Infra diagnostic".into(),
             description: "worker never started".into(),
-            status: "blocked".into(),
-            priority: 2,
-            issue_type: "task".into(),
+            status: loom_driver::bd::Status::Blocked,
+            priority: loom_driver::bd::Priority::P2,
+            issue_type: loom_driver::bd::IssueType::Task,
             labels: vec![
                 loom_driver::bd::Label::new("spec:harness").expect("valid Label"),
                 loom_driver::bd::Label::new("loom:infra").expect("valid Label"),
@@ -6688,11 +6690,13 @@ mod tests {
             serde_json::to_string(&reported).expect("finding json"),
             serde_json::to_string(&suppressed).expect("finding json"),
         );
-        let suppressions = vec![loom_driver::config::SuppressionConfig {
-            id: Some(suppressed.id()),
-            hash: None,
-            reason: "false positive".to_owned(),
-        }];
+        let suppressions = vec![
+            loom_driver::config::SuppressionConfig::new(
+                loom_driver::config::SuppressionSelector::Id(suppressed.id()),
+                "false positive".to_owned(),
+            )
+            .unwrap(),
+        ];
 
         let records = review_finding_status_records(&stdout, DispatchScope::PerBead, &suppressions);
 

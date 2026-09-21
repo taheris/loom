@@ -127,11 +127,11 @@ pub fn build_wrix_argv(
     ];
     if let Some(provider) = &selection.provider {
         argv.push("--provider".to_string());
-        argv.push(provider.clone());
+        argv.push(provider.to_string());
     }
     if let Some(model_id) = &selection.model_id {
         argv.push("--model".to_string());
-        argv.push(model_id.clone());
+        argv.push(model_id.to_string());
     }
     if let Some(level) = selection.thinking_level {
         argv.push("--thinking".to_string());
@@ -148,17 +148,16 @@ fn json_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_driver::agent::{AgentKind, ThinkingLevel};
+    use loom_driver::agent::ThinkingLevel;
     use loom_driver::identifier::ProfileName;
 
     fn pi_selection() -> AgentSelection {
         AgentSelection {
             profile: ProfileName::new("base").unwrap(),
-            kind: AgentKind::Pi,
-            provider: Some("openai".to_string()),
-            model_id: Some("gpt-4o".to_string()),
+            backend: loom_driver::config::BackendSettings::Pi,
+            provider: Some("openai".parse().unwrap()),
+            model_id: Some("gpt-4o".parse().unwrap()),
             thinking_level: Some(ThinkingLevel::High),
-            claude_settings: None,
         }
     }
 

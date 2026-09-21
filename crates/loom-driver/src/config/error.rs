@@ -20,7 +20,7 @@ pub enum LoomConfigError {
         source: io::Error,
     },
 
-    /// failed to parse loom config
+    /// failed to parse loom config: {0}
     Parse(#[from] toml::de::Error),
 
     /// empty path for config field {field}; blanking the value does not disable the pin — remove the corresponding include from the template instead
@@ -28,7 +28,4 @@ pub enum LoomConfigError {
 
     /// invalid skills.paths entry at index {index}: path must not be empty
     InvalidSkillPath { index: usize },
-
-    /// invalid suppress entry at index {index}: {reason}
-    InvalidSuppression { index: usize, reason: &'static str },
 }

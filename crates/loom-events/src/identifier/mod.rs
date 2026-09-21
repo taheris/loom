@@ -9,6 +9,7 @@
 //! logic cannot be bypassed.
 
 mod bead;
+mod model;
 mod molecule;
 mod profile;
 mod request;
@@ -17,6 +18,7 @@ mod spec;
 mod tool_call;
 
 pub use bead::{BeadId, ParseBeadIdError};
+pub use model::{ModelName, ParseModelNameError, ParseProviderNameError, ProviderName};
 pub use molecule::{MoleculeId, ParseMoleculeIdError};
 pub use profile::{ParseProfileNameError, ProfileName};
 pub use request::{ParseRequestIdError, RequestId};

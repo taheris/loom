@@ -14,7 +14,13 @@ use loom_driver::identifier::{BeadId, MoleculeId, ParseMoleculeIdError, SpecLabe
 
 pub const SPEC_METADATA_CLOSE_REASON: &str = "spec metadata carrier";
 
-const SPEC_METADATA_STATUSES: &str = "open,in_progress,blocked,deferred,closed";
+const SPEC_METADATA_STATUSES: [loom_driver::bd::Status; 5] = [
+    loom_driver::bd::Status::Open,
+    loom_driver::bd::Status::InProgress,
+    loom_driver::bd::Status::Blocked,
+    loom_driver::bd::Status::Deferred,
+    loom_driver::bd::Status::Closed,
+];
 
 /// Failures from spec metadata or legacy work-epic resolution.
 #[derive(Debug, Display, Error)]
@@ -56,9 +62,9 @@ pub async fn ensure_spec_metadata_epic<R: CommandRunner>(
 ) -> Result<ResolvedSpecEpic, ResolveError> {
     let beads = bd
         .list(ListOpts {
-            issue_type: Some("epic".to_string()),
+            issue_type: Some(loom_driver::bd::IssueType::Epic),
             label: Some(format!("spec:{}", label.as_str())),
-            status: Some(SPEC_METADATA_STATUSES.to_string()),
+            statuses: SPEC_METADATA_STATUSES.to_vec(),
             ..Default::default()
         })
         .await?;
@@ -76,8 +82,8 @@ pub async fn ensure_spec_metadata_epic<R: CommandRunner>(
                 .create(CreateOpts {
                     title: format!("loom spec: {label}"),
                     description: format!("Spec metadata epic for `{label}`."),
-                    issue_type: Some("epic".to_string()),
-                    priority: Some(2),
+                    issue_type: Some(loom_driver::bd::IssueType::Epic),
+                    priority: Some(loom_driver::bd::Priority::P2),
                     labels: vec!["loom:spec".to_string(), format!("spec:{label}")],
                     ..CreateOpts::default()
                 })
@@ -122,9 +128,9 @@ pub async fn resolve_open_epic<R: CommandRunner>(
 ) -> Result<Option<MoleculeId>, ResolveError> {
     let beads = bd
         .list(ListOpts {
-            issue_type: Some("epic".to_string()),
+            issue_type: Some(loom_driver::bd::IssueType::Epic),
             label: Some(format!("spec:{}", label.as_str())),
-            status: Some("open".to_string()),
+            statuses: vec![loom_driver::bd::Status::Open],
             ..Default::default()
         })
         .await?;
@@ -189,7 +195,7 @@ pub async fn resolve_or_mint_open_epic<R: CommandRunner>(
         .create(CreateOpts {
             title: label.as_str().to_owned(),
             description: String::new(),
-            issue_type: Some("epic".to_string()),
+            issue_type: Some(loom_driver::bd::IssueType::Epic),
             labels: vec![format!("spec:{}", label.as_str())],
             metadata: Some(metadata),
             ..CreateOpts::default()

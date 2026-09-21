@@ -23,11 +23,7 @@ pub fn matching_suppression<'a>(
 }
 
 pub fn suppression_matches(entry: &SuppressionConfig, finding: &Finding) -> bool {
-    entry.id.as_deref().is_some_and(|id| id == finding.id())
-        || entry
-            .hash
-            .as_deref()
-            .is_some_and(|hash| hash == finding.hash())
+    entry.matches(&finding.id(), &finding.hash())
 }
 
 const fn is_rubric_suppressible(token: ConcernToken) -> bool {
@@ -84,16 +80,16 @@ mod tests {
     #[test]
     fn suppressions_match_rubric_findings_by_id_or_hash() {
         let finding = rubric_finding();
-        let by_id = SuppressionConfig {
-            id: Some(finding.id()),
-            hash: None,
-            reason: "false positive".to_owned(),
-        };
-        let by_hash = SuppressionConfig {
-            id: None,
-            hash: Some(finding.hash()),
-            reason: "false positive".to_owned(),
-        };
+        let by_id = SuppressionConfig::new(
+            loom_driver::config::SuppressionSelector::Id(finding.id()),
+            "false positive".to_owned(),
+        )
+        .unwrap();
+        let by_hash = SuppressionConfig::new(
+            loom_driver::config::SuppressionSelector::Hash(finding.hash()),
+            "false positive".to_owned(),
+        )
+        .unwrap();
         assert!(suppresses_rubric_finding(&[by_id], &finding));
         assert!(suppresses_rubric_finding(&[by_hash], &finding));
     }
@@ -101,11 +97,11 @@ mod tests {
     #[test]
     fn suppressions_do_not_filter_deterministic_or_integrity_findings() {
         let finding = deterministic_finding();
-        let entry = SuppressionConfig {
-            id: Some(finding.id()),
-            hash: None,
-            reason: "do not apply".to_owned(),
-        };
+        let entry = SuppressionConfig::new(
+            loom_driver::config::SuppressionSelector::Id(finding.id()),
+            "do not apply".to_owned(),
+        )
+        .unwrap();
         assert!(suppression_matches(&entry, &finding));
         assert!(!suppresses_rubric_finding(&[entry], &finding));
     }

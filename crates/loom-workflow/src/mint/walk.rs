@@ -368,7 +368,7 @@ where
         let beads = self
             .bd
             .list(ListOpts {
-                status: None,
+                statuses: Vec::new(),
                 label: Some(self.spec_label_filter()),
                 ..ListOpts::default()
             })
@@ -728,7 +728,7 @@ mod tests {
 
     use super::*;
     use crate::mint::{
-        BatchOutcome, DEDUP_STATUSES, FINDING_LABEL_PREFIX, MintOptions, batch_fingerprint,
+        BatchOutcome, FINDING_LABEL_PREFIX, MintOptions, batch_fingerprint,
         mint_findings_with_options,
     };
     use crate::review::{LOOM_FINDING_PREFIX, TargetKind};
@@ -1200,7 +1200,8 @@ mod tests {
             .iter()
             .filter(|c| {
                 c.iter().any(|a| a == "list")
-                    && c.iter().any(|a| a == &format!("--status={DEDUP_STATUSES}"))
+                    && c.iter()
+                        .any(|a| a == &"--status=open,in_progress,blocked,deferred".to_string())
                     && c.iter().any(|a| a.starts_with("--label=finding:"))
             })
             .count();

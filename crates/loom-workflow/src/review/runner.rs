@@ -407,13 +407,13 @@ async fn auto_close_completed_epics<C: ReviewController>(
         let Some(epic) = controller.show_bead(&candidate).await? else {
             continue;
         };
-        if epic.issue_type != "epic" {
+        if epic.issue_type != loom_driver::bd::IssueType::Epic {
             continue;
         }
         // Skip already-closed epics, but still enqueue *their* parents:
         // a leaf bead's immediate parent may already be closed while a
         // higher ancestor still qualifies for this pass.
-        if epic.status == "closed" {
+        if epic.status == loom_driver::bd::Status::Closed {
             if let Some(parent) = epic.parent.clone() {
                 frontier.push_back(parent);
             }
@@ -423,7 +423,10 @@ async fn auto_close_completed_epics<C: ReviewController>(
         if children.is_empty() {
             continue;
         }
-        if children.iter().any(|c| c.status != "closed") {
+        if children
+            .iter()
+            .any(|c| c.status != loom_driver::bd::Status::Closed)
+        {
             continue;
         }
         controller
@@ -814,7 +817,7 @@ mod tests {
         ) -> Result<Vec<BeadId>, ReviewError> {
             let ids = spec_beads
                 .iter()
-                .filter(|bead| bead.status == "closed")
+                .filter(|bead| bead.status == loom_driver::bd::Status::Closed)
                 .map(|bead| bead.id.clone())
                 .collect::<Vec<_>>();
             self.parked_closed_calls.push((ids.clone(), cause));
@@ -872,7 +875,7 @@ mod tests {
             // Reflect the close in the store so an inside-out walk sees
             // the just-closed child when it evaluates the parent epic.
             if let Some(b) = self.bead_store.get_mut(id) {
-                b.status = "closed".into();
+                b.status = loom_driver::bd::Status::Closed;
             }
             Ok(())
         }
@@ -893,9 +896,9 @@ mod tests {
             id: BeadId::new(id).expect("valid bead id"),
             title: format!("title for {id}"),
             description: String::new(),
-            status: "open".into(),
-            priority: 2,
-            issue_type: "task".into(),
+            status: loom_driver::bd::Status::Open,
+            priority: loom_driver::bd::Priority::P2,
+            issue_type: loom_driver::bd::IssueType::Task,
             labels: labels
                 .iter()
                 .map(|s| Label::new(*s).expect("valid Label"))
@@ -911,8 +914,8 @@ mod tests {
     /// the `FakeController`'s bead store with realistic ancestry.
     fn shaped_bead(id: &str, issue_type: &str, status: &str, parent: Option<&str>) -> Bead {
         let mut b = bead(id, &[]);
-        b.issue_type = issue_type.into();
-        b.status = status.into();
+        b.issue_type = issue_type.parse().unwrap();
+        b.status = status.parse().unwrap();
         b.parent = parent.map(|p| BeadId::new(p).expect("valid bead id"));
         b
     }
@@ -1087,7 +1090,7 @@ mod tests {
     #[tokio::test]
     async fn push_blocked_parks_closed_unpushed_beads() -> Result<(), ReviewError> {
         let mut closed = bead("lm-closed", &["spec:harness"]);
-        closed.status = "closed".into();
+        closed.status = loom_driver::bd::Status::Closed;
         let mut c = FakeController {
             review: Some(ReviewOutcome::Incomplete {
                 detail: "review concern".into(),

@@ -295,7 +295,7 @@ async fn block_invalid_proposal(
     bd.update(
         id,
         UpdateOpts {
-            status: Some("blocked".to_owned()),
+            status: Some(loom_driver::bd::Status::Blocked),
             add_labels: vec!["loom:blocked".to_owned()],
             notes: Some(format!("tune proposal validation blocked apply: {reason}")),
             set_metadata: vec![(TUNE_STATE_KEY.to_owned(), "blocked".to_owned())],
@@ -490,7 +490,7 @@ async fn mark_apply_failed(
         bd.update(
             &proposal.id,
             UpdateOpts {
-                status: Some("blocked".to_string()),
+                status: Some(loom_driver::bd::Status::Blocked),
                 add_labels: vec!["loom:blocked".to_string()],
                 notes: Some(format!(
                     "tune apply failed ({kind}): {detail}\nlog: {log}",

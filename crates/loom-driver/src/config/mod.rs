@@ -22,14 +22,15 @@ mod error;
 mod logs;
 mod loom_section;
 mod loop_config;
+mod phase;
 mod runner;
 mod security;
 mod skills;
+mod suppression;
 
 pub use agent::{
-    AgentSelection, AgentSelectionError, BUILT_IN_BACKEND, BUILT_IN_PROFILE, ClaudeSettings,
-    DEFAULT_PHASE_KEY, Phase, PhaseAgentConfig, PhaseConfig, parse_backend_name,
-    parse_thinking_level_name,
+    AgentSelection, BUILT_IN_BACKEND, BUILT_IN_PROFILE, BackendSettings, ClaudeSettings,
+    DEFAULT_PHASE_KEY, Phase, PhaseAgentConfig, PhaseConfig,
 };
 pub use agent_observer::{AgentObserversConfig, DoomLoopConfig, DuplicateResultConfig};
 pub use beads::BeadsConfig;
@@ -42,9 +43,11 @@ pub use loom_section::{
     default_sccache_container_path,
 };
 pub use loop_config::{LoopConfig, LoopInfraConfig};
+pub use phase::PhaseKey;
 pub use runner::{Parser, RunnerConfig, RunnerEntry, RunnerTier};
 pub use security::SecurityConfig;
 pub use skills::{SkillPathDisplay, SkillRegistration, SkillsConfig};
+pub use suppression::{SuppressionConfig, SuppressionError, SuppressionSelector};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -62,14 +65,6 @@ pub const DEFAULT_CONFIG_FILENAME: &str = "loom.toml";
 
 use crate::agent::{AgentKind, OutputLimits};
 use agent::lookup_phase_field;
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
-pub struct SuppressionConfig {
-    pub id: Option<String>,
-    pub hash: Option<String>,
-    pub reason: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -95,7 +90,8 @@ pub struct LoomConfig {
     /// `[phase.<name>]` tables keyed by phase name. The literal key
     /// `default` is the fallback applied by [`LoomConfig::agent_for`] to
     /// any field a per-phase table does not declare.
-    pub phase: BTreeMap<String, PhaseConfig>,
+    #[serde(deserialize_with = "phase::deserialize")]
+    pub phase: BTreeMap<PhaseKey, PhaseConfig>,
     pub claude: ClaudeConfig,
     /// `[direct]` block — Direct-backend runtime settings (`max_inline_bytes`).
     /// Resolved into [`crate::agent::SpawnConfig::output_limits`] via
@@ -152,45 +148,6 @@ fn config_parent(path: &Path) -> Result<PathBuf, LoomConfigError> {
         .join(parent))
 }
 
-fn normalize_nested_phase_tables(src: &str, cfg: &mut LoomConfig) -> Result<(), LoomConfigError> {
-    let value: toml::Value = toml::from_str(src)?;
-    let Some(review) = value
-        .get("phase")
-        .and_then(|phase| phase.get("gate"))
-        .and_then(|gate| gate.get("review"))
-        .cloned()
-    else {
-        return Ok(());
-    };
-    let phase: PhaseConfig = review.try_into()?;
-    cfg.phase.remove("gate");
-    cfg.phase.insert("gate.review".to_string(), phase);
-    Ok(())
-}
-
-fn validate_suppressions(entries: &[SuppressionConfig]) -> Result<(), LoomConfigError> {
-    for (index, entry) in entries.iter().enumerate() {
-        let has_id = entry.id.as_deref().is_some_and(|id| !id.trim().is_empty());
-        let has_hash = entry
-            .hash
-            .as_deref()
-            .is_some_and(|hash| !hash.trim().is_empty());
-        if has_id == has_hash {
-            return Err(LoomConfigError::InvalidSuppression {
-                index,
-                reason: "exactly one of id or hash is required",
-            });
-        }
-        if entry.reason.trim().is_empty() {
-            return Err(LoomConfigError::InvalidSuppression {
-                index,
-                reason: "reason is required",
-            });
-        }
-    }
-    Ok(())
-}
-
 fn validate_skill_paths(paths: &[PathBuf]) -> Result<(), LoomConfigError> {
     for (index, path) in paths.iter().enumerate() {
         if path.as_os_str().is_empty() {
@@ -213,8 +170,7 @@ impl LoomConfig {
     ///
     /// Returns an error when configuration cannot be read, merged, or validated.
     pub fn from_toml_str(src: &str) -> Result<Self, LoomConfigError> {
-        let mut cfg: Self = toml::from_str(src)?;
-        normalize_nested_phase_tables(src, &mut cfg)?;
+        let cfg: Self = toml::from_str(src)?;
         for (field, value) in [
             ("pinned_context", &cfg.pinned_context),
             ("style_rules", &cfg.style_rules),
@@ -224,7 +180,6 @@ impl LoomConfig {
                 return Err(LoomConfigError::EmptyPath { field });
             }
         }
-        validate_suppressions(&cfg.suppress)?;
         validate_skill_paths(&cfg.skills.paths)?;
         Ok(cfg)
     }
@@ -235,44 +190,34 @@ impl LoomConfig {
     /// claude-specific settings are pulled from `[claude]` and `[security]`
     /// so call sites receive everything in one struct.
     ///
-    /// Returns [`AgentSelectionError::UnknownBackend`] when the backend name
-    /// (per-phase or default) does not match `claude`, `pi`, or `direct` —
-    /// surfacing the validation lazily lets the TOML parser stay schema-free
-    /// for unknown `[phase.<phase>]` keys.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when configuration cannot be read, merged, or validated.
-    pub fn agent_for(&self, phase: Phase) -> Result<AgentSelection, AgentSelectionError> {
-        let key = phase.as_str();
-        let profile_str = lookup_phase_field(&self.phase, key, |p| &p.profile)
-            .map_or(BUILT_IN_PROFILE, String::as_str);
-        let backend_str = lookup_phase_field(&self.phase, key, |p| &p.agent.backend)
-            .map_or(BUILT_IN_BACKEND, String::as_str);
-        let kind = parse_backend_name(backend_str)?;
-        let provider = lookup_phase_field(&self.phase, key, |p| &p.agent.provider).cloned();
-        let model_id = lookup_phase_field(&self.phase, key, |p| &p.agent.model_id).cloned();
-        let thinking_level = lookup_phase_field(&self.phase, key, |p| &p.agent.thinking_level)
-            .map(String::as_str)
-            .map(parse_thinking_level_name)
-            .transpose()?;
-        let claude_settings = match kind {
-            AgentKind::Claude => Some(ClaudeSettings {
+    /// All configured values are already typed; resolution only applies fallback.
+    pub fn agent_for(&self, phase: Phase) -> AgentSelection {
+        let profile = lookup_phase_field(&self.phase, phase, |p| &p.profile)
+            .cloned()
+            .unwrap_or_else(crate::identifier::ProfileName::base);
+        let kind = lookup_phase_field(&self.phase, phase, |p| &p.agent.backend)
+            .copied()
+            .unwrap_or(AgentKind::Claude);
+        AgentSelection {
+            profile,
+            backend: self.backend_settings(kind),
+            provider: lookup_phase_field(&self.phase, phase, |p| &p.agent.provider).cloned(),
+            model_id: lookup_phase_field(&self.phase, phase, |p| &p.agent.model_id).cloned(),
+            thinking_level: lookup_phase_field(&self.phase, phase, |p| &p.agent.thinking_level)
+                .copied(),
+        }
+    }
+
+    /// Resolve CLI runtime overrides without separating runtime from its settings.
+    pub fn backend_settings(&self, kind: AgentKind) -> BackendSettings {
+        match kind {
+            AgentKind::Pi => BackendSettings::Pi,
+            AgentKind::Claude => BackendSettings::Claude(ClaudeSettings {
                 denied_tools: self.security.denied_tools.clone(),
                 post_result_grace_secs: self.claude.post_result_grace_secs,
             }),
-            AgentKind::Pi | AgentKind::Direct => None,
-        };
-        Ok(AgentSelection {
-            profile: profile_str
-                .parse()
-                .map_err(|source| AgentSelectionError::InvalidProfile { source })?,
-            kind,
-            provider,
-            model_id,
-            thinking_level,
-            claude_settings,
-        })
+            AgentKind::Direct => BackendSettings::Direct,
+        }
     }
 
     /// Resolve the Direct backend's [`OutputLimits`] from the `[direct]`
@@ -463,11 +408,11 @@ post_result_grace_secs = 5
             Phase::Review,
             Phase::Inbox,
         ] {
-            let from_spec_sel = from_spec.agent_for(phase).expect("agent_for");
-            let empty_sel = empty.agent_for(phase).expect("agent_for");
+            let from_spec_sel = from_spec.agent_for(phase);
+            let empty_sel = empty.agent_for(phase);
             assert_eq!(from_spec_sel, empty_sel, "phase={phase:?}");
             assert_eq!(from_spec_sel.profile.as_str(), BUILT_IN_PROFILE);
-            assert_eq!(from_spec_sel.kind, AgentKind::Claude);
+            assert_eq!(from_spec_sel.kind(), AgentKind::Claude);
         }
         // Non-phase fields round-trip identically.
         assert_eq!(from_spec.pinned_context, empty.pinned_context);
@@ -679,19 +624,30 @@ agent.backend = "claude"
         let cfg = LoomConfig::from_toml_str(src)?;
         assert_eq!(cfg.phase.len(), 3);
 
-        let default = &cfg.phase[DEFAULT_PHASE_KEY];
-        assert_eq!(default.profile.as_deref(), Some("base"));
-        assert_eq!(default.agent.backend.as_deref(), Some("pi"));
+        let default = &cfg.phase[&PhaseKey::Default];
+        assert_eq!(
+            default
+                .profile
+                .as_ref()
+                .map(crate::identifier::ProfileName::as_str),
+            Some("base")
+        );
+        assert_eq!(default.agent.backend.map(AgentKind::as_str), Some("pi"));
 
-        let todo = &cfg.phase["todo"];
-        assert_eq!(todo.profile.as_deref(), Some("rust"));
-        assert_eq!(todo.agent.backend.as_deref(), Some("pi"));
+        let todo = &cfg.phase[&PhaseKey::Named(Phase::Todo)];
+        assert_eq!(
+            todo.profile
+                .as_ref()
+                .map(crate::identifier::ProfileName::as_str),
+            Some("rust")
+        );
+        assert_eq!(todo.agent.backend.map(AgentKind::as_str), Some("pi"));
         assert_eq!(todo.agent.provider.as_deref(), Some("deepseek"));
         assert_eq!(todo.agent.model_id.as_deref(), Some("deepseek-v3"));
 
-        let review = &cfg.phase["gate.review"];
+        let review = &cfg.phase[&PhaseKey::Named(Phase::Review)];
         assert!(review.profile.is_none());
-        assert_eq!(review.agent.backend.as_deref(), Some("claude"));
+        assert_eq!(review.agent.backend.map(AgentKind::as_str), Some("claude"));
         assert!(review.agent.provider.is_none());
         Ok(())
     }
@@ -739,7 +695,7 @@ agent.backend = "claude"
 
         let absent =
             LoomConfig::from_toml_str("[phase.gate.review]\nagent.backend = \"direct\"\n")?;
-        let selection = absent.agent_for(Phase::Review)?;
+        let selection = absent.agent_for(Phase::Review);
         let mut spawn = bare_spawn_config();
         selection.apply_to_spawn_config(&mut spawn, absent.direct_output_limits());
         assert_eq!(
@@ -753,7 +709,7 @@ agent.backend = "claude"
         let cfg = LoomConfig::from_toml_str(
             "[phase.gate.review]\nagent.backend = \"direct\"\n\n[direct]\nmax_inline_bytes = 32768\n",
         )?;
-        let selection = cfg.agent_for(Phase::Review)?;
+        let selection = cfg.agent_for(Phase::Review);
         let mut spawn = bare_spawn_config();
         selection.apply_to_spawn_config(&mut spawn, cfg.direct_output_limits());
         assert_eq!(
@@ -792,10 +748,15 @@ reason = "Generated template noise."
         )?;
         assert_eq!(cfg.suppress.len(), 2);
         assert_eq!(
-            cfg.suppress[0].id.as_deref(),
-            Some("v1:criterion:verifier-too-narrow:gate#verifier-honesty"),
+            cfg.suppress[0].selector(),
+            &SuppressionSelector::Id(
+                "v1:criterion:verifier-too-narrow:gate#verifier-honesty".into()
+            ),
         );
-        assert_eq!(cfg.suppress[1].hash.as_deref(), Some("v1:abc123def456"));
+        assert_eq!(
+            cfg.suppress[1].selector(),
+            &SuppressionSelector::Hash("v1:abc123def456".into())
+        );
 
         for src in [
             "[[suppress]]\nreason = \"missing identity\"\n",
@@ -803,10 +764,7 @@ reason = "Generated template noise."
             "[[suppress]]\nid = \"x\"\n",
         ] {
             assert!(
-                matches!(
-                    LoomConfig::from_toml_str(src),
-                    Err(LoomConfigError::InvalidSuppression { .. })
-                ),
+                LoomConfig::from_toml_str(src).is_err(),
                 "invalid suppression should be rejected: {src}",
             );
         }
@@ -908,18 +866,18 @@ agent.model_id = "deepseek-v3"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
 
-        let todo = cfg.agent_for(Phase::Todo).expect("agent_for todo");
+        let todo = cfg.agent_for(Phase::Todo);
         assert_eq!(todo.profile.as_str(), "rust");
-        assert_eq!(todo.kind, AgentKind::Pi);
+        assert_eq!(todo.kind(), AgentKind::Pi);
         assert_eq!(todo.provider.as_deref(), Some("deepseek"));
         assert_eq!(todo.model_id.as_deref(), Some("deepseek-v3"));
-        assert!(todo.claude_settings.is_none());
+        assert!(todo.claude_settings().is_none());
 
-        let run = cfg.agent_for(Phase::Loop).expect("agent_for run");
+        let run = cfg.agent_for(Phase::Loop);
         assert_eq!(run.profile.as_str(), "base");
-        assert_eq!(run.kind, AgentKind::Claude);
+        assert_eq!(run.kind(), AgentKind::Claude);
         assert!(run.provider.is_none());
-        let claude = run.claude_settings.expect("claude_settings");
+        let claude = run.claude_settings().expect("claude_settings");
         assert_eq!(claude.post_result_grace_secs, 5);
         assert!(claude.denied_tools.is_empty());
 
@@ -940,11 +898,11 @@ agent.backend = "pi"
 agent.backend = "direct"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        let loop_sel = cfg.agent_for(Phase::Loop).expect("loop phase");
+        let loop_sel = cfg.agent_for(Phase::Loop);
         assert_eq!(loop_sel.profile.as_str(), "rust");
-        assert_eq!(loop_sel.kind, AgentKind::Pi);
-        let review_sel = cfg.agent_for(Phase::Review).expect("review phase");
-        assert_eq!(review_sel.kind, AgentKind::Direct);
+        assert_eq!(loop_sel.kind(), AgentKind::Pi);
+        let review_sel = cfg.agent_for(Phase::Review);
+        assert_eq!(review_sel.kind(), AgentKind::Direct);
         Ok(())
     }
 
@@ -966,33 +924,24 @@ agent.backend = "pi"
 agent.thinking_level = "high"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        let todo = cfg.agent_for(Phase::Todo).expect("agent_for todo");
+        let todo = cfg.agent_for(Phase::Todo);
         assert_eq!(todo.thinking_level, Some(ThinkingLevel::High));
 
-        let run = cfg.agent_for(Phase::Loop).expect("agent_for run");
+        let run = cfg.agent_for(Phase::Loop);
         assert_eq!(run.thinking_level, Some(ThinkingLevel::Medium));
         Ok(())
     }
 
-    /// Typos in `agent.thinking_level` surface lazily as
-    /// `UnknownThinkingLevel` from `agent_for`, mirroring the
-    /// `UnknownBackend` error path so misconfigurations are caught at
-    /// resolve time with a precise message.
+    /// Invalid reasoning effort is rejected before any phase is selected.
     #[test]
-    fn agent_for_unknown_thinking_level_surfaces_typed_error() -> Result<()> {
+    fn agent_for_unknown_thinking_level_surfaces_typed_error() {
         let src = r#"
 [phase.default]
 agent.backend = "pi"
 agent.thinking_level = "ultra"
 "#;
-        let cfg = LoomConfig::from_toml_str(src)?;
-        match cfg.agent_for(Phase::Loop) {
-            Err(AgentSelectionError::UnknownThinkingLevel { name }) => {
-                assert_eq!(name, "ultra");
-            }
-            other => panic!("expected UnknownThinkingLevel, got {other:?}"),
-        }
-        Ok(())
+        let error = LoomConfig::from_toml_str(src).unwrap_err();
+        assert!(error.to_string().contains("ultra"));
     }
 
     #[test]
@@ -1003,10 +952,10 @@ agent.backend = "direct"
 agent.model_id = "claude-sonnet-4-6"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        let sel = cfg.agent_for(Phase::Review).expect("agent_for review");
-        assert_eq!(sel.kind, AgentKind::Direct);
+        let sel = cfg.agent_for(Phase::Review);
+        assert_eq!(sel.kind(), AgentKind::Direct);
         assert_eq!(sel.model_id.as_deref(), Some("claude-sonnet-4-6"));
-        assert!(sel.claude_settings.is_none());
+        assert!(sel.claude_settings().is_none());
         Ok(())
     }
 
@@ -1022,10 +971,10 @@ agent.model_id = "claude-sonnet-4-6"
             Phase::Review,
             Phase::Inbox,
         ] {
-            let sel = cfg.agent_for(phase).expect("agent_for");
-            assert_eq!(sel.kind, AgentKind::Claude, "phase={phase:?}");
+            let sel = cfg.agent_for(phase);
+            assert_eq!(sel.kind(), AgentKind::Claude, "phase={phase:?}");
             assert_eq!(sel.profile.as_str(), BUILT_IN_PROFILE, "phase={phase:?}");
-            assert!(sel.claude_settings.is_some());
+            assert!(sel.claude_settings().is_some());
         }
     }
 
@@ -1039,32 +988,26 @@ agent.model_id = "claude-sonnet-4-6"
 profile = "base"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        let sel = cfg.agent_for(Phase::Loop).expect("agent_for");
-        assert_eq!(sel.kind, AgentKind::Claude);
+        let sel = cfg.agent_for(Phase::Loop);
+        assert_eq!(sel.kind(), AgentKind::Claude);
         assert_eq!(sel.profile.as_str(), "base");
         Ok(())
     }
 
-    /// Unknown backend name in TOML surfaces as `UnknownBackend` — not a
-    /// parse error — so the message is precise about the offending value.
+    /// Unknown default backends fail while parsing, naming the invalid value.
     #[test]
-    fn agent_for_unknown_backend_in_default_returns_error() -> Result<()> {
+    fn agent_for_unknown_backend_in_default_returns_error() {
         let src = r#"
 [phase.default]
 agent.backend = "gpt"
 "#;
-        let cfg = LoomConfig::from_toml_str(src)?;
-        match cfg.agent_for(Phase::Loop) {
-            Err(AgentSelectionError::UnknownBackend { name }) => assert_eq!(name, "gpt"),
-            other => panic!("expected UnknownBackend, got {other:?}"),
-        }
-        Ok(())
+        let error = LoomConfig::from_toml_str(src).unwrap_err();
+        assert!(error.to_string().contains("gpt"));
     }
 
-    /// Unknown backend in a per-phase override surfaces only when that phase
-    /// is queried — other phases still resolve.
+    /// Bad overrides fail parsing even when another phase will be requested.
     #[test]
-    fn agent_for_unknown_backend_in_phase_override_isolated_to_that_phase() -> Result<()> {
+    fn config_rejects_unknown_backend_in_phase_override() {
         let src = r#"
 [phase.default]
 agent.backend = "claude"
@@ -1072,15 +1015,8 @@ agent.backend = "claude"
 [phase.todo]
 agent.backend = "ollama"
 "#;
-        let cfg = LoomConfig::from_toml_str(src)?;
-        match cfg.agent_for(Phase::Todo) {
-            Err(AgentSelectionError::UnknownBackend { name }) => assert_eq!(name, "ollama"),
-            other => panic!("expected UnknownBackend, got {other:?}"),
-        }
-        // Other phases unaffected.
-        let run = cfg.agent_for(Phase::Loop).expect("run unaffected");
-        assert_eq!(run.kind, AgentKind::Claude);
-        Ok(())
+        let error = LoomConfig::from_toml_str(src).unwrap_err();
+        assert!(error.to_string().contains("ollama"));
     }
 
     /// Claude-specific settings (`[claude]` + `[security]`) flow through
@@ -1095,8 +1031,8 @@ post_result_grace_secs = 12
 denied_tools = ["WebFetch", "Other"]
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        let sel = cfg.agent_for(Phase::Loop).expect("agent_for");
-        let claude = sel.claude_settings.expect("claude_settings present");
+        let sel = cfg.agent_for(Phase::Loop);
+        let claude = sel.claude_settings().expect("claude_settings present");
         assert_eq!(claude.post_result_grace_secs, 12);
         assert_eq!(claude.denied_tools, vec!["WebFetch", "Other"]);
         Ok(())
@@ -1113,14 +1049,8 @@ profile = "base"
 profile = "rust"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        assert_eq!(
-            cfg.agent_for(Phase::Todo).expect("todo").profile.as_str(),
-            "rust"
-        );
-        assert_eq!(
-            cfg.agent_for(Phase::Loop).expect("run").profile.as_str(),
-            "base"
-        );
+        assert_eq!(cfg.agent_for(Phase::Todo).profile.as_str(), "rust");
+        assert_eq!(cfg.agent_for(Phase::Loop).profile.as_str(), "base");
         Ok(())
     }
 
@@ -1133,10 +1063,7 @@ profile = "rust"
 profile = "rust"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        assert_eq!(
-            cfg.agent_for(Phase::Inbox).expect("inbox").profile.as_str(),
-            "rust"
-        );
+        assert_eq!(cfg.agent_for(Phase::Inbox).profile.as_str(), "rust");
         Ok(())
     }
 

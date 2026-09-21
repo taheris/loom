@@ -398,7 +398,7 @@ where
         let beads = self
             .bd
             .list(ListOpts {
-                status: Some("blocked".to_string()),
+                statuses: vec![loom_driver::bd::Status::Blocked],
                 label: self
                     .ready_parent
                     .is_none()
@@ -520,7 +520,7 @@ where
         let Some(path) = self.current_worktree_path.clone() else {
             return Ok(());
         };
-        if self.bd.show(bead).await?.status != "closed" {
+        if self.bd.show(bead).await?.status != loom_driver::bd::Status::Closed {
             return Ok(());
         }
         self.git.remove_worktree(&path).await?;
@@ -570,7 +570,7 @@ where
             if deferred.iter().any(|id| id == &bead.id) {
                 continue;
             }
-            if bead.issue_type == "epic" {
+            if bead.issue_type == loom_driver::bd::IssueType::Epic {
                 info!(
                     bead = %bead.id,
                     spec = %self.label,
@@ -607,7 +607,7 @@ where
             if deferred.iter().any(|id| id == &bead.id) {
                 continue;
             }
-            if bead.issue_type == "epic" {
+            if bead.issue_type == loom_driver::bd::IssueType::Epic {
                 info!(
                     bead = %bead.id,
                     spec = %self.label,
@@ -632,7 +632,7 @@ where
                 .update(
                     &bead.id,
                     UpdateOpts {
-                        status: Some("open".to_string()),
+                        status: Some(loom_driver::bd::Status::Open),
                         remove_labels: vec!["loom:infra".to_string()],
                         ..UpdateOpts::default()
                     },
@@ -1169,7 +1169,7 @@ where
             .update(
                 bead,
                 UpdateOpts {
-                    status: Some("blocked".to_string()),
+                    status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:blocked".to_string()],
                     notes: Some(notes),
                     ..UpdateOpts::default()
@@ -1224,7 +1224,7 @@ where
             .update(
                 bead,
                 UpdateOpts {
-                    status: Some("blocked".to_string()),
+                    status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:infra".to_string()],
                     notes: Some(diagnostic_notes(&diagnostic.cause, &diagnostic.error)),
                     set_metadata: metadata,
@@ -1707,7 +1707,12 @@ async fn molecule_state<R: CommandRunner>(
     let progress = bd.mol_progress(molecule).await?;
     let beads = bd
         .list(ListOpts {
-            status: Some("open,in_progress,blocked,deferred".to_string()),
+            statuses: vec![
+                loom_driver::bd::Status::Open,
+                loom_driver::bd::Status::InProgress,
+                loom_driver::bd::Status::Blocked,
+                loom_driver::bd::Status::Deferred,
+            ],
             parent: Some(parent),
             ..ListOpts::default()
         })
@@ -1768,7 +1773,7 @@ fn allocate_review_log_path(workspace: &Path) -> (PathBuf, std::time::SystemTime
 }
 
 fn bead_has_parked_state(bead: &Bead) -> bool {
-    bead.status == "blocked"
+    bead.status == loom_driver::bd::Status::Blocked
         || bead.labels.iter().any(|label| {
             label.is_blocked() || label.is_clarify() || label.is_deferred() || label.is_infra()
         })
@@ -2216,7 +2221,7 @@ fn verdict_to_outcome(verdict: PhaseVerdict, exit_code: i32) -> AgentOutcome {
 pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<Bead>, LoopError> {
     let beads = bd
         .list(ListOpts {
-            status: Some("open".to_string()),
+            statuses: vec![loom_driver::bd::Status::Open],
             label: Some(format!("spec:{}", label.as_str())),
             ..ListOpts::default()
         })
@@ -2578,9 +2583,9 @@ mod tests {
             id: BeadId::new(id).expect("valid bead id"),
             title: format!("title-{id}"),
             description: "desc".into(),
-            status: "open".into(),
-            priority: 2,
-            issue_type: "task".into(),
+            status: loom_driver::bd::Status::Open,
+            priority: loom_driver::bd::Priority::P2,
+            issue_type: loom_driver::bd::IssueType::Task,
             labels: vec![Label::new("profile:base").expect("valid Label")],
             parent: None,
             metadata: std::collections::BTreeMap::default(),
@@ -2807,7 +2812,7 @@ mod tests {
             },
         );
         let mut infra_bead = bead("lm-infra");
-        infra_bead.status = "blocked".to_string();
+        infra_bead.status = loom_driver::bd::Status::Blocked;
         infra_bead
             .labels
             .push(Label::new("loom:infra").expect("valid Label"));
@@ -3087,9 +3092,9 @@ mod tests {
             id: BeadId::new("lm-99").expect("bead id"),
             title: "Implement the harness".into(),
             description: "wire the per-bead loop".into(),
-            status: "open".into(),
-            priority: 2,
-            issue_type: "task".into(),
+            status: loom_driver::bd::Status::Open,
+            priority: loom_driver::bd::Priority::P2,
+            issue_type: loom_driver::bd::IssueType::Task,
             labels: vec![Label::new("profile:base").expect("valid Label")],
             parent: None,
             metadata: std::collections::BTreeMap::default(),
@@ -3636,9 +3641,9 @@ mod tests {
             id: BeadId::new("lm-5").expect("valid bead id"),
             title: "needs a profile we do not have".into(),
             description: "desc".into(),
-            status: "open".into(),
-            priority: 2,
-            issue_type: "task".into(),
+            status: loom_driver::bd::Status::Open,
+            priority: loom_driver::bd::Priority::P2,
+            issue_type: loom_driver::bd::IssueType::Task,
             labels: vec![Label::new("profile:nonexistent").expect("valid Label")],
             parent: None,
             metadata: std::collections::BTreeMap::default(),

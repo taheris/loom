@@ -23,16 +23,6 @@ pub enum State {
     ApplyFailed,
 }
 
-impl State {
-    pub const fn bead_status(self) -> &'static str {
-        match self {
-            Self::Pending | Self::Accepted => "open",
-            Self::Blocked | Self::ApplyFailed => "blocked",
-            Self::Applied | Self::Rejected => "closed",
-        }
-    }
-}
-
 /// Aggregate case counts recorded in tune bead metadata and manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaseCounts {
@@ -218,16 +208,6 @@ mod tests {
             seed: 17,
         })
         .expect("plan")
-    }
-
-    #[test]
-    fn proposal_state_maps_to_bead_status() {
-        assert_eq!(State::Pending.bead_status(), "open");
-        assert_eq!(State::Accepted.bead_status(), "open");
-        assert_eq!(State::Blocked.bead_status(), "blocked");
-        assert_eq!(State::ApplyFailed.bead_status(), "blocked");
-        assert_eq!(State::Applied.bead_status(), "closed");
-        assert_eq!(State::Rejected.bead_status(), "closed");
     }
 
     #[test]

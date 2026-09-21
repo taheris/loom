@@ -200,7 +200,7 @@ pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
         bd.update(
             bead,
             UpdateOpts {
-                status: Some("blocked".to_string()),
+                status: Some(loom_driver::bd::Status::Blocked),
                 add_labels: vec!["loom:clarify".to_string()],
                 ..UpdateOpts::default()
             },
@@ -216,7 +216,7 @@ pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
         bd.update(
             bead,
             UpdateOpts {
-                status: Some("blocked".to_string()),
+                status: Some(loom_driver::bd::Status::Blocked),
                 add_labels: vec!["loom:blocked".to_string()],
                 notes: Some(CLARIFY_WITHOUT_OPTIONS_CAUSE.to_string()),
                 ..UpdateOpts::default()

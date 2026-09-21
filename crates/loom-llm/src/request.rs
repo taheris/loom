@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn completion_request_builder_chains_all_roles() {
         let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Other(
-            "gpt-5-preview".to_string(),
+            "gpt-5-preview".parse().expect("model name"),
         )))
         .assistant("previous reply")
         .assistant_cached("cached reply", CacheControl::Ephemeral(CacheTtl::Minutes5));

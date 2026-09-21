@@ -83,7 +83,12 @@ pub const GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE: &str = "gate-routing-structur
 const EMPTY_TREE_EPIC_CLOSE_REASON: &str = "empty tree mint remediation cleanup";
 
 /// Live bd statuses that count as a per-finding dedup hit.
-const DEDUP_STATUSES: &str = "open,in_progress,blocked,deferred";
+const DEDUP_STATUSES: [loom_driver::bd::Status; 4] = [
+    loom_driver::bd::Status::Open,
+    loom_driver::bd::Status::InProgress,
+    loom_driver::bd::Status::Blocked,
+    loom_driver::bd::Status::Deferred,
+];
 
 /// Construct the bd label that carries a batch receipt, e.g.
 /// `loom:fixup:0123456789ab`.
@@ -216,10 +221,14 @@ pub enum MaterializedStatus {
 impl MaterializedStatus {
     #[must_use]
     pub const fn as_wire(self) -> &'static str {
+        self.bead_status().as_str()
+    }
+
+    const fn bead_status(self) -> loom_driver::bd::Status {
         match self {
-            Self::Open => "open",
-            Self::Blocked => "blocked",
-            Self::Deferred => "deferred",
+            Self::Open => loom_driver::bd::Status::Open,
+            Self::Blocked => loom_driver::bd::Status::Blocked,
+            Self::Deferred => loom_driver::bd::Status::Deferred,
         }
     }
 }
@@ -775,7 +784,7 @@ pub async fn route_molecule_findings<R: CommandRunner>(
                     .update(
                         &bead,
                         UpdateOpts {
-                            status: Some("blocked".to_string()),
+                            status: Some(loom_driver::bd::Status::Blocked),
                             add_labels: vec!["loom:blocked".to_string()],
                             notes: Some(format!(
                                 "{GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE}: {}",
@@ -825,7 +834,7 @@ async fn route_molecule_findings_inner<R: CommandRunner>(
     let children = match bd
         .list(ListOpts {
             parent: Some(parent.clone()),
-            status: Some(DEDUP_STATUSES.to_string()),
+            statuses: DEDUP_STATUSES.to_vec(),
             ..ListOpts::default()
         })
         .await
@@ -1052,7 +1061,7 @@ async fn merge_or_create_deferred_batch<R: CommandRunner>(
                 .update(
                     &existing.id,
                     UpdateOpts {
-                        status: Some("deferred".to_string()),
+                        status: Some(loom_driver::bd::Status::Deferred),
                         add_labels: labels,
                         description: Some(description),
                         ..UpdateOpts::default()
@@ -1104,7 +1113,7 @@ async fn create_molecule_batch<R: CommandRunner>(
         .create(CreateOpts {
             title: batch_title(findings, lead_spec),
             description: molecule_batch_description(findings, state),
-            issue_type: Some("task".to_string()),
+            issue_type: Some(loom_driver::bd::IssueType::Task),
             labels: molecule_batch_labels(findings, state),
             parent: Some(parent.clone()),
             notes,
@@ -1349,9 +1358,9 @@ fn record_dry_run_tree_plan(plan: TreeMintPlan, summary: &mut MintSummary) {
 async fn active_work_epics<R: CommandRunner>(bd: &BdClient<R>) -> Result<Vec<Bead>, MintError> {
     let beads = bd
         .list(ListOpts {
-            issue_type: Some("epic".to_string()),
+            issue_type: Some(loom_driver::bd::IssueType::Epic),
             label: Some(ACTIVE_LABEL.to_string()),
-            status: Some("open".to_string()),
+            statuses: vec![loom_driver::bd::Status::Open],
             ..ListOpts::default()
         })
         .await?;
@@ -1379,8 +1388,8 @@ async fn create_tree_remediation_epic<R: CommandRunner>(
                 "tree remediation: {batch_count} batches ({finding_count} findings)",
             )),
             description: tree_remediation_epic_description(batch_count, finding_count),
-            issue_type: Some("epic".to_string()),
-            priority: Some(2),
+            issue_type: Some(loom_driver::bd::IssueType::Epic),
+            priority: Some(loom_driver::bd::Priority::P2),
             labels: tree_remediation_epic_labels(plan),
             metadata: Some(metadata),
             ..CreateOpts::default()
@@ -1679,7 +1688,7 @@ pub async fn promote_deferred<R: CommandRunner>(
             .update(
                 &bead.id,
                 UpdateOpts {
-                    status: Some("open".to_string()),
+                    status: Some(loom_driver::bd::Status::Open),
                     remove_labels: vec![DEFERRED_LABEL.to_string()],
                     description: Some(bead.description.clone()),
                     ..UpdateOpts::default()
@@ -1705,7 +1714,10 @@ pub async fn promote_deferred<R: CommandRunner>(
 
 fn duplicate_live_finding_reason(children: &[Bead]) -> Option<String> {
     let mut seen: HashMap<&str, &BeadId> = HashMap::new();
-    for bead in children.iter().filter(|bead| bead.status != "closed") {
+    for bead in children
+        .iter()
+        .filter(|bead| bead.status != loom_driver::bd::Status::Closed)
+    {
         for label in bead
             .labels
             .iter()
@@ -1723,7 +1735,7 @@ fn duplicate_live_finding_reason(children: &[Bead]) -> Option<String> {
 }
 
 fn is_deferred_remediation(bead: &Bead) -> bool {
-    bead.status == "deferred"
+    bead.status == loom_driver::bd::Status::Deferred
         && bead
             .labels
             .iter()
@@ -1939,7 +1951,7 @@ async fn report_stale_candidates<R: CommandRunner>(
 ) {
     let beads = match bd
         .list(ListOpts {
-            status: Some(DEDUP_STATUSES.to_string()),
+            statuses: DEDUP_STATUSES.to_vec(),
             ..ListOpts::default()
         })
         .await
@@ -2048,7 +2060,7 @@ async fn dedup_live_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Findin
     let label = finding_label(finding);
     let matching_beads = match bd
         .list(ListOpts {
-            status: Some(DEDUP_STATUSES.to_string()),
+            statuses: DEDUP_STATUSES.to_vec(),
             label: Some(label),
             ..ListOpts::default()
         })
@@ -2110,7 +2122,7 @@ async fn dedup_closed_same_molecule<R: CommandRunner>(
     let label = finding_label(finding);
     let matching_beads = match bd
         .list(ListOpts {
-            status: Some("closed".to_string()),
+            statuses: vec![loom_driver::bd::Status::Closed],
             label: Some(label),
             parent: Some(parent),
             ..ListOpts::default()
@@ -2234,7 +2246,7 @@ async fn create_batch_under_parent<R: CommandRunner>(
         .create(CreateOpts {
             title,
             description,
-            issue_type: Some("task".to_string()),
+            issue_type: Some(loom_driver::bd::IssueType::Task),
             labels,
             parent: Some(parent.clone()),
             notes,
@@ -2286,7 +2298,7 @@ async fn apply_materialized_status<R: CommandRunner>(
     bd.update(
         bead,
         UpdateOpts {
-            status: Some(status.as_wire().to_string()),
+            status: Some(status.bead_status()),
             ..UpdateOpts::default()
         },
     )
@@ -2691,9 +2703,9 @@ mod tests {
                 id: BeadId::new("lm-mol").expect("molecule id"),
                 title: "molecule".to_string(),
                 description: String::new(),
-                status: "open".to_string(),
-                priority: 2,
-                issue_type: "epic".to_string(),
+                status: loom_driver::bd::Status::Open,
+                priority: loom_driver::bd::Priority::P2,
+                issue_type: loom_driver::bd::IssueType::Epic,
                 labels: vec![Label::new("spec:agent").expect("valid Label")],
                 parent: None,
                 metadata: BTreeMap::new(),
@@ -2778,9 +2790,12 @@ mod tests {
                         description: stateful_flag(&argv, "--description")
                             .unwrap_or_default()
                             .to_string(),
-                        status: "open".to_string(),
-                        priority: 2,
-                        issue_type: stateful_flag(&argv, "--type").unwrap_or("task").to_string(),
+                        status: loom_driver::bd::Status::Open,
+                        priority: loom_driver::bd::Priority::P2,
+                        issue_type: stateful_flag(&argv, "--type")
+                            .unwrap_or("task")
+                            .parse()
+                            .unwrap(),
                         labels,
                         parent,
                         metadata: BTreeMap::new(),
@@ -2827,9 +2842,9 @@ mod tests {
                     std::slice::from_ref(finding),
                     MoleculeBatchState::Ready,
                 ),
-                status: "open".to_string(),
-                priority: 2,
-                issue_type: "task".to_string(),
+                status: loom_driver::bd::Status::Open,
+                priority: loom_driver::bd::Priority::P2,
+                issue_type: loom_driver::bd::IssueType::Task,
                 labels: molecule_batch_labels(
                     std::slice::from_ref(finding),
                     MoleculeBatchState::Ready,
@@ -2859,8 +2874,10 @@ mod tests {
         beads
             .iter()
             .filter(|bead| {
-                (!ready || bead.status == "open")
-                    && status.is_none_or(|statuses| statuses.split(',').any(|s| s == bead.status))
+                (!ready || bead.status == loom_driver::bd::Status::Open)
+                    && status.is_none_or(|statuses| {
+                        statuses.split(',').any(|s| s == bead.status.as_str())
+                    })
                     && label.is_none_or(|wanted| {
                         bead.labels
                             .iter()
@@ -2871,7 +2888,7 @@ mod tests {
                             .as_ref()
                             .is_some_and(|candidate| candidate.as_str() == wanted)
                     })
-                    && issue_type.is_none_or(|wanted| bead.issue_type == wanted)
+                    && issue_type.is_none_or(|wanted| bead.issue_type.as_str() == wanted)
             })
             .cloned()
             .collect()
@@ -2881,7 +2898,7 @@ mod tests {
         let mut index = 2;
         while index < argv.len() {
             match argv[index].as_str() {
-                "--status" => bead.status = argv[index + 1].clone(),
+                "--status" => bead.status = argv[index + 1].parse().unwrap(),
                 "--add-label" => {
                     let label = Label::new(&argv[index + 1]).expect("valid Label");
                     if !bead.labels.contains(&label) {
@@ -3050,7 +3067,7 @@ mod tests {
             .create(CreateOpts {
                 title: "deferred remediation".to_string(),
                 description: "finding evidence".to_string(),
-                issue_type: Some("task".to_string()),
+                issue_type: Some(loom_driver::bd::IssueType::Task),
                 labels: vec![DEFERRED_LABEL.to_string()],
                 parent: Some(parent.clone()),
                 ..CreateOpts::default()
@@ -3063,7 +3080,7 @@ mod tests {
         bd.update(
             &child,
             UpdateOpts {
-                status: Some("deferred".to_string()),
+                status: Some(loom_driver::bd::Status::Deferred),
                 ..UpdateOpts::default()
             },
         )
@@ -3072,7 +3089,7 @@ mod tests {
 
         let children = bd
             .list(ListOpts {
-                status: Some("deferred".to_string()),
+                statuses: vec![loom_driver::bd::Status::Deferred],
                 parent: Some(parent.clone()),
                 ..ListOpts::default()
             })
@@ -3122,7 +3139,7 @@ mod tests {
             .into_iter()
             .find(|bead| bead.id.as_str() != "lm-mol")
             .expect("clarify bead created");
-        assert_eq!(child.status, "blocked");
+        assert_eq!(child.status, loom_driver::bd::Status::Blocked);
         assert!(child.labels.iter().any(Label::is_clarify));
         assert!(child.description.contains("## Options — choose routing"));
     }
@@ -3160,7 +3177,7 @@ mod tests {
             remediation.parent.as_ref().map(BeadId::as_str),
             Some("lm-mol")
         );
-        assert_eq!(remediation.status, "open");
+        assert_eq!(remediation.status, loom_driver::bd::Status::Open);
         assert!(
             remediation
                 .labels
@@ -3207,7 +3224,7 @@ mod tests {
             .into_iter()
             .find(|bead| bead.id.as_str() != "lm-mol")
             .expect("deferred remediation created");
-        assert_eq!(remediation.status, "deferred");
+        assert_eq!(remediation.status, loom_driver::bd::Status::Deferred);
         assert!(remediation.labels.iter().any(Label::is_deferred));
         assert_eq!(
             remediation.parent.as_ref().map(BeadId::as_str),
@@ -3245,7 +3262,7 @@ mod tests {
             .into_iter()
             .find(|bead| bead.id.as_str() == "lm-mol")
             .expect("molecule remains");
-        assert_eq!(molecule.status, "blocked");
+        assert_eq!(molecule.status, loom_driver::bd::Status::Blocked);
         assert!(molecule.labels.iter().any(Label::is_blocked));
         assert!(
             molecule
@@ -3613,7 +3630,7 @@ mod tests {
         assert!(
             dedup_call
                 .iter()
-                .any(|a| a == &format!("--status={DEDUP_STATUSES}")),
+                .any(|a| a == &"--status=open,in_progress,blocked,deferred".to_string()),
             "dedup query must include blocked in its status set: {dedup_call:?}",
         );
     }
@@ -3672,11 +3689,13 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: false,
-            suppressions: vec![SuppressionConfig {
-                id: Some(finding.id()),
-                hash: None,
-                reason: "must not suppress deterministic failures".to_owned(),
-            }],
+            suppressions: vec![
+                SuppressionConfig::new(
+                    loom_driver::config::SuppressionSelector::Id(finding.id()),
+                    "must not suppress deterministic failures".to_owned(),
+                )
+                .unwrap(),
+            ],
             suppress_closed_same_molecule: false,
             report_stale: false,
         };
@@ -3734,13 +3753,13 @@ reason = "false positive"
         assert!(
             calls.iter().any(|call| call
                 .iter()
-                .any(|arg| arg == &format!("--status={DEDUP_STATUSES}"))),
+                .any(|arg| arg == &"--status=open,in_progress,blocked,deferred".to_string())),
             "stale reporting must list live remediation beads tree-wide: {calls:?}",
         );
         assert!(
             calls.iter().any(|call| {
                 call.iter()
-                    .any(|arg| arg == &format!("--status={DEDUP_STATUSES}"))
+                    .any(|arg| arg == &"--status=open,in_progress,blocked,deferred".to_string())
                     && !call.iter().any(|arg| arg.starts_with("--label=spec:"))
             }),
             "tree stale-reporting list must not narrow by spec label: {calls:?}",
@@ -3829,9 +3848,12 @@ reason = "false positive"
         assert!(summary.render().contains("stale-candidate lm-stale.1"));
         let calls = rendered_calls(&invocations);
         assert!(
-            calls
-                .iter()
-                .any(|call| call == &["list", "--json", &format!("--status={DEDUP_STATUSES}")]),
+            calls.iter().any(|call| call
+                == &[
+                    "list",
+                    "--json",
+                    "--status=open,in_progress,blocked,deferred"
+                ]),
             "unfiltered tree stale reporting must list all live candidates: {calls:?}",
         );
     }
@@ -3861,7 +3883,7 @@ reason = "false positive"
             calls.iter().all(|call| {
                 !call
                     .iter()
-                    .any(|arg| arg == &format!("--status={DEDUP_STATUSES}"))
+                    .any(|arg| arg == &"--status=open,in_progress,blocked,deferred".to_string())
                     || !call.iter().any(|arg| arg.starts_with("--label=spec:"))
             }),
             "non-tree mint must not perform stale-candidate scans: {calls:?}",

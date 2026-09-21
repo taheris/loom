@@ -1,5 +1,8 @@
 //! Model identifiers grouped by provider wire-schema family.
 
+pub use loom_events::identifier::{ModelName, ParseModelNameError};
+use std::str::FromStr;
+
 /// Non-exhaustive discriminator for provider HTTP wire formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -19,7 +22,7 @@ pub enum ModelId {
     OpenAi(OpenAiModel),
     Gemini(GeminiModel),
     #[cfg(feature = "openai-compat")]
-    OpenAiCompat(String),
+    OpenAiCompat(ModelName),
 }
 
 /// Anthropic models with `Other` preserving forward-compatible names.
@@ -28,7 +31,7 @@ pub enum AnthropicModel {
     ClaudeOpus48,
     ClaudeSonnet46,
     ClaudeHaiku45,
-    Other(String),
+    Other(ModelName),
 }
 
 /// OpenAI-family models. See [`AnthropicModel`] for the inner-enum
@@ -36,7 +39,7 @@ pub enum AnthropicModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenAiModel {
     Gpt55,
-    Other(String),
+    Other(ModelName),
 }
 
 /// Google Gemini-family models. See [`AnthropicModel`] for the
@@ -45,7 +48,7 @@ pub enum OpenAiModel {
 pub enum GeminiModel {
     Gemini31Pro,
     Gemini35Flash,
-    Other(String),
+    Other(ModelName),
 }
 
 impl ModelId {
@@ -63,26 +66,19 @@ impl ModelId {
         }
     }
 
-    /// Parse a model identifier string into a typed [`ModelId`]. Known
-    /// canonical strings resolve to their named variant; any other
-    /// input is routed into the appropriate schema's `Other` arm by
-    /// prefix match on the carried string. Strings without a recognized
-    /// prefix fall back to [`AnthropicModel::Other`] so the parse is
-    /// total and the round-trip through [`ModelId::as_wire`] preserves
-    /// the input.
-    #[expect(
-        clippy::should_implement_trait,
-        reason = "spec names ModelId::from_str(...) as the parse surface; the operation is total so a Result<_, Infallible> return would force unwrap warts at every call site"
-    )]
-    pub fn from_str(s: &str) -> Self {
-        match s {
+    /// Resolve an already-checked name without parsing it again. Known
+    /// names select named variants; unknown names retain the documented
+    /// prefix routing, including the Anthropic fallback for unrecognized
+    /// prefixes. Use [`FromStr`] at a raw-string boundary.
+    pub fn from_name(name: ModelName) -> Self {
+        match name.as_str() {
             "claude-opus-4-8" => ModelId::Anthropic(AnthropicModel::ClaudeOpus48),
             "claude-sonnet-4-6" => ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
             "claude-haiku-4-5" => ModelId::Anthropic(AnthropicModel::ClaudeHaiku45),
             "gpt-5.5" => ModelId::OpenAi(OpenAiModel::Gpt55),
             "gemini-3.1-pro" => ModelId::Gemini(GeminiModel::Gemini31Pro),
             "gemini-3.5-flash" => ModelId::Gemini(GeminiModel::Gemini35Flash),
-            other => fallback_from_prefix(other),
+            _ => fallback_from_prefix(name),
         }
     }
 
@@ -95,31 +91,41 @@ impl ModelId {
                 AnthropicModel::ClaudeOpus48 => "claude-opus-4-8".to_string(),
                 AnthropicModel::ClaudeSonnet46 => "claude-sonnet-4-6".to_string(),
                 AnthropicModel::ClaudeHaiku45 => "claude-haiku-4-5".to_string(),
-                AnthropicModel::Other(s) => s.clone(),
+                AnthropicModel::Other(s) => s.to_string(),
             },
             ModelId::OpenAi(m) => match m {
                 OpenAiModel::Gpt55 => "gpt-5.5".to_string(),
-                OpenAiModel::Other(s) => s.clone(),
+                OpenAiModel::Other(s) => s.to_string(),
             },
             ModelId::Gemini(m) => match m {
                 GeminiModel::Gemini31Pro => "gemini-3.1-pro".to_string(),
                 GeminiModel::Gemini35Flash => "gemini-3.5-flash".to_string(),
-                GeminiModel::Other(s) => s.clone(),
+                GeminiModel::Other(s) => s.to_string(),
             },
             #[cfg(feature = "openai-compat")]
-            ModelId::OpenAiCompat(s) => s.clone(),
+            ModelId::OpenAiCompat(s) => s.to_string(),
         }
     }
 }
 
-fn fallback_from_prefix(s: &str) -> ModelId {
-    let lower = s.to_ascii_lowercase();
+impl FromStr for ModelId {
+    type Err = ParseModelNameError;
+
+    /// Reject blank, whitespace-bearing, and control-bearing names before
+    /// applying the forward-compatible family routing.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse().map(Self::from_name)
+    }
+}
+
+fn fallback_from_prefix(name: ModelName) -> ModelId {
+    let lower = name.to_ascii_lowercase();
     if lower.starts_with("gpt") || lower.starts_with("o1") || lower.starts_with("o3") {
-        ModelId::OpenAi(OpenAiModel::Other(s.to_string()))
+        ModelId::OpenAi(OpenAiModel::Other(name))
     } else if lower.starts_with("gemini") {
-        ModelId::Gemini(GeminiModel::Other(s.to_string()))
+        ModelId::Gemini(GeminiModel::Other(name))
     } else {
-        ModelId::Anthropic(AnthropicModel::Other(s.to_string()))
+        ModelId::Anthropic(AnthropicModel::Other(name))
     }
 }
 
@@ -145,7 +151,7 @@ mod tests {
             ),
             #[cfg(feature = "openai-compat")]
             (
-                ModelId::OpenAiCompat("custom-llama".to_string()),
+                ModelId::OpenAiCompat("custom-llama".parse().expect("model name")),
                 SchemaKind::OpenAiCompat,
             ),
         ];
@@ -155,7 +161,7 @@ mod tests {
     }
 
     /// `ModelId::schema(&self)` returns the matching [`SchemaKind`] for
-    /// every outer variant, including the `Other(String)` inner arms
+    /// every outer variant, including the `Other(ModelName)` inner arms
     /// which still route by outer variant rather than by carried
     /// string.
     #[test]
@@ -165,7 +171,10 @@ mod tests {
             SchemaKind::Anthropic,
         );
         assert_eq!(
-            ModelId::Anthropic(AnthropicModel::Other("claude-future".to_string())).schema(),
+            ModelId::Anthropic(AnthropicModel::Other(
+                "claude-future".parse().expect("model name")
+            ))
+            .schema(),
             SchemaKind::Anthropic,
         );
         assert_eq!(
@@ -173,7 +182,10 @@ mod tests {
             SchemaKind::OpenAi,
         );
         assert_eq!(
-            ModelId::OpenAi(OpenAiModel::Other("gpt-future".to_string())).schema(),
+            ModelId::OpenAi(OpenAiModel::Other(
+                "gpt-future".parse().expect("model name")
+            ))
+            .schema(),
             SchemaKind::OpenAi,
         );
         assert_eq!(
@@ -181,12 +193,15 @@ mod tests {
             SchemaKind::Gemini,
         );
         assert_eq!(
-            ModelId::Gemini(GeminiModel::Other("gemini-future".to_string())).schema(),
+            ModelId::Gemini(GeminiModel::Other(
+                "gemini-future".parse().expect("model name")
+            ))
+            .schema(),
             SchemaKind::Gemini,
         );
         #[cfg(feature = "openai-compat")]
         assert_eq!(
-            ModelId::OpenAiCompat("custom".to_string()).schema(),
+            ModelId::OpenAiCompat("custom".parse().expect("model name")).schema(),
             SchemaKind::OpenAiCompat,
         );
     }
@@ -204,7 +219,14 @@ mod tests {
             "gemini-3.5-flash",
         ];
         for wire in canonical {
-            assert_eq!(ModelId::from_str(wire).as_wire(), wire);
+            assert_eq!(ModelId::from_str(wire).unwrap().as_wire(), wire);
+        }
+    }
+
+    #[test]
+    fn modelid_rejects_empty_and_malformed_names() {
+        for name in ["", " ", "claude\nsonnet", "gpt\0future", "custom model"] {
+            assert!(name.parse::<ModelId>().is_err(), "{name:?}");
         }
     }
 
@@ -217,9 +239,11 @@ mod tests {
             ("gpt-5-preview", SchemaKind::OpenAi),
             ("o1-mini", SchemaKind::OpenAi),
             ("gemini-3-ultra", SchemaKind::Gemini),
+            ("vendor/model:vNext", SchemaKind::Anthropic),
+            ("GPT-future", SchemaKind::OpenAi),
         ];
         for (wire, expected_schema) in cases {
-            let parsed = ModelId::from_str(wire);
+            let parsed = ModelId::from_str(wire).unwrap();
             assert_eq!(parsed.schema(), expected_schema, "wire={wire}");
             assert_eq!(parsed.as_wire(), wire);
         }

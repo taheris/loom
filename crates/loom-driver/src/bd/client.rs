@@ -5,8 +5,9 @@ use serde::Deserialize;
 
 use crate::identifier::{BeadId, MoleculeId};
 
+use super::Priority;
 use super::error::BdError;
-use super::models::{Bead, DependencySnapshot, MolProgress};
+use super::models::{Bead, DependencySnapshot, IssueType, MolProgress, Status};
 use super::runner::{CommandRunner, RunOutput, TokioRunner, render_args};
 
 /// Default subprocess timeout. Configurable per [`BdClient`] instance via
@@ -122,7 +123,7 @@ impl<R: CommandRunner> BdClient<R> {
         ];
         if let Some(t) = opts.issue_type {
             args.push("--type".into());
-            args.push(t.into());
+            args.push(t.as_str().into());
         }
         if let Some(p) = opts.priority {
             args.push("--priority".into());
@@ -181,7 +182,7 @@ impl<R: CommandRunner> BdClient<R> {
         }
         if let Some(s) = opts.status {
             args.push("--status".into());
-            args.push(s.into());
+            args.push(s.as_str().into());
         }
         if let Some(title) = opts.title {
             args.push("--title".into());
@@ -232,8 +233,14 @@ impl<R: CommandRunner> BdClient<R> {
         if let Some(limit) = opts.limit {
             args.push(format!("--limit={limit}").into());
         }
-        if let Some(status) = opts.status {
-            args.push(format!("--status={status}").into());
+        if !opts.statuses.is_empty() {
+            let statuses = opts
+                .statuses
+                .iter()
+                .map(|status| status.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            args.push(format!("--status={statuses}").into());
         }
         if let Some(label) = opts.label {
             args.push(format!("--label={label}").into());
@@ -373,8 +380,8 @@ fn decode<T: for<'de> Deserialize<'de>>(stdout: &[u8], args: &str) -> Result<T, 
 pub struct CreateOpts {
     pub title: String,
     pub description: String,
-    pub issue_type: Option<String>,
-    pub priority: Option<u8>,
+    pub issue_type: Option<IssueType>,
+    pub priority: Option<Priority>,
     pub labels: Vec<String>,
     pub parent: Option<BeadId>,
     /// Forwarded verbatim to `bd create --metadata <json>` when set. `bd`
@@ -388,9 +395,9 @@ pub struct CreateOpts {
 #[derive(Debug, Clone, Default)]
 pub struct UpdateOpts {
     pub claim: bool,
-    pub status: Option<String>,
+    pub status: Option<Status>,
     pub title: Option<String>,
-    pub priority: Option<u8>,
+    pub priority: Option<Priority>,
     pub add_labels: Vec<String>,
     pub remove_labels: Vec<String>,
     /// Full issue body forwarded to `bd update --description <text>`.
@@ -421,7 +428,8 @@ pub struct ListOpts {
     pub all: bool,
     /// Maximum number of rows; zero requests all matching rows.
     pub limit: Option<u32>,
-    pub status: Option<String>,
+    /// Status filters joined for the CLI; empty means no status restriction.
+    pub statuses: Vec<Status>,
     pub label: Option<String>,
     /// `bd list --label-any=<L>` — beads carrying at least one of these
     /// labels. Forwarded as a repeated flag so multiple labels OR together.
@@ -434,7 +442,7 @@ pub struct ListOpts {
     /// `bd list --type=<type>` — restrict to issues of the given type
     /// (`epic`, `task`, …). Used by `loom init --rebuild` to enumerate
     /// the epics carried in the bd state without depending on a label.
-    pub issue_type: Option<String>,
+    pub issue_type: Option<IssueType>,
 }
 
 /// Filters accepted by `bd ready`.
@@ -544,9 +552,9 @@ mod tests {
         let bead = client.show(&BeadId::new("lm-3hhwq.5")?).await?;
         assert_eq!(bead.id, BeadId::new("lm-3hhwq.5")?);
         assert_eq!(bead.title, "BdClient");
-        assert_eq!(bead.status, "in_progress");
-        assert_eq!(bead.priority, 2);
-        assert_eq!(bead.issue_type, "task");
+        assert_eq!(bead.status, Status::InProgress);
+        assert_eq!(bead.priority, Priority::P2);
+        assert_eq!(bead.issue_type, IssueType::Task);
         assert_eq!(
             bead.labels,
             vec![
@@ -654,12 +662,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_list_statuses_keep_csv_and_empty_filter_semantics() -> Result<()> {
+        let client = BdClient::with_runner(CapturingRunner::new([ok(b"[]"), ok(b"[]")]));
+        client
+            .list(ListOpts {
+                statuses: vec![
+                    Status::Open,
+                    Status::InProgress,
+                    Status::Blocked,
+                    Status::Deferred,
+                ],
+                ..ListOpts::default()
+            })
+            .await?;
+        assert_eq!(
+            argv_of(&client.runner, 0),
+            [
+                "list",
+                "--json",
+                "--status=open,in_progress,blocked,deferred"
+            ]
+        );
+        client.list(ListOpts::default()).await?;
+        assert_eq!(argv_of(&client.runner, 1), ["list", "--json"]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn list_filters_status_and_label() -> Result<()> {
         let runner = CapturingRunner::new([ok(b"[]")]);
         let client = BdClient::with_runner(runner);
         client
             .list(ListOpts {
-                status: Some("open".into()),
+                statuses: vec![crate::bd::Status::Open],
                 label: Some("spec:harness".into()),
                 ..ListOpts::default()
             })
@@ -759,8 +794,8 @@ mod tests {
             .create(CreateOpts {
                 title: "do thing".into(),
                 description: "why".into(),
-                issue_type: Some("task".into()),
-                priority: Some(2),
+                issue_type: Some(crate::bd::IssueType::Task),
+                priority: Some(crate::bd::Priority::P2),
                 labels: vec!["profile:rust".into()],
                 parent: Some(BeadId::new("lm-3hhwq")?),
                 metadata: None,
@@ -791,7 +826,7 @@ mod tests {
             .create(CreateOpts {
                 title: "loom-harness: pending decomposition".into(),
                 description: String::new(),
-                issue_type: Some("epic".into()),
+                issue_type: Some(crate::bd::IssueType::Epic),
                 labels: vec!["spec:harness".into()],
                 metadata: Some(r#"{"loom.base_commit":"deadbeef"}"#.into()),
                 ..CreateOpts::default()
@@ -909,7 +944,7 @@ mod tests {
                 &BeadId::new("lm-3hhwq.5")?,
                 UpdateOpts {
                     claim: true,
-                    status: Some("in_progress".into()),
+                    status: Some(crate::bd::Status::InProgress),
                     title: Some("Retitle work epic".into()),
                     add_labels: vec!["urgent".into()],
                     ..UpdateOpts::default()

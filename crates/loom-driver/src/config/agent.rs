@@ -1,23 +1,22 @@
 use std::collections::BTreeMap;
 
-use displaydoc::Display;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use tracing::{info, warn};
 
+use super::PhaseKey;
 use crate::agent::{AgentKind, ModelSelection, OutputLimits, SpawnConfig, ThinkingLevel};
-use crate::identifier::{ParseProfileNameError, ProfileName};
+use crate::identifier::{ModelName, ProfileName, ProviderName};
 
 /// `[phase.<name>]` table from `<workspace>/loom.toml`. Each per-phase
 /// block deserializes into one of these; `[phase.default]` is the fallback
 /// applied to any field a per-phase table does not set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PhaseConfig {
     /// Profile name (`base`, `rust`, `python`, …) used to select the
     /// container image. Resolves through the same chain as the agent
     /// fields when unset.
-    pub profile: Option<String>,
+    pub profile: Option<ProfileName>,
     /// Agent-related fields. `agent.backend` / `agent.provider` /
     /// `agent.model_id` flatten naturally as dotted keys in TOML.
     pub agent: PhaseAgentConfig,
@@ -26,27 +25,20 @@ pub struct PhaseConfig {
 /// Agent fields nested under `[phase.<name>]`. Captured separately so
 /// `agent.backend = "..."` style keys parse natively.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PhaseAgentConfig {
-    pub backend: Option<String>,
-    pub provider: Option<String>,
-    pub model_id: Option<String>,
-    /// Reasoning-effort hint forwarded to pi via `set_thinking_level`. Stays
-    /// stringly-typed at the TOML layer so `agent.thinking_level = "off"`
-    /// parses natively; [`super::LoomConfig::agent_for`] converts the value
-    /// to [`ThinkingLevel`] and surfaces typos as
-    /// [`AgentSelectionError::UnknownThinkingLevel`].
-    pub thinking_level: Option<String>,
+    pub backend: Option<AgentKind>,
+    pub provider: Option<ProviderName>,
+    pub model_id: Option<ModelName>,
+    /// Reasoning effort parsed before phase fallback is applied.
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 /// Workflow phase that resolves an [`AgentSelection`] from config.
 ///
 /// `[phase.<phase>]` table keys in TOML correspond to the active workflow
-/// phases. `loom loop` resolves `[phase.loop]`; LLM review resolves
-/// `[phase.gate.review]`. The `BTreeMap` that backs `[phase.*]` remains
-/// string-keyed so unknown TOML keys parse without error and the resolver's
-/// `[phase.default]` fallback is just another lookup against the same map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// phases. Unknown phase keys are rejected rather than selecting defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Phase {
     #[serde(rename = "plan")]
     Plan,
@@ -110,18 +102,38 @@ pub struct ClaudeSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSelection {
     pub profile: ProfileName,
-    pub kind: AgentKind,
-    pub provider: Option<String>,
-    pub model_id: Option<String>,
+    pub backend: BackendSettings,
+    pub provider: Option<ProviderName>,
+    pub model_id: Option<ModelName>,
     /// Reasoning-effort hint forwarded to pi via `set_thinking_level` when
     /// the resolved backend is [`AgentKind::Pi`]. Claude has no analog;
     /// resolver carries the value through regardless so a non-pi phase that
     /// later switches backends still has the typed value at hand.
     pub thinking_level: Option<ThinkingLevel>,
-    pub claude_settings: Option<ClaudeSettings>,
+}
+
+/// Runtime and runtime-only settings form one exclusive choice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendSettings {
+    Pi,
+    Claude(ClaudeSettings),
+    Direct,
 }
 
 impl AgentSelection {
+    pub const fn kind(&self) -> AgentKind {
+        match self.backend {
+            BackendSettings::Pi => AgentKind::Pi,
+            BackendSettings::Claude(_) => AgentKind::Claude,
+            BackendSettings::Direct => AgentKind::Direct,
+        }
+    }
+    pub const fn claude_settings(&self) -> Option<&ClaudeSettings> {
+        match &self.backend {
+            BackendSettings::Claude(settings) => Some(settings),
+            _ => None,
+        }
+    }
     /// Install resolved per-phase agent settings onto a spawn config.
     pub fn apply_to_spawn_config(
         &self,
@@ -134,23 +146,23 @@ impl AgentSelection {
         spawn.output_limits = None;
         spawn.denied_tools.clear();
 
-        match self.kind {
+        match self.kind() {
             AgentKind::Pi => {
                 if let (Some(provider), Some(model_id)) = (&self.provider, &self.model_id) {
                     spawn.model = Some(ModelSelection {
-                        provider: provider.clone(),
-                        model_id: model_id.clone(),
+                        provider: provider.to_string(),
+                        model_id: model_id.to_string(),
                     });
                 }
                 spawn.thinking_level = self.thinking_level;
             }
             AgentKind::Claude => {
-                if let Some(settings) = &self.claude_settings {
+                if let Some(settings) = self.claude_settings() {
                     spawn.denied_tools.clone_from(&settings.denied_tools);
                 }
             }
             AgentKind::Direct => {
-                spawn.model_id.clone_from(&self.model_id);
+                spawn.model_id = self.model_id.as_ref().map(ToString::to_string);
                 spawn.output_limits = Some(direct_output_limits);
             }
         }
@@ -172,16 +184,16 @@ impl AgentSelection {
 
     fn required_api_key_vars(&self) -> Vec<String> {
         let mut vars = Vec::new();
-        match self.kind {
+        match self.kind() {
             AgentKind::Pi => {
                 if let Some(provider) = &self.provider {
-                    push_provider_api_key_var(&mut vars, provider);
+                    push_provider_api_key_var(&mut vars, provider.as_str());
                 }
                 if let Some(model_id) = &self.model_id {
-                    push_model_api_key_var(&mut vars, model_id);
+                    push_model_api_key_var(&mut vars, model_id.as_str());
                 }
             }
-            AgentKind::Direct => match self.model_id.as_deref() {
+            AgentKind::Direct => match self.model_id.as_ref().map(ModelName::as_str) {
                 Some(model_id) => push_model_api_key_var(&mut vars, model_id),
                 None => push_unique(&mut vars, ANTHROPIC_API_KEY_ENV),
             },
@@ -270,71 +282,21 @@ fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: String) {
     }
 }
 
-#[derive(Debug, Display, Error, PartialEq, Eq)]
-pub enum AgentSelectionError {
-    /// invalid profile name in phase configuration
-    InvalidProfile {
-        #[source]
-        source: ParseProfileNameError,
-    },
-    /// unknown agent backend `{name}` in config (expected `claude`, `pi`, or `direct`)
-    UnknownBackend { name: String },
-    /// unknown `agent.thinking_level` `{name}` in config (expected one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`)
-    UnknownThinkingLevel { name: String },
-}
-
-/// Convert a backend name string (from `[phase.<name>] agent.backend` or
-/// `[phase.default] agent.backend`) into the typed [`AgentKind`].
-///
-/// # Errors
-///
-/// Returns an error when configuration cannot be read, merged, or validated.
-pub fn parse_backend_name(name: &str) -> Result<AgentKind, AgentSelectionError> {
-    name.parse()
-        .map_err(|_| AgentSelectionError::UnknownBackend {
-            name: name.to_string(),
-        })
-}
-
-/// Convert an `agent.thinking_level` TOML string into a [`ThinkingLevel`].
-///
-/// The accepted vocabulary matches `specs/agent.md`'s
-/// Pi command table; typos surface as
-/// [`AgentSelectionError::UnknownThinkingLevel`] rather than silently
-/// dropping the override.
-///
-/// # Errors
-///
-/// Returns an error when configuration cannot be read, merged, or validated.
-pub fn parse_thinking_level_name(name: &str) -> Result<ThinkingLevel, AgentSelectionError> {
-    match name {
-        "off" => Ok(ThinkingLevel::Off),
-        "minimal" => Ok(ThinkingLevel::Minimal),
-        "low" => Ok(ThinkingLevel::Low),
-        "medium" => Ok(ThinkingLevel::Medium),
-        "high" => Ok(ThinkingLevel::High),
-        "xhigh" => Ok(ThinkingLevel::Xhigh),
-        other => Err(AgentSelectionError::UnknownThinkingLevel {
-            name: other.to_string(),
-        }),
-    }
-}
-
 /// Resolve a single optional phase field via the
 /// `[phase.<name>]` → `[phase.default]` chain. Returns `None` only when
 /// neither the named phase nor `default` populates the field.
 pub(super) fn lookup_phase_field<'a, T, F>(
-    phase: &'a BTreeMap<String, PhaseConfig>,
-    name: &str,
+    phase: &'a BTreeMap<PhaseKey, PhaseConfig>,
+    name: Phase,
     f: F,
 ) -> Option<&'a T>
 where
     F: Fn(&'a PhaseConfig) -> &'a Option<T>,
 {
     phase
-        .get(name)
+        .get(&PhaseKey::Named(name))
         .and_then(|p| f(p).as_ref())
-        .or_else(|| phase.get(DEFAULT_PHASE_KEY).and_then(|p| f(p).as_ref()))
+        .or_else(|| phase.get(&PhaseKey::Default).and_then(|p| f(p).as_ref()))
 }
 
 #[cfg(test)]
@@ -350,11 +312,10 @@ mod tests {
     ) -> AgentSelection {
         AgentSelection {
             profile: ProfileName::new("base").unwrap(),
-            kind,
-            provider: provider.map(str::to_string),
-            model_id: model_id.map(str::to_string),
+            backend: super::super::LoomConfig::default().backend_settings(kind),
+            provider: provider.map(|value| value.parse().unwrap()),
+            model_id: model_id.map(|value| value.parse().unwrap()),
             thinking_level: None,
-            claude_settings: None,
         }
     }
 
@@ -411,22 +372,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_backend_name_accepts_claude_pi_and_direct() {
-        assert_eq!(parse_backend_name("claude").unwrap(), AgentKind::Claude);
-        assert_eq!(parse_backend_name("pi").unwrap(), AgentKind::Pi);
-        assert_eq!(parse_backend_name("direct").unwrap(), AgentKind::Direct);
-    }
-
-    #[test]
-    fn parse_backend_name_rejects_unknown() {
-        match parse_backend_name("gpt") {
-            Err(AgentSelectionError::UnknownBackend { name }) => assert_eq!(name, "gpt"),
-            other => panic!("expected UnknownBackend, got {other:?}"),
+    fn phase_backend_field_accepts_claude_pi_and_direct() {
+        for (name, expected) in [
+            ("claude", AgentKind::Claude),
+            ("pi", AgentKind::Pi),
+            ("direct", AgentKind::Direct),
+        ] {
+            let agent: PhaseAgentConfig =
+                serde_json::from_value(serde_json::json!({"backend": name})).unwrap();
+            assert_eq!(agent.backend, Some(expected));
         }
     }
 
     #[test]
-    fn parse_thinking_level_name_accepts_every_documented_level() {
+    fn phase_backend_field_rejects_unknown() {
+        assert!(
+            serde_json::from_value::<PhaseAgentConfig>(serde_json::json!({"backend": "gpt"}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn phase_thinking_field_accepts_every_documented_level() {
         for (token, expected) in [
             ("off", ThinkingLevel::Off),
             ("minimal", ThinkingLevel::Minimal),
@@ -435,58 +402,62 @@ mod tests {
             ("high", ThinkingLevel::High),
             ("xhigh", ThinkingLevel::Xhigh),
         ] {
-            assert_eq!(parse_thinking_level_name(token).unwrap(), expected);
+            let agent: PhaseAgentConfig =
+                serde_json::from_value(serde_json::json!({"thinking_level": token})).unwrap();
+            assert_eq!(agent.thinking_level, Some(expected));
         }
     }
 
     #[test]
-    fn parse_thinking_level_name_rejects_unknown() {
-        match parse_thinking_level_name("ultra") {
-            Err(AgentSelectionError::UnknownThinkingLevel { name }) => assert_eq!(name, "ultra"),
-            other => panic!("expected UnknownThinkingLevel, got {other:?}"),
-        }
+    fn phase_thinking_field_rejects_unknown() {
+        assert!(
+            serde_json::from_value::<PhaseAgentConfig>(
+                serde_json::json!({"thinking_level": "ultra"})
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn lookup_phase_field_prefers_named_over_default() {
         let mut phase = BTreeMap::new();
         phase.insert(
-            DEFAULT_PHASE_KEY.to_string(),
+            PhaseKey::Default,
             PhaseConfig {
-                profile: Some("base".to_string()),
+                profile: Some(ProfileName::base()),
                 ..PhaseConfig::default()
             },
         );
         phase.insert(
-            "todo".to_string(),
+            PhaseKey::Named(Phase::Todo),
             PhaseConfig {
-                profile: Some("rust".to_string()),
+                profile: Some(ProfileName::rust()),
                 ..PhaseConfig::default()
             },
         );
-        let resolved = lookup_phase_field(&phase, "todo", |p| &p.profile).unwrap();
-        assert_eq!(resolved, "rust");
+        let resolved = lookup_phase_field(&phase, Phase::Todo, |p| &p.profile).unwrap();
+        assert_eq!(resolved.as_str(), "rust");
     }
 
     #[test]
     fn lookup_phase_field_falls_back_to_default_when_named_unset() {
         let mut phase = BTreeMap::new();
         phase.insert(
-            DEFAULT_PHASE_KEY.to_string(),
+            PhaseKey::Default,
             PhaseConfig {
-                profile: Some("base".to_string()),
+                profile: Some(ProfileName::base()),
                 ..PhaseConfig::default()
             },
         );
-        phase.insert("todo".to_string(), PhaseConfig::default());
-        let resolved = lookup_phase_field(&phase, "todo", |p| &p.profile).unwrap();
-        assert_eq!(resolved, "base");
+        phase.insert(PhaseKey::Named(Phase::Todo), PhaseConfig::default());
+        let resolved = lookup_phase_field(&phase, Phase::Todo, |p| &p.profile).unwrap();
+        assert_eq!(resolved.as_str(), "base");
     }
 
     #[test]
     fn lookup_phase_field_returns_none_when_neither_set() {
-        let phase: BTreeMap<String, PhaseConfig> = BTreeMap::new();
-        assert!(lookup_phase_field(&phase, "todo", |p| &p.profile).is_none());
+        let phase: BTreeMap<PhaseKey, PhaseConfig> = BTreeMap::new();
+        assert!(lookup_phase_field(&phase, Phase::Todo, |p| &p.profile).is_none());
     }
 
     #[test]
