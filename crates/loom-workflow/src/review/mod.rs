@@ -1,27 +1,14 @@
-//! `loom review` — LLM-judged review + push gate.
+//! LLM inspection and review verdicts.
 //!
-//! Implements the review-gate semantics defined in
-//! `specs/gate.md` ("Per-diff stage checks") on top of
-//! `loom-driver`'s typed surface and `templates`' `review.md` template.
-//! The gate:
-//!
-//! 1. snapshots beads carrying `spec:<label>` (`pre`);
-//! 2. renders [`ReviewContext`](loom_templates::review::ReviewContext), spawns
-//!    `wrix spawn --spawn-config <file> --stdio`, drives an
-//!    [`AgentBackend`](loom_driver::agent::AgentBackend) and tees the
-//!    [`AgentEvent`](loom_driver::agent::AgentEvent) stream into the
-//!    terminal renderer + per-bead JSONL log;
-//! 3. snapshots beads again, computes new bead IDs and clarify membership;
-//! 4. branches: clean → `git push` + `wrix beads push`; clarify → stop;
-//!    fix-up + under cap → `exec loom loop`; fix-up + at cap → escalate the
-//!    newest fix-up bead to `loom:clarify`.
-//!
-//! `loom loop`'s molecule-complete handoff invokes this module's review controller.
+//! CLI inspection invokes one reviewer session. Only a full diff review consuming
+//! matching verified evidence can emit push-gate review evidence. Publication
+//! belongs to the loop workflow, never to inspection or its scope/context metadata.
 
 mod context;
 mod error;
 mod finding;
 mod fixup;
+mod inspection;
 mod iteration;
 mod phase_verdict;
 mod production;

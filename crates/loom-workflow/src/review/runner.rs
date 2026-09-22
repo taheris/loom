@@ -1561,6 +1561,8 @@ mod tests {
                 | ReviewError::Profile(_)
                 | ReviewError::NoActiveMolecule(_)
                 | ReviewError::Spec(_)
+                | ReviewError::Annotations(_)
+                | ReviewError::UnknownJudgeTarget(_)
                 | ReviewError::Resolve(_)
                 | ReviewError::Git(_)
                 | ReviewError::Skill(_) => {}

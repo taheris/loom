@@ -154,6 +154,8 @@ where
     hook_timeout: Duration,
     push_range: Option<String>,
     verified_scope: Option<VerifiedScope>,
+    inspection_scope: Option<loom_gate::scope::Resolved>,
+    context_bead: Option<BeadId>,
     /// Which lane(s) of the review this controller drives. `Both` is the
     /// `loom gate review` path; `Judge`/`Rubric` are the focused single-
     /// lane re-runs surfaced by `loom gate judge` / `loom gate rubric`.
@@ -250,6 +252,8 @@ where
             hook_timeout: Duration::from_secs(loom_driver::config::default_git_hook_timeout_secs()),
             push_range: None,
             verified_scope: None,
+            inspection_scope: None,
+            context_bead: None,
             lane: ReviewLane::Both,
             dispatch_scope: DispatchScope::PerBead,
             suppressions: Vec::new(),
@@ -319,6 +323,24 @@ where
         self
     }
 
+    /// Select inspection content; bead identity supplies intent, never mutation authority.
+    #[must_use]
+    pub fn with_inspection_scope(
+        mut self,
+        scope: loom_gate::scope::Resolved,
+        bead: Option<BeadId>,
+    ) -> Self {
+        self.push_range = scope.diff().map(str::to_owned);
+        self.dispatch_scope = if scope.is_tree() {
+            DispatchScope::Tree
+        } else {
+            DispatchScope::PerBead
+        };
+        self.inspection_scope = Some(scope);
+        self.context_bead = bead;
+        self
+    }
+
     #[must_use]
     pub fn with_verified_scope(mut self, scope: Option<VerifiedScope>) -> Self {
         self.verified_scope = scope;
@@ -329,6 +351,16 @@ where
         let Some(verified) = self.verified_scope.as_ref() else {
             return Ok(());
         };
+        if self.lane != ReviewLane::Both
+            || self.dispatch_scope == DispatchScope::Tree
+            || self.inspection_scope.as_ref().is_some_and(|scope| {
+                scope.diff() != self.push_range.as_deref() || scope.diff().is_none()
+            })
+        {
+            return Err(ReviewError::VerifiedScopeMismatch(
+                "partial inspection cannot certify a full push-gate review".to_owned(),
+            ));
+        }
         let range = self.push_range.as_deref().ok_or_else(|| {
             ReviewError::VerifiedScopeMismatch("review has no diff range".to_owned())
         })?;
@@ -517,7 +549,11 @@ where
                 ..ListOpts::default()
             })
             .await?;
-        let molecule_id = self.resolve_molecule_id().await?;
+        let molecule_id = if self.inspection_scope.is_some() {
+            None
+        } else {
+            self.resolve_molecule_id().await?
+        };
         let base_commit = if self.push_range.is_some() || self.dispatch_scope == DispatchScope::Tree
         {
             None
@@ -535,11 +571,29 @@ where
             }
         };
         let spec_path = format!("specs/{}.md", self.label.as_str());
-        let (test_sources, judge_rubrics) = load_review_sources_for_lane(
-            &self.workspace,
-            &self.workspace.join(&spec_path),
-            self.lane,
-        )?;
+        let materials = if let Some(scope) = &self.inspection_scope {
+            super::inspection::load(
+                &self.workspace,
+                scope,
+                self.lane,
+                self.context_bead.as_ref(),
+            )?
+        } else {
+            let (test_sources, judge_rubrics) = load_review_sources_for_lane(
+                &self.workspace,
+                &self.workspace.join(&spec_path),
+                self.lane,
+            )?;
+            super::inspection::Materials {
+                test_sources,
+                judge_rubrics,
+                companion_paths: vec![],
+                pinned_context: review_dispatch_scope_pin(
+                    self.dispatch_scope,
+                    self.push_range.as_deref(),
+                ),
+            }
+        };
         let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratchpad_path =
             loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key);
@@ -559,19 +613,16 @@ where
         let skill_session = skill_plan.materialize(scratch_dir, &self.workspace)?;
         let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path);
         let ctx = ReviewContext {
-            pinned_context: review_dispatch_scope_pin(
-                self.dispatch_scope,
-                self.push_range.as_deref(),
-            ),
+            pinned_context: materials.pinned_context,
             default_profile: default_profile_for_spec(&self.label),
             label: self.label.clone(),
             spec_path,
-            companion_paths: vec![],
+            companion_paths: materials.companion_paths,
             beads_summary: beads_summary(&beads),
             base_commit,
             molecule_id,
-            test_sources,
-            judge_rubrics,
+            test_sources: materials.test_sources,
+            judge_rubrics: materials.judge_rubrics,
             scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
             style_rules: self.style_rules.clone(),
             lane: self.lane,
@@ -955,26 +1006,21 @@ where
             } else {
                 marker
             };
-        if let (Some(path), Some(range)) = (
+        if let (Some(path), Some(verified)) = (
             self.resolve_review_log_for_marker(),
-            self.push_range.as_ref(),
+            self.verified_scope.as_ref(),
         ) {
-            let tree_oid = self.verified_scope.as_ref().map_or_else(
-                || loom_driver::git::head_tree_oid_sync(&self.workspace).map(|oid| oid.to_string()),
-                |verified| Ok(verified.tree_oid().to_owned()),
-            )?;
-            let config_digest = self.verified_scope.as_ref().map_or_else(
-                || pre_commit_config_digest(&self.workspace),
-                |verified| Ok(verified.config_digest().to_owned()),
-            )?;
+            self.require_matching_verified_scope()?;
             let run = GateRun {
                 phase: GatePhase::Review,
-                push_range: range.clone(),
-                tree_oid,
-                config_digest,
+                push_range: verified.push_range().to_owned(),
+                tree_oid: verified.tree_oid().to_owned(),
+                config_digest: verified.config_digest().to_owned(),
                 log_path: path.clone(),
                 exit_code: Some(outcome.exit_code),
-                status: if outcome.exit_code == 0 && effective_marker.is_some() {
+                status: if outcome.exit_code == 0
+                    && matches!(typed_outcome, ReviewOutcome::Complete)
+                {
                     GateRunStatus::Success
                 } else {
                     GateRunStatus::Failed
@@ -1185,26 +1231,6 @@ where
         // Best-effort: specs/harness.md § Verdict Gate — mint failures fall
         // through to prek's slow tier, never abort the push.
         let review_log_path = self.resolve_review_log_for_marker();
-        if let (Some(path), Some(range)) = (review_log_path.as_deref(), self.push_range.as_ref()) {
-            let tree =
-                loom_driver::git::head_tree_oid_sync(&self.workspace.join(".loom/integration"))
-                    .map_or_else(|_| String::new(), |oid| oid.to_string());
-            let marker = self
-                .effective_review_marker
-                .clone()
-                .unwrap_or(ExitSignal::Complete);
-            let config_digest = pre_commit_config_digest(&self.workspace)?;
-            append_gate_run_lifecycle_events(
-                path,
-                &GateRun::successful_review(
-                    range.clone(),
-                    tree,
-                    config_digest,
-                    path.to_path_buf(),
-                    marker,
-                ),
-            )?;
-        }
         let mut evidence = review_log_path
             .as_deref()
             .map(parse_gate_runs_from_jsonl)

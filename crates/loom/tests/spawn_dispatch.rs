@@ -1784,13 +1784,18 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         .iter()
         .position(|event| event["kind"] == "session_complete")
         .expect("session_complete index");
-    let push_gate_walk_index = parsed
+    let marker_routed_index = parsed
         .iter()
-        .position(|event| event["driver_kind"] == "push_gate_walk")
-        .expect("push_gate_walk event");
+        .position(|event| event["driver_kind"] == "marker_routed")
+        .expect("marker_routed event");
     assert!(
-        push_gate_walk_index > session_complete_index,
-        "push_gate_walk must follow the reviewer session; events={parsed:?}",
+        marker_routed_index > session_complete_index,
+        "inspection verdict must follow the reviewer session; events={parsed:?}",
+    );
+    assert!(
+        !parsed
+            .iter()
+            .any(|event| event["driver_kind"] == "push_gate_walk")
     );
 }
 

@@ -647,6 +647,35 @@ promotion errors or blocking on structural bd state — is owned by
 
 ### Commands surface — explicit scopes and status
 
+- `review`, `judge`, `rubric`, and `audit` inspections never publish, mint
+  markers, mutate Beads, or advance recovery iterations, independently of
+  internal environment flags and reviewer verdicts
+  [test](review_commands_are_read_only_without_internal_environment_flags)
+- Review `--bead` supplies intent metadata without acquiring a work-root lock
+  [test](review_bead_context_takes_no_work_root_lock)
+- Judge `--target` loads only the exact selected annotation's source and pins
+  its selector, excluding sibling targets and the rubric walk
+  [test](judge_target_selects_exact_annotation_and_preserves_selector)
+- Exact judge targets can span shared declarations in multiple specs; a
+  context label never filters those declarations
+  [test](judge_target_crosses_context_labels_and_deduplicates_shared_declarations)
+- Unknown, partial, glob-shaped, and wrong-tier judge targets fail before
+  backend dispatch
+  [test](judge_target_rejects_unknown_partial_and_wrong_tier_matches_before_dispatch)
+- CLI judge `--files` preserves workspace-wide judge selection rather than
+  applying test-input intersection
+  [test](judge_files_does_not_apply_test_input_intersection)
+- Partial inspections cannot consume full verified scope as push authorization
+  [test](partial_inspections_cannot_consume_full_verified_scope)
+- A full diff review consuming matching verified scope emits completed review
+  evidence and a parseable stdout handoff, without publishing itself
+  [test](only_full_matching_verified_review_produces_push_evidence)
+- Stale verified fingerprints fail before the reviewer is dispatched
+  [test](full_review_rejects_stale_verified_fingerprint_before_dispatch)
+- Concerns, malformed finding/marker pairs, blocked reviews, and missing
+  markers cannot produce completed push-gate review evidence
+  [test](rejected_review_walks_never_produce_completed_push_evidence)
+
 - Bare `loom gate` (no subcommand) prints `loom gate --help` —
   identical output to `loom gate --help`. No verifier runs, no cache
   read, no bd writes
@@ -1028,6 +1057,14 @@ selecting what kind of inspection or act path runs:
 | **`loom gate rubric`** | LLM judge, one lane | Runs only the rubric walk for an explicit `--diff` or `--tree` scope; skips criterion-attached judges. Inspection-only, like `review`. |
 | **`loom gate mint`** | Act | Materializes findings into bd work. `loom gate mint -m/--molecule <id>` promotes that molecule's deferred remediation batches after original work drains; `loom gate mint --tree` runs the standing safety-net sweep and creates or updates ready remediation batches under one active work epic when actionable findings remain. `mint` has no per-bead, diff, file, spec-filter, or target surface. Clarify-route findings still materialize as one `loom:clarify` bead per finding so each carries one `## Options — …` block. See [*Findings and Minting*](#findings-and-minting). |
 | **`loom gate verify-marker`** | Trust check | Reads `.loom/marker.json`, validates the current workspace fingerprint, and exits 0 iff the marker is well-formed and current. Diagnostic use on the CLI remains valid. The `pre-push-checks` wrapper performs the hook-coverage validation defined in *Marker* before short-circuiting any wrapped command; `verify-marker` is not registered as a standalone prek hook. |
+
+Inspection runs one reviewer session, not a recovery or publishing loop.
+Human live rendering goes to stderr; stdout carries result records and the
+terminal marker, so rendered prompt examples cannot become findings in a
+parent's handoff parser. `--bead` and internal context labels carry metadata,
+not scope filters or mutation authority. Only a full diff review consuming
+matching `VerifiedScope` can emit push-eligible completed review evidence;
+partial or ordinary unverified inspection cannot manufacture that evidence.
 
 Spec-specific target discovery is outside the gate command tree:
 `loom spec <label> --targets` prints annotation targets for a spec,

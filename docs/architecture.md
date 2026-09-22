@@ -87,6 +87,12 @@ Gate CLI flags become one `loom-gate::scope::Request`, then an immutable
 `Resolved` selection. Explicit files, diff-derived files, whole tree, and exact
 targets retain their distinct meanings; an empty diff is a finite empty set,
 not whole-tree authorization. Evidence seals remain separate from selection.
+Inspection runs one reviewer session without work-root locks or publication;
+bead/context labels are metadata, not filters. Exact judge targets retain
+selectors and matching declarations across specs. Only a full diff review
+consuming matching verified evidence can produce push-gate review evidence;
+partial inspection never does. Live inspection rendering uses stderr, leaving
+stdout free of prompt examples that could be mistaken for result records.
 
 Native LLM clients retain their public provider-specific types while sharing
 one private transport/conversion/event path for text and structured output.

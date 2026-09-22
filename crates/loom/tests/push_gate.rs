@@ -1,823 +1,627 @@
-//! End-to-end live-path tests for the four-condition push gate.
-//!
-//! Drives `loom gate review` against a Rust mock agent (mock-loom-agent
-//! under `LOOM_WRIX_BIN`) and a stub `bd` (bd-shim) so the test
-//! exercises `ProductionReviewController::review_loop` — the production
-//! wiring — rather than `decide_verdict` in isolation. The May-19 lesson
-//! pinned by `specs/harness.md` § FR9 is that unit tests on
-//! `decide_verdict` passed throughout while the real binary discarded
-//! exit codes; the live-path tests below are the contract that catches
-//! that class of regression next time.
-//!
-//! Scenarios mirror the four push-gate causes wired in
-//! `loom-workflow/src/review/runner.rs`:
-//!
-//! - `review-concern`: mock agent emits `LOOM_CONCERN: <token> -- <reason>`
-//!   as the sole final-line marker → push refused.
-//! - `integrity-finding`: a spec file in the molecule's diff scope
-//!   carries an unresolved `[check]` annotation → push refused and the
-//!   molecule's epic gets `loom:clarify` with the auto-`## Options — …`
-//!   block.
-//! - clean: mock agent emits `LOOM_COMPLETE` only and no integrity
-//!   findings surface → gate reaches the `Pushed` branch.
-//!
-//! Plus a live-path replay of the literal May-19 sequence — a `concern`
-//! line followed by a `LOOM_COMPLETE` line — to confirm that
-//! `parse_exit_signal` (A.13) picks the trailing marker through the
-//! real binary, not just the unit test. The rendered-template fixture
-//! that pins A.7's "emit only one" instruction lives next to the other
-//! review-template tests in `loom-templates/tests/render.rs`.
+//! Live inspection cannot publish, mutate Beads, or certify a partial review.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Output};
 
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+    use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+    use loom_driver::lock::LockManager;
+    use loom_driver::state::CacheDb;
+    use loom_gate::{
+        GateRun, HandoffEvidence, append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
+    };
 
-use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_driver::state::CacheDb;
-use loom_driver::testing::epic_fixture;
-use loom_workflow::review::DEFAULT_MAX_ITERATIONS;
-
-fn git_command() -> Command {
-    let mut command = Command::new("git");
-    loom_test_support::scrub_git_local_env(&mut command);
-    command
-}
-
-// -------------------------------------------------------------------
-// Workspace + state setup
-// -------------------------------------------------------------------
-
-/// Return an executable fake `wrix.prekHooks` directory for push-gate tests.
-fn fake_prek_hooks(workspace: &Path) -> PathBuf {
-    let hooks = workspace.join(".loom-test-prek-hooks");
-    std::fs::create_dir_all(&hooks).expect("mkdir fake prek hooks");
-    for hook in ["pre-commit", "pre-push"] {
-        let script = hooks.join(hook);
-        std::fs::write(
-            &script,
-            loom_test_support::bash_script("set -euo pipefail\nexit 0\n"),
-        )
-        .expect("write fake hook");
-        let mut perm = std::fs::metadata(&script)
-            .expect("stat fake hook")
-            .permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&script, perm).expect("chmod fake hook");
+    struct Fixture {
+        dir: tempfile::TempDir,
+        home: PathBuf,
+        bin: PathBuf,
+        state: PathBuf,
+        base: String,
     }
-    hooks
-}
 
-/// Initialise `workspace` as a real git repo + bare origin + loom-owned
-/// integration workspace at `.loom/integration/`, then commit the
-/// caller-provided seed content (any `specs/` files written before this
-/// call land in the seed commit). `loom gate review`'s integrity walk
-/// opens a [`GitClient`] and queries `git diff <base>..HEAD -- specs/`;
-/// the push gate exercises [`GitClient::push`] which operates inside the
-/// loom workspace, so both must be materialized before the gate runs.
-/// Returns the seed commit's full SHA.
-fn init_workspace_repo(workspace: &Path) -> String {
-    for args in [
-        &["init", "-q", "-b", "main"][..],
-        &["config", "user.email", "test@example.com"][..],
-        &["config", "user.name", "Test"][..],
-        &["config", "commit.gpgsign", "false"][..],
-    ] {
-        let status = git_command()
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();
+            let base = git(dir.path(), &["rev-parse", "HEAD"]);
+            let home = dir.path().join(".loom/fixture");
+            let bin = home.join("bin");
+            let state = home.join("bd-state");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::create_dir_all(&state).unwrap();
+            std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_bd-shim"), bin.join("bd")).unwrap();
+            executable(
+                &bin.join("wrix"),
+                &format!(
+                    "set -euo pipefail\nprintf '%s\\n' \"$*\" >> \"$LOOM_TEST_WRIX_LOG\"\nexec {:?} \"$@\"\n",
+                    env!("CARGO_BIN_EXE_mock-loom-agent")
+                ),
+            );
+            executable(
+                &bin.join("prek"),
+                "set -euo pipefail\nprintf '%s\\n' \"$*\" >> \"$LOOM_TEST_PREK_LOG\"\nexit 0\n",
+            );
+            std::fs::write(home.join("profiles.json"), r#"{"base":{"pi":{"ref":"fixture-pi","source":"/fixture/image","source_kind":"nix-descriptor"}}}"#).unwrap();
+            let bead = state.join("lm-work");
+            std::fs::create_dir_all(&bead).unwrap();
+            for (field, value) in [
+                ("title", "active work"),
+                ("description", "intent"),
+                ("status", "open"),
+                ("priority", "2"),
+                ("issue_type", "epic"),
+                ("labels", "loom:active\nspec:acme\n"),
+            ] {
+                std::fs::write(bead.join(field), value).unwrap();
+            }
+            let fixture = Self {
+                dir,
+                home,
+                bin,
+                state,
+                base,
+            };
+            fixture.spec("acme", "- Finding status output\n");
+            fixture.commit();
+            let db = fixture.db();
+            db.rebuild(
+                fixture.root(),
+                &loom_driver::testing::epic_fixture(
+                    MoleculeId::new("lm-work").unwrap(),
+                    SpecLabel::new("acme").unwrap(),
+                    Some(fixture.base.clone()),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            db.set_iteration(&MoleculeId::new("lm-work").unwrap(), 7)
+                .unwrap();
+            std::fs::write(
+                fixture.root().join(".loom/marker.json"),
+                "existing operator marker\n",
+            )
+            .unwrap();
+            fixture
+        }
+
+        fn root(&self) -> &Path {
+            self.dir.path()
+        }
+        fn db(&self) -> CacheDb {
+            CacheDb::open(self.root().join(".loom/cache.db")).unwrap()
+        }
+        fn range(&self) -> String {
+            format!(
+                "{}..{}",
+                self.base,
+                git(self.root(), &["rev-parse", "HEAD"])
+            )
+        }
+        fn spec(&self, label: &str, body: &str) {
+            std::fs::create_dir_all(self.root().join("specs")).unwrap();
+            std::fs::write(
+                self.root().join(format!("specs/{label}.md")),
+                format!("# {label}\n\n## Success Criteria\n\n{body}"),
+            )
+            .unwrap();
+        }
+        fn file(&self, path: &str, body: &str) {
+            let path = self.root().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        fn commit(&self) {
+            loom_driver::git::commit_all_in(self.root(), "fixture content").unwrap();
+        }
+        fn command(&self, args: &[&str], mode: &str) -> Command {
+            let ambient = std::env::var_os("PATH").unwrap_or_default();
+            let mut paths = vec![self.bin.clone()];
+            paths.extend(std::env::split_paths(&ambient));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_loom"));
+            command
+                .args(["--workspace"])
+                .arg(self.root())
+                .args(["--host-key", "--agent", "pi", "gate"])
+                .args(args)
+                .env("PATH", std::env::join_paths(paths).unwrap())
+                .env("LOOM_WRIX_BIN", self.bin.join("wrix"))
+                .env("LOOM_TEST_WRIX_LOG", self.home.join("wrix.log"))
+                .env("LOOM_TEST_PREK_LOG", self.home.join("prek.log"))
+                .env("LOOM_TEST_AGENT_MODE", mode)
+                .env("LOOM_PROFILES_MANIFEST", self.home.join("profiles.json"))
+                .env("BD_STATE_DIR", &self.state)
+                .env("XDG_STATE_HOME", self.home.join("user-state"))
+                .env("GIT_TRACE2_EVENT", self.home.join("git.jsonl"))
+                .env_remove("LOOM_INSIDE")
+                .env_remove("LOOM_WRIX_SPAWN_BIN")
+                .env_remove("LOOM_REVIEW_INSPECTION_ONLY")
+                .env_remove("LOOM_REVIEW_EMIT_STDOUT")
+                .env_remove("LOOM_REVIEW_SPEC_LABEL")
+                .env_remove("LOOM_REVIEW_PHASE_WHEN_MILLIS")
+                .env_remove("LOOM_REVIEW_VERIFIED_LOG");
+            loom_test_support::scrub_git_local_env(&mut command);
+            command
+        }
+        fn events(&self) -> Vec<loom_events::AgentEvent> {
+            self.logs()
+                .into_iter()
+                .flat_map(|path| {
+                    std::fs::read_to_string(path)
+                        .unwrap()
+                        .lines()
+                        .map(|line| serde_json::from_str(line).unwrap())
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        }
+        fn logs(&self) -> Vec<PathBuf> {
+            let path = self.root().join(".loom/logs/review");
+            if !path.exists() {
+                return vec![];
+            }
+            std::fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+                .collect()
+        }
+        fn prompt(&self) -> String {
+            let prompts: Vec<_> = self
+                .events()
+                .into_iter()
+                .filter_map(|event| match event {
+                    loom_events::AgentEvent::AgentInput { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                prompts.len(),
+                1,
+                "one inspection session, never a recovery loop"
+            );
+            prompts.into_iter().next().unwrap()
+        }
+        fn review_runs(&self) -> Vec<GateRun> {
+            self.logs()
+                .iter()
+                .flat_map(|path| parse_gate_runs_from_jsonl(path))
+                .collect()
+        }
+        fn verified_log(&self) -> PathBuf {
+            let path = self.home.join("verify.jsonl");
+            let run = GateRun::successful_verify(
+                self.range(),
+                loom_driver::git::head_tree_oid_sync(self.root())
+                    .unwrap()
+                    .to_string(),
+                blake3::hash(&std::fs::read(self.root().join(".pre-commit-config.yaml")).unwrap())
+                    .to_hex()
+                    .to_string(),
+                path.clone(),
+                loom_gate::pre_push_hook_coverage_from_config(self.root()).unwrap(),
+            );
+            append_gate_run_lifecycle_events(&path, &run).unwrap();
+            assert!(
+                HandoffEvidence::from_runs(parse_gate_runs_from_jsonl(&path))
+                    .verified
+                    .is_some()
+            );
+            path
+        }
+        fn assert_read_only(&self, before: &BTreeMap<PathBuf, Vec<u8>>) {
+            assert_eq!(
+                &bead_files(&self.state),
+                before,
+                "inspection cannot write Beads state"
+            );
+            let bd_log =
+                std::fs::read_to_string(self.state.join(".invocations.log")).unwrap_or_default();
+            assert!(
+                !bd_log.is_empty(),
+                "bd instrumentation must observe real reads"
+            );
+            for line in bd_log.lines() {
+                assert!(
+                    matches!(
+                        line.split_whitespace().next(),
+                        Some("list" | "show" | "find")
+                    ),
+                    "unexpected bd operation: {line}"
+                );
+            }
+            let wrix_log = std::fs::read_to_string(self.home.join("wrix.log")).unwrap();
+            assert_eq!(
+                wrix_log.lines().count(),
+                1,
+                "only one backend spawn: {wrix_log}"
+            );
+            assert!(wrix_log.starts_with("spawn "), "no beads push: {wrix_log}");
+            let trace = std::fs::read_to_string(self.home.join("git.jsonl")).unwrap();
+            let git_commands: Vec<_> = trace
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter(|value| value["event"] == "cmd_name")
+                .collect();
+            assert!(
+                !git_commands.is_empty(),
+                "Git trace must record actual commands"
+            );
+            for command in git_commands {
+                assert!(
+                    !matches!(
+                        command["name"].as_str(),
+                        Some(
+                            "push"
+                                | "commit"
+                                | "merge"
+                                | "rebase"
+                                | "reset"
+                                | "clean"
+                                | "stash"
+                                | "update-ref"
+                        )
+                    ),
+                    "inspection mutated Git: {command}"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(self.root().join(".loom/marker.json")).unwrap(),
+                "existing operator marker\n"
+            );
+            assert_eq!(
+                self.db()
+                    .work_epic(&MoleculeId::new("lm-work").unwrap())
+                    .unwrap()
+                    .unwrap()
+                    .iteration_count,
+                7
+            );
+        }
+    }
+
+    fn executable(path: &Path, body: &str) {
+        std::fs::write(path, loom_test_support::bash_script(body)).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fn git(workspace: &Path, args: &[&str]) -> String {
+        let mut command = Command::new("git");
+        loom_test_support::scrub_git_local_env(&mut command);
+        let output = command
             .arg("-C")
             .arg(workspace)
             .args(args)
-            .status()
-            .expect("git spawn");
-        assert!(status.success(), "git {args:?} failed: {status}");
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
-    // .gitignore must shield the state dirs the test creates inside the
-    // workspace; otherwise `git diff` would surface them on every run.
-    std::fs::write(
-        workspace.join(".gitignore"),
-        "bd-state/\nbd-bin/\nbin/\n.loom-test-state/\n.loom/\n.wrix/\n*.tar\nprofile-images.json\n",
-    )
-    .expect("write .gitignore");
-    let status = git_command()
-        .arg("-C")
-        .arg(workspace)
-        .args(["add", "."])
-        .status()
-        .expect("git add spawn");
-    assert!(status.success(), "git add failed: {status}");
-    let status = git_command()
-        .arg("-C")
-        .arg(workspace)
-        .args(["commit", "-q", "-m", "seed"])
-        .status()
-        .expect("git commit spawn");
-    assert!(status.success(), "git commit failed: {status}");
-
-    let origin_path = loom_driver::git::bare_origin_path(workspace);
-    if let Some(parent) = origin_path.parent() {
-        std::fs::create_dir_all(parent).expect("mkdir origin parent");
+    fn bead_files(state: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        walkdir::WalkDir::new(state)
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_type().is_file() && entry.file_name() != ".invocations.log")
+            .map(|entry| {
+                (
+                    entry.path().strip_prefix(state).unwrap().to_owned(),
+                    std::fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect()
     }
-    std::fs::create_dir_all(&origin_path).expect("mkdir origin");
-    let status = git_command()
-        .arg("-C")
-        .arg(&origin_path)
-        .args(["init", "-q", "--bare", "-b", "main"])
-        .status()
-        .expect("bare init spawn");
-    assert!(status.success(), "bare init failed: {status}");
-    let origin_url = origin_path.to_string_lossy().into_owned();
-    let status = git_command()
-        .arg("-C")
-        .arg(workspace)
-        .args(["remote", "add", "origin", &origin_url])
-        .status()
-        .expect("git remote add spawn");
-    assert!(status.success(), "git remote add failed: {status}");
-    let status = git_command()
-        .arg("-C")
-        .arg(workspace)
-        .args(["push", "-q", "-u", "origin", "main"])
-        .status()
-        .expect("initial push spawn");
-    assert!(status.success(), "initial push failed: {status}");
-
-    let loom_workspace = workspace.join(".loom/integration");
-    if let Some(parent) = loom_workspace.parent() {
-        std::fs::create_dir_all(parent).expect("mkdir loom parent");
+    fn success(output: Output) -> String {
+        assert!(
+            output.status.success(),
+            "stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
     }
-    loom_driver::git::clone_loom_workspace(&origin_url, &loom_workspace, "main")
-        .expect("clone loom workspace");
-    for args in [
-        &["config", "user.email", "test@example.com"][..],
-        &["config", "user.name", "Test"][..],
-        &["config", "commit.gpgsign", "false"][..],
-    ] {
-        let status = git_command()
-            .arg("-C")
-            .arg(&loom_workspace)
-            .args(args)
-            .status()
-            .expect("git spawn");
-        assert!(status.success(), "loom git {args:?} failed: {status}");
-    }
-    let hooks = fake_prek_hooks(workspace);
-    loom_driver::git::write_hooks_config(&loom_workspace, &hooks).expect("write hooks config");
 
-    let out = git_command()
-        .arg("-C")
-        .arg(workspace)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .expect("git rev-parse spawn");
-    assert!(out.status.success(), "git rev-parse failed");
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
-}
-
-/// Stage every file under `workspace`, commit it with `msg`, and return
-/// the new HEAD sha. Used by the integrity-finding scenario to land a
-/// spec mutation between the molecule's `base_commit` and `HEAD`.
-fn commit_all(workspace: &Path, msg: &str) -> String {
-    let status = git_command()
-        .arg("-C")
-        .arg(workspace)
-        .args(["add", "."])
-        .status()
-        .expect("git add spawn");
-    assert!(status.success(), "git add failed");
-    let status = git_command()
-        .arg("-C")
-        .arg(workspace)
-        .args(["commit", "-q", "-m", msg])
-        .status()
-        .expect("git commit spawn");
-    assert!(status.success(), "git commit failed");
-    let out = git_command()
-        .arg("-C")
-        .arg(workspace)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .expect("git rev-parse spawn");
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
-}
-
-/// Seed a bd-shim bead directory at `state_dir/<id>/` as an `epic`.
-/// The push-gate review controller resolves the molecule via
-/// `bd find --type=epic --label=spec:<X> --status=open`, so a `task`
-/// seed would not surface as a recovery epic.
-fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels: &[&str]) {
-    let bead_dir = state_dir.join(id);
-    std::fs::create_dir_all(&bead_dir).expect("mkdir bead dir");
-    std::fs::write(bead_dir.join("title"), title).expect("write title");
-    std::fs::write(bead_dir.join("description"), description).expect("write description");
-    std::fs::write(bead_dir.join("status"), "open").expect("write status");
-    std::fs::write(bead_dir.join("priority"), "2").expect("write priority");
-    std::fs::write(bead_dir.join("issue_type"), "epic").expect("write issue_type");
-    std::fs::write(bead_dir.join("labels"), labels.join("\n")).expect("write labels");
-}
-
-/// Install the `bd-shim` binary as `bd` on a fresh PATH entry. Returns the
-/// directory the caller prepends to `PATH`; mock-loom-agent handles both Wrix
-/// spawn and `wrix beads push` calls through `LOOM_WRIX_BIN`.
-fn install_path_shims(workspace: &Path) -> PathBuf {
-    let bin_dir = workspace.join("bd-bin");
-    std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
-    let bd_path = bin_dir.join("bd");
-    let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
-    if matches!(std::os::unix::fs::symlink(&source, &bd_path), Ok(())) {
-    } else {
-        std::fs::copy(&source, &bd_path).expect("copy bd-shim");
-        let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
-    }
-    bin_dir
-}
-
-/// Write a `profile-images.json` pointing at an empty tar source. The
-/// mock agent never instantiates the image, but
-/// `ProductionReviewController::run_review` resolves the `base` profile
-/// through the manifest before dispatch; a missing entry would surface
-/// as `ProfileError::UnknownProfile`.
-fn write_minimal_manifest(workspace: &Path) -> PathBuf {
-    let source = workspace.join("base.tar");
-    std::fs::write(&source, "").expect("write base.tar");
-    let manifest = workspace.join("profile-images.json");
-    let body = format!(
-        r#"{{"base": {{"pi": {{"ref":"localhost/wrix-base-pi:test","source":{source:?}, "source_kind": "nix-descriptor"}}, "claude": {{"ref":"localhost/wrix-base-claude:test","source":{source:?}, "source_kind": "nix-descriptor"}}, "direct": {{"ref":"localhost/wrix-base-direct:test","source":{source:?}, "source_kind": "nix-descriptor"}}}}}}"#,
-        source = source.display().to_string(),
-    );
-    std::fs::write(&manifest, body).expect("write manifest");
-    manifest
-}
-
-/// Seed `cache.db` with one active molecule for `label` whose
-/// `base_commit` points at `base_sha`. `ProductionReviewController`'s
-/// `integrity_findings()` short-circuits to an empty list when this row
-/// is missing, so every scenario that wants to exercise the integrity
-/// branch must call this with a real seed commit. Resolution itself
-/// goes through `bd find` against the bd-shim's epic bead seed.
-fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &str) {
-    std::fs::create_dir_all(workspace.join(".loom")).expect("mkdir state dir");
-    let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache.db");
-    db.rebuild(
-        workspace,
-        &epic_fixture(
-            MoleculeId::new(mol_id).unwrap(),
-            SpecLabel::new(label).unwrap(),
-            Some(base_sha.to_string()),
-        )
-        .unwrap(),
-    )
-    .expect("rebuild cache.db");
-    db.upsert_spec(
-        &SpecLabel::new(label).unwrap(),
-        &format!("specs/{label}.md"),
-    )
-    .expect("seed spec");
-    drop(db);
-}
-
-/// Drive `loom gate review --diff <range>` against the wired stubs and
-/// return the captured `Output`.
-fn run_loom_gate_review(
-    workspace: &Path,
-    bin_dir: &Path,
-    state_dir: &Path,
-    manifest: &Path,
-    agent_mode: &str,
-    spec_label: &str,
-) -> std::process::Output {
-    let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open state db");
-    let base = db
-        .spec_epic(&SpecLabel::new(spec_label).unwrap())
-        .expect("fixture spec epic lookup")
-        .and_then(|row| row.todo_cursor)
-        .expect("base commit");
-    let diff_range = format!("{base}..HEAD");
-    let path_var = std::env::var_os("PATH").unwrap_or_default();
-    let mut entries: Vec<PathBuf> = vec![bin_dir.to_path_buf()];
-    entries.extend(std::env::split_paths(&path_var));
-    let new_path = std::env::join_paths(entries).expect("join PATH");
-
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
-    let mock_agent = env!("CARGO_BIN_EXE_mock-loom-agent");
-
-    let mut cmd = Command::new(loom_bin);
-    cmd.arg("--workspace")
-        .arg(workspace)
-        .arg("--host-key")
-        .arg("--agent")
-        .arg("pi")
-        .arg("gate")
-        .arg("review")
-        .arg("--diff")
-        .arg(diff_range);
-    cmd.env("PATH", new_path)
-        .env("LOOM_WRIX_BIN", mock_agent)
-        .env_remove("LOOM_WRIX_SPAWN_BIN")
-        .env("LOOM_TEST_AGENT_MODE", agent_mode)
-        .env("LOOM_BIN", loom_bin)
-        .env("LOOM_PROFILES_MANIFEST", manifest)
-        .env("WRIX_PREK_HOOKS", fake_prek_hooks(workspace))
-        .env("BD_STATE_DIR", state_dir)
-        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
-        .env_remove("LOOM_INSIDE")
-        .output()
-        .expect("spawn loom")
-}
-
-fn read_invocation_log(state_dir: &Path) -> String {
-    std::fs::read_to_string(state_dir.join(".invocations.log")).unwrap_or_default()
-}
-
-fn read_field(state_dir: &Path, id: &str, field: &str) -> String {
-    std::fs::read_to_string(state_dir.join(id).join(field)).unwrap_or_default()
-}
-
-fn read_labels(state_dir: &Path, id: &str) -> Vec<String> {
-    read_field(state_dir, id, "labels")
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect()
-}
-
-// -------------------------------------------------------------------
-// push_gate_walk event introspection
-// -------------------------------------------------------------------
-
-/// Read every `driver_event` record from the review phase JSONL log
-/// and return them in emission order. Empty when no review log was
-/// written (e.g. the controller errored before opening the phase log
-/// or no `emit_driver_event` call landed for this phase).
-fn read_driver_events(workspace: &Path, _label: &str) -> Vec<serde_json::Value> {
-    let logs_dir = workspace.join(".loom/logs/review");
-    let Ok(entries) = std::fs::read_dir(&logs_dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
-        .filter(|p| {
-            p.file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.starts_with("review-"))
-        })
-        .collect();
-    paths.sort();
-    let mut out = Vec::new();
-    for path in paths {
-        let body = std::fs::read_to_string(&path).unwrap_or_default();
-        for line in body.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            if v["kind"] == "driver_event" {
-                out.push(v);
+    #[test]
+    fn review_commands_are_read_only_without_internal_environment_flags() {
+        for command in ["review", "rubric", "judge", "audit"] {
+            for tree in [false, true] {
+                for mode in ["complete-marker", "finding-concern"] {
+                    let fixture = Fixture::new();
+                    let before = bead_files(&fixture.state);
+                    let range = fixture.range();
+                    let args = if tree {
+                        vec![command, "--tree"]
+                    } else {
+                        vec![command, "--diff", &range]
+                    };
+                    let stdout = success(fixture.command(&args, mode).output().unwrap());
+                    assert!(
+                        stdout.trim_end().ends_with("LOOM_COMPLETE")
+                            || stdout.lines().last().unwrap().starts_with("LOOM_CONCERN:"),
+                        "terminal protocol: {stdout}"
+                    );
+                    fixture.assert_read_only(&before);
+                    assert!(
+                        fixture.review_runs().is_empty(),
+                        "unverified inspection cannot produce ReviewedScope"
+                    );
+                }
             }
         }
     }
-    out
-}
 
-/// Pull the first `push_gate_refuse` event's `cause` field, if any.
-fn refuse_cause(events: &[serde_json::Value]) -> Option<String> {
-    events
-        .iter()
-        .find(|e| e["driver_kind"] == "push_gate_refuse")
-        .and_then(|e| e["payload"]["cause"].as_str())
-        .map(str::to_string)
-}
+    #[test]
+    fn review_bead_context_takes_no_work_root_lock() {
+        let fixture = Fixture::new();
+        let manager =
+            LockManager::with_state_home(fixture.root(), fixture.home.join("user-state")).unwrap();
+        let _guard = manager
+            .acquire_work_root(&BeadId::new("lm-work").unwrap())
+            .unwrap();
+        let before = bead_files(&fixture.state);
+        success(
+            fixture
+                .command(
+                    &["review", "--diff", &fixture.range(), "--bead", "lm-work"],
+                    "complete-marker",
+                )
+                .output()
+                .unwrap(),
+        );
+        assert!(fixture.prompt().contains("Intent/context bead: `lm-work`"));
+        fixture.assert_read_only(&before);
+    }
 
-/// True iff any recorded bd-shim invocation matches `bd update <id>
-/// --add-label loom:clarify`.
-fn bd_applied_clarify(log: &str, target_id: &str) -> bool {
-    log.lines().any(|line| {
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        tokens.first() == Some(&"update")
-            && tokens.get(1) == Some(&target_id)
-            && tokens.contains(&"--add-label")
-            && tokens.contains(&"loom:clarify")
-    })
-}
+    #[test]
+    fn judge_target_selects_exact_annotation_and_preserves_selector() {
+        let fixture = Fixture::new();
+        let target = "../judges/shared.sh#selected";
+        fixture.spec("acme", &format!("- wanted [judge]({target})\n- sibling [judge](../judges/shared.sh#sibling)\n- unrelated [judge](../judges/missing.sh#other)\n- unrelated test [test](../tests/missing.sh)\n"));
+        fixture.file(
+            "judges/shared.sh",
+            "selected() { echo selected; }\nsibling() { echo sibling; }\n",
+        );
+        fixture.commit();
+        let before = bead_files(&fixture.state);
+        success(
+            fixture
+                .command(&["judge", "--target", target], "complete-marker")
+                .output()
+                .unwrap(),
+        );
+        let prompt = fixture.prompt();
+        assert!(prompt.contains(&format!("--target {target}")));
+        assert!(prompt.contains("selected() { echo selected; }"));
+        assert!(!prompt.contains("../judges/shared.sh#sibling"));
+        assert!(!prompt.contains("../judges/missing.sh#other"));
+        assert!(!prompt.contains("## Review Dimensions"));
+        fixture.assert_read_only(&before);
+        assert!(fixture.review_runs().is_empty());
+    }
 
-// -------------------------------------------------------------------
-// Scenario 2 — `LOOM_CONCERN: verifier-bypass -- …` refuses the push
-// -------------------------------------------------------------------
+    #[test]
+    fn judge_target_crosses_context_labels_and_deduplicates_shared_declarations() {
+        for context in [None, Some("acme")] {
+            let fixture = Fixture::new();
+            let target = "../judges/wanted.sh::selected";
+            for label in ["beta", "gamma"] {
+                fixture.spec(label, &format!("- wanted [judge]({target})\n"));
+            }
+            fixture.file("judges/wanted.sh", "UNIQUE_SELECTED_RUBRIC");
+            fixture.commit();
+            let mut command = fixture.command(&["judge", "--target", target], "complete-marker");
+            if let Some(context) = context {
+                command.env("LOOM_REVIEW_SPEC_LABEL", context);
+            }
+            success(command.output().unwrap());
+            let prompt = fixture.prompt();
+            assert_eq!(prompt.matches("UNIQUE_SELECTED_RUBRIC").count(), 1);
+            for label in ["beta", "gamma"] {
+                assert!(prompt.contains(&format!("in specs/{label}.md")));
+            }
+        }
+    }
 
-/// Production wiring requirement (FR9): a reviewer agent emitting
-/// `LOOM_CONCERN: <token> -- <reason>` as its sole final-line marker
-/// MUST refuse the push with cause `review-concern`. The earlier
-/// label-only verdict path silently let the molecule push despite the
-/// concern; this test pins the inverse contract against `loom gate
-/// review`'s real wiring rather than a `decide_verdict` unit fake.
-#[test]
-fn push_gate_refuses_on_review_concern_via_live_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    let label = "pushconcern";
+    #[test]
+    fn judge_target_rejects_unknown_partial_and_wrong_tier_matches_before_dispatch() {
+        let fixture = Fixture::new();
+        fixture.spec(
+            "acme",
+            "- selected [judge](../judge.sh#selected)\n- check [check](true)\n",
+        );
+        fixture.file("judge.sh", "selected() {}\n");
+        fixture.commit();
+        for target in ["../judge.sh", "../judge.sh#select", "../judge.sh#*", "true"] {
+            let output = fixture
+                .command(&["judge", "--target", target], "complete-marker")
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "target {target} cannot select a judge"
+            );
+            assert!(!fixture.home.join("wrix.log").exists());
+            assert!(fixture.events().is_empty());
+        }
+    }
 
-    // No diff scope between base_commit and HEAD → integrity walk yields
-    // empty findings; only the review marker drives the verdict.
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join(format!("specs/{label}.md")),
-        "## Success Criteria\n\n",
-    )
-    .unwrap();
+    #[test]
+    fn full_review_rejects_stale_verified_fingerprint_before_dispatch() {
+        let fixture = Fixture::new();
+        let log = fixture.verified_log();
+        fixture.file(".pre-commit-config.yaml", "repos: []\n");
+        let output = fixture
+            .command(&["review", "--diff", &fixture.range()], "complete-marker")
+            .env("LOOM_REVIEW_VERIFIED_LOG", log)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("does not match verified scope"));
+        assert!(!fixture.home.join("wrix.log").exists());
+        assert!(fixture.review_runs().is_empty());
+    }
 
-    let base_sha = init_workspace_repo(workspace);
+    #[test]
+    fn judge_files_does_not_apply_test_input_intersection() {
+        let fixture = Fixture::new();
+        fixture.spec("acme", "- first [judge](../judges/one.sh#first)\n");
+        fixture.spec("beta", "- second [judge](../judges/two.sh#second)\n");
+        fixture.file("judges/one.sh", "FIRST_JUDGE_RUBRIC");
+        fixture.file("judges/two.sh", "SECOND_JUDGE_RUBRIC");
+        fixture.commit();
+        let before = bead_files(&fixture.state);
+        success(
+            fixture
+                .command(&["judge", "--files", "unrelated.txt"], "complete-marker")
+                .output()
+                .unwrap(),
+        );
+        let prompt = fixture.prompt();
+        assert!(prompt.contains("FIRST_JUDGE_RUBRIC") && prompt.contains("SECOND_JUDGE_RUBRIC"));
+        assert!(prompt.contains("--files") && prompt.contains("unrelated.txt"));
+        fixture.assert_read_only(&before);
+    }
 
-    let state_dir = workspace.join("bd-state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    seed_bead(
-        &state_dir,
-        "lm-mol",
-        "molecule epic",
-        "Epic for push-gate review-concern test.\n",
-        &["spec:pushconcern"],
-    );
+    #[test]
+    fn only_full_matching_verified_review_produces_push_evidence() {
+        let fixture = Fixture::new();
+        let verified_log = fixture.verified_log();
+        let before = bead_files(&fixture.state);
+        let stdout = success(
+            fixture
+                .command(&["review", "--diff", &fixture.range()], "complete-marker")
+                .env("LOOM_REVIEW_VERIFIED_LOG", verified_log)
+                .env("LOOM_REVIEW_EMIT_STDOUT", "1")
+                .output()
+                .unwrap(),
+        );
+        let walk = loom_workflow::review::WalkOutput::from_stdout(
+            &stdout,
+            loom_workflow::review::DispatchScope::PerBead,
+            &loom_workflow::review::WorkspaceFindingValidator::new(fixture.root()),
+        );
+        assert!(matches!(
+            walk.terminal(),
+            loom_workflow::review::TerminalSurface::Complete
+        ));
+        assert!(
+            walk.findings().is_empty() && walk.finding_errors().is_empty(),
+            "rendered context must not pollute the parent handoff: {stdout}"
+        );
+        let evidence = HandoffEvidence::from_runs(fixture.review_runs());
+        assert_eq!(evidence.reviewed.unwrap().push_range(), fixture.range());
+        fixture.assert_read_only(&before);
+    }
 
-    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
+    #[test]
+    fn partial_inspections_cannot_consume_full_verified_scope() {
+        for args in [
+            vec!["judge", "--diff"],
+            vec!["rubric", "--diff"],
+            vec!["review", "--tree"],
+            vec!["judge", "--files", "README.md"],
+            vec!["judge", "--target", "../judge.sh#selected"],
+        ] {
+            let fixture = Fixture::new();
+            fixture.spec("acme", "- selected [judge](../judge.sh#selected)\n");
+            fixture.file("judge.sh", "selected() { echo selected; }\n");
+            fixture.commit();
+            let range = fixture.range();
+            let mut args = args;
+            if args.last() == Some(&"--diff") {
+                args.push(&range);
+            }
+            let verified_log = fixture.verified_log();
+            let output = fixture
+                .command(&args, "complete-marker")
+                .env("LOOM_REVIEW_VERIFIED_LOG", verified_log)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("partial inspection"));
+            assert!(
+                !fixture.home.join("wrix.log").exists(),
+                "reject before agent dispatch"
+            );
+            assert!(fixture.review_runs().is_empty());
+        }
+    }
 
-    let bin_dir = install_path_shims(workspace);
-    let manifest = write_minimal_manifest(workspace);
+    #[test]
+    fn rejected_review_walks_never_produce_completed_push_evidence() {
+        for mode in [
+            "finding-concern",
+            "finding-complete",
+            "blocked-marker",
+            "no-marker",
+        ] {
+            let fixture = Fixture::new();
+            let before = bead_files(&fixture.state);
+            let verified_log = fixture.verified_log();
+            let stdout = success(
+                fixture
+                    .command(&["review", "--diff", &fixture.range()], mode)
+                    .env("LOOM_REVIEW_VERIFIED_LOG", verified_log)
+                    .output()
+                    .unwrap(),
+            );
+            if mode == "finding-complete" {
+                assert!(
+                    stdout.contains("LOOM_FINDING:")
+                        && stdout.trim_end().ends_with("LOOM_COMPLETE"),
+                    "malformed pairing fixture: {stdout}"
+                );
+            }
+            let runs = fixture.review_runs();
+            assert_eq!(
+                runs.len(),
+                1,
+                "record failed evidence, never silently authorize: {stdout}"
+            );
+            assert!(HandoffEvidence::from_runs(runs).reviewed.is_none());
+            fixture.assert_read_only(&before);
+        }
+    }
 
-    let output = run_loom_gate_review(
-        workspace,
-        &bin_dir,
-        &state_dir,
-        &manifest,
-        "concern-marker",
-        label,
-    );
+    #[test]
+    fn concern_then_complete_live_path_remains_inspection_only() {
+        let fixture = Fixture::new();
+        let before = bead_files(&fixture.state);
+        let stdout = success(
+            fixture
+                .command(
+                    &["review", "--diff", &fixture.range()],
+                    "concern-then-complete",
+                )
+                .output()
+                .unwrap(),
+        );
+        assert!(stdout.contains("inspection Complete"));
+        assert!(stdout.trim_end().ends_with("LOOM_COMPLETE"));
+        fixture.assert_read_only(&before);
+    }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let log = read_invocation_log(&state_dir);
-    let events = read_driver_events(workspace, label);
-
-    assert!(
-        output.status.success(),
-        "loom gate review must exit 0 on a refused push (the verdict gate \
-         applies labels and exits without erroring).\n\
-         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
-    );
-    assert_eq!(
-        refuse_cause(&events).as_deref(),
-        Some("review-concern"),
-        "push_gate_refuse must tag cause=review-concern. events:\n{events:#?}\n\
-         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
-    );
-    // No remote is configured; a refused push must NOT shell out to
-    // `git push` (which would surface as `GitPushFailed` in stderr).
-    assert!(
-        !stderr.contains("GitPushFailed"),
-        "push must NOT have been attempted on a review-concern verdict. \
-         stderr={stderr}\nbd-shim log:\n{log}",
-    );
-}
-
-// -------------------------------------------------------------------
-// Scenario 3 — integrity finding terminal at the push gate
-// -------------------------------------------------------------------
-
-/// FR9 condition 4: an `UnresolvedAnnotation` finding within the
-/// molecule's diff scope MUST refuse the push (`integrity-finding`) and
-/// apply `loom:clarify` to the molecule's epic with the auto-generated
-/// `## Options — …` block. The mock review agent emits `LOOM_COMPLETE`,
-/// so the only failing input is the integrity finding — the test pins
-/// that branch in isolation against the live binary.
-#[test]
-fn push_gate_refuses_on_integrity_finding_via_live_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    let label = "pushintegrity";
-
-    // Base commit: spec file with no annotation.
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    let spec_path = workspace.join(format!("specs/{label}.md"));
-    std::fs::write(&spec_path, "## Success Criteria\n\n- baseline criterion\n").unwrap();
-    let base_sha = init_workspace_repo(workspace);
-
-    // HEAD: spec gains an unresolved `[check]` annotation whose first
-    // token resolves neither on PATH nor against the workspace.
-    let unresolvable_target = "definitely-not-a-real-command-xyz-loomtest";
-    std::fs::write(
-        &spec_path,
-        format!(
-            "## Success Criteria\n\n\
-             - baseline criterion\n\
-             - new criterion needing a verifier\n  [check]({unresolvable_target})\n",
-        ),
-    )
-    .unwrap();
-    commit_all(workspace, "add unresolved annotation");
-
-    let state_dir = workspace.join("bd-state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    seed_bead(
-        &state_dir,
-        "lm-mol",
-        "molecule epic",
-        "Epic for push-gate integrity test.\n",
-        &["spec:pushintegrity"],
-    );
-
-    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
-    // Exhaust the iteration cap so the integrity branch takes the
-    // terminal clarify fallback rather than minting a recovery batch and
-    // re-entering the loop (which would spawn live subprocesses).
-    seed_iteration_at_cap(workspace, "lm-mol");
-
-    let bin_dir = install_path_shims(workspace);
-    let manifest = write_minimal_manifest(workspace);
-
-    let output = run_loom_gate_review(
-        workspace,
-        &bin_dir,
-        &state_dir,
-        &manifest,
-        "complete-marker",
-        label,
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let log = read_invocation_log(&state_dir);
-    let events = read_driver_events(workspace, label);
-
-    assert!(
-        output.status.success(),
-        "loom gate review must exit 0 on integrity-finding refusal.\n\
-         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
-    );
-    assert_eq!(
-        refuse_cause(&events).as_deref(),
-        Some("integrity-finding"),
-        "push_gate_refuse must tag cause=integrity-finding. events:\n{events:#?}\n\
-         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
-    );
-
-    let epic_labels = read_labels(&state_dir, "lm-mol");
-    assert!(
-        epic_labels.iter().any(|l| l == "loom:clarify"),
-        "epic must carry loom:clarify on integrity-finding refusal. \
-         labels={epic_labels:?}\nbd-shim log:\n{log}",
-    );
-    assert!(
-        bd_applied_clarify(&log, "lm-mol"),
-        "bd update lm-mol --add-label loom:clarify must be recorded. \
-         bd-shim log:\n{log}",
-    );
-    let notes = read_field(&state_dir, "lm-mol", "notes");
-    assert!(
-        notes.starts_with("## Options — "),
-        "epic notes must carry the canonical Options block. notes:\n{notes}",
-    );
-    // Cap-exhausted fallback: the controller writes exactly the composed
-    // block `compose_clarify_options` produces — one primary option per
-    // present integrity-finding kind plus the mixed escape hatch, scoped
-    // to the affected `spec:line (target)` locations.
-    assert_eq!(
-        notes.matches("## Options — ").count(),
-        1,
-        "one composed block per clarify bead: {notes}",
-    );
-    assert!(
-        notes.contains("### Option 1 — Implement"),
-        "Option 1 must lead with the unresolved-annotation primary: {notes}",
-    );
-    assert!(
-        notes.contains(&format!("specs/{label}.md:")),
-        "epic notes must cite the affected spec:line: {notes}",
-    );
-    assert!(
-        notes.contains(unresolvable_target),
-        "epic notes must reference the unresolvable target. notes:\n{notes}",
-    );
-}
-
-/// Set the active molecule's iteration counter to the cap so the
-/// push-gate integrity branch escalates to the terminal `loom:clarify`
-/// fallback instead of recovering through the mint pipeline.
-fn seed_iteration_at_cap(workspace: &Path, mol_id: &str) {
-    let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache.db");
-    db.set_iteration(&MoleculeId::new(mol_id).unwrap(), DEFAULT_MAX_ITERATIONS)
-        .expect("set iteration to cap");
-    drop(db);
-}
-
-// -------------------------------------------------------------------
-// Scenario 4 — clean path: every input passes, push fires
-// -------------------------------------------------------------------
-
-#[test]
-fn live_llm_commands_use_shared_renderer_pipeline() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    let label = "reviewrender";
-
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join(format!("specs/{label}.md")),
-        "## Success Criteria\n\n",
-    )
-    .unwrap();
-    let base_sha = init_workspace_repo(workspace);
-    let state_dir = workspace.join("bd-state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    seed_bead(
-        &state_dir,
-        "lm-mol",
-        "molecule epic",
-        "Review renderer fixture.\n",
-        &["spec:reviewrender"],
-    );
-    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
-    let bin_dir = install_path_shims(workspace);
-    let manifest = write_minimal_manifest(workspace);
-
-    let output = run_loom_gate_review(
-        workspace,
-        &bin_dir,
-        &state_dir,
-        &manifest,
-        "complete-marker",
-        label,
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "live gate review failed: stdout={stdout}\nstderr={stderr}",
-    );
-    let transcript = stdout
-        .find("# Post-Epic Review")
-        .unwrap_or_else(|| panic!("rendered agent input missing: {stdout}"));
-    let marker = stdout
-        .find("LOOM_COMPLETE")
-        .unwrap_or_else(|| panic!("rendered agent output missing: {stdout}"));
-    let summary = stdout
-        .find("loom review:")
-        .unwrap_or_else(|| panic!("review summary missing: {stdout}"));
-    assert!(
-        transcript < marker && marker < summary,
-        "live transcript must precede the command summary: {stdout}",
-    );
-}
-
-/// Clean push: `LOOM_COMPLETE`, no `loom:blocked` / `loom:clarify`
-/// beads, no integrity findings → the gate must reach `push_gate_clean`
-/// and invoke `git_push` + `wrix beads push`. A bare git remote stands in
-/// for `origin` so `git push` can succeed without network access; the Wrix
-/// mock accepts the second publication step.
-#[test]
-fn push_gate_fires_clean_when_all_conditions_pass_via_live_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    let label = "pushclean";
-
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join(format!("specs/{label}.md")),
-        "## Success Criteria\n\n",
-    )
-    .unwrap();
-    let base_sha = init_workspace_repo(workspace);
-
-    let state_dir = workspace.join("bd-state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    seed_bead(
-        &state_dir,
-        "lm-mol",
-        "molecule epic",
-        "Epic for push-gate clean-path test.\n",
-        &["spec:pushclean"],
-    );
-
-    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
-
-    let bin_dir = install_path_shims(workspace);
-    let manifest = write_minimal_manifest(workspace);
-
-    let output = run_loom_gate_review(
-        workspace,
-        &bin_dir,
-        &state_dir,
-        &manifest,
-        "complete-marker",
-        label,
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let log = read_invocation_log(&state_dir);
-    let events = read_driver_events(workspace, label);
-
-    assert!(
-        output.status.success(),
-        "loom gate review must exit 0 on the clean-push branch.\n\
-         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
-    );
-    let kinds: Vec<&str> = events
-        .iter()
-        .filter_map(|e| e["driver_kind"].as_str())
-        .collect();
-    assert!(
-        kinds.contains(&"push_gate_clean"),
-        "clean-push branch must emit push_gate_clean. kinds={kinds:?}\n\
-         events:\n{events:#?}\nstderr={stderr}",
-    );
-    assert!(
-        !kinds.contains(&"push_gate_refuse"),
-        "clean-push branch must NOT emit push_gate_refuse. kinds={kinds:?}",
-    );
-    assert!(
-        stdout.contains("Pushed"),
-        "controller must surface ReviewResult::Pushed on the clean path. \
-         stdout={stdout}",
-    );
-}
-
-// -------------------------------------------------------------------
-// Scenario 1 — live-path parser disambiguation
-// -------------------------------------------------------------------
-
-/// Replay the May-19 sequence through the live binary: the mock agent
-/// emits `LOOM_CONCERN: <token> -- <reason>` and then `LOOM_COMPLETE` on
-/// later lines. `parse_exit_signal` (A.13) inspects only the final
-/// non-empty line, so the trailing `LOOM_COMPLETE` wins and — with
-/// every other condition passing — the push fires. The unit tests on
-/// `parse_exit_signal` in `loom-workflow/src/todo/exit.rs` already pin
-/// this; this test is the cross-binary witness that the production
-/// dispatcher carries the same behaviour end-to-end.
-#[test]
-fn concern_then_complete_live_path_resolves_to_clean_push() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    let label = "pushrelay";
-
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join(format!("specs/{label}.md")),
-        "## Success Criteria\n\n",
-    )
-    .unwrap();
-    let base_sha = init_workspace_repo(workspace);
-
-    let state_dir = workspace.join("bd-state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    seed_bead(
-        &state_dir,
-        "lm-mol",
-        "molecule epic",
-        "Epic for May-19 sequence relay test.\n",
-        &["spec:pushrelay"],
-    );
-    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
-
-    let bin_dir = install_path_shims(workspace);
-    let manifest = write_minimal_manifest(workspace);
-
-    let output = run_loom_gate_review(
-        workspace,
-        &bin_dir,
-        &state_dir,
-        &manifest,
-        "concern-then-complete",
-        label,
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let log = read_invocation_log(&state_dir);
-    let events = read_driver_events(workspace, label);
-
-    assert!(
-        output.status.success(),
-        "loom gate review must exit 0 — the final-line parser must pick \
-         LOOM_COMPLETE over the earlier LOOM_CONCERN.\n\
-         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
-    );
-    let kinds: Vec<&str> = events
-        .iter()
-        .filter_map(|e| e["driver_kind"].as_str())
-        .collect();
-    assert!(
-        kinds.contains(&"push_gate_clean"),
-        "two-marker session must still route to push_gate_clean once the \
-         parser picks the final LOOM_COMPLETE. kinds={kinds:?}\n\
-         events:\n{events:#?}",
-    );
-    assert!(
-        !kinds.contains(&"push_gate_refuse"),
-        "final-line LOOM_COMPLETE must NOT route to push_gate_refuse. \
-         kinds={kinds:?}",
-    );
+    #[test]
+    fn live_llm_commands_use_shared_renderer_pipeline() {
+        let fixture = Fixture::new();
+        let output = fixture
+            .command(&["review", "--diff", &fixture.range()], "complete-marker")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+        let stdout = success(output);
+        let transcript = stderr.find("# Post-Epic Review").expect("rendered input");
+        let marker = stderr.find("LOOM_COMPLETE").expect("rendered output");
+        assert!(transcript < marker);
+        assert!(
+            !stdout.contains("# Post-Epic Review"),
+            "protocol stdout excludes prompt examples"
+        );
+        assert!(stdout.contains("loom review: inspection Complete"));
+        assert!(stdout.trim_end().ends_with("LOOM_COMPLETE"));
+    }
 }

@@ -63,6 +63,12 @@ pub enum ReviewError {
     /// no active molecule for spec {0} — run `loom todo` before `loom review`
     NoActiveMolecule(String),
 
+    /// failed to parse workspace review annotations
+    Annotations(#[from] loom_gate::annotation::ParseError),
+
+    /// no judge annotation matches target `{0}`
+    UnknownJudgeTarget(String),
+
     /// failed to load `[test]`/`[judge]` sources for review prompt
     Spec(#[from] SpecError),
 

@@ -36,11 +36,11 @@ Read: {{ spec_path }}
 
 ## Deterministic-Verifier Sources
 
-The verdict gate just ran these `[test]` scripts (the deterministic
-verifier tier whose targets resolve to a file body — `[check]` /
-`[system]` command strings have no source body to inline here). Their
-full source is reproduced below so you can judge live-path coverage and
-mock discipline without re-reading them from disk.
+These file-shaped `[test]` verifier sources are context, not execution
+evidence. Only completed deterministic gate evidence establishes which
+verifiers ran. `[check]` / `[system]` command strings have no source body
+to inline here. Judge live-path coverage and mock discipline from the
+sources below.
 
 {% if test_sources.is_empty() %}—
 {% else %}{% for source in test_sources %}### {{ source.path }}

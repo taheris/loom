@@ -37,6 +37,7 @@
 //!   so a test driving a different spec can override.
 //! - `finding-concern` — emit one `LOOM_FINDING:` JSON line followed by
 //!   `LOOM_CONCERN: {"summary": "…"}` without mutating bd state.
+//! - `finding-complete` — emit a finding followed by `LOOM_COMPLETE`, an invalid walk.
 //! - `concern-then-complete` — emit `LOOM_CONCERN: {"summary": "…"}` then
 //!   `LOOM_COMPLETE` on a later line. The final-line parser must pick
 //!   the trailing `LOOM_COMPLETE`; this is the literal May-19 sequence.
@@ -59,6 +60,7 @@ const MODE_WAITING: &str = "waiting-marker";
 const MODE_NO_MARKER: &str = "no-marker";
 const MODE_CONCERN: &str = "concern-marker";
 const MODE_FINDING_CONCERN: &str = "finding-concern";
+const MODE_FINDING_COMPLETE: &str = "finding-complete";
 const MODE_CONCERN_THEN_COMPLETE: &str = "concern-then-complete";
 
 const BLOCKED_REASON: &str = "spec section is missing the schema for this bead";
@@ -139,9 +141,16 @@ fn main() -> ExitCode {
             stamp_concern_fixup_bead();
             emit_message_delta(&mut stdout, CONCERN_LINE);
         }
-        MODE_FINDING_CONCERN => {
+        MODE_FINDING_CONCERN | MODE_FINDING_COMPLETE => {
             emit_message_delta(&mut stdout, &format!("{FINDING_LINE}\n"));
-            emit_message_delta(&mut stdout, FINDING_CONCERN_LINE);
+            emit_message_delta(
+                &mut stdout,
+                if mode == MODE_FINDING_COMPLETE {
+                    "LOOM_COMPLETE"
+                } else {
+                    FINDING_CONCERN_LINE
+                },
+            );
         }
         MODE_CONCERN_THEN_COMPLETE => {
             // The May-19 sequence: a `LOOM_CONCERN: …` line followed by a

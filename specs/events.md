@@ -47,9 +47,11 @@ LLM-bearing command attaches this pipeline live: `loom loop`, `loom todo`,
 LLM-spawning gate inspection commands, `loom gate audit`, `loom gate mint
 --tree`, and tune runs that spawn LLMs. The command may add command-specific
 summaries before or after the stream, but it must not buffer the agent
-transcript internally while stdout appears idle. Interactive `loom plan` and
-`loom inbox chat` use their inherited stdio/native UI surfaces instead of this
-live renderer.
+transcript instead of rendering it live. Gate inspection reserves stdout for
+result records and its terminal marker, routing the same live renderer to
+stderr so prompt examples cannot contaminate the result protocol. Interactive
+`loom plan` and `loom inbox chat` use their inherited stdio/native UI surfaces
+instead of this live renderer.
 
 The `LogSink` tee is the standard fan-out: one `emit(&AgentEvent)` writes the
 JSONL event and drives the selected renderer, when a renderer is attached.

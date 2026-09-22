@@ -125,19 +125,23 @@ pub fn load_review_sources_for_lane(
         source,
     })?;
     let parsed = parse_content(spec_path, &body);
+    load_review_sources_for_annotations(workspace, &parsed.annotations, lane)
+}
+
+pub(super) fn load_review_sources_for_annotations(
+    workspace: &Path,
+    annotations: &[Annotation],
+    lane: ReviewLane,
+) -> Result<(Vec<ReviewSource>, Vec<ReviewSource>), SpecError> {
     let mut tests = Vec::new();
     let mut judges = Vec::new();
     let mut seen_test: BTreeSet<String> = BTreeSet::new();
     let mut seen_judge: BTreeSet<String> = BTreeSet::new();
 
-    // Per `specs/gate.md`: `[test]` / `[judge]` targets resolve relative
-    // to the spec file's own directory, not the workspace root, so
-    // `../tests/judges/x.sh` from `specs/foo.md` lands at
-    // `<workspace>/tests/judges/x.sh`.
-    let spec_dir = spec_path.parent().unwrap_or(workspace);
-    for annotation in &parsed.annotations {
+    for annotation in annotations {
+        let spec_dir = annotation.source_spec.parent().unwrap_or(workspace);
         match annotation.tier {
-            Tier::Test => {
+            Tier::Test if lane.includes_rubric() => {
                 push_unique(workspace, spec_dir, annotation, &mut tests, &mut seen_test)?;
             }
             Tier::Judge if lane.includes_judge() => {
@@ -149,7 +153,7 @@ pub fn load_review_sources_for_lane(
                     &mut seen_judge,
                 )?;
             }
-            Tier::Judge | Tier::Check | Tier::System => {}
+            Tier::Test | Tier::Judge | Tier::Check | Tier::System => {}
         }
     }
     Ok((tests, judges))
@@ -565,7 +569,7 @@ mod tests {
             "judge section heading present: {body}",
         );
         assert!(
-            body.contains("re-reading them from disk.\n\n—"),
+            body.contains("sources below.\n\n—"),
             "test em-dash placeholder when empty: {body}",
         );
         assert!(

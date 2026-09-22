@@ -2425,6 +2425,7 @@ name = "loom"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
  "insta",
  "loom-agent",

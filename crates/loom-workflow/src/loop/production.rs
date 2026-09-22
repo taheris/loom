@@ -73,11 +73,6 @@ pub const REVIEW_EMIT_STDOUT_ENV: &str = "LOOM_REVIEW_EMIT_STDOUT";
 /// `--diff` remains the trust-bearing scope.
 pub const REVIEW_SPEC_LABEL_ENV: &str = "LOOM_REVIEW_SPEC_LABEL";
 
-/// Internal handoff flag that keeps `loom gate review` inspection-only when
-/// the loop-owned molecule controller is responsible for marker minting and
-/// push side effects.
-pub const REVIEW_INSPECTION_ONLY_ENV: &str = "LOOM_REVIEW_INSPECTION_ONLY";
-
 /// Internal handoff path to the completed deterministic gate log whose
 /// [`loom_gate::VerifiedScope`] the push-eligible review must consume.
 pub const REVIEW_VERIFIED_LOG_ENV: &str = "LOOM_REVIEW_VERIFIED_LOG";
@@ -1311,7 +1306,6 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         .current_dir(&gate_workspace)
         .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
         .env(REVIEW_EMIT_STDOUT_ENV, "1")
-        .env(REVIEW_INSPECTION_ONLY_ENV, "1")
         .env(REVIEW_VERIFIED_LOG_ENV, &verify_log_path)
         .env(REVIEW_SPEC_LABEL_ENV, label.as_str());
     append_agent_override(&mut review_command, commands.review_agent);

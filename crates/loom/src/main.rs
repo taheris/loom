@@ -38,15 +38,14 @@ use loom_workflow::inbox::{
 };
 use loom_workflow::r#loop::{
     GateOutcome, InfraRetryPolicy, LoopOutcome, NoGateReason, Parallelism,
-    ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_INSPECTION_ONLY_ENV,
-    REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV, REVIEW_VERIFIED_LOG_ENV, RetryPolicy,
-    SessionResult, classify_session, run_loop_with_infra_policy,
+    ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV,
+    REVIEW_SPEC_LABEL_ENV, REVIEW_VERIFIED_LOG_ENV, RetryPolicy, SessionResult, classify_session,
+    run_loop_with_infra_policy,
 };
 use loom_workflow::mint::{BatchOutcome, FindingStatusAction, FindingStatusRecord, MintWalker};
 use loom_workflow::review::{
-    AcceptAllFindingValidator, DispatchScope, IterationCap, ProductionReviewController,
-    ReviewController, ReviewLane, WalkOutput, WorkspaceFindingValidator,
-    review_loop as run_review_loop,
+    AcceptAllFindingValidator, DispatchScope, ProductionReviewController, ReviewController,
+    ReviewLane, WalkOutput, WorkspaceFindingValidator,
 };
 use loom_workflow::run_agent_classified;
 use loom_workflow::todo::{
@@ -148,7 +147,7 @@ struct GateReviewArgs {
     scope: GateScopeArgs,
     /// Attach review context to an explicit diff scope.
     #[arg(long, short = 'b', value_name = "ID")]
-    bead: Option<String>,
+    bead: Option<BeadId>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1123,7 +1122,7 @@ enum GateOperation {
     Verify,
     Tier(Tier),
     Audit,
-    Review(Option<String>),
+    Review(Option<BeadId>),
     Rubric,
 }
 
@@ -2565,29 +2564,27 @@ fn run_gate_audit(
     agent_override: Option<AgentKind>,
     host_key: bool,
 ) -> anyhow::Result<()> {
-    let verify_result = run_gate_verify(workspace, &args);
-    let review_result = run_gate_review(
+    run_gate_verify(workspace, &args)?;
+    run_gate_review(
         workspace,
         args,
         None,
         agent_override,
         ReviewLane::Both,
         host_key,
-    );
-    verify_result.and(review_result)
+    )
 }
 
 fn run_gate_review(
     workspace: &Path,
     args: GateScope,
-    bead: Option<String>,
+    bead: Option<BeadId>,
     agent_override: Option<AgentKind>,
     lane: ReviewLane,
     host_key: bool,
 ) -> anyhow::Result<()> {
     run_review(
         workspace,
-        None,
         agent_override,
         ReviewOpts {
             bead,
@@ -4082,7 +4079,7 @@ fn open_review_sink_with_renderer(
         render_mode,
         renderer_id,
         when,
-        Box::new(std::io::stdout()),
+        Box::new(std::io::stderr()),
         max_inline_bytes,
     )
 }
@@ -4229,7 +4226,7 @@ fn resolved_agent_for(
 }
 
 struct ReviewOpts {
-    bead: Option<String>,
+    bead: Option<BeadId>,
     scope: GateScope,
     /// Which lane(s) of the review to run — `Both` for `loom gate review`,
     /// `Judge`/`Rubric` for the focused single-lane re-runs surfaced by
@@ -4243,23 +4240,14 @@ struct ReviewOpts {
 )]
 fn run_review(
     workspace: &Path,
-    spec: Option<String>,
     agent_override: Option<AgentKind>,
     opts: ReviewOpts,
     host_key: bool,
 ) -> anyhow::Result<()> {
     let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
-    let wrix_bin =
-        std::env::var_os("LOOM_WRIX_BIN").map_or_else(|| PathBuf::from("wrix"), PathBuf::from);
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
-    let label = resolve_review_label(workspace, spec, opts.scope.is_tree())?;
+    let label = resolve_review_label(workspace, &opts.scope)?;
     let runtime = tokio::runtime::Runtime::new()?;
-    let inspection_only = std::env::var_os(REVIEW_INSPECTION_ONLY_ENV).is_some();
-    let work_root_guard = if opts.scope.is_tree() || inspection_only {
-        None
-    } else {
-        acquire_review_work_root_lock(workspace, &label, opts.bead.as_deref(), &runtime)?
-    };
     let verified_scope = verified_scope_from_env()?;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
@@ -4288,8 +4276,6 @@ fn run_review(
     let emit_stdout = std::env::var_os(REVIEW_EMIT_STDOUT_ENV).is_some();
     let logs_root_for_spawn = logs_root.clone();
     let style_rules_for_review = config.style_rules.clone();
-    let integration_branch_for_review = config.loom.integration_branch.clone();
-    let hook_timeout_for_review = config.loom.git_hook_timeout();
     let suppressions_for_review = config.suppress.clone();
     let skills_cfg_for_review = config.skills.clone();
     let dispatch_scope = if opts.scope.is_tree() {
@@ -4301,7 +4287,7 @@ fn run_review(
     let stdout_capture_for_spawn = Arc::clone(&captured_review_stdout);
     let result = runtime.block_on(async move {
         let bd = BdClient::new();
-        let mut controller = ProductionReviewController::new(
+        let controller = ProductionReviewController::new(
             bd,
             label.clone(),
             loom_bin,
@@ -4350,42 +4336,27 @@ fn run_review(
                 }
             },
         );
-        if let Some(guard) = work_root_guard {
-            controller = controller.with_handoff_lock(guard);
-        }
         let mut controller = controller
             .with_phase_log(logs_root, phase_when)
             .with_agent_runtime(kind)
-            .with_wrix_bin(wrix_bin)
             .with_launcher_env(launcher_env)
             .with_style_rules(style_rules_for_review)
-            .with_integration_branch(integration_branch_for_review)
-            .with_hook_timeout(hook_timeout_for_review)
-            .with_push_range(opts.scope.diff().map(str::to_owned))
+            .with_inspection_scope(opts.scope, opts.bead)
             .with_verified_scope(verified_scope)
             .with_lane(opts.lane)
-            .with_dispatch_scope(dispatch_scope)
             .with_suppressions(suppressions_for_review)
             .with_skills_config(skills_cfg_for_review);
-        if inspection_only {
-            let output = controller.run_review().await?;
-            Ok::<_, loom_workflow::review::ReviewError>(format!("inspection {:?}", output.outcome))
-        } else {
-            run_review_loop(&mut controller, IterationCap::default())
-                .await
-                .map(|result| format!("{result:?}"))
-        }
+        controller.run_review().await
     })?;
     let review_stdout = captured_review_stdout
         .lock()
         .map_err(|_| anyhow::anyhow!("review stdout capture poisoned"))?
         .clone();
     emit_review_finding_statuses(&review_stdout, dispatch_scope, &config.suppress)?;
-    if emit_stdout {
-        print!("{review_stdout}");
-    } else {
-        println!("loom review: {result}");
+    if !emit_stdout {
+        println!("loom review: inspection {:?}", result.outcome);
     }
+    print!("{review_stdout}");
     Ok(())
 }
 
@@ -4951,32 +4922,6 @@ fn acquire_work_root_lock(workspace: &Path, root: &str) -> anyhow::Result<LockGu
     Ok(lock_mgr.acquire_work_root(&root)?)
 }
 
-fn acquire_active_work_root_lock(
-    workspace: &Path,
-    label: &SpecLabel,
-    runtime: &tokio::runtime::Runtime,
-) -> anyhow::Result<Option<LockGuard>> {
-    let active = runtime.block_on(async {
-        let bd = BdClient::new();
-        loom_workflow::resolve::resolve_open_epic(&bd, label).await
-    })?;
-    active
-        .map(|root| acquire_work_root_lock(workspace, root.as_str()))
-        .transpose()
-}
-
-fn acquire_review_work_root_lock(
-    workspace: &Path,
-    label: &SpecLabel,
-    bead: Option<&str>,
-    runtime: &tokio::runtime::Runtime,
-) -> anyhow::Result<Option<LockGuard>> {
-    if let Some(bead) = bead {
-        return acquire_work_root_lock(workspace, bead).map(Some);
-    }
-    acquire_active_work_root_lock(workspace, label, runtime)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoopWorkRootKind {
     Task,
@@ -5076,14 +5021,7 @@ fn primary_spec_label_from_work_root(root: &Bead) -> anyhow::Result<SpecLabel> {
         .ok_or_else(|| anyhow::anyhow!("work root {} has no spec:<label> label", root.id))
 }
 
-fn resolve_review_label(
-    workspace: &Path,
-    spec: Option<String>,
-    tree: bool,
-) -> anyhow::Result<SpecLabel> {
-    if let Some(s) = spec {
-        return Ok(s.parse()?);
-    }
+fn resolve_review_label(workspace: &Path, scope: &GateScope) -> anyhow::Result<SpecLabel> {
     match std::env::var(REVIEW_SPEC_LABEL_ENV) {
         Ok(s) => return Ok(s.parse()?),
         Err(std::env::VarError::NotPresent) => {}
@@ -5094,10 +5032,21 @@ fn resolve_review_label(
             );
         }
     }
-    if tree {
-        return resolve_tree_review_label(workspace);
+    if let Some(target) = scope.target() {
+        let parsed = loom_gate::annotation::parse(&workspace.join("specs"))?;
+        let annotation = parsed
+            .annotations
+            .iter()
+            .find(|annotation| annotation.tier == Tier::Judge && annotation.target == target)
+            .ok_or_else(|| anyhow::anyhow!("no judge annotation matches target `{target}`"))?;
+        let label = annotation
+            .source_spec
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| anyhow::anyhow!("judge target has no spec label"))?;
+        return Ok(label.parse()?);
     }
-    resolve_spec_label_from_tree(workspace)
+    resolve_tree_review_label(workspace)
 }
 
 fn resolve_tree_review_label(workspace: &Path) -> anyhow::Result<SpecLabel> {
@@ -5105,19 +5054,6 @@ fn resolve_tree_review_label(workspace: &Path) -> anyhow::Result<SpecLabel> {
         .into_iter()
         .next()
         .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"))
-}
-
-fn resolve_spec_label_from_tree(workspace: &Path) -> anyhow::Result<SpecLabel> {
-    let labels = resolve_tree_mint_labels(workspace, None)?;
-    if labels.len() == 1 {
-        return labels
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"));
-    }
-    Err(anyhow::anyhow!(
-        "multiple specs found and no review context label is available; run from a single-spec workspace or via loom loop"
-    ))
 }
 
 fn resolve_tree_mint_labels(
@@ -5473,10 +5409,6 @@ mod tests {
         let label = resolve_tree_review_label(tmp.path()).expect("resolve tree review anchor");
 
         assert_eq!(label, SpecLabel::new("gate").unwrap());
-        assert!(
-            resolve_spec_label_from_tree(tmp.path()).is_err(),
-            "finite review still rejects an ambiguous workspace without explicit context",
-        );
     }
 
     /// Spec contract `specs/gate.md` § *Molecule mint summary semantics*:
