@@ -22,6 +22,7 @@ set -euo pipefail
 #   LOOM_TEST_IMAGE_SOURCE_KIND — wrix image source kind (default: nix-descriptor)
 #   LOOM_TEST_PROFILE_CONFIG — immutable wrix ProfileConfig for the mock image
 #   LOOM_TEST_PRE_PUSH_CHECKS — canonical repository pre-push wrapper
+#   LOOM_TEST_SEED_BEADS     — script seeding spec metadata and ready smoke work
 #   WRIX_PREK_HOOKS          — canonical packaged wrix prek hook directory
 #   LOOM_SMOKE_KEEP          — set to 1 to preserve the temp workspace after
 #                              a failed run for diagnosis
@@ -211,13 +212,7 @@ git -C "$BEADS_WORKTREE" add .beads/.gitkeep
 git -C "$BEADS_WORKTREE" commit -q -m "Initialize beads branch"
 git -C "$BEADS_WORKTREE" push -q -u origin beads
 
-BASE_COMMIT=$(git rev-parse HEAD)
-MOLECULE_ID=$(bd create "smoke molecule" \
-    --description "container smoke molecule" \
-    --type=epic --priority=2 \
-    --labels="loom:spec,spec:smoke,profile:base" \
-    --metadata "{\"loom.base_commit\":\"$BASE_COMMIT\"}" \
-    --silent)
+BEAD_ID=$(bash "$LOOM_TEST_SEED_BEADS")
 
 cat >"$WORKSPACE/profile-images.json" <<JSON
 {
@@ -234,14 +229,6 @@ cat >"$WORKSPACE/profile-images.json" <<JSON
 JSON
 
 "$LOOM_BIN" --workspace "$WORKSPACE" init --rebuild >/dev/null
-"$LOOM_BIN" --workspace "$WORKSPACE" use smoke >/dev/null
-
-BEAD_ID=$(bd create "smoke happy-path" \
-    --description "container smoke: pi happy-path" \
-    --type=task --priority=2 \
-    --labels="spec:smoke,profile:base" \
-    --parent="$MOLECULE_ID" \
-    --silent)
 log "seeded bead: $BEAD_ID"
 
 unset WRIX_AGENT

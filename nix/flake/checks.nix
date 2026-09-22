@@ -70,6 +70,7 @@ _:
         nativeBuildInputs = [
           pkgs.git
           pkgs.cacert
+          pkgs.cargo-nextest
           bin
         ];
         buildPhaseCargoCommand = "loom --version";
@@ -229,6 +230,22 @@ _:
       '';
 
       test-app-ignores-host-git-signing = testsDeriv.test-app-ignores-host-git-signing;
+
+      smoke-beads-fixture =
+        pkgs.runCommand "smoke-beads-fixture"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.beads
+              pkgs.git
+              pkgs.jq
+            ];
+          }
+          ''
+            set -euo pipefail
+            bash ${../../tests/smoke/seed-beads-test.sh} ${../../tests/smoke/seed-beads.sh}
+            touch "$out"
+          '';
 
       fakeSmokeNix = pkgs.writeShellScriptBin "nix" ''
         set -euo pipefail
@@ -488,6 +505,7 @@ _:
           loom-gate-check
           loom-wrix-uses-unprofiled-spawn-launcher
           profile-manifest-keeps-runtime-path-context
+          smoke-beads-fixture
           smoke-preflight-skips-runtime-build
           test-app-ignores-host-git-signing
           test-sandbox-disables-container-network
