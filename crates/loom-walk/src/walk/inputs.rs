@@ -200,12 +200,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         // RS-5: forbidden central `types.rs` / `error.rs` at any crate-src root.
         "no_types_or_error_files" => types_error_inputs(root),
 
-        // Renderer crate: `Cargo.toml` + every `src/**` Rust file.
-        "renderer_no_insta_dependency" => {
-            let mut out = vec![manifest(root, "loom-render")];
-            out.extend(crate_src(root, "loom-render"));
-            out
-        }
+        "renderer_no_insta_dependency" => super::renderer_no_insta_dependency::paths(root),
 
         // Template-tree scans.
         "template_wire_format_restatement" => template_files(root),

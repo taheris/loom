@@ -32,8 +32,7 @@ const NEEDLE_PATH: &str = concat!("insta", "::");
 
 pub fn run(input: &WalkInput) -> Verdict {
     let root = workspace_root();
-    let renderer_root = root.join(RENDERER_DIR);
-    let scope = narrow_to_loom_files(renderer_paths(&renderer_root), input, &root);
+    let scope = narrow_to_loom_files(paths(&root), input, &root);
     let mut violations = Vec::new();
     for path in scope {
         let rel_path = rel(&root, &path);
@@ -47,6 +46,15 @@ pub fn run(input: &WalkInput) -> Verdict {
         }
     }
     verdict_from(RULE, violations)
+}
+
+pub(super) fn paths(root: &Path) -> Vec<PathBuf> {
+    let mut paths = renderer_paths(&root.join(RENDERER_DIR));
+    let logging_test = root.join("crates/loom-driver/tests/logging.rs");
+    if logging_test.is_file() {
+        paths.push(logging_test);
+    }
+    paths
 }
 
 fn renderer_paths(renderer_root: &Path) -> Vec<PathBuf> {

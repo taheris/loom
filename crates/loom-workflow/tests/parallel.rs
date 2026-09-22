@@ -98,13 +98,38 @@ fn fake_bead(id: &str) -> Bead {
     }
 }
 
-/// Acceptance (`specs/harness.md` § Bead dispatch — flat-keyed
-/// `.loom/beads/<id>/` layout): dispatching a single bead — even
-/// at `--parallel 1` — materialises `.loom/beads/<bead-id>/` and
-/// runs the merge-back path after the bead completes. Universal worktree
-/// isolation: the main checkout is never the bead's workdir. The
-/// merge-back step (previously a no-op when N=1 ran on the driver
-/// branch) now always runs.
+/// Redispatch preserves tracked and untracked worker edits before cleanup.
+#[tokio::test]
+async fn parallel_preparation_preserves_dirty_work_in_recovery_stash() -> Result<()> {
+    let repo = init_repo()?;
+    let client = unsigned_client(repo.path())?;
+    let label = SpecLabel::new("harness")?;
+    let bead = fake_bead("lm-recovery");
+    let worktree = client.create_worktree(&label, &bead.id).await?;
+    std::fs::write(worktree.path.join("tracked.txt"), "committed\n")?;
+    git(&worktree.path, &["add", "tracked.txt"])?;
+    git(&worktree.path, &["commit", "-qm", "worker baseline"])?;
+    std::fs::write(worktree.path.join("tracked.txt"), "preserve tracked\n")?;
+    std::fs::write(worktree.path.join("loose.txt"), "preserve untracked\n")?;
+
+    let slots = create_worktrees(&client, &label, vec![bead]).await?;
+    let recovery = slots[0]
+        .workspace_recovery
+        .as_ref()
+        .expect("dirty work is never discarded");
+    let commit = recovery.stash.commit.as_str();
+    assert_eq!(
+        git_capture(&worktree.path, &["show", &format!("{commit}:tracked.txt")])?,
+        "preserve tracked\n"
+    );
+    assert_eq!(
+        git_capture(&worktree.path, &["show", &format!("{commit}^3:loose.txt")])?,
+        "preserve untracked\n"
+    );
+    assert!(git_capture(&worktree.path, &["status", "--porcelain"])?.is_empty());
+    Ok(())
+}
+
 #[tokio::test]
 async fn bead_dispatch_creates_worktree() -> Result<()> {
     let repo = init_repo()?;

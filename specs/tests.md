@@ -626,6 +626,11 @@ owns:
 - Loop renderer uses substring + structural assertions, not
       `insta` (ensures terminal-output flexibility)
   [check](cargo run -p loom-walk -- renderer_no_insta_dependency)
+- Renderer dependency enforcement includes external driver logging tests and
+      declares them as gate inputs
+  [test](renderer_walk_retains_driver_log_test_coverage_and_declares_inputs)
+- Consolidated mechanical style walks retain real-workspace coverage
+  [test](workspace_style_walks_pass)
 
 ### Cross-platform
 

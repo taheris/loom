@@ -96,6 +96,87 @@ fn assert_fail(out: &Output, evidence_contains: &str) {
     );
 }
 
+#[test]
+fn workspace_style_walks_pass() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap();
+    for walk in [
+        "renderer_no_insta_dependency",
+        "no_derive_from_on_newtypes",
+        "no_types_or_error_files",
+        "git_client_encapsulation",
+        "single_event_channel",
+        "newtype_identifiers",
+        "template_context_structs",
+        "no_hardcoded_tmp_paths",
+        "no_event_sentinels",
+        "no_ignore_for_flake",
+    ] {
+        assert_pass(&invoke(&[walk], Some(root), None));
+    }
+}
+
+#[test]
+fn event_sentinel_walk_rejects_calls_and_constructor_definitions() {
+    for source in [
+        "fn f() { let _ = BeadId::placeholder(); }",
+        "fn f() { let _ = AgentEvent::placeholder(); }",
+        "fn f() { let _ = EventEnvelope::placeholder(); }",
+        "fn f() { let _ = EventEnvelope::default(); }",
+        "impl EventEnvelope { fn placeholder() {} }",
+        "impl Default for EventEnvelope { fn default() -> Self { Self {} } }",
+    ] {
+        let ws = make_workspace();
+        seed(ws.path(), "crates/loom-events/src/event.rs", source);
+        assert_fail(
+            &invoke(&["no_event_sentinels"], Some(ws.path()), None),
+            "sentinel constructor",
+        );
+    }
+}
+
+#[test]
+fn event_sentinel_walk_accepts_builders_and_ignores_prose() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-events/src/event.rs",
+        r#"
+        // EventEnvelope::default() is banned.
+        fn f() { let _ = builder.build(); let _ = "BeadId::placeholder()"; }
+    "#,
+    );
+    assert_pass(&invoke(&["no_event_sentinels"], Some(ws.path()), None));
+}
+
+#[test]
+fn renderer_walk_retains_driver_log_test_coverage_and_declares_inputs() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-driver/tests/logging.rs",
+        "fn snapshot() { insta::assert_snapshot!(\"log\"); }",
+    );
+    assert_fail(
+        &invoke(&["renderer_no_insta_dependency"], Some(ws.path()), None),
+        "insta",
+    );
+    let inputs = invoke(
+        &["renderer_no_insta_dependency", "--print-inputs"],
+        Some(ws.path()),
+        None,
+    );
+    let doc: Value = serde_json::from_slice(&inputs.stdout).unwrap();
+    assert!(
+        doc["inputs"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::from("crates/loom-driver/tests/logging.rs"))
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Dispatcher contract
 // ---------------------------------------------------------------------------

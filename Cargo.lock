@@ -2438,9 +2438,7 @@ dependencies = [
  "loom-tune",
  "loom-workflow",
  "nix",
- "proc-macro2",
  "serde_json",
- "syn",
  "tempfile",
  "tokio",
  "tracing",
@@ -2551,6 +2549,7 @@ dependencies = [
  "shlex",
  "tempfile",
  "thiserror",
+ "tokio",
  "tracing",
  "walkdir",
 ]

@@ -77,7 +77,6 @@ pub fn src_files(root: &Path) -> Vec<PathBuf> {
 pub fn test_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let self_test = root.join("crates/loom-walk/tests/fixture.rs");
-    let legacy_self_test = root.join("crates/loom/tests/style.rs");
     for crate_dir in immediate_children(&root.join("crates")) {
         let tests = crate_dir.join("tests");
         if !tests.is_dir() {
@@ -85,7 +84,7 @@ pub fn test_files(root: &Path) -> Vec<PathBuf> {
         }
         for entry in WalkDir::new(&tests).into_iter().filter_map(Result::ok) {
             let p = entry.path();
-            if is_rust_file(p) && p != self_test && p != legacy_self_test {
+            if is_rust_file(p) && p != self_test {
                 out.push(p.to_path_buf());
             }
         }
@@ -103,10 +102,7 @@ pub fn all_rs_files(root: &Path) -> Vec<PathBuf> {
 /// Production and test Rust files, including verifier fixtures.
 pub fn all_rs_files_including_verifiers(root: &Path) -> Vec<PathBuf> {
     let mut out = all_rs_files(root);
-    for path in [
-        root.join("crates/loom-walk/tests/fixture.rs"),
-        root.join("crates/loom/tests/style.rs"),
-    ] {
+    for path in [root.join("crates/loom-walk/tests/fixture.rs")] {
         if path.is_file() {
             out.push(path);
         }

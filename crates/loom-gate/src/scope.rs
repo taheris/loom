@@ -28,6 +28,9 @@
 //! during construction; [`TestScope::scope_for`] falls back to that index
 //! when the direct crate-key lookup finds no crate.
 
+pub mod request;
+pub use request::{Request, Resolved};
+
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

@@ -941,7 +941,7 @@ agent.backend = "pi"
 agent.thinking_level = "ultra"
 "#;
         let error = LoomConfig::from_toml_str(src).unwrap_err();
-        assert!(error.to_string().contains("ultra"));
+        assert!(format!("{:#}", anyhow::Error::new(error)).contains("ultra"));
     }
 
     #[test]
@@ -1002,7 +1002,7 @@ profile = "base"
 agent.backend = "gpt"
 "#;
         let error = LoomConfig::from_toml_str(src).unwrap_err();
-        assert!(error.to_string().contains("gpt"));
+        assert!(format!("{:#}", anyhow::Error::new(error)).contains("gpt"));
     }
 
     /// Bad overrides fail parsing even when another phase will be requested.
@@ -1016,7 +1016,7 @@ agent.backend = "claude"
 agent.backend = "ollama"
 "#;
         let error = LoomConfig::from_toml_str(src).unwrap_err();
-        assert!(error.to_string().contains("ollama"));
+        assert!(format!("{:#}", anyhow::Error::new(error)).contains("ollama"));
     }
 
     /// Claude-specific settings (`[claude]` + `[security]`) flow through

@@ -578,6 +578,8 @@ status is required.
   [check](cargo run -p loom-walk -- no_panics_in_production)
 - No `#[allow(dead_code)]` in non-test code
   [check](cargo run -p loom-walk -- no_allow_dead_code)
+- Event identities expose no sentinel `placeholder` constructors or `EventEnvelope::default`
+  [check](cargo run -p loom-walk -- no_event_sentinels)
 - No `derive(From)` or `derive(Into)` on newtype structs
   [check](cargo run -p loom-walk -- no_derive_from_on_newtypes)
 
@@ -684,6 +686,13 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [check](cargo run -p loom-walk -- loom_agent_deps)
 
 ### Bead dispatch
+
+- Shared worker preparation threads prompt context and owns scratch cleanup
+      for every supported agent runtime
+  [test](shared_worker_preparation_threads_context_and_owns_scratch_for_every_backend)
+- Parallel redispatch preserves dirty tracked and untracked work in a recovery
+      stash before cleanup, just like sequential dispatch
+  [test](parallel_preparation_preserves_dirty_work_in_recovery_stash)
 
 - `loom init` materializes the loom workspace at
       `.loom/integration/` (one-shot clone from origin) — the

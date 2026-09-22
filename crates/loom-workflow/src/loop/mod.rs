@@ -28,9 +28,8 @@
 //!
 //! `--parallel N > 1` (worktree parallelism) lives in the parallel runner. The
 //! sequential and parallel paths share the [`AgentOutcome`] / retry vocabulary
-//! but split on dispatch: sequential spawns one container on the driver
-//! branch; parallel spawns N containers in disjoint worktrees and merges
-//! finished branches sequentially.
+//! and [`worker`] preparation. Both dispatch into independent bead clones;
+//! parallel mode runs N containers before sequential integration.
 
 mod context;
 mod driver_emit;
@@ -42,10 +41,12 @@ mod production;
 mod profile;
 mod retry;
 mod runner;
+pub mod schedule;
 mod spawn;
 mod tree_clean;
 mod verify;
 mod waiting;
+pub mod worker;
 
 pub use context::{LoopContextInputs, build_loop_context, render_loop_prompt};
 pub use driver_emit::BeadEmit;

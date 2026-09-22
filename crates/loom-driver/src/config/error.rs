@@ -20,7 +20,7 @@ pub enum LoomConfigError {
         source: io::Error,
     },
 
-    /// failed to parse loom config: {0}
+    /// failed to parse loom config
     Parse(#[from] toml::de::Error),
 
     /// empty path for config field {field}; blanking the value does not disable the pin — remove the corresponding include from the template instead

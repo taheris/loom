@@ -6,7 +6,6 @@
 //! `tune`. There is no `sync` — Askama compiled templates make per-project
 //! sync unnecessary (see `specs/harness.md`).
 
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -17,20 +16,20 @@ use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
 use loom_driver::agent::{AgentKind, LOOM_INSIDE_ENV, ProtocolError, SessionOutcome, SpawnConfig};
-use loom_driver::bd::{BdClient, Bead, CommandRunner, ListOpts, UpdateOpts};
+use loom_driver::bd::{BdClient, Bead, CommandRunner, ListOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
 use loom_driver::git::{GitClient, KeyMode, RepoGitPolicy};
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::logging::{LogSink, sweep_retention_at};
-use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
-use loom_driver::scratch::resolve_scratch_key;
+use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::CacheDb;
+use loom_gate::scope::{Request as GateScopeRequest, Resolved as GateScope};
 use loom_gate::{
     self, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
     FsCommandResolver, InputResolver, RunnerSpec, StatusCache, TestScope, Tier, TierCwds, Verdict,
-    filter_by_files, is_missing_binary_target, render_report,
+    is_missing_binary_target, render_report,
 };
 use loom_protocol::todo::parse_todo_success;
 use loom_workflow::inbox::{
@@ -38,12 +37,10 @@ use loom_workflow::inbox::{
     find_by_proposal_id, frame_unavailable_tune_items, parse_options_in,
 };
 use loom_workflow::r#loop::{
-    BatchInfraFailure, BatchResult, GateOutcome, InfraDiagnostic, InfraRetryPolicy, LoopOutcome,
-    MoleculePushGateCommands, NoGateReason, Parallelism, ProductionAgentLoopController,
-    REVIEW_EMIT_STDOUT_ENV, REVIEW_INSPECTION_ONLY_ENV, REVIEW_PHASE_WHEN_ENV,
-    REVIEW_SPEC_LABEL_ENV, REVIEW_VERIFIED_LOG_ENV, RetryPolicy, SessionResult, classify_session,
-    execute_molecule_push_gate, format_unknown_profile_error,
-    format_unknown_runtime_for_profile_error, run_loop_with_infra_policy,
+    GateOutcome, InfraRetryPolicy, LoopOutcome, NoGateReason, Parallelism,
+    ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_INSPECTION_ONLY_ENV,
+    REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV, REVIEW_VERIFIED_LOG_ENV, RetryPolicy,
+    SessionResult, classify_session, run_loop_with_infra_policy,
 };
 use loom_workflow::mint::{BatchOutcome, FindingStatusAction, FindingStatusRecord, MintWalker};
 use loom_workflow::review::{
@@ -1121,130 +1118,134 @@ fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<(
     Ok(())
 }
 
+enum GateOperation {
+    Status,
+    Verify,
+    Tier(Tier),
+    Audit,
+    Review(Option<String>),
+    Rubric,
+}
+
+impl GateOperation {
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Verify => "verify",
+            Self::Audit => "audit",
+            Self::Review(_) => "review",
+            Self::Rubric => "rubric",
+            Self::Tier(Tier::Check) => "check",
+            Self::Tier(Tier::Test) => "test",
+            Self::Tier(Tier::System) => "system",
+            Self::Tier(Tier::Judge) => "judge",
+        }
+    }
+
+    fn validate(&self, request: &GateScopeRequest) -> anyhow::Result<()> {
+        if matches!(self, Self::Status) && matches!(request, GateScopeRequest::Target(_)) {
+            anyhow::bail!("loom gate status does not accept --target");
+        }
+        if matches!(self, Self::Review(Some(_))) && !matches!(request, GateScopeRequest::Diff(_)) {
+            anyhow::bail!("loom gate review --bead requires --diff <range>");
+        }
+        if matches!(self, Self::Audit | Self::Review(_) | Self::Rubric)
+            && !matches!(request, GateScopeRequest::Diff(_) | GateScopeRequest::Tree)
+        {
+            anyhow::bail!(
+                "loom gate {} requires --diff <range> or --tree",
+                self.name()
+            );
+        }
+        Ok(())
+    }
+}
+
+impl GateScopeArgs {
+    fn into_request(self) -> anyhow::Result<Option<GateScopeRequest>> {
+        Ok(
+            match (self.files.is_empty(), self.target, self.diff, self.tree) {
+                (true, None, None, false) => None,
+                (false, None, None, false) => Some(GateScopeRequest::Files(self.files)),
+                (true, Some(target), None, false) => Some(GateScopeRequest::Target(target)),
+                (true, None, Some(range), false) => Some(GateScopeRequest::Diff(range)),
+                (true, None, None, true) => Some(GateScopeRequest::Tree),
+                _ => anyhow::bail!("gate scope selectors are mutually exclusive"),
+            },
+        )
+    }
+}
+
 fn run_gate(
     workspace: &Path,
     subcommand: Option<GateSubcommand>,
     agent_override: Option<AgentKind>,
     host_key: bool,
 ) -> anyhow::Result<()> {
-    match subcommand {
+    let (operation, args) = match subcommand {
         None => {
-            // Bare `loom gate` prints identical output to
-            // `loom gate --help` per spec § Commands. Triggering clap's
-            // own help renderer via `try_parse_from` keeps the two
-            // surfaces byte-identical without duplicating help text.
-            // `--help` always returns `Err(DisplayHelp)`; the `Ok`
-            // branch is unreachable but we map it to a bug error rather
-            // than `unreachable!` per RS-9.
-            match Cli::try_parse_from(["loom", "gate", "--help"]) {
-                Ok(_) => Err(anyhow::anyhow!(
-                    "clap returned Ok for `--help`; expected DisplayHelp error",
-                )),
-                Err(err) => {
-                    err.print()?;
+            return match Cli::try_parse_from(["loom", "gate", "--help"]) {
+                Ok(_) => Err(anyhow::anyhow!("clap returned Ok for --help")),
+                Err(error) => {
+                    error.print()?;
                     Ok(())
                 }
-            }
-        }
-        Some(GateSubcommand::Status(mut args)) => {
-            if !has_scope(&args) {
-                return print_gate_subcommand_help("status");
-            }
-            validate_status_scope(&args)?;
-            resolve_gate_scope(workspace, &mut args)?;
-            run_gate_status(workspace)
-        }
-        Some(GateSubcommand::Verify(mut args)) => {
-            if !has_scope(&args) {
-                return print_gate_subcommand_help("verify");
-            }
-            resolve_gate_scope(workspace, &mut args)?;
-            run_gate_verify(workspace, &args)
-        }
-        Some(GateSubcommand::Check(mut args)) => {
-            if !has_scope(&args) {
-                return print_gate_subcommand_help("check");
-            }
-            resolve_gate_scope(workspace, &mut args)?;
-            validate_target_for_tier(workspace, &args, Tier::Check)?;
-            run_gate_single_tier(workspace, &args, Tier::Check)
-        }
-        Some(GateSubcommand::Test(mut args)) => {
-            if !has_scope(&args) {
-                return print_gate_subcommand_help("test");
-            }
-            resolve_gate_scope(workspace, &mut args)?;
-            validate_target_for_tier(workspace, &args, Tier::Test)?;
-            run_gate_single_tier(workspace, &args, Tier::Test)
-        }
-        Some(GateSubcommand::System(mut args)) => {
-            if !has_scope(&args) {
-                return print_gate_subcommand_help("system");
-            }
-            resolve_gate_scope(workspace, &mut args)?;
-            validate_target_for_tier(workspace, &args, Tier::System)?;
-            run_gate_single_tier(workspace, &args, Tier::System)
-        }
-        Some(GateSubcommand::Audit(mut args)) => {
-            if !has_scope(&args) {
-                return print_gate_subcommand_help("audit");
-            }
-            validate_diff_or_tree_scope(&args, "audit")?;
-            resolve_gate_scope(workspace, &mut args)?;
-            run_gate_audit(workspace, args, agent_override, host_key)
-        }
-        Some(GateSubcommand::Review(mut args)) => {
-            if !has_scope(&args.scope) {
-                return print_gate_subcommand_help("review");
-            }
-            validate_review_scope(&args.scope, args.bead.as_deref())?;
-            resolve_gate_scope(workspace, &mut args.scope)?;
-            run_gate_review(
-                workspace,
-                args.scope,
-                args.bead,
-                agent_override,
-                ReviewLane::Both,
-                host_key,
-            )
-        }
-        Some(GateSubcommand::Judge(mut args)) => {
-            if !has_scope(&args) {
-                return print_gate_subcommand_help("judge");
-            }
-            resolve_gate_scope(workspace, &mut args)?;
-            validate_target_for_tier(workspace, &args, Tier::Judge)?;
-            run_gate_review(
-                workspace,
-                args,
-                None,
-                agent_override,
-                ReviewLane::Judge,
-                host_key,
-            )
-        }
-        Some(GateSubcommand::Rubric(mut args)) => {
-            if !has_scope(&args) {
-                return print_gate_subcommand_help("rubric");
-            }
-            validate_diff_or_tree_scope(&args, "rubric")?;
-            resolve_gate_scope(workspace, &mut args)?;
-            run_gate_review(
-                workspace,
-                args,
-                None,
-                agent_override,
-                ReviewLane::Rubric,
-                host_key,
-            )
+            };
         }
         Some(GateSubcommand::Mint(args)) => {
             if !args.tree && args.molecule.is_none() {
                 return print_gate_subcommand_help("mint");
             }
-            run_gate_mint(workspace, &args, agent_override, host_key)
+            return run_gate_mint(workspace, &args, agent_override, host_key);
         }
-        Some(GateSubcommand::VerifyMarker(args)) => run_gate_verify_marker(workspace, args),
+        Some(GateSubcommand::VerifyMarker(args)) => return run_gate_verify_marker(workspace, args),
+        Some(GateSubcommand::Status(args)) => (GateOperation::Status, args),
+        Some(GateSubcommand::Verify(args)) => (GateOperation::Verify, args),
+        Some(GateSubcommand::Check(args)) => (GateOperation::Tier(Tier::Check), args),
+        Some(GateSubcommand::Test(args)) => (GateOperation::Tier(Tier::Test), args),
+        Some(GateSubcommand::System(args)) => (GateOperation::Tier(Tier::System), args),
+        Some(GateSubcommand::Judge(args)) => (GateOperation::Tier(Tier::Judge), args),
+        Some(GateSubcommand::Audit(args)) => (GateOperation::Audit, args),
+        Some(GateSubcommand::Review(args)) => (GateOperation::Review(args.bead), args.scope),
+        Some(GateSubcommand::Rubric(args)) => (GateOperation::Rubric, args),
+    };
+    let Some(request) = args.into_request()? else {
+        return print_gate_subcommand_help(operation.name());
+    };
+    operation.validate(&request)?;
+    let scope = resolve_gate_scope(workspace, request)?;
+    if let GateOperation::Tier(tier) = operation {
+        validate_target_for_tier(workspace, &scope, tier)?;
+    }
+    match operation {
+        GateOperation::Status => run_gate_status(workspace),
+        GateOperation::Verify => run_gate_verify(workspace, &scope),
+        GateOperation::Tier(Tier::Judge) => run_gate_review(
+            workspace,
+            scope,
+            None,
+            agent_override,
+            ReviewLane::Judge,
+            host_key,
+        ),
+        GateOperation::Tier(tier) => run_gate_single_tier(workspace, &scope, tier),
+        GateOperation::Audit => run_gate_audit(workspace, scope, agent_override, host_key),
+        GateOperation::Review(bead) => run_gate_review(
+            workspace,
+            scope,
+            bead,
+            agent_override,
+            ReviewLane::Both,
+            host_key,
+        ),
+        GateOperation::Rubric => run_gate_review(
+            workspace,
+            scope,
+            None,
+            agent_override,
+            ReviewLane::Rubric,
+            host_key,
+        ),
     }
 }
 
@@ -1260,46 +1261,8 @@ fn print_gate_subcommand_help(name: &str) -> anyhow::Result<()> {
     }
 }
 
-const fn has_scope(args: &GateScopeArgs) -> bool {
-    !args.files.is_empty() || args.diff.is_some() || args.tree || args.target.is_some()
-}
-
-fn validate_status_scope(args: &GateScopeArgs) -> anyhow::Result<()> {
-    if args.target.is_some() {
-        anyhow::bail!("loom gate status does not accept --target");
-    }
-    Ok(())
-}
-
-fn validate_diff_or_tree_scope(args: &GateScopeArgs, subcommand: &str) -> anyhow::Result<()> {
-    if args.target.is_some() || !args.files.is_empty() {
-        anyhow::bail!("loom gate {subcommand} requires --diff <range> or --tree");
-    }
-    if args.diff.is_none() && !args.tree {
-        anyhow::bail!("loom gate {subcommand} requires --diff <range> or --tree");
-    }
-    Ok(())
-}
-
-fn validate_review_scope(args: &GateScopeArgs, bead: Option<&str>) -> anyhow::Result<()> {
-    if bead.is_some() && args.diff.is_none() {
-        anyhow::bail!("loom gate review --bead requires --diff <range>");
-    }
-    if args.target.is_some() || !args.files.is_empty() {
-        anyhow::bail!("loom gate review requires --diff <range> or --tree");
-    }
-    if args.diff.is_none() && !args.tree {
-        anyhow::bail!("loom gate review requires --diff <range> or --tree");
-    }
-    Ok(())
-}
-
-fn validate_target_for_tier(
-    workspace: &Path,
-    args: &GateScopeArgs,
-    tier: Tier,
-) -> anyhow::Result<()> {
-    let Some(target) = args.target.as_deref() else {
+fn validate_target_for_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Result<()> {
+    let Some(target) = args.target() else {
         return Ok(());
     };
     let matches = target_matches(workspace, target)?;
@@ -1340,87 +1303,13 @@ fn run_gate_verify_marker(workspace: &Path, args: GateVerifyMarkerArgs) -> anyho
     }
 }
 
-/// Convert `args.diff` into a populated `args.files` via
-/// `git diff <range> --name-only`, per specs/gate.md § *Scope flags*:
-///
-/// > `--diff <range>` | Input set = `git diff <range> --name-only`
-/// > (committed + working tree in the range)
-///
-/// Honoured for every gate subcommand that consumes a `GateScopeArgs`:
-/// without this expansion the dispatcher's `args.files`-based filter
-/// (in `dispatch_tier` and `run_integrity_gate`) silently runs every
-/// verifier when only `--diff` is set — the very push-gate scenario
-/// the spec promises will scope by intersection.
-///
-/// Skipped when `args.files` is already populated (explicit `--files`
-/// wins) or when no `--diff` is set. `--tree` leaves both `args.diff`
-/// and `args.files` unset so dispatcher's "scope was set" check
-/// continues to flow through the tree-mode "match all" path.
-fn expand_diff_to_files(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::Result<()> {
-    if !args.files.is_empty() {
-        return Ok(());
-    }
-    let Some(range) = args.diff.as_deref() else {
-        return Ok(());
-    };
-    let workdir = workspace.to_path_buf();
-    let range_owned = range.to_string();
-    let runtime = tokio::runtime::Runtime::new()?;
-    let result = runtime.block_on(async move {
-        let client = loom_driver::git::GitClient::open(&workdir)?;
-        client.changed_files_in_range(&range_owned, None).await
-    });
-    // A valid-but-empty diff returns `Ok(vec![])` (legitimate empty scope —
-    // e.g. `HEAD` on a clean tree); only a range git itself rejects (invalid
-    // commit, `@{u}` with no upstream, not a git repo) returns `Err`. The
-    // latter must fail loudly: an unparseable range silently degraded to an
-    // empty `args.files`, which `narrow_to_loom_files` then treats as "no
-    // filter" and walks the whole tree — surfacing findings outside the
-    // intended scope (and masking that the push range was never verified).
-    let files = result.with_context(|| {
-        format!("loom gate: --diff {range} could not be resolved to a file set")
-    })?;
-    args.files = files;
-    Ok(())
+fn resolve_gate_scope(workspace: &Path, request: GateScopeRequest) -> anyhow::Result<GateScope> {
+    Ok(tokio::runtime::Runtime::new()?.block_on(request.resolve(workspace))?)
 }
 
-/// Expand a diff scope into files and normalise file paths.
-///
-/// After expansion, `args.files` is normalised against `workspace`
-/// (relative paths become absolute). Downstream filters accept absolute
-/// scope files for both spec-section auto-includes and repo-relative
-/// verifier globs, matching `--diff` output and pre-commit payloads.
-fn resolve_gate_scope(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::Result<()> {
-    expand_diff_to_files(workspace, args)?;
-    for path in &mut args.files {
-        if path.is_relative() {
-            *path = workspace.join(&*path);
-        }
-    }
-    Ok(())
-}
-
-/// True iff the caller scoped to a finite file set (`--files`,
-/// `--diff`, or `--bead` — and post-`resolve_gate_scope`, the
-/// auto-defaulted bare invocation that becomes `--diff HEAD`).
-/// `--tree` is intentionally absent: it means "run every verifier",
-/// no filter. Used by `dispatch_tier` and `run_integrity_gate` to
-/// distinguish "scope resolved to empty set — run nothing" (e.g.
-/// clean working tree under bare invocation) from "no scope at all —
-/// run everything" (`--tree`). Per specs/gate.md § *Scope flags* the
-/// contract is that every finite scope flag defines an input set and
-/// verifiers run iff their declared inputs intersect.
-const fn scope_is_finite(args: &GateScopeArgs) -> bool {
-    !args.files.is_empty() || args.diff.is_some()
-}
-
-const fn scope_allows_missing_binary_skip(args: &GateScopeArgs) -> bool {
-    !args.files.is_empty() && args.diff.is_none() && !args.tree
-}
-
-fn gate_dispatch_options(args: &GateScopeArgs) -> DispatchOptions {
+fn gate_dispatch_options(args: &GateScope) -> DispatchOptions {
     DispatchOptions {
-        files: args.files.clone(),
+        files: args.files().unwrap_or_default().to_vec(),
         spec: None,
     }
 }
@@ -1459,16 +1348,10 @@ impl TestScope for SelectedTestScope {
 fn filter_annotations(
     annotations: &[loom_gate::Annotation],
     tier: Tier,
-    args: &GateScopeArgs,
 ) -> Vec<loom_gate::Annotation> {
     annotations
         .iter()
         .filter(|a| a.tier == tier)
-        .filter(|a| {
-            args.target
-                .as_deref()
-                .is_none_or(|target| a.target == target)
-        })
         .filter(|a| !is_allowlisted_check_annotation(a))
         .cloned()
         .collect()
@@ -1598,7 +1481,7 @@ fn print_gate_status(report: &loom_gate::Report) {
     clippy::print_stderr,
     reason = "gate progress and verifier failures are CLI diagnostics"
 )]
-fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()> {
+fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
     if nested_diff_gate_skip(args) {
         eprintln!("loom gate verify --files: skipped under parent --diff gate");
         return Ok(());
@@ -1621,8 +1504,8 @@ fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()>
     Ok(())
 }
 
-fn verify_tiers_for_args(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<Vec<Tier>> {
-    if let Some(target) = args.target.as_deref() {
+fn verify_tiers_for_args(workspace: &Path, args: &GateScope) -> anyhow::Result<Vec<Tier>> {
+    if let Some(target) = args.target() {
         let matches = target_matches(workspace, target)?;
         if matches.is_empty() {
             anyhow::bail!(
@@ -1637,27 +1520,20 @@ fn verify_tiers_for_args(workspace: &Path, args: &GateScopeArgs) -> anyhow::Resu
         }
         return Ok(vec![first]);
     }
-    if args.tree {
+    if args.is_tree() {
         return Ok(vec![Tier::Check, Tier::Test, Tier::System]);
     }
     Ok(vec![Tier::Check, Tier::Test])
 }
 
-fn nested_diff_gate_skip(args: &GateScopeArgs) -> bool {
-    std::env::var_os("LOOM_PARENT_DIFF_GATE").is_some()
-        && !args.files.is_empty()
-        && args.diff.is_none()
-        && args.target.is_none()
-        && !args.tree
+fn nested_diff_gate_skip(args: &GateScope) -> bool {
+    std::env::var_os("LOOM_PARENT_DIFF_GATE").is_some() && args.is_explicit_files()
 }
 
-fn run_project_hook_lane(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<i32> {
-    let Some(range) = args.diff.as_deref() else {
+fn run_project_hook_lane(workspace: &Path, args: &GateScope) -> anyhow::Result<i32> {
+    let Some(range) = args.diff() else {
         return Ok(0);
     };
-    if args.target.is_some() {
-        return Ok(0);
-    }
     let (from_ref, to_ref) = concrete_diff_refs(workspace, range)?;
     let status = std::process::Command::new("prek")
         .current_dir(workspace)
@@ -1696,7 +1572,7 @@ fn git_rev_parse(workspace: &Path, rev: &str) -> anyhow::Result<String> {
         .to_string())
 }
 
-fn run_gate_single_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::Result<()> {
+fn run_gate_single_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Result<()> {
     let code = dispatch_tier(workspace, args, tier)?;
     if code != 0 {
         std::process::exit(code);
@@ -1769,26 +1645,28 @@ fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
     clippy::print_stderr,
     reason = "gate dispatch diagnostics are part of the CLI stderr contract"
 )]
-fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::Result<i32> {
+fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Result<i32> {
     let specs_dir = workspace.join("specs");
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
-    let mut selected = filter_annotations(&parsed.annotations, tier, args);
-    selected.retain(|ann| !ann.pending);
-    if scope_is_finite(args) {
+    let mut candidates = filter_annotations(&parsed.annotations, tier);
+    candidates.retain(|ann| !ann.pending);
+    let mut input_resolver = if args.files().is_some() {
         let runner_specs = match tier {
             Tier::Check | Tier::System => resolve_runner_context(workspace, tier)?.0,
             Tier::Test | Tier::Judge => Vec::new(),
         };
-        let mut input_resolver = build_input_resolver(workspace, &runner_specs);
-        selected = filter_by_files(&selected, &args.files, &mut input_resolver);
-        if matches!(tier, Tier::Check | Tier::System) && scope_allows_missing_binary_skip(args) {
-            let cmd_resolver = FsCommandResolver::new(workspace);
-            selected.retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver));
-        }
+        build_input_resolver(workspace, &runner_specs)
+    } else {
+        InputResolver::new(workspace.to_path_buf())
+    };
+    let mut selected = args.select(&candidates, &mut input_resolver);
+    if matches!(tier, Tier::Check | Tier::System) && args.is_explicit_files() {
+        let cmd_resolver = FsCommandResolver::new(workspace);
+        selected.retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver));
     }
 
     let mut combined: i32 = 0;
-    if tier == Tier::Check && args.target.is_none() {
+    if tier == Tier::Check && args.target().is_none() {
         combined = combined.max(run_integrity_gate(workspace, args)?);
     }
     if selected.is_empty() {
@@ -1862,7 +1740,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
 /// gate's scope-finite path. The self-cleaning `?` modifier per
 /// `specs/gate.md` § Pending modifier requires forward-resolution at
 /// every gate scope; routing pending annotations through
-/// [`filter_by_files`] would drop them whenever the spec they live in
+/// [`GateScope::select`] would drop them whenever the spec they live in
 /// is outside the staged set — common for plain test-leaf targets
 /// (no `::`-segmented crate prefix) whose `CargoMetadataScope` lookup
 /// collapses to the auto-included spec file. The pending half rejoins
@@ -1889,7 +1767,7 @@ fn partition_pending_for_forward_resolution(
 /// and treats the integrity gate as itself a `[check]`-tier verifier, so
 /// the verify lane fails the same way the per-annotation `[check]`
 /// dispatch does.
-fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<i32> {
+fn run_integrity_gate(workspace: &Path, args: &GateScope) -> anyhow::Result<i32> {
     use std::io::Write;
 
     let specs_dir = workspace.join("specs");
@@ -1903,13 +1781,13 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
     }
     let cmd_resolver = FsCommandResolver::new(workspace);
     let (specs, tier_cwds) = resolve_integrity_runner_context(workspace)?;
-    if scope_is_finite(args) {
+    if args.files().is_some() {
         let mut input_resolver = build_input_resolver(workspace, &specs);
         let (pending, candidates): (Vec<_>, Vec<_>) =
             partition_pending_for_forward_resolution(annotations);
-        annotations = filter_by_files(&candidates, &args.files, &mut input_resolver);
+        annotations = args.select(&candidates, &mut input_resolver);
         annotations.extend(pending);
-        if scope_allows_missing_binary_skip(args) {
+        if args.is_explicit_files() {
             annotations
                 .retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver) || ann.pending);
         }
@@ -1919,7 +1797,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
     }
     let (test_resolver, stub_scanner) = loom_gate::integrity::scan_workspace_pair(workspace)?;
     let options = DispatchOptions {
-        files: args.files.clone(),
+        files: args.files().unwrap_or_default().to_vec(),
         spec: None,
     };
     let pending_executor = DispatchPendingExecutor::new(&specs, options, workspace, tier_cwds);
@@ -2683,7 +2561,7 @@ fn resolve_mint_scope(_workspace: &Path, args: &GateMintArgs) -> anyhow::Result<
 
 fn run_gate_audit(
     workspace: &Path,
-    args: GateScopeArgs,
+    args: GateScope,
     agent_override: Option<AgentKind>,
     host_key: bool,
 ) -> anyhow::Result<()> {
@@ -2701,7 +2579,7 @@ fn run_gate_audit(
 
 fn run_gate_review(
     workspace: &Path,
-    args: GateScopeArgs,
+    args: GateScope,
     bead: Option<String>,
     agent_override: Option<AgentKind>,
     lane: ReviewLane,
@@ -2713,8 +2591,7 @@ fn run_gate_review(
         agent_override,
         ReviewOpts {
             bead,
-            diff: args.diff,
-            tree: args.tree,
+            scope: args,
             lane,
         },
         host_key,
@@ -2962,7 +2839,7 @@ fn run_loop_cmd(
                 &runtime,
                 workspace,
                 root,
-                parallel_n,
+                parallel,
                 selection.kind(),
                 agent_override,
                 wrix_bin.clone(),
@@ -3098,7 +2975,7 @@ fn run_parallel_loop_root(
     runtime: &tokio::runtime::Runtime,
     workspace: &Path,
     root: &LoopWorkRoot,
-    parallel_n: u32,
+    parallel: Parallelism,
     kind: AgentKind,
     agent_override: Option<AgentKind>,
     wrix_bin: PathBuf,
@@ -3118,42 +2995,65 @@ fn run_parallel_loop_root(
     }
     let _guard = acquire_work_root_lock(workspace, root.id.as_str())?;
     prepare_loop_root(runtime, workspace, root, &config.loom, startup_reconcile)?;
-    let workspace_buf = workspace.to_path_buf();
-    let label_for_async = root.label.clone();
-    let ready_parent_for_async = root.ready_parent.clone();
-    let style_rules_for_async = config.style_rules.clone();
-    let loom_cfg_for_async = config.loom.clone();
-    let skills_cfg_for_async = config.skills.clone();
-    let observer_config = config.agent.clone();
-    let infra_policy = InfraRetryPolicy {
-        max_attempts: config.loop_.infra.max_attempts,
+    let launcher_env = repo_git_policy.launcher_env();
+    let request = loom_workflow::r#loop::schedule::Request {
+        workspace: workspace.to_path_buf(),
+        label: root.label.clone(),
+        ready_parent: root.ready_parent.clone(),
+        parallelism: parallel,
+        agent_override,
+        wrix_bin,
+        loom_bin: current_loom_bin()?,
+        loom: config.loom.clone(),
+        infra_policy: InfraRetryPolicy {
+            max_attempts: config.loop_.infra.max_attempts,
+        },
+        max_iterations: config.loop_.max_iterations,
+        repo_git_policy,
     };
-    runtime.block_on(async move {
-        run_parallel_loop(
-            workspace_buf,
-            label_for_async,
-            ready_parent_for_async,
-            parallel_n,
-            kind,
-            agent_override,
-            wrix_bin,
-            selection,
-            direct_output_limits,
-            shutdown_grace,
-            manifest,
-            cli_profile,
-            phase_default,
-            style_rules_for_async,
-            loom_cfg_for_async,
-            skills_cfg_for_async,
-            observer_config,
-            render_mode,
-            infra_policy,
-            config.loop_.max_iterations,
-            repo_git_policy,
-        )
-        .await
-    })
+    let config = Arc::new(config.clone());
+    let workspace = workspace.to_path_buf();
+    let label = root.label.clone();
+    Ok(
+        runtime.block_on(loom_workflow::r#loop::schedule::run(request, move |slot| {
+            let config = Arc::clone(&config);
+            let manifest = Arc::clone(&manifest);
+            let cli_profile = cli_profile.clone();
+            let phase_default = phase_default.clone();
+            let selection = selection.clone();
+            let workspace = workspace.clone();
+            let label = label.clone();
+            let launcher_env = launcher_env.clone();
+            async move {
+                match dispatch_for_slot(
+                    kind,
+                    shutdown_grace,
+                    slot,
+                    &manifest,
+                    cli_profile.as_ref(),
+                    &phase_default,
+                    &workspace.join(".loom/logs"),
+                    &label,
+                    &config.style_rules,
+                    &workspace,
+                    &config.loom,
+                    &config.skills,
+                    &config.agent,
+                    &selection,
+                    direct_output_limits,
+                    launcher_env,
+                    render_mode,
+                )
+                .await
+                {
+                    Ok(outcome) => outcome,
+                    Err(error) => loom_workflow::r#loop::AgentOutcome::Failure {
+                        error: format!("{error:#}"),
+                    },
+                }
+            }
+        }))?,
+    )
 }
 
 #[expect(clippy::too_many_arguments, reason = "CLI loop root wiring surface")]
@@ -3479,669 +3379,6 @@ const fn gate_label(gate: &GateOutcome) -> &'static str {
     }
 }
 
-/// `UpdateOpts` for a parallel-mode `loom:clarify` / `loom:blocked`
-/// self-report. Pairs `status=blocked` with the terminal label so
-/// `bd ready` excludes the parked bead via its native status filter
-/// (`specs/harness.md` § Labels), mirroring the serial
-/// `apply_clarify_or_blocked` / `apply_blocked` paths. Without the
-/// paired status the escalated bead stays ready and the next
-/// `loom loop` re-dispatches it instead of parking for human resolution.
-fn parallel_park_update(label: &str, notes: Option<String>) -> UpdateOpts {
-    UpdateOpts {
-        status: Some(loom_driver::bd::Status::Blocked),
-        add_labels: vec![label.to_string()],
-        notes,
-        ..UpdateOpts::default()
-    }
-}
-
-#[expect(clippy::too_many_arguments, reason = "fan-out wiring surface")]
-async fn run_parallel_loop(
-    workspace: PathBuf,
-    label: SpecLabel,
-    ready_parent: Option<BeadId>,
-    parallel_n: u32,
-    kind: AgentKind,
-    agent_override: Option<AgentKind>,
-    wrix_bin: PathBuf,
-    selection: loom_driver::config::AgentSelection,
-    direct_output_limits: loom_driver::agent::OutputLimits,
-    shutdown_grace: Option<Duration>,
-    manifest: Arc<ProfileImageManifest>,
-    cli_profile: Option<ProfileName>,
-    phase_default: ProfileName,
-    style_rules: String,
-    loom_cfg: loom_driver::config::LoomTopConfig,
-    skills_cfg: loom_driver::config::SkillsConfig,
-    observer_config: AgentObserversConfig,
-    render_mode: loom_render::RenderMode,
-    infra_policy: InfraRetryPolicy,
-    max_iterations: u32,
-    repo_git_policy: RepoGitPolicy,
-) -> anyhow::Result<LoopOutcome> {
-    use loom_driver::bd::UpdateOpts;
-    use loom_workflow::gate_clarify::ClarifyApplyOutcome;
-    use loom_workflow::r#loop::AgentOutcome;
-
-    let bd = BdClient::new();
-    let git = GitClient::open_with_integration_branch(
-        workspace.clone(),
-        loom_cfg.integration_branch.clone(),
-    )?
-    .with_hook_timeout(loom_cfg.git_hook_timeout())
-    .with_repo_git_policy(repo_git_policy);
-    let launcher_env = git.launcher_key_env()?;
-    let logs_root = workspace.join(".loom/logs");
-    let batch_limit = parallel_n as usize;
-    let mut infra_budget = ParallelInfraBudget::new(infra_policy);
-    let mut infra_retry_queue: VecDeque<Bead> = VecDeque::new();
-    let mut infra_queue_loaded = false;
-    let mut finished_ids: HashSet<BeadId> = HashSet::new();
-    let mut processed = 0_u32;
-    let mut waiting = 0_u32;
-    let mut clarified = 0_u32;
-    let mut blocked = 0_u32;
-    let mut outer_iterations = 0_u32;
-    let mut work_since_gate = false;
-    let mut last_gate: Option<GateOutcome> = None;
-
-    let gate = 'outer: loop {
-        if outer_iterations >= max_iterations && last_gate.is_some() {
-            break GateOutcome::Fail(loom_gate::GateFail::stalled(outer_iterations));
-        }
-        loop {
-            let deferred_ids = infra_retry_queue
-                .iter()
-                .map(|bead| bead.id.clone())
-                .collect::<Vec<_>>();
-            let mut batch_beads = parallel_ready_batch(
-                &bd,
-                &label,
-                ready_parent.as_ref(),
-                batch_limit,
-                &deferred_ids,
-                &finished_ids,
-            )
-            .await?;
-            if batch_beads.is_empty() {
-                if !infra_queue_loaded {
-                    infra_retry_queue.extend(
-                        load_parallel_infra_queue(&bd, &label, ready_parent.as_ref()).await?,
-                    );
-                    infra_queue_loaded = true;
-                }
-                while batch_beads.len() < batch_limit {
-                    let Some(bead) = infra_retry_queue.pop_front() else {
-                        break;
-                    };
-                    if finished_ids.contains(&bead.id) {
-                        continue;
-                    }
-                    batch_beads.push(bead);
-                }
-            }
-            if batch_beads.is_empty() {
-                break;
-            }
-
-            clear_parallel_infra_state(&bd, &batch_beads).await?;
-            let batch_by_id = batch_beads
-                .iter()
-                .map(|bead| (bead.id.clone(), bead.clone()))
-                .collect::<HashMap<_, _>>();
-            let logs_root_for_merge = logs_root.clone();
-            let logs_root_for_spawn = logs_root.clone();
-            let label_for_closure = label.clone();
-            let workspace_for_closure = workspace.clone();
-            let manifest_for_batch = Arc::clone(&manifest);
-            let cli_profile_for_batch = cli_profile.clone();
-            let phase_default_for_batch = phase_default.clone();
-            let style_rules_for_batch = style_rules.clone();
-            let loom_cfg_for_batch = loom_cfg.clone();
-            let skills_cfg_for_batch = skills_cfg.clone();
-            let observer_config_for_batch = observer_config.clone();
-            let selection_for_batch = selection.clone();
-            let launcher_env_for_batch = launcher_env.clone();
-            let outcome = loom_workflow::r#loop::run_parallel_batch_with_logs(
-                &git,
-                &label,
-                batch_beads,
-                Some(&logs_root_for_merge),
-                move |slot| {
-                    let manifest_inner = Arc::clone(&manifest_for_batch);
-                    let cli_profile_inner = cli_profile_for_batch.clone();
-                    let phase_default_inner = phase_default_for_batch.clone();
-                    let logs_root_inner = logs_root_for_spawn.clone();
-                    let label_inner = label_for_closure.clone();
-                    let style_rules_inner = style_rules_for_batch.clone();
-                    let workspace_inner = workspace_for_closure.clone();
-                    let loom_cfg_inner = loom_cfg_for_batch.clone();
-                    let skills_cfg_inner = skills_cfg_for_batch.clone();
-                    let observer_config_inner = observer_config_for_batch.clone();
-                    let selection_inner = selection_for_batch.clone();
-                    let launcher_env_inner = launcher_env_for_batch.clone();
-                    async move {
-                        match dispatch_for_slot(
-                            kind,
-                            shutdown_grace,
-                            slot,
-                            &manifest_inner,
-                            cli_profile_inner.as_ref(),
-                            &phase_default_inner,
-                            &logs_root_inner,
-                            &label_inner,
-                            &style_rules_inner,
-                            &workspace_inner,
-                            &loom_cfg_inner,
-                            &skills_cfg_inner,
-                            &observer_config_inner,
-                            &selection_inner,
-                            direct_output_limits,
-                            launcher_env_inner,
-                            render_mode,
-                        )
-                        .await
-                        {
-                            Ok(outcome) => outcome,
-                            Err(e) => AgentOutcome::Failure {
-                                error: format!("{e:#}"),
-                            },
-                        }
-                    }
-                },
-            )
-            .await?;
-
-            for result in outcome.results {
-                match result {
-                    BatchResult::Merged { bead } => {
-                        infra_budget.clear(&bead);
-                        finished_ids.insert(bead);
-                        processed = processed.saturating_add(1);
-                        work_since_gate = true;
-                    }
-                    BatchResult::Waiting { bead, blockers } => {
-                        tracing::info!(
-                            bead = %bead,
-                            blocker_count = blockers.count(),
-                            "loom loop: dependency wait accepted; continuing parallel work",
-                        );
-                        infra_budget.clear(&bead);
-                        processed = processed.saturating_add(1);
-                        waiting = waiting.saturating_add(1);
-                    }
-                    BatchResult::Conflict { bead, .. } => {
-                        tracing::warn!(
-                            bead = %bead,
-                            "loom loop: integration conflict — marking for single retry; rerun loom loop to re-dispatch against the moved tip",
-                        );
-                        bd.update(
-                            &bead,
-                            UpdateOpts {
-                                add_labels: vec![
-                                    loom_workflow::r#loop::CONFLICT_RETRY_LABEL.to_string(),
-                                ],
-                                ..UpdateOpts::default()
-                            },
-                        )
-                        .await?;
-                        emit_parallel_route_event(
-                            &logs_root,
-                            &label,
-                            &bead,
-                            loom_events::DriverKind::BdStateTransition,
-                            format!("Beads state updated for {bead}: integration conflict retry"),
-                            serde_json::json!({
-                                "source_route": "loop-integration-conflict",
-                                "identity": "integration-conflict",
-                                "bead_id": bead,
-                                "mutation": "update",
-                                "added_labels": [loom_workflow::r#loop::CONFLICT_RETRY_LABEL],
-                            }),
-                        );
-                        infra_budget.clear(&bead);
-                        finished_ids.insert(bead);
-                        processed = processed.saturating_add(1);
-                    }
-                    BatchResult::AgentFailed { bead, .. } => {
-                        infra_budget.clear(&bead);
-                        finished_ids.insert(bead);
-                        processed = processed.saturating_add(1);
-                    }
-                    BatchResult::AgentInfra { bead, failure } => {
-                        let route = infra_budget.record(&bead, &failure);
-                        match route {
-                            ParallelInfraRoute::Retry { diagnostic } => {
-                                tracing::warn!(
-                                    bead = %bead,
-                                    cause = %diagnostic.cause,
-                                    attempt = ?diagnostic.attempt,
-                                    "loom loop: infra failure queued for retry",
-                                );
-                                let retry_bead =
-                                    batch_by_id.get(&bead).cloned().ok_or_else(|| {
-                                        anyhow::anyhow!("parallel infra result missing bead {bead}")
-                                    })?;
-                                infra_retry_queue.push_back(retry_bead);
-                            }
-                            ParallelInfraRoute::Park { diagnostic } => {
-                                bd.update(&bead, parallel_infra_update(&diagnostic)).await?;
-                                emit_parallel_route_event(
-                                    &logs_root,
-                                    &label,
-                                    &bead,
-                                    loom_events::DriverKind::BdStateTransition,
-                                    format!("Beads state updated for {bead}: loom:infra"),
-                                    serde_json::json!({
-                                        "source_route": "loop-infra",
-                                        "identity": diagnostic.cause,
-                                        "bead_id": bead,
-                                        "mutation": "update",
-                                        "status": "blocked",
-                                        "added_labels": ["loom:infra"],
-                                    }),
-                                );
-                                finished_ids.insert(bead);
-                                processed = processed.saturating_add(1);
-                                blocked = blocked.saturating_add(1);
-                            }
-                        }
-                    }
-                    BatchResult::AgentBlocked { bead, reason } => {
-                        let notes = if reason.is_empty() {
-                            "agent-blocked".to_string()
-                        } else {
-                            format!("agent-blocked: {reason}")
-                        };
-                        bd.update(&bead, parallel_park_update("loom:blocked", Some(notes)))
-                            .await?;
-                        emit_parallel_route_event(
-                            &logs_root,
-                            &label,
-                            &bead,
-                            loom_events::DriverKind::BdStateTransition,
-                            format!("Beads state updated for {bead}: loom:blocked"),
-                            serde_json::json!({
-                                "source_route": "loop-marker",
-                                "identity": "LOOM_BLOCKED",
-                                "bead_id": bead,
-                                "mutation": "update",
-                                "status": "blocked",
-                                "added_labels": ["loom:blocked"],
-                            }),
-                        );
-                        infra_budget.clear(&bead);
-                        finished_ids.insert(bead);
-                        processed = processed.saturating_add(1);
-                        blocked = blocked.saturating_add(1);
-                    }
-                    BatchResult::AgentClarify { bead, question } => {
-                        if loom_protocol::gate::options::has_well_formed_block(&question) {
-                            bd.update(
-                                &bead,
-                                UpdateOpts {
-                                    notes: Some(question),
-                                    ..UpdateOpts::default()
-                                },
-                            )
-                            .await?;
-                            emit_parallel_route_event(
-                                &logs_root,
-                                &label,
-                                &bead,
-                                loom_events::DriverKind::BdStateTransition,
-                                format!("Beads notes updated with clarify options for {bead}"),
-                                serde_json::json!({
-                                    "source_route": "loop-marker",
-                                    "identity": "LOOM_CLARIFY",
-                                    "bead_id": bead,
-                                    "mutation": "update",
-                                    "notes": "clarify-options",
-                                }),
-                            );
-                        }
-                        let report = loom_workflow::gate_clarify::apply_clarify_or_blocked_report(
-                            &bd, &bead,
-                        )
-                        .await?;
-                        let context = loom_workflow::gate_clarify::ClarifyRouteContext {
-                            source_route:
-                                loom_workflow::gate_clarify::ClarifySourceRoute::LoopMarker,
-                            identity: "LOOM_CLARIFY".to_string(),
-                            gate_log_path: loom_workflow::r#loop::BeadEmit::for_bead(
-                                &logs_root, &label, &bead,
-                            )
-                            .map(|state| state.log_path),
-                        };
-                        for event in report.routing_events(&bead, &context) {
-                            emit_parallel_route_event(
-                                &logs_root,
-                                &label,
-                                &bead,
-                                event.driver_kind,
-                                event.summary,
-                                event.payload,
-                            );
-                        }
-                        infra_budget.clear(&bead);
-                        finished_ids.insert(bead);
-                        processed = processed.saturating_add(1);
-                        match report.outcome {
-                            ClarifyApplyOutcome::Clarify => {
-                                clarified = clarified.saturating_add(1);
-                            }
-                            ClarifyApplyOutcome::BlockedClarifyWithoutOptions => {
-                                blocked = blocked.saturating_add(1);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let molecule = match ready_parent.as_ref() {
-            Some(parent) => Some(parent.as_str().parse::<MoleculeId>()?),
-            None => loom_workflow::resolve::resolve_open_epic(&bd, &label).await?,
-        };
-        if let Some(molecule) = molecule.as_ref() {
-            let molecule_bead = BeadId::new(molecule.as_str())?;
-            let molecule_exists = match bd.show(&molecule_bead).await {
-                Ok(_) => true,
-                Err(loom_driver::bd::BdError::ShowEmpty)
-                    if !work_since_gate && last_gate.is_none() =>
-                {
-                    false
-                }
-                Err(error) => return Err(error.into()),
-            };
-            let promotion = if molecule_exists {
-                loom_workflow::mint::promote_deferred(&bd, molecule, false).await
-            } else {
-                loom_workflow::mint::MintSummary::default()
-            };
-            if promotion.errors > 0 {
-                anyhow::bail!(
-                    "parallel molecule stabilization failed: {}",
-                    promotion.render()
-                );
-            }
-            if promotion.refused > 0 {
-                bd.update(
-                    &molecule_bead,
-                    UpdateOpts {
-                        status: Some(loom_driver::bd::Status::Blocked),
-                        add_labels: vec!["loom:blocked".to_string()],
-                        notes: Some(format!(
-                            "{}: {}",
-                            loom_workflow::r#loop::GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE,
-                            promotion.render(),
-                        )),
-                        ..UpdateOpts::default()
-                    },
-                )
-                .await?;
-                blocked = blocked.saturating_add(1);
-                let evidence = loom_gate::HandoffEvidence {
-                    molecule_state: loom_gate::MoleculeState::Unresolved,
-                    ..loom_gate::HandoffEvidence::default()
-                };
-                break 'outer match loom_gate::GateSuccess::new(&evidence, outer_iterations) {
-                    Ok(success) => GateOutcome::Success(success),
-                    Err(fail) => GateOutcome::Fail(fail),
-                };
-            }
-            if promotion.promoted_deferred > 0 {
-                continue 'outer;
-            }
-        }
-
-        if !work_since_gate {
-            break last_gate.take().unwrap_or(GateOutcome::NoGate {
-                beads_processed: processed,
-                reason: if processed == 0 {
-                    NoGateReason::NoBeadsReady
-                } else {
-                    NoGateReason::SelectionPartial
-                },
-            });
-        }
-
-        let loom_bin = current_loom_bin()?;
-        let handoff = execute_molecule_push_gate(
-            &bd,
-            &label,
-            molecule.as_ref(),
-            MoleculePushGateCommands::new(agent_override, &loom_bin, &wrix_bin),
-            &workspace,
-            &git,
-        )
-        .await?;
-        outer_iterations = outer_iterations.saturating_add(1);
-        work_since_gate = false;
-        let handoff_gate = match loom_gate::GateSuccess::new(&handoff.evidence, outer_iterations) {
-            Ok(success) => GateOutcome::Success(success),
-            Err(fail) => GateOutcome::Fail(fail),
-        };
-        if matches!(handoff_gate, GateOutcome::Success(_)) {
-            break handoff_gate;
-        }
-        last_gate = Some(handoff_gate);
-    };
-    Ok(LoopOutcome {
-        beads_processed: processed,
-        beads_waiting: waiting,
-        beads_clarified: clarified,
-        beads_blocked: blocked,
-        outer_iterations,
-        gate,
-    })
-}
-
-#[derive(Debug)]
-struct ParallelInfraBudget {
-    attempts: HashMap<BeadId, u32>,
-    max_attempts: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ParallelInfraRoute {
-    Retry { diagnostic: InfraDiagnostic },
-    Park { diagnostic: InfraDiagnostic },
-}
-
-impl ParallelInfraBudget {
-    fn new(policy: InfraRetryPolicy) -> Self {
-        Self {
-            attempts: HashMap::new(),
-            max_attempts: policy.max_attempts.max(1),
-        }
-    }
-
-    fn record(&mut self, bead: &BeadId, failure: &BatchInfraFailure) -> ParallelInfraRoute {
-        if !failure.is_retryable() {
-            self.clear(bead);
-            return ParallelInfraRoute::Park {
-                diagnostic: failure.diagnostic(0, self.max_attempts),
-            };
-        }
-        let attempt = self
-            .attempts
-            .get(bead)
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(1);
-        self.attempts.insert(bead.clone(), attempt);
-        let diagnostic = failure.diagnostic(attempt, self.max_attempts);
-        if attempt >= self.max_attempts {
-            self.clear(bead);
-            ParallelInfraRoute::Park { diagnostic }
-        } else {
-            ParallelInfraRoute::Retry { diagnostic }
-        }
-    }
-
-    fn clear(&mut self, bead: &BeadId) {
-        self.attempts.remove(bead);
-    }
-}
-
-async fn parallel_ready_batch(
-    bd: &BdClient,
-    label: &SpecLabel,
-    ready_parent: Option<&BeadId>,
-    batch_limit: usize,
-    deferred: &[BeadId],
-    finished: &HashSet<BeadId>,
-) -> anyhow::Result<Vec<Bead>> {
-    let beads = bd
-        .ready(loom_driver::bd::ReadyOpts {
-            limit: None,
-            label: ready_parent
-                .is_none()
-                .then(|| format!("spec:{}", label.as_str())),
-            parent: ready_parent.cloned(),
-            exclude_label: vec![],
-        })
-        .await?;
-    let mut out = Vec::with_capacity(batch_limit);
-    for bead in beads {
-        if out.len() >= batch_limit {
-            break;
-        }
-        if deferred.iter().any(|id| id == &bead.id) || finished.contains(&bead.id) {
-            continue;
-        }
-        if bead.issue_type == loom_driver::bd::IssueType::Epic {
-            tracing::info!(
-                bead = %bead.id,
-                spec = %label,
-                "loom loop: skipping epic-typed ready bead — workers dispatch leaves only",
-            );
-            continue;
-        }
-        out.push(bead);
-    }
-    Ok(out)
-}
-
-async fn load_parallel_infra_queue(
-    bd: &BdClient,
-    label: &SpecLabel,
-    ready_parent: Option<&BeadId>,
-) -> anyhow::Result<VecDeque<Bead>> {
-    let beads = bd
-        .list(ListOpts {
-            statuses: vec![loom_driver::bd::Status::Blocked],
-            label: ready_parent
-                .is_none()
-                .then(|| format!("spec:{}", label.as_str())),
-            label_any: vec!["loom:infra".to_string()],
-            parent: ready_parent.cloned(),
-            ..ListOpts::default()
-        })
-        .await?;
-    let mut queue = VecDeque::new();
-    for bead in beads {
-        if bead.issue_type == loom_driver::bd::IssueType::Epic {
-            tracing::info!(
-                bead = %bead.id,
-                spec = %label,
-                "loom loop: skipping epic-typed infra bead — workers dispatch leaves only",
-            );
-            continue;
-        }
-        queue.push_back(bead);
-    }
-    Ok(queue)
-}
-
-async fn clear_parallel_infra_state(bd: &BdClient, beads: &[Bead]) -> anyhow::Result<()> {
-    for bead in beads {
-        if bead.labels.iter().any(loom_driver::bd::Label::is_infra) {
-            bd.update(&bead.id, parallel_clear_infra_update()).await?;
-        }
-    }
-    Ok(())
-}
-
-fn parallel_clear_infra_update() -> UpdateOpts {
-    UpdateOpts {
-        status: Some(loom_driver::bd::Status::Open),
-        remove_labels: vec!["loom:infra".to_string()],
-        ..UpdateOpts::default()
-    }
-}
-
-fn parallel_infra_update(diagnostic: &InfraDiagnostic) -> UpdateOpts {
-    let mut metadata = vec![
-        ("loom.infra.cause".to_string(), diagnostic.cause.clone()),
-        ("loom.infra.phase".to_string(), "loop".to_string()),
-        (
-            "loom.infra.class".to_string(),
-            diagnostic.infra_class.clone(),
-        ),
-    ];
-    if let Some(first_event_seen) = diagnostic.first_event_seen {
-        metadata.push((
-            "loom.infra.first_event_seen".to_string(),
-            first_event_seen.to_string(),
-        ));
-    }
-    if let Some(attempt) = diagnostic.attempt {
-        metadata.push(("loom.infra.attempt".to_string(), attempt.to_string()));
-    }
-    if let Some(max_attempts) = diagnostic.max_attempts {
-        metadata.push((
-            "loom.infra.max_attempts".to_string(),
-            max_attempts.to_string(),
-        ));
-    }
-    UpdateOpts {
-        status: Some(loom_driver::bd::Status::Blocked),
-        add_labels: vec!["loom:infra".to_string()],
-        notes: Some(parallel_diagnostic_notes(
-            &diagnostic.cause,
-            &diagnostic.error,
-        )),
-        set_metadata: metadata,
-        ..UpdateOpts::default()
-    }
-}
-
-fn parallel_diagnostic_notes(cause: &str, error: &str) -> String {
-    if error.is_empty() {
-        cause.to_string()
-    } else {
-        format!("{cause}: {error}")
-    }
-}
-
-fn emit_parallel_route_event(
-    logs_root: &Path,
-    label: &SpecLabel,
-    bead: &BeadId,
-    kind: loom_events::DriverKind,
-    summary: impl AsRef<str>,
-    mut payload: serde_json::Value,
-) {
-    let Some(mut emit) = loom_workflow::r#loop::BeadEmit::for_bead(logs_root, label, bead) else {
-        return;
-    };
-    if matches!(kind, loom_events::DriverKind::ClarifyDowngraded)
-        && let Some(object) = payload.as_object_mut()
-    {
-        object.insert(
-            "event_sequence".to_string(),
-            serde_json::json!(emit.builder.current_seq()),
-        );
-        object.insert(
-            "gate_log_path".to_string(),
-            serde_json::json!(emit.log_path.to_string_lossy()),
-        );
-    }
-    emit.emit(kind, summary.as_ref(), payload);
-}
-
 /// One slot's dispatch: build the per-bead [`SpawnConfig`] against the
 /// slot's worktree and hand it to the same [`dispatch`] match the sequential
 /// path uses. The pre-resolved [`AgentKind`] from `run_run` is threaded down
@@ -4173,119 +3410,39 @@ async fn dispatch_for_slot(
     launcher_env: Vec<(String, String)>,
     render_mode: loom_render::RenderMode,
 ) -> anyhow::Result<loom_workflow::r#loop::AgentOutcome> {
-    use loom_driver::scratch::ScratchSession;
-    use loom_workflow::r#loop::{
-        AgentOutcome, LoopContextInputs, build_spawn_config_from_manifest, dolt_socket_mount,
-        render_loop_prompt, sccache_mount,
-    };
-    use loom_workflow::skill::SkillPlan;
-
-    let banner = format!("loom loop @ {}", slot.bead.id);
-    let key = resolve_scratch_key(
-        Phase::Loop,
-        std::slice::from_ref(label),
-        Some(&slot.bead.id),
-    );
-    let scratchpad_path = ScratchSession::scratchpad_path_for(&slot.worktree.path, &key);
-    let scratch_dir = scratchpad_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("scratchpad path has no parent"))?;
-    let bead_git = GitClient::open(&slot.worktree.path)?;
-    let tracked_files = bead_git.tracked_files().await?;
-    let skill_profile =
-        loom_workflow::r#loop::resolve_profile(&slot.bead.labels, cli_profile, phase_default);
-    let skill_plan = SkillPlan::resolve(
-        &slot.worktree.path,
-        &tracked_files,
-        Phase::Loop.as_str(),
-        &skill_profile,
-        kind,
-        skills_cfg,
-    )?;
-    let skill_session = skill_plan.materialize(scratch_dir, &slot.worktree.path)?;
-    let initial_prompt = render_loop_prompt(LoopContextInputs {
-        label: label.clone(),
-        spec_path: format!("specs/{}.md", label.as_str()),
-        pinned_context: String::new(),
-        companion_paths: vec![],
-        molecule_id: None,
-        issue_id: slot.bead.id.clone(),
-        title: slot.bead.title.clone(),
-        description: slot.bead.description.clone(),
-        previous_failure: None,
-        workspace_recovery: None,
-        attempt: 0,
-        scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
-        style_rules: style_rules.to_string(),
-        skill_index: skill_session.skill_index,
-    })?;
-    let scratch = ScratchSession::open(&slot.worktree.path, &key, &initial_prompt, &banner)?;
-    let mut mounts: Vec<_> = dolt_socket_mount(loom_workspace).into_iter().collect();
-    if let Some(spec) = sccache_mount(loom_cfg)? {
-        mounts.push(spec);
-    }
-    let extra_env = loom_cfg.container_sccache_env();
-    let mut spawn_config = match build_spawn_config_from_manifest(
+    use loom_workflow::r#loop::{AgentOutcome, worker};
+    let recovery_event = slot
+        .workspace_recovery
+        .as_ref()
+        .map(|recovery| worker::recovery_event(&slot.bead.id, recovery));
+    let worker = match worker::prepare(worker::Request {
+        bead: &slot.bead,
+        workspace: &slot.worktree.path,
+        loom_workspace,
         manifest,
-        &slot.bead,
         cli_profile,
         phase_default,
-        kind,
-        slot.worktree.path.clone(),
-        initial_prompt,
-        scratch.path().to_path_buf(),
-        extra_env,
-        vec![],
-        mounts,
+        runtime: kind,
+        label,
+        style_rules,
+        loom: loom_cfg,
+        skills: skills_cfg,
         launcher_env,
-    ) {
-        Ok(config) => config,
-        Err(ProfileError::UnknownProfile { name, .. }) => {
-            drop(scratch);
-            return Ok(AgentOutcome::UnknownProfile {
-                error: format_unknown_profile_error(&name, manifest),
-            });
-        }
-        Err(ProfileError::UnknownRuntimeForProfile {
-            profile,
-            runtime,
-            declared_runtimes,
-            ..
-        }) => {
-            drop(scratch);
-            return Ok(AgentOutcome::UnknownRuntimeForProfile {
-                error: format_unknown_runtime_for_profile_error(
-                    &profile,
-                    runtime,
-                    &declared_runtimes,
-                ),
-            });
-        }
-        Err(
-            e @ (ProfileError::InvalidSpawnConfig { .. }
-            | ProfileError::RuntimeMetadataMismatch { .. }),
-        ) => {
-            drop(scratch);
-            return Ok(AgentOutcome::StaticInfra {
-                cause: loom_workflow::r#loop::INVALID_SPAWN_CONFIG_CAUSE.to_string(),
-                error: e.to_string(),
-            });
-        }
-        Err(e) => {
-            drop(scratch);
-            return Err(e.into());
-        }
+        previous_failure: None,
+        workspace_recovery: slot.workspace_recovery,
+        attempt: 0,
+    })
+    .await?
+    {
+        worker::Preparation::Ready(worker) => worker,
+        worker::Preparation::Rejected(outcome) => return Ok(outcome),
     };
-    let skill_session = skill_plan.materialize(scratch.path(), &slot.worktree.path)?;
-    spawn_config.skills = Some(skill_session.registered);
-    spawn_config.event_metadata = Some(loom_events::AgentStartMetadata {
-        title: slot.bead.title.clone(),
-        profile: skill_profile,
-        spec_label: label.clone(),
-        parent_tool_call_id: None,
-    });
+    let worker::Worker {
+        spawn: mut spawn_config,
+        scratch,
+    } = *worker;
 
-    let sink = match open_bead_sink_with_renderer(
+    let mut sink = match open_bead_sink_with_renderer(
         logs_root,
         label,
         &slot.bead.id,
@@ -4304,7 +3461,13 @@ async fn dispatch_for_slot(
     };
     let mut output = String::new();
     selection.apply_to_spawn_config(&mut spawn_config, direct_output_limits);
-    let envelope_builder = build_envelope_builder(slot.bead.id.clone());
+    let mut envelope_builder = build_envelope_builder(slot.bead.id.clone());
+    if let Some(event) = recovery_event {
+        sink.emit(&loom_events::AgentEvent::from_driver_event(
+            event,
+            envelope_builder.build_with_source(loom_events::Source::Driver),
+        ))?;
+    }
     let result = dispatch_classified(
         kind,
         spawn_config,
@@ -5067,8 +4230,7 @@ fn resolved_agent_for(
 
 struct ReviewOpts {
     bead: Option<String>,
-    diff: Option<String>,
-    tree: bool,
+    scope: GateScope,
     /// Which lane(s) of the review to run — `Both` for `loom gate review`,
     /// `Judge`/`Rubric` for the focused single-lane re-runs surfaced by
     /// `loom gate judge` / `loom gate rubric`.
@@ -5090,10 +4252,10 @@ fn run_review(
     let wrix_bin =
         std::env::var_os("LOOM_WRIX_BIN").map_or_else(|| PathBuf::from("wrix"), PathBuf::from);
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
-    let label = resolve_review_label(workspace, spec, opts.tree)?;
+    let label = resolve_review_label(workspace, spec, opts.scope.is_tree())?;
     let runtime = tokio::runtime::Runtime::new()?;
     let inspection_only = std::env::var_os(REVIEW_INSPECTION_ONLY_ENV).is_some();
-    let work_root_guard = if opts.tree || inspection_only {
+    let work_root_guard = if opts.scope.is_tree() || inspection_only {
         None
     } else {
         acquire_review_work_root_lock(workspace, &label, opts.bead.as_deref(), &runtime)?
@@ -5130,7 +4292,7 @@ fn run_review(
     let hook_timeout_for_review = config.loom.git_hook_timeout();
     let suppressions_for_review = config.suppress.clone();
     let skills_cfg_for_review = config.skills.clone();
-    let dispatch_scope = if opts.tree {
+    let dispatch_scope = if opts.scope.is_tree() {
         DispatchScope::Tree
     } else {
         DispatchScope::PerBead
@@ -5199,7 +4361,7 @@ fn run_review(
             .with_style_rules(style_rules_for_review)
             .with_integration_branch(integration_branch_for_review)
             .with_hook_timeout(hook_timeout_for_review)
-            .with_push_range(opts.diff.clone())
+            .with_push_range(opts.scope.diff().map(str::to_owned))
             .with_verified_scope(verified_scope)
             .with_lane(opts.lane)
             .with_dispatch_scope(dispatch_scope)
@@ -6197,111 +5359,6 @@ mod tests {
         Ok(())
     }
 
-    /// Spec contract `specs/harness.md` § Labels: parallel-mode
-    /// `loom:clarify` / `loom:blocked` self-reports must pair
-    /// `status=blocked` with the label so `bd ready` excludes the parked
-    /// bead via its native status filter. Without it the escalated bead
-    /// stays ready and the next `loom loop` re-dispatches it instead of
-    /// parking for human resolution — the divergence from the serial
-    /// `apply_*` paths this guards against.
-    #[test]
-    fn parallel_park_pairs_status_blocked_with_label() {
-        for label in ["loom:clarify", "loom:blocked"] {
-            let opts = parallel_park_update(label, Some("a-note".to_string()));
-            assert_eq!(
-                opts.status.map(loom_driver::bd::Status::as_str),
-                Some("blocked"),
-                "{label}: must transition status=blocked so `bd ready` excludes it",
-            );
-            assert!(
-                opts.add_labels.iter().any(|l| l == label),
-                "{label}: terminal label must be applied: {:?}",
-                opts.add_labels,
-            );
-        }
-    }
-
-    #[test]
-    fn parallel_infra_budget_retries_then_parks_with_attempt_metadata() {
-        let bead = BeadId::new("lm-infra").expect("valid bead id");
-        let mut budget = ParallelInfraBudget::new(InfraRetryPolicy { max_attempts: 2 });
-        let failure = BatchInfraFailure::Preflight {
-            error: "spawn eof".to_string(),
-        };
-
-        let first = budget.record(&bead, &failure);
-        match first {
-            ParallelInfraRoute::Retry { diagnostic } => {
-                assert_eq!(diagnostic.cause, "infra-preflight");
-                assert_eq!(diagnostic.attempt, Some(1));
-                assert_eq!(diagnostic.max_attempts, Some(2));
-                assert_eq!(diagnostic.first_event_seen, Some(false));
-            }
-            other @ ParallelInfraRoute::Park { .. } => {
-                panic!("first preflight failure should retry, got {other:?}");
-            }
-        }
-        let second = budget.record(&bead, &failure);
-        match second {
-            ParallelInfraRoute::Park { diagnostic } => {
-                assert_eq!(diagnostic.cause, "infra-preflight");
-                assert_eq!(diagnostic.attempt, Some(2));
-                assert_eq!(diagnostic.max_attempts, Some(2));
-            }
-            other @ ParallelInfraRoute::Retry { .. } => {
-                panic!("second preflight failure should park, got {other:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn parallel_infra_update_pairs_status_label_and_metadata() {
-        let diagnostic = InfraDiagnostic::retryable(
-            "infra-interrupted",
-            "infra-interrupted",
-            "stream eof".to_string(),
-            2,
-            3,
-            true,
-        );
-
-        let opts = parallel_infra_update(&diagnostic);
-
-        assert_eq!(
-            opts.status.map(loom_driver::bd::Status::as_str),
-            Some("blocked")
-        );
-        assert!(opts.add_labels.iter().any(|label| label == "loom:infra"));
-        assert_eq!(opts.notes.as_deref(), Some("infra-interrupted: stream eof"),);
-        assert!(opts.set_metadata.contains(&(
-            "loom.infra.cause".to_string(),
-            "infra-interrupted".to_string(),
-        )));
-        assert!(opts.set_metadata.contains(&(
-            "loom.infra.first_event_seen".to_string(),
-            "true".to_string(),
-        )));
-        assert!(
-            opts.set_metadata
-                .contains(&("loom.infra.attempt".to_string(), "2".to_string(),))
-        );
-        assert!(
-            opts.set_metadata
-                .contains(&("loom.infra.max_attempts".to_string(), "3".to_string(),))
-        );
-    }
-
-    #[test]
-    fn parallel_clear_infra_update_reopens_and_removes_label() {
-        let opts = parallel_clear_infra_update();
-
-        assert_eq!(
-            opts.status.map(loom_driver::bd::Status::as_str),
-            Some("open")
-        );
-        assert!(opts.remove_labels.iter().any(|label| label == "loom:infra"),);
-    }
-
     #[test]
     fn inbox_kind_arg_accepts_infra() {
         let cli = Cli::try_parse_from(["loom", "inbox", "list", "--kind", "infra"])
@@ -6544,8 +5601,10 @@ mod tests {
     #[test]
     fn verify_tiers_for_args_scopes_files_to_check_and_test() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut args = empty_scope_args();
-        args.files.push(PathBuf::from(".pre-commit-config.yaml"));
+        let args = test_scope(
+            tmp.path(),
+            GateScopeRequest::Files(vec![".pre-commit-config.yaml".into()]),
+        );
         assert_eq!(
             verify_tiers_for_args(tmp.path(), &args).expect("tiers"),
             vec![Tier::Check, Tier::Test],
@@ -6555,8 +5614,7 @@ mod tests {
     #[test]
     fn verify_tiers_for_args_scopes_tree_to_all_deterministic_tiers() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut args = empty_scope_args();
-        args.tree = true;
+        let args = test_scope(tmp.path(), GateScopeRequest::Tree);
         assert_eq!(
             verify_tiers_for_args(tmp.path(), &args).expect("tiers"),
             vec![Tier::Check, Tier::Test, Tier::System],
@@ -6566,8 +5624,7 @@ mod tests {
     #[test]
     fn verify_tiers_for_args_scopes_diff_to_check_and_test() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut args = empty_scope_args();
-        args.diff = Some("HEAD".to_owned());
+        let args = changed_scope(tmp.path());
         assert_eq!(
             verify_tiers_for_args(tmp.path(), &args).expect("tiers"),
             vec![Tier::Check, Tier::Test],
@@ -6584,8 +5641,10 @@ mod tests {
             "## Success Criteria\n\n- check [check](same-target)\n- test [test](same-target)\n",
         )
         .expect("write spec");
-        let mut args = empty_scope_args();
-        args.target = Some("same-target".to_owned());
+        let args = test_scope(
+            tmp.path(),
+            GateScopeRequest::Target("same-target".to_owned()),
+        );
         let err = verify_tiers_for_args(tmp.path(), &args).expect_err("ambiguous target fails");
         let rendered = format!("{err:#}");
         assert!(
@@ -6604,8 +5663,10 @@ mod tests {
             "## Success Criteria\n\n- one [check](same-target)\n- two [check](same-target)\n",
         )
         .expect("write spec");
-        let mut args = empty_scope_args();
-        args.target = Some("same-target".to_owned());
+        let args = test_scope(
+            tmp.path(),
+            GateScopeRequest::Target("same-target".to_owned()),
+        );
         assert_eq!(
             verify_tiers_for_args(tmp.path(), &args).expect("same-tier target"),
             vec![Tier::Check],
@@ -6622,8 +5683,7 @@ mod tests {
             "## Success Criteria\n\n- selected [check](true)\n- unrelated [check](definitely-missing-target-check)\n",
         )
         .expect("write spec");
-        let mut args = empty_scope_args();
-        args.target = Some("true".to_owned());
+        let args = test_scope(tmp.path(), GateScopeRequest::Target("true".to_owned()));
         let code = dispatch_tier(tmp.path(), &args, Tier::Check).expect("target dispatch");
         assert_eq!(
             code, 0,
@@ -6633,14 +5693,15 @@ mod tests {
 
     #[test]
     fn missing_binary_skip_is_limited_to_explicit_files_scope() {
-        let mut files = empty_scope_args();
-        files.files = vec![PathBuf::from("src/lib.rs")];
-        assert!(scope_allows_missing_binary_skip(&files));
-
-        let mut diff = empty_scope_args();
-        diff.diff = Some("HEAD".to_owned());
-        diff.files = vec![PathBuf::from("src/lib.rs")];
-        assert!(!scope_allows_missing_binary_skip(&diff));
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let files = test_scope(
+            tmp.path(),
+            GateScopeRequest::Files(vec!["src/lib.rs".into()]),
+        );
+        assert!(files.is_explicit_files());
+        let diff = changed_scope(tmp.path());
+        assert!(!diff.is_explicit_files());
+        assert!(!diff.files().unwrap().is_empty());
     }
 
     #[test]
@@ -6654,9 +5715,7 @@ mod tests {
         )
         .expect("write spec");
 
-        let mut args = empty_scope_args();
-        args.diff = Some("HEAD".to_owned());
-        args.files = vec![tmp.path().join("src/lib.rs")];
+        let args = changed_scope(tmp.path());
 
         let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
         assert_eq!(code, 1);
@@ -6744,8 +5803,10 @@ mod tests {
         )
         .expect("write spec");
 
-        let mut args = empty_scope_args();
-        args.files = vec![PathBuf::from("src/lib.rs")];
+        let args = test_scope(
+            tmp.path(),
+            GateScopeRequest::Files(vec![PathBuf::from("src/lib.rs")]),
+        );
 
         let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
         assert_eq!(
@@ -6790,8 +5851,10 @@ mod tests {
         )
         .expect("write loom config");
 
-        let mut args = empty_scope_args();
-        args.files = vec![PathBuf::from("src/lib.rs")];
+        let args = test_scope(
+            tmp.path(),
+            GateScopeRequest::Files(vec![PathBuf::from("src/lib.rs")]),
+        );
 
         let code = dispatch_tier(tmp.path(), &args, Tier::Check).expect("check tier dispatch runs");
         assert_eq!(code, 0, "unresolved pending marker remains silent");
@@ -6815,57 +5878,69 @@ mod tests {
         )
         .expect("write spec");
 
-        let mut args = empty_scope_args();
-        args.files = vec![tmp.path().join("src/lib.rs")];
+        let args = test_scope(
+            tmp.path(),
+            GateScopeRequest::Files(vec![tmp.path().join("src/lib.rs")]),
+        );
 
         let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
         assert_eq!(code, 0);
     }
 
-    fn empty_scope_args() -> GateScopeArgs {
-        GateScopeArgs {
-            files: Vec::new(),
-            target: None,
-            diff: None,
-            tree: false,
-        }
+    fn test_scope(workspace: &Path, request: GateScopeRequest) -> GateScope {
+        resolve_gate_scope(workspace, request).expect("resolved scope")
     }
 
-    /// An unparseable `--diff` range (here a ref that does not exist, the
-    /// same failure shape as `@{u}` with no upstream) must fail loudly
-    /// rather than degrade to an empty `args.files` — empty scope reads as
-    /// "no filter" downstream and walks the whole tree.
+    fn changed_scope(workspace: &Path) -> GateScope {
+        loom_driver::git::init_test_repo_with_integration(workspace).expect("init repo");
+        std::fs::write(workspace.join("scope.txt"), "before").unwrap();
+        loom_driver::git::commit_all_in(workspace, "scope baseline").unwrap();
+        std::fs::write(workspace.join("scope.txt"), "after").unwrap();
+        test_scope(workspace, GateScopeRequest::Diff("HEAD".into()))
+    }
+
     #[test]
     fn expand_diff_to_files_errors_on_unresolvable_range() {
         let tmp = tempfile::tempdir().expect("tempdir");
         loom_driver::git::init_test_repo_with_integration(tmp.path()).expect("init repo");
-        let mut args = empty_scope_args();
-        args.diff = Some("no-such-ref..HEAD".into());
-        let err = expand_diff_to_files(tmp.path(), &mut args)
-            .expect_err("an unresolvable diff range must fail loudly");
-        assert!(
-            args.files.is_empty(),
-            "a failed expansion must not leave a partial scope",
-        );
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("no-such-ref..HEAD"),
-            "error must name the offending range: {msg}",
+        let err = resolve_gate_scope(
+            tmp.path(),
+            GateScopeRequest::Diff("no-such-ref..HEAD".into()),
+        )
+        .expect_err("invalid range");
+        assert!(format!("{err:#}").contains("no-such-ref..HEAD"));
+    }
+
+    #[test]
+    fn empty_diff_never_runs_whole_tree_verifiers() {
+        let tmp = tempfile::tempdir().unwrap();
+        loom_driver::git::init_test_repo_with_integration(tmp.path()).unwrap();
+        std::fs::create_dir_all(tmp.path().join("specs")).unwrap();
+        std::fs::write(
+            tmp.path().join("specs/alpha.md"),
+            "## Success Criteria\n\n- selected [check](sh -c 'printf ran > marker')\n",
+        )
+        .unwrap();
+        loom_driver::git::commit_all_in(tmp.path(), "verifier").unwrap();
+        let empty = test_scope(tmp.path(), GateScopeRequest::Diff("HEAD".into()));
+        assert_eq!(dispatch_tier(tmp.path(), &empty, Tier::Check).unwrap(), 0);
+        assert!(!tmp.path().join("marker").exists());
+        let tree = test_scope(tmp.path(), GateScopeRequest::Tree);
+        assert_eq!(dispatch_tier(tmp.path(), &tree, Tier::Check).unwrap(), 0);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("marker")).unwrap(),
+            "ran"
         );
     }
 
-    /// A valid range that simply has no changes (`HEAD` on a clean tree) is
-    /// a legitimate empty scope, not an error — only ranges git rejects
-    /// trip the fail-loud path.
     #[test]
     fn expand_diff_to_files_accepts_valid_empty_range() {
         let tmp = tempfile::tempdir().expect("tempdir");
         loom_driver::git::init_test_repo_with_integration(tmp.path()).expect("init repo");
-        let mut args = empty_scope_args();
-        args.diff = Some("HEAD".into());
-        expand_diff_to_files(tmp.path(), &mut args)
-            .expect("a valid range with no changes is a legitimate empty scope");
-        assert!(args.files.is_empty());
+        let scope = test_scope(tmp.path(), GateScopeRequest::Diff("HEAD".into()));
+        assert_eq!(scope.files(), Some([].as_slice()));
+        assert_eq!(scope.diff(), Some("HEAD"));
+        assert!(!scope.is_tree());
     }
 
     /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion

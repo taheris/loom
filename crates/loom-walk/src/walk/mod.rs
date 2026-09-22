@@ -49,6 +49,7 @@ mod loom_tune_deps;
 mod newtype_identifiers;
 mod no_allow_dead_code;
 mod no_derive_from_on_newtypes;
+mod no_event_sentinels;
 mod no_hardcoded_tmp_paths;
 mod no_ignore_for_flake;
 mod no_inline_suppression_comment_contract;
@@ -273,6 +274,10 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "no_derive_from_on_newtypes",
         run: no_derive_from_on_newtypes::run,
+    },
+    Walk {
+        name: "no_event_sentinels",
+        run: no_event_sentinels::run,
     },
     Walk {
         name: "no_hardcoded_tmp_paths",

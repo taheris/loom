@@ -75,6 +75,25 @@ command set; [`../specs/gate.md`](../specs/gate.md) for the verification
 model; and [`../specs/agent.md`](../specs/agent.md) for the backend
 abstraction.
 
+## Workflow Boundaries
+
+`loom-workflow::loop::schedule` owns parallel scheduling, retry budgets,
+parking, and stabilization behind a typed request and a spawn callback. The
+CLI supplies backend transport and rendering. Sequential and parallel dispatch
+share `loop::worker` preparation: clone recovery, profiles, skills, prompts,
+scratch ownership, and typed static-fault outcomes.
+
+Gate CLI flags become one `loom-gate::scope::Request`, then an immutable
+`Resolved` selection. Explicit files, diff-derived files, whole tree, and exact
+targets retain their distinct meanings; an empty diff is a finite empty set,
+not whole-tree authorization. Evidence seals remain separate from selection.
+
+Native LLM clients retain their public provider-specific types while sharing
+one private transport/conversion/event path for text and structured output.
+Mechanical style enforcement has one owner in `loom-walk`; its fixtures cover
+both violations and the real workspace, including event sentinels and renderer
+logging-test dependencies.
+
 ## State
 
 Loom's state lives under `.loom/` in the workspace:

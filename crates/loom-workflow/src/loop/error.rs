@@ -19,6 +19,12 @@ pub enum LoopError {
     /// bd CLI failure during `loom loop`
     Bd(#[from] BdError),
 
+    /// loop state carried an invalid bead id
+    InvalidBeadId(#[from] loom_driver::identifier::ParseBeadIdError),
+
+    /// parallel molecule stabilization failed: {detail}
+    Stabilization { detail: String },
+
     /// loop bead carried an invalid molecule id
     InvalidMoleculeId(#[from] ParseMoleculeIdError),
 

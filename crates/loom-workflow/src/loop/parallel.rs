@@ -24,6 +24,7 @@ use super::waiting::ActiveBlockers;
 pub struct WorktreeBead {
     pub bead: Bead,
     pub worktree: CreatedWorktree,
+    pub workspace_recovery: Option<loom_templates::run::WorkspaceRecovery>,
 }
 
 /// One slot's state after the concurrent spawn phase finishes — before the
@@ -299,13 +300,13 @@ pub async fn create_worktrees(
     let mut out = Vec::with_capacity(beads.len());
     for bead in beads {
         let wt = git.create_worktree(label, &bead.id).await?;
-        // Drop any uncommitted mid-session leftovers from a prior attempt
-        // while preserving the bead branch's HEAD (i.e. the agent's prior
-        // commits) and the warm caches under `target/` + `.wrix/`. No-op
-        // on the first attempt against a freshly-cloned tree.
-        git.reset_bead_clone(&wt.path).await?;
+        let workspace_recovery = super::worker::prepare_workspace(git, &bead, &wt.path).await?;
         info!(bead = %bead.id, path = %wt.path.display(), branch = %wt.branch, "worktree created");
-        out.push(WorktreeBead { bead, worktree: wt });
+        out.push(WorktreeBead {
+            bead,
+            worktree: wt,
+            workspace_recovery,
+        });
     }
     Ok(out)
 }
@@ -335,6 +336,7 @@ where
             let outcome = spawn(WorktreeBead {
                 bead: bead.clone(),
                 worktree: worktree.clone(),
+                workspace_recovery: slot.workspace_recovery,
             })
             .await;
             BatchSlot {
@@ -828,6 +830,7 @@ mod tests {
 
     fn fake_slot(id: &str) -> WorktreeBead {
         WorktreeBead {
+            workspace_recovery: None,
             bead: fake_bead(id),
             worktree: CreatedWorktree {
                 path: PathBuf::from(format!(".loom/beads/{id}")),

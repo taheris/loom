@@ -767,6 +767,12 @@ promotion errors or blocking on structural bd state — is owned by
 
 ### Scope handling
 
+- Resolved selection distinguishes explicit files (including empty), whole
+  tree, and exact targets without mutable combinations of scope flags
+  [test](resolved_scope_distinguishes_empty_tree_target_and_file_provenance)
+- A valid empty diff does not execute whole-tree deterministic verifiers
+  [test](empty_diff_never_runs_whole_tree_verifiers)
+
 - Live-workspace scope for a `[test](crate::module::test)` annotation
   includes the owning crate's files plus its transitive dependency
   files

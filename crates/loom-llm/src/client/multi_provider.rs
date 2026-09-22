@@ -75,72 +75,114 @@ fn genai_client_for_schema_endpoint(
     )
 }
 
-/// Client targeting the [`SchemaKind::Anthropic`] schema.
-#[must_use]
-pub struct AnthropicClient {
+/// Shared transport and event state; public clients keep their fixed schema.
+struct ClientState {
     inner: Arc<genai::Client>,
     api_key: ApiKey,
     sinks: Mutex<Vec<Box<dyn EventSink>>>,
     envelope_builder: Mutex<Option<EnvelopeBuilder>>,
 }
 
-impl AnthropicClient {
-    /// Wire-format discriminator this Client targets. Fixed at
-    /// construction; per-call selection varies the `ModelId` within
-    /// this schema.
-    pub const SCHEMA: SchemaKind = SchemaKind::Anthropic;
+enum Output {
+    Text,
+    Structured {
+        schema: serde_json::Value,
+        type_name: String,
+    },
+}
 
-    /// Construct a Client carrying `api_key` as its credential.
-    pub fn new(api_key: ApiKey) -> Self {
-        let inner = genai_client_for_schema(ANTHROPIC_ADAPTER, &api_key);
+impl ClientState {
+    fn new(adapter: AdapterKind, api_key: ApiKey) -> Self {
         Self {
-            inner,
+            inner: genai_client_for_schema(adapter, &api_key),
             api_key,
             sinks: Mutex::new(Vec::new()),
             envelope_builder: Mutex::new(Some(default_envelope_builder())),
         }
     }
 
+    async fn complete(
+        &self,
+        schema: SchemaKind,
+        req: CompletionRequest,
+        output: Output,
+    ) -> Result<CompletionResponse, LlmError> {
+        let model = req.model.clone();
+        if model.schema() != schema {
+            return Err(LlmError::IncompatibleModel {
+                model,
+                expected: schema,
+            });
+        }
+        validate_binary_payloads_for_schema(schema, &req)?;
+        let model_name = model_id_to_provider_name(&model);
+        let (chat_req, options) = match output {
+            Output::Text => to_genai_chat_request(req),
+            Output::Structured { schema, type_name } => {
+                to_genai_structured_chat_options_raw(req, schema, type_name)
+            }
+        };
+        let response = self
+            .inner
+            .exec_chat(&model_name, chat_req, Some(&options))
+            .await
+            .map_err(genai_error_to_llm)?;
+        let completion = chat_response_to_completion(response)?;
+        emit_usage_to_chain(
+            &self.envelope_builder,
+            &self.sinks,
+            &model,
+            &completion.usage,
+        );
+        Ok(completion)
+    }
+}
+
+/// Client targeting the [`SchemaKind::Anthropic`] schema.
+#[must_use]
+pub struct AnthropicClient {
+    state: ClientState,
+}
+
+impl AnthropicClient {
+    /// Fixed wire-format discriminator; models vary within this schema.
+    pub const SCHEMA: SchemaKind = SchemaKind::Anthropic;
+
+    /// Construct a client carrying `api_key` as its credential.
+    pub fn new(api_key: ApiKey) -> Self {
+        Self {
+            state: ClientState::new(ANTHROPIC_ADAPTER, api_key),
+        }
+    }
+
     #[cfg(test)]
     fn with_mock_endpoint(mut self, base_url: String) -> Self {
-        self.inner = genai_client_for_schema_endpoint(ANTHROPIC_ADAPTER, &self.api_key, base_url);
+        self.state.inner =
+            genai_client_for_schema_endpoint(ANTHROPIC_ADAPTER, &self.state.api_key, base_url);
         self
     }
 
-    /// Attach an [`EventSink`] to this Client's chain. Each call
-    /// appends; multiple calls compose. Every successful `complete*`
-    /// call fans a [`loom_events::DriverKind::TokenUsage`] [`AgentEvent`] into every
-    /// attached sink in registration order.
-    pub fn with_event_sink<S>(self, sink: S) -> Self
-    where
-        S: EventSink + 'static,
-    {
-        push_sink(&self.sinks, Box::new(sink));
+    /// Append a sink; successful completions emit usage to every attached sink.
+    pub fn with_event_sink<S: EventSink + 'static>(self, sink: S) -> Self {
+        push_sink(&self.state.sinks, Box::new(sink));
         self
     }
 
-    /// Replace the default [`EnvelopeBuilder`] with one that stamps the
-    /// caller's event-session scope onto every emitted event.
+    /// Stamp emitted events with the caller's session scope.
     pub fn with_envelope_builder(self, envelope_builder: EnvelopeBuilder) -> Self {
-        set_envelope_builder(&self.envelope_builder, envelope_builder);
+        set_envelope_builder(&self.state.envelope_builder, envelope_builder);
         self
     }
 
-    /// Borrow the credential the Client was constructed with. Callers
-    /// SHOULD NOT log or emit this value; per RS-15 the wrapped string
-    /// is meant for wire-level auth resolvers only.
+    /// Borrow the credential; never log or emit its unredacted value.
     pub const fn api_key(&self) -> &ApiKey {
-        &self.api_key
-    }
-
-    fn emit_usage(&self, model: &ModelId, usage: &TokenUsage) {
-        emit_usage_to_chain(&self.envelope_builder, &self.sinks, model, usage);
+        &self.state.api_key
     }
 }
 
 impl std::fmt::Debug for AnthropicClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        debug_per_schema_client(f, "AnthropicClient", Self::SCHEMA, &self.sinks)
+        debug_per_schema_client(f, "AnthropicClient", Self::SCHEMA, &self.state.sinks)
     }
 }
 
@@ -150,41 +192,18 @@ impl LlmClient for AnthropicClient {
     }
 
     fn emit_driver_event(&self, event: DriverEventPayload) {
-        emit_driver_event_to_chain(&self.envelope_builder, &self.sinks, event);
+        emit_driver_event_to_chain(&self.state.envelope_builder, &self.state.sinks, event);
     }
 
     fn emit_event(&self, event: &AgentEvent) {
-        emit_event_to_chain(&self.sinks, event);
+        emit_event_to_chain(&self.state.sinks, event);
     }
 
     fn complete(
         &self,
         req: CompletionRequest,
     ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
-        let model = req.model.clone();
-        if model.schema() != Self::SCHEMA {
-            return Box::pin(async move {
-                Err(LlmError::IncompatibleModel {
-                    model,
-                    expected: Self::SCHEMA,
-                })
-            });
-        }
-        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
-            return Box::pin(async move { Err(err) });
-        }
-        Box::pin(async move {
-            let model_name = model_id_to_provider_name(&model);
-            let (chat_req, options) = to_genai_chat_request(req);
-            let resp = self
-                .inner
-                .exec_chat(&model_name, chat_req, Some(&options))
-                .await
-                .map_err(genai_error_to_llm)?;
-            let response = chat_response_to_completion(resp)?;
-            self.emit_usage(&model, &response.usage);
-            Ok(response)
-        })
+        Box::pin(self.state.complete(Self::SCHEMA, req, Output::Text))
     }
 
     fn complete_structured_raw(
@@ -193,29 +212,11 @@ impl LlmClient for AnthropicClient {
         schema: serde_json::Value,
         type_name: String,
     ) -> BoxFuture<'_, Result<String, LlmError>> {
-        let model = req.model.clone();
-        if model.schema() != Self::SCHEMA {
-            return Box::pin(async move {
-                Err(LlmError::IncompatibleModel {
-                    model,
-                    expected: Self::SCHEMA,
-                })
-            });
-        }
-        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
-            return Box::pin(async move { Err(err) });
-        }
         Box::pin(async move {
-            let model_name = model_id_to_provider_name(&model);
-            let (chat_req, options) = to_genai_structured_chat_options_raw(req, schema, type_name);
-            let resp = self
-                .inner
-                .exec_chat(&model_name, chat_req, Some(&options))
+            self.state
+                .complete(Self::SCHEMA, req, Output::Structured { schema, type_name })
                 .await
-                .map_err(genai_error_to_llm)?;
-            let completion = chat_response_to_completion(resp)?;
-            self.emit_usage(&model, &completion.usage);
-            Ok(completion.text)
+                .map(|response| response.text)
         })
     }
 }
@@ -223,62 +224,48 @@ impl LlmClient for AnthropicClient {
 /// Client targeting the [`SchemaKind::OpenAi`] schema.
 #[must_use]
 pub struct OpenAiClient {
-    inner: Arc<genai::Client>,
-    api_key: ApiKey,
-    sinks: Mutex<Vec<Box<dyn EventSink>>>,
-    envelope_builder: Mutex<Option<EnvelopeBuilder>>,
+    state: ClientState,
 }
 
 impl OpenAiClient {
-    /// Wire-format discriminator this Client targets.
+    /// Fixed wire-format discriminator; models vary within this schema.
     pub const SCHEMA: SchemaKind = SchemaKind::OpenAi;
 
-    /// Construct a Client carrying `api_key` as its credential.
+    /// Construct a client carrying `api_key` as its credential.
     pub fn new(api_key: ApiKey) -> Self {
-        let inner = genai_client_for_schema(OPENAI_ADAPTER, &api_key);
         Self {
-            inner,
-            api_key,
-            sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(Some(default_envelope_builder())),
+            state: ClientState::new(OPENAI_ADAPTER, api_key),
         }
     }
 
     #[cfg(test)]
     fn with_mock_endpoint(mut self, base_url: String) -> Self {
-        self.inner = genai_client_for_schema_endpoint(OPENAI_ADAPTER, &self.api_key, base_url);
+        self.state.inner =
+            genai_client_for_schema_endpoint(OPENAI_ADAPTER, &self.state.api_key, base_url);
         self
     }
 
-    /// Attach an [`EventSink`] to this Client's chain.
-    pub fn with_event_sink<S>(self, sink: S) -> Self
-    where
-        S: EventSink + 'static,
-    {
-        push_sink(&self.sinks, Box::new(sink));
+    /// Append a sink; successful completions emit usage to every attached sink.
+    pub fn with_event_sink<S: EventSink + 'static>(self, sink: S) -> Self {
+        push_sink(&self.state.sinks, Box::new(sink));
         self
     }
 
-    /// Replace the default [`EnvelopeBuilder`] with one that stamps the
-    /// caller's event-session scope onto every emitted event.
+    /// Stamp emitted events with the caller's session scope.
     pub fn with_envelope_builder(self, envelope_builder: EnvelopeBuilder) -> Self {
-        set_envelope_builder(&self.envelope_builder, envelope_builder);
+        set_envelope_builder(&self.state.envelope_builder, envelope_builder);
         self
     }
 
-    /// Borrow the credential the Client was constructed with.
+    /// Borrow the credential; never log or emit its unredacted value.
     pub const fn api_key(&self) -> &ApiKey {
-        &self.api_key
-    }
-
-    fn emit_usage(&self, model: &ModelId, usage: &TokenUsage) {
-        emit_usage_to_chain(&self.envelope_builder, &self.sinks, model, usage);
+        &self.state.api_key
     }
 }
 
 impl std::fmt::Debug for OpenAiClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        debug_per_schema_client(f, "OpenAiClient", Self::SCHEMA, &self.sinks)
+        debug_per_schema_client(f, "OpenAiClient", Self::SCHEMA, &self.state.sinks)
     }
 }
 
@@ -288,41 +275,18 @@ impl LlmClient for OpenAiClient {
     }
 
     fn emit_driver_event(&self, event: DriverEventPayload) {
-        emit_driver_event_to_chain(&self.envelope_builder, &self.sinks, event);
+        emit_driver_event_to_chain(&self.state.envelope_builder, &self.state.sinks, event);
     }
 
     fn emit_event(&self, event: &AgentEvent) {
-        emit_event_to_chain(&self.sinks, event);
+        emit_event_to_chain(&self.state.sinks, event);
     }
 
     fn complete(
         &self,
         req: CompletionRequest,
     ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
-        let model = req.model.clone();
-        if model.schema() != Self::SCHEMA {
-            return Box::pin(async move {
-                Err(LlmError::IncompatibleModel {
-                    model,
-                    expected: Self::SCHEMA,
-                })
-            });
-        }
-        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
-            return Box::pin(async move { Err(err) });
-        }
-        Box::pin(async move {
-            let model_name = model_id_to_provider_name(&model);
-            let (chat_req, options) = to_genai_chat_request(req);
-            let resp = self
-                .inner
-                .exec_chat(&model_name, chat_req, Some(&options))
-                .await
-                .map_err(genai_error_to_llm)?;
-            let response = chat_response_to_completion(resp)?;
-            self.emit_usage(&model, &response.usage);
-            Ok(response)
-        })
+        Box::pin(self.state.complete(Self::SCHEMA, req, Output::Text))
     }
 
     fn complete_structured_raw(
@@ -331,29 +295,11 @@ impl LlmClient for OpenAiClient {
         schema: serde_json::Value,
         type_name: String,
     ) -> BoxFuture<'_, Result<String, LlmError>> {
-        let model = req.model.clone();
-        if model.schema() != Self::SCHEMA {
-            return Box::pin(async move {
-                Err(LlmError::IncompatibleModel {
-                    model,
-                    expected: Self::SCHEMA,
-                })
-            });
-        }
-        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
-            return Box::pin(async move { Err(err) });
-        }
         Box::pin(async move {
-            let model_name = model_id_to_provider_name(&model);
-            let (chat_req, options) = to_genai_structured_chat_options_raw(req, schema, type_name);
-            let resp = self
-                .inner
-                .exec_chat(&model_name, chat_req, Some(&options))
+            self.state
+                .complete(Self::SCHEMA, req, Output::Structured { schema, type_name })
                 .await
-                .map_err(genai_error_to_llm)?;
-            let completion = chat_response_to_completion(resp)?;
-            self.emit_usage(&model, &completion.usage);
-            Ok(completion.text)
+                .map(|response| response.text)
         })
     }
 }
@@ -361,62 +307,48 @@ impl LlmClient for OpenAiClient {
 /// Client targeting the [`SchemaKind::Gemini`] schema.
 #[must_use]
 pub struct GeminiClient {
-    inner: Arc<genai::Client>,
-    api_key: ApiKey,
-    sinks: Mutex<Vec<Box<dyn EventSink>>>,
-    envelope_builder: Mutex<Option<EnvelopeBuilder>>,
+    state: ClientState,
 }
 
 impl GeminiClient {
-    /// Wire-format discriminator this Client targets.
+    /// Fixed wire-format discriminator; models vary within this schema.
     pub const SCHEMA: SchemaKind = SchemaKind::Gemini;
 
-    /// Construct a Client carrying `api_key` as its credential.
+    /// Construct a client carrying `api_key` as its credential.
     pub fn new(api_key: ApiKey) -> Self {
-        let inner = genai_client_for_schema(GEMINI_ADAPTER, &api_key);
         Self {
-            inner,
-            api_key,
-            sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(Some(default_envelope_builder())),
+            state: ClientState::new(GEMINI_ADAPTER, api_key),
         }
     }
 
     #[cfg(test)]
     fn with_mock_endpoint(mut self, base_url: String) -> Self {
-        self.inner = genai_client_for_schema_endpoint(GEMINI_ADAPTER, &self.api_key, base_url);
+        self.state.inner =
+            genai_client_for_schema_endpoint(GEMINI_ADAPTER, &self.state.api_key, base_url);
         self
     }
 
-    /// Attach an [`EventSink`] to this Client's chain.
-    pub fn with_event_sink<S>(self, sink: S) -> Self
-    where
-        S: EventSink + 'static,
-    {
-        push_sink(&self.sinks, Box::new(sink));
+    /// Append a sink; successful completions emit usage to every attached sink.
+    pub fn with_event_sink<S: EventSink + 'static>(self, sink: S) -> Self {
+        push_sink(&self.state.sinks, Box::new(sink));
         self
     }
 
-    /// Replace the default [`EnvelopeBuilder`] with one that stamps the
-    /// caller's event-session scope onto every emitted event.
+    /// Stamp emitted events with the caller's session scope.
     pub fn with_envelope_builder(self, envelope_builder: EnvelopeBuilder) -> Self {
-        set_envelope_builder(&self.envelope_builder, envelope_builder);
+        set_envelope_builder(&self.state.envelope_builder, envelope_builder);
         self
     }
 
-    /// Borrow the credential the Client was constructed with.
+    /// Borrow the credential; never log or emit its unredacted value.
     pub const fn api_key(&self) -> &ApiKey {
-        &self.api_key
-    }
-
-    fn emit_usage(&self, model: &ModelId, usage: &TokenUsage) {
-        emit_usage_to_chain(&self.envelope_builder, &self.sinks, model, usage);
+        &self.state.api_key
     }
 }
 
 impl std::fmt::Debug for GeminiClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        debug_per_schema_client(f, "GeminiClient", Self::SCHEMA, &self.sinks)
+        debug_per_schema_client(f, "GeminiClient", Self::SCHEMA, &self.state.sinks)
     }
 }
 
@@ -426,41 +358,18 @@ impl LlmClient for GeminiClient {
     }
 
     fn emit_driver_event(&self, event: DriverEventPayload) {
-        emit_driver_event_to_chain(&self.envelope_builder, &self.sinks, event);
+        emit_driver_event_to_chain(&self.state.envelope_builder, &self.state.sinks, event);
     }
 
     fn emit_event(&self, event: &AgentEvent) {
-        emit_event_to_chain(&self.sinks, event);
+        emit_event_to_chain(&self.state.sinks, event);
     }
 
     fn complete(
         &self,
         req: CompletionRequest,
     ) -> BoxFuture<'_, Result<CompletionResponse, LlmError>> {
-        let model = req.model.clone();
-        if model.schema() != Self::SCHEMA {
-            return Box::pin(async move {
-                Err(LlmError::IncompatibleModel {
-                    model,
-                    expected: Self::SCHEMA,
-                })
-            });
-        }
-        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
-            return Box::pin(async move { Err(err) });
-        }
-        Box::pin(async move {
-            let model_name = model_id_to_provider_name(&model);
-            let (chat_req, options) = to_genai_chat_request(req);
-            let resp = self
-                .inner
-                .exec_chat(&model_name, chat_req, Some(&options))
-                .await
-                .map_err(genai_error_to_llm)?;
-            let response = chat_response_to_completion(resp)?;
-            self.emit_usage(&model, &response.usage);
-            Ok(response)
-        })
+        Box::pin(self.state.complete(Self::SCHEMA, req, Output::Text))
     }
 
     fn complete_structured_raw(
@@ -469,29 +378,11 @@ impl LlmClient for GeminiClient {
         schema: serde_json::Value,
         type_name: String,
     ) -> BoxFuture<'_, Result<String, LlmError>> {
-        let model = req.model.clone();
-        if model.schema() != Self::SCHEMA {
-            return Box::pin(async move {
-                Err(LlmError::IncompatibleModel {
-                    model,
-                    expected: Self::SCHEMA,
-                })
-            });
-        }
-        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
-            return Box::pin(async move { Err(err) });
-        }
         Box::pin(async move {
-            let model_name = model_id_to_provider_name(&model);
-            let (chat_req, options) = to_genai_structured_chat_options_raw(req, schema, type_name);
-            let resp = self
-                .inner
-                .exec_chat(&model_name, chat_req, Some(&options))
+            self.state
+                .complete(Self::SCHEMA, req, Output::Structured { schema, type_name })
                 .await
-                .map_err(genai_error_to_llm)?;
-            let completion = chat_response_to_completion(resp)?;
-            self.emit_usage(&model, &completion.usage);
-            Ok(completion.text)
+                .map(|response| response.text)
         })
     }
 }
@@ -2239,7 +2130,12 @@ mod tests {
             cache_read: 0,
             cache_write: 0,
         };
-        client.emit_usage(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), &usage);
+        emit_usage_to_chain(
+            &client.state.envelope_builder,
+            &client.state.sinks,
+            &ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+            &usage,
+        );
     }
 
     /// Each Client owns the credential supplied to its constructor.

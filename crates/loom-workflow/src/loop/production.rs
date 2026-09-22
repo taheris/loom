@@ -1,42 +1,26 @@
-//! Production [`AgentLoopController`] used by the `loom loop` binary.
+//! Sequential [`AgentLoopController`] with host-owned integration and recovery.
 //!
-//! Wires `BdClient` for bead lookup/close/clarify, a `tokio::process::Command`
-//! shell-out for `exec_review`, and a caller-provided dispatch closure for the
-//! actual agent invocation. The closure pattern keeps backend selection
-//! (`PiBackend`, `ClaudeBackend`, or `DirectBackend`) inside the binary's
-//! `dispatch` match — `loom-workflow` never sees the concrete backend types,
-//! mirroring the shape
-//! used by `ProductionTodoController` and `run_parallel_batch`.
-//!
-//! Per-bead profile dispatch is wired through [`build_spawn_config_from_manifest`]:
-//! the manifest, CLI `--profile` override, and per-phase fallback all flow
-//! into the controller at construction time so `run_bead` resolves the
-//! per-bead `image_ref` + `image_source` against the parsed manifest before
-//! the agent invocation. A missing manifest entry surfaces as
-//! [`LoopError::Profile`] — no silent fallback.
+//! Worker preparation is shared with parallel scheduling through [`super::worker`].
+//! The caller supplies transport; static profile faults never fall back silently.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use loom_driver::agent::{AgentRuntime, ProtocolError, SpawnConfig};
+use loom_driver::agent::{AgentRuntime, SpawnConfig};
 use loom_driver::bd::{
     BdClient, Bead, CommandRunner, ListOpts, ReadyOpts, TokioRunner, UpdateOpts,
 };
 use loom_driver::clock::{Clock, SystemClock};
-use loom_driver::config::{LoomConfig, LoomTopConfig, Phase, SkillsConfig};
-use loom_driver::git::{
-    BeadCloneAlignment, BeadClonePreparation, CreatedWorktree, GitClient, GitOid, RebaseOutcome,
-};
+use loom_driver::config::{LoomConfig, LoomTopConfig, SkillsConfig};
+use loom_driver::git::{CreatedWorktree, GitClient, GitOid, RebaseOutcome};
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::logging::phase_log_path;
-use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
-use loom_driver::scratch::resolve_scratch_key;
+use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_events::{
-    AgentEvent, AgentStartMetadata, DriverEventPayload, DriverKind, EnvelopeBuilder, SessionScope,
-    Source,
+    AgentEvent, DriverEventPayload, DriverKind, EnvelopeBuilder, SessionScope, Source,
 };
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -46,17 +30,12 @@ use loom_gate::{
     append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
 };
 
-use super::context::{LoopContextInputs, render_loop_prompt};
 use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::{AgentOutcome, InfraDiagnostic, SessionResult};
 use super::runner::{
-    AgentLoopController, INVALID_SPAWN_CONFIG_CAUSE, PerBeadGateOutcome, StabilizationOutcome,
-    WORKSPACE_RECOVERY_FAILED_CAUSE,
+    AgentLoopController, PerBeadGateOutcome, StabilizationOutcome, WORKSPACE_RECOVERY_FAILED_CAUSE,
 };
-use crate::spawn::container_workspace_path;
-
-use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
 use super::verify::{VerifyPass, verify_pass};
 use super::waiting::validate_waiting_outcome;
@@ -64,11 +43,10 @@ use crate::review::{
     DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput, WorkspaceFindingValidator,
     decide,
 };
-use crate::skill::SkillPlan;
 use crate::suppression::suppresses_rubric_finding;
 use crate::todo::{ExitSignal, parse_exit_signal};
 use loom_templates::previous_failure::{TerminalSurface, VerifierFailure};
-use loom_templates::run::{PreviousFailure, RecoveryStash, WorkspaceAlignment, WorkspaceRecovery};
+use loom_templates::run::PreviousFailure;
 
 /// Env var the molecule-completion handoff sets when spawning `loom gate
 /// review` so the child re-uses the parent's pinned `phase_when`
@@ -103,79 +81,6 @@ pub const REVIEW_INSPECTION_ONLY_ENV: &str = "LOOM_REVIEW_INSPECTION_ONLY";
 /// Internal handoff path to the completed deterministic gate log whose
 /// [`loom_gate::VerifiedScope`] the push-eligible review must consume.
 pub const REVIEW_VERIFIED_LOG_ENV: &str = "LOOM_REVIEW_VERIFIED_LOG";
-
-struct DriverEventDraft {
-    summary: String,
-    payload: serde_json::Value,
-}
-
-fn workspace_recovery_from_preparation(
-    preparation: &BeadClonePreparation,
-) -> Option<WorkspaceRecovery> {
-    let recovery = preparation.recovery.as_ref()?;
-    Some(WorkspaceRecovery {
-        pre_stash_status: recovery.pre_stash_status.clone(),
-        stash: RecoveryStash {
-            selector: recovery.stash.selector.clone(),
-            commit: recovery.stash.commit.clone(),
-            message: recovery.stash.message.clone(),
-        },
-        integration_tip: preparation.integration_tip.clone(),
-        alignment: workspace_alignment_from_git(&preparation.alignment),
-    })
-}
-
-fn workspace_alignment_from_git(alignment: &BeadCloneAlignment) -> WorkspaceAlignment {
-    match alignment {
-        BeadCloneAlignment::Clean => WorkspaceAlignment::Clean,
-        BeadCloneAlignment::Rebased {
-            previous_head,
-            current_head,
-        } => WorkspaceAlignment::Rebased {
-            previous_head: previous_head.clone(),
-            current_head: current_head.clone(),
-        },
-        BeadCloneAlignment::Conflict { files } => WorkspaceAlignment::Conflict {
-            files: files
-                .iter()
-                .map(|file| file.to_string_lossy().into_owned())
-                .collect(),
-        },
-    }
-}
-
-fn workspace_recovery_event_draft(
-    bead_id: &BeadId,
-    recovery: &WorkspaceRecovery,
-) -> DriverEventDraft {
-    let (alignment_outcome, previous_head, current_head) = match &recovery.alignment {
-        WorkspaceAlignment::Clean => ("clean", None, None),
-        WorkspaceAlignment::Rebased {
-            previous_head,
-            current_head,
-        } => (
-            "rebased",
-            Some(previous_head.as_str()),
-            Some(current_head.as_str()),
-        ),
-        WorkspaceAlignment::Conflict { .. } => ("conflict", None, None),
-    };
-    DriverEventDraft {
-        summary: format!("workspace recovery stash preserved for bead {bead_id}"),
-        payload: serde_json::json!({
-            "bead_id": bead_id.to_string(),
-            "pre_stash_status": recovery.pre_stash_status.as_str(),
-            "stash_selector": recovery.stash.selector.as_str(),
-            "stash_message": recovery.stash.message.as_str(),
-            "stash_commit": recovery.stash.commit.as_str(),
-            "integration_tip": recovery.integration_tip.as_str(),
-            "alignment_outcome": alignment_outcome,
-            "alignment_previous_head": previous_head,
-            "alignment_current_head": current_head,
-            "conflict_files": recovery.alignment.conflict_files(),
-        }),
-    }
-}
 
 /// Wires the [`AgentLoopController`] trait against the real `BdClient`, a
 /// caller-provided agent dispatch closure, and a child `loom review` exec for
@@ -639,7 +544,6 @@ where
                 )
                 .await?;
         }
-        let banner = format!("loom loop @ {}", bead.id);
         let is_retry = previous_failure.is_some();
         // The stash is per-retry-sequence: a fresh dispatch
         // (`previous_failure = None`) means any leftover variant from a
@@ -677,7 +581,13 @@ where
             branch = %worktree.branch,
             "dispatching agent against per-bead workspace",
         );
-        let preparation = match self.git.prepare_bead_clone(&worktree.path, &bead.id).await {
+        let workspace_recovery = match super::worker::prepare_workspace(
+            &self.git,
+            bead,
+            &worktree.path,
+        )
+        .await
+        {
             Ok(preparation) => preparation,
             Err(source) => {
                 return Ok(AgentOutcome::StaticInfra {
@@ -688,154 +598,42 @@ where
                 });
             }
         };
-        let workspace_recovery = workspace_recovery_from_preparation(&preparation);
         let workspace_recovery_event = workspace_recovery
             .as_ref()
-            .map(|recovery| workspace_recovery_event_draft(&bead.id, recovery));
+            .map(|recovery| super::worker::recovery_event(&bead.id, recovery));
 
-        let key = resolve_scratch_key(
-            Phase::Loop,
-            std::slice::from_ref(&self.label),
-            Some(&bead.id),
-        );
-        let scratchpad_path =
-            loom_driver::scratch::ScratchSession::scratchpad_path_for(&worktree.path, &key);
-        let scratch_dir = scratchpad_path.parent().ok_or_else(|| {
-            LoopError::Protocol(ProtocolError::Io(std::io::Error::other(
-                "scratchpad path has no parent",
-            )))
-        })?;
-        let bead_git = GitClient::open(&worktree.path)?;
-        let tracked_files = bead_git.tracked_files().await?;
-        let skill_profile = super::profile::resolve_profile(
-            &bead.labels,
-            self.cli_profile.as_ref(),
-            &self.phase_default,
-        );
-        let skill_plan = SkillPlan::resolve(
-            &worktree.path,
-            &tracked_files,
-            Phase::Loop.as_str(),
-            &skill_profile,
-            self.runtime,
-            &self.skills_cfg,
-        )?;
-        let skill_session = skill_plan.materialize(scratch_dir, &worktree.path)?;
         let attempt = if is_retry {
             self.current_attempt.saturating_add(1)
         } else {
             0
         };
         self.current_attempt = attempt;
-        let prompt_scratchpad_path = container_workspace_path(&worktree.path, &scratchpad_path);
-        let initial_prompt = match render_loop_prompt(LoopContextInputs {
-            label: self.label.clone(),
-            spec_path: format!("specs/{}.md", self.label.as_str()),
-            pinned_context: String::new(),
-            companion_paths: vec![],
-            molecule_id: None,
-            issue_id: bead.id.clone(),
-            title: bead.title.clone(),
-            description: bead.description.clone(),
+        let worker = match super::worker::prepare(super::worker::Request {
+            bead,
+            workspace: &worktree.path,
+            loom_workspace: &self.workspace,
+            manifest: &self.manifest,
+            cli_profile: self.cli_profile.as_ref(),
+            phase_default: &self.phase_default,
+            runtime: self.runtime,
+            label: &self.label,
+            style_rules: &self.style_rules,
+            loom: &self.loom_cfg,
+            skills: &self.skills_cfg,
+            launcher_env: self.git.launcher_key_env()?,
             previous_failure: typed_previous_failure,
             workspace_recovery,
             attempt,
-            scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
-            style_rules: self.style_rules.clone(),
-            skill_index: skill_session.skill_index,
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                return Err(LoopError::Protocol(ProtocolError::Io(
-                    std::io::Error::other(e),
-                )));
-            }
-        };
-        let scratch = match loom_driver::scratch::ScratchSession::open(
-            &worktree.path,
-            &key,
-            &initial_prompt,
-            &banner,
-        ) {
-            Ok(s) => s,
-            Err(source) => {
-                return Err(LoopError::Protocol(ProtocolError::Io(source)));
-            }
-        };
-        let mut mounts: Vec<_> = dolt_socket_mount(&self.workspace).into_iter().collect();
-        if let Some(spec) = sccache_mount(&self.loom_cfg)
-            .map_err(|source| LoopError::Protocol(ProtocolError::Io(source)))?
+        })
+        .await?
         {
-            mounts.push(spec);
-        }
-        let extra_env = self.loom_cfg.container_sccache_env();
-        // Host key paths handed to the `wrix spawn` launcher so it mounts
-        // the deploy + signing keys into the bead container; the agent boots
-        // without git keys otherwise (`specs/harness.md` § Repository Git isolation).
-        let launcher_env = self.git.launcher_key_env()?;
-        let mut spawn_config = match build_spawn_config_from_manifest(
-            &self.manifest,
-            bead,
-            self.cli_profile.as_ref(),
-            &self.phase_default,
-            self.runtime,
-            worktree.path.clone(),
-            initial_prompt,
-            scratch.path().to_path_buf(),
-            extra_env,
-            vec![],
-            mounts,
-            launcher_env,
-        ) {
-            Ok(cfg) => cfg,
-            Err(ProfileError::UnknownProfile { name, .. }) => {
-                drop(scratch);
-                return Ok(AgentOutcome::UnknownProfile {
-                    error: format_unknown_profile_error(&name, &self.manifest),
-                });
-            }
-            Err(ProfileError::UnknownRuntimeForProfile {
-                profile,
-                runtime,
-                declared_runtimes,
-                ..
-            }) => {
-                drop(scratch);
-                return Ok(AgentOutcome::UnknownRuntimeForProfile {
-                    error: format_unknown_runtime_for_profile_error(
-                        &profile,
-                        runtime,
-                        &declared_runtimes,
-                    ),
-                });
-            }
-            Err(
-                e @ (ProfileError::InvalidSpawnConfig { .. }
-                | ProfileError::RuntimeMetadataMismatch { .. }),
-            ) => {
-                drop(scratch);
-                return Ok(AgentOutcome::StaticInfra {
-                    cause: INVALID_SPAWN_CONFIG_CAUSE.to_string(),
-                    error: e.to_string(),
-                });
-            }
-            Err(e) => {
-                drop(scratch);
-                return Err(LoopError::Profile(e));
-            }
+            super::worker::Preparation::Ready(worker) => worker,
+            super::worker::Preparation::Rejected(outcome) => return Ok(outcome),
         };
-        let skill_session = skill_plan.materialize(scratch.path(), &worktree.path)?;
-        spawn_config.skills = Some(skill_session.registered);
-        spawn_config.event_metadata = Some(AgentStartMetadata {
-            title: bead.title.clone(),
-            profile: super::profile::resolve_profile(
-                &bead.labels,
-                self.cli_profile.as_ref(),
-                &self.phase_default,
-            ),
-            spec_label: self.label.clone(),
-            parent_tool_call_id: None,
-        });
+        let super::worker::Worker {
+            spawn: spawn_config,
+            scratch,
+        } = *worker;
         info!(
             bead = %bead.id,
             image_ref = %spawn_config.image_ref,
@@ -853,7 +651,7 @@ where
         // cleanup) land in the same JSONL the agent's events live in.
         self.prepare_emit_state(&bead.id);
         if let Some(event) = workspace_recovery_event {
-            self.emit_to_log(DriverKind::WorkspaceRecovery, &event.summary, event.payload);
+            self.emit_payload(event);
         }
 
         let outcome = validate_waiting_outcome(
@@ -2233,8 +2031,10 @@ pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<
 mod tests {
     use super::super::runner::MISSING_AGENT_BINARY_CAUSE;
     use super::*;
+    use crate::r#loop::INVALID_SPAWN_CONFIG_CAUSE;
     use loom_driver::agent::SessionOutcome;
     use loom_driver::bd::{BdError, Label, RunOutput};
+    use loom_driver::git::BeadCloneAlignment;
     use std::collections::VecDeque;
     use std::ffi::OsString;
     use std::sync::Mutex;
