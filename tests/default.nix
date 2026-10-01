@@ -38,3 +38,6 @@ in
     test-app-ignores-host-git-signing
     ;
 }
+// pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+  inherit (loomDeriv) smoke-git-policy smoke-host-gate;
+}

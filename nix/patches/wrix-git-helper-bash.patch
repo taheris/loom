@@ -1,0 +1,62 @@
+diff --git a/crates/wrix-cli/src/init.rs b/crates/wrix-cli/src/init.rs
+index 254d592..d14525f 100644
+--- a/crates/wrix-cli/src/init.rs
++++ b/crates/wrix-cli/src/init.rs
+@@ -26,7 +26,7 @@ const TRANSPORT_TRAMPOLINE: &str = concat!(
+     "case \"$common_dir\" in /*) ;; *) ",
+     "root=$(git rev-parse --show-toplevel) || exit 255; ",
+     "common_dir=\"$root/$common_dir\" ;; esac; ",
+-    "exec \"$common_dir/wrix/git-ssh\" \"$@\"' wrix-git-ssh",
++    "exec bash \"$common_dir/wrix/git-ssh\" \"$@\"' wrix-git-ssh",
+ );
+ const PREK_HOOKS_ENV: &str = "WRIX_PREK_HOOKS";
+ const PREK_HOOK_NAMES: [&str; 5] = [
+@@ -1985,7 +1985,8 @@ fn resolved_deploy_key(key_name: &KeyName) -> Result<PathBuf, Error> {
+ }
+
+ fn probe_helper_config(root: &Path, helper_path: &Path) -> Result<String, Error> {
+-    let output = ProcessCommand::new(helper_path)
++    let output = ProcessCommand::new("bash")
++        .arg(helper_path)
+         .arg("-G")
+         .arg("github.com")
+         .current_dir(root)
+@@ -2408,14 +2409,36 @@ enum Error {
+
+ #[cfg(test)]
+ mod test {
+-    use std::path::Path;
++    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+     use super::{
+         DeployPolicy, FilePolicy, ForcePolicy, HookPolicy, KeyName, OnlineFailure, RemoteKeyId,
+         RemoteName, SigningPolicy, VerificationPolicy, classify_online_failure, parse_file_policy,
+-        parse_flags, parse_github_remote,
++        parse_flags, parse_github_remote, probe_helper_config,
+     };
+
++    /// A real process is required to exercise missing shebang interpreter handling.
++    #[test]
++    fn helper_probe_does_not_require_the_shebang_interpreter() {
++        let fixture = tempfile::Builder::new()
++            .prefix("wrix helper probe ")
++            .tempdir()
++            .unwrap();
++        let helper = fixture.path().join("git-ssh");
++        fs::write(
++            &helper,
++            format!(
++                "#!{}/missing-interpreter\nset -euo pipefail\nprintf '%s\\n' \"$@\"\n",
++                fixture.path().display(),
++            ),
++        )
++        .unwrap();
++        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
++
++        let config = probe_helper_config(fixture.path(), &helper).unwrap();
++        assert_eq!(config, "-G\ngithub.com\n");
++    }
++
+     #[test]
+     fn flags_parse_documented_init_options() {
+         let args = vec![

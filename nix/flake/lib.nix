@@ -112,7 +112,10 @@ in
       patchedWrixSrc = pkgs.applyPatches {
         name = "wrix-src-loom-agent";
         src = inputs.wrix;
-        patches = [ ../patches/wrix-claude-permission-prompt.patch ];
+        patches = [
+          ../patches/wrix-claude-permission-prompt.patch
+          ../patches/wrix-git-helper-bash.patch
+        ];
       };
       wrixLib = import "${patchedWrixSrc}/lib" {
         inherit system;

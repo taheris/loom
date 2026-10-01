@@ -9,6 +9,7 @@ _:
       loom,
       sandbox,
       profileManifest,
+      smokeSandbox,
       system,
       wrixLinuxPkgs,
       ...
@@ -31,7 +32,7 @@ _:
       inherit (pkgs.lib) assertMsg makeBinPath optionalAttrs;
       loomLib = import ../lib.nix;
       testsDeriv = import ../../tests/default.nix {
-        inherit pkgs;
+        inherit pkgs smokeSandbox;
         loomPackage = loom;
       };
 
@@ -517,6 +518,7 @@ _:
           ;
       }
       // optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        inherit (testsDeriv) smoke-git-policy smoke-host-gate;
         inherit
           image-runtime-binaries-launch
           sandbox-profile-env-has-loom

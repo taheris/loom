@@ -13,6 +13,9 @@
 #   test-app-ignores-host-git-signing — regression check that executes
 #               the full-suite script against a host signing config.
 #
+#   smoke-git-policy — real offline Wrix signing with only smoke Git tools.
+#   smoke-host-gate — real host gate and hooks with only smoke runtime tools.
+#
 #   loom-smoke — Linux-only `writeShellApplication` wrapping the
 #               container smoke harness (`tests/run-tests.sh`). On
 #               Darwin a stub script exits 0 with the documented
@@ -32,7 +35,7 @@
 
 let
   inherit (pkgs) lib;
-  inherit (lib) optionalAttrs;
+  inherit (lib) makeBinPath optionalAttrs;
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
   inherit (loomPackage)
     craneLib
@@ -154,19 +157,48 @@ let
 
   smokeEntry = smokeProfileManifest.passthru.manifest.base.pi;
 
+  smokeGitInputs = [
+    pkgs.bash
+    pkgs.git
+    pkgs.openssh
+    smokeSandbox.launcher
+  ];
+
+  smoke-git-policy = pkgs.runCommand "smoke-git-policy" { } ''
+    set -euo pipefail
+    env -i \
+      PATH="${makeBinPath (smokeGitInputs ++ [ pkgs.coreutils ])}" \
+      TMPDIR="$TMPDIR" \
+      ${pkgs.bash}/bin/bash ${../smoke/git-policy-test.sh} ${smokeSandbox.launcher}/bin/wrix
+    touch "$out"
+  '';
+
+  smokeRuntimeInputs = [
+    bin
+    pkgs.beads
+    pkgs.coreutils
+    pkgs.dolt
+    pkgs.jq
+    pkgs.nix
+    pkgs.podman
+    pkgs.prek
+    pkgs.skopeo
+  ]
+  ++ smokeGitInputs;
+
+  smoke-host-gate = pkgs.runCommand "smoke-host-gate" { } ''
+    set -euo pipefail
+    env -i \
+      PATH="${makeBinPath smokeRuntimeInputs}" \
+      TMPDIR="$TMPDIR" \
+      ${pkgs.bash}/bin/bash ${../smoke/host-gate-test.sh} \
+        ${smokeSandbox.launcher}/bin/wrix ${../../bin/pre-push-checks}
+    touch "$out"
+  '';
+
   smokeApp = pkgs.writeShellApplication {
     name = "smoke";
-    runtimeInputs = [
-      bin
-      pkgs.beads
-      pkgs.dolt
-      pkgs.git
-      pkgs.jq
-      pkgs.nix
-      pkgs.openssh
-      pkgs.podman
-      pkgs.skopeo
-    ];
+    runtimeInputs = smokeRuntimeInputs;
     text = ''
       export LOOM_TEST_IMAGE=${smokeSandbox.image.source or smokeSandbox.image}
       export LOOM_TEST_IMAGE_REF=${smokeEntry.ref}
@@ -197,5 +229,8 @@ in
 {
   inherit loomTests test-app-ignores-host-git-signing;
 }
-// optionalAttrs isLinux { loom-smoke = smokeApp; }
+// optionalAttrs isLinux {
+  loom-smoke = smokeApp;
+  inherit smoke-git-policy smoke-host-gate;
+}
 // optionalAttrs (!isLinux) { loom-smoke = darwinStub; }
