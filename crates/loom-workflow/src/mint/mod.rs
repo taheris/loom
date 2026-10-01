@@ -39,7 +39,7 @@ use crate::gate_clarify::{
 use crate::resolve::{
     ResolveError, ensure_spec_metadata_epic, resolve_open_epic, resolve_or_mint_open_epic,
 };
-use crate::review::{ConcernToken, Finding, FindingRoute, FindingTarget};
+use crate::review::{ConcernToken, Finding, FindingRoute, FindingTarget, default_profile_for_spec};
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 
 /// How a batch routes to a label class. Single-finding clarify batches
@@ -1107,6 +1107,8 @@ async fn create_molecule_batch<R: CommandRunner>(
     state: MoleculeBatchState,
 ) -> BatchOutcome {
     let fingerprint = batch_fingerprint(findings);
+    let mut labels = molecule_batch_labels(findings, state);
+    labels.push(format!("profile:{}", default_profile_for_spec(lead_spec)));
     let notes = (state == MoleculeBatchState::BlockedClarifyWithoutOptions)
         .then(|| CLARIFY_WITHOUT_OPTIONS_CAUSE.to_string());
     let created = bd
@@ -1114,7 +1116,7 @@ async fn create_molecule_batch<R: CommandRunner>(
             title: batch_title(findings, lead_spec),
             description: molecule_batch_description(findings, state),
             issue_type: Some(loom_driver::bd::IssueType::Task),
-            labels: molecule_batch_labels(findings, state),
+            labels,
             parent: Some(parent.clone()),
             notes,
             ..CreateOpts::default()
@@ -2237,7 +2239,8 @@ async fn create_batch_under_parent<R: CommandRunner>(
 ) -> BatchOutcome {
     let fingerprint = batch_fingerprint(findings);
     let label = mint_label(&fingerprint);
-    let labels = batch_labels(findings, &label, routing);
+    let mut labels = batch_labels(findings, &label, routing);
+    labels.push(format!("profile:{}", default_profile_for_spec(lead_spec)));
     let title = batch_title(findings, lead_spec);
     let description = batch_description(findings, &fingerprint, routing);
     let notes = matches!(routing, FindingRouting::BlockedClarifyWithoutOptions)
@@ -3110,6 +3113,176 @@ mod tests {
             state.bonds(),
             vec![(MoleculeId::new("lm-mol").unwrap(), child)]
         );
+    }
+
+    const PROFILE_CASES: &[(&[&str], &str)] = &[
+        (&["agent"], "profile:rust"),
+        (&["gate"], "profile:rust"),
+        (&["harness"], "profile:rust"),
+        (&["llm"], "profile:rust"),
+        (&["templates"], "profile:rust"),
+        (&["tests"], "profile:rust"),
+        (&["pre-commit"], "profile:base"),
+        (&["unknown-spec"], "profile:base"),
+        (&["agent", "pre-commit"], "profile:rust"),
+        (&["pre-commit", "agent"], "profile:base"),
+    ];
+
+    fn profile_findings(bonds: &[&str]) -> Vec<Finding> {
+        let bonds = bonds.iter().map(|label| spec(label)).collect::<Vec<_>>();
+        vec![
+            contract_finding(bonds.clone(), "fixup", "fix-up evidence"),
+            invariant_clash_finding(
+                bonds.clone(),
+                bonds[0].clone(),
+                "Architecture",
+                "clarify",
+                "## Options — choose\n\n### Option 1 — revise\nCost: migration.\n",
+            ),
+            invariant_clash_finding(
+                bonds.clone(),
+                bonds[0].clone(),
+                "Architecture",
+                "blocked",
+                "missing options",
+            ),
+        ]
+    }
+
+    async fn assert_child_profiles(
+        bd: &BdClient<StatefulBdRunner>,
+        parent: BeadId,
+        expected: &str,
+        count: usize,
+    ) {
+        let children = bd
+            .list(ListOpts {
+                parent: Some(parent),
+                ..ListOpts::default()
+            })
+            .await
+            .expect("list minted children");
+        assert_eq!(children.len(), count);
+        assert!(
+            children
+                .iter()
+                .any(|bead| bead.labels.iter().any(Label::is_clarify))
+        );
+        assert!(
+            children
+                .iter()
+                .any(|bead| bead.labels.iter().any(Label::is_blocked))
+        );
+        for child in children {
+            let profiles = child
+                .labels
+                .iter()
+                .map(Label::as_str)
+                .filter(|label| label.starts_with("profile:"))
+                .collect::<Vec<_>>();
+            assert_eq!(profiles, [expected], "minted child: {child:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mint_applies_per_spec_default_profile_label_to_created_beads() {
+        for &(bonds, expected) in PROFILE_CASES {
+            let runner = StatefulBdRunner::molecule();
+            for (index, label) in bonds.iter().enumerate() {
+                let epic = serde_json::from_str(&spec_epic_row(
+                    &format!("lm-spec.{index}"),
+                    label,
+                    "closed",
+                ))
+                .expect("metadata spec epic");
+                runner.state.lock().expect("state lock").beads.push(epic);
+            }
+            let bd = BdClient::with_runner(runner);
+            let summary = mint_tree_findings_with_options(
+                &bd,
+                &profile_findings(bonds),
+                "head-sha",
+                &MintOptions::default(),
+            )
+            .await;
+
+            assert_eq!(summary.minted, 3, "{bonds:?}: {summary:?}");
+            assert_eq!(summary.errors, 0, "{summary:?}");
+            assert_child_profiles(
+                &bd,
+                summary.active_epic.expect("active remediation epic"),
+                expected,
+                3,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn molecule_mint_applies_lead_spec_profile_to_every_created_child() {
+        for &(bonds, expected) in PROFILE_CASES {
+            let mut findings = profile_findings(bonds);
+            let mut blocking = contract_finding(
+                bonds.iter().map(|label| spec(label)).collect(),
+                "blocking",
+                "blocking evidence",
+            )
+            .into_raw();
+            blocking.route = FindingRoute::Blocking;
+            findings.push(loom_test_support::finding::resolve(blocking).unwrap());
+            let bd = BdClient::with_runner(StatefulBdRunner::molecule());
+            let summary = route_molecule_findings(
+                &bd,
+                &MoleculeId::new("lm-mol").unwrap(),
+                &findings,
+                &MintOptions::default(),
+            )
+            .await;
+
+            assert_eq!(summary.minted, 4, "{bonds:?}: {summary:?}");
+            assert_eq!(summary.errors, 0, "{summary:?}");
+            assert_child_profiles(&bd, BeadId::new("lm-mol").unwrap(), expected, 4).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn deferred_merge_preserves_operator_profile_override() {
+        let bd = BdClient::with_runner(StatefulBdRunner::molecule());
+        let molecule = MoleculeId::new("lm-mol").unwrap();
+        let opts = MintOptions::default();
+        let original = contract_finding(vec![spec("agent")], "original", "first finding");
+        let summary = route_molecule_findings(&bd, &molecule, &[original], &opts).await;
+        assert_eq!(summary.minted, 1, "{summary:?}");
+        let child = BeadId::new("lm-mol.1").unwrap();
+        bd.update(
+            &child,
+            UpdateOpts {
+                remove_labels: vec!["profile:rust".to_owned()],
+                add_labels: vec!["profile:python".to_owned()],
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .expect("operator override");
+
+        let additional = contract_finding(vec![spec("agent")], "additional", "new finding");
+        let hash_label = finding_label(&additional);
+        let summary = route_molecule_findings(&bd, &molecule, &[additional], &opts).await;
+        assert_eq!(summary.deferred_findings_merged, 1, "{summary:?}");
+        let merged = bd.show(&child).await.expect("merged bead");
+        assert!(
+            merged
+                .labels
+                .iter()
+                .any(|label| label.as_str() == hash_label)
+        );
+        let profiles = merged
+            .labels
+            .iter()
+            .map(Label::as_str)
+            .filter(|label| label.starts_with("profile:"))
+            .collect::<Vec<_>>();
+        assert_eq!(profiles, ["profile:python"]);
     }
 
     #[tokio::test]
