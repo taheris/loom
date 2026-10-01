@@ -104,6 +104,27 @@ known; read that spec and companions on demand for the current item.
 6. The driver does not reconcile bd state after this interactive session.
    Unresolved items remain visible in the next `loom inbox` list.
 
+## Unblocking Beads and Work Epics
+
+Unblocking a child bead includes reopening its blocked owning work epic; do not
+leave the epic parked after requeueing its child. Handle both in the same resolution:
+
+- Use `bd show <id>` and actual `parent-child` links to find the owning work epic,
+  then inspect its current status, labels, and notes. Do not infer ownership from
+  id prefixes or shared `spec:` labels, or confuse a `loom:spec` epic with a work epic.
+- Include the affected child ids and owning epic id in the same human-confirmed
+  resolution, even when the epic was not in the displayed inbox slice. For an epic
+  parked under `loom:blocked`, pair `--remove-label=loom:blocked` with `--status=open`
+  just as for the child. Reopen each shared owning epic once; leave already-open
+  epics alone and do not reopen closed epics without explicit authorization.
+- Surface any independent epic blocker, such as duplicate finding ownership,
+  before confirmation: reopening permits a retry but does not repair that cause,
+  and the driver may block the epic again. Do not close duplicates, unblock
+  unrelated siblings/spec epics, or remove dependencies as part of this operation.
+- After the confirmed writes, re-read both child and epic state with `bd show`.
+  Report all reopened ids, any failed updates, and remaining dependency or host-only
+  blockers; do not call the work runnable merely because its status is open.
+
 ## Manual Escape Hatches
 
 If the chat backend or artifact path is unavailable, tell the user exactly which

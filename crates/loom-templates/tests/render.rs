@@ -1358,6 +1358,30 @@ fn inbox_template_teaches_agent_bd_write_authority() -> Result<()> {
 }
 
 #[test]
+fn inbox_unblocking_includes_owning_work_epic() -> Result<()> {
+    for kind in [ItemKind::Clarify, ItemKind::Blocked, ItemKind::Infra] {
+        let out = inbox_ctx(vec![inbox_item("lm-child.1", "harness", "Retry", kind)]).render()?;
+        for required in [
+            "Unblocking a child bead includes reopening its blocked owning work epic",
+            "actual `parent-child` links",
+            "same human-confirmed",
+            "epic was not in the displayed inbox slice",
+            "pair `--remove-label=loom:blocked` with `--status=open`",
+            "re-read both child and epic state with `bd show`",
+            "Do not close duplicates",
+            "or remove dependencies",
+            "driver may block the epic again",
+        ] {
+            assert!(
+                out.contains(required),
+                "missing guidance `{required}`: {out}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn inbox_template_renders_chat_interview_discipline() -> Result<()> {
     let out = inbox_ctx(vec![]).render()?;
     assert!(
