@@ -14,29 +14,26 @@ backends, and tune from observed outcomes.
 The SkillOpt discipline applies to both skills and templates: harvest evidence,
 mine checkable tasks, replay/evaluate, reflect, make bounded edits, gate against
 held-out evidence, and stage proposals for human review. The adoption paths
-differ: skills are dynamic guidance; workflow templates are protocol-bearing
-source and cannot become runtime overrides.
+differ according to the boundary in
+[templates.md § Out of Scope](templates.md#out-of-scope).
 
 ## Architecture
 
 ### Templates vs. Skills
 
-Templates are static, compiled workflow protocol. They define the phase
-objective, required terminal markers, permitted state mutations, and gate
-rubrics. A skill must not redefine those protocol rules or override the compiled
-prompt's safety contract; it can only add strategy guidance that helps an agent
-satisfy the phase.
+[templates.md](templates.md) owns workflow protocol and prompt policy. A skill
+must not redefine those protocol rules or override the prompt's safety contract;
+it can only add strategy guidance that helps an agent satisfy the phase.
 
 Skills are dynamic Markdown artifacts. They are discovered, registered, and
 progressively disclosed at runtime. A skill can describe a workflow, heuristics,
 examples, scripts, references, or project conventions. Skills may be tuned and
 adopted without recompiling Loom.
 
-Template tuning is supported only as source-change proposal work. `loom tune`
-may propose edits to phase templates or partials in an isolated proposal
-worktree. Those candidates must pass template validation before they enter the
-human review queue. They are never hot-loaded as runtime overrides of Loom's
-compiled workflow templates.
+Template tuning follows the
+[templates.md § Out of Scope](templates.md#out-of-scope) boundary. This spec
+owns proposal isolation and candidate validation before human review, as defined
+in [Tune Proposal Worktrees and Beads](#tune-proposal-worktrees-and-beads).
 
 ### Public Crate and Type Pipeline
 
@@ -837,10 +834,9 @@ driver without making tuning a second resolution authority.
 
 1. **Privacy.** Loom never implicitly reads home-directory transcript stores.
    Evidence roots outside the workspace are explicit configuration.
-2. **Safety.** Skill tuning cannot weaken compiled phase protocol. Template
-   tuning cannot bypass source review and validation by becoming a runtime
-   override. Native registration failure is fatal when native registration was
-   selected.
+2. **Safety.** Skill tuning cannot weaken phase protocol. Template tuning
+   follows [templates.md § Out of Scope](templates.md#out-of-scope).
+   Native registration failure is fatal when native registration was selected.
 3. **Prompt budget.** Skills use progressive disclosure; full bodies are read on
    demand, not pinned into every phase prompt.
 4. **Portability.** Repo skills and built-in overrides use Agent Skills-compatible
@@ -858,7 +854,8 @@ driver without making tuning a second resolution authority.
   workspace.
 - Auto-discovery of `*_skill.md` or arbitrary Markdown files outside configured
   paths and `.loom-override/skills/`.
-- Runtime replacement of Loom's compiled workflow templates.
+- Workflow-template override policy is owned by
+  [templates.md § Out of Scope](templates.md#out-of-scope).
 - A standalone `loom inbox apply` command.
 - A `loom skills init` scaffolding command.
 - Public tuning-engine APIs in v1.

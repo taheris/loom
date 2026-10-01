@@ -2015,6 +2015,19 @@ fn todo_template_renders_pre_decomposition_audit_clause() -> Result<()> {
 }
 
 #[test]
+fn todo_template_requires_zero_commit_pass_evidence() -> Result<()> {
+    let out = todo_context(vec![], vec![]).render()?;
+
+    assert!(out.contains(
+        "A row whose evidence is `Current`, whose result is `Pass`, and whose commits-since count is zero (`commits_since: 0`) is positive evidence of coverage"
+    ));
+    assert!(out.contains(
+        "missing evidence, stale annotation evidence, failed or skipped current evidence, any nonzero commits-since count"
+    ));
+    Ok(())
+}
+
+#[test]
 fn todo_template_forbids_blanket_full_spec_reads() -> Result<()> {
     let out = todo_context(vec![], vec![]).render()?;
 

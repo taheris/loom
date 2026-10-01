@@ -2131,21 +2131,8 @@ owned by [agent.md § Compaction Handling](agent.md#compaction-handling).
   the flag keeps `plan` / `todo` / `loop` path-resolution
   single-shaped. Reintroducing it later is a non-breaking additive
   change if the workflow asks for it.
-- **Runtime override of Loom's workflow templates** — Loom's `plan` / `todo`
-  / `loop` / `review` / `inbox` templates are Askama, compiled into the
-  binary. `loom tune phase` / `loom tune partial` may propose source edits in an
-  isolated worktree, but there is no per-project runtime template-fetch or
-  hot-override mechanism for Loom's own workflow templates. Project-specific
-  prompt tweaks to Loom's workflow happen via `pinned_context`, `style_rules`,
-  skills, and per-spec implementation notes. Consumers writing their *own*
-  templates (for their own LLM calls via `loom-llm`) compose them from
-  `loom-templates`' exposed typed building blocks — that path is supported and is *not* what this
-  exclusion covers.
-- **Runtime template engine for consumer overrides of Loom's
-  workflow templates** — adding a runtime engine (e.g. `minijinja`)
-  to allow consumers to drop in replacements for Loom's compiled
-  Askama templates is bolt-on-able after the typed-context public
-  surface lands and is deferred until a concrete consumer asks.
+- **Workflow-template override policy** — owned by
+  [templates.md § Out of Scope](templates.md#out-of-scope).
 - **Prompt-size tuning for oversized initial prompts** — if a rendered
   phase prompt grows too large to re-pin after compaction, the fix is
   to tune the prompt/template/pinning surface separately. The compaction

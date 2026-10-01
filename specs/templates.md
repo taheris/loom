@@ -733,6 +733,7 @@ Before authoring any non-audit bead, the agent must:
    Pass, commits_since: 0, ... }` is positive evidence of coverage;
    `Missing` or `StaleAnnotation` is absence/staleness of evidence, not a
    reason to treat the criterion as already complete.
+   [test](todo_template_requires_zero_commit_pass_evidence)
 2. Read representative existing implementations and verifier functions for
    criteria where evidence is missing, stale, failed, skipped, or the agent
    judges the verifier target may not exercise the live system per
@@ -823,19 +824,12 @@ text and gate routing cannot drift.
 
 ### Mint Default-Profile
 
-The per-spec default profile (`profile:rust` for cargo-bound specs;
-`profile:base` for Nix-only and unknown specs) is consumed by the
-driver-side `loom gate mint` flow when it issues `bd create
---labels=…` for fix-up and clarify beads. The mapping is
-`default_profile_for_spec(&SpecLabel)` in
-`loom-workflow::review::context`; cargo-bound specs (`harness`,
-`templates`, `agent`, `gate`, `llm`, `tests`) resolve to
-`profile:rust` so the fix-up bead's dispatch container has the Rust
-toolchain its `[check]` / `[test]` verifiers need; Nix-only specs
-(currently `pre-commit`) and unknown specs stay on `profile:base`.
-Mint applies this default to every fix-up it creates; the operator
-overrides via `bd update <id> --labels` post-mint when a specific
-fix-up's toolchain needs diverge from the spec's default.
+The driver-side `loom gate mint` flow labels fix-up and clarify beads
+with the per-spec default profile: `profile:rust` for cargo-bound specs,
+so their dispatch containers have the Rust toolchain needed by their
+verifiers; `profile:base` for Nix-only and unknown specs. The operator
+can override the label via `bd update <id> --labels` post-mint when a
+specific fix-up's toolchain needs diverge from the spec's default.
 
 `review.md` remains inspection-only and does not emit `bd create`
 calls; the driver applies the default profile when minting from
@@ -1332,10 +1326,8 @@ documents in front of the agent with zero configuration.
 
 ### Mint default-profile
 
-- The driver-side `loom gate mint` resolves the per-spec default
-  profile via `default_profile_for_spec(&SpecLabel)`; cargo-bound
-  specs (`harness`, `templates`, `agent`, `gate`, `llm`, `tests`)
-  resolve to `profile:rust`
+- The driver-side `loom gate mint` defaults cargo-bound specs to
+  `profile:rust`
   [test](default_profile_for_spec_returns_rust_for_cargo_bound_specs)
 - Nix-only / unknown specs fall through to `profile:base`
   [test](default_profile_for_spec_returns_base_for_nix_only_specs)
