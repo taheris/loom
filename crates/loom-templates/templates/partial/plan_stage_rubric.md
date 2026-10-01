@@ -11,18 +11,18 @@ Every requirement the user expressed must have a checkable surface in the
 spec:
 
 - A *Success Criteria* bullet carrying a `[check]`, `[test]`, `[system]`, or `[judge]` annotation
-- A lifecycle / decision / contract table row
 - An explicit `## Out of Scope` declaration
 
-Implicit assumptions must be surfaced — do not let one slide into the spec
-unexamined. For each surfaced assumption, either make it testable (promote
-it to a Success Criteria bullet with a verifier annotation) or mark it
-**non-testable with a reason** so a future reader knows why no verifier
-exists.
+Lifecycle, decision, and contract table rows elaborate those criteria.
+Every behavioral row must map to an annotated criterion in the same section;
+a table row alone is not a checkable surface.
 
-A requirement that maps to no bullet, no row, and no out-of-scope
-declaration is the failure mode this check catches. Pause and resolve
-before exiting.
+Surface implicit functional assumptions and convert them into annotated,
+checkable claims. Move genuine non-goals to `Out of Scope` with their
+rationale, rather than leaving unverifiable contract text in the spec.
+
+A requirement that maps to neither an annotated criterion nor an explicit
+out-of-scope declaration fails this check. Pause and resolve before exiting.
 
 **Pending-modifier discipline.** Every annotation this interview adds whose
 target will not resolve at commit time — typically a newly-authored claim

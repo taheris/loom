@@ -66,21 +66,7 @@ fn loom_protocol_crate_has_minimal_leaf_dependency_set() {
     }
 }
 
-/// `WalkOutput`'s fields are private at the `loom-protocol` crate
-/// boundary; the only `pub` construction path is
-/// [`WalkOutput::from_stdout`]. Struct-literal construction (`WalkOutput
-/// { terminal, findings, finding_errors }`) is rejected at compile time
-/// outside this crate, so the silent-loss failure class — production
-/// caller constructs `WalkOutput` with bogus fields, bypassing the
-/// typed parse pipeline — is structurally unrepresentable per
-/// `specs/gate.md` § *Structural enforcement*.
-///
-/// At runtime we exercise the constructor and pin the accessor surface
-/// (`terminal()` / `findings()` / `finding_errors()`) so consumers can
-/// read state without naming the private field path. The
-/// function-pointer assignment is a compile-time signature pin: if
-/// `from_stdout` changes shape or stops being `pub`, this fails to
-/// compile.
+/// External consumers can parse stdout but cannot bypass parsing with a struct literal.
 #[test]
 fn walk_output_fields_private_only_constructor_is_from_stdout() {
     struct AcceptAll;
@@ -109,20 +95,7 @@ fn walk_output_fields_private_only_constructor_is_from_stdout() {
     assert!(walk.findings().is_empty());
     assert!(walk.finding_errors().is_empty());
 
-    let gate_src = workspace_root().join("crates/loom-protocol/src/gate.rs");
-    let body = std::fs::read_to_string(&gate_src)
-        .unwrap_or_else(|e| panic!("read {}: {e}", gate_src.display()));
-    assert!(
-        !body.contains("pub terminal:")
-            && !body.contains("pub findings:")
-            && !body.contains("pub finding_errors:"),
-        "WalkOutput fields must be private — found a `pub` field declaration in {}",
-        gate_src.display(),
-    );
-    assert!(
-        body.contains("pub fn from_stdout"),
-        "WalkOutput::from_stdout must be `pub` so consumers can call it",
-    );
+    trybuild::TestCases::new().compile_fail("tests/ui/walk_output_literal.rs");
 }
 
 /// The `LOOM_FINDING:` / `LOOM_CONCERN:` wire payloads carry no

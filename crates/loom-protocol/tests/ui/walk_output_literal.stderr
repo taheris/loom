@@ -1,0 +1,11 @@
+error[E0451]: fields `terminal`, `findings` and `finding_errors` of struct `WalkOutput` are private
+ --> tests/ui/walk_output_literal.rs:5:9
+  |
+4 |     let _walk = WalkOutput {
+  |                 ---------- in this type
+5 |         terminal: TerminalSurface::Complete,
+  |         ^^^^^^^^ private field
+6 |         findings: Vec::new(),
+  |         ^^^^^^^^ private field
+7 |         finding_errors: Vec::new(),
+  |         ^^^^^^^^^^^^^^ private field

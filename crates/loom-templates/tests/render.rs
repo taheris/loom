@@ -225,6 +225,33 @@ fn plan_template_renders_three_plan_stage_checks() -> Result<()> {
 }
 
 #[test]
+fn plan_stage_rubric_requires_annotated_criteria_for_behavioral_rows() -> Result<()> {
+    let out = plan_ctx().render()?;
+    let normalized = out.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(normalized.contains(
+        "Every behavioral row must map to an annotated criterion in the same section; a table row alone is not a checkable surface."
+    ));
+    assert!(!out.contains("- A lifecycle / decision / contract table row"));
+    Ok(())
+}
+
+#[test]
+fn plan_stage_rubric_requires_checkable_assumptions_or_explicit_non_goals() -> Result<()> {
+    let out = plan_ctx().render()?;
+    let normalized = out.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(normalized.contains(
+        "Surface implicit functional assumptions and convert them into annotated, checkable claims."
+    ));
+    assert!(normalized.contains(
+        "Move genuine non-goals to `Out of Scope` with their rationale, rather than leaving unverifiable contract text in the spec."
+    ));
+    assert!(!out.contains("non-testable with a reason"));
+    Ok(())
+}
+
+#[test]
 fn plan_stage_rubric_distinguishes_binary_from_assertion_pending_by_exit_status() -> Result<()> {
     let out = plan_ctx().render()?;
     let normalized = out.split_whitespace().collect::<Vec<_>>().join(" ");
