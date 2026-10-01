@@ -147,7 +147,10 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     fn grep_with(dir: &TempDir) -> Grep {
-        Grep::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+        Grep::new(ToolContext::new(
+            dir.path().join("offload"),
+            usize::MAX.try_into().unwrap(),
+        ))
     }
 
     #[tokio::test]

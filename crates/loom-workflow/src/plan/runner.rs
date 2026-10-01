@@ -89,8 +89,7 @@ pub fn run_with_timeout(
     let _guard =
         lock_mgr.acquire_phase_with_timeout(loom_driver::lock::PhaseLock::Planning, timeout)?;
 
-    let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
-        .unwrap_or_else(|_| LoomConfig::default());
+    let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
 
     let selection = resolve_plan_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
     let image: &ImageEntry = opts.manifest.lookup(&selection.profile, selection.kind())?;
@@ -449,6 +448,27 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             std::fs::read_to_string(env_log)?,
             "deploy=/keys/repo\nsigning=/keys/repo-signing\n",
         );
+        Ok(())
+    }
+
+    #[test]
+    fn plan_rejects_invalid_or_unreadable_config_before_launch() -> Result<()> {
+        for unreadable in [false, true] {
+            let dir = tempfile::tempdir()?;
+            seed_workspace(dir.path())?;
+            let path = dir.path().join("loom.toml");
+            if unreadable {
+                std::fs::create_dir(&path)?;
+            } else {
+                std::fs::write(&path, "[phase.plan]\nagent.backend = 'typo'\n")?;
+            }
+            let opts = plan_opts(
+                Vec::new(),
+                dir.path().join("must-not-execute"),
+                three_profile_manifest(dir.path())?,
+            );
+            assert!(matches!(run(dir.path(), opts), Err(PlanError::Config(_))));
+        }
         Ok(())
     }
 

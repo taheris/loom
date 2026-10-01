@@ -446,7 +446,7 @@ pub enum Source {
 }
 
 /// Current persisted event-log schema version.
-pub const EVENT_SCHEMA_VERSION: u32 = 1;
+pub const EVENT_SCHEMA_VERSION: u32 = 2;
 
 /// Host-owned metadata required to open an agent event session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -509,9 +509,7 @@ pub enum AgentEvent {
         redactions: Option<Vec<InputRedaction>>,
     },
 
-    /// Agent session ended — paired with [`AgentEvent::AgentStart`].
-    /// `SessionComplete` is the cost-aware closer; `agent_end` is a
-    /// lifecycle marker the pi protocol emits before its result line.
+    /// Non-terminal prompt-cycle boundary; only `SessionComplete` closes the session.
     AgentEnd {
         #[serde(flatten)]
         envelope: EventEnvelope,

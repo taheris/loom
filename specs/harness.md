@@ -31,10 +31,14 @@ profile and the phase's agent runtime. Loom delegates sandbox construction to
 agent events over piped JSONL. It does not construct containers directly.
 
 The trust boundary is stable: Loom, Git integration, gate decisions, and pushes
-run on the host; agent tools run in the sandbox. Interactive `plan` and `inbox
-chat` sessions use `wrix run` with inherited terminal IO, while non-interactive
-worker sessions use `wrix spawn --stdio`. Backend-specific launch and protocol
-details are owned by [agent.md](agent.md).
+run on the host; agent tools run in the sandbox. Non-interactive worker
+sessions use `wrix spawn --stdio`. Interactive `plan` and `inbox chat` follow
+[agent.md § Interactive Shell-Out](agent.md#interactive-shell-out): native
+terminal paths use `wrix run`, while non-TTY Pi inbox chat uses the controlled
+`wrix spawn --stdio` RPC bridge. Direct is rejected for interactive phases.
+[test](inbox_chat_runs_pi_backend_through_controlled_bridge)
+[test](inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio)
+[test](interactive_shell_out_rejects_direct_backend)
 
 ### Bead Dispatch
 

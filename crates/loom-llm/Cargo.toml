@@ -38,6 +38,7 @@ wiremock = { workspace = true }
 
 [features]
 default = []
+test-support = ["dep:url"]
 openai-compat = ["dep:reqwest", "dep:url"]
 
 [package.metadata.docs.rs]

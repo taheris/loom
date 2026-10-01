@@ -111,7 +111,10 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     fn edit_with(dir: &TempDir) -> Edit {
-        Edit::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+        Edit::new(ToolContext::new(
+            dir.path().join("offload"),
+            usize::MAX.try_into().unwrap(),
+        ))
     }
 
     #[tokio::test]

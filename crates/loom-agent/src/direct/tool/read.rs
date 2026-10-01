@@ -42,6 +42,9 @@ pub struct Args {
     /// Maximum number of lines to return from `offset`.
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Zero-indexed UTF-8 byte boundary; cannot be combined with line slicing.
+    #[serde(default)]
+    pub byte_offset: Option<usize>,
 }
 
 impl Tool for Read {
@@ -51,7 +54,8 @@ impl Tool for Read {
 
     fn description(&self) -> &'static str {
         "Read a workspace file. Optional 1-indexed `offset` and `limit` \
-         slice the content by line. Errors on binary files."
+         slice the content by line without changing line endings. Use `byte_offset` \
+         alone to continue an offloaded partial line. Errors on binary files."
     }
 
     fn input_schema(&self) -> Value {
@@ -74,7 +78,7 @@ async fn read_file(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm:
         Err(err) => return Ok(error(format!("read {display_path}: {err}"))),
     };
 
-    if is_binary(&bytes) {
+    if is_binary(&bytes) && !ctx.is_offload_file(&path, &bytes) {
         return Ok(error(format!("binary file rejected: {display_path}")));
     }
 
@@ -82,9 +86,24 @@ async fn read_file(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm:
         return Ok(error(format!("invalid utf-8: {display_path}")));
     };
 
-    let sliced = slice_lines(&text, args.offset, args.limit);
+    let content = if let Some(byte_offset) = args.byte_offset {
+        if args.offset.is_some() || args.limit.is_some() {
+            return Ok(error(
+                "byte_offset cannot be combined with offset or limit".into(),
+            ));
+        }
+        if text.get(byte_offset..).is_none() {
+            return Ok(error(
+                "byte_offset must be a UTF-8 boundary within the file".into(),
+            ));
+        }
+        ctx.cap_or_offload_at("Read", &text, byte_offset)?
+    } else {
+        let sliced = slice_lines(&text, args.offset, args.limit);
+        ctx.cap_or_offload("Read", &sliced)?
+    };
     Ok(ToolOutput {
-        content: ctx.cap_or_offload("Read", &sliced)?,
+        content,
         is_error: false,
     })
 }
@@ -100,11 +119,7 @@ fn slice_lines(text: &str, offset: Option<usize>, limit: Option<usize>) -> Strin
     }
     let start = offset.unwrap_or(1).saturating_sub(1);
     let take = limit.unwrap_or(usize::MAX);
-    text.lines()
-        .skip(start)
-        .take(take)
-        .collect::<Vec<_>>()
-        .join("\n")
+    text.split_inclusive('\n').skip(start).take(take).collect()
 }
 
 const fn error(message: String) -> ToolOutput {
@@ -122,7 +137,10 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     fn read_with(dir: &TempDir, cap: usize) -> Read {
-        Read::new(ToolContext::new(dir.path().join("offload"), cap))
+        Read::new(ToolContext::new(
+            dir.path().join("offload"),
+            cap.try_into().unwrap(),
+        ))
     }
 
     #[tokio::test]
@@ -152,7 +170,7 @@ mod tests {
             .await
             .expect("invoke");
         assert!(!out.is_error);
-        assert_eq!(out.content, Value::String("two\nthree".into()));
+        assert_eq!(out.content, Value::String("two\nthree\n".into()));
     }
 
     #[tokio::test]
@@ -168,6 +186,23 @@ mod tests {
         assert!(out.is_error);
         let msg = out.content.as_str().unwrap();
         assert!(msg.contains("binary"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn read_only_accepts_nul_in_verified_offload_files() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().join("offload"), 4.try_into().unwrap());
+        let reference = ctx.cap_or_offload("Bash", "abc\0def\0ghi").unwrap();
+        let path = reference["path"].as_str().unwrap();
+        fs::write(path, "changed\0binary").await.unwrap();
+        let output = Read::new(ctx)
+            .invoke(json!({"file_path": path}))
+            .await
+            .unwrap();
+        assert!(
+            output.is_error,
+            "a filename alone cannot bypass binary detection"
+        );
     }
 
     #[tokio::test]
@@ -223,15 +258,15 @@ mod tests {
     async fn cap_measured_on_raw_utf8_byte_length_not_serialized() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("quoted.txt");
-        fs::write(&path, "\"").await.unwrap();
+        fs::write(&path, "\"\"\"\"").await.unwrap();
 
-        let out = read_with(&dir, 1)
+        let out = read_with(&dir, 4)
             .invoke(json!({ "file_path": path }))
             .await
             .expect("invoke");
 
         assert!(!out.is_error);
-        assert_eq!(out.content, Value::String("\"".to_string()));
+        assert_eq!(out.content, Value::String("\"\"\"\"".to_string()));
     }
 
     #[tokio::test]
@@ -241,22 +276,142 @@ mod tests {
         let body = "one\ntwo\nthree\nfour";
         fs::write(&path, body).await.unwrap();
 
-        let out = read_with(&dir, "one\ntwo\n".len())
-            .invoke(json!({ "file_path": path }))
-            .await
-            .expect("invoke");
-        let offload_path = out.content["path"].as_str().expect("offload path");
-        let head_lines = usize::try_from(out.content["head_lines"].as_u64().expect("head_lines"))
-            .expect("head_lines fits usize");
+        let tool = read_with(&dir, 8);
+        let mut output = tool.invoke(json!({"file_path": path})).await.unwrap();
+        let mut recovered = String::new();
+        let mut chunks = 0;
+        while output.content["offloaded"] == true {
+            assert!(!output.is_error);
+            let bytes = usize::try_from(output.content["head_bytes"].as_u64().unwrap()).unwrap();
+            let head = &output.content["head"].as_str().unwrap()[..bytes];
+            assert!(head.ends_with('\n'));
+            assert!(bytes <= 8);
+            recovered.push_str(head);
+            let lines = output.content["head_lines"].as_u64().unwrap();
+            output = tool
+                .invoke(json!({
+                    "file_path": output.content["path"], "offset": lines + 1,
+                }))
+                .await
+                .unwrap();
+            chunks += 1;
+            assert!(chunks < body.len());
+        }
+        recovered.push_str(output.content.as_str().unwrap());
+        assert!(chunks >= 2);
+        assert_eq!(recovered, body);
+    }
 
-        let tail = read_with(&dir, usize::MAX)
-            .invoke(json!({ "file_path": offload_path, "offset": head_lines + 1 }))
+    async fn recover_with_byte_cursor(body: &str, cap: usize) {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().join("offload"), cap.try_into().unwrap());
+        let mut output = ToolOutput {
+            content: ctx.cap_or_offload("Bash", body).unwrap(),
+            is_error: false,
+        };
+        let tool = Read::new(ctx);
+        let mut recovered = String::new();
+        let mut cursor = 0;
+        let mut offload_path = None;
+        loop {
+            assert!(!output.is_error);
+            if let Some(tail) = output.content.as_str() {
+                assert!(tail.len() <= cap);
+                recovered.push_str(tail);
+                break;
+            }
+            assert_eq!(output.content["offloaded"], true);
+            let bytes = usize::try_from(output.content["head_bytes"].as_u64().unwrap()).unwrap();
+            assert!(bytes > 0 && bytes <= cap);
+            let head = output.content["head"].as_str().unwrap();
+            recovered.push_str(&head[..bytes]);
+            let next =
+                usize::try_from(output.content["next_byte_offset"].as_u64().unwrap()).unwrap();
+            assert_eq!(next, cursor + bytes);
+            let path = output.content["path"].as_str().unwrap().to_owned();
+            if let Some(previous) = &offload_path {
+                assert_eq!(&path, previous);
+            }
+            assert_eq!(fs::read(&path).await.unwrap(), body.as_bytes());
+            offload_path = Some(path.clone());
+            cursor = next;
+            output = tool
+                .invoke(json!({"file_path": path, "byte_offset": next}))
+                .await
+                .unwrap();
+        }
+        assert_eq!(recovered.as_bytes(), body.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn byte_cursor_recovers_oversized_lines_and_exact_line_endings() {
+        for body in [
+            "😀😀😀😀",
+            "abcdefgh",
+            "aa\r\nbb\r\ncc\r\n",
+            "a\n\nb\r\n",
+            "abcd\nefgh\n",
+            "終わりなし",
+            "abc\0def\0ghi\0jkl",
+        ] {
+            for cap in 4..=9 {
+                recover_with_byte_cursor(body, cap).await;
+            }
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(loom_test_support::proptest_config())]
+        #[test]
+        fn capped_byte_recovery_is_lossless(
+            chars in proptest::collection::vec(
+                proptest::prop_oneof![
+                    proptest::char::range('\u{0}', '\u{10ffff}'),
+                    proptest::strategy::Just('\n'),
+                    proptest::strategy::Just('\r'),
+                    proptest::strategy::Just('\0'),
+                ], 0..160),
+            cap in 4usize..40,
+        ) {
+            let body: String = chars.into_iter().collect();
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+                .block_on(recover_with_byte_cursor(&body, cap));
+        }
+    }
+
+    #[tokio::test]
+    async fn read_rejects_invalid_or_ambiguous_byte_cursor() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("source.txt");
+        fs::write(&path, "😀text").await.unwrap();
+        for args in [
+            json!({"file_path": path, "byte_offset": 1}),
+            json!({"file_path": path, "byte_offset": 9}),
+            json!({"file_path": path, "byte_offset": 0, "offset": 1}),
+            json!({"file_path": path, "byte_offset": 0, "limit": 1}),
+        ] {
+            assert!(read_with(&dir, 4).invoke(args).await.unwrap().is_error);
+        }
+        assert_eq!(
+            read_with(&dir, 4)
+                .invoke(json!({"file_path": path, "byte_offset": 8}))
+                .await
+                .unwrap()
+                .content,
+            ""
+        );
+    }
+
+    #[tokio::test]
+    async fn line_slices_preserve_crlf_and_final_newline() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("source.txt");
+        fs::write(&path, "aa\r\nbb\r\ncc\r\n").await.unwrap();
+        let output = read_with(&dir, 8)
+            .invoke(json!({"file_path": path, "offset": 2, "limit": 2}))
             .await
-            .expect("tail read");
-        assert!(!tail.is_error);
-        let prefix = body.lines().take(head_lines).collect::<Vec<_>>().join("\n");
-        let reconstructed = format!("{prefix}\n{}", tail.content.as_str().unwrap());
-        assert_eq!(reconstructed, body);
+            .unwrap();
+        assert_eq!(output.content, "bb\r\ncc\r\n");
     }
 
     #[tokio::test]
@@ -301,7 +456,7 @@ mod tests {
         let blocker = dir.path().join("blocker");
         fs::write(&source, "alpha\nbeta\ngamma\n").await.unwrap();
         fs::write(&blocker, "not a directory").await.unwrap();
-        let ctx = ToolContext::new(blocker.join("offload"), "alpha\n".len());
+        let ctx = ToolContext::new(blocker.join("offload"), "alpha\n".len().try_into().unwrap());
 
         let out = Read::new(ctx)
             .invoke(json!({ "file_path": source }))
@@ -315,7 +470,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_tools_read_against_container_workspace_mount() {
+    async fn read_maps_container_paths_to_explicit_workspace_root() {
         let workspace_mount = tempfile::tempdir().expect("workspace mount tempdir");
         let nested = workspace_mount.path().join("crates/loom-agent/src");
         fs::create_dir_all(&nested)
@@ -327,7 +482,7 @@ mod tests {
         let container_path = PathBuf::from("/workspace/crates/loom-agent/src/lib.rs");
         let tool = Read::new(ToolContext::with_workspace_root(
             workspace_mount.path().join("offload"),
-            usize::MAX,
+            usize::MAX.try_into().unwrap(),
             workspace_mount.path().to_path_buf(),
         ));
 

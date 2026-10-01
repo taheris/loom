@@ -86,7 +86,10 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     fn write_with(dir: &TempDir) -> Write {
-        Write::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+        Write::new(ToolContext::new(
+            dir.path().join("offload"),
+            usize::MAX.try_into().unwrap(),
+        ))
     }
 
     #[tokio::test]

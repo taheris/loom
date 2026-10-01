@@ -316,6 +316,17 @@ impl Conversation {
             }
             let req = self.build_request(tool_defs.clone());
             let response = client.complete(req).await?;
+            if !response.text.is_empty()
+                && let Some(builder) = self.envelope_builder.as_mut()
+            {
+                client.emit_event(&AgentEvent::TextDelta {
+                    envelope: builder.build_with_source(Source::Agent),
+                    text: response.text.clone(),
+                });
+                client.emit_event(&AgentEvent::TextEnd {
+                    envelope: builder.build_with_source(Source::Agent),
+                });
+            }
 
             if response.tool_calls.is_empty() {
                 return Ok(response);
@@ -327,7 +338,7 @@ impl Conversation {
             ));
 
             for call in &response.tool_calls {
-                self.observe_tool_call(&call.call_id, &call.name, &call.args)?;
+                self.observe_tool_call(client, &call.call_id, &call.name, &call.args)?;
                 if let Some(reason) = self.process_observer_updates(client) {
                     return Err(ConversationError::ObserverAbort { reason });
                 }
@@ -340,6 +351,21 @@ impl Conversation {
                         name: call.name.clone(),
                     })?;
                 let output = tool.invoke(call.args.clone()).await?;
+                if let Some(builder) = self.envelope_builder.as_mut() {
+                    client.emit_event(&AgentEvent::ToolResult {
+                        envelope: builder.build_with_source(Source::Agent),
+                        id: call
+                            .call_id
+                            .as_str()
+                            .parse()
+                            .map_err(|source| ConversationError::EventToolCallId { source })?,
+                        output: match &output.content {
+                            serde_json::Value::String(text) => text.clone(),
+                            value => value.to_string(),
+                        },
+                        is_error: output.is_error,
+                    });
+                }
                 let fingerprint = ResultHasher::result_fingerprint(&output.content)?;
                 let content = serde_json::to_string(&output.content)?;
                 self.history.push(Message::tool_result(
@@ -369,8 +395,9 @@ impl Conversation {
         }
     }
 
-    fn observe_tool_call(
+    fn observe_tool_call<C: LlmClient + ?Sized>(
         &mut self,
+        client: &C,
         call_id: &LlmToolCallId,
         tool: &str,
         params: &serde_json::Value,
@@ -388,6 +415,7 @@ impl Conversation {
             params: params.clone(),
             parent_tool_call_id: None,
         };
+        client.emit_event(&event);
         if let Some(observer) = self.doom_loop.as_mut() {
             observer.emit(&event);
         }
@@ -419,9 +447,6 @@ impl Conversation {
     }
 
     fn next_observer_envelope(&mut self) -> Option<loom_events::EventEnvelope> {
-        if self.doom_loop.is_none() && self.duplicate_result.is_none() {
-            return None;
-        }
         self.envelope_builder
             .as_mut()
             .map(|builder| builder.build_with_source(Source::Agent))
@@ -1387,9 +1412,13 @@ mod tests {
         let resp = tokio_test::block_on(conv.run(&client)).expect("stage 1 only steers");
         assert_eq!(resp.text, "done");
 
-        let recorded = events
+        let recorded: Vec<_> = events
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::DriverEvent { .. }))
+            .cloned()
+            .collect();
         assert_eq!(recorded.len(), 1);
         match &recorded[0] {
             AgentEvent::DriverEvent {
@@ -1490,9 +1519,13 @@ mod tests {
             .expect("fixture serializes")
             .len() as u64;
 
-        let recorded = events
+        let recorded: Vec<_> = events
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::DriverEvent { .. }))
+            .cloned()
+            .collect();
         assert_eq!(recorded.len(), 1);
         match &recorded[0] {
             AgentEvent::DriverEvent {
@@ -1547,17 +1580,14 @@ mod tests {
         );
     }
 
-    /// Disabling both observers via the builder means the run loop
-    /// synthesises no `ToolCall` / `ToolResult` envelopes — confirmed
-    /// indirectly here by driving an otherwise-doom-looping program past
-    /// stage 2's threshold without triggering an abort.
+    /// Disabling safety observers does not suppress the live tool transcript.
     #[test]
-    fn conversation_run_observers_disabled_skips_event_synthesis() {
+    fn conversation_run_observers_disabled_still_emits_tool_events() {
         let (tool, _seen) = EchoTool::new();
         let identical = || with_call("echo", "call-noop", json!({ "text": "spin" }));
         let mut scripted: Vec<CompletionResponse> = (0..5).map(|_| identical()).collect();
         scripted.push(no_calls("done"));
-        let (client, _calls) = ScriptedClient::new(scripted);
+        let (client, _calls, events) = ScriptedClient::new_recording(scripted);
 
         let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .register(tool)
@@ -1569,5 +1599,25 @@ mod tests {
         let resp =
             tokio_test::block_on(conv.run(&client)).expect("disabled observers do not abort");
         assert_eq!(resp.text, "done");
+        let events = events.lock().unwrap().clone();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::ToolCall { .. }))
+                .count(),
+            5
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::ToolResult { .. }))
+                .count(),
+            5
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::DriverEvent { .. }))
+        );
     }
 }

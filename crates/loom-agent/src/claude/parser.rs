@@ -216,12 +216,11 @@ impl LineParse for ClaudeParser {
                 })
             }
             ClaudeMessage::ControlRequest { id, tool, input } => {
-                let serialized = input.to_string();
-                let truncated: String = serialized.chars().take(200).collect();
                 let approved = !self.denied_tools.contains(&tool);
                 info!(
                     tool = %tool,
-                    input = %truncated,
+                    request_id = %id,
+                    input = ?loom_driver::logging::Redacted(&input),
                     approved,
                     "claude tool permission request",
                 );
@@ -456,6 +455,38 @@ mod tests {
         assert!(resp.contains(r#""id":"req_01""#));
         assert!(resp.contains(r#""approved":true"#));
         assert!(resp.ends_with('\n'));
+    }
+
+    #[test]
+    fn claude_permission_audit_redacts_secret_bearing_input() {
+        let log = tempfile::NamedTempFile::new().unwrap();
+        let writer = log.reopen().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.try_clone().unwrap())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let parser = ClaudeParser::new(Vec::new());
+        for (tool, input) in [
+            (
+                "Bash",
+                serde_json::json!({"command": "export API_KEY=canary-secret"}),
+            ),
+            (
+                "Write",
+                serde_json::json!({"content": "password=canary-secret"}),
+            ),
+            ("Edit", serde_json::json!({"new_string": "canary-secret"})),
+        ] {
+            let wire = serde_json::json!({"type": "control_request", "id": "audit-1", "tool": tool, "input": input});
+            parser.parse_line(&wire.to_string()).unwrap();
+        }
+        let captured = std::fs::read_to_string(log.path()).unwrap();
+        assert!(!captured.contains("canary-secret"), "{captured}");
+        assert_eq!(captured.matches("[REDACTED]").count(), 3, "{captured}");
+        assert_eq!(captured.matches("approved=true").count(), 3, "{captured}");
+        assert!(captured.contains("audit-1"), "{captured}");
     }
 
     #[test]

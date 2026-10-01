@@ -3747,7 +3747,7 @@ fn direct_tools_net_new_pass_when_all_six_defined_locally() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-agent/src/direct/tools/mod.rs",
+        "crates/loom-agent/src/direct/tool/mod.rs",
         "pub struct Read;\npub struct Write;\npub struct Edit;\n\
          pub struct Bash;\npub struct Grep;\npub struct Glob;\n",
     );
@@ -3760,32 +3760,32 @@ fn direct_tools_net_new_pass_when_split_across_files() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-agent/src/direct/tools/read.rs",
+        "crates/loom-agent/src/direct/tool/read.rs",
         "pub struct Read;\n",
     );
     seed(
         ws.path(),
-        "crates/loom-agent/src/direct/tools/write.rs",
+        "crates/loom-agent/src/direct/tool/write.rs",
         "pub struct Write;\n",
     );
     seed(
         ws.path(),
-        "crates/loom-agent/src/direct/tools/edit.rs",
+        "crates/loom-agent/src/direct/tool/edit.rs",
         "pub struct Edit;\n",
     );
     seed(
         ws.path(),
-        "crates/loom-agent/src/direct/tools/bash.rs",
+        "crates/loom-agent/src/direct/tool/bash.rs",
         "pub struct Bash;\n",
     );
     seed(
         ws.path(),
-        "crates/loom-agent/src/direct/tools/grep.rs",
+        "crates/loom-agent/src/direct/tool/grep.rs",
         "pub struct Grep;\n",
     );
     seed(
         ws.path(),
-        "crates/loom-agent/src/direct/tools/glob.rs",
+        "crates/loom-agent/src/direct/tool/glob.rs",
         "pub struct Glob;\n",
     );
     let out = invoke(&["direct_tools_net_new"], Some(ws.path()), None);
@@ -3797,7 +3797,7 @@ fn direct_tools_net_new_fail_when_a_tool_is_only_reexported() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-agent/src/direct/tools/mod.rs",
+        "crates/loom-agent/src/direct/tool/mod.rs",
         "pub struct Read;\npub struct Write;\npub struct Edit;\n\
          pub struct Bash;\npub struct Grep;\n\
          pub use external::Glob;\n",

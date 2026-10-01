@@ -1,16 +1,10 @@
-//! `loom-direct-runner` binary entry point.
-//!
-//! Parses argv (`--spawn-config <path>`), reads the JSON file into a
-//! [`SpawnConfig`], constructs a per-schema LLM Client from the
-//! configured model's schema, and hands off to
-//! [`loom_direct_runner::run_session`].
+//! In-container Direct agent entry point.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use loom_direct_runner::run_session;
-use loom_direct_runner::{RunnerError, build_client_for_config};
+use loom_direct_runner::session::{RunnerError, build_client_for_config, run_session};
 use loom_driver::agent::SpawnConfig;
 use tokio::io::{self, BufReader};
 use tracing::{error, info};
@@ -27,8 +21,7 @@ const ENV_SPAWN_CONFIG: &str = "LOOM_SPAWN_CONFIG";
     about = "In-container Direct backend entrypoint."
 )]
 struct Cli {
-    /// Path to the JSON-serialised [`SpawnConfig`] the host wrote at
-    /// dispatch time. Falls back to `$LOOM_SPAWN_CONFIG` when omitted.
+    /// Load session settings from this path.
     #[arg(long)]
     spawn_config: Option<PathBuf>,
 }

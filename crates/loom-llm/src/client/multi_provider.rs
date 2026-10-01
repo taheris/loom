@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use base64::Engine;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use genai::ServiceTarget;
 use genai::adapter::AdapterKind;
 use genai::chat::{
@@ -21,7 +21,7 @@ use genai::chat::{
     ToolResponse as GenAiToolResponse, Usage as GenAiUsage,
 };
 use genai::resolver::AuthData;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use genai::resolver::Endpoint;
 #[cfg(test)]
 use loom_events::DriverKind;
@@ -56,7 +56,7 @@ fn genai_client_for_schema(adapter_kind: AdapterKind, api_key: &ApiKey) -> Arc<g
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn genai_client_for_schema_endpoint(
     adapter_kind: AdapterKind,
     api_key: &ApiKey,
@@ -159,6 +159,17 @@ impl AnthropicClient {
     fn with_mock_endpoint(mut self, base_url: String) -> Self {
         self.state.inner =
             genai_client_for_schema_endpoint(ANTHROPIC_ADAPTER, &self.state.api_key, base_url);
+        self
+    }
+
+    /// Route real Anthropic requests to a test HTTP server.
+    #[cfg(feature = "test-support")]
+    pub fn with_endpoint_for_test(mut self, base_url: url::Url) -> Self {
+        self.state.inner = genai_client_for_schema_endpoint(
+            ANTHROPIC_ADAPTER,
+            &self.state.api_key,
+            base_url.into(),
+        );
         self
     }
 

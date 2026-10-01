@@ -31,6 +31,7 @@ use std::sync::{
 };
 
 use displaydoc::Display;
+use loom_driver::config::InlineByteLimit;
 use loom_llm::LlmError;
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::de::DeserializeOwned;
@@ -51,7 +52,7 @@ struct Capabilities {
 
 struct OffloadSink {
     dir: PathBuf,
-    max_inline_bytes: usize,
+    max_inline_bytes: InlineByteLimit,
 }
 
 struct WorkspaceMount {
@@ -82,7 +83,7 @@ pub struct OffloadRecord {
 
 impl ToolContext {
     /// Create a Direct tool context rooted at the session's offload directory.
-    pub fn new(offload_dir: PathBuf, max_inline_bytes: usize) -> Self {
+    pub fn new(offload_dir: PathBuf, max_inline_bytes: InlineByteLimit) -> Self {
         Self::with_workspace_root(
             offload_dir,
             max_inline_bytes,
@@ -93,7 +94,7 @@ impl ToolContext {
     /// Create a context whose `/workspace` paths resolve under `workspace_root`.
     pub fn with_workspace_root(
         offload_dir: PathBuf,
-        max_inline_bytes: usize,
+        max_inline_bytes: InlineByteLimit,
         workspace_root: PathBuf,
     ) -> Self {
         Self {
@@ -116,13 +117,29 @@ impl ToolContext {
         self.capabilities.workspace.resolve(path)
     }
 
+    pub(super) fn is_offload_file(&self, path: &Path, content: &[u8]) -> bool {
+        path == self.capabilities.offload.path_for(content)
+    }
+
     /// Return `content` inline when it fits, otherwise offload the full payload.
     ///
     /// # Errors
     ///
     /// Returns an error when agent startup, protocol handling, or tool execution fails.
     pub fn cap_or_offload(&self, tool: &str, content: &str) -> Result<Value, ToolContextError> {
-        let outcome = self.capabilities.offload.cap_or_offload(content);
+        self.cap_or_offload_at(tool, content, 0)
+    }
+
+    pub(super) fn cap_or_offload_at(
+        &self,
+        tool: &str,
+        content: &str,
+        byte_offset: usize,
+    ) -> Result<Value, ToolContextError> {
+        let outcome = self
+            .capabilities
+            .offload
+            .cap_or_offload(content, byte_offset)?;
         if let Some(total_bytes) = outcome.total_bytes {
             self.capabilities
                 .records
@@ -156,6 +173,8 @@ impl ToolContext {
 pub enum ToolContextError {
     /// Direct offload record lock poisoned
     OffloadRecordLockPoisoned,
+    /// Read byte offset must be a UTF-8 boundary within the file
+    InvalidByteOffset,
 }
 
 impl From<ToolContextError> for LlmError {
@@ -176,58 +195,75 @@ impl WorkspaceMount {
 }
 
 impl OffloadSink {
-    fn cap_or_offload(&self, content: &str) -> CapOutcome {
+    fn cap_or_offload(
+        &self,
+        content: &str,
+        byte_offset: usize,
+    ) -> Result<CapOutcome, ToolContextError> {
+        let remaining = content
+            .get(byte_offset..)
+            .ok_or(ToolContextError::InvalidByteOffset)?;
         let total_bytes = content.len();
-        if total_bytes <= self.max_inline_bytes {
-            return CapOutcome {
-                value: Value::String(content.to_string()),
+        if remaining.len() <= self.max_inline_bytes.get() {
+            return Ok(CapOutcome {
+                value: Value::String(remaining.to_string()),
                 total_bytes: None,
-            };
+            });
         }
 
         let total_lines = content.lines().count();
-        let head = head_within_cap(content, self.max_inline_bytes);
+        let head = head_within_cap(remaining, self.max_inline_bytes.get());
         match self.write(content) {
             Ok(path) => {
                 let path = path.display().to_string();
                 let head_lines = head.lines;
+                let head_bytes = head.content.len();
+                let next_byte_offset = byte_offset + head_bytes;
                 let head = append_marker(
                     head.content,
                     &format!(
-                        "[truncated: showing {head_lines} of {total_lines} lines; full output at {path}; Read with offset {} to continue]",
-                        head_lines + 1,
+                        "[truncated: showing {head_bytes} bytes; full output at {path}; Read with byte_offset {next_byte_offset} to continue]",
                     ),
                 );
-                CapOutcome {
+                Ok(CapOutcome {
                     value: json!({
                         "offloaded": true,
                         "path": path,
                         "total_bytes": total_bytes,
                         "total_lines": total_lines,
                         "head_lines": head_lines,
+                        "head_bytes": head_bytes,
+                        "next_byte_offset": next_byte_offset,
                         "head": head,
                     }),
                     total_bytes: Some(total_bytes),
-                }
+                })
             }
-            Err(_) => CapOutcome {
-                value: Value::String(append_marker(
-                    head.content,
-                    &format!("[truncated: showing {} of {total_lines} lines]", head.lines),
-                )),
-                total_bytes: None,
-            },
+            Err(err) => {
+                tracing::warn!(tool_output_bytes = total_bytes, error = ?err, "offload failed; returning inline truncation");
+                Ok(CapOutcome {
+                    value: Value::String(append_marker(
+                        head.content,
+                        &format!("[truncated: showing {} of {total_lines} lines]", head.lines),
+                    )),
+                    total_bytes: None,
+                })
+            }
         }
+    }
+
+    fn path_for(&self, content: &[u8]) -> PathBuf {
+        self.dir
+            .join(format!("{}.txt", blake3::hash(content).to_hex()))
     }
 
     fn write(&self, content: &str) -> io::Result<PathBuf> {
         fs::create_dir_all(&self.dir)?;
-        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-        let path = self.dir.join(format!("{hash}.txt"));
+        let path = self.path_for(content.as_bytes());
         if path.is_file() {
             return Ok(path);
         }
-        let tmp = write_unique_temp(&self.dir, &hash, content)?;
+        let tmp = write_unique_temp(&path, content)?;
         if path.is_file() {
             fs::remove_file(&tmp)?;
             return Ok(path);
@@ -243,9 +279,13 @@ impl OffloadSink {
     }
 }
 
-fn write_unique_temp(dir: &Path, hash: &str, content: &str) -> io::Result<PathBuf> {
+fn write_unique_temp(path: &Path, content: &str) -> io::Result<PathBuf> {
     loop {
-        let tmp = temp_path(dir, hash, TEMP_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let tmp = path.with_extension(format!(
+            "{}.{}.tmp",
+            process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
         match OpenOptions::new().write(true).create_new(true).open(&tmp) {
             Ok(mut file) => {
                 file.write_all(content.as_bytes())?;
@@ -255,10 +295,6 @@ fn write_unique_temp(dir: &Path, hash: &str, content: &str) -> io::Result<PathBu
             Err(err) => return Err(err),
         }
     }
-}
-
-fn temp_path(dir: &Path, hash: &str, nonce: u64) -> PathBuf {
-    dir.join(format!("{hash}.{}.{}.tmp", process::id(), nonce))
 }
 
 fn head_within_cap(content: &str, cap: usize) -> Head {
@@ -272,13 +308,6 @@ fn head_within_cap(content: &str, cap: usize) -> Head {
             continue;
         }
 
-        if let Some(line_content) = line.strip_suffix('\n') {
-            let next_without_newline = bytes + line_content.len();
-            if next_without_newline <= cap {
-                bytes = next_without_newline;
-                lines += 1;
-            }
-        }
         break;
     }
 
@@ -353,7 +382,7 @@ mod tests {
         std::fs::write(&grep_source, "needle with long payload\nignored\n")
             .expect("write grep fixture");
         std::fs::write(&glob_source, "").expect("write glob fixture");
-        let ctx = ToolContext::new(dir.path().join("offload"), 8);
+        let ctx = ToolContext::new(dir.path().join("offload"), 8.try_into().unwrap());
 
         let grep_output = Grep::new(ctx.clone())
             .invoke(json!({ "pattern": "needle", "path": grep_source }))
@@ -400,7 +429,7 @@ mod tests {
     #[test]
     fn same_content_concurrent_offloads_converge_to_one_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = ToolContext::new(dir.path().join("offload"), 1);
+        let ctx = ToolContext::new(dir.path().join("offload"), 4.try_into().unwrap());
         let body = "alpha\nbeta\ngamma\n".to_string();
         let barrier = Arc::new(Barrier::new(16));
         let mut handles = Vec::with_capacity(16);

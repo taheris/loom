@@ -40,7 +40,7 @@ const CONTAINER_WORKSPACE: &str = "/workspace";
 /// Unlike Pi and Claude which drive external agent binaries, Direct
 /// drives `loom-direct-runner` — a Loom-owned binary that composes
 /// [`loom_llm::Conversation`] with the six sandbox-aware tools in
-/// [`super::tools`]. The host-side surface is still a JSONL wire over
+/// [`super::tool`]. The host-side surface is still a JSONL wire over
 /// the launcher's stdin/stdout: the trust boundary (loom on host =
 /// trusted; agent in container = sandboxed) is preserved identically to
 /// the subprocess backends.

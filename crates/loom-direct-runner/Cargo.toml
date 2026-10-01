@@ -28,6 +28,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+loom-llm = { workspace = true, features = ["test-support"] }
+wiremock = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 

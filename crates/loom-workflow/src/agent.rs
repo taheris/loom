@@ -252,7 +252,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
         if let Some(s) = sink.as_mut()
             && let Err(e) = s.emit(&event)
         {
-            warn!(error = %e, "log sink emit failed");
+            warn!(error = ?e, "log sink emit failed");
             let error_str = format!("log sink emit failed: {e}");
             emit_infra_failure_event(
                 sink.as_mut(),
@@ -299,7 +299,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                             &msg,
                             config,
                         ) {
-                            warn!(error = %e, "agent input event emit failed before steer");
+                            warn!(error = ?e, "agent input event emit failed before steer");
                             let error_str = format!("agent input event emit failed: {e}");
                             emit_protocol_failure_event(
                                 sink.as_mut(),
@@ -312,7 +312,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                             return protocol_error_session_result(first_event_seen, &e, error_str);
                         }
                         if let Err(e) = session.steer(&msg).await {
-                            warn!(error = %e, "session steer failed");
+                            warn!(error = ?e, "session steer failed");
                             let error_str = format!("session steer failed: {e}");
                             emit_protocol_failure_event(
                                 sink.as_mut(),
@@ -333,7 +333,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                     );
                     if let Err(e) = session.abort().await {
                         warn!(
-                            error = %e,
+                            error = ?e,
                             "session abort failed during observer-driven cancel; \
                              kill_on_drop will reap the child",
                         );
@@ -353,7 +353,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                         &payload,
                         config,
                     ) {
-                        warn!(error = %e, "agent input event emit failed before re-pin");
+                        warn!(error = ?e, "agent input event emit failed before re-pin");
                         let error_str = format!("agent input event emit failed: {e}");
                         emit_protocol_failure_event(
                             sink.as_mut(),
@@ -366,7 +366,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                         return protocol_error_session_result(first_event_seen, &e, error_str);
                     }
                     if let Err(e) = session.steer(&payload).await {
-                        warn!(error = %e, "backend compaction re-pin failed");
+                        warn!(error = ?e, "backend compaction re-pin failed");
                         let error_str = e.to_string();
                         emit_protocol_failure_event(
                             sink.as_mut(),
@@ -381,7 +381,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    warn!(error = %e, "backend compaction handler failed");
+                    warn!(error = ?e, "backend compaction handler failed");
                     let error_str = e.to_string();
                     emit_protocol_failure_event(
                         sink.as_mut(),
@@ -398,7 +398,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
         if matches!(event, AgentEvent::TurnEnd { .. })
             && let Err(e) = session.finish_turn().await
         {
-            error!(error = %e, "session turn completion failed");
+            error!(error = ?e, "session turn completion failed");
             let error_str = format!("session turn completion failed: {e}");
             emit_protocol_failure_event(
                 sink.as_mut(),
@@ -422,7 +422,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                 BeadOutcome::Failed
             };
             if let Err(e) = B::after_session_complete(session, config).await {
-                warn!(error = %e, "backend shutdown hook failed");
+                warn!(error = ?e, "backend shutdown hook failed");
             }
             finish_sink(sink, outcome);
             return SessionResult::Complete(SessionOutcome {
@@ -625,7 +625,7 @@ fn finish_sink(sink: Option<LogSink>, outcome: BeadOutcome) {
     if let Some(mut s) = sink
         && let Err(e) = s.finish(outcome)
     {
-        warn!(error = %e, "log sink finish failed");
+        warn!(error = ?e, "log sink finish failed");
     }
 }
 
@@ -717,7 +717,7 @@ fn emit_driver_event(
         envelope,
     );
     if let Err(e) = sink.emit(&event) {
-        warn!(error = %e, kind = %wire, "driver event emit failed");
+        warn!(error = ?e, kind = %wire, "driver event emit failed");
     }
 }
 

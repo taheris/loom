@@ -8,10 +8,17 @@ use super::util::{
 use super::{Verdict, WalkInput};
 
 const RULE: &str = "TST-3 #[ignore] is limited to enumerated process entry points";
-const ALLOWLIST: &[(&str, &str)] = &[(
-    "crates/loom-driver/tests/lock_manager.rs",
-    "crash_helper_take_lock_then_exit",
-)];
+const ALLOWLIST: &[(&str, &str)] = &[
+    (
+        "crates/loom-driver/tests/lock_manager.rs",
+        "crash_helper_take_lock_then_exit",
+    ),
+    // This entry point requires the real bind mount installed by the system verifier.
+    (
+        "crates/loom-agent/tests/workspace_mount.rs",
+        "direct_tools_read_against_container_workspace_mount",
+    ),
+];
 
 pub fn run(input: &WalkInput) -> Verdict {
     run_with_root(input, &workspace_root())
@@ -78,6 +85,20 @@ mod tests {
     fn accepts_tests_without_ignore() -> Result<()> {
         let dir = fixture("#[test]\nfn runs_normally() {}\n")?;
         assert!(run_with_root(&WalkInput::default(), dir.path()).pass);
+        Ok(())
+    }
+
+    #[test]
+    fn allows_only_exact_process_entrypoints() -> Result<()> {
+        for (path, function) in ALLOWLIST {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join(path);
+            fs::create_dir_all(path.parent().unwrap())?;
+            fs::write(&path, format!("#[test]\n#[ignore]\nfn {function}() {{}}\n"))?;
+            assert!(run_with_root(&WalkInput::default(), dir.path()).pass);
+            fs::write(&path, "#[test]\n#[ignore]\nfn hidden_flake() {}\n")?;
+            assert!(!run_with_root(&WalkInput::default(), dir.path()).pass);
+        }
         Ok(())
     }
 

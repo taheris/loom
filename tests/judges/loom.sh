@@ -120,9 +120,9 @@ judge_llm_error_mapping_honesty() {
 judge_tool_context_shape() {
   judge_files \
     "crates/loom-agent/src/direct/mod.rs" \
-    "crates/loom-agent/src/direct/tools/mod.rs" \
-    "crates/loom-agent/src/direct/tools/read.rs" \
-    "crates/loom-direct-runner/src/lib.rs" \
+    "crates/loom-agent/src/direct/tool/mod.rs" \
+    "crates/loom-agent/src/direct/tool/read.rs" \
+    "crates/loom-direct-runner/src/session.rs" \
     "crates/loom-llm/src/tool.rs"
   judge_criterion \
     "ToolContext is the single per-session handle threaded into Direct tools without changing loom-llm::Tool. The judge should verify: (1) loom-llm/src/tool.rs is unchanged in shape — no session/context parameter was added to Tool::invoke or any other trait method; (2) loom-direct-runner exposes six_tools(ctx: ToolContext) and build_conversation constructs one ToolContext from SpawnConfig scratch_dir/output_limits, then passes cheap clones into Read, Write, Edit, Bash, Grep, and Glob; (3) ToolContext v1 carries only the offload sink capability (offload directory plus max_inline_bytes/cap_or_offload behavior), not an LlmClient, ModelId, or delegation implementation today; (4) ToolContext is cheap-clone and internally shaped as an additive capability holder, so adding a future delegate capability such as LlmClient + ModelId would add fields inside the context rather than changing six_tools's signature or the Tool trait. Fail if any Direct tool is still zero-sized, if per-session state is global/static, if the Tool trait was modified, or if delegation is implemented in this bead."

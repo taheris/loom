@@ -109,11 +109,17 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     fn bash_with(dir: &TempDir) -> Bash {
-        Bash::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+        Bash::new(ToolContext::new(
+            dir.path().join("offload"),
+            usize::MAX.try_into().unwrap(),
+        ))
     }
 
     fn capped_bash_with(dir: &TempDir, cap: usize) -> Bash {
-        Bash::new(ToolContext::new(dir.path().join("offload"), cap))
+        Bash::new(ToolContext::new(
+            dir.path().join("offload"),
+            cap.try_into().unwrap(),
+        ))
     }
 
     #[tokio::test]

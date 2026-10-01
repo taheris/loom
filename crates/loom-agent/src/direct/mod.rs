@@ -8,12 +8,12 @@
 //!   [`AgentBackend`](loom_driver::agent::AgentBackend) impl. Spawns a
 //!   container via `wrix spawn` whose entrypoint exec's
 //!   `loom-direct-runner` over JSONL on stdin/stdout.
-//! - [`tools`] — net-new sandbox-aware tool implementations the runner
+//! - [`tool`] — net-new sandbox-aware tool implementations the runner
 //!   registers with the in-process `Conversation`. See `specs/agent.md`
 //!   § Direct Backend.
 
 pub mod backend;
-pub mod tools;
+pub mod tool;
 
 pub use backend::DirectBackend;
-pub use tools::ToolContext;
+pub use tool::ToolContext;

@@ -1,23 +1,5 @@
-//! Pi-mono RPC backend: spawn + startup probe + optional `set_model`.
-//!
-//! [`PiBackend::spawn`] serializes the [`SpawnConfig`] to a JSON file,
-//! execs the raw wrix launcher as
-//! `wrix --profile-config <file> spawn --spawn-config <file> --stdio`
-//! when the manifest provides a `ProfileConfig`, and drives the pi RPC
-//! handshake before handing back an [`AgentSession`] in the [`Idle`] state:
-//!
-//! 1. `get_state` probe — verifies the RPC process is responsive and
-//!    returns the documented state object shape before any workflow begins.
-//!    Pi's `get_commands` lists slash commands/templates/skills, not built-in
-//!    RPC verbs, so it is not a startup capability probe.
-//! 2. `set_model` (optional) — sent only when [`SpawnConfig::model`] is
-//!    populated by per-phase config. Failure is hard-fail.
-//!
-//! Process IO during the handshake is direct (no [`AgentSession`] yet) —
-//! the typestate session only starts taking events once `prompt` is
-//! called by the workflow layer. Compaction re-pin delivery is triggered
-//! from `AgentEvent::CompactionStart`; [`PiParser`] owns Pi-private
-//! overflow auto-retry fail-fast policy.
+//! Pi RPC sessions are returned idle only after protocol readiness and any
+//! configured model selection succeed.
 
 use std::ffi::OsStr;
 use std::io;
@@ -146,8 +128,7 @@ impl PiBackend {
             spawn_config.path(),
         );
         apply_launcher_env(&mut cmd, &config.launcher_env);
-        // Needed for the stderr readiness boundary below. The marker is
-        // emitted by wrix after image load/staging and before `podman run`.
+        // Readiness detection requires Wrix's verbose container-start marker.
         cmd.env("WRIX_VERBOSE", "1");
 
         let session = spawn_with_handshake_after_wrix_start(
@@ -192,13 +173,19 @@ fn build_repin_payload(scratch_dir: &Path) -> Result<String, ProtocolError> {
     Ok(format!("{prompt}\n\n{scratch}"))
 }
 
-/// `get_state` request body. Sent on stdin during the startup handshake
-/// before any [`AgentSession`] is constructed.
+/// Startup commands with fixed Pi RPC discriminators.
 #[derive(Serialize)]
-struct GetStateCommand<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    id: &'a str,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum HandshakeCommand<'a> {
+    GetState {
+        id: &'a str,
+    },
+    SetModel {
+        id: &'a str,
+        provider: &'a str,
+        #[serde(rename = "modelId")]
+        model_id: &'a str,
+    },
 }
 
 /// Minimal `get_state.data` shape required by Loom's startup probe. Pi
@@ -212,19 +199,6 @@ struct StateProbeData {
     is_compacting: bool,
     message_count: u64,
     pending_message_count: u64,
-}
-
-/// `set_model` request body. Sent only when [`SpawnConfig::model`] is
-/// populated; the wrapper never sees this — it is consumed by pi inside
-/// the container.
-#[derive(Serialize)]
-struct SetModelCommand<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    id: &'a str,
-    provider: &'a str,
-    #[serde(rename = "modelId")]
-    model_id: &'a str,
 }
 
 pub(crate) fn build_wrix_command(
@@ -435,8 +409,7 @@ async fn run_probe(
     budget: Duration,
     clock: &dyn Clock,
 ) -> Result<(), ProtocolError> {
-    let cmd = GetStateCommand {
-        kind: "get_state",
+    let cmd = HandshakeCommand::GetState {
         id: PROBE_REQUEST_ID,
     };
     info!(id = PROBE_REQUEST_ID, "pi probe: sending get_state");
@@ -467,8 +440,7 @@ async fn run_set_model(
     budget: Duration,
     clock: &dyn Clock,
 ) -> Result<(), ProtocolError> {
-    let cmd = SetModelCommand {
-        kind: "set_model",
+    let cmd = HandshakeCommand::SetModel {
         id: SET_MODEL_REQUEST_ID,
         provider: &model.provider,
         model_id: &model.model_id,
@@ -1399,8 +1371,7 @@ mod tests {
     /// of the probe request as a command rather than a stray event.
     #[test]
     fn get_state_command_serializes_to_expected_shape() {
-        let cmd = GetStateCommand {
-            kind: "get_state",
+        let cmd = HandshakeCommand::GetState {
             id: PROBE_REQUEST_ID,
         };
         let json = serde_json::to_string(&cmd).expect("serialize");
@@ -1415,8 +1386,7 @@ mod tests {
     /// produce a no-op handshake that the driver mistakes for success.
     #[test]
     fn set_model_command_serializes_to_expected_shape() {
-        let cmd = SetModelCommand {
-            kind: "set_model",
+        let cmd = HandshakeCommand::SetModel {
             id: SET_MODEL_REQUEST_ID,
             provider: "deepseek",
             model_id: "deepseek-v3",

@@ -193,10 +193,14 @@ impl AgentSelection {
                     push_model_api_key_var(&mut vars, model_id.as_str());
                 }
             }
-            AgentKind::Direct => match self.model_id.as_ref().map(ModelName::as_str) {
-                Some(model_id) => push_model_api_key_var(&mut vars, model_id),
-                None => push_unique(&mut vars, ANTHROPIC_API_KEY_ENV),
-            },
+            AgentKind::Direct => {
+                if let Some(model_id) = &self.model_id {
+                    push_model_api_key_var(&mut vars, model_id.as_str());
+                }
+                if vars.is_empty() {
+                    push_unique(&mut vars, ANTHROPIC_API_KEY_ENV);
+                }
+            }
             AgentKind::Claude => {}
         }
         vars
@@ -490,6 +494,38 @@ mod tests {
             "Direct's default Anthropic model needs ANTHROPIC_API_KEY: {:?}",
             spawn.env,
         );
+    }
+
+    #[test]
+    fn direct_credentials_follow_model_id_schema_including_unknown_fallback() {
+        use loom_llm::model_id::{ModelId, SchemaKind};
+        for name in [
+            "custom-v1",
+            "Claude-Future",
+            "gpt-next",
+            "O1-next",
+            "o3-next",
+            "GEMINI-next",
+        ] {
+            let model: ModelId = name.parse().unwrap();
+            let expected = match model.schema() {
+                SchemaKind::Anthropic => ANTHROPIC_API_KEY_ENV,
+                SchemaKind::OpenAi => OPENAI_API_KEY_ENV,
+                SchemaKind::Gemini => GEMINI_API_KEY_ENV,
+                other => panic!("unhandled schema: {other:?}"),
+            };
+            let mut spawn = spawn_config();
+            selection(AgentKind::Direct, None, Some(name))
+                .apply_api_key_allowlist(&mut spawn, |var| Some(format!("fixture-{var}")));
+            assert_eq!(
+                spawn.env,
+                vec![
+                    ("WRIX_AGENT".into(), "direct".into()),
+                    (expected.into(), format!("fixture-{expected}")),
+                ],
+                "model {name}"
+            );
+        }
     }
 
     #[test]

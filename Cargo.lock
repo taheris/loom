@@ -2490,6 +2490,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
@@ -2501,6 +2502,7 @@ dependencies = [
  "gix",
  "loom-driver",
  "loom-events",
+ "loom-llm",
  "loom-protocol",
  "loom-render",
  "loom-skill",

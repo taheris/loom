@@ -99,7 +99,7 @@ Payload fields are also top-level fields on the same flat JSON object. Payload
 |-------|----------------|---------|
 | `agent_start` | `schema_version`, `title`, `profile`, `spec_label`, `started_at_ms`, `parent_tool_call_id?` | First event in a session; carries renderer/replay metadata. |
 | `agent_input` | `input_kind`, `text`, `redactions?` | Loom-authored text sent into the backend session, emitted before the send. |
-| `agent_end` | — | Agent session lifecycle bookend paired with `agent_start`. |
+| `agent_end` | — | Non-terminal prompt-cycle boundary; another prompt may follow on the same session. |
 | `turn_start` | — | A multi-turn session opened a new turn. |
 | `text_delta` | `text` | Streaming assistant prose fragment. |
 | `text_end` | — | Closes a `text_delta` stream. |
@@ -131,6 +131,13 @@ The spec owns the architectural shape: flat tagged event, common envelope,
 stable variant and payload field names, and source separation.
 
 ### Schema Versioning
+
+Version 2 defines `agent_end` as a non-terminal prompt-cycle marker rather
+than a session bookend. `session_complete` remains the terminal event. Pi's
+one-shot versus bridge normalization is owned by
+[agent.md](agent.md#pi-mono-rpc-protocol).
+[test](pi_agent_end_bridge_mode_yields_agent_end_not_session_complete)
+[test](inbox_chat_pi_bridge_sends_human_reply_as_next_prompt)
 
 `agent_start.schema_version` names the event-log schema version for that
 session. Adding new fields, variants, or `driver_kind` values is additive when

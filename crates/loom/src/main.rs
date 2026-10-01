@@ -2119,7 +2119,7 @@ fn run_gate_mint(
                     render_mode,
                     &renderer_id,
                     phase_when,
-                    config.direct_output_limits().max_inline_bytes,
+                    config.direct_output_limits().max_inline_bytes.get(),
                 )?;
                 progress.emit(
                     loom_events::DriverKind::GateRunStart,
@@ -2183,7 +2183,7 @@ fn run_gate_mint(
                     render_mode,
                     &renderer_id,
                     phase_when,
-                    direct_output_limits.max_inline_bytes,
+                    direct_output_limits.max_inline_bytes.get(),
                 )?;
                 let progress_log_path = progress.log_path().to_string_lossy().to_string();
                 progress.emit(
@@ -2244,7 +2244,7 @@ fn run_gate_mint(
                                     &renderer_id,
                                     &workspace,
                                     false,
-                                    direct_output_limits.max_inline_bytes,
+                                    direct_output_limits.max_inline_bytes.get(),
                                 );
                                 let sink = LogSink::open_phase_at(
                                     &logs_root,
@@ -2680,6 +2680,7 @@ fn run_logs(
         LoomConfig::load(LoomConfig::resolve_path(workspace))?
             .direct_output_limits()
             .max_inline_bytes
+            .get()
     };
     let clock: Arc<dyn loom_driver::clock::Clock> = Arc::new(loom_driver::clock::SystemClock);
     let runtime = tokio::runtime::Runtime::new()?;
@@ -3139,7 +3140,7 @@ fn run_sequential_loop_root(
                         render_mode,
                         &workspace,
                         false,
-                        direct_output_limits.max_inline_bytes,
+                        direct_output_limits.max_inline_bytes.get(),
                     ) {
                         Ok(s) => Some(s),
                         Err(err) => {
@@ -3446,7 +3447,7 @@ async fn dispatch_for_slot(
         render_mode,
         &slot.worktree.path,
         true,
-        direct_output_limits.max_inline_bytes,
+        direct_output_limits.max_inline_bytes.get(),
     ) {
         Ok(sink) => sink,
         Err(err) => {
@@ -4309,7 +4310,7 @@ fn run_review(
                         review_render_mode,
                         &renderer_id,
                         phase_when,
-                        direct_output_limits.max_inline_bytes,
+                        direct_output_limits.max_inline_bytes.get(),
                     )?;
                     let mut output = String::new();
                     let mut spawn_cfg = spawn_cfg;
@@ -4863,7 +4864,7 @@ fn run_todo(
                     render_mode,
                     &renderer_id,
                     phase_when,
-                    direct_output_limits.max_inline_bytes,
+                    direct_output_limits.max_inline_bytes.get(),
                 )?;
                 let outcome = dispatch_with_envelope(
                     kind,
@@ -5222,7 +5223,8 @@ mod tests {
         )?;
         let max_inline_bytes = LoomConfig::load(tmp.path().join("loom.toml"))?
             .direct_output_limits()
-            .max_inline_bytes;
+            .max_inline_bytes
+            .get();
         let output = Arc::new(Mutex::new(Vec::new()));
         let mut sink = open_review_sink_with_writer(
             &tmp.path().join(".loom/logs"),

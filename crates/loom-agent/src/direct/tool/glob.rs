@@ -97,7 +97,10 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     fn glob_with(dir: &TempDir) -> Glob {
-        Glob::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+        Glob::new(ToolContext::new(
+            dir.path().join("offload"),
+            usize::MAX.try_into().unwrap(),
+        ))
     }
 
     #[tokio::test]

@@ -286,7 +286,7 @@ pub struct MountSpec {
 /// does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputLimits {
-    pub max_inline_bytes: usize,
+    pub max_inline_bytes: crate::config::InlineByteLimit,
 }
 
 /// Per-session model override: pi RPC's `set_model { provider, modelId }`.
@@ -445,11 +445,7 @@ mod tests {
         }
     }
 
-    /// `model: None` is omitted from the on-disk JSON via
-    /// `#[serde(skip_serializing_if = "Option::is_none")]`. Wrappers that
-    /// pre-date the field added in lm-pkht8.* must continue to round-trip
-    /// the serialized fixture identically — the absence of `model` proves
-    /// the no-drift contract.
+    /// An absent model preserves the wire shape expected by older launchers.
     #[test]
     fn spawn_config_with_model_none_omits_model_key() {
         let cfg = sample_config(None);
@@ -811,7 +807,7 @@ mod tests {
     fn spawn_config_with_output_limits_some_round_trips() {
         let mut cfg = sample_config(None);
         cfg.output_limits = Some(OutputLimits {
-            max_inline_bytes: 16384,
+            max_inline_bytes: crate::config::InlineByteLimit::default(),
         });
         let json = serde_json::to_string(&cfg).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
@@ -820,7 +816,8 @@ mod tests {
         assert_eq!(
             back.output_limits
                 .expect("output_limits present")
-                .max_inline_bytes,
+                .max_inline_bytes
+                .get(),
             16384,
         );
     }

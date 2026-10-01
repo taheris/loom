@@ -639,9 +639,10 @@ session.
 **Permission prompt tool:** With `--permission-prompt-tool stdio`, Claude emits
 `control_request` events for tool permissions and expects `control_response` on
 stdin. Loom auto-approves tool calls because the container is sandboxed, but
-logs every approval at `info!` level with the tool name and a truncated input
-summary (first 200 chars). This provides an audit trail and makes unexpected
-tool types visible in logs.
+logs every decision at `info!` level with the tool name, request id, approval
+boolean, and an explicit `[REDACTED]` input marker. Arbitrary tool input is
+never included in the audit log, even in truncated form.
+[test](claude_permission_audit_redacts_secret_bearing_input)
 
 ```json
 {"type": "control_response", "id": "<request_id>", "approved": true}
@@ -836,7 +837,7 @@ tool to Direct is a `loom-agent` change, independent of the
 ### Direct Output Bounding
 
 Direct is the only backend whose tool implementations Loom owns: a
-tool's output flows `loom-agent::direct::tools` → `ToolOutput` → the
+tool's output flows `loom-agent::direct::tool` → `ToolOutput` → the
 `Conversation` transcript `loom-llm` manages on Loom's behalf, so a size
 cap can be applied **at the source**, before the bytes reach the
 agent's context. The Pi and Claude backends produce tool output inside
@@ -862,25 +863,45 @@ of the content:
   "total_bytes": 1234567,
   "total_lines": 9001,
   "head_lines": 412,
-  "head": "first 412 whole lines …\n[truncated: showing 412 of 9001 lines; full output at <path>; Read with offset 413 to continue]" }
+  "head_bytes": 16000,
+  "next_byte_offset": 16000,
+  "head": "first 412 whole lines …\n[truncated: showing 16000 bytes; full output at <path>; Read with byte_offset 16000 to continue]" }
 ```
 
-`head` is the longest whole-line prefix of the payload whose UTF-8 byte
-length stays within `max_inline_bytes` (a single line longer than the cap
-is cut at a UTF-8 character boundary, with `head_lines: 0`). Cutting on a
-line boundary lets the agent **resume cleanly**: `head_lines` is the line
-count of the head, so the agent recovers the tail by issuing `Read`
-against `path` with `offset = head_lines + 1`. All Direct tools emit
-valid UTF-8 (`Bash` via lossy conversion), so the offloaded file always
-round-trips back through `Read`. The head's marker is a bracketed
-truncation notice in the spirit of Grep's existing `[truncated at N
-matches]`. If the offload write itself fails, the tool degrades to a
+`head` begins with the longest whole-line prefix whose UTF-8 byte length
+stays within `max_inline_bytes`, including original LF/CRLF terminators.
+If the first line exceeds the cap, the prefix ends at a UTF-8 boundary and
+`head_lines` is zero. `head_bytes` counts only the returned content bytes,
+not the appended truncation marker; consumers append exactly those first
+`head_bytes` bytes when reconstructing output.
+
+`Read` accepts an additive zero-based `byte_offset`, exclusive with the
+existing one-based line `offset` and line `limit`. A byte offset outside the
+file or inside a UTF-8 scalar is a tool error. To continue any reference,
+read its `path` with `byte_offset = next_byte_offset`. The next cursor is
+relative to that file and advances by the actual consumed content bytes;
+repeated byte reads keep the same full-content reference and the configured
+cap. A final chunk under the cap is returned verbatim. The line API remains
+available for whole-line recovery: on a fresh reference with complete head
+lines, `offset = head_lines + 1` reads the tail. Both APIs preserve all
+original line-ending bytes, including the final newline. All Direct tools
+emit valid UTF-8 (`Bash` via lossy conversion). Valid UTF-8 offloads remain
+readable even when output contains NUL; ordinary files retain binary rejection.
+Read recognizes an offload only when its session-local content hash matches.
+[test](read_only_accepts_nul_in_verified_offload_files)
+[test](capped_byte_recovery_is_lossless)
+[test](read_rejects_invalid_or_ambiguous_byte_cursor)
+[test](line_slices_preserve_crlf_and_final_newline)
+
+The head's marker is a bracketed truncation notice in the spirit of Grep's
+existing `[truncated at N matches]`. If the offload write itself fails, the tool degrades to a
 plain inline truncation: the `head` followed by a **path-less** marker
 (`[truncated: showing N of M lines]`) and no offload reference — the same
 shape Grep emits at its match cap.
 
 `max_inline_bytes` bounds the `head` payload, not the whole reference:
-the `{ offloaded, path, total_bytes, total_lines, head_lines }` envelope
+the `{ offloaded, path, total_bytes, total_lines, head_lines, head_bytes,
+next_byte_offset }` envelope
 around `head` adds a small bounded overhead, so a reference puts slightly
 more than `max_inline_bytes` inline by that fixed wrapper cost. The cap
 is a budget for content, not a hard ceiling on the envelope.
@@ -942,7 +963,9 @@ worth doing.
 **Configuration.** `max_inline_bytes` is set by a top-level `[direct]`
 block in `loom.toml` (default 16384), symmetric with the `[claude]`
 block, and flows into the Direct runner via a `SpawnConfig.output_limits`
-field.
+field. Configuration and spawn deserialization reject caps below four bytes,
+so a valid cap can always admit the next UTF-8 scalar.
+[test](direct_rejects_sub_four_byte_caps_at_config_and_spawn_boundaries)
 
 ### Two-Axis Composition
 
@@ -1108,10 +1131,10 @@ the entrypoint run the wrong runtime.
   [test](direct_runner_emits_agent_event_jsonl_compatible_with_common_agent_events)
 - Direct registers exactly six tools by name: `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`
   [test](direct_runner_registers_canonical_six_tools)
-- Each Direct tool's impl lives in `loom-agent::direct::tools` — net-new code, not re-exported from any other crate
+- Each Direct tool's impl lives in `loom-agent::direct::tool` — net-new code, not re-exported from any other crate
   [check](cargo run -p loom-walk -- direct_tools_net_new)
 - Direct tools execute against the container's bind-mounted workspace; absolute paths under `/workspace/...` resolve inside the container
-  [test](direct_tools_read_against_container_workspace_mount)
+  [system](bash scripts/test-direct-workspace.sh)
 - `DoomLoopObserver` and `DuplicateResultObserver` are composed into the Conversation's sink by default in `loom-direct-runner`
   [test](direct_runner_composes_default_observers)
 - `loom-direct-runner` builds its `Conversation` from `SpawnConfig.observers` so `[agent.doom_loop] enabled = false` and `[agent.duplicate_result] enabled = false` disable the in-container observers
@@ -1122,10 +1145,14 @@ the entrypoint run the wrong runtime.
   [test](direct_cache_control_propagates_to_anthropic_request)
 - `DriverKind::TokenUsage` event emits on every completion within Direct sessions
   [test](direct_emits_token_usage_per_completion)
+- Direct emits tool, text, usage, and offload events live rather than replaying a completed tool loop
+  [test](direct_streams_tool_and_offload_events_before_next_completion)
+- A later provider failure does not discard already emitted Direct tool history
+  [test](direct_preserves_live_tool_history_when_later_completion_fails)
 
 ### Direct output bounding
 
-- `Read` whose returned content exceeds `max_inline_bytes` returns an `{ offloaded, path, total_bytes, total_lines, head_lines, head }` reference whose `head` is a whole-line prefix within the cap; the full payload is written to the offload file
+- `Read` whose returned content exceeds `max_inline_bytes` returns an `{ offloaded, path, total_bytes, total_lines, head_lines, head_bytes, next_byte_offset, head }` reference whose content prefix fits the cap; the full payload is written to the offload file
   [test](read_over_cap_offloads_full_payload_and_returns_head_reference)
 - The cap is measured on the raw UTF-8 byte length of the tool's content string (per stream for `Bash`), not the JSON-serialized size of `ToolOutput.content`
   [test](cap_measured_on_raw_utf8_byte_length_not_serialized)
@@ -1133,8 +1160,10 @@ the entrypoint run the wrong runtime.
   [test](bash_caps_streams_independently_keeps_exit_code_inline)
 - `Grep` and `Glob` string output exceeding `max_inline_bytes` is offloaded and replaced with a reference
   [test](grep_and_glob_offload_string_output_over_cap)
-- The agent recovers the tail by issuing `Read` against the offload `path` with `offset = head_lines + 1`, reconstructing the full original content (offload round-trips)
+- Whole-line offload heads round-trip through repeated capped `Read` calls with `offset = head_lines + 1`, reconstructing exclusively from returned content
   [test](offloaded_file_round_trips_through_read_via_head_lines_offset)
+- Byte continuation recovers oversized single lines and UTF-8 content without duplicating partial prefixes or losing line endings, with the same cap on every read
+  [test](byte_cursor_recovers_oversized_lines_and_exact_line_endings)
 - Two results with distinct content offload to distinct paths; the file name is a deterministic content hash for fixed input
   [test](distinct_content_offloads_to_distinct_deterministic_paths)
 - When the offload write fails, the tool degrades to an inline truncation (head + marker, no `path`) rather than erroring
@@ -1357,9 +1386,11 @@ the entrypoint run the wrong runtime.
     `max_inline_bytes` (the `[direct]` block, default 16384). Above the
     cap the tool writes the full payload to a content-addressed file under
     the per-session scratch offload directory and returns a
-    `{ offloaded, path, total_bytes, total_lines, head_lines, head }`
-    reference whose `head` is a whole-line prefix (so the agent resumes via
-    `Read` at `offset = head_lines + 1`); an offload-write failure degrades
+    `{ offloaded, path, total_bytes, total_lines, head_lines, head_bytes,
+    next_byte_offset, head }` reference. The bounded prefix preserves line
+    endings; oversized single lines use UTF-8-boundary byte continuation.
+    Recovery uses `Read` with `byte_offset = next_byte_offset`, or the line
+    API for complete heads; an offload-write failure degrades
     to an inline truncation marker. The cap is measured on the raw UTF-8
     byte length of the content string (per stream for `Bash`, which keeps
     `exit_code` inline and caps `stdout`/`stderr` independently); offload

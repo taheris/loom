@@ -132,7 +132,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             crate_src(root, "loom-events")
         }
         "direct_tools_net_new" => {
-            rs_files_recursive(&root.join("crates/loom-agent/src/direct/tools"))
+            rs_files_recursive(&root.join("crates/loom-agent/src/direct/tool"))
         }
         "newtype_identifiers" => crate_src(root, "loom-events"),
 

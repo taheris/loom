@@ -126,6 +126,7 @@ in
       };
       imagePiCodingAgent = wrixLinuxPkgs.pi-coding-agent;
       smokeMockPi = wrixLinuxPkgs.writeShellScriptBin "pi" ''
+        set -euo pipefail
         export MOCK_PI_SCENARIO=happy-path
         export LOOM_SMOKE_WORKER=1
         exec ${wrixLinuxPkgs.bash}/bin/bash ${../../tests/mock-pi/pi.sh} "$@"

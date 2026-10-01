@@ -35,7 +35,7 @@ pub use agent::{
 pub use agent_observer::{AgentObserversConfig, DoomLoopConfig, DuplicateResultConfig};
 pub use beads::BeadsConfig;
 pub use claude::ClaudeConfig;
-pub use direct::DirectConfig;
+pub use direct::{DirectConfig, InlineByteLimit, InvalidInlineByteLimit};
 pub use error::LoomConfigError;
 pub use logs::LogsConfig;
 pub use loom_section::{
@@ -702,7 +702,8 @@ agent.backend = "claude"
             spawn
                 .output_limits
                 .expect("output_limits set")
-                .max_inline_bytes,
+                .max_inline_bytes
+                .get(),
             16384,
         );
 
@@ -716,7 +717,8 @@ agent.backend = "claude"
             spawn
                 .output_limits
                 .expect("output_limits set")
-                .max_inline_bytes,
+                .max_inline_bytes
+                .get(),
             32768,
         );
         Ok(())

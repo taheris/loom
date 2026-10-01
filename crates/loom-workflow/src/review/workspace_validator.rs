@@ -504,7 +504,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
-        std::fs::create_dir_all(tmp.path().join("crates/loom-agent/src/direct/tools"))
+        std::fs::create_dir_all(tmp.path().join("crates/loom-agent/src/direct/tool"))
             .expect("direct tools dir");
         std::fs::create_dir_all(tmp.path().join("crates/loom-agent/src/pi")).expect("pi dir");
         std::fs::write(
@@ -518,8 +518,7 @@ mod tests {
         )
         .expect("write backend test");
         std::fs::write(
-            tmp.path()
-                .join("crates/loom-agent/src/direct/tools/read.rs"),
+            tmp.path().join("crates/loom-agent/src/direct/tool/read.rs"),
             "#[tokio::test]\nasync fn direct_tools_read_against_container_workspace_mount() {}\n",
         )
         .expect("write read test");

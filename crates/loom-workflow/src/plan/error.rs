@@ -34,6 +34,9 @@ pub enum PlanError {
     /// profile-image manifest lookup failed while resolving the plan phase
     Profile(#[from] ProfileError),
 
+    /// failed to load plan configuration
+    Config(#[from] loom_driver::config::LoomConfigError),
+
     /// direct backend cannot run interactive `loom plan`
     DirectInteractive,
 
