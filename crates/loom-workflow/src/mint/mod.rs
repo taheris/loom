@@ -3117,9 +3117,11 @@ mod tests {
 
     const PROFILE_CASES: &[(&[&str], &str)] = &[
         (&["agent"], "profile:rust"),
+        (&["events"], "profile:rust"),
         (&["gate"], "profile:rust"),
         (&["harness"], "profile:rust"),
         (&["llm"], "profile:rust"),
+        (&["skills"], "profile:rust"),
         (&["templates"], "profile:rust"),
         (&["tests"], "profile:rust"),
         (&["pre-commit"], "profile:base"),

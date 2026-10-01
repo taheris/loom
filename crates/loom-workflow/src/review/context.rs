@@ -70,7 +70,9 @@ pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
 /// rather than silently regressing into the old `profile:base` recurrence.
 pub fn default_profile_for_spec(spec: &SpecLabel) -> ProfileName {
     match spec.as_str() {
-        "harness" | "templates" | "agent" | "gate" | "llm" | "tests" => ProfileName::rust(),
+        "agent" | "events" | "gate" | "harness" | "llm" | "skills" | "templates" | "tests" => {
+            ProfileName::rust()
+        }
         _ => ProfileName::base(),
     }
 }
@@ -493,7 +495,16 @@ mod tests {
 
     #[test]
     fn default_profile_for_spec_returns_rust_for_cargo_bound_specs() {
-        for label in ["harness", "templates", "agent", "gate", "llm", "tests"] {
+        for label in [
+            "agent",
+            "events",
+            "gate",
+            "harness",
+            "llm",
+            "skills",
+            "templates",
+            "tests",
+        ] {
             assert_eq!(
                 default_profile_for_spec(&SpecLabel::new(label).unwrap()).as_str(),
                 "rust",
