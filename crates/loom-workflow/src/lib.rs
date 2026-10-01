@@ -11,7 +11,6 @@
 //! depending on `loom-driver` directly each time.
 
 pub mod agent;
-mod agent_input;
 mod event_log;
 pub mod gate_clarify;
 pub mod inbox;
@@ -22,6 +21,7 @@ pub mod mint;
 pub mod observer;
 mod pi_tui;
 pub mod plan;
+mod redaction;
 pub mod resolve;
 pub mod review;
 pub mod skill;

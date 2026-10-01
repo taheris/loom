@@ -30,9 +30,9 @@ use loom_events::{EnvelopeBuilder, InputKind, SessionScope, Source};
 use thiserror::Error;
 use tracing::{info, warn};
 
-use crate::agent_input::redact_agent_input;
 use crate::r#loop::{dolt_socket_mount, sccache_mount};
 use crate::pi_tui;
+use crate::redaction::redact_agent_input;
 use crate::skill::{SkillError, SkillPlan};
 use crate::spawn::container_workspace_path;
 

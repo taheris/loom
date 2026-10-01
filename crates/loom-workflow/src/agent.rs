@@ -31,9 +31,9 @@ use loom_events::{
 };
 use tracing::{error, info, trace, warn};
 
-use crate::agent_input::redact_agent_input;
 use crate::r#loop::{MISSING_AGENT_BINARY_CAUSE, SessionResult};
 use crate::observer::DefaultObserverChain;
+use crate::redaction::{Sink, redact_agent_input};
 
 /// Drive `B` through one full session: spawn, prompt, then consume events
 /// until `SessionComplete` arrives. Returns the resulting [`SessionOutcome`]
@@ -106,11 +106,12 @@ pub async fn run_agent<B: AgentBackend>(
 /// without a synthetic `bead_id`.
 pub async fn run_agent_classified<B: AgentBackend>(
     config: &SpawnConfig,
-    mut sink: Option<LogSink>,
+    sink: Option<LogSink>,
     mut observer: Option<&mut DefaultObserverChain>,
     mut text_capture: Option<&mut String>,
     mut envelope_builder: Option<loom_events::EnvelopeBuilder>,
 ) -> SessionResult {
+    let mut sink = sink.map(|sink| Sink::new(sink, config));
     let stall_window = config
         .stall_warn_interval
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_STALL_WARN_SECS));
@@ -157,7 +158,6 @@ pub async fn run_agent_classified<B: AgentBackend>(
         &mut envelope_builder,
         InputKind::InitialPrompt,
         &config.initial_prompt,
-        config,
     ) {
         let error_str = err.to_string();
         emit_protocol_failure_event(
@@ -243,7 +243,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
         if event.envelope().source == Source::Agent {
             first_event_seen = true;
         }
-        log_agent_event(&event);
+        log_agent_event(&event, config);
         if let AgentEvent::TextDelta { text, .. } = &event
             && let Some(buf) = text_capture.as_deref_mut()
         {
@@ -297,7 +297,6 @@ pub async fn run_agent_classified<B: AgentBackend>(
                             &mut envelope_builder,
                             InputKind::Steer,
                             &msg,
-                            config,
                         ) {
                             warn!(error = ?e, "agent input event emit failed before steer");
                             let error_str = format!("agent input event emit failed: {e}");
@@ -351,7 +350,6 @@ pub async fn run_agent_classified<B: AgentBackend>(
                         &mut envelope_builder,
                         InputKind::Repin,
                         &payload,
-                        config,
                     ) {
                         warn!(error = ?e, "agent input event emit failed before re-pin");
                         let error_str = format!("agent input event emit failed: {e}");
@@ -482,7 +480,7 @@ async fn prompt_with_stall_warn(
     msg: &str,
     stall_window: Duration,
     clock: &dyn Clock,
-    sink: &mut Option<LogSink>,
+    sink: &mut Option<Sink>,
     envelope_builder: &mut Option<EnvelopeBuilder>,
 ) -> Result<AgentSession<Active>, ProtocolError> {
     let fut = session.prompt(msg);
@@ -521,7 +519,7 @@ async fn next_event_with_stall_warn(
     session: &mut AgentSession<Active>,
     stall_window: Duration,
     clock: &dyn Clock,
-    sink: &mut Option<LogSink>,
+    sink: &mut Option<Sink>,
     envelope_builder: &mut Option<EnvelopeBuilder>,
 ) -> Result<Option<ParsedAgentEvent>, ProtocolError> {
     let next = session.next_event();
@@ -547,7 +545,7 @@ async fn next_event_with_stall_warn(
 }
 
 fn record_stall_watchdog_tick(
-    sink: &mut Option<LogSink>,
+    sink: &mut Option<Sink>,
     envelope_builder: &mut Option<EnvelopeBuilder>,
     phase: StallPhase,
     stall_window: Duration,
@@ -576,7 +574,7 @@ fn record_stall_watchdog_tick(
 }
 
 fn emit_stall_watchdog_event(
-    sink: &mut Option<LogSink>,
+    sink: &mut Option<Sink>,
     envelope_builder: &mut Option<EnvelopeBuilder>,
     phase: StallPhase,
     stall_window: Duration,
@@ -621,7 +619,7 @@ fn phase_envelope_builder() -> EnvelopeBuilder {
     )
 }
 
-fn finish_sink(sink: Option<LogSink>, outcome: BeadOutcome) {
+fn finish_sink(sink: Option<Sink>, outcome: BeadOutcome) {
     if let Some(mut s) = sink
         && let Err(e) = s.finish(outcome)
     {
@@ -630,7 +628,7 @@ fn finish_sink(sink: Option<LogSink>, outcome: BeadOutcome) {
 }
 
 fn emit_agent_start_event(
-    sink: &mut Option<LogSink>,
+    sink: &mut Option<Sink>,
     builder: &mut Option<EnvelopeBuilder>,
     config: &SpawnConfig,
 ) -> Result<(), ProtocolError> {
@@ -666,11 +664,10 @@ fn emit_agent_start_event(
 }
 
 fn emit_agent_input_event(
-    sink: &mut Option<LogSink>,
+    sink: &mut Option<Sink>,
     builder: &mut Option<EnvelopeBuilder>,
     input_kind: InputKind,
     text: &str,
-    config: &SpawnConfig,
 ) -> Result<(), ProtocolError> {
     let Some(sink) = sink.as_mut() else {
         return Ok(());
@@ -682,12 +679,11 @@ fn emit_agent_input_event(
         return Ok(());
     };
     let envelope = builder.build_with_source(Source::Driver);
-    let redacted = redact_agent_input(text, config);
     let event = AgentEvent::AgentInput {
         envelope,
         input_kind,
-        text: redacted.text,
-        redactions: redacted.redactions,
+        text: text.to_string(),
+        redactions: None,
     };
     sink.emit(&event)
         .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))
@@ -701,7 +697,7 @@ fn emit_agent_input_event(
 /// envelope builder is absent — tests and the legacy `run_agent` wrapper
 /// pass `None` and must not be required to wire driver events.
 fn emit_driver_event(
-    sink: Option<&mut LogSink>,
+    sink: Option<&mut Sink>,
     builder: Option<&mut EnvelopeBuilder>,
     kind: DriverKind,
     summary: &str,
@@ -828,7 +824,7 @@ const fn infra_session_result(first_event_seen: bool, error: String) -> SessionR
 }
 
 fn emit_spawn_failure_event(
-    sink: Option<&mut LogSink>,
+    sink: Option<&mut Sink>,
     builder: Option<&mut EnvelopeBuilder>,
     err: &ProtocolError,
     error: &str,
@@ -845,7 +841,7 @@ fn emit_spawn_failure_event(
 }
 
 fn emit_protocol_failure_event(
-    sink: Option<&mut LogSink>,
+    sink: Option<&mut Sink>,
     builder: Option<&mut EnvelopeBuilder>,
     first_event_seen: bool,
     err: &ProtocolError,
@@ -863,7 +859,7 @@ fn emit_protocol_failure_event(
 }
 
 fn emit_infra_failure_event(
-    sink: Option<&mut LogSink>,
+    sink: Option<&mut Sink>,
     builder: Option<&mut EnvelopeBuilder>,
     phase: InfraPhase,
     cause: InfraCause,
@@ -1007,8 +1003,8 @@ const fn is_non_streaming(event: &AgentEvent) -> bool {
     )
 }
 
-fn log_agent_event(event: &AgentEvent) {
-    let summary = summarize_event(event);
+fn log_agent_event(event: &AgentEvent, config: &SpawnConfig) {
+    let summary = redact_agent_input(&summarize_event(event), config).text;
     trace!(event = %summary, "agent event");
 }
 
@@ -1488,7 +1484,8 @@ mod tests {
     #[test]
     fn emit_driver_event_writes_one_jsonl_line_with_source_driver() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut sink, path) = open_test_sink(dir.path());
+        let (sink, path) = open_test_sink(dir.path());
+        let mut sink = Sink::new(sink, &sample_spawn_config(dir.path()));
         let mut b = builder();
         emit_driver_event(
             Some(&mut sink),
@@ -1644,7 +1641,8 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
     #[test]
     fn emit_driver_event_is_silent_noop_when_sink_or_builder_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut sink, path) = open_test_sink(dir.path());
+        let (sink, path) = open_test_sink(dir.path());
+        let mut sink = Sink::new(sink, &sample_spawn_config(dir.path()));
         let mut b = builder();
         emit_driver_event(
             None,
@@ -1893,6 +1891,101 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         assert!(!render.contains("sk-redact"), "{render:?}");
     }
 
+    #[tokio::test]
+    async fn backend_events_are_redacted_before_log_and_render() {
+        struct EchoBackend;
+        impl AgentBackend for EchoBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script_with_parser(
+                    r#"set -euo pipefail
+IFS= read -r prompt
+case "$prompt" in
+    *fixture-key-value*) ;;
+    *) exit 2 ;;
+esac
+printf '%s\n' \
+    '{"type":"text_delta","text":"assistant fixture-key-"}' \
+    '{"type":"text_delta","text":"value\nLOOM_COMPLETE\n"}' \
+    '{"type":"text_end"}' \
+    '{"type":"tool_call","id":"tc-1","tool":"Bash","params":{"command":"echo fixture-key-value","nested":[{"fixture-key-value":"fixture-launcher-value","count":3}]}}' \
+    '{"type":"tool_result","id":"tc-1","output":"result fixture-key-value","is_error":false}' \
+    '{"type":"driver_event","driver_kind":"offload","summary":"offload fixture-launcher-value","payload":{"detail":["fixture-key-value",true]}}' \
+    '{"type":"error","message":"error fixture-launcher-value"}' \
+    '{"type":"session_complete","exit_code":0,"cost_usd":0.25}'
+"#,
+                    Box::new(loom_agent::direct::backend::DirectParser),
+                )
+            }
+        }
+
+        for mode in [
+            loom_render::RenderMode::Pretty,
+            loom_render::RenderMode::Plain,
+            loom_render::RenderMode::VerbosePlain,
+            loom_render::RenderMode::Json,
+            loom_render::RenderMode::Raw,
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let render_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let renderer = loom_render::build_renderer(
+                mode,
+                Box::new(SharedBufferWriter {
+                    inner: render_buffer.clone(),
+                }),
+                BeadId::new("lm-emit").unwrap(),
+                false,
+                true,
+            );
+            let (sink, path) = open_test_sink_with_renderer(dir.path(), renderer);
+            let mut cfg = sample_spawn_config(dir.path());
+            cfg.initial_prompt = "send fixture-key-value unchanged".into();
+            cfg.env
+                .push(("ANTHROPIC_API_KEY".into(), "fixture-key-value".into()));
+            cfg.launcher_env
+                .push(("HOST_TOKEN".into(), "fixture-launcher-value".into()));
+            let mut captured = String::new();
+            let result = run_agent_classified::<EchoBackend>(
+                &cfg,
+                Some(sink),
+                None,
+                Some(&mut captured),
+                Some(builder()),
+            )
+            .await;
+            assert!(matches!(result, SessionResult::Complete(_)), "{result:?}");
+            assert_eq!(captured, "assistant fixture-key-value\nLOOM_COMPLETE\n");
+
+            let persisted = std::fs::read_to_string(&path).unwrap();
+            let transcript = String::from_utf8(render_buffer.lock().unwrap().clone()).unwrap();
+            for surface in [&persisted, &transcript] {
+                assert!(
+                    !surface.contains("fixture-key-value"),
+                    "{mode:?}: {surface}"
+                );
+                assert!(
+                    !surface.contains("fixture-launcher-value"),
+                    "{mode:?}: {surface}"
+                );
+                assert!(surface.contains("[REDACTED:api_key:ANTHROPIC_API_KEY]"));
+                assert!(surface.contains("[REDACTED:token:HOST_TOKEN]"));
+                assert!(surface.contains("LOOM_COMPLETE"), "{mode:?}: {surface:?}");
+            }
+            let events = read_jsonl(&path);
+            assert_eq!(events.len(), 11);
+            for (seq, event) in events.iter().enumerate() {
+                assert_eq!(event["seq"], seq);
+                assert_eq!(event["session_id"], "sess-emit");
+            }
+            let call = events
+                .iter()
+                .find(|event| event["kind"] == "tool_call")
+                .unwrap();
+            assert_eq!(call["params"]["nested"][0]["count"], 3);
+            assert_eq!(call["id"], "tc-1");
+            assert_eq!(events.last().unwrap()["cost_usd"], 0.25);
+        }
+    }
+
     fn sample_envelope() -> loom_events::EventEnvelope {
         loom_events::EventEnvelope {
             session_id: SessionId::new("sess-react").unwrap(),
@@ -1991,7 +2084,9 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
             .without_time()
             .finish();
         let dispatch = tracing::Dispatch::new(subscriber);
-        tracing::dispatcher::with_default(&dispatch, || log_agent_event(event));
+        let scratch = tempfile::tempdir().unwrap();
+        let config = sample_spawn_config(scratch.path());
+        tracing::dispatcher::with_default(&dispatch, || log_agent_event(event, &config));
         let bytes = buffer.lock().expect("not poisoned").clone();
         String::from_utf8(bytes).expect("utf-8 log output")
     }
@@ -2033,7 +2128,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         )
         .expect("open sink");
         let path = sink.log_path().to_path_buf();
-        let mut sink = Some(sink);
+        let mut sink = Some(Sink::new(sink, &sample_spawn_config(dir.path())));
         let mut b = Some(builder());
         let mut emitted = false;
         record_stall_watchdog_tick(

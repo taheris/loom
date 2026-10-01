@@ -467,6 +467,7 @@ not abort the run.
 4. **Security redaction.** Secret-bearing values must not be rendered or
    persisted by this event surface; required redaction is explicit in the
    transcript rather than silent omission.
+   [test](backend_events_are_redacted_before_log_and_render)
 5. **Forward compatibility.** New driver event kinds are additive on the wire;
    consumers render unknown kinds generically.
 6. **Small public dependency floor.** External consumers can depend on
