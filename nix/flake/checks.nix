@@ -481,6 +481,21 @@ _:
         wrixLauncher = fakeProfiledWrix;
         profileManifest = fakeProfileManifest;
       };
+      loom-wrapper-preserves-spaced-output-path =
+        pkgs.runCommand "loom-wrapper-preserves-spaced-output-path"
+          {
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+          }
+          ''
+            set -euo pipefail
+            (
+              out="$TMPDIR/loom output"
+              ${fakeLoomWrix.buildCommand}
+              [[ "$("$out/bin/loom" --version)" == "loom 0.0.0" ]]
+            )
+            touch "$out"
+          '';
+
       loom-wrix-uses-unprofiled-spawn-launcher =
         pkgs.runCommand "loom-wrix-uses-unprofiled-spawn-launcher" { }
           ''
@@ -504,6 +519,7 @@ _:
       checks = {
         inherit
           loom-gate-check
+          loom-wrapper-preserves-spaced-output-path
           loom-wrix-uses-unprofiled-spawn-launcher
           profile-manifest-keeps-runtime-path-context
           smoke-beads-fixture

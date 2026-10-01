@@ -147,8 +147,9 @@ in
         inherit (loomBuild.bin) meta;
       }
       ''
-        mkdir -p $out/bin
-        makeWrapper ${loomBuild.bin}/bin/loom $out/bin/loom \
+        set -euo pipefail
+        mkdir -p "$out/bin"
+        makeWrapper ${loomBuild.bin}/bin/loom "$out/bin/loom" \
           --prefix PATH : ${wrixLauncher}/bin:${spawnLauncher}/bin:${launcherRuntimePath} \
           --set-default LOOM_WRIX_BIN ${wrixLauncher}/bin/wrix \
           --set-default LOOM_WRIX_SPAWN_BIN ${spawnLauncher}/bin/wrix \
