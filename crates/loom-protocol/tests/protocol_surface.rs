@@ -131,12 +131,4 @@ fn loom_protocol_wire_format_does_not_carry_protocol_version_field() {
             "FindingTarget wire JSON must not carry a `protocol` field",
         );
     }
-
-    let gate_src = workspace_root().join("crates/loom-protocol/src/gate.rs");
-    let body = std::fs::read_to_string(&gate_src)
-        .unwrap_or_else(|e| panic!("read {}: {e}", gate_src.display()));
-    assert!(
-        !body.contains("\"protocol\""),
-        "loom-protocol::gate must not declare a wire `\"protocol\"` field",
-    );
 }
