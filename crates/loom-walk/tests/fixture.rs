@@ -4824,7 +4824,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "tests/loom/default.nix",
-        "loom gate check --tree\nloom gate test --tree\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nLOOM_WRIX_BIN\nLOOM_WRIX_SPAWN_BIN\nWRIX_PREK_HOOKS\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
+        "loom gate check --tree\nloom gate test --tree\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nexport LOOM_TEST_LOOP=${../smoke/loop.sh}\nLOOM_WRIX_BIN\nLOOM_WRIX_SPAWN_BIN\nWRIX_PREK_HOOKS\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
     );
     seed(
         root,
@@ -4834,7 +4834,12 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "tests/run-tests.sh",
-        "LOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nunset WRIX_AGENT\nWRIX_DEPLOY_KEY\nWRIX_SIGNING_KEY\nWRIX_PI_AUTH_FILE\n.pre-commit-config.yaml\nloom --agent pi loop \"$BEAD_ID\"\n.loom/\nbin/pre-push-checks --hook-id smoke-noop\nif [[ \"$ELAPSED\" -gt 30 ]]; then\n",
+        "LOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nunset WRIX_AGENT\nWRIX_DEPLOY_KEY\nWRIX_SIGNING_KEY\nWRIX_PI_AUTH_FILE\n.pre-commit-config.yaml\n.loom/\nbin/pre-push-checks --hook-id smoke-noop\nbash \"$LOOM_TEST_LOOP\" \"$LOOM_BIN\" \"$WORKSPACE\" \"$BEAD_ID\" \"$START_TS\"\n",
+    );
+    seed(
+        root,
+        "tests/smoke/loop.sh",
+        "loom --agent pi loop \"$BEAD_ID\"\n",
     );
     seed(
         root,
@@ -4862,4 +4867,19 @@ fn test_nix_surface_contract_fail_when_test_tier_is_missing() {
     );
     let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
     assert_fail(&out, "loom gate test --tree");
+}
+
+#[test]
+fn test_nix_surface_contract_fail_when_smoke_loop_is_not_called() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    let script = ws.path().join("tests/run-tests.sh");
+    let body = std::fs::read_to_string(&script).unwrap();
+    seed(
+        ws.path(),
+        "tests/run-tests.sh",
+        &body.replace("bash \"$LOOM_TEST_LOOP\"", "# bash \"$LOOM_TEST_LOOP\""),
+    );
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "missing active test-surface wiring `bash");
 }

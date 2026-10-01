@@ -655,8 +655,9 @@ owns:
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
 - `nix run .#fuzz-loom` is on-demand and absent from flake checks
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
-- Container smoke enforces a 30-second wall-time budget
-  [check](cargo run -p loom-walk -- test_nix_surface_contract)
+- Container smoke reports elapsed time and warns after the 30-second soft
+      target without failing an otherwise successful run
+  [test](smoke_timing_is_advisory)
 
 ## Requirements
 

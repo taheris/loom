@@ -167,6 +167,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             root.join("tests/default.nix"),
             root.join("tests/loom/default.nix"),
             root.join("tests/run-tests.sh"),
+            root.join("tests/smoke/loop.sh"),
         ],
         "phase_verdict_decide_called_from_production" => vec![
             root.join("crates/loom-workflow/src/loop/production.rs"),

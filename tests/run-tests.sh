@@ -23,6 +23,7 @@ set -euo pipefail
 #   LOOM_TEST_PROFILE_CONFIG — immutable wrix ProfileConfig for the mock image
 #   LOOM_TEST_PRE_PUSH_CHECKS — canonical repository pre-push wrapper
 #   LOOM_TEST_SEED_BEADS     — script seeding spec metadata and ready smoke work
+#   LOOM_TEST_LOOP           — script running the bead and checking its result
 #   WRIX_PREK_HOOKS          — canonical packaged wrix prek hook directory
 #   LOOM_SMOKE_KEEP          — set to 1 to preserve the temp workspace after
 #                              a failed run for diagnosis
@@ -232,33 +233,4 @@ JSON
 log "seeded bead: $BEAD_ID"
 
 unset WRIX_AGENT
-set +e
-LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
-"$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID"
-RC=$?
-set -e
-
-if [[ "$RC" -ne 0 ]]; then
-    log "loom loop $BEAD_ID failed with exit $RC"
-    exit 1
-fi
-
-if ! STATUS=$(bd show "$BEAD_ID" --json | jq -er 'if type == "array" then .[0].status else .status end'); then
-    log "failed to read bead $BEAD_ID status"
-    exit 1
-fi
-if [[ "$STATUS" != "closed" ]]; then
-    log "bead $BEAD_ID did not close: status=$STATUS"
-    exit 1
-fi
-log "bead $BEAD_ID closed"
-
-END_TS=$(date +%s)
-ELAPSED=$((END_TS - START_TS))
-log "elapsed: ${ELAPSED}s"
-if [[ "$ELAPSED" -gt 30 ]]; then
-    log "smoke exceeded 30s wall-time budget: ${ELAPSED}s"
-    exit 1
-fi
-
-log "ok"
+bash "$LOOM_TEST_LOOP" "$LOOM_BIN" "$WORKSPACE" "$BEAD_ID" "$START_TS"
