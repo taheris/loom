@@ -10,7 +10,7 @@
 
 use std::ffi::OsStr;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -20,6 +20,7 @@ use loom_driver::agent::{
 use loom_driver::clock::Clock;
 use loom_driver::clock::SystemClock;
 use loom_driver::process::OwnedChild as Child;
+use loom_driver::scratch::runtime;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use tokio::io::BufWriter;
@@ -29,15 +30,6 @@ use tracing::{debug, info, warn};
 use super::parser::ClaudeParser;
 use crate::skill::{NoNativeRegistrar, register_native_skills};
 use crate::{apply_launcher_env, resolve_wrix_spawn_bin};
-
-/// File name for the JSON-serialized [`SpawnConfig`] handed to
-/// `wrix spawn --spawn-config`. Written into the per-session
-/// [`SpawnConfig::scratch_dir`] alongside `repin.sh` and
-/// `claude-settings.json` (which the workflow code wrote earlier via
-/// [`ScratchSession`]).
-///
-/// [`ScratchSession`]: loom_driver::scratch::ScratchSession
-const SPAWN_CONFIG_FILE: &str = "spawn-config.json";
 
 /// Default grace period after observing a Claude `result`.
 ///
@@ -59,23 +51,25 @@ pub struct ClaudeBackend;
 impl AgentBackend for ClaudeBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
         register_native_skills::<NoNativeRegistrar>(config)?;
-        let spawn_config_path = prepare_runtime(config)?;
+        let spawn_config = prepare_runtime(config)?;
 
         let wrix_bin = resolve_wrix_spawn_bin(config);
         info!(
             wrix = %wrix_bin.to_string_lossy(),
-            spawn_config = %spawn_config_path.display(),
+            spawn_config = %spawn_config.path().display(),
             "claude backend spawn",
         );
 
         let mut cmd = build_wrix_command(
             &wrix_bin,
             config.profile_config.as_deref(),
-            &spawn_config_path,
+            spawn_config.path(),
         );
         apply_launcher_env(&mut cmd, &config.launcher_env);
 
-        spawn_session(cmd, config.denied_tools.clone())
+        let session = spawn_session(cmd, config.denied_tools.clone())?;
+        spawn_config.retain();
+        Ok(session)
     }
 
     async fn after_session_complete(
@@ -143,19 +137,19 @@ impl ClaudeBackend {
 /// Serialize the [`SpawnConfig`] into the per-session
 /// [`SpawnConfig::scratch_dir`] alongside the `repin.sh` and
 /// `claude-settings.json` files the workflow already wrote there via
-/// [`ScratchSession`]. Returns the path of the written spawn-config.
+/// [`ScratchSession`]. Failed startup removes the pending config.
 ///
 /// Module-public so tests can verify the side effects independently of
 /// the launcher exec (which would otherwise require the real `wrix`
 /// wrapper on `PATH`).
 ///
 /// [`ScratchSession`]: loom_driver::scratch::ScratchSession
-pub(crate) fn prepare_runtime(config: &SpawnConfig) -> Result<PathBuf, ProtocolError> {
+pub(crate) fn prepare_runtime(config: &SpawnConfig) -> Result<runtime::Config, ProtocolError> {
     let mut config = config.clone();
     if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
         upsert_env(&mut config.env, "CLAUDE_CODE_OAUTH_TOKEN", &token);
     }
-    write_spawn_config(&config.scratch_dir, &config)
+    runtime::Config::write(&config.scratch_dir, &config)
 }
 
 fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
@@ -213,14 +207,6 @@ fn build_wrix_command(
         .arg(spawn_config_path)
         .arg("--stdio");
     cmd
-}
-
-fn write_spawn_config(runtime_dir: &Path, config: &SpawnConfig) -> Result<PathBuf, ProtocolError> {
-    std::fs::create_dir_all(runtime_dir).map_err(ProtocolError::Io)?;
-    let path = runtime_dir.join(SPAWN_CONFIG_FILE);
-    let json = serde_json::to_vec(config)?;
-    std::fs::write(&path, json).map_err(ProtocolError::Io)?;
-    Ok(path)
 }
 
 /// Wait `grace` for the child to exit. `Ok(Some(code))` means the child
@@ -394,7 +380,8 @@ mod tests {
             launcher_env: Vec::new(),
         };
 
-        let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");
+        let spawn_config = prepare_runtime(&cfg).expect("prepare_runtime");
+        let spawn_config_path = spawn_config.path();
 
         // Scratch session pre-populated repin.sh + claude-settings.json.
         assert!(
@@ -405,12 +392,12 @@ mod tests {
             scratch.claude_settings().exists(),
             "claude-settings.json missing in scratch dir",
         );
-        assert_eq!(spawn_config_path, scratch.path().join(SPAWN_CONFIG_FILE));
+        assert_eq!(spawn_config_path, scratch.path().join("spawn-config.json"));
         assert!(spawn_config_path.exists());
 
         // Round-trip the spawn-config file to confirm it carries the input
         // unchanged — the wrapper consumes this exact JSON.
-        let bytes = std::fs::read(&spawn_config_path).expect("read");
+        let bytes = std::fs::read(spawn_config_path).expect("read");
         let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
         assert_eq!(decoded.image_ref, cfg.image_ref);
         assert_eq!(decoded.image_source, cfg.image_source);

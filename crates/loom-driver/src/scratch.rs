@@ -19,10 +19,14 @@
 //! carry-over for the next session. [`ScratchSession::close`] is the
 //! explicit teardown and is idempotent w.r.t. the [`Drop`] cleanup.
 
-use std::fs;
-use std::io;
+mod directory;
+pub mod runtime;
+
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use directory::Directory;
+use rustix::fs::Mode;
 use serde_json::json;
 
 use crate::config::Phase;
@@ -72,6 +76,9 @@ fn fallback_label_key(anchor_labels: &[SpecLabel], phase: Phase) -> String {
 #[derive(Debug)]
 pub struct ScratchSession {
     path: PathBuf,
+    parent: Directory,
+    directory: Directory,
+    name: PathBuf,
 }
 
 impl ScratchSession {
@@ -96,22 +103,42 @@ impl ScratchSession {
     ///
     /// Returns an error when scratch workspace state cannot be created or inspected.
     pub fn open(workspace: &Path, key: &str, prompt: &str, banner: &str) -> io::Result<Self> {
-        if key.is_empty() || key.contains('/') || key.contains("..") {
+        if key.is_empty() || key == "." || key.contains('/') || key.contains("..") {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("invalid scratch key: {key:?}"),
             ));
         }
-        let path = workspace.join(SCRATCH_SUBDIR).join(key);
-        if path.exists() {
-            fs::remove_dir_all(&path)?;
+        let workspace_dir = Directory::open(workspace)?;
+        let loom = workspace_dir.ensure_child(Path::new(".loom"))?;
+        let parent = loom.ensure_child(Path::new("scratch"))?;
+        parent.make_private()?;
+        let name = Path::new(key);
+        match parent.child(name) {
+            Ok(stale) => {
+                stale.make_private()?;
+                parent.remove_child(name, &stale)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
-        fs::create_dir_all(&path)?;
-        fs::write(path.join("prompt.txt"), prompt)?;
-        fs::write(path.join("scratch.md"), "")?;
-        write_repin_script(&path, banner)?;
-        write_claude_settings(&path, key)?;
-        Ok(Self { path })
+        let directory = parent.create_child(name)?;
+        let session = Self {
+            path: workspace.join(SCRATCH_SUBDIR).join(key),
+            parent,
+            directory,
+            name: PathBuf::from(key),
+        };
+        session
+            .directory
+            .create_file(Path::new("prompt.txt"), Mode::RUSR | Mode::WUSR)?
+            .write_all(prompt.as_bytes())?;
+        session
+            .directory
+            .create_file(Path::new("scratch.md"), Mode::RUSR | Mode::WUSR)?;
+        write_repin_script(&session.directory, banner)?;
+        write_claude_settings(&session.directory, key)?;
+        Ok(session)
     }
 
     /// Path to the scratch dir.
@@ -138,32 +165,23 @@ impl ScratchSession {
     ///
     /// Returns an error when scratch workspace state cannot be created or inspected.
     pub fn close(self) -> io::Result<()> {
-        let path = self.path.clone();
-        // Suppress the Drop-time cleanup so we own the error path.
-        std::mem::forget(self);
-        match fs::remove_dir_all(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        }
+        self.parent.remove_child(&self.name, &self.directory)
     }
 }
 
 impl Drop for ScratchSession {
     fn drop(&mut self) {
-        if let Err(e) = fs::remove_dir_all(&self.path)
-            && e.kind() != io::ErrorKind::NotFound
-        {
+        if let Err(e) = self.parent.remove_child(&self.name, &self.directory) {
             tracing::warn!(
                 path = %self.path.display(),
-                error = %e,
+                error = ?e,
                 "scratch dir cleanup failed",
             );
         }
     }
 }
 
-fn write_repin_script(dir: &Path, banner: &str) -> io::Result<()> {
+fn write_repin_script(dir: &Directory, banner: &str) -> io::Result<()> {
     let banner_lit = bash_single_quote(banner);
     let script = format!(
         "#!/usr/bin/env bash\n\
@@ -176,12 +194,11 @@ fn write_repin_script(dir: &Path, banner: &str) -> io::Result<()> {
            cat \"$here/scratch.md\"\n\
          }} | jq -Rs '{{hookSpecificOutput:{{hookEventName:\"SessionStart\",additionalContext:.}}}}'\n",
     );
-    let path = dir.join("repin.sh");
-    fs::write(&path, script)?;
-    set_executable(&path)
+    dir.create_file(Path::new("repin.sh"), Mode::RWXU)?
+        .write_all(script.as_bytes())
 }
 
-fn write_claude_settings(dir: &Path, key: &str) -> io::Result<()> {
+fn write_claude_settings(dir: &Directory, key: &str) -> io::Result<()> {
     let script_path = Path::new(SCRATCH_SUBDIR).join(key).join("repin.sh");
     let settings = json!({
         "hooks": {
@@ -199,20 +216,8 @@ fn write_claude_settings(dir: &Path, key: &str) -> io::Result<()> {
         }
     });
     let body = serde_json::to_string_pretty(&settings).map_err(io::Error::other)?;
-    fs::write(dir.join("claude-settings.json"), body)
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(path, perms)
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path) -> io::Result<()> {
-    Ok(())
+    dir.create_file(Path::new("claude-settings.json"), Mode::RUSR | Mode::WUSR)?
+        .write_all(body.as_bytes())
 }
 
 /// Single-quote a string for safe inclusion in a bash script. A literal
@@ -235,6 +240,7 @@ fn bash_single_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     const PLANNING_INTERVIEW_PROMPT: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -311,6 +317,128 @@ mod tests {
     }
 
     #[test]
+    fn scratch_directories_are_owner_only_from_creation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let session =
+            ScratchSession::open(workspace.path(), "private", "prompt", "banner").unwrap();
+        for path in [session.path(), session.path().parent().unwrap()] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+                0o700
+            );
+        }
+    }
+
+    #[test]
+    fn scratch_setup_rejects_symlink_components_without_touching_targets() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        for component in [".loom", ".loom/scratch", ".loom/scratch/key"] {
+            let workspace = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir().unwrap();
+            fs::write(target.path().join("sentinel"), "untouched").unwrap();
+            fs::set_permissions(target.path(), fs::Permissions::from_mode(0o755)).unwrap();
+            let path = workspace.path().join(component);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            symlink(target.path(), &path).unwrap();
+            assert!(ScratchSession::open(workspace.path(), "key", "prompt", "banner").is_err());
+            assert_eq!(
+                fs::read_to_string(target.path().join("sentinel")).unwrap(),
+                "untouched"
+            );
+            assert_eq!(fs::read_dir(target.path()).unwrap().count(), 1);
+            assert_eq!(
+                fs::metadata(target.path()).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+            assert_eq!(fs::read_link(path).unwrap(), target.path());
+        }
+    }
+
+    #[test]
+    fn scratch_setup_rejects_writable_ancestors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let loom = workspace.path().join(".loom");
+        fs::create_dir(&loom).unwrap();
+        fs::set_permissions(&loom, fs::Permissions::from_mode(0o777)).unwrap();
+        let error = ScratchSession::open(workspace.path(), "key", "prompt", "banner").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(!loom.join("scratch").exists());
+    }
+
+    #[test]
+    fn scratch_setup_rejects_existing_file_as_session_directory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join(SCRATCH_SUBDIR).join("key");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "untouched").unwrap();
+        assert!(ScratchSession::open(workspace.path(), "key", "prompt", "banner").is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "untouched");
+    }
+
+    #[test]
+    fn scratch_cleanup_rejects_replaced_session_directory() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        fs::write(target.path().join("sentinel"), "untouched").unwrap();
+        let session = ScratchSession::open(workspace.path(), "key", "prompt", "banner").unwrap();
+        let path = session.path().to_path_buf();
+        fs::rename(&path, path.with_extension("moved")).unwrap();
+        symlink(target.path(), &path).unwrap();
+        assert!(session.close().is_err());
+        assert_eq!(
+            fs::read_to_string(target.path().join("sentinel")).unwrap(),
+            "untouched"
+        );
+        assert_eq!(fs::read_link(path).unwrap(), target.path());
+    }
+
+    #[test]
+    fn scratch_cleanup_is_anchored_when_parent_path_is_replaced() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        fs::create_dir(target.path().join("key")).unwrap();
+        fs::write(target.path().join("key/sentinel"), "untouched").unwrap();
+        let session = ScratchSession::open(workspace.path(), "key", "prompt", "banner").unwrap();
+        let parent = session.path().parent().unwrap().to_path_buf();
+        let moved = parent.with_extension("moved");
+        fs::rename(&parent, &moved).unwrap();
+        symlink(target.path(), &parent).unwrap();
+        session.close().unwrap();
+        assert!(!moved.join("key").exists());
+        assert_eq!(
+            fs::read_to_string(target.path().join("key/sentinel")).unwrap(),
+            "untouched"
+        );
+    }
+
+    #[test]
+    fn stale_scratch_cleanup_does_not_follow_nested_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        fs::write(target.path().join("sentinel"), "untouched").unwrap();
+        let path = workspace.path().join(SCRATCH_SUBDIR).join("key");
+        fs::create_dir_all(path.join("offload")).unwrap();
+        symlink(target.path(), path.join("offload/link")).unwrap();
+        let session = ScratchSession::open(workspace.path(), "key", "prompt", "banner").unwrap();
+        assert!(!session.path().join("offload").exists());
+        assert_eq!(
+            fs::read_to_string(target.path().join("sentinel")).unwrap(),
+            "untouched"
+        );
+    }
+
+    #[test]
     fn open_clears_leftover_dir_from_prior_session() {
         let workspace = tempfile::tempdir().unwrap();
         let dir = workspace.path().join(SCRATCH_SUBDIR).join("lm-1");
@@ -355,7 +483,7 @@ mod tests {
     #[test]
     fn invalid_keys_rejected() {
         let workspace = tempfile::tempdir().unwrap();
-        for bad in ["", "a/b", "..", "../escape"] {
+        for bad in ["", ".", "a/b", "..", "../escape"] {
             let err = ScratchSession::open(workspace.path(), bad, "p", "b").expect_err(bad);
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         }

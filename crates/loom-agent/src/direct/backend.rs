@@ -17,6 +17,7 @@ use loom_driver::agent::{
     AgentBackend, AgentSession, Idle, JsonlReader, LineParse, ParsedLine, ProtocolError,
     SpawnConfig,
 };
+use loom_driver::scratch::runtime;
 use loom_events::identifier::ToolCallId;
 use loom_events::{DriverEventPayload, DriverKind, ParsedAgentEvent};
 
@@ -27,11 +28,6 @@ use tokio::io::BufWriter;
 use tokio::process::Command;
 use tracing::info;
 
-/// File name for the JSON-serialized [`SpawnConfig`] handed to `wrix
-/// spawn --spawn-config`. Written into the per-session
-/// [`SpawnConfig::scratch_dir`]; the wrapper reads it back to materialize
-/// the container.
-const SPAWN_CONFIG_FILE: &str = "spawn-config.json";
 const CONTAINER_WORKSPACE: &str = "/workspace";
 
 /// Zero-sized marker for the Direct backend.
@@ -53,22 +49,24 @@ pub struct DirectBackend;
 impl AgentBackend for DirectBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
         register_native_skills::<NoNativeRegistrar>(config)?;
-        let spawn_config_path = prepare_runtime(config)?;
+        let spawn_config = prepare_runtime(config)?;
 
         let wrix_bin = resolve_wrix_spawn_bin(config);
         info!(
             wrix = %wrix_bin.to_string_lossy(),
-            spawn_config = %spawn_config_path.display(),
+            spawn_config = %spawn_config.path().display(),
             "direct backend spawn",
         );
 
         let mut cmd = build_wrix_command(
             &wrix_bin,
             config.profile_config.as_deref(),
-            &spawn_config_path,
+            spawn_config.path(),
         );
         apply_launcher_env(&mut cmd, &config.launcher_env);
-        spawn_session(cmd)
+        let session = spawn_session(cmd)?;
+        spawn_config.retain();
+        Ok(session)
     }
 }
 
@@ -103,18 +101,10 @@ pub(crate) fn build_wrix_command(
 ///
 /// Module-public so tests can verify the side effects independently of
 /// the launcher exec.
-pub(crate) fn prepare_runtime(config: &SpawnConfig) -> Result<PathBuf, ProtocolError> {
-    write_spawn_config(&config.scratch_dir, config)
-}
-
-fn write_spawn_config(runtime_dir: &Path, config: &SpawnConfig) -> Result<PathBuf, ProtocolError> {
-    std::fs::create_dir_all(runtime_dir).map_err(ProtocolError::Io)?;
-    let path = runtime_dir.join(SPAWN_CONFIG_FILE);
+pub(crate) fn prepare_runtime(config: &SpawnConfig) -> Result<runtime::Config, ProtocolError> {
     let mut runner_config = config.clone();
     runner_config.scratch_dir = container_workspace_path(&config.workspace, &config.scratch_dir);
-    let json = serde_json::to_vec(&runner_config)?;
-    std::fs::write(&path, json).map_err(ProtocolError::Io)?;
-    Ok(path)
+    runtime::Config::write(&config.scratch_dir, &runner_config)
 }
 
 fn container_workspace_path(host_workspace: &Path, host_path: &Path) -> PathBuf {
@@ -366,15 +356,19 @@ mod tests {
 
     #[test]
     fn prepare_runtime_writes_spawn_config_into_scratch_dir() {
-        let scratch = tempfile::tempdir().expect("tempdir");
+        let scratch = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .expect("tempdir");
         let cfg = sample_config(scratch.path().to_path_buf());
 
-        let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");
+        let spawn_config = prepare_runtime(&cfg).expect("prepare_runtime");
+        let spawn_config_path = spawn_config.path();
 
-        assert_eq!(spawn_config_path, scratch.path().join(SPAWN_CONFIG_FILE));
+        assert_eq!(spawn_config_path, scratch.path().join("spawn-config.json"));
         assert!(spawn_config_path.exists());
 
-        let bytes = std::fs::read(&spawn_config_path).expect("read");
+        let bytes = std::fs::read(spawn_config_path).expect("read");
         let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
         assert_eq!(decoded.image_ref, cfg.image_ref);
         assert_eq!(decoded.image_source, cfg.image_source);
@@ -384,7 +378,10 @@ mod tests {
 
     #[test]
     fn prepare_runtime_serializes_observer_config_for_runner() {
-        let scratch = tempfile::tempdir().expect("tempdir");
+        let scratch = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .expect("tempdir");
         let mut cfg = sample_config(scratch.path().to_path_buf());
         cfg.observers = AgentObserversConfig {
             doom_loop: DoomLoopConfig {
@@ -397,9 +394,9 @@ mod tests {
             },
         };
 
-        let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");
+        let spawn_config = prepare_runtime(&cfg).expect("prepare_runtime");
 
-        let bytes = std::fs::read(&spawn_config_path).expect("read");
+        let bytes = std::fs::read(spawn_config.path()).expect("read");
         let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
         assert_eq!(decoded.observers, cfg.observers);
     }
@@ -407,14 +404,21 @@ mod tests {
     #[test]
     fn prepare_runtime_serializes_container_visible_scratch_dir_for_runner() {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
-        let scratch_dir = workspace.path().join(".loom/scratch/lm-direct");
-        let mut cfg = sample_config(scratch_dir.clone());
+        let scratch = loom_driver::scratch::ScratchSession::open(
+            workspace.path(),
+            "lm-direct",
+            "hello",
+            "test",
+        )
+        .expect("scratch");
+        let scratch_dir = scratch.path();
+        let mut cfg = sample_config(scratch_dir.to_path_buf());
         cfg.workspace = workspace.path().to_path_buf();
 
-        let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");
+        let spawn_config = prepare_runtime(&cfg).expect("prepare_runtime");
 
-        assert_eq!(spawn_config_path, scratch_dir.join(SPAWN_CONFIG_FILE));
-        let bytes = std::fs::read(&spawn_config_path).expect("read");
+        assert_eq!(spawn_config.path(), scratch_dir.join("spawn-config.json"));
+        let bytes = std::fs::read(spawn_config.path()).expect("read");
         let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
         assert_eq!(
             decoded.scratch_dir,
@@ -464,8 +468,11 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         permissions.set_mode(0o755);
         fs::set_permissions(&launcher, permissions).expect("chmod fake wrix");
 
-        let scratch_dir = root.path().join("scratch");
-        let mut cfg = sample_config(scratch_dir.clone());
+        let scratch =
+            loom_driver::scratch::ScratchSession::open(root.path(), "direct", "hello", "test")
+                .expect("scratch");
+        let scratch_dir = scratch.path();
+        let mut cfg = sample_config(scratch_dir.to_path_buf());
         cfg.wrix_launcher = Some(launcher);
         cfg.launcher_env = vec![
             ("WRIX_AGENT".into(), "direct".into()),
@@ -495,7 +502,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         assert!(status.success());
 
         let args = fs::read_to_string(&argv_log).expect("read argv log");
-        let expected_spawn_config = scratch_dir.join(SPAWN_CONFIG_FILE);
+        let expected_spawn_config = scratch_dir.join("spawn-config.json");
         assert_eq!(
             args.lines().collect::<Vec<_>>(),
             vec![

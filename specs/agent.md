@@ -371,12 +371,21 @@ requires them. Variable names are logged at `info!` level during
 spawn; secret values are never logged. The closed-set `WRIX_AGENT`
 value is non-secret and is logged as spawn diagnostics.
 
+All three backends create `spawn-config.json` exclusively with mode `0600`
+inside the owner-only (`0700`) session scratch directory. Directory setup
+rejects symlink components and ancestors that other users can replace;
+existing config files or symlinks are rejected without modifying their targets.
+The scratch owner retains the file until launcher and runner teardown, then
+removes it. Failed or cancelled startup removes the pending config so retry
+can create it exclusively again. The launcher receives the host path; Direct's
+serialized scratch path remains container-visible.
+
 ### Host-to-Container Communication
 
 ```
 loom (host)                                            container
     │                                                       │
-    ├─ serialize SpawnConfig → /tmp/loom-<id>.json          │
+    ├─ SpawnConfig → private scratch/spawn-config.json       │
     ├─ set launcher env: WRIX_AGENT=<runtime>, keys…        │
     ├─ wrix --profile-config <file> spawn --spawn-config <file> --stdio
     │   └─ exec podman run [no TTY, stdio piped] ─►  entrypoint.sh
@@ -991,6 +1000,28 @@ the entrypoint run the wrong runtime.
   [test](agent_event_payload_fields_match_spec)
 - `SpawnConfig` struct captures image_ref, image_source, image_source_kind, workspace, env, initial_prompt, agent_args, scratch_dir, and omits launcher/ProfileConfig-only host fields from JSON
   [test](spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
+- Pi spawn config is private, uses the host launcher path, and is removed with the scratch session
+  [test](pi_spawn_config_is_private_mapped_and_scratch_owned)
+- Claude spawn config is private, uses the host launcher path, and is removed with the scratch session
+  [test](claude_spawn_config_is_private_mapped_and_scratch_owned)
+- Direct spawn config is private, preserves host/runner path mapping, and is removed with the scratch session
+  [test](direct_spawn_config_is_private_mapped_and_scratch_owned)
+- Scratch setup rejects symlink components without modifying their targets
+  [test](scratch_setup_rejects_symlink_components_without_touching_targets)
+- Scratch setup rejects non-sticky ancestors writable by other users
+  [test](scratch_setup_rejects_writable_ancestors)
+- All backends reject existing spawn configs rather than overwriting them
+  [test](all_backends_reject_existing_config_without_overwriting)
+- All backends reject spawn-config symlinks without modifying their targets
+  [test](all_backends_reject_config_symlinks_without_modifying_targets)
+- All backends remove pending configs on exec failure and allow retry
+  [test](all_backends_remove_config_on_exec_failure_and_allow_retry)
+- Pi handshake failure removes the pending config and allows retry
+  [test](pi_handshake_failure_removes_config_and_allows_retry)
+- Cancelled Pi startup removes the pending config
+  [test](cancelled_pi_startup_removes_pending_config)
+- All backends require private, non-symlink scratch directories before writing credentials
+  [test](all_backends_require_private_nonsymlink_scratch_directories)
 - `SpawnConfig` defaults absent Direct observer config to enabled
   [test](spawn_config_with_default_observers_omits_field)
 - `SpawnConfig` serializes non-default Direct observer config

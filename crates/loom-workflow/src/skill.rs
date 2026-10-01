@@ -293,7 +293,9 @@ mod tests {
     #[tokio::test]
     async fn skill_registration_policy_auto_and_prompt() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let scratch = tempfile::tempdir().expect("scratch");
+        let scratch =
+            loom_driver::scratch::ScratchSession::open(workspace.path(), "auto", "", "test")
+                .expect("scratch");
         let calls = workspace.path().join("calls");
         let wrix = install_probe_wrix(workspace.path(), &calls);
         let profile = ProfileName::new("rust").unwrap();
@@ -321,6 +323,10 @@ mod tests {
             .await
             .expect("auto prompt disclosure reaches real backend spawn");
         drop(auto_session);
+        scratch.close().expect("close auto scratch");
+        let scratch =
+            loom_driver::scratch::ScratchSession::open(workspace.path(), "prompt", "", "test")
+                .expect("scratch");
 
         let prompt_policy = SkillsConfig {
             registration: SkillRegistration::Prompt,

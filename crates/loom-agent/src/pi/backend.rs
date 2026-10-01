@@ -21,9 +21,8 @@
 
 use std::ffi::OsStr;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use loom_driver::agent::{
@@ -31,6 +30,7 @@ use loom_driver::agent::{
     ProtocolError, SpawnConfig, ThinkingLevel,
 };
 use loom_driver::clock::{Clock, SystemClock};
+use loom_driver::scratch::runtime;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{ChildStderr, ChildStdin, Command};
@@ -74,10 +74,6 @@ const WRIX_CONTAINER_START_MARKERS: &[&str] = &["Starting container", "Network m
 /// from the Pi probe budget: a cold image load may be slow, but it is not an
 /// unresponsive Pi RPC process.
 const WRIX_CONTAINER_START_TIMEOUT_SECS: u64 = 600;
-
-/// Counter that distinguishes simultaneous spawn-config files inside the
-/// same loom process. The pid component handles cross-process uniqueness.
-static SPAWN_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Zero-sized marker for the pi-mono RPC backend.
 ///
@@ -132,14 +128,14 @@ impl PiBackend {
         agent_end_mode: AgentEndMode,
     ) -> Result<AgentSession<Idle>, ProtocolError> {
         register_native_skills::<NoNativeRegistrar>(config)?;
-        let spawn_config_path = write_spawn_config(config)?;
+        let spawn_config = runtime::Config::write(&config.scratch_dir, config)?;
 
         let handshake_budget = config
             .handshake_timeout
             .unwrap_or_else(|| Duration::from_secs(DEFAULT_HANDSHAKE_TIMEOUT_SECS));
         info!(
             wrix = %wrix_bin.to_string_lossy(),
-            spawn_config = %spawn_config_path.display(),
+            spawn_config = %spawn_config.path().display(),
             handshake_timeout_secs = handshake_budget.as_secs(),
             "pi backend spawn",
         );
@@ -147,14 +143,14 @@ impl PiBackend {
         let mut cmd = build_wrix_command(
             wrix_bin,
             config.profile_config.as_deref(),
-            &spawn_config_path,
+            spawn_config.path(),
         );
         apply_launcher_env(&mut cmd, &config.launcher_env);
         // Needed for the stderr readiness boundary below. The marker is
         // emitted by wrix after image load/staging and before `podman run`.
         cmd.env("WRIX_VERBOSE", "1");
 
-        spawn_with_handshake_after_wrix_start(
+        let session = spawn_with_handshake_after_wrix_start(
             cmd,
             config.model.as_ref(),
             config.thinking_level,
@@ -162,7 +158,9 @@ impl PiBackend {
             &SystemClock::new(),
             agent_end_mode,
         )
-        .await
+        .await?;
+        spawn_config.retain();
+        Ok(session)
     }
 }
 
@@ -661,25 +659,6 @@ fn validate_state_probe(resp: &PiResponse) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-/// Serialize `config` as JSON and write it to a uniquely-named tempfile
-/// under the system temp dir. The path is handed to `wrix spawn
-/// --spawn-config`; the wrapper reads it back and ignores any unknown
-/// fields (`model` is consumed by the host-side backend, not the wrapper).
-fn write_spawn_config(config: &SpawnConfig) -> Result<PathBuf, ProtocolError> {
-    let dir = std::env::temp_dir();
-    let pid = std::process::id();
-    let counter = SPAWN_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("loom-{pid}-{counter}.json"));
-    write_spawn_config_to(&path, config)?;
-    Ok(path)
-}
-
-fn write_spawn_config_to(path: &Path, config: &SpawnConfig) -> Result<(), ProtocolError> {
-    let json = serde_json::to_vec(config)?;
-    std::fs::write(path, json).map_err(ProtocolError::Io)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,11 +725,15 @@ mod tests {
     }
 
     async fn spawn_from_phase_config(config_toml: &str, mock_mode: &str) -> AgentSession<Idle> {
-        let wrix_dir = tempfile::tempdir().expect("tempdir");
+        let wrix_dir = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .expect("tempdir");
         let wrix = install_wrix_pi_shim(wrix_dir.path());
         let cfg = LoomConfig::from_toml_str(config_toml).expect("parse config");
         let selection = cfg.agent_for(Phase::Loop);
         let mut spawn = sample_config(None);
+        spawn.scratch_dir = wrix_dir.path().to_path_buf();
         spawn.handshake_timeout = Some(TEST_HANDSHAKE_BUDGET);
         spawn.launcher_env = vec![
             (
@@ -838,12 +821,16 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_through_wrix_accepts_entrypoint_network_marker() {
-        let wrix_dir = tempfile::tempdir().expect("tempdir");
+        let wrix_dir = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .expect("tempdir");
         let wrix = install_wrix_pi_shim_with_startup_line(
             wrix_dir.path(),
             "Network mode: open (local-network baseline enforced; firewall=nft)",
         );
         let mut spawn = sample_config(None);
+        spawn.scratch_dir = wrix_dir.path().to_path_buf();
         spawn.handshake_timeout = Some(TEST_HANDSHAKE_BUDGET);
         spawn.launcher_env = vec![
             (
@@ -894,12 +881,17 @@ mod tests {
 
     #[test]
     fn write_spawn_config_round_trips_through_json() {
-        let cfg = sample_config(Some(ModelSelection {
+        let scratch = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .expect("scratch");
+        let mut cfg = sample_config(Some(ModelSelection {
             provider: "deepseek".into(),
             model_id: "deepseek-v3".into(),
         }));
-        let path = write_spawn_config(&cfg).expect("write");
-        let bytes = std::fs::read(&path).expect("read");
+        cfg.scratch_dir = scratch.path().to_path_buf();
+        let file = runtime::Config::write(&cfg.scratch_dir, &cfg).expect("write");
+        let bytes = std::fs::read(file.path()).expect("read");
         let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
         assert_eq!(decoded.image_ref, cfg.image_ref);
         assert_eq!(decoded.image_source, cfg.image_source);
@@ -907,7 +899,6 @@ mod tests {
         let model = decoded.model.expect("model present");
         assert_eq!(model.provider, "deepseek");
         assert_eq!(model.model_id, "deepseek-v3");
-        let _ = std::fs::remove_file(&path);
     }
 
     // -- test_pi_startup_probe --------------------------------------------

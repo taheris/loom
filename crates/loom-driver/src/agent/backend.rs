@@ -14,7 +14,7 @@ use super::session::{Active, AgentSession, Idle};
 /// Configuration `loom` hands to `wrix spawn` describing how to launch
 /// the per-bead container and what initial agent state to install.
 ///
-/// Serialized to a JSON file (`/tmp/loom-<id>.json`) and read back by
+/// Serialized to a private JSON file in the session scratch directory and read back by
 /// `wrix spawn --spawn-config <file>` — this is the single stable
 /// boundary between loom and the wrapper. `env` is an explicit allowlist;
 /// the wrapper never inherits the host environment wholesale.
@@ -88,7 +88,7 @@ pub struct SpawnConfig {
     pub event_metadata: Option<AgentStartMetadata>,
     /// Pre-populated `.loom/scratch/<key>/` for this session. Owned
     /// by the workflow code through a [`ScratchSession`] guard whose
-    /// lifetime spans the spawn; backends read `repin.sh` and
+    /// lifetime spans all launcher and runner consumers; backends read `repin.sh` and
     /// `claude-settings.json` from here and write their own
     /// `spawn-config.json` alongside. Spec: `harness.md` § Compaction
     /// Recovery.
@@ -188,7 +188,7 @@ pub struct SpawnConfig {
     /// never reaches the wrapper's spawn-config JSON — it is applied to the
     /// child process environment by the backend before `wrix spawn` runs,
     /// and keeping it out of the on-disk JSON avoids leaking host key paths
-    /// into a world-readable file.
+    /// into the container-facing config.
     #[serde(skip)]
     pub launcher_env: Vec<(String, String)>,
 }
