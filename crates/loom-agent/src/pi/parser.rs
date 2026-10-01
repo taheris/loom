@@ -1205,12 +1205,30 @@ mod tests {
 
     #[test]
     fn malformed_json_line_is_skipped_and_stream_continues() {
+        let log = tempfile::NamedTempFile::new().unwrap();
+        let writer = log.reopen().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || writer.try_clone().unwrap())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
         let parser = PiParser::new();
-        let malformed = parser
-            .parse_line("not-json")
-            .expect("malformed JSON line is skipped");
-        assert!(malformed.events.is_empty());
-        assert!(malformed.response.is_none());
+        for line in ["not-json", r#"{"type": "message_del"#] {
+            let malformed = parser
+                .parse_line(line)
+                .expect("malformed JSON line is skipped");
+            assert!(malformed.events.is_empty());
+            assert!(malformed.response.is_none());
+        }
+        let captured = std::fs::read_to_string(log.path()).unwrap();
+        assert_eq!(captured.matches("WARN").count(), 2, "{captured}");
+        assert_eq!(
+            captured.matches("skipping malformed line").count(),
+            2,
+            "{captured}",
+        );
 
         let valid = parser
             .parse_line(
@@ -1223,41 +1241,67 @@ mod tests {
                 text: "after malformed line".to_string(),
             }],
         );
+        assert!(valid.response.is_none());
+    }
+
+    #[test]
+    fn missing_event_discriminator_returns_invalid_json() {
+        assert!(matches!(
+            parse_err(r#"{"foo":42}"#),
+            ProtocolError::InvalidJson(_),
+        ));
+    }
+
+    #[test]
+    fn invalid_known_message_payload_returns_invalid_json() {
+        for line in [
+            r#"{"type":"message_update","assistantMessageEvent":42}"#,
+            r#"{"type":"response","id":"r1","command":"prompt","success":"yes"}"#,
+            r#"{"type":"extension_ui_request","id":"u1","method":42}"#,
+        ] {
+            assert!(
+                matches!(parse_err(line), ProtocolError::InvalidJson(_)),
+                "expected typed deserialization failure for {line}",
+            );
+        }
     }
 
     // -- test_pi_extension_ui_passthrough ---------------------------------
 
+    fn assert_ui_cancellation(parsed: ParsedLine, id: &str) {
+        assert!(parsed.events.is_empty());
+        let response = parsed.response.expect("auto-cancel response present");
+        assert!(response.ends_with('\n'));
+        assert_eq!(response.lines().count(), 1);
+        let payload: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!({"type": "extension_ui_response", "id": id, "cancelled": true}),
+        );
+    }
+
     #[test]
     fn extension_ui_select_yields_auto_cancel_response() {
         let line = r#"{"type":"extension_ui_request","id":"u-42","method":"select","payload":{}}"#;
-        let p = parse(line);
-        assert!(p.events.is_empty());
-        let resp = p.response.expect("auto-cancel response present");
-        assert!(resp.contains(r#""type":"extension_ui_response""#));
-        assert!(resp.contains(r#""id":"u-42""#));
-        assert!(resp.contains(r#""cancelled":true"#));
-        assert!(resp.ends_with('\n'));
+        assert_ui_cancellation(parse(line), "u-42");
     }
 
     #[test]
     fn extension_ui_confirm_yields_auto_cancel_response() {
         let line = r#"{"type":"extension_ui_request","id":"u-1","method":"confirm","payload":{}}"#;
-        let p = parse(line);
-        assert!(p.response.is_some());
+        assert_ui_cancellation(parse(line), "u-1");
     }
 
     #[test]
     fn extension_ui_input_yields_auto_cancel_response() {
         let line = r#"{"type":"extension_ui_request","id":"u-2","method":"input","payload":{}}"#;
-        let p = parse(line);
-        assert!(p.response.is_some());
+        assert_ui_cancellation(parse(line), "u-2");
     }
 
     #[test]
     fn extension_ui_editor_yields_auto_cancel_response() {
         let line = r#"{"type":"extension_ui_request","id":"u-3","method":"editor","payload":{}}"#;
-        let p = parse(line);
-        assert!(p.response.is_some());
+        assert_ui_cancellation(parse(line), "u-3");
     }
 
     #[test]

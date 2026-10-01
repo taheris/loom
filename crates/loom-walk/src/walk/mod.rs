@@ -26,7 +26,6 @@ mod inputs;
 mod loom_agent_deps;
 mod loom_does_not_invoke_podman;
 mod loom_events_is_leaf;
-mod loom_events_minimal_deps;
 mod loom_gate_check_derivation_exists;
 mod loom_llm_client_constructors_use_newtypes;
 mod loom_llm_client_types_per_schema_kind;
@@ -66,11 +65,9 @@ mod public_contract_crates;
 mod renderer_no_insta_dependency;
 mod result_hasher_single_call_site;
 mod session_trait_does_not_expose_typestate;
-mod session_trait_in_loom_events;
 mod shared_proptest_config;
 mod single_event_channel;
 mod surface_conformance;
-mod template_context_structs;
 mod template_pinning_matrix;
 mod template_wire_format_restatement;
 mod templates_no_removed_surface;
@@ -182,10 +179,6 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "loom_events_is_leaf",
         run: loom_events_is_leaf::run,
-    },
-    Walk {
-        name: "loom_events_minimal_deps",
-        run: loom_events_minimal_deps::run,
     },
     Walk {
         name: "loom_gate_check_derivation_exists",
@@ -344,10 +337,6 @@ pub static REGISTRY: &[Walk] = &[
         run: session_trait_does_not_expose_typestate::run,
     },
     Walk {
-        name: "session_trait_in_loom_events",
-        run: session_trait_in_loom_events::run,
-    },
-    Walk {
         name: "shared_proptest_config",
         run: shared_proptest_config::run,
     },
@@ -358,10 +347,6 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "surface_conformance",
         run: surface_conformance::run,
-    },
-    Walk {
-        name: "template_context_structs",
-        run: template_context_structs::run,
     },
     Walk {
         name: "template_pinning_matrix",
@@ -452,7 +437,6 @@ mod tests {
             "loom_agent_deps",
             "loom_does_not_invoke_podman",
             "loom_events_is_leaf",
-            "loom_events_minimal_deps",
             "loom_gate_check_derivation_exists",
             "loom_llm_client_constructors_use_newtypes",
             "loom_llm_client_types_per_schema_kind",
@@ -476,12 +460,10 @@ mod tests {
             "public_contract_crates",
             "result_hasher_single_call_site",
             "session_trait_does_not_expose_typestate",
-            "session_trait_in_loom_events",
             "single_event_channel",
             "surface_conformance",
             "test_nix_surface_contract",
             "newtype_identifiers",
-            "template_context_structs",
             "template_pinning_matrix",
             "template_wire_format_restatement",
             "templates_no_removed_surface",

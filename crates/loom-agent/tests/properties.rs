@@ -64,14 +64,13 @@ proptest! {
 
     #[test]
     fn jsonl_malformed_line_emits_no_events(input in malformed_jsonl()) {
-        let pi_res = pi_parser().parse_line(&input);
-        if let Ok(parsed) = pi_res {
-            prop_assert!(parsed.events.is_empty(), "pi parser emitted events for non-JSON line");
-            prop_assert!(parsed.response.is_none(), "pi parser emitted a response for non-JSON line");
-        }
+        let parsed = pi_parser().parse_line(&input)
+            .expect("pi parser skips malformed syntax");
+        prop_assert!(parsed.events.is_empty(), "pi parser emitted events for non-JSON line");
+        prop_assert!(parsed.response.is_none(), "pi parser emitted a response for non-JSON line");
 
         let cl_res = claude_parser().parse_line(&input);
-        prop_assert!(cl_res.is_err(), "claude parser accepted non-JSON line");
+        prop_assert!(matches!(cl_res, Err(ProtocolError::InvalidJson(_))));
     }
 }
 

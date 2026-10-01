@@ -174,11 +174,6 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             root.join("crates/loom-workflow/src/review/production.rs"),
         ],
         "pre_push_config_marker_wrapper_contract" => vec![root.join(".pre-commit-config.yaml")],
-        "session_trait_in_loom_events" => {
-            let mut out = vec![root.join("crates/loom-events/src/lib.rs")];
-            out.extend(rs_files_recursive(&root.join("crates/loom-driver/src")));
-            out
-        }
 
         // Manifest-only scans.
         "loom_agent_deps" => vec![manifest(root, "loom-agent")],
@@ -187,7 +182,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "loom_skill_deps" => vec![manifest(root, "loom-skill")],
         "loom_templates_deps" => vec![manifest(root, "loom-templates")],
         "loom_tune_deps" => vec![manifest(root, "loom-tune")],
-        "loom_events_is_leaf" | "loom_events_minimal_deps" => vec![manifest(root, "loom-events")],
+        "loom_events_is_leaf" => vec![manifest(root, "loom-events")],
         "public_contract_crates" => crate_manifests(root),
         "workspace_deps_pinned" => vec![root.join("Cargo.toml")],
         "workspace_edition" | "workspace_lints" => {
@@ -208,11 +203,6 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "templates_no_removed_surface" => template_md_files(root),
         "todo_template_uses_driver_created_work_epic" => {
             vec![root.join("crates/loom-templates/templates/todo.md")]
-        }
-        "template_context_structs" => {
-            let mut out = crate_src(root, "loom-templates");
-            out.extend(template_md_files(root));
-            out
         }
         "template_pinning_matrix" => {
             let mut out = vec![root.join("specs/templates.md")];

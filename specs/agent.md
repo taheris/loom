@@ -421,7 +421,13 @@ Parsing rules:
 - U+2028 and U+2029 are NOT line terminators — they pass through as JSON content.
 - Empty lines (blank between objects) are silently skipped.
 - Each non-empty line is independently parsed as JSON.
-- A line that fails JSON parsing is an "invalid JSON" protocol error.
+- A line that fails JSON parsing is classified as an "invalid JSON" protocol
+  error, subject to backend recovery policy: [Pi](#pi-mono-rpc-protocol) warns
+  and skips malformed stdout lines without events or a response, then continues;
+  Claude returns `ProtocolError::InvalidJson`.
+
+[test](malformed_json_line_is_skipped_and_stream_continues)
+[test](malformed_json_returns_invalid_json_error)
 
 A per-line byte budget of **10 MB** prevents a malicious or
 malfunctioning agent from exhausting host memory by sending a single
@@ -464,6 +470,13 @@ The classifier rules:
   `type` values like `"message_update"` and never have an `id`).
 - Any other line with an `id` but an unrecognized `type` → an
   unknown-message-type protocol error.
+
+Missing event discriminators (for example, `{"foo": 42}`) and invalid known
+message payloads fail typed deserialization with `ProtocolError::InvalidJson`;
+these are distinct from the malformed-syntax recovery described below.
+[test](missing_event_discriminator_returns_invalid_json)
+[test](invalid_known_message_payload_returns_invalid_json)
+[test](unknown_envelope_type_with_id_is_unknown_message_type)
 
 **Why two-phase?** Pi messages don't follow a clean tagged union:
 correlated responses have `type: "response"` plus an `id`, prompt

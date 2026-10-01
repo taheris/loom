@@ -109,7 +109,6 @@ fn workspace_style_walks_pass() {
         "git_client_encapsulation",
         "single_event_channel",
         "newtype_identifiers",
-        "template_context_structs",
         "no_hardcoded_tmp_paths",
         "no_event_sentinels",
         "no_ignore_for_flake",
@@ -199,22 +198,29 @@ fn missing_walk_name_exits_two_and_names_available_walks() {
 
 #[test]
 fn unknown_walk_name_exits_two_and_names_the_walk_and_available_set() {
-    let out = invoke(&["definitely_not_a_walk"], None, None);
-    let code = out.status.code().unwrap();
-    assert_eq!(code, 2, "stderr={}", String::from_utf8_lossy(&out.stderr));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("unknown walk"),
-        "must say 'unknown walk'; stderr={stderr}"
-    );
-    assert!(
-        stderr.contains("definitely_not_a_walk"),
-        "must echo the offending walk name; stderr={stderr}"
-    );
-    assert!(
-        stderr.contains("available walks"),
-        "must enumerate available walks; stderr={stderr}"
-    );
+    for name in [
+        "definitely_not_a_walk",
+        "loom_events_minimal_deps",
+        "session_trait_in_loom_events",
+        "template_context_structs",
+    ] {
+        let out = invoke(&[name], None, None);
+        let code = out.status.code().unwrap();
+        assert_eq!(code, 2, "stderr={}", String::from_utf8_lossy(&out.stderr));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("unknown walk"),
+            "must say 'unknown walk'; stderr={stderr}"
+        );
+        assert!(
+            stderr.contains(name),
+            "must echo the offending walk name; stderr={stderr}"
+        );
+        assert!(
+            stderr.contains("available walks"),
+            "must enumerate available walks; stderr={stderr}"
+        );
+    }
 }
 
 /// Multi-arg invocation: every positional arg gets a verdict line in
@@ -223,13 +229,10 @@ fn unknown_walk_name_exits_two_and_names_the_walk_and_available_set() {
 #[test]
 fn multi_arg_invocation_emits_one_target_verdict_line_per_name_in_argv_order() {
     let ws = make_workspace();
-    // Seed the inputs each walk needs to pass. Both walks scan crate
-    // manifests, so the harness is independent of which two walks we
-    // pick — they just need to coexist and pass on the same tree.
     seed(
         ws.path(),
         "crates/loom-events/Cargo.toml",
-        "[package]\nname=\"loom-events\"\n\n[dependencies]\ndisplaydoc = \"0.2\"\nfutures-core = \"0.3\"\nserde = \"1\"\nserde_json = \"1\"\nthiserror = \"2\"\n",
+        "[package]\nname=\"loom-events\"\n\n[dependencies]\nserde = \"1\"\n",
     );
     seed(
         ws.path(),
@@ -237,7 +240,7 @@ fn multi_arg_invocation_emits_one_target_verdict_line_per_name_in_argv_order() {
         "[package]\nname=\"loom-render\"\n\n[dependencies]\nloom-events = { workspace = true }\nserde_json = \"1\"\n",
     );
     let out = invoke(
-        &["loom_events_minimal_deps", "loom_render_deps"],
+        &["loom_events_is_leaf", "loom_render_deps"],
         Some(ws.path()),
         None,
     );
@@ -254,7 +257,7 @@ fn multi_arg_invocation_emits_one_target_verdict_line_per_name_in_argv_order() {
 
     let first: Value = serde_json::from_str(lines[0]).unwrap();
     let second: Value = serde_json::from_str(lines[1]).unwrap();
-    assert_eq!(first["target"].as_str(), Some("loom_events_minimal_deps"));
+    assert_eq!(first["target"].as_str(), Some("loom_events_is_leaf"));
     assert!(first["pass"].as_bool().unwrap());
     assert_eq!(second["target"].as_str(), Some("loom_render_deps"));
     assert!(second["pass"].as_bool().unwrap());
@@ -267,11 +270,10 @@ fn multi_arg_invocation_emits_one_target_verdict_line_per_name_in_argv_order() {
 #[test]
 fn multi_arg_invocation_exits_one_when_any_walk_fails_but_still_emits_all_lines() {
     let ws = make_workspace();
-    // Pass for loom_events_minimal_deps.
     seed(
         ws.path(),
         "crates/loom-events/Cargo.toml",
-        "[package]\nname=\"loom-events\"\n\n[dependencies]\ndisplaydoc = \"0.2\"\nfutures-core = \"0.3\"\nserde = \"1\"\nserde_json = \"1\"\nthiserror = \"2\"\n",
+        "[package]\nname=\"loom-events\"\n\n[dependencies]\nserde = \"1\"\n",
     );
     // Fail for loom_render_deps — missing loom-events dep.
     seed(
@@ -280,7 +282,7 @@ fn multi_arg_invocation_exits_one_when_any_walk_fails_but_still_emits_all_lines(
         "[package]\nname=\"loom-render\"\n\n[dependencies]\nserde_json = \"1\"\n",
     );
     let out = invoke(
-        &["loom_events_minimal_deps", "loom_render_deps"],
+        &["loom_events_is_leaf", "loom_render_deps"],
         Some(ws.path()),
         None,
     );
@@ -592,47 +594,6 @@ fn newtype_derive_audit_rejects_malformed_rust() {
         &invoke(&["no_derive_from_on_newtypes"], Some(ws.path()), None),
         "unable to read or parse Rust source",
     );
-}
-
-// ---------------------------------------------------------------------------
-// template_context_structs
-// ---------------------------------------------------------------------------
-
-#[test]
-fn template_context_structs_pass() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-templates/templates/loop.md",
-        "body\n",
-    );
-    seed(
-        ws.path(),
-        "crates/loom-templates/src/lib.rs",
-        "use askama::Template;\n\
-         #[derive(Template)]\n\
-         #[template(path = \"loop.md\")]\n\
-         pub struct LoopContext;\n",
-    );
-    let out = invoke(&["template_context_structs"], Some(ws.path()), None);
-    assert_pass(&out);
-}
-
-#[test]
-fn template_context_structs_fail() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-templates/templates/loop.md",
-        "body\n",
-    );
-    seed(
-        ws.path(),
-        "crates/loom-templates/src/lib.rs",
-        "pub struct Nothing;\n",
-    );
-    let out = invoke(&["template_context_structs"], Some(ws.path()), None);
-    assert_fail(&out, "loop.md");
 }
 
 // ---------------------------------------------------------------------------
@@ -1602,34 +1563,6 @@ fn seed_workspace_lint_members(root: &Path) {
 }
 
 // ---------------------------------------------------------------------------
-// loom_events_minimal_deps
-// ---------------------------------------------------------------------------
-
-#[test]
-fn loom_events_minimal_deps_pass_exactly_five_runtime_deps() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-events/Cargo.toml",
-        "[package]\nname=\"loom-events\"\n\n[dependencies]\ndisplaydoc = \"0.2\"\nfutures-core = \"0.3\"\nserde = \"1\"\nserde_json = \"1\"\nthiserror = \"2\"\n",
-    );
-    let out = invoke(&["loom_events_minimal_deps"], Some(ws.path()), None);
-    assert_pass(&out);
-}
-
-#[test]
-fn loom_events_minimal_deps_fail_extra_runtime_dep() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-events/Cargo.toml",
-        "[package]\nname=\"loom-events\"\n\n[dependencies]\ndisplaydoc = \"0.2\"\nfutures-core = \"0.3\"\nserde = \"1\"\nserde_json = \"1\"\nthiserror = \"2\"\nchrono = \"0.4\"\n",
-    );
-    let out = invoke(&["loom_events_minimal_deps"], Some(ws.path()), None);
-    assert_fail(&out, "chrono");
-}
-
-// ---------------------------------------------------------------------------
 // loom_events_is_leaf
 // ---------------------------------------------------------------------------
 
@@ -2530,51 +2463,6 @@ fn agent_backend_trait_contract_fail_on_supports_steering_constant() {
     );
     let out = invoke(&["agent_backend_trait_contract"], Some(ws.path()), None);
     assert_fail(&out, "SUPPORTS_STEERING");
-}
-
-// ---------------------------------------------------------------------------
-// session_trait_in_loom_events
-// ---------------------------------------------------------------------------
-
-#[test]
-fn session_trait_in_loom_events_pass() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-events/src/lib.rs",
-        "pub trait Session {}\n",
-    );
-    let out = invoke(&["session_trait_in_loom_events"], Some(ws.path()), None);
-    assert_pass(&out);
-}
-
-#[test]
-fn session_trait_in_loom_events_fail_when_missing() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-events/src/lib.rs",
-        "pub fn x() {}\n",
-    );
-    let out = invoke(&["session_trait_in_loom_events"], Some(ws.path()), None);
-    assert_fail(&out, "pub trait Session");
-}
-
-#[test]
-fn session_trait_in_loom_events_fail_when_defined_in_driver() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-events/src/lib.rs",
-        "pub trait Session {}\n",
-    );
-    seed(
-        ws.path(),
-        "crates/loom-driver/src/agent/session.rs",
-        "pub trait Session {}\n",
-    );
-    let out = invoke(&["session_trait_in_loom_events"], Some(ws.path()), None);
-    assert_fail(&out, "loom-driver");
 }
 
 // ---------------------------------------------------------------------------

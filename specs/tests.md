@@ -147,8 +147,8 @@ failure identifies the source location and applicable rule.
 | Target | Invariants |
 |--------|------------|
 | JSONL line parser | never panics on arbitrary bytes; respects `MAX_LINE_BYTES`; never emits `AgentEvent` from a malformed line |
-| Pi protocol parser | round-trip identity for known shapes; unknown shapes map to `ProtocolError::UnknownMessageType`; never panics |
-| Claude protocol parser | round-trip identity for known shapes; unknown shapes map to the `Unknown` variant via `#[serde(other)]`; never panics |
+| Pi protocol parser | round-trip identity for known shapes; malformed input and unknown types follow the [agent-owned Pi classification and recovery policy](agent.md#pi-mono-rpc-protocol); never panics |
+| Claude protocol parser | round-trip identity for known shapes; malformed input and unknown types follow the [agent-owned Claude protocol policy](agent.md#claude-stream-json-protocol); never panics |
 | Cache DB rebuild | never panics on arbitrary spec/index content; schema invariants always hold; corrupted cache recovers via `recreate` or reports durable-source inconsistency |
 
 **Convention.** Parsers and codecs ship with a proptest invariant —
@@ -768,25 +768,27 @@ owns:
      `[phase.default].agent.backend`, `--agent` flag overrides all phases)
    - Backend launch tests execute the runtime-to-child-environment contract
      owned by [agent.md § Container integration](agent.md#container-integration)
-   - Malformed JSONL handling — specific test cases:
-     - Truncated JSON (`{"type": "message_del`) → `ProtocolError::InvalidJson`
-     - Valid JSON, wrong shape (`{"foo": 42}`) → `ProtocolError::UnknownMessageType`
-     - Empty line between objects → silently skipped
-     - Line containing only whitespace → silently skipped
-     - Escaped `\n` inside a JSON string value (e.g. `{"text":"line1\nline2"}`)
-       → parsed as a single line, string value contains literal newline
-     - U+2028/U+2029 inside JSON string → passes through, not treated as
-       line terminator
-     - Trailing `\r\n` → `\r` stripped, parsed normally
-     - Line exceeding `MAX_LINE_BYTES` (10 MB) → `ProtocolError::LineTooLong`
-   - `ParsedLine::response` populated for Claude `control_request` (parser
-     returns auto-approve JSON string, `events` is empty)
+   - Malformed-input tests execute the backend-specific recovery and
+     classification policy owned by [agent.md § Pi-Mono RPC
+     Protocol](agent.md#pi-mono-rpc-protocol) and [Claude Stream-JSON
+     Protocol](agent.md#claude-stream-json-protocol). Cover truncated syntax
+     (`{"type": "message_del`), missing discriminators (`{"foo": 42}`), invalid
+     known payloads, unknown correlated Pi types, and unknown event types
+     separately; these input categories do not imply one shared error policy.
+   - Framing tests execute [agent.md § JSONL Framing](agent.md#jsonl-framing)
+     with empty/whitespace lines, escaped newlines, U+2028/U+2029 inside JSON
+     strings, CRLF terminators, and lines exceeding `MAX_LINE_BYTES`.
+   - Control-response tests execute the agent-owned Pi extension UI and Claude
+     permission-request policies: response-requiring Pi `extension_ui_request`
+     methods are distinct from ordinary events, and Claude `control_request`
+     coverage includes both approval and deny-list decisions.
    - `ParsedLine::events` contains two events for Claude `result/success`
      (`TurnEnd` + `SessionComplete`); two events for `result/error`
      (`Error` + `SessionComplete`); Pi's `turn_end` and `agent_end` each
      map to a single event
-   - `ParsedLine::response` is `None` for Pi events and Claude non-control
-     events
+   - Ordinary Pi events and Claude non-control events leave
+     `ParsedLine::response` empty; Pi extension UI replies follow the separate
+     [agent-owned extension UI policy](agent.md#pi-mono-rpc-protocol).
    - Event normalization (all backends produce identical `AgentEvent`
      sequences for equivalent agent behavior)
    - Timeout behavior: no JSONL line for 5+ minutes → warning logged, no
@@ -959,7 +961,7 @@ owns:
    targets: JSONL line parser, Pi protocol parser, Claude protocol
    parser, cache DB rebuild. Properties target invariants ("never
    panics on arbitrary input", "round-trip is identity for known
-   shapes", "unknown shapes map to typed errors") rather than
+   shapes", "unknown types follow backend classification policy") rather than
    specific input/output pairs. CI runs each property at
    `PROPTEST_CASES=32`; local exhaustive runs use `PROPTEST_CASES=2048+`
    via env var. No `cargo fuzz` under `nix flake check` — exposed
