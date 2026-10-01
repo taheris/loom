@@ -936,6 +936,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_rejects_non_json_before_valid_reply() {
+        assert_startup_rejects_line("launcher status", serde_json::error::Category::Syntax).await;
+    }
+
+    #[tokio::test]
+    async fn startup_rejects_invalid_envelope_before_valid_reply() {
+        assert_startup_rejects_line(r#"{"type":42}"#, serde_json::error::Category::Data).await;
+    }
+
+    async fn assert_startup_rejects_line(line: &str, category: serde_json::error::Category) {
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c")
+            .arg("set -euo pipefail; printf '%s\\n' \"$REJECTED_LINE\"; exec bash \"$MOCK_PI\" happy-path")
+            .env("REJECTED_LINE", line)
+            .env("MOCK_PI", mock_pi_path());
+        let result =
+            spawn_with_handshake(cmd, None, None, TEST_HANDSHAKE_BUDGET, &SystemClock::new()).await;
+        match result {
+            Err(ProtocolError::InvalidJson(source)) => assert_eq!(source.classify(), category),
+            Err(other) => panic!("expected InvalidJson, got {other:?}"),
+            Ok(_) => panic!("startup silently discarded invalid protocol input"),
+        }
+    }
+
+    #[tokio::test]
     async fn startup_probe_fails_fast_when_get_state_shape_is_invalid() {
         let result = spawn_with_handshake(
             mock_command("probe-bad-state"),

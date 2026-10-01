@@ -140,8 +140,8 @@ pub async fn run_agent_classified<B: AgentBackend>(
             session
         }
         Err(err) => {
-            warn!(error = ?err, "agent spawn failed before session became live");
-            let error_str = err.to_string();
+            let error_str = protocol_error_diagnostic(&err, config);
+            warn!(error = %error_str, "agent spawn failed before session became live");
             emit_spawn_failure_event(sink.as_mut(), envelope_builder.as_mut(), &err, &error_str);
             finish_sink(sink, BeadOutcome::Failed);
             return spawn_error_session_result(&err, error_str);
@@ -897,6 +897,23 @@ fn emit_infra_failure_event(
         &summary,
         serde_json::Value::Object(payload),
     );
+}
+
+fn protocol_error_diagnostic(error: &ProtocolError, config: &SpawnConfig) -> String {
+    const MAX_BYTES: usize = 4096;
+    const TRUNCATED: &str = " [truncated]";
+    let chain = std::iter::successors(Some(error as &dyn std::error::Error), |cause| {
+        cause.source()
+    })
+    .map(ToString::to_string)
+    .collect::<Vec<_>>()
+    .join(": ");
+    let mut detail = redact_agent_input(&chain, config).text;
+    if detail.len() > MAX_BYTES {
+        detail.truncate(detail.floor_char_boundary(MAX_BYTES - TRUNCATED.len()));
+        detail.push_str(TRUNCATED);
+    }
+    detail
 }
 
 fn infra_failure_summary(phase: InfraPhase, cause: InfraCause, error: &str) -> String {
@@ -2159,8 +2176,9 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         match result {
             crate::r#loop::SessionResult::PreflightFailed { error } => {
                 assert!(
-                    error.contains("io failure"),
-                    "preflight error must carry the ProtocolError display: {error}",
+                    error.contains("io failure")
+                        && error.contains("podman load failed: image archive missing"),
+                    "preflight error must carry the source chain: {error}",
                 );
             }
             other => panic!("expected PreflightFailed, got {other:?}"),
@@ -2177,16 +2195,76 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
         assert!(
             infra["payload"]["error"]
                 .as_str()
-                .is_some_and(|s| s.contains("io failure")),
-            "payload error body must carry the ProtocolError display: {:?}",
+                .is_some_and(|s| s.contains("podman load failed: image archive missing")),
+            "payload error body must carry the source chain: {:?}",
             infra["payload"],
         );
         assert!(
             infra["payload"]["spawn_error"]
                 .as_str()
-                .is_some_and(|s| s.contains("io failure")),
-            "spawn failures must carry spawn_error: {:?}",
+                .is_some_and(|s| s.contains("podman load failed: image archive missing")),
+            "spawn failures must carry the source chain in spawn_error: {:?}",
             infra["payload"],
+        );
+    }
+
+    #[test]
+    fn startup_error_diagnostic_is_bounded_after_redaction() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut cfg = sample_spawn_config(dir.path());
+        let secret = "密".repeat(5000);
+        cfg.launcher_env
+            .push(("WRIX_SIGNING_KEY".into(), secret.clone()));
+        let err = ProtocolError::Io(std::io::Error::other(format!(
+            "{secret} {}",
+            "界".repeat(5000),
+        )));
+        let detail = protocol_error_diagnostic(&err, &cfg);
+        assert!(
+            detail.contains("[REDACTED:secret:WRIX_SIGNING_KEY]"),
+            "{detail}"
+        );
+        assert!(!detail.contains('密'), "{detail}");
+        assert!(detail.len() <= 4096, "{}", detail.len());
+        assert!(detail.ends_with(" [truncated]"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn startup_parse_error_retains_redacted_cause_in_durable_log() {
+        struct MalformedBackend;
+        impl AgentBackend for MalformedBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                let source = serde_json::from_str::<bool>(r#""sk-startup-secret""#)
+                    .expect_err("string is not a boolean");
+                Err(ProtocolError::InvalidJson(source))
+            }
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (sink, path) = open_test_sink(dir.path());
+        let mut cfg = sample_spawn_config(dir.path());
+        cfg.env
+            .push(("OPENAI_API_KEY".into(), "sk-startup-secret".into()));
+        let result =
+            run_agent_classified::<MalformedBackend>(&cfg, Some(sink), None, None, Some(builder()))
+                .await;
+        let SessionResult::PreflightFailed { error } = result else {
+            panic!("expected preflight failure");
+        };
+        assert!(error.contains("invalid JSON on protocol line"), "{error}");
+        assert!(error.contains("expected a boolean"), "{error}");
+        assert!(error.contains("line 1 column"), "{error}");
+        assert!(
+            error.contains("[REDACTED:api_key:OPENAI_API_KEY]"),
+            "{error}"
+        );
+        let events = read_jsonl(&path);
+        let infra = infra_event(&events);
+        assert_eq!(infra["payload"]["error"], error);
+        assert_eq!(infra["payload"]["spawn_error"], error);
+        assert!(
+            !std::fs::read_to_string(path)
+                .expect("log")
+                .contains("sk-startup-secret")
         );
     }
 
