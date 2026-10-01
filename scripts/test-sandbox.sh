@@ -96,24 +96,35 @@ if [[ -z "$ref" ]]; then
     exit 1
 fi
 
+source_root=$(realpath "${LOOM_TEST_SANDBOX_SOURCE:-$(dirname "${BASH_SOURCE[0]}")/..}")
+: "${WRIX_PREK_HOOKS:?canonical Wrix hooks must be supplied}"
+
 if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none \
-    --entrypoint /bin/bash "$ref" -lc '
+    --entrypoint /bin/bash \
+    --volume "$source_root:/sandbox-source:ro" \
+    --env "WRIX_PREK_HOOKS=$WRIX_PREK_HOOKS" \
+    "$ref" -lc '
         set -euo pipefail
+        printf "sandbox-checks-started\n"
         pi --version >/dev/null
         if command -v nix >/dev/null 2>&1; then
             printf "nix unexpectedly present in the worker image\n" >&2
             exit 1
         fi
         printf "sandbox-agent-health-ok\n"
+        bash /sandbox-source/tests/sandbox/hooks-test.sh /sandbox-source
     ' 2>&1); then
-    if is_unsupported_container_runtime_error "$run_out"; then
+    if [[ "$run_out" != *"sandbox-checks-started"* ]] && is_unsupported_container_runtime_error "$run_out"; then
         skip_unsupported_container_runtime "$run_out"
     fi
     printf 'test-sandbox: sandbox verification failed:\n%s\n' "$run_out" >&2
     exit 1
 fi
 
-if [[ "$run_out" != *"sandbox-agent-health-ok"* ]]; then
-    printf 'test-sandbox: packaged-agent health canary missing:\n%s\n' "$run_out" >&2
-    exit 1
-fi
+for canary in sandbox-agent-health-ok sandbox-commit-hooks-ok sandbox-pre-push-hooks-ok sandbox-hook-self-tests-ok; do
+    if ! grep -Fxq "$canary" <<< "$run_out"; then
+        printf 'test-sandbox: %s canary missing:\n%s\n' "$canary" "$run_out" >&2
+        exit 1
+    fi
+done
+printf '%s\n' "$run_out"

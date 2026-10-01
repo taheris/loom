@@ -12,6 +12,7 @@ _:
       smokeSandbox,
       system,
       wrixLinuxPkgs,
+      wrixLib,
       ...
     }:
     let
@@ -221,7 +222,23 @@ _:
             mkdir -p "$readonly_dir"
             touch "$readonly_dir/libfake.so"
             chmod -R a-w "$root/overlay/fake/diff/nix/store/fake-lib"
-            printf 'sandbox-agent-health-ok\n'
+            printf 'sandbox-checks-started\n'
+            case "''${LOOM_TEST_SANDBOX_RESULT:-complete}" in
+              check-failure)
+                printf 'hook check failed: operation not permitted\n' >&2
+                exit 1
+                ;;
+              health-only)
+                printf 'sandbox-agent-health-ok\n'
+                ;;
+              complete)
+                printf '%s\n' sandbox-agent-health-ok sandbox-commit-hooks-ok sandbox-pre-push-hooks-ok sandbox-hook-self-tests-ok
+                ;;
+              *)
+                printf 'unknown fake sandbox result\n' >&2
+                exit 2
+                ;;
+            esac
             ;;
           *)
             printf 'unexpected podman args: %s\n' "$*" >&2
@@ -291,6 +308,7 @@ _:
             export PATH="$fakebin:${
               makeBinPath [
                 pkgs.coreutils
+                pkgs.gnugrep
                 pkgs.gnused
                 pkgs.bash
               ]
@@ -323,16 +341,15 @@ _:
             export PATH="$fakebin:${
               makeBinPath [
                 pkgs.coreutils
+                pkgs.gnugrep
                 pkgs.gnused
                 pkgs.bash
               ]
             }"
             export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
             export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-            export LOOM_TEST_SANDBOX_SOURCE="$TMPDIR/source"
-            export LOOM_TEST_SANDBOX_WORKSPACE="$LOOM_TEST_SANDBOX_SOURCE"
-            mkdir -p "$LOOM_TEST_SANDBOX_SOURCE/.git"
-            touch "$LOOM_TEST_SANDBOX_SOURCE/Cargo.toml"
+            export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
+            export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
             set +e
             script_output=$(bash ${../../scripts/test-sandbox.sh} 2>&1)
             rc=$?
@@ -361,16 +378,15 @@ _:
             export PATH="$fakebin:${
               makeBinPath [
                 pkgs.coreutils
+                pkgs.gnugrep
                 pkgs.gnused
                 pkgs.bash
               ]
             }"
             export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
             export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-            export LOOM_TEST_SANDBOX_SOURCE="$TMPDIR/source"
-            export LOOM_TEST_SANDBOX_WORKSPACE="$LOOM_TEST_SANDBOX_SOURCE"
-            mkdir -p "$LOOM_TEST_SANDBOX_SOURCE/.git"
-            touch "$LOOM_TEST_SANDBOX_SOURCE/Cargo.toml"
+            export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
+            export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
             set +e
             script_output=$(bash ${../../scripts/test-sandbox.sh} 2>&1)
             rc=$?
@@ -391,6 +407,7 @@ _:
             export PATH="$fakebin:${
               makeBinPath [
                 pkgs.coreutils
+                pkgs.gnugrep
                 pkgs.gnused
                 pkgs.bash
               ]
@@ -398,15 +415,48 @@ _:
             export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
             export LOOM_TEST_PODMAN_ARGS_LOG="$TMPDIR/podman-args"
             export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-            export LOOM_TEST_SANDBOX_SOURCE="$TMPDIR/source"
-            export LOOM_TEST_SANDBOX_WORKSPACE="$LOOM_TEST_SANDBOX_SOURCE"
-            mkdir -p "$LOOM_TEST_SANDBOX_SOURCE/.git"
-            touch "$LOOM_TEST_SANDBOX_SOURCE/Cargo.toml"
+            export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
+            export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
             bash ${../../scripts/test-sandbox.sh}
             if [[ $(<"$LOOM_TEST_PODMAN_ARGS_LOG") != *'<run><--rm><--network=none><--entrypoint></bin/bash>'* ]]; then
               printf 'expected test-sandbox podman run to disable networking and select the health-check entrypoint; observed:\n%s\n' "$(<"$LOOM_TEST_PODMAN_ARGS_LOG")" >&2
               exit 1
             fi
+            touch "$out"
+          '';
+
+      test-sandbox-rejects-incomplete-checks =
+        pkgs.runCommand "test-sandbox-rejects-incomplete-checks" { }
+          ''
+            set -euo pipefail
+            fakebin=$(mktemp -d)
+            ln -s ${fakePodmanCreatesReadOnlyStorage} "$fakebin/podman"
+            export PATH="$fakebin:${
+              makeBinPath [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.gnugrep
+                pkgs.gnused
+              ]
+            }"
+            export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
+            export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
+            export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
+            export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
+            for result in health-only check-failure; do
+              export LOOM_TEST_SANDBOX_RESULT="$result"
+              status=0
+              bash ${../../scripts/test-sandbox.sh} > "$TMPDIR/output" 2>&1 || status=$?
+              if [[ "$status" -ne 1 ]]; then
+                printf 'expected failed sandbox checks, not success or skip (%s):\n%s\n' "$status" "$(<"$TMPDIR/output")" >&2
+                exit 1
+              fi
+              if [[ "$result" == health-only ]]; then
+                grep -Fq 'sandbox-commit-hooks-ok canary missing' "$TMPDIR/output"
+              else
+                grep -Fq 'sandbox verification failed' "$TMPDIR/output"
+              fi
+            done
             touch "$out"
           '';
 
@@ -418,10 +468,13 @@ _:
           makeBinPath [
             pkgs.bash
             pkgs.coreutils
+            pkgs.gnugrep
             pkgs.gnused
           ]
         }"
         export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
+        export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
+        export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
         export LOOM_TEST_PODMAN_ARGS_LOG="$TMPDIR/podman-args"
         export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
         bash ${../../scripts/test-sandbox.sh}
@@ -528,6 +581,7 @@ _:
           test-sandbox-disables-container-network
           test-sandbox-ignores-read-only-podman-storage-cleanup
           test-sandbox-needs-no-dolt-socket
+          test-sandbox-rejects-incomplete-checks
           test-sandbox-skips-oci-permission-denied
           test-sandbox-skips-unsupported-runtime
           workspace-source-includes-git-policy-scripts
