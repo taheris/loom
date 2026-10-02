@@ -81,12 +81,23 @@ impl Outcome {
 #[serde(deny_unknown_fields)]
 pub(super) struct Wire {
     pub target: String,
+    #[serde(default, deserialize_with = "present_value")]
     outcome: Option<Outcome>,
+    #[serde(default, deserialize_with = "present_value")]
     pass: Option<bool>,
+    #[serde(default, deserialize_with = "present_value")]
     skipped: Option<bool>,
     evidence: String,
+    #[serde(default, deserialize_with = "present_value")]
     execution: Option<Execution>,
+    #[serde(default, deserialize_with = "present_value")]
     skip_reason: Option<SkipReason>,
+}
+
+fn present_value<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 impl Wire {
@@ -108,10 +119,9 @@ impl Wire {
             .map(Outcome::verdict)
             .or(legacy)
             .ok_or_else(|| "expected outcome or legacy pass".to_string())?;
-        if (self.pass == Some(true) && self.skipped == Some(true))
-            || self
-                .outcome
-                .is_some_and(|explicit| legacy.is_some_and(|legacy| legacy != explicit.verdict()))
+        if self
+            .pass
+            .is_some_and(|pass| pass != (outcome == Verdict::Pass))
             || self
                 .skipped
                 .is_some_and(|skipped| skipped != (outcome == Verdict::Skipped))
@@ -208,6 +218,24 @@ mod tests {
             parse(serde_json::json!({"target":"a","pass":false,"evidence":"skipped missing KVM"}))
                 .unwrap();
         assert_eq!(result.outcome, Verdict::Fail);
+    }
+
+    #[test]
+    fn optional_result_fields_reject_present_null_values() {
+        for field in ["outcome", "pass", "skipped", "execution", "skip_reason"] {
+            let mut record = serde_json::json!({"target":"a","pass":true,"evidence":"ok"});
+            record[field] = serde_json::Value::Null;
+            assert!(
+                parse(record).is_err(),
+                "null field {field} must not become omission"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_skipped_outcome_is_consistent_with_legacy_false_flag() {
+        let record = serde_json::json!({"target":"a","outcome":"skipped","pass":false,"evidence":"not executed","execution":{"platform":current_platform(),"platforms":[],"capabilities":["kvm"]},"skip_reason":{"kind":"missing-capability","capability":"kvm","reason":"device unavailable"}});
+        assert_eq!(parse(record).unwrap().outcome, Verdict::Skipped);
     }
 
     #[test]

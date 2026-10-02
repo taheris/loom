@@ -933,6 +933,9 @@ promotion errors or blocking on structural bd state — is owned by
   [test](skipped_wire_verdict_cannot_claim_an_observed_pass)
 - JSON-lines rejects malformed, duplicate, incomplete and contradictory records
   [test](parse_json_lines_rejects_malformed_duplicate_and_incomplete_records)
+- Optional result fields reject present null values rather than treating them
+  as omission
+  [test](optional_result_fields_reject_present_null_values)
 - Declared foreign-platform and allowlisted capability skips can be accepted
   by worker verification while tier execution remains exit 77, coverage stays
   skipped in reports/cache, and no verified scope or marker is produced
@@ -3145,8 +3148,10 @@ runtime prerequisites. Platform/capability tokens are nonempty ASCII letters,
 digits, `-`, `_` or `.`; duplicate requirements are invalid. `skip_reason` is
 required for a modern skip and forbidden on passes/failures. Its `reason` is
 nonblank. Unknown fields/variants, missing or unrequested targets, duplicates,
-and contradictions are rejected. Legacy `pass:false` is a failure unless the
-explicit `skipped:true` flag is present; evidence text is never classified.
+and contradictions are rejected. Optional fields are omitted rather than null;
+present null values are malformed. Legacy flags may accompany an explicit outcome
+only when consistent with it. Without an explicit outcome, legacy `pass:false`
+is a failure unless `skipped:true` is present; evidence text is never classified.
 Legacy skips without metadata cannot gain policy permission.
 [test](invalid_json_batches_fail_closed_without_partial_pass_cache_entries)
 

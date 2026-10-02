@@ -295,6 +295,8 @@ fn invalid_json_batches_fail_closed_without_partial_pass_cache_entries() {
         "{\"target\":\"a\",\"pass\":false,\"evidence\":\"failure\"}\n{\"target\":\"a\",\"pass\":true,\"evidence\":\"overwrite\"}\n",
         "{\"target\":\"a\",\"pass\":true,\"skipped\":true,\"evidence\":\"conflict\"}\n",
         "{\"target\":\"a\",\"pass\":true}\n",
+        "{\"target\":\"a\",\"pass\":true,\"skipped\":null,\"evidence\":\"malformed\"}\n",
+        "{\"target\":\"a\",\"pass\":false,\"pass\":true,\"evidence\":\"duplicate field\"}\n",
         "{\"target\":\"unrequested\",\"pass\":true,\"evidence\":\"bad identity\"}\n",
     ] {
         let dir = fixture(true);
