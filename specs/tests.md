@@ -782,10 +782,9 @@ owns:
      permission-request policies: response-requiring Pi `extension_ui_request`
      methods are distinct from ordinary events, and Claude `control_request`
      coverage includes both approval and deny-list decisions.
-   - `ParsedLine::events` contains two events for Claude `result/success`
-     (`TurnEnd` + `SessionComplete`); two events for `result/error`
-     (`Error` + `SessionComplete`); Pi's `turn_end` and `agent_end` each
-     map to a single event
+   - `ParsedLine::events` tests execute the backend normalization owned by
+     [agent.md § Pi-Mono RPC Protocol](agent.md#pi-mono-rpc-protocol) and
+     [Claude Stream-JSON Protocol](agent.md#claude-stream-json-protocol).
    - Ordinary Pi events and Claude non-control events leave
      `ParsedLine::response` empty; Pi extension UI replies follow the separate
      [agent-owned extension UI policy](agent.md#pi-mono-rpc-protocol).
