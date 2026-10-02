@@ -1378,6 +1378,31 @@ fn inbox_renders_clarify_item_without_blocked_framing() -> Result<()> {
 }
 
 #[test]
+fn inbox_explains_problem_options_and_recommendation_before_decision() -> Result<()> {
+    let out = inbox_ctx(vec![inbox_item(
+        "lm-clar.7",
+        "harness",
+        "Choose a resolution",
+        ItemKind::Clarify,
+    )])
+    .render()?;
+    for required in [
+        "Before asking the user to decide, explain the problem clearly",
+        "present the options and their practical trade-offs",
+        "recommend an option with your rationale",
+        "existing options rather than re-generating the menu",
+        "insufficient for a recommendation",
+        "only after confirmation",
+    ] {
+        assert!(
+            out.contains(required),
+            "missing decision guidance `{required}`: {out}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn inbox_template_teaches_agent_bd_write_authority() -> Result<()> {
     let out = inbox_ctx(vec![inbox_item(
         "lm-clar.9",

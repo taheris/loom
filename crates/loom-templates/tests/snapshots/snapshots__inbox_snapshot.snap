@@ -116,8 +116,14 @@ Use a SQLite table.
 1. Print a concise triage summary with item number, kind, spec, durable id, and
    summary/title.
 2. Ask which item to start with, unless this prompt contains only one item.
-3. For each item: orient to its spec or tune artifact, research as needed, draft
-   the resolution, confirm with the user, then persist only after confirmation.
+3. For each item: orient to its spec or tune artifact and research as needed.
+   Before asking the user to decide, explain the problem clearly and why it
+   needs a decision, present the options and their practical trade-offs, and
+   recommend an option with your rationale. For clarify items, compare the
+   existing options rather than re-generating the menu. If the evidence is
+   insufficient for a recommendation, explain what is missing instead of
+   guessing. Then draft the resolution, confirm with the user, and persist
+   only after confirmation.
 4. For bead-backed clarify/blocked/infra items, bd writes are authorized in
    chat: `bd update <id> --notes "..."`, `bd update <id>
    --remove-label=loom:clarify --status=open` / `bd update <id>

@@ -715,6 +715,14 @@ the loop:
   specific and lives in a separate partial; the chat-discipline rules
   above apply to every interactive session, including inbox-chat.
 
+Inbox's session flow supplies a decision brief before asking the human to
+choose: explain the problem clearly and why a decision is needed, compare the
+options and practical trade-offs, and recommend an option with rationale.
+Clarify items retain their existing Options block rather than regenerating a
+menu. When evidence is insufficient, the agent explains the missing information
+instead of guessing; persistence still waits for human confirmation.
+[test](inbox_explains_problem_options_and_recommendation_before_decision)
+
 Worker phases (`loop`, `todo`, `review`) are single-shot and do not
 interview the user, so the partial is not pinned there.
 
@@ -1136,6 +1144,10 @@ documents in front of the agent with zero configuration.
   (picker prohibition + persistence destinations) sourced from the pinned
   partial
   [test](inbox_template_renders_chat_interview_discipline)
+- Inbox explains the problem, compares options and trade-offs, and recommends
+  with rationale before asking for a decision; uncertainty and human
+  confirmation remain explicit
+  [test](inbox_explains_problem_options_and_recommendation_before_decision)
 
 ### Agent-output markers
 
