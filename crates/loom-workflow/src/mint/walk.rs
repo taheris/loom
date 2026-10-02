@@ -674,7 +674,7 @@ fn dispatch_outcome_to_failures(
     outcome: Result<loom_gate::DispatchOutcome, loom_gate::DispatchError>,
 ) -> Vec<VerifierFailure> {
     match outcome {
-        Ok(out) if out.verdict.skipped || out.verdict.pass => Vec::new(),
+        Ok(out) if out.verdict.pass && out.verdict.accepted() => Vec::new(),
         Ok(out) => out
             .annotations
             .into_iter()
@@ -700,7 +700,8 @@ fn dispatch_outcome_to_failures(
 fn dispatch_error_annotation(err: &loom_gate::DispatchError) -> Annotation {
     let target = match err {
         loom_gate::DispatchError::Spawn { command, .. }
-        | loom_gate::DispatchError::MalformedVerdict { command, .. } => command.clone(),
+        | loom_gate::DispatchError::MalformedVerdict { command, .. }
+        | loom_gate::DispatchError::InvalidVerdict { command, .. } => command.clone(),
         loom_gate::DispatchError::MissingFromBatchOutput { target, .. } => target.clone(),
         loom_gate::DispatchError::EmptyTarget { .. }
         | loom_gate::DispatchError::ZeroMatch { .. }

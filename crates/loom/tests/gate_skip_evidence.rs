@@ -169,8 +169,8 @@ async fn skipped_tests_survive_cli_cache_and_criterion_evidence() {
 
         let output = run_report(dir.path(), &report(parser, [Verdict::Skipped; 3]));
         assert!(
-            output.status.success(),
-            "legitimate skips remain neutral, not passes"
+            !output.status.success(),
+            "unclassified legacy skips remain unverified and blocking"
         );
         let cache = StatusCache::open(&dir.path().join(".loom/cache.db")).unwrap();
         let rows = cache.read_all().unwrap();
@@ -216,9 +216,8 @@ fn failed() { panic!("must remain skipped"); }
     .unwrap();
     let output = run_report(dir.path(), "");
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "unstructured skips cannot establish sandbox-capability permission"
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("per-target outcomes unavailable"));
     let cache = StatusCache::open(&dir.path().join(".loom/cache.db")).unwrap();

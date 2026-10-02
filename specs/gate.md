@@ -450,6 +450,10 @@ Gate lifecycle events use the canonical event schema owned by
   passed, and successful `VerifiedScope` + `ReviewedScope` for the
   same range; otherwise `pre-push-checks` falls through
   [test](marker_short_circuit_requires_hook_coverage_for_same_tree_config_and_range)
+- Worker acceptance with skipped coverage cannot validate a push marker
+  [test](worker_acceptance_with_skips_cannot_validate_existing_push_marker)
+- Markers predating strict producer-result policy are rejected
+  [test](markers_from_before_strict_result_policy_are_rejected)
 
 ### Review finding wire contract
 
@@ -727,9 +731,9 @@ promotion errors or blocking on structural bd state — is owned by
 - The `row_for` helper writes a row that round-trips through the unified
   cache
   [test](row_for_helper_writes_round_trip_row)
-- Unversioned verifier evidence is invalidated once because historical
-  passing rows may represent ignored tests; subsequent cache opens preserve
-  new evidence and unrelated cache state
+- Verifier evidence predating the current evidence version is invalidated
+  once because historical passing rows may represent ignored tests or invalid
+  producer reports; subsequent cache opens preserve new evidence and unrelated cache state
   [test](unversioned_verifier_evidence_is_invalidated_once)
 - Report rendered from on-disk rows summarises pass/fail per tier
   [test](render_report_reads_from_disk_and_summarises_per_tier)
@@ -923,12 +927,26 @@ promotion errors or blocking on structural bd state — is owned by
   [test](junit_rejects_malformed_unsupported_and_ambiguous_reports)
 - Malformed JUnit output cannot persist partial passing evidence
   [test](malformed_junit_fails_without_persisting_partial_passes)
-- Skip exit code 77 applies to every target in a matched runner batch,
-  even if stdout contains a passing verdict
-  [test](batch_exit_77_preserves_skips_even_with_a_pass_on_stdout)
-- The existing JSON verdict shape remains accepted; `skipped: true`
-  takes precedence over `pass` and normalizes it to false
+- Exit 77 still parses individual batch outcomes and never conceals a failure
+  [test](batch_exit_77_parses_individual_results_and_cannot_hide_failure)
+- Contradictory legacy pass and skip flags are rejected rather than normalized
   [test](skipped_wire_verdict_cannot_claim_an_observed_pass)
+- JSON-lines rejects malformed, duplicate, incomplete and contradictory records
+  [test](parse_json_lines_rejects_malformed_duplicate_and_incomplete_records)
+- Declared foreign-platform and allowlisted capability skips can be accepted
+  by worker verification while tier execution remains exit 77, coverage stays
+  skipped in reports/cache, and no verified scope or marker is produced
+  [test](worker_accepts_foreign_platform_and_declared_capability_skips_without_verifying_them)
+- Unexpected skips remain blocking even under worker capability policy
+  [test](unexpected_skips_cannot_be_accepted_by_worker_policy)
+- Failure+skip batches preserve individual failures even on producer exit 77
+  [test](failure_skip_batches_preserve_failures_even_when_producer_exits_77)
+- Failed producers and zero-exit skips cannot establish verified cache evidence
+  [test](producer_failure_and_zero_exit_skips_never_create_verified_cache_evidence)
+- Legacy false records remain failures regardless of skip-like evidence text
+  [test](legacy_boolean_failures_never_become_capability_skips_from_evidence_text)
+- Synthetic Wrix-seam producers aggregate failures before skips before passes
+  [test](synthetic_wrix_producer_aggregates_failures_before_skips_before_passes)
 - `exit-code` parser shares a single per-runner verdict across every
   target in the group
   [test](run_with_runners_exit_code_parser_shares_verdict_across_group)
@@ -1807,7 +1825,9 @@ flow uniformly. The mapping:
 The owning spec for `bonds` is the spec containing the annotation
 the verifier was dispatched for — the same spec-section auto-include
 the verifier's input set already uses (per *Verifier inputs*). Exit
-code 77 is a skip, not a failure; it produces no Finding. The
+code 77 describes skipped execution, not a pass; unaccepted skips remain
+blocking verifier evidence. Only worker capability policy can accept them
+without claiming coverage. The
 `LOOM_FINDING:` wire format is the LLM rubric's emit shape; the
 typed Finding record is the in-driver representation both sources
 converge on.
@@ -2837,10 +2857,13 @@ emit one of these formats, rather than authoring custom parsers:
   without an explicit failure/skip are dispatch errors.
 - `nix-build-status` — `nix build`'s per-derivation success/failure
   output.
-- `json-lines` — one `{"target":"<name>","pass":bool,"evidence":"<msg>"}`
-  per line on stdout, optionally including `"skipped":true`. The simplest
-  format for consumers writing custom batched runners: emit one line per
-  target. A skip always takes precedence over a passing flag.
+- `json-lines` — one checked per-target result per nonblank stdout line,
+  using the schema in *Sandbox-capability results* below. Legacy
+  `{"target":"<name>","pass":bool,"evidence":"<msg>"}` remains supported.
+  Diagnostics belong on stderr. Malformed records, duplicate targets/fields,
+  missing required fields and conflicting outcomes are errors; records are
+  parsed even when the producer exits 77. Shared annotation targets are sent
+  once and their one result fans out to all owning criteria.
 - `exit-code` — single per-runner verdict from the process exit
   code. Only useful for non-batched runners (one annotation per
   invocation).
@@ -3059,8 +3082,11 @@ conforms to:
   emit one such line per target via the `json-lines` parser, or use
   one of the other built-in parsers (`libtest-json`, `junit-xml`,
   `nix-build-status`).
-- **Exit code:** `0` for pass, `1` for fail, `2` for dispatch error
-  (unknown verifier, command not found, missing prerequisite).
+- **Exit code:** `0` for all-pass, `77` for skips without failures, a
+  nonzero code other than `77` for any failure (`1` normally, `2` for dispatch
+  errors such as unknown verifiers or invalid invocation). Failures dominate
+  skips; skips dominate passes. JSON-lines process status and result aggregation
+  agree; a failed process cannot become successful by claiming passing records.
 
 This works for any language. The contract is process-shaped, not
 language-shaped.
@@ -3080,25 +3106,93 @@ the missing implementation surfaces immediately.
 test`, `nix build`, and similar shells that don't emit a JSON
 verdict line still satisfy the contract via their exit code alone:
 the dispatcher interprets exit 0 as `pass=true` (stdout surfaced as
-evidence), exit 77 as a skip (per the GNU test-suite /
-`AM_TESTS_ENVIRONMENT` convention — the verifier reports a missing
-prerequisite rather than a real failure), and any other non-zero
-exit as `pass=false` (stderr surfaced as evidence). The third
-verdict propagates through dispatch as `skipped=true` on
-`VerifierVerdict` and persists as `Verdict::Skipped` in the status
-cache, so a verifier that legitimately cannot run does not count
-as a failure against the molecule. It also cannot satisfy an observed-pass
-criterion. Exit 77 applies to configured batches as well as fallback commands;
-explicit `skipped: true` JSON retains the same meaning with either exit zero or
-77. The JSON wire shape and cache verdict strings remain unchanged. Previously
-unversioned criterion evidence is discarded once because old parsers conflated
-ignored tests with passes; other cache state is retained.
+evidence), exit 77 as skipped, and other nonzero exits as failures. Skipped
+execution is not an observed pass, and exit 77 alone does not authorize worker
+acceptance. Unstructured, ignored-test and legacy skips without checked
+platform/capability metadata remain blocking. A JSON claim cannot override a
+failed process; conflicting or duplicate verdicts fail closed. Status-cache
+verdicts remain `pass`, `fail`, and `skipped`; verifier evidence version 2
+invalidates older criterion rows once while retaining unrelated cache state.
 
 Verifiers that emit a JSON line
 are preferred — the explicit evidence string clicks straight to the
 violation site — but the exit-code fallback keeps simple
 presence/absence checks viable without wrapping each one in a Rust
 walk.
+
+##### Sandbox-capability results
+
+The worker-stage policy is distinct from later host testing. Workers execute
+locally in their sandbox; no SSH access, host-verifier bridge, remote per-bead
+receipts, host provisioning or live Darwin evidence is required. Host system
+tests remain a separate end-of-loop/integration-test-branch stage, configured
+by the consumer; worker acceptance never substitutes for that stage.
+[test](worker_accepts_foreign_platform_and_declared_capability_skips_without_verifying_them)
+
+A modern JSON-lines producer emits exactly one record per requested target:
+
+```json
+{"target":"linux-check","outcome":"passed","evidence":"executed assertions","execution":{"platform":"x86_64-linux","platforms":["x86_64-linux"],"capabilities":[]}}
+{"target":"darwin-check","outcome":"skipped","evidence":"not executed","execution":{"platform":"x86_64-linux","platforms":["aarch64-darwin","x86_64-darwin"],"capabilities":[]},"skip_reason":{"kind":"foreign-platform","reason":"macOS APIs unavailable on Linux"}}
+{"target":"vm-check","outcome":"skipped","evidence":"not executed","execution":{"platform":"x86_64-linux","platforms":["x86_64-linux"],"capabilities":["kvm"]},"skip_reason":{"kind":"missing-capability","capability":"kvm","reason":"sandbox has no /dev/kvm"}}
+```
+
+`outcome` is `passed`, `failed` or `skipped`. `target` and `evidence` are required;
+modern outcomes also require `execution`. Its `platform` is the actual canonical
+`<architecture>-<OS>` platform (`darwin` for macOS); `platforms` declares
+applicability (empty means all platforms), and `capabilities` declares local
+runtime prerequisites. Platform/capability tokens are nonempty ASCII letters,
+digits, `-`, `_` or `.`; duplicate requirements are invalid. `skip_reason` is
+required for a modern skip and forbidden on passes/failures. Its `reason` is
+nonblank. Unknown fields/variants, missing or unrequested targets, duplicates,
+and contradictions are rejected. Legacy `pass:false` is a failure unless the
+explicit `skipped:true` flag is present; evidence text is never classified.
+Legacy skips without metadata cannot gain policy permission.
+[test](invalid_json_batches_fail_closed_without_partial_pass_cache_entries)
+
+Wrix-compatible configuration (repeat the same runner fields under
+`[runner.system.wrix]` for system-tier targets):
+
+```toml
+[runner.check.wrix]
+match = '^verify:(.+)$'
+command = 'nix run .#verify -- {targets}'
+target = '{capture_1}'
+join = ' '
+parse = 'json-lines'
+cwd = '.'
+skip_policy = 'sandbox-capability'
+skip_capabilities = ['container-runtime', 'kvm']
+```
+
+`skip_policy` defaults to `deny`; `sandbox-capability` requires `json-lines`.
+`skip_capabilities` is an explicit allowlist, empty by default. A foreign-platform
+skip is permitted only when the reported actual platform matches Loom's execution
+platform and is outside declared applicability. A missing-capability skip is
+permitted only on an applicable platform, with the unavailable capability both
+declared by the target and allowlisted by the runner. The producer owns honest
+local capability preflight: check availability before executing, preserve the
+actual execution failure as failed, and never retrofit requirements to excuse
+an assertion failure, broken invocation, arbitrary missing resource or other
+unexpected skip. Loom checks declarations/policy consistency, not the truth of
+an external producer's claim; this is not remote verification evidence.
+[test](sandbox_policy_permits_only_declared_platform_or_capability_gaps)
+
+A tier command containing permitted skips exits 77, including in a worker.
+Only worker `loom gate verify` (`LOOM_INSIDE=1`) may accept an otherwise clean
+run with those permitted skips and exit 0; its diagnostics say coverage remains
+unverified. A failure, dispatch error, unpermitted skip or aggregation conflict
+still blocks. Outside the worker, `gate verify` retains exit 77 for permitted
+skips. Skipped targets stay `skipped`, never `pass`, in cache and reports;
+structured execution metadata, reason and policy decision survive in the cache
+`evidence` JSON and `.loom/logs/gate/verifier-results.jsonl`. Worker acceptance
+writes an `accepted-with-skips` lifecycle log without hook coverage; it cannot
+construct `VerifiedScope`, validate `GateSuccess` or authorize a push marker.
+Marker schema 4 rejects older markers, and host hooks do not consume worker
+acceptance/cache as proof of passed system coverage. The synthetic native CLI
+fixture uses the same seam with `bash producer.sh {targets}`; it proves parser
+and runner integration, not the consumer's system tests.
+[test](worker_accepts_foreign_platform_and_declared_capability_skips_without_verifying_them)
 
 ##### `--files` scope handling
 

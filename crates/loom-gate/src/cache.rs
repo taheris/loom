@@ -28,9 +28,8 @@ use thiserror::Error;
 use crate::annotation::{Annotation, ParsedSpecs, Tier};
 use crate::integrity::IntegrityFinding;
 
-// Earlier parsers recorded ignored tests as passes. Their evidence cannot be
-// distinguished from real passes, so invalidate unversioned rows once.
-const EVIDENCE_VERSION: &str = "1";
+// Older parsers allowed malformed reports and failed producers to certify passes.
+const EVIDENCE_VERSION: &str = "2";
 const EVIDENCE_VERSION_KEY: &str = "verifier_evidence_version";
 
 const SCHEMA: &str = "

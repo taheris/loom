@@ -79,47 +79,73 @@ fn fixture_dir() -> TempDir {
 }
 
 #[test]
-fn batch_exit_77_preserves_skips_even_with_a_pass_on_stdout() {
+fn batch_exit_77_parses_individual_results_and_cannot_hide_failure() {
     let dir = fixture_dir();
     let command = write_script(
         dir.path(),
         "skip.sh",
-        "printf '%s\\n' '{\"target\":\"a\",\"pass\":true,\"evidence\":\"needs service\"}'\nexit 77\n",
+        "printf '%s\\n' '{\"target\":\"a\",\"pass\":false,\"evidence\":\"actual failure\"}' '{\"target\":\"b\",\"pass\":false,\"skipped\":true,\"evidence\":\"needs service\"}'\nexit 77\n",
     );
-    let fallback = run_system(
-        &[ann(Tier::System, &command)],
-        &[],
+    let runner = RunnerSpec::compile(
+        "skip",
+        None,
+        &command,
+        "{name}",
+        " ",
+        BuiltinParser::JsonLines,
+        None,
+    )
+    .unwrap();
+    let annotations = [ann(Tier::Test, "a"), ann(Tier::Test, "b")];
+    let outcomes = run_with_runners(
+        &annotations,
+        &[runner],
         &DispatchOptions::default(),
         dir.path(),
         &TierCwds::default(),
     );
-    let fallback = fallback[0].as_ref().unwrap();
-    assert!(fallback.verdict.skipped);
-    assert!(!fallback.verdict.pass);
-    for parser in [
-        BuiltinParser::ExitCode,
+    let failed = &outcomes[0].as_ref().unwrap().verdict;
+    let skipped = &outcomes[1].as_ref().unwrap().verdict;
+    assert_eq!(failed.outcome(), loom_gate::cache::Verdict::Fail);
+    assert_eq!(skipped.outcome(), loom_gate::cache::Verdict::Skipped);
+    assert!(!failed.accepted());
+    assert!(!skipped.accepted());
+    assert!(failed.producer_error.is_some());
+    assert!(skipped.evidence.contains("needs service"));
+}
+
+#[test]
+fn shared_annotation_targets_are_sent_once_without_duplicate_results() {
+    let dir = fixture_dir();
+    let command = write_script(
+        dir.path(),
+        "producer.sh",
+        "set -eu\nfor target in \"$@\"; do printf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"executed\"}\\n' \"$target\"; done\n",
+    );
+    let runner = RunnerSpec::compile(
+        "shared",
+        None,
+        format!("{command} {{targets}}"),
+        "{name}",
+        " ",
         BuiltinParser::JsonLines,
-        BuiltinParser::LibtestJson,
-        BuiltinParser::JunitXml,
-    ] {
-        let runner =
-            RunnerSpec::compile("skip", None, &command, "{name}", " ", parser, None).unwrap();
-        let annotations = [ann(Tier::Test, "a"), ann(Tier::Test, "b")];
-        let outcomes = run_with_runners(
-            &annotations,
-            &[runner],
-            &DispatchOptions::default(),
-            dir.path(),
-            &TierCwds::default(),
-        );
-        assert_eq!(outcomes.len(), 2);
-        for outcome in outcomes {
-            let outcome = outcome.unwrap();
-            assert!(outcome.verdict.skipped);
-            assert!(!outcome.verdict.pass);
-            assert!(outcome.verdict.evidence.contains("needs service"));
-        }
-    }
+        None,
+    )
+    .unwrap();
+    let annotations = [ann(Tier::Check, "shared"), ann(Tier::Check, "shared")];
+    let outcomes = run_with_runners(
+        &annotations,
+        &[runner],
+        &DispatchOptions::default(),
+        dir.path(),
+        &TierCwds::default(),
+    );
+    assert_eq!(outcomes.len(), 2);
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| outcome.as_ref().unwrap().verdict.accepted())
+    );
 }
 
 #[test]

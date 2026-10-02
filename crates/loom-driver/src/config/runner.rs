@@ -21,6 +21,15 @@ pub enum Parser {
     ExitCode,
 }
 
+/// Whether declared sandbox prerequisite gaps are acceptable worker feedback.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkipPolicy {
+    #[default]
+    Deny,
+    SandboxCapability,
+}
+
 /// One named runner under a tier: `[runner.<tier>.<name>]`. Describes how
 /// to recognise its annotations, build the batch command, and parse
 /// per-target verdicts out of the runner's stdout.
@@ -61,6 +70,11 @@ pub struct RunnerEntry {
     /// the input-query protocol; omitted leaves them on the conservative
     /// always-run default.
     pub inputs: Option<String>,
+
+    #[serde(default)]
+    pub skip_policy: SkipPolicy,
+    #[serde(default)]
+    pub skip_capabilities: Vec<String>,
 }
 
 /// Configuration for one `[runner.<tier>]` block.
@@ -100,6 +114,11 @@ pub struct RunnerTier {
     /// Implicit default runner's input-query template (the `inputs` field).
     pub inputs: Option<String>,
 
+    #[serde(default)]
+    pub skip_policy: SkipPolicy,
+    #[serde(default)]
+    pub skip_capabilities: Vec<String>,
+
     /// Named runners declared under this tier as `[runner.<tier>.<name>]`.
     #[serde(flatten)]
     pub runners: BTreeMap<String, RunnerEntry>,
@@ -116,7 +135,9 @@ impl RunnerTier {
             || self.target.is_some()
             || self.join.is_some()
             || self.parse.is_some()
-            || self.inputs.is_some();
+            || self.inputs.is_some()
+            || self.skip_policy != SkipPolicy::Deny
+            || !self.skip_capabilities.is_empty();
         if !has_runner_field {
             return None;
         }
@@ -128,6 +149,8 @@ impl RunnerTier {
             parse: self.parse,
             cwd: self.cwd.clone(),
             inputs: self.inputs.clone(),
+            skip_policy: self.skip_policy,
+            skip_capabilities: self.skip_capabilities.clone(),
         })
     }
 }
@@ -444,6 +467,22 @@ inputs = "verifier {print_inputs}"
             .default_runner()
             .expect("an inputs-bearing tier block forms a default runner");
         assert_eq!(default.inputs.as_deref(), Some("verifier {print_inputs}"));
+    }
+
+    #[test]
+    fn sandbox_skip_configuration_has_explicit_fail_closed_defaults() {
+        let config = LoomConfig::from_toml_str("[runner.check.wrix]\ncommand='verify {targets}'\nparse='json-lines'\nskip_policy='sandbox-capability'\nskip_capabilities=['container-runtime','kvm']\n").unwrap();
+        let runner = &config.runner.tier("check").unwrap().runners["wrix"];
+        assert_eq!(runner.skip_policy, SkipPolicy::SandboxCapability);
+        assert_eq!(runner.skip_capabilities, ["container-runtime", "kvm"]);
+        assert_eq!(RunnerEntry::default().skip_policy, SkipPolicy::Deny);
+        assert!(RunnerEntry::default().skip_capabilities.is_empty());
+        assert!(
+            LoomConfig::from_toml_str(
+                "[runner.check]\ncommand='verify'\nskip_policy='allow-anything'\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]

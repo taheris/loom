@@ -37,9 +37,9 @@ use crate::gate_outcome::{
     scope_fingerprint,
 };
 
-/// Marker schema version this binary understands. Higher versions are
+/// Marker schema version this binary understands. Other versions are
 /// rejected with `MarkerError::UnsupportedSchema`.
-const CURRENT_VERSION: u32 = 3;
+const CURRENT_VERSION: u32 = 4;
 
 /// Canonical marker location relative to the workspace root, per
 /// `specs/gate.md` § Marker — *File location and lifecycle*.
@@ -268,7 +268,7 @@ impl MarkerProof {
 
 impl ParsedMarkerProof {
     fn validate(self, workspace: &Path) -> Result<MarkerProof, MarkerError> {
-        if self.version > CURRENT_VERSION {
+        if self.version != CURRENT_VERSION {
             return Err(MarkerError::UnsupportedSchema {
                 found: self.version,
                 current: CURRENT_VERSION,
@@ -468,7 +468,7 @@ pub enum MarkerError {
         #[source]
         source: serde_json::Error,
     },
-    /// marker schema version {found} is newer than the supported version {current}
+    /// marker schema version {found} is not the supported version {current}
     UnsupportedSchema { found: u32, current: u32 },
     /// workspace porcelain is not clean — uncommitted changes invalidate the marker
     PorcelainDirty,
@@ -1084,6 +1084,42 @@ mod tests {
             "mint's write path must match the wrapper's read path: \
              sentinel must NOT execute",
         );
+    }
+
+    #[test]
+    fn markers_from_before_strict_result_policy_are_rejected() {
+        let dir = init_test_workspace();
+        let (_log, success) = good_gate_success(dir.path());
+        MarkerProof::mint(success, dir.path(), &loom_driver::clock::SystemClock::new()).unwrap();
+        let path = dir.path().join(MARKER_PATH);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["version"] = serde_json::json!(CURRENT_VERSION - 1);
+        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(matches!(
+            verify_marker(dir.path()),
+            Err(MarkerError::UnsupportedSchema { .. })
+        ));
+    }
+
+    #[test]
+    fn worker_acceptance_with_skips_cannot_validate_existing_push_marker() {
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        let (log, success) = good_gate_success(workspace);
+        let clock = loom_driver::clock::SystemClock::new();
+        MarkerProof::mint(success, workspace, &clock).expect("mint all-pass evidence");
+        let mut runs = parse_gate_runs_from_jsonl(log.path());
+        for run in &mut runs {
+            if run.phase == crate::gate_outcome::GatePhase::Verify {
+                run.status = crate::gate_outcome::GateRunStatus::AcceptedWithSkips;
+            }
+        }
+        fs::write(log.path(), "").unwrap();
+        for run in runs {
+            crate::gate_outcome::append_gate_run_lifecycle_events(log.path(), &run).unwrap();
+        }
+        assert!(verify_marker(workspace).is_err());
     }
 
     fn good_gate_success(workspace: &Path) -> (tempfile::NamedTempFile, GateSuccess) {

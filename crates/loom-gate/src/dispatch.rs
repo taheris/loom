@@ -55,12 +55,20 @@ use crate::runner::{
 /// for running was not met — the dispatcher surfaces those as the
 /// third verdict alongside pass/fail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "WireVerifierVerdict")]
+#[serde(try_from = "WireVerifierVerdict")]
 pub struct VerifierVerdict {
     pub pass: bool,
     pub evidence: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skipped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution: Option<crate::runner::result::Execution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<crate::runner::result::SkipReason>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_permitted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub producer_error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -71,13 +79,23 @@ struct WireVerifierVerdict {
     skipped: bool,
 }
 
-impl From<WireVerifierVerdict> for VerifierVerdict {
-    fn from(wire: WireVerifierVerdict) -> Self {
-        Self {
-            pass: wire.pass && !wire.skipped,
-            evidence: wire.evidence,
-            skipped: wire.skipped,
+impl TryFrom<WireVerifierVerdict> for VerifierVerdict {
+    type Error = String;
+
+    fn try_from(wire: WireVerifierVerdict) -> Result<Self, Self::Error> {
+        if wire.pass && wire.skipped {
+            return Err("contradictory pass=true and skipped=true".into());
         }
+        Ok(Self::from_outcome(
+            if wire.skipped {
+                Verdict::Skipped
+            } else if wire.pass {
+                Verdict::Pass
+            } else {
+                Verdict::Fail
+            },
+            wire.evidence,
+        ))
     }
 }
 
@@ -98,6 +116,26 @@ impl VerifierVerdict {
             pass: outcome == Verdict::Pass,
             skipped: outcome == Verdict::Skipped,
             evidence,
+            execution: None,
+            skip_reason: None,
+            skip_permitted: false,
+            producer_error: None,
+        }
+    }
+
+    pub const fn accepted(&self) -> bool {
+        self.producer_error.is_none() && (self.pass || (self.skipped && self.skip_permitted))
+    }
+
+    /// Structured metadata is retained in cache evidence, never in a passing skip row.
+    ///
+    /// # Errors
+    /// Returns a serialization error if the evidence cannot be encoded.
+    pub fn cache_evidence(&self) -> Result<String, serde_json::Error> {
+        if self.execution.is_some() || self.producer_error.is_some() {
+            serde_json::to_string(self)
+        } else {
+            Ok(self.evidence.clone())
         }
     }
 }
@@ -126,6 +164,8 @@ pub enum DispatchError {
         #[source]
         source: serde_json::Error,
     },
+    /// verifier `{command}` produced an invalid verdict: {detail}
+    InvalidVerdict { command: String, detail: String },
     /// runner zero-match: {source}
     ZeroMatch {
         #[source]
@@ -565,7 +605,7 @@ fn dispatch_group(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
-    if matches!(group.spec.parse, BuiltinParser::ExitCode) || skipped {
+    if matches!(group.spec.parse, BuiltinParser::ExitCode) {
         let pass = output.status.success();
         let evidence = if pass || (skipped && stderr.trim().is_empty()) {
             stdout.trim().to_string()
@@ -578,11 +618,16 @@ fn dispatch_group(
             .map(|matched| {
                 Ok(DispatchOutcome {
                     annotations: vec![matched.annotation.clone()],
-                    verdict: VerifierVerdict {
-                        pass,
-                        evidence: evidence.clone(),
-                        skipped,
-                    },
+                    verdict: VerifierVerdict::from_outcome(
+                        if skipped {
+                            Verdict::Skipped
+                        } else if pass {
+                            Verdict::Pass
+                        } else {
+                            Verdict::Fail
+                        },
+                        evidence.clone(),
+                    ),
                 })
             })
             .collect();
@@ -604,13 +649,70 @@ fn dispatch_group(
                     .collect();
             }
         };
+    let requested = group
+        .matched
+        .iter()
+        .map(|matched| matched.rendered_target.as_str())
+        .collect::<HashSet<_>>();
+    if group.spec.parse == BuiltinParser::JsonLines
+        && let Some(unexpected) = parsed
+            .keys()
+            .find(|target| !requested.contains(target.as_str()))
+    {
+        return group
+            .matched
+            .iter()
+            .map(|_| {
+                Err(DispatchError::InvalidVerdict {
+                    command: command.clone(),
+                    detail: format!("unexpected target `{unexpected}`"),
+                })
+            })
+            .collect();
+    }
+    let has_failure = parsed
+        .values()
+        .any(|verdict| verdict.outcome == Verdict::Fail);
+    let has_skip = parsed
+        .values()
+        .any(|verdict| verdict.outcome == Verdict::Skipped);
+    let code = output.status.code();
+    let consistent = if has_failure {
+        code.is_some_and(|code| code != 0 && code != SKIP_EXIT_CODE)
+    } else if has_skip {
+        code == Some(SKIP_EXIT_CODE)
+    } else {
+        output.status.success()
+    };
+    let producer_error = if (group.spec.parse == BuiltinParser::JsonLines && !consistent)
+        || (!output.status.success() && !skipped && !has_failure)
+        || (skipped && !has_skip)
+    {
+        Some(format!(
+            "producer exit {code:?} contradicts per-target outcomes"
+        ))
+    } else {
+        None
+    };
     group
         .matched
         .iter()
         .map(|matched| match parsed.get(&matched.rendered_target) {
             Some(verdict) => Ok(DispatchOutcome {
                 annotations: vec![matched.annotation.clone()],
-                verdict: VerifierVerdict::from_outcome(verdict.outcome, verdict.evidence.clone()),
+                verdict: VerifierVerdict {
+                    execution: verdict.execution.clone(),
+                    skip_reason: verdict.skip_reason.clone(),
+                    skip_permitted: verdict.outcome == Verdict::Skipped
+                        && crate::runner::result::permits_skip(
+                            group.spec.skip_policy,
+                            &group.spec.skip_capabilities,
+                            verdict.execution.as_ref(),
+                            verdict.skip_reason.as_ref(),
+                        ),
+                    producer_error: producer_error.clone(),
+                    ..VerifierVerdict::from_outcome(verdict.outcome, verdict.evidence.clone())
+                },
             }),
             None => Err(DispatchError::MissingFromBatchOutput {
                 runner: group.spec.name.clone(),
@@ -673,11 +775,17 @@ fn run_with_fallback(
             .map_err(|e| DispatchError::ZeroMatch { source: e })?;
     }
     if let Some(verdict) = reported {
-        return Ok(if skipped {
-            VerifierVerdict::from_outcome(Verdict::Skipped, verdict.evidence)
-        } else {
-            verdict
-        });
+        let mut verdict = verdict;
+        if (skipped && !verdict.skipped)
+            || (!output.status.success() && !skipped && verdict.pass)
+            || (output.status.success() && verdict.skipped)
+        {
+            verdict.producer_error = Some(format!(
+                "producer exit {:?} contradicts JSON verdict",
+                output.status.code()
+            ));
+        }
+        return Ok(verdict);
     }
     if skipped {
         let evidence = if stderr.trim().is_empty() {
@@ -685,21 +793,20 @@ fn run_with_fallback(
         } else {
             stderr.into_owned()
         };
-        return Ok(VerifierVerdict {
-            pass: false,
-            evidence,
-            skipped: true,
-        });
+        return Ok(VerifierVerdict::from_outcome(Verdict::Skipped, evidence));
     }
-    Ok(VerifierVerdict {
-        pass: output.status.success(),
-        evidence: if output.status.success() {
+    Ok(VerifierVerdict::from_outcome(
+        if output.status.success() {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
+        if output.status.success() {
             stdout.into_owned()
         } else {
             stderr.into_owned()
         },
-        skipped: false,
-    })
+    ))
 }
 
 fn filter_by_files<'a>(
@@ -766,13 +873,22 @@ fn parse_verdict_optional(
     command: &str,
     stdout: &str,
 ) -> Result<Option<VerifierVerdict>, DispatchError> {
-    for raw in stdout.lines().rev() {
+    let mut reported = None;
+    for raw in stdout.lines() {
         let line = raw.trim();
         if line.is_empty() || !line.starts_with('{') {
             continue;
         }
         match serde_json::from_str::<VerifierVerdict>(line) {
-            Ok(v) => return Ok(Some(v)),
+            Ok(v) => {
+                if reported.is_some() {
+                    return Err(DispatchError::InvalidVerdict {
+                        command: command.to_string(),
+                        detail: "duplicate verdict".into(),
+                    });
+                }
+                reported = Some(v);
+            }
             Err(source) if line_attempts_verdict(line) => {
                 return Err(DispatchError::MalformedVerdict {
                     command: command.to_string(),
@@ -782,18 +898,21 @@ fn parse_verdict_optional(
             Err(_) => {}
         }
     }
-    Ok(None)
+    Ok(reported)
 }
 
 /// `true` when the line parses as a JSON object with a `pass` key —
 /// the signal that the verifier is attempting to speak the verdict
 /// contract.
 fn line_attempts_verdict(line: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(line)
-        .ok()
-        .as_ref()
-        .and_then(serde_json::Value::as_object)
-        .is_some_and(|o| o.contains_key("pass"))
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(value) => value.as_object().is_some_and(|object| {
+            object.contains_key("pass")
+                || object.contains_key("outcome")
+                || object.contains_key("skipped")
+        }),
+        Err(_) => true,
+    }
 }
 
 #[cfg(test)]
@@ -814,23 +933,17 @@ mod tests {
 
     #[test]
     fn skipped_wire_verdict_cannot_claim_an_observed_pass() {
-        let verdict: VerifierVerdict =
-            serde_json::from_str(r#"{"pass":true,"evidence":"not run","skipped":true}"#).unwrap();
-        assert!(!verdict.pass);
-        assert!(verdict.skipped);
-        assert_eq!(verdict.outcome(), Verdict::Skipped);
-        let serialized = serde_json::to_value(&verdict).unwrap();
-        assert_eq!(serialized["pass"], false);
-        assert_eq!(serialized["skipped"], true);
+        assert!(
+            serde_json::from_str::<VerifierVerdict>(
+                r#"{"pass":true,"evidence":"not run","skipped":true}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn verdict_round_trips_through_json() {
-        let v = VerifierVerdict {
-            pass: true,
-            evidence: "ok".into(),
-            skipped: false,
-        };
+        let v = VerifierVerdict::from_outcome(Verdict::Pass, "ok".into());
         let s = serde_json::to_string(&v).unwrap();
         assert_eq!(s, r#"{"pass":true,"evidence":"ok"}"#);
         let back: VerifierVerdict = serde_json::from_str(&s).unwrap();
@@ -839,11 +952,7 @@ mod tests {
 
     #[test]
     fn skipped_verdict_serializes_with_skipped_flag() {
-        let v = VerifierVerdict {
-            pass: false,
-            evidence: "no image".into(),
-            skipped: true,
-        };
+        let v = VerifierVerdict::from_outcome(Verdict::Skipped, "no image".into());
         let s = serde_json::to_string(&v).unwrap();
         assert_eq!(s, r#"{"pass":false,"evidence":"no image","skipped":true}"#);
         let back: VerifierVerdict = serde_json::from_str(&s).unwrap();
@@ -880,9 +989,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_verdict_optional_falls_through_on_unparseable_json() {
+    fn parse_verdict_optional_rejects_unparseable_json() {
         let stdout = "{\"pass\": maybe}\n";
-        assert!(parse_verdict_optional("cmd", stdout).unwrap().is_none());
+        assert!(matches!(
+            parse_verdict_optional("cmd", stdout),
+            Err(DispatchError::MalformedVerdict { .. })
+        ));
+    }
+
+    #[test]
+    fn fallback_duplicate_verdict_cannot_overwrite_failure() {
+        let stdout = "{\"pass\":false,\"evidence\":\"failed\"}\n{\"pass\":true,\"evidence\":\"overwritten\"}\n";
+        assert!(matches!(
+            parse_verdict_optional("cmd", stdout),
+            Err(DispatchError::InvalidVerdict { .. })
+        ));
     }
 
     #[test]

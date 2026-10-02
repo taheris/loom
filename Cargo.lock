@@ -2543,6 +2543,8 @@ dependencies = [
  "loom-driver",
  "loom-events",
  "loom-protocol",
+ "loom-test-support",
+ "proptest",
  "pulldown-cmark",
  "regex",
  "roxmltree",

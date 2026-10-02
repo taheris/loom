@@ -1490,17 +1490,63 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
         eprintln!("--- loom gate verify [{tier}] ---");
         match dispatch_tier(workspace, args, tier) {
             Ok(0) => {}
-            Ok(code) => combined = combined.max(code),
+            Ok(code) => combined = combine_verifier_codes(combined, code),
             Err(err) => {
                 eprintln!("loom gate verify [{tier}]: {err:#}");
-                combined = combined.max(1);
+                combined = 1;
             }
         }
     }
-    if combined != 0 {
+    if combined == loom_gate::dispatch::SKIP_EXIT_CODE
+        && std::env::var("LOOM_INSIDE").as_deref() == Ok("1")
+    {
+        eprintln!(
+            "loom gate verify: worker accepted with permitted skips; coverage remains unverified; no push marker evidence"
+        );
+        let path = workspace.join(".loom/logs/gate/worker-acceptance.jsonl");
+        let run = loom_gate::GateRun {
+            phase: loom_gate::GatePhase::Verify,
+            push_range: args.diff().unwrap_or("non-diff-worker-scope").to_string(),
+            tree_oid: loom_driver::git::head_tree_oid_sync(workspace)?.to_string(),
+            config_digest: blake3::hash(&std::fs::read(LoomConfig::resolve_path(workspace))?)
+                .to_hex()
+                .to_string(),
+            log_path: path.clone(),
+            exit_code: Some(0),
+            status: loom_gate::GateRunStatus::AcceptedWithSkips,
+            marker: None,
+            covered_hooks: Vec::new(),
+        };
+        loom_gate::append_gate_run_lifecycle_events(&path, &run)?;
+    } else if combined != 0 {
         std::process::exit(combined);
     }
     Ok(())
+}
+
+fn combine_verifier_codes(left: i32, right: i32) -> i32 {
+    if [left, right]
+        .into_iter()
+        .any(|code| code != 0 && code != loom_gate::dispatch::SKIP_EXIT_CODE)
+    {
+        1
+    } else if left == loom_gate::dispatch::SKIP_EXIT_CODE
+        || right == loom_gate::dispatch::SKIP_EXIT_CODE
+    {
+        loom_gate::dispatch::SKIP_EXIT_CODE
+    } else {
+        0
+    }
+}
+
+const fn verifier_code(verdict: &loom_gate::dispatch::VerifierVerdict) -> i32 {
+    if !verdict.accepted() {
+        1
+    } else if verdict.skipped {
+        loom_gate::dispatch::SKIP_EXIT_CODE
+    } else {
+        0
+    }
 }
 
 fn verify_tiers_for_args(workspace: &Path, args: &GateScope) -> anyhow::Result<Vec<Tier>> {
@@ -1666,7 +1712,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Resu
 
     let mut combined: i32 = 0;
     if tier == Tier::Check && args.target().is_none() {
-        combined = combined.max(run_integrity_gate(workspace, args)?);
+        combined = combine_verifier_codes(combined, run_integrity_gate(workspace, args)?);
     }
     if selected.is_empty() {
         eprintln!("loom gate [{tier}]: no annotations matched");
@@ -1711,21 +1757,35 @@ fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Resu
                 match result {
                     Ok(outcome) => {
                         let verdict = outcome.verdict.outcome();
+                        combined =
+                            combine_verifier_codes(combined, verifier_code(&outcome.verdict));
+                        if let Some(error) = &outcome.verdict.producer_error {
+                            eprintln!("loom gate [test] producer error: {error}");
+                        }
                         match verdict {
                             Verdict::Pass => {}
                             Verdict::Skipped => {
-                                eprintln!("loom gate [test] SKIP: {}", outcome.verdict.evidence);
+                                eprintln!(
+                                    "loom gate [test] SKIP (coverage unverified, permitted={}): {:?}\n{}",
+                                    outcome.verdict.skip_permitted,
+                                    outcome
+                                        .annotations
+                                        .iter()
+                                        .map(|annotation| &annotation.target)
+                                        .collect::<Vec<_>>(),
+                                    outcome.verdict.cache_evidence()?
+                                );
                             }
                             Verdict::Fail => {
                                 eprintln!("loom gate [test] failed:\n{}", outcome.verdict.evidence);
-                                combined = combined.max(1);
+                                combined = 1;
                             }
                         }
                         persist_outcome(workspace, &cache, &outcome, verdict, now_ms, &commit);
                     }
                     Err(err) => {
                         eprintln!("loom gate [test]: {err:#}");
-                        combined = combined.max(1);
+                        combined = 1;
                     }
                 }
             }
@@ -1866,13 +1926,18 @@ fn run_check_with_progress(
     for (ann, result) in check_only.iter().zip(results) {
         match result {
             Ok(outcome) if outcome.verdict.skipped => {
-                let _ = writeln!(stderr, "loom gate [check] SKIP: {}", ann.target);
+                combined = combine_verifier_codes(combined, verifier_code(&outcome.verdict));
+                let _ = writeln!(
+                    stderr,
+                    "loom gate [check] SKIP (coverage unverified, permitted={}): {}",
+                    outcome.verdict.skip_permitted, ann.target
+                );
                 for line in outcome.verdict.evidence.lines().take(5) {
                     let _ = writeln!(stderr, "  {line}");
                 }
                 persist_outcome(repo_root, cache, &outcome, Verdict::Skipped, now_ms, commit);
             }
-            Ok(outcome) if outcome.verdict.pass => {
+            Ok(outcome) if outcome.verdict.pass && outcome.verdict.accepted() => {
                 persist_outcome(repo_root, cache, &outcome, Verdict::Pass, now_ms, commit);
             }
             Ok(outcome) => {
@@ -1880,15 +1945,22 @@ fn run_check_with_progress(
                 for line in outcome.verdict.evidence.lines().take(5) {
                     let _ = writeln!(stderr, "  {line}");
                 }
-                persist_outcome(repo_root, cache, &outcome, Verdict::Fail, now_ms, commit);
-                combined = combined.max(1);
+                persist_outcome(
+                    repo_root,
+                    cache,
+                    &outcome,
+                    outcome.verdict.outcome(),
+                    now_ms,
+                    commit,
+                );
+                combined = 1;
             }
             Err(err) => {
                 let _ = writeln!(stderr, "loom gate [check] dispatch error: {}", ann.target);
                 for line in format!("{err:#}").lines().take(5) {
                     let _ = writeln!(stderr, "  {line}");
                 }
-                combined = combined.max(1);
+                combined = 1;
             }
         }
     }
@@ -1950,13 +2022,18 @@ fn run_system_with_progress(
                     if is_tty {
                         let _ = write!(stderr, "\x1b[2K\r");
                     }
-                    let _ = writeln!(stderr, "loom gate [{tier}] SKIP: {}", ann.target);
+                    combined = combine_verifier_codes(combined, verifier_code(&outcome.verdict));
+                    let _ = writeln!(
+                        stderr,
+                        "loom gate [{tier}] SKIP (coverage unverified, permitted={}): {}",
+                        outcome.verdict.skip_permitted, ann.target
+                    );
                     for line in outcome.verdict.evidence.lines().take(5) {
                         let _ = writeln!(stderr, "  {line}");
                     }
                     persist_outcome(repo_root, cache, &outcome, Verdict::Skipped, now_ms, commit);
                 }
-                Ok(outcome) if outcome.verdict.pass => {
+                Ok(outcome) if outcome.verdict.pass && outcome.verdict.accepted() => {
                     persist_outcome(repo_root, cache, &outcome, Verdict::Pass, now_ms, commit);
                 }
                 Ok(outcome) => {
@@ -1967,8 +2044,15 @@ fn run_system_with_progress(
                     for line in outcome.verdict.evidence.lines().take(5) {
                         let _ = writeln!(stderr, "  {line}");
                     }
-                    persist_outcome(repo_root, cache, &outcome, Verdict::Fail, now_ms, commit);
-                    combined = combined.max(1);
+                    persist_outcome(
+                        repo_root,
+                        cache,
+                        &outcome,
+                        outcome.verdict.outcome(),
+                        now_ms,
+                        commit,
+                    );
+                    combined = 1;
                 }
                 Err(err) => {
                     if is_tty {
@@ -1978,7 +2062,7 @@ fn run_system_with_progress(
                     for line in format!("{err:#}").lines().take(5) {
                         let _ = writeln!(stderr, "  {line}");
                     }
-                    combined = combined.max(1);
+                    combined = 1;
                 }
             }
         }
@@ -2011,6 +2095,21 @@ fn persist_outcome(
     now_ms: i64,
     commit: &str,
 ) {
+    let verdict = if verdict == Verdict::Pass && outcome.verdict.producer_error.is_some() {
+        Verdict::Fail
+    } else {
+        verdict
+    };
+    let evidence = match outcome.verdict.cache_evidence() {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            eprintln!("loom gate: cannot encode verifier evidence: {error}");
+            return;
+        }
+    };
+    if let Err(error) = append_verifier_report(workspace, outcome, now_ms) {
+        eprintln!("loom gate: cannot persist verifier report: {error:#}");
+    }
     for ann in &outcome.annotations {
         let source_spec = if ann.source_spec.is_absolute() {
             ann.source_spec.clone()
@@ -2032,12 +2131,39 @@ fn persist_outcome(
             last_run_ts_ms: now_ms,
             last_run_commit: commit.to_string(),
             verdict,
-            evidence: outcome.verdict.evidence.clone(),
+            evidence: evidence.clone(),
         };
         if let Err(err) = cache.upsert(&row) {
             eprintln!("loom gate: failed to upsert cache row: {err:#}");
         }
     }
+}
+
+fn append_verifier_report(
+    workspace: &Path,
+    outcome: &loom_gate::DispatchOutcome,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let directory = workspace.join(".loom/logs/gate");
+    std::fs::create_dir_all(&directory)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("verifier-results.jsonl"))?;
+    for annotation in &outcome.annotations {
+        serde_json::to_writer(
+            &mut file,
+            &serde_json::json!({
+                "kind": "verifier-result", "target": annotation.target, "tier": annotation.tier.as_wire(),
+                "timestamp_ms": now_ms, "execution_platform": loom_gate::runner::result::current_platform(),
+                "outcome": outcome.verdict.outcome().as_wire(), "result": outcome.verdict,
+                "coverage_verified": outcome.verdict.pass && outcome.verdict.producer_error.is_none(),
+            }),
+        )?;
+        writeln!(file)?;
+    }
+    Ok(())
 }
 
 fn criterion_id_for_annotation(

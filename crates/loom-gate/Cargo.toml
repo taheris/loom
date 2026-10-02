@@ -29,6 +29,8 @@ tracing = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
+loom-test-support = { workspace = true }
+proptest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 

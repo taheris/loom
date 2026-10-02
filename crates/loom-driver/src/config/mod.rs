@@ -44,7 +44,7 @@ pub use loom_section::{
 };
 pub use loop_config::{LoopConfig, LoopInfraConfig};
 pub use phase::PhaseKey;
-pub use runner::{Parser, RunnerConfig, RunnerEntry, RunnerTier};
+pub use runner::{Parser, RunnerConfig, RunnerEntry, RunnerTier, SkipPolicy};
 pub use security::SecurityConfig;
 pub use skills::{SkillPathDisplay, SkillRegistration, SkillsConfig};
 pub use suppression::{SuppressionConfig, SuppressionError, SuppressionSelector};

@@ -146,6 +146,7 @@ pub enum GatePhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateRunStatus {
     Success,
+    AcceptedWithSkips,
     Failed,
     Incomplete,
 }
@@ -879,6 +880,7 @@ fn gate_phase_from_wire(phase: &str) -> Option<GatePhase> {
 const fn gate_status_wire(status: GateRunStatus) -> &'static str {
     match status {
         GateRunStatus::Success => "success",
+        GateRunStatus::AcceptedWithSkips => "accepted-with-skips",
         GateRunStatus::Failed => "failed",
         GateRunStatus::Incomplete => "incomplete",
     }
@@ -887,6 +889,7 @@ const fn gate_status_wire(status: GateRunStatus) -> &'static str {
 fn gate_status_from_wire(status: &str) -> Option<GateRunStatus> {
     match status {
         "success" => Some(GateRunStatus::Success),
+        "accepted-with-skips" => Some(GateRunStatus::AcceptedWithSkips),
         "failed" => Some(GateRunStatus::Failed),
         "incomplete" => Some(GateRunStatus::Incomplete),
         _ => None,

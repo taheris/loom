@@ -18,8 +18,11 @@ use loom_driver::config::{self, LoomConfig, RunnerEntry};
 use regex::Regex;
 use thiserror::Error;
 
+pub mod result;
+
 use crate::annotation::{Annotation, Tier};
 use crate::cache::Verdict;
+use result::{Execution, SkipReason, Token};
 
 /// Template string for a batched-tier runner.
 ///
@@ -401,6 +404,8 @@ pub struct ParsedVerdict {
     pub target: String,
     pub outcome: Verdict,
     pub evidence: String,
+    pub execution: Option<Execution>,
+    pub skip_reason: Option<SkipReason>,
 }
 
 /// Runtime form of one `[runner.<tier>.<name>]` entry.
@@ -445,6 +450,8 @@ pub struct RunnerSpec {
     /// into the input-query protocol; `None` leaves them on the
     /// conservative always-run default. See `specs/gate.md` § Runners.
     pub inputs: Option<String>,
+    pub skip_policy: config::SkipPolicy,
+    pub skip_capabilities: Vec<Token>,
 }
 
 impl RunnerSpec {
@@ -486,6 +493,8 @@ impl RunnerSpec {
             cwd,
             tier: None,
             inputs: None,
+            skip_policy: config::SkipPolicy::Deny,
+            skip_capabilities: Vec::new(),
         })
     }
 
@@ -579,7 +588,23 @@ pub fn compile_runner_entry(name: &str, entry: &RunnerEntry) -> Result<RunnerSpe
         Some(config::Parser::ExitCode) => BuiltinParser::ExitCode,
     };
     let cwd = entry.cwd.as_deref().map(PathBuf::from);
-    Ok(RunnerSpec::compile(
+    let skip_capabilities = entry
+        .skip_capabilities
+        .iter()
+        .cloned()
+        .map(Token::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|detail| RunnerError::InvalidOutput {
+            parser: "skip-policy",
+            detail,
+        })?;
+    if entry.skip_policy != config::SkipPolicy::Deny && parse != BuiltinParser::JsonLines {
+        return Err(RunnerError::InvalidOutput {
+            parser: "skip-policy",
+            detail: "sandbox-capability requires json-lines metadata".into(),
+        });
+    }
+    let mut spec = RunnerSpec::compile(
         name,
         entry.match_regex.as_deref(),
         command,
@@ -588,7 +613,10 @@ pub fn compile_runner_entry(name: &str, entry: &RunnerEntry) -> Result<RunnerSpe
         parse,
         cwd,
     )?
-    .with_inputs(entry.inputs.clone()))
+    .with_inputs(entry.inputs.clone());
+    spec.skip_policy = entry.skip_policy;
+    spec.skip_capabilities = skip_capabilities;
+    Ok(spec)
 }
 
 /// Compile declared runners into runtime [`RunnerSpec`] values.
@@ -713,12 +741,7 @@ impl RunnerGroup<'_, '_> {
     /// `{capture_N}` in `command` references the first matched target's
     /// captures so command-template captures are well-defined.
     pub fn render_command(&self) -> String {
-        let joined = self
-            .matched
-            .iter()
-            .map(|m| m.rendered_target.as_str())
-            .collect::<Vec<_>>()
-            .join(&self.spec.join);
+        let joined = self.joined_targets();
         let first_target = self.matched.first().map(|m| m.annotation.target.as_str());
         substitute_command(
             &self.spec.command,
@@ -739,12 +762,7 @@ impl RunnerGroup<'_, '_> {
     /// command's first token.
     pub fn render_inputs_query(&self) -> Option<String> {
         let template = self.spec.inputs.as_deref()?;
-        let joined = self
-            .matched
-            .iter()
-            .map(|m| m.rendered_target.as_str())
-            .collect::<Vec<_>>()
-            .join(&self.spec.join);
+        let joined = self.joined_targets();
         let first_target = self.matched.first().map(|m| m.annotation.target.as_str());
         let rendered = substitute_command(
             template,
@@ -753,6 +771,16 @@ impl RunnerGroup<'_, '_> {
             first_target,
         );
         Some(place_print_inputs(&rendered))
+    }
+
+    fn joined_targets(&self) -> String {
+        let mut seen = HashSet::new();
+        self.matched
+            .iter()
+            .map(|matched| matched.rendered_target.as_str())
+            .filter(|target| seen.insert(*target))
+            .collect::<Vec<_>>()
+            .join(&self.spec.join)
     }
 }
 
@@ -824,77 +852,60 @@ pub fn parse_runner_output(
     exit_success: bool,
 ) -> Result<HashMap<String, ParsedVerdict>, RunnerError> {
     Ok(match parser {
-        BuiltinParser::JsonLines => parse_json_lines(stdout),
-        BuiltinParser::LibtestJson => parse_libtest_json(stdout),
+        BuiltinParser::JsonLines => parse_json_lines(stdout)?,
+        BuiltinParser::LibtestJson => parse_libtest_json(stdout)?,
         BuiltinParser::JunitXml => parse_junit_xml(stdout)?,
         BuiltinParser::NixBuildStatus => parse_nix_build_status(stdout, stderr),
         BuiltinParser::ExitCode => parse_exit_code(stdout, stderr, exit_success),
     })
 }
 
-fn parse_json_lines(stdout: &str) -> HashMap<String, ParsedVerdict> {
+fn parse_json_lines(stdout: &str) -> Result<HashMap<String, ParsedVerdict>, RunnerError> {
     let mut out = HashMap::new();
-    for raw in stdout.lines() {
+    for (index, raw) in stdout.lines().enumerate() {
         let line = raw.trim();
-        if line.is_empty() || !line.starts_with('{') {
+        if line.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
+        let invalid = |detail| RunnerError::InvalidOutput {
+            parser: "json-lines",
+            detail: format!("line {}: {detail}", index + 1),
         };
-        let Some(obj) = value.as_object() else {
-            continue;
-        };
-        let target = obj
-            .get("target")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let pass = obj.get("pass").and_then(serde_json::Value::as_bool);
-        let evidence = obj
-            .get("evidence")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let skipped = obj
-            .get("skipped")
-            .map_or(Some(false), serde_json::Value::as_bool);
-        if let (Some(target), Some(pass), Some(skipped)) = (target, pass, skipped) {
-            out.insert(
-                target.clone(),
-                ParsedVerdict {
-                    target,
-                    outcome: if skipped {
-                        Verdict::Skipped
-                    } else {
-                        pass_outcome(pass)
-                    },
-                    evidence,
-                },
-            );
+        let wire = serde_json::from_str::<result::Wire>(line)
+            .map_err(|error| invalid(error.to_string()))?;
+        let verdict = wire.resolve().map_err(invalid)?;
+        if out.contains_key(&verdict.target) {
+            return Err(invalid(format!("duplicate target `{}`", verdict.target)));
         }
+        out.insert(verdict.target.clone(), verdict);
     }
-    out
+    Ok(out)
 }
 
-fn parse_libtest_json(stdout: &str) -> HashMap<String, ParsedVerdict> {
+fn parse_libtest_json(stdout: &str) -> Result<HashMap<String, ParsedVerdict>, RunnerError> {
     let mut out = HashMap::new();
-    for raw in stdout.lines() {
+    for (index, raw) in stdout.lines().enumerate() {
+        let invalid = |detail| RunnerError::InvalidOutput {
+            parser: "libtest-json",
+            detail: format!("line {}: {detail}", index + 1),
+        };
         let line = raw.trim();
         if line.is_empty() || !line.starts_with('{') {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
+        let value = serde_json::from_str::<serde_json::Value>(line)
+            .map_err(|error| invalid(error.to_string()))?;
         let Some(obj) = value.as_object() else {
             continue;
         };
         if obj.get("type").and_then(|v| v.as_str()) != Some("test") {
             continue;
         }
-        let Some(name) = obj.get("name").and_then(|v| v.as_str()) else {
-            continue;
-        };
+        let name = obj
+            .get("name")
+            .and_then(|value| value.as_str())
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| invalid("missing test name".into()))?;
         let event = obj.get("event").and_then(|v| v.as_str()).unwrap_or("");
         let (outcome, evidence) = match event {
             "ok" => (Verdict::Pass, String::from("ok")),
@@ -913,18 +924,24 @@ fn parse_libtest_json(stdout: &str) -> HashMap<String, ParsedVerdict> {
                     .unwrap_or("ignored")
                     .to_string(),
             ),
-            _ => continue,
+            "started" => continue,
+            _ => return Err(invalid(format!("unknown test event `{event}`"))),
         };
+        if out.contains_key(name) {
+            return Err(invalid(format!("duplicate terminal result `{name}`")));
+        }
         out.insert(
             name.to_string(),
             ParsedVerdict {
                 target: name.to_string(),
                 outcome,
                 evidence,
+                execution: None,
+                skip_reason: None,
             },
         );
     }
-    out
+    Ok(out)
 }
 
 fn parse_junit_xml(stdout: &str) -> Result<HashMap<String, ParsedVerdict>, RunnerError> {
@@ -1025,6 +1042,8 @@ fn parse_junit_xml(stdout: &str) -> Result<HashMap<String, ParsedVerdict>, Runne
                     target: key.clone(),
                     outcome,
                     evidence,
+                    execution: None,
+                    skip_reason: None,
                 },
             )
             .is_some()
@@ -1070,6 +1089,8 @@ fn parse_nix_build_status(stdout: &str, stderr: &str) -> HashMap<String, ParsedV
                 target: name.clone(),
                 outcome: pass_outcome(pass),
                 evidence,
+                execution: None,
+                skip_reason: None,
             },
         );
     }
@@ -1078,6 +1099,8 @@ fn parse_nix_build_status(stdout: &str, stderr: &str) -> HashMap<String, ParsedV
             target: name,
             outcome: Verdict::Fail,
             evidence: line,
+            execution: None,
+            skip_reason: None,
         });
     }
     out
@@ -1104,6 +1127,8 @@ fn parse_exit_code(
             target: String::new(),
             outcome: pass_outcome(exit_success),
             evidence,
+            execution: None,
+            skip_reason: None,
         },
     );
     out
@@ -1740,7 +1765,6 @@ test result: ok. 3 passed; 0 failed
     fn parse_json_lines_recovers_each_target() {
         let stdout = concat!(
             "{\"target\":\"a\",\"pass\":true,\"evidence\":\"ok\"}\n",
-            "noise line\n",
             "{\"target\":\"b\",\"pass\":false,\"evidence\":\"bad\"}\n",
         );
         let map = parse_runner_output(BuiltinParser::JsonLines, stdout, "", true).unwrap();
@@ -1752,16 +1776,20 @@ test result: ok. 3 passed; 0 failed
     }
 
     #[test]
-    fn parse_json_lines_skips_lines_missing_required_fields() {
-        let stdout = concat!(
+    fn parse_json_lines_rejects_malformed_duplicate_and_incomplete_records() {
+        for stdout in [
             "{\"target\":\"a\",\"pass\":true}\n",
             "{\"target\":\"missing_pass\"}\n",
             "{\"pass\":true,\"evidence\":\"no target\"}\n",
-        );
-        let map = parse_runner_output(BuiltinParser::JsonLines, stdout, "", true).unwrap();
-        assert_eq!(map.len(), 1);
-        assert!(map.contains_key("a"));
-        assert_eq!(map["a"].evidence, "");
+            "{\"target\":\"a\",\"pass\":false\n{\"target\":\"a\",\"pass\":true,\"evidence\":\"ok\"}",
+            "{\"target\":\"a\",\"pass\":false,\"evidence\":\"failed\"}\n{\"target\":\"a\",\"pass\":true,\"evidence\":\"overwritten\"}",
+            "diagnostic on stdout",
+        ] {
+            assert!(
+                parse_runner_output(BuiltinParser::JsonLines, stdout, "", true).is_err(),
+                "{stdout}"
+            );
+        }
     }
 
     #[test]
@@ -1863,15 +1891,16 @@ test result: ok. 3 passed; 0 failed
     }
 
     #[test]
-    fn json_lines_skips_override_legacy_pass_flag() {
-        let verdicts = parse_runner_output(
-            BuiltinParser::JsonLines,
-            "{\"target\":\"a\",\"pass\":true,\"skipped\":true,\"evidence\":\"unavailable\"}",
-            "",
-            true,
-        )
-        .unwrap();
-        assert_eq!(verdicts["a"].outcome, Verdict::Skipped);
+    fn json_lines_rejects_conflicting_legacy_pass_and_skip_flags() {
+        assert!(
+            parse_runner_output(
+                BuiltinParser::JsonLines,
+                "{\"target\":\"a\",\"pass\":true,\"skipped\":true,\"evidence\":\"unavailable\"}",
+                "",
+                true,
+            )
+            .is_err()
+        );
     }
 
     #[test]
