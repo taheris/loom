@@ -124,7 +124,9 @@ in
         linuxPkgs = wrixLinuxPkgs;
         treefmt = imageTreefmtWrapper;
       };
-      imagePiCodingAgent = wrixLinuxPkgs.pi-coding-agent;
+      imagePiCodingAgent = import "${patchedWrixSrc}/lib/sandbox/pi.nix" {
+        pkgs = wrixLinuxPkgs;
+      };
       smokeMockPi = wrixLinuxPkgs.writeShellScriptBin "pi" ''
         set -euo pipefail
         export MOCK_PI_SCENARIO=happy-path

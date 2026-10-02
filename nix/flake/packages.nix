@@ -6,6 +6,7 @@ _:
       pkgs,
       sandbox,
       debugSandbox,
+      imagePiCodingAgent,
       loom,
       loomBin,
       patchedWrixSrc,
@@ -20,6 +21,7 @@ _:
         default = loom.bin;
         loom = loom.bin;
         loom-wrix = loomBin;
+        pi-coding-agent = imagePiCodingAgent;
 
         debug = debugSandbox.package;
         sandbox = sandbox.package;
