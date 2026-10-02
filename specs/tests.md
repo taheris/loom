@@ -1049,8 +1049,9 @@ owns:
    read or sleep also appears in the exact audited exception registry with a
    finite upper deadline, reliable child cleanup, the smallest practical
    duration, and deterministic companion coverage for timer logic.
-9. **Upstream protocol versioning** — Pi Coding Agent and Claude Code
-   versions are pinned by the repo's nixpkgs input. Bumps are deliberate PRs
+9. **Upstream protocol versioning** (Pi Coding Agent and Claude Code) —
+   Agent versions are pinned by locked flake inputs and package overrides
+   defined here or in those inputs. Bumps are deliberate PRs
    accompanied by a protocol-bump checklist (re-run parser tests, scan
    upstream changelog for new event types, add `Unknown` coverage if
    any new types lack typed variants, update mock scripts if new types
@@ -1080,8 +1081,9 @@ owns:
   container). The sole real-agent exception is the offline packaged-Pi
   `--version` health check in Functional #10; it detects image/runtime
   packaging drift but does not validate conversational or protocol behavior.
-  The pinned nixpkgs input plus parser tests with field-level coverage catch
-  silent protocol drift on bumps.
+  Locked flake inputs and package overrides defined here or in those inputs,
+  plus parser tests with field-level coverage, catch silent protocol drift on
+  bumps.
 - **macOS container smoke** — the smoke requires `podman` (Linux). Darwin
   container testing is a follow-up.
 - **Mocking `bd`** — the container smoke uses live `bd` (see NFR #6).
