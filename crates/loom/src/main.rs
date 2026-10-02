@@ -3427,6 +3427,7 @@ async fn dispatch_for_slot(
         skills: skills_cfg,
         launcher_env,
         previous_failure: None,
+        bead_base: slot.bead_base,
         workspace_recovery: slot.workspace_recovery,
         attempt: 0,
     })

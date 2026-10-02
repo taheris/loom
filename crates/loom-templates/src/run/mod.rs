@@ -2,6 +2,7 @@
 
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_protocol::todo::GitSha;
 
 use crate::SkillIndexMarkdown;
 
@@ -21,6 +22,8 @@ pub struct LoopContext {
     pub companion_paths: Vec<String>,
     pub molecule_id: Option<MoleculeId>,
     pub issue_id: Option<BeadId>,
+    /// Exact integration tip resolved for this dispatch, independent of worker HEAD.
+    pub bead_base: GitSha,
     pub title: Option<String>,
     pub description: Option<String>,
     /// Typed retry context — variants render with their documented framing

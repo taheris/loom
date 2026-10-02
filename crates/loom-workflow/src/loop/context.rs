@@ -1,5 +1,6 @@
 use askama::Template;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_protocol::oid::GitOid;
 use loom_templates::SkillIndexMarkdown;
 use loom_templates::run::{LoopContext, PreviousFailure, WorkspaceRecovery};
 
@@ -13,6 +14,8 @@ pub struct LoopContextInputs {
     pub companion_paths: Vec<String>,
     pub molecule_id: Option<MoleculeId>,
     pub issue_id: BeadId,
+    /// Exact integration tip resolved during this bead's workspace preparation.
+    pub bead_base: GitOid,
     pub title: String,
     pub description: String,
     /// Typed retry context from the prior attempt (the driver maps the
@@ -46,6 +49,7 @@ pub fn build_loop_context(inputs: LoopContextInputs) -> LoopContext {
         companion_paths: inputs.companion_paths,
         molecule_id: inputs.molecule_id,
         issue_id: Some(inputs.issue_id),
+        bead_base: inputs.bead_base,
         title: Some(inputs.title),
         description: Some(inputs.description),
         previous_failure: inputs.previous_failure,
@@ -81,6 +85,7 @@ mod tests {
             companion_paths: vec![],
             molecule_id: Some(MoleculeId::new("lm-3hhwq").unwrap()),
             issue_id: BeadId::new("lm-3hhwq.15").expect("valid bead id"),
+            bead_base: GitOid::new("0123456789abcdef0123456789abcdef01234567").unwrap(),
             title: "Implement loom loop".into(),
             description: "Per-bead loop".into(),
             previous_failure: None,
@@ -130,6 +135,23 @@ mod tests {
         let body = ctx.render().expect("render");
         assert!(body.contains("lm-3hhwq.15"), "{body}");
         assert!(body.contains("Implement loom loop"), "{body}");
+    }
+
+    #[test]
+    fn rendered_prompt_uses_exact_dispatch_base_on_fresh_and_retry_attempts() {
+        for attempt in [0, 1] {
+            let mut input = inputs();
+            input.attempt = attempt;
+            if attempt > 0 {
+                input.previous_failure = Some(PreviousFailure::AgentRetry {
+                    reason: "retry requested".into(),
+                });
+            }
+            let expected = format!("loom gate verify --diff {}..HEAD", input.bead_base);
+            let body = render_loop_prompt(input).unwrap();
+            assert!(body.contains(&expected), "{body}");
+            assert!(!body.contains("<bead-base>"), "{body}");
+        }
     }
 
     #[test]

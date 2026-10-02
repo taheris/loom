@@ -576,12 +576,8 @@ where
             branch = %worktree.branch,
             "dispatching agent against per-bead workspace",
         );
-        let workspace_recovery = match super::worker::prepare_workspace(
-            &self.git,
-            bead,
-            &worktree.path,
-        )
-        .await
+        let preparation = match super::worker::prepare_workspace(&self.git, bead, &worktree.path)
+            .await
         {
             Ok(preparation) => preparation,
             Err(source) => {
@@ -593,7 +589,8 @@ where
                 });
             }
         };
-        let workspace_recovery_event = workspace_recovery
+        let workspace_recovery_event = preparation
+            .recovery
             .as_ref()
             .map(|recovery| super::worker::recovery_event(&bead.id, recovery));
 
@@ -617,7 +614,8 @@ where
             skills: &self.skills_cfg,
             launcher_env: self.git.launcher_key_env()?,
             previous_failure: typed_previous_failure,
-            workspace_recovery,
+            bead_base: preparation.bead_base,
+            workspace_recovery: preparation.recovery,
             attempt,
         })
         .await?
@@ -2849,6 +2847,7 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
+        let bead_base = git.integration_commit_sha().await.unwrap();
         let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));
         let captured_for_closure = Arc::clone(&captured);
         let prompt_seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -2920,6 +2919,74 @@ mod tests {
         // surfaces the phase prompt under compaction recovery.
         let written = prompt_seen.lock().unwrap().take().expect("prompt.txt seen");
         assert_eq!(written, cfg.initial_prompt);
+        assert!(written.contains(&format!("loom gate verify --diff {bead_base}..HEAD")));
+        assert!(!written.contains("## Workspace Recovery"));
+    }
+
+    #[tokio::test]
+    async fn sequential_dispatch_pins_resolved_base_for_resumed_work() {
+        for advance_integration in [false, true] {
+            for dirty in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let workspace = dir.path().join("ws");
+                let git = git_workspace(&workspace);
+                let label = SpecLabel::new("harness").unwrap();
+                let bead = bead("lm-resumed");
+                let created = git.create_worktree(&label, &bead.id).await.unwrap();
+                std::fs::write(created.path.join("worker.txt"), "previous attempt\n").unwrap();
+                loom_driver::git::commit_all_in(&created.path, "Preserve worker commit").unwrap();
+                if advance_integration {
+                    let integration = git.loom_workspace();
+                    std::fs::write(integration.join("other.txt"), "other bead\n").unwrap();
+                    loom_driver::git::commit_all_in(&integration, "Advance integration").unwrap();
+                }
+                if dirty {
+                    std::fs::write(created.path.join("dirty.txt"), "uncommitted work\n").unwrap();
+                }
+                let bead_base = git.integration_commit_sha().await.unwrap();
+                let mut controller = ProductionAgentLoopController::new(
+                    BdClient::new(),
+                    label,
+                    PathBuf::from("/loom/bin"),
+                    workspace,
+                    git,
+                    write_manifest(dir.path()),
+                    None,
+                    ProfileName::base(),
+                    move |cfg: SpawnConfig, _bead_id: BeadId| {
+                        let bead_base = bead_base.clone();
+                        async move {
+                            let head =
+                                loom_driver::git::sync_head_commit_sha(&cfg.workspace).unwrap();
+                            assert_ne!(head, bead_base);
+                            assert!(cfg.workspace.join("worker.txt").is_file());
+                            let expected = format!("loom gate verify --diff {bead_base}..HEAD");
+                            assert!(
+                                cfg.initial_prompt.contains(&expected),
+                                "{}",
+                                cfg.initial_prompt
+                            );
+                            assert_eq!(cfg.initial_prompt.contains("## Workspace Recovery"), dirty);
+                            let pin = std::fs::read_to_string(cfg.scratch_dir.join("prompt.txt"))
+                                .unwrap();
+                            assert_eq!(pin, cfg.initial_prompt);
+                            (
+                                SessionResult::Complete(SessionOutcome {
+                                    exit_code: 1,
+                                    cost_usd: None,
+                                }),
+                                None,
+                            )
+                        }
+                    },
+                );
+                let outcome = controller
+                    .run_bead(&bead, Some("resume worker".into()))
+                    .await
+                    .unwrap();
+                assert!(matches!(outcome, AgentOutcome::Failure { .. }));
+            }
+        }
     }
 
     #[tokio::test]
@@ -3019,6 +3086,7 @@ mod tests {
         std::fs::write(created.path.join("scratch.txt"), "dirty scratch\n")
             .expect("write dirty scratch");
         let captured_prompt: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let bead_base = git.integration_commit_sha().await.unwrap();
         let conflict_body: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let captured_prompt_inner = Arc::clone(&captured_prompt);
         let conflict_body_inner = Arc::clone(&conflict_body);
@@ -3066,6 +3134,7 @@ mod tests {
             prompt.contains("Alignment is in conflict"),
             "conflict guidance missing: {prompt}",
         );
+        assert!(prompt.contains(&format!("loom gate verify --diff {bead_base}..HEAD")));
         assert!(
             prompt.contains("- `README.md`"),
             "conflict file missing from prompt: {prompt}",

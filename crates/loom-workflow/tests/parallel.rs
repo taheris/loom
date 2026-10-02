@@ -17,13 +17,16 @@ use std::process::Command;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
+use loom_driver::agent::AgentRuntime;
 use loom_driver::bd::{Bead, Label};
+use loom_driver::config::{LoomTopConfig, SkillsConfig};
 use loom_driver::git::{GitClient, KeyMode, RepoGitPolicy};
-use loom_driver::identifier::{BeadId, SpecLabel};
+use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
+use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_test_support::git_policy::Fixture as GitPolicyFixture;
 use loom_workflow::r#loop::{
     AgentOutcome, BatchInfraFailure, BatchResult, BatchSlot, CONFLICT_RETRY_LABEL, Parallelism,
-    ParallelismError, create_worktrees, merge_back,
+    ParallelismError, create_worktrees, merge_back, run_concurrent_spawns, worker,
 };
 use tempfile::TempDir;
 
@@ -127,6 +130,102 @@ async fn parallel_preparation_preserves_dirty_work_in_recovery_stash() -> Result
         "preserve untracked\n"
     );
     assert!(git_capture(&worktree.path, &["status", "--porcelain"])?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn parallel_dispatch_preserves_each_prepared_base_in_prompt_pins() -> Result<()> {
+    let repo = init_repo()?;
+    let client = unsigned_client(repo.path())?;
+    let label = SpecLabel::new("harness")?;
+    let resumed = fake_bead("lm-resumed");
+    let worktree = client.create_worktree(&label, &resumed.id).await?;
+    std::fs::write(worktree.path.join("worker.txt"), "previous attempt\n")?;
+    loom_driver::git::commit_all_in(&worktree.path, "Preserve worker commit")?;
+    git(&worktree.path, &["branch", "stale-upstream", "HEAD~1"])?;
+    git(
+        &worktree.path,
+        &["branch", "--set-upstream-to=stale-upstream"],
+    )?;
+
+    let first_base = client.integration_commit_sha().await?;
+    let mut slots = create_worktrees(&client, &label, vec![fake_bead("lm-fresh")]).await?;
+    let integration = client.loom_workspace();
+    std::fs::write(integration.join("other.txt"), "other bead\n")?;
+    loom_driver::git::commit_all_in(&integration, "Advance integration")?;
+    let second_base = client.integration_commit_sha().await?;
+    assert_ne!(first_base, second_base);
+    slots.extend(create_worktrees(&client, &label, vec![resumed]).await?);
+    assert_eq!(slots[0].bead_base, first_base);
+    assert_eq!(slots[1].bead_base, second_base);
+    assert!(slots.iter().all(|slot| slot.workspace_recovery.is_none()));
+    assert_ne!(
+        loom_driver::git::sync_head_commit_sha(&worktree.path)?,
+        second_base
+    );
+    assert_eq!(
+        loom_driver::git::sync_rev_parse(&worktree.path, "@{u}")?,
+        first_base
+    );
+
+    let manifest_path = repo.path().join("images.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{"base":{"pi":{"ref":"fixture-image","source":"/fixture/image","source_kind":"nix-descriptor"}}}"#,
+    )?;
+    let manifest = std::sync::Arc::new(ProfileImageManifest::from_path(&manifest_path)?);
+    let workspace = repo.path().to_path_buf();
+    let results = run_concurrent_spawns(slots, move |slot| {
+        let expected_base = if slot.bead.id.as_str() == "lm-fresh" {
+            first_base.clone()
+        } else {
+            second_base.clone()
+        };
+        let manifest = std::sync::Arc::clone(&manifest);
+        let label = label.clone();
+        let workspace = workspace.clone();
+        async move {
+            let prepared = worker::prepare(worker::Request {
+                bead: &slot.bead,
+                workspace: &slot.worktree.path,
+                loom_workspace: &workspace,
+                manifest: &manifest,
+                cli_profile: None,
+                phase_default: &ProfileName::base(),
+                runtime: AgentRuntime::Pi,
+                label: &label,
+                style_rules: "docs/style-rules.md",
+                loom: &LoomTopConfig::default(),
+                skills: &SkillsConfig::default(),
+                launcher_env: vec![],
+                previous_failure: None,
+                bead_base: slot.bead_base,
+                workspace_recovery: slot.workspace_recovery,
+                attempt: 0,
+            })
+            .await
+            .unwrap();
+            let worker::Preparation::Ready(worker) = prepared else {
+                panic!("valid worker rejected");
+            };
+            let expected_command = format!("loom gate verify --diff {expected_base}..HEAD");
+            assert!(worker.spawn.initial_prompt.contains(&expected_command));
+            let pin = std::fs::read_to_string(worker.scratch.path().join("prompt.txt")).unwrap();
+            assert_eq!(pin, worker.spawn.initial_prompt);
+            AgentOutcome::Success
+        }
+    })
+    .await;
+    assert_eq!(
+        results.len(),
+        2,
+        "both concurrent dispatch assertions must complete"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|slot| slot.outcome == AgentOutcome::Success)
+    );
     Ok(())
 }
 

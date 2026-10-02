@@ -14,6 +14,14 @@
 
 Read: {{ spec_path }}
 
+## Dispatch Base
+
+Bead base: `{{ bead_base }}`
+
+This is the exact integration tip resolved for this dispatch. Use it for the
+completion self-check range; do not substitute the current `HEAD`, a molecule
+base, or an upstream that points elsewhere.
+
 ## Issue Details
 
 Issue: {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}—{% endmatch %}
@@ -109,7 +117,7 @@ Before outputting LOOM_COMPLETE:
 - Changes staged (`git add`)
 - Spec verification test files created for relevant criteria
 - Bead closed (`bd close {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}<issue-id>{% endmatch %}`)
-- Preflight self-check: run `loom gate verify --diff <bead-base>..HEAD` using the exact bead base injected for this dispatch. If the branch upstream is that injected base, `loom gate verify --diff @{u}..HEAD` is acceptable. Resolve any findings in-session before emitting `LOOM_COMPLETE` — do not defer findings to a follow-up bead.
+- Preflight self-check: run `loom gate verify --diff {{ bead_base }}..HEAD` using the exact bead base injected for this dispatch. If the branch upstream is that injected base, `loom gate verify --diff @{u}..HEAD` is acceptable. Resolve any findings in-session before emitting `LOOM_COMPLETE` — do not defer findings to a follow-up bead.
 - Rerun the self-check after any later commit, formatter or hook tree change, or other change that could invalidate the prior run.
 - Prompt-level self-review: before the final marker, re-read the issue criteria, inspect the committed diff, verify style/spec fit, and either fix issues or emit `LOOM_RETRY`, `LOOM_CLARIFY`, or `LOOM_BLOCKED` with the required self-report framing.
 

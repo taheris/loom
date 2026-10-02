@@ -203,6 +203,7 @@ fn todo_snapshot() -> Result<()> {
 
 fn run_snapshot() -> Result<()> {
     let ctx = LoopContext {
+        bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness")?,
         spec_path: "specs/harness.md".to_string(),
@@ -232,6 +233,7 @@ fn run_snapshot() -> Result<()> {
 #[test]
 fn run_snapshot_no_failure() {
     let ctx = LoopContext {
+        bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -254,6 +256,7 @@ fn run_snapshot_no_failure() {
 #[test]
 fn run_snapshot_workspace_recovery() {
     let ctx = LoopContext {
+        bead_base: git_sha(TEST_SHA_3),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -283,6 +286,7 @@ fn run_snapshot_workspace_recovery() {
 #[test]
 fn run_snapshot_driver_notice() {
     let ctx = LoopContext {
+        bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -311,6 +315,7 @@ fn run_snapshot_driver_notice() {
 #[test]
 fn run_snapshot_verify_failures() {
     let ctx = LoopContext {
+        bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -339,6 +344,7 @@ fn run_snapshot_verify_failures() {
 #[test]
 fn run_snapshot_review_concern() {
     let ctx = LoopContext {
+        bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -380,6 +386,7 @@ fn run_snapshot_review_concern() {
 #[test]
 fn run_snapshot_build_failure() {
     let ctx = LoopContext {
+        bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),

@@ -9,6 +9,7 @@ use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_events::AgentStartMetadata;
+use loom_protocol::oid::GitOid;
 use loom_templates::run::{PreviousFailure, RecoveryStash, WorkspaceAlignment, WorkspaceRecovery};
 
 use super::context::{LoopContextInputs, render_loop_prompt};
@@ -36,6 +37,7 @@ pub struct Request<'a> {
     pub skills: &'a SkillsConfig,
     pub launcher_env: Vec<(String, String)>,
     pub previous_failure: Option<PreviousFailure>,
+    pub bead_base: GitOid,
     pub workspace_recovery: Option<WorkspaceRecovery>,
     pub attempt: u32,
 }
@@ -51,7 +53,14 @@ pub enum Preparation {
     Rejected(AgentOutcome),
 }
 
-/// Preserve dirty work and derive the recovery context before dispatch.
+/// Resolved dispatch base and any preserved dirty-workspace context.
+#[derive(Debug, Clone)]
+pub struct WorkspacePreparation {
+    pub bead_base: GitOid,
+    pub recovery: Option<WorkspaceRecovery>,
+}
+
+/// Preserve dirty work and resolve the base and recovery context before dispatch.
 ///
 /// # Errors
 /// Returns Git preparation failures without discarding the existing workspace.
@@ -59,11 +68,9 @@ pub async fn prepare_workspace(
     git: &GitClient,
     bead: &Bead,
     workspace: &Path,
-) -> Result<Option<WorkspaceRecovery>, GitError> {
+) -> Result<WorkspacePreparation, GitError> {
     let preparation = git.prepare_bead_clone(workspace, &bead.id).await?;
-    let Some(recovery) = preparation.recovery else {
-        return Ok(None);
-    };
+    let bead_base = preparation.integration_tip;
     let alignment = match preparation.alignment {
         BeadCloneAlignment::Clean => WorkspaceAlignment::Clean,
         BeadCloneAlignment::Rebased {
@@ -80,16 +87,20 @@ pub async fn prepare_workspace(
                 .collect(),
         },
     };
-    Ok(Some(WorkspaceRecovery {
+    let recovery = preparation.recovery.map(|recovery| WorkspaceRecovery {
         pre_stash_status: recovery.pre_stash_status,
         stash: RecoveryStash {
             selector: recovery.stash.selector,
             commit: recovery.stash.commit,
             message: recovery.stash.message,
         },
-        integration_tip: preparation.integration_tip,
+        integration_tip: bead_base.clone(),
         alignment,
-    }))
+    });
+    Ok(WorkspacePreparation {
+        bead_base,
+        recovery,
+    })
 }
 
 /// Resolve skills, prompt, profile image, mounts, and event metadata once per dispatch.
@@ -111,6 +122,7 @@ pub async fn prepare(request: Request<'_>) -> Result<Preparation, LoopError> {
         skills,
         launcher_env,
         previous_failure,
+        bead_base,
         workspace_recovery,
         attempt,
     } = request;
@@ -137,6 +149,7 @@ pub async fn prepare(request: Request<'_>) -> Result<Preparation, LoopError> {
         companion_paths: vec![],
         molecule_id: None,
         issue_id: bead.id.clone(),
+        bead_base,
         title: bead.title.clone(),
         description: bead.description.clone(),
         previous_failure,
@@ -247,6 +260,7 @@ fn profile_rejection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_driver::agent::AgentBackend;
 
     #[tokio::test]
     async fn shared_worker_preparation_threads_context_and_owns_scratch_for_every_backend() {
@@ -287,6 +301,7 @@ mod tests {
                 previous_failure: Some(PreviousFailure::AgentRetry {
                     reason: "retry-context".into(),
                 }),
+                bead_base: GitOid::new("0123456789abcdef0123456789abcdef01234567").unwrap(),
                 workspace_recovery: None,
                 attempt: 2,
             })
@@ -315,8 +330,35 @@ mod tests {
                     .contains(&dir.path().display().to_string())
             );
             let scratch = worker.scratch.path().to_path_buf();
-            assert!(scratch.join("prompt.txt").is_file());
-            assert!(scratch.join("scratch.md").is_file());
+            let prompt = &worker.spawn.initial_prompt;
+            assert!(prompt.contains(
+                "loom gate verify --diff 0123456789abcdef0123456789abcdef01234567..HEAD"
+            ));
+            assert_eq!(
+                std::fs::read_to_string(scratch.join("prompt.txt")).unwrap(),
+                *prompt
+            );
+            std::fs::write(scratch.join("scratch.md"), "live recovery notes").unwrap();
+            let pi_pin = loom_agent::pi::backend::PiBackend::compaction_repin(&worker.spawn)
+                .unwrap()
+                .unwrap();
+            assert!(pi_pin.contains(prompt));
+            assert!(pi_pin.contains("live recovery notes"));
+            let output = std::process::Command::new("bash")
+                .arg(worker.scratch.repin_script())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let hook: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let claude_pin = hook["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap();
+            assert!(claude_pin.contains(prompt));
+            assert!(claude_pin.contains("live recovery notes"));
             drop(worker);
             assert!(
                 !scratch.exists(),

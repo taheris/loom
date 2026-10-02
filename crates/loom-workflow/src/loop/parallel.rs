@@ -5,6 +5,7 @@ use loom_driver::bd::Bead;
 use loom_driver::git::{CreatedWorktree, GitClient, RebaseOutcome};
 use loom_driver::identifier::{BeadId, SpecLabel};
 use loom_events::DriverKind;
+use loom_protocol::oid::GitOid;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
@@ -24,6 +25,7 @@ use super::waiting::ActiveBlockers;
 pub struct WorktreeBead {
     pub bead: Bead,
     pub worktree: CreatedWorktree,
+    pub bead_base: GitOid,
     pub workspace_recovery: Option<loom_templates::run::WorkspaceRecovery>,
 }
 
@@ -300,12 +302,13 @@ pub async fn create_worktrees(
     let mut out = Vec::with_capacity(beads.len());
     for bead in beads {
         let wt = git.create_worktree(label, &bead.id).await?;
-        let workspace_recovery = super::worker::prepare_workspace(git, &bead, &wt.path).await?;
+        let preparation = super::worker::prepare_workspace(git, &bead, &wt.path).await?;
         info!(bead = %bead.id, path = %wt.path.display(), branch = %wt.branch, "worktree created");
         out.push(WorktreeBead {
             bead,
             worktree: wt,
-            workspace_recovery,
+            bead_base: preparation.bead_base,
+            workspace_recovery: preparation.recovery,
         });
     }
     Ok(out)
@@ -336,6 +339,7 @@ where
             let outcome = spawn(WorktreeBead {
                 bead: bead.clone(),
                 worktree: worktree.clone(),
+                bead_base: slot.bead_base,
                 workspace_recovery: slot.workspace_recovery,
             })
             .await;
@@ -830,6 +834,7 @@ mod tests {
 
     fn fake_slot(id: &str) -> WorktreeBead {
         WorktreeBead {
+            bead_base: GitOid::new("0123456789abcdef0123456789abcdef01234567").unwrap(),
             workspace_recovery: None,
             bead: fake_bead(id),
             worktree: CreatedWorktree {
