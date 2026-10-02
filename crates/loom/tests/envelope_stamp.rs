@@ -56,7 +56,8 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
         r#"{{"base": {{"pi": {{"ref":"localhost/wrix-base-pi:test","source":{source:?}, "source_kind": "nix-descriptor"}}, "claude": {{"ref":"localhost/wrix-base-claude:test","source":{source:?}, "source_kind": "nix-descriptor"}}, "direct": {{"ref":"localhost/wrix-base-direct:test","source":{source:?}, "source_kind": "nix-descriptor"}}}}}}"#,
         source = source.display().to_string(),
     );
-    std::fs::write(&manifest, body).expect("write manifest");
+    loom_test_support::profile_manifest::write(&manifest, body, Path::new("/fixture/wrix"))
+        .expect("write manifest");
     manifest
 }
 
@@ -114,7 +115,7 @@ fn run_loom_loop_bead(
         .arg(bead_id)
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)
-        .env_remove("LOOM_WRIX_SPAWN_BIN")
+        .env("LOOM_WRIX_SPAWN_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         // Point `LOOM_BIN` at a no-op shim so the per-bead gate's
         // `loom gate verify --diff` + `loom gate review --diff --bead` calls

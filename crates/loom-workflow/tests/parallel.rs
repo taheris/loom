@@ -171,7 +171,7 @@ async fn parallel_dispatch_preserves_each_prepared_base_in_prompt_pins() -> Resu
     let manifest_path = repo.path().join("images.json");
     std::fs::write(
         &manifest_path,
-        r#"{"base":{"pi":{"ref":"fixture-image","source":"/fixture/image","source_kind":"nix-descriptor"}}}"#,
+        r#"{"base":{"pi":{"ref":"fixture-image","source":"/fixture/image","source_kind":"nix-descriptor","launcher":"/fixture/wrix","profile_config":"/fixture/profile.json"}}}"#,
     )?;
     let manifest = std::sync::Arc::new(ProfileImageManifest::from_path(&manifest_path)?);
     let workspace = repo.path().to_path_buf();

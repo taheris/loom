@@ -2648,6 +2648,7 @@ dependencies = [
  "loom-events",
  "loom-protocol",
  "proptest",
+ "serde_json",
  "tempfile",
 ]
 

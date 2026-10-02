@@ -492,8 +492,8 @@ _:
       profileManifestKeepsRuntimePathContext = all (
         entry:
         builtins.hasContext entry.source
-        && (!(entry ? launcher) || builtins.hasContext entry.launcher)
-        && (!(entry ? profile_config) || builtins.hasContext entry.profile_config)
+        && builtins.hasContext entry.launcher
+        && builtins.hasContext entry.profile_config
       ) profileManifestEntries;
       profile-manifest-keeps-runtime-path-context =
         assert profileManifestKeepsRuntimePathContext;
@@ -504,7 +504,11 @@ _:
       fakeLoomBin = pkgs.writeShellApplication {
         name = "loom";
         text = ''
-          printf 'loom 0.0.0\n'
+          if [[ "''${1:-}" == --launch-inputs ]]; then
+            printf 'git=%s\nraw=%s\n' "''${LOOM_WRIX_BIN:-}" "''${LOOM_WRIX_SPAWN_BIN:-}"
+          else
+            printf 'loom 0.0.0\n'
+          fi
         '';
       };
       fakeUnprofiledWrix = pkgs.writeShellApplication {
@@ -549,23 +553,32 @@ _:
             touch "$out"
           '';
 
-      loom-wrix-uses-unprofiled-spawn-launcher =
-        pkgs.runCommand "loom-wrix-uses-unprofiled-spawn-launcher" { }
+      loom-wrix-does-not-default-launcher-override =
+        pkgs.runCommand "loom-wrix-does-not-default-launcher-override" { }
           ''
             set -euo pipefail
-            grep=${pkgs.gnugrep}/bin/grep
-            wrapper=${fakeLoomWrix}/bin/loom
-            profiled=${fakeProfiledWrix}/bin/wrix
-            unprofiled=${fakeUnprofiledWrix}/bin/wrix
-            "$grep" -qF "LOOM_WRIX_BIN" "$wrapper"
-            "$grep" -qF "LOOM_WRIX_SPAWN_BIN" "$wrapper"
-            "$grep" -qF "$profiled" "$wrapper"
-            "$grep" -qF "$unprofiled" "$wrapper"
-            "$grep" -q -- '--profile-config' "$profiled"
-            if "$grep" -q -- '--profile-config' "$unprofiled"; then
-              printf 'LOOM_WRIX_SPAWN_BIN must point at the unprofiled wrix launcher, not %s\n' "$unprofiled" >&2
+            unset LOOM_WRIX_BIN LOOM_WRIX_SPAWN_BIN
+            expected=$(printf 'git=%s\nraw=\n' ${fakeProfiledWrix}/bin/wrix)
+            [[ "$(${fakeLoomWrix}/bin/loom --launch-inputs)" == "$expected" ]]
+            export LOOM_WRIX_SPAWN_BIN=${fakeUnprofiledWrix}/bin/wrix
+            expected=$(printf 'git=%s\nraw=%s\n' ${fakeProfiledWrix}/bin/wrix "$LOOM_WRIX_SPAWN_BIN")
+            [[ "$(${fakeLoomWrix}/bin/loom --launch-inputs)" == "$expected" ]]
+            touch "$out"
+          '';
+
+      wrix-requires-explicit-profile-config =
+        pkgs.runCommand "wrix-requires-explicit-profile-config" { }
+          ''
+            set -euo pipefail
+            launcher=${sandbox.launcher}/bin/wrix
+            "$launcher" --profile-config /selected-profile.json run --help > "$TMPDIR/help"
+            ${pkgs.gnugrep}/bin/grep -q -- '--profile-config' "$TMPDIR/help"
+            if WRIX_DEFAULT_IMAGE_REF=ignored WRIX_DEFAULT_IMAGE_SOURCE=ignored \
+              "$launcher" run "$TMPDIR" true > "$TMPDIR/no-config" 2>&1; then
+              printf 'raw Wrix accepted a session without explicit profile config\n' >&2
               exit 1
             fi
+            ${pkgs.gnugrep}/bin/grep -q -- '--profile-config' "$TMPDIR/no-config"
             touch "$out"
           '';
 
@@ -573,7 +586,8 @@ _:
         inherit
           loom-gate-check
           loom-wrapper-preserves-spaced-output-path
-          loom-wrix-uses-unprofiled-spawn-launcher
+          loom-wrix-does-not-default-launcher-override
+          wrix-requires-explicit-profile-config
           profile-manifest-keeps-runtime-path-context
           smoke-beads-fixture
           smoke-preflight-skips-runtime-build

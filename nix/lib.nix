@@ -89,15 +89,15 @@ in
             # alive in the store after GC / on fresh machines.
             source = "${image.source or image}";
           }
-          // optionalAttrs (sandboxes.${profileName}.${runtime} ? launcher) {
+          // {
             # The raw launcher accepts Loom's per-bead ProfileConfig. Do not
             # use `sandbox.package` here: that configured wrapper already
             # injects its own `--profile-config`, which would collide with the
             # runtime-selected one below.
             launcher = "${sandboxes.${profileName}.${runtime}.launcher}/bin/wrix";
           }
-          // optionalAttrs (image ? profileConfig) {
-            # `wrix spawn` now requires the immutable ProfileConfig path; keep
+          // {
+            # Image-backed launches require the immutable ProfileConfig; keep
             # it as a real Nix reference, not just inert JSON text.
             profile_config = "${image.profileConfig}";
           }
@@ -131,7 +131,6 @@ in
       inherit (pkgs) stdenv;
       inherit (pkgs.lib) makeBinPath optionals;
 
-      spawnLauncher = wrixLauncher.launcher or wrixLauncher;
       launcherRuntimePath = makeBinPath (
         [ pkgs.nix ]
         ++ optionals stdenv.hostPlatform.isLinux [
@@ -150,9 +149,8 @@ in
         set -euo pipefail
         mkdir -p "$out/bin"
         makeWrapper ${loomBuild.bin}/bin/loom "$out/bin/loom" \
-          --prefix PATH : ${wrixLauncher}/bin:${spawnLauncher}/bin:${launcherRuntimePath} \
+          --prefix PATH : ${wrixLauncher}/bin:${launcherRuntimePath} \
           --set-default LOOM_WRIX_BIN ${wrixLauncher}/bin/wrix \
-          --set-default LOOM_WRIX_SPAWN_BIN ${spawnLauncher}/bin/wrix \
           --set-default LOOM_PROFILES_MANIFEST ${profileManifest}
       '';
 }

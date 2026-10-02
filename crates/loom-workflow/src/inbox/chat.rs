@@ -51,17 +51,6 @@ const INBOX_NON_CLOSED_STATUSES: [loom_driver::bd::Status; 4] = [
     loom_driver::bd::Status::Deferred,
 ];
 
-/// Default name of the wrix launcher binary on PATH.
-pub const WRIX_BIN: &str = "wrix";
-
-const LOOM_WRIX_BIN: &str = "LOOM_WRIX_BIN";
-const LOOM_WRIX_SPAWN_BIN: &str = "LOOM_WRIX_SPAWN_BIN";
-
-/// Env vars `wrix run` reads to pick the per-profile image when no
-/// `--spawn-config` is supplied.
-pub const WRIX_DEFAULT_IMAGE_REF: &str = "WRIX_DEFAULT_IMAGE_REF";
-pub const WRIX_DEFAULT_IMAGE_SOURCE: &str = "WRIX_DEFAULT_IMAGE_SOURCE";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatTarget {
     Index(u32),
@@ -84,7 +73,7 @@ pub struct ChatOpts {
     pub agent_override: Option<AgentKind>,
     /// Resolved profile-image manifest.
     pub manifest: ProfileImageManifest,
-    /// Explicit path to the `wrix` launcher.
+    /// Explicit raw launcher override; never changes the selected profile config.
     pub wrix_bin: Option<PathBuf>,
     /// Repository key paths for Wrix launcher processes.
     pub launcher_env: Vec<(String, String)>,
@@ -144,7 +133,7 @@ pub enum ChatError {
 /// # Errors
 ///
 /// Returns an error when inbox state, interaction, or persistence fails.
-pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
+pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .map_err(|e| ChatError::Config(e.to_string()))?;
     let selection = resolve_chat_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
@@ -208,15 +197,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
 
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, "loom inbox chat")?;
     let restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
-    let explicit_wrix_bin = opts.wrix_bin;
-    let bin: PathBuf = explicit_wrix_bin
-        .clone()
-        .or_else(|| std::env::var_os(LOOM_WRIX_BIN).map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(WRIX_BIN));
-    let spawn_bin: PathBuf = explicit_wrix_bin
-        .or_else(|| std::env::var_os(LOOM_WRIX_SPAWN_BIN).map(PathBuf::from))
-        .or_else(|| std::env::var_os(LOOM_WRIX_BIN).map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(WRIX_BIN));
+    let bin = loom_driver::wrix::resolve_launcher(&image.launcher, opts.wrix_bin.as_deref());
 
     let stdout = match selection.kind() {
         AgentKind::Claude => {
@@ -238,13 +219,10 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                 "loom inbox chat: shelling out to interactive wrix run",
             );
 
-            let mut command = Command::new(&bin);
+            let mut command = loom_driver::wrix::command(bin.as_os_str(), &image.profile_config);
             command
                 .args(&argv)
-                .envs(opts.launcher_env.iter().map(|(key, value)| (key, value)))
-                .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
-                .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
-                .env("WRIX_AGENT", selection.kind().as_str());
+                .envs(opts.launcher_env.iter().map(|(key, value)| (key, value)));
             let output = run_wrix_and_capture_stdout(command).map_err(ChatError::Scratch)?;
             if !output.status.success() {
                 return Err(ChatError::WrixExit {
@@ -265,13 +243,11 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                     scratch_dir = %scratch.path().display(),
                     "loom inbox chat: shelling out to native pi TUI",
                 );
-                let mut command = Command::new(&bin);
+                let mut command =
+                    loom_driver::wrix::command(bin.as_os_str(), &image.profile_config);
                 command
                     .args(&launch.argv)
-                    .envs(opts.launcher_env.iter().map(|(key, value)| (key, value)))
-                    .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
-                    .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
-                    .env("WRIX_AGENT", selection.kind().as_str());
+                    .envs(opts.launcher_env.iter().map(|(key, value)| (key, value)));
                 run_pi_tui_shell_out(command, &launch.session_dir)?
             } else {
                 let mut spawn_config = build_pi_bridge_spawn_config(
@@ -285,7 +261,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                 )?;
                 spawn_config.skills = Some(restored_skills.registered);
                 info!(
-                    wrix_bin = %spawn_bin.display(),
+                    wrix_bin = %bin.display(),
                     items_surfaced,
                     profile = %selection.profile,
                     agent = ?selection.kind(),
@@ -293,7 +269,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
                     scratch_dir = %scratch.path().display(),
                     "loom inbox chat: starting controlled pi RPC bridge",
                 );
-                runtime.block_on(run_pi_bridge(spawn_config, &spawn_bin))?
+                runtime.block_on(run_pi_bridge(spawn_config, &bin))?
             }
         }
         AgentKind::Direct => {
@@ -374,8 +350,8 @@ fn build_pi_bridge_spawn_config(
     Ok(spawn_config)
 }
 
-async fn run_pi_bridge(config: SpawnConfig, _wrix_bin: &Path) -> Result<String, ChatError> {
-    let session = PiBackend::spawn_bridge(&config).await?;
+async fn run_pi_bridge(config: SpawnConfig, launcher: &Path) -> Result<String, ChatError> {
+    let session = PiBackend::spawn_bridge_with_wrix_bin(&config, launcher.as_os_str()).await?;
     let mut output = String::new();
     let mut envelope_builder = pi_bridge_envelope_builder();
     emit_pi_bridge_agent_input(

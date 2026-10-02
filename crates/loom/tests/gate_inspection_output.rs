@@ -37,11 +37,12 @@ fn pinned_path(bin_dir: &Path) -> std::ffi::OsString {
 
 fn write_profile_manifest(workspace: &Path) -> PathBuf {
     let manifest_path = workspace.join("profile-images.json");
-    std::fs::write(
+    loom_test_support::profile_manifest::write(
         &manifest_path,
         r#"{
           "base": { "pi": { "ref": "localhost/wrix-base-pi:test", "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" }, "claude": { "ref": "localhost/wrix-base-claude:test", "source": "/nix/store/aaa-image-base-claude", "source_kind": "nix-descriptor" }, "direct": { "ref": "localhost/wrix-base-direct:test", "source": "/nix/store/aaa-image-base-direct", "source_kind": "nix-descriptor" } }
         }"#,
+        Path::new("/fixture/wrix"),
     )
     .expect("write profile manifest");
     manifest_path
@@ -88,7 +89,7 @@ where
         .args(args)
         .env("PATH", pinned_path(&bin_dir))
         .env("LOOM_WRIX_BIN", mock_agent)
-        .env_remove("LOOM_WRIX_SPAWN_BIN")
+        .env("LOOM_WRIX_SPAWN_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", manifest)

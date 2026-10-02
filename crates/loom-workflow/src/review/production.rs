@@ -2333,7 +2333,8 @@ mod tests {
           "base": { "pi": { "ref": "localhost/wrix-base-pi:abc", "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" }, "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude", "source_kind": "nix-descriptor" }, "direct": { "ref": "localhost/wrix-base-direct:abc", "source": "/nix/store/aaa-image-base-direct", "source_kind": "nix-descriptor" } }
         }"#;
         let path = dir.join("profile-images.json");
-        std::fs::write(&path, body).unwrap();
+        loom_test_support::profile_manifest::write(&path, body, Path::new("/fixture/wrix"))
+            .unwrap();
         Arc::new(ProfileImageManifest::from_path(&path).unwrap())
     }
 

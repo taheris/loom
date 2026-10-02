@@ -718,6 +718,24 @@ fn dispatch_error_annotation(err: &loom_gate::DispatchError) -> Annotation {
 
 #[cfg(test)]
 mod tests {
+    fn fixture_manifest(workspace: &std::path::Path) -> Arc<ProfileImageManifest> {
+        let path = workspace.join("profile-images.json");
+        let mut matrix = serde_json::json!({});
+        for runtime in ["pi", "claude", "direct"] {
+            matrix["base"][runtime] = serde_json::json!({
+                "ref": format!("localhost/base-{runtime}:test"),
+                "source": format!("/fixture/{runtime}-image"), "source_kind": "nix-descriptor"
+            });
+        }
+        loom_test_support::profile_manifest::write(
+            &path,
+            matrix.to_string(),
+            std::path::Path::new("/fixture/wrix"),
+        )
+        .unwrap();
+        Arc::new(ProfileImageManifest::from_path(&path).unwrap())
+    }
+
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -851,15 +869,7 @@ mod tests {
         )
         .expect("spec");
         std::fs::write(workspace.join("loom.toml"), "").expect("config");
-        let manifest_path = workspace.join("profile-images.json");
-        std::fs::write(
-            &manifest_path,
-            r#"{"base":{"pi":{"ref":"localhost/base-pi:test","source":"/nix/store/base-pi-image", "source_kind": "nix-descriptor"},"claude":{"ref":"localhost/base-claude:test","source":"/nix/store/base-claude-image", "source_kind": "nix-descriptor"},"direct":{"ref":"localhost/base-direct:test","source":"/nix/store/base-direct-image", "source_kind": "nix-descriptor"}}}"#,
-        )
-        .expect("manifest");
-        let manifest = Arc::new(
-            ProfileImageManifest::from_path(&manifest_path).expect("profile manifest parses"),
-        );
+        let manifest = fixture_manifest(workspace);
         let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
         let runner = ScriptedRunner::new(vec![Ok(ok_stdout("[]")), Ok(ok_stdout("[]"))]);
         let bd = BdClient::with_runner(runner);
@@ -931,15 +941,7 @@ mod tests {
             "# Gate\n\n## Success Criteria\n\n- Review stream [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)\n",
         )
         .expect("spec");
-        let manifest_path = workspace.join("profile-images.json");
-        std::fs::write(
-            &manifest_path,
-            r#"{"base":{"pi":{"ref":"localhost/base-pi:test","source":"/nix/store/base-pi-image", "source_kind": "nix-descriptor"},"claude":{"ref":"localhost/base-claude:test","source":"/nix/store/base-claude-image", "source_kind": "nix-descriptor"},"direct":{"ref":"localhost/base-direct:test","source":"/nix/store/base-direct-image", "source_kind": "nix-descriptor"}}}"#,
-        )
-        .expect("manifest");
-        let manifest = Arc::new(
-            ProfileImageManifest::from_path(&manifest_path).expect("profile manifest parses"),
-        );
+        let manifest = fixture_manifest(workspace);
         let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
         let bd = BdClient::with_runner(ScriptedRunner::new(vec![
             Ok(ok_stdout("[]")),
@@ -1429,7 +1431,6 @@ mod tests {
     /// from its configured cwd.
     #[tokio::test]
     async fn production_mint_walker_exists_and_dispatches_rubric_and_verifiers() {
-        use loom_driver::profile_manifest::ProfileImageManifest;
         use loom_driver::state::CacheDb;
 
         const UNRESOLVED_TARGET: &str = "loom-verifier-bypass-fixture-9b8d-does-not-exist";
@@ -1457,14 +1458,7 @@ cwd = "verifier-cwd"
 "#,
         )
         .expect("loom.toml");
-        let manifest_path = workspace.join("profile-images.json");
-        std::fs::write(
-            &manifest_path,
-            r#"{"base":{"pi":{"ref":"localhost/wrix-base-pi:abc","source":"/nix/store/aaa-pi", "source_kind": "nix-descriptor"},"claude":{"ref":"localhost/wrix-base-claude:abc","source":"/nix/store/aaa-claude", "source_kind": "nix-descriptor"},"direct":{"ref":"localhost/wrix-base-direct:abc","source":"/nix/store/aaa-direct", "source_kind": "nix-descriptor"}}}"#,
-        )
-        .expect("manifest");
-        let manifest =
-            Arc::new(ProfileImageManifest::from_path(&manifest_path).expect("manifest parse"));
+        let manifest = fixture_manifest(&workspace);
         let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
 
         // bd.list calls during prompt build: (1) spec-label bead summary,
@@ -1582,7 +1576,6 @@ cwd = "verifier-cwd"
     /// driver-side `run_check` wiring.
     #[tokio::test]
     async fn mint_tree_scope_check_dispatches_runner_owned_target_without_finding() {
-        use loom_driver::profile_manifest::ProfileImageManifest;
         use loom_driver::state::CacheDb;
 
         const RUNNER_OWNED_TARGET: &str = "loom-runner-only-fixture-7c3a-not-on-path";
@@ -1603,14 +1596,7 @@ cwd = "verifier-cwd"
             "[runner.check.fixture]\nmatch   = '^loom-runner-only-fixture'\ncommand = \"true {targets}\"\nparse   = \"exit-code\"\n",
         )
         .expect("loom.toml");
-        let manifest_path = workspace.join("profile-images.json");
-        std::fs::write(
-            &manifest_path,
-            r#"{"base":{"pi":{"ref":"localhost/wrix-base-pi:abc","source":"/nix/store/aaa-pi", "source_kind": "nix-descriptor"},"claude":{"ref":"localhost/wrix-base-claude:abc","source":"/nix/store/aaa-claude", "source_kind": "nix-descriptor"},"direct":{"ref":"localhost/wrix-base-direct:abc","source":"/nix/store/aaa-direct", "source_kind": "nix-descriptor"}}}"#,
-        )
-        .expect("manifest");
-        let manifest =
-            Arc::new(ProfileImageManifest::from_path(&manifest_path).expect("manifest parse"));
+        let manifest = fixture_manifest(&workspace);
         let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
 
         let responses = vec![Ok(ok_stdout("[]")), Ok(ok_stdout("[]"))];

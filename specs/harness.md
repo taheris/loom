@@ -117,16 +117,22 @@ for integration-conflict replay.
 
 The Nix-produced profile-image manifest maps `(ProfileName, AgentRuntime)` to an
 image entry. Each entry carries the podman reference, immutable image source,
-source kind, and optional host-only launcher, wrix profile configuration, and
-digest paths. Loom parses the manifest once from `LOOM_PROFILES_MANIFEST` and
+source kind, required host-only raw launcher and immutable Wrix profile
+configuration paths, and an optional digest path. Loom parses the manifest once from `LOOM_PROFILES_MANIFEST` and
 has no implicit search fallback.
 
 Dispatch resolves the CLI profile override or bead `profile:X` label together
 with the phase backend, then looks up the pair. Missing profiles or runtimes are
 static `loom:infra` diagnostics that name the requested and available values.
 Non-interactive launches place the selected values in `SpawnConfig`;
-interactive launches hand the same selected image to `wrix run` through
-`WRIX_DEFAULT_IMAGE_REF` and `WRIX_DEFAULT_IMAGE_SOURCE`.
+interactive launches exec the selected raw launcher with
+`--profile-config <selected-profile-config> run <workspace> <agent-command>`.
+Configured wrappers are not an image-selection mechanism.
+[test](plan_does_not_create_epic_or_touch_bd)
+
+Every manifest entry requires `launcher` and `profile_config`; older/custom
+manifests missing either field fail ingestion with regeneration guidance.
+[test](manifest_rejects_missing_launcher_or_profile_config)
 
 ### Concurrency & Locking
 
@@ -624,9 +630,9 @@ Criteria.
   [test](lookup_missing_runtime_for_profile_carries_profile_and_runtime)
 - `--profile` CLI override takes precedence over bead labels
   [test](cli_override_swaps_resolved_image)
-- `loom plan` shells out to interactive `wrix run` (TTY attached); does
-      not capture stdio for JSONL
-  [test](argv_starts_with_run_subcommand)
+- `loom plan` shells out to interactive `wrix run` with inherited stdio,
+      and surfaces unsuccessful launcher status
+  [test](plan_inherits_stdio_and_reports_nonzero_launcher_status)
 
 ### Concurrency & locking
 

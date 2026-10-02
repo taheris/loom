@@ -78,7 +78,12 @@ mod tests {
 
     fn write_manifest(dir: &std::path::Path, body: &str) -> PathBuf {
         let path = dir.join("profile-images.json");
-        std::fs::write(&path, body).expect("write manifest");
+        loom_test_support::profile_manifest::write(
+            &path,
+            body,
+            std::path::Path::new("/fixture/wrix"),
+        )
+        .expect("write manifest");
         path
     }
 

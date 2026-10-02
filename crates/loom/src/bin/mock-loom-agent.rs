@@ -5,7 +5,7 @@
 //! exit cleanly — and chooses what marker text to emit based on the
 //! `LOOM_TEST_AGENT_MODE` env var.
 //!
-//! Selection: the test points `LOOM_WRIX_BIN` at this binary. loom
+//! Selection: the test points `LOOM_WRIX_SPAWN_BIN` at this binary. loom
 //! invokes it with `spawn --spawn-config <path> --stdio` (the
 //! production wrix CLI shape) plus whatever spawn-config the
 //! production code resolved. The mock ignores those args — there is

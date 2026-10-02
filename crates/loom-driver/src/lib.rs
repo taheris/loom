@@ -18,6 +18,7 @@ pub mod profile_manifest;
 pub mod scratch;
 pub mod state;
 pub mod testing;
+pub mod wrix;
 
 /// Re-export of the identifier newtypes that now live in `loom-events`.
 /// Existing call sites (`use loom_driver::identifier::BeadId`) continue

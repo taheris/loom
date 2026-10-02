@@ -175,7 +175,12 @@ mod tests {
           "python": { "pi": { "ref": "localhost/wrix-python-pi:ghi", "source": "/nix/store/ccc-image-python-pi", "source_kind": "nix-descriptor" } }
         }"#;
         let path = dir.join("profile-images.json");
-        std::fs::write(&path, body).expect("write manifest");
+        loom_test_support::profile_manifest::write(
+            &path,
+            body,
+            std::path::Path::new("/fixture/wrix"),
+        )
+        .expect("write manifest");
         ProfileImageManifest::from_path(&path).expect("parse manifest")
     }
 
@@ -354,7 +359,12 @@ mod tests {
           "base": { "pi": { "ref": "localhost/wrix-base-pi:darwin", "source": "/nix/store/source-without-tar-suffix", "source_kind": "docker-archive" } }
         }"#;
         let path = dir.path().join("profile-images.json");
-        std::fs::write(&path, body).expect("write manifest");
+        loom_test_support::profile_manifest::write(
+            &path,
+            body,
+            std::path::Path::new("/fixture/wrix"),
+        )
+        .expect("write manifest");
         let manifest = ProfileImageManifest::from_path(&path).expect("parse manifest");
         let bead = bead_with_labels("lm-1", &["profile:base"]);
 
@@ -681,7 +691,7 @@ mod tests {
         std::fs::write(
             &path,
             r#"{
-              "base": { "pi": { "ref": "", "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" } }
+              "base": { "pi": { "ref": "", "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor", "launcher": "/fixture/wrix", "profile_config": "/fixture/profile.json" } }
             }"#,
         )
         .expect("write manifest");

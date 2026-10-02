@@ -35,9 +35,9 @@ pub struct SpawnConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_source_kind: Option<ImageSourceKind>,
     /// Raw, profile-agnostic wrix launcher selected from the same manifest
-    /// entry as [`SpawnConfig::image_ref`]. Host-side backends prefer this
-    /// over `LOOM_WRIX_BIN` so they can pass Loom's per-bead `ProfileConfig` to
-    /// a launcher that does not already inject a different `--profile-config`.
+    /// entry as [`SpawnConfig::image_ref`]. Required for host-side launch;
+    /// only an explicit raw launcher override can supersede it. Configured
+    /// wrappers and PATH defaults are not fallback image-selection mechanisms.
     /// Skipped because it is host process state, not part of wrix's
     /// per-launch JSON contract.
     #[serde(skip)]

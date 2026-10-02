@@ -111,24 +111,22 @@ error before any Wrix child process is spawned.
 Per-phase config still resolves: each phase's `profile` key flows
 through `LoomConfig::agent_for(Phase)` exactly like the non-interactive
 phases. The resolved profile/runtime pair is looked up in the
-profile-image manifest. For `wrix run` shell-outs, the resulting
-`ImageEntry` is exported via the `WRIX_DEFAULT_IMAGE_REF` /
-`WRIX_DEFAULT_IMAGE_SOURCE` env vars documented in [harness.md —
-Profile-Image Manifest](harness.md#profile-image-manifest). Loom also
-sets the backend-derived `WRIX_AGENT` on the `wrix run` child process so
-launcher host-side setup matches the selected runtime. The env-var
-hand-off is the sole image-selection contract on this path: `wrix run`
-has no `--profile` parser, and any extra tokens between the workspace
-positional and the agent command would be forwarded into the container as
-the command vector (the entrypoint would exec them literally and exit
-127).
+profile-image manifest. All image-backed launches exec the entry's raw
+`launcher` with its immutable `--profile-config` before `run` or `spawn`.
+A configured wrapper would inject a conflicting profile configuration and is
+not used. Image-selection environment variables are not part of this contract.
+Pi inbox chat's native TUI and non-TTY RPC bridge select the same manifest
+entry and profile configuration.
+[test](inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio)
 
-`wrix run` reads those env vars (when no `--spawn-config` is supplied)
-to pick the same profile/runtime image the non-interactive `wrix spawn`
-path selects. Pi-backed `loom inbox chat` uses the env hand-off on its
-native TUI path and `SpawnConfig` on the non-TTY RPC bridge path, but both
-resolve the same profile/runtime manifest entry — both launch paths must
-select the same image for the same profile name and backend runtime.
+An explicit API launcher override takes precedence over `LOOM_WRIX_SPAWN_BIN`,
+which takes precedence over the manifest launcher. Overrides accept raw
+launchers only and change the executable, never the selected profile config.
+`LOOM_WRIX_BIN` remains the repository-initialization command and cannot
+change session image selection. Loom does not inspect or unwrap wrapper scripts.
+[test](explicit_raw_launcher_override_wins_without_changing_profile_config)
+[test](plan_raw_launcher_override_changes_executable_not_profile_config)
+[test](plan_does_not_unwrap_a_configured_launcher_override)
 
 ### Agent Backend Trait
 
@@ -1230,11 +1228,30 @@ the entrypoint run the wrong runtime.
 
 ### Interactive shell-out
 
-- `loom plan` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag — `wrix run` has no parser for it), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Plan)`
-  [test](plan_runner_passes_resolved_profile_runtime_to_wrix_run)
-- Claude-backed `loom inbox chat` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Inbox)`
+- CLI profile and agent overrides select matching profile configs for both
+      native Pi and Claude planning, with exactly one profile flag before `run`
+  [test](plan_cli_overrides_select_matching_profile_configs)
+- A raw launcher environment override changes only the planning executable
+  [test](plan_raw_launcher_override_changes_executable_not_profile_config)
+- A configured wrapper override is not silently unwrapped
+  [test](plan_does_not_unwrap_a_configured_launcher_override)
+- Inbox raw launcher overrides retain the selected config and key forwarding
+  [test](inbox_chat_raw_override_preserves_selected_config_and_launcher_keys)
+- Inbox CLI agent overrides select the immutable config matching the phase profile
+  [test](inbox_chat_agent_override_selects_matching_profile_config)
+- Shared Wrix command construction prefixes both `run` and `spawn` with one
+      selected profile config
+  [test](profile_config_precedes_run_and_spawn_arguments)
+
+- `loom plan` launches the manifest's raw launcher with its matching
+      `--profile-config` before `run`, even when the configured default wrapper
+      is Rust/Pi and the selected runtime/profile is Claude/base
+  [test](plan_does_not_create_epic_or_touch_bd)
+- Claude-backed `loom inbox chat` uses the matching raw launcher and explicit
+      profile config rather than the configured default wrapper
   [test](inbox_chat_passes_resolved_profile_runtime_to_wrix_run)
-- `[phase.default].profile` alone (no per-phase override, no CLI override) reaches `Phase::Plan` via the env-var hand-off
+- `[phase.default].profile` alone (no per-phase override, no CLI override) selects
+      the matching `Phase::Plan` profile config
   [test](plan_phase_default_profile_alone_picks_manifest_entry)
 - Direct backend selection for `loom plan` or `loom inbox chat` fails before spawning Wrix because Direct has no interactive REPL command
   [test](interactive_shell_out_rejects_direct_backend)

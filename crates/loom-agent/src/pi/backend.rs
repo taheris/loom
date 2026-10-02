@@ -21,7 +21,7 @@ use tracing::{debug, error, info, warn};
 use super::messages::{PiEnvelope, PiResponse, SetThinkingLevelCommand};
 use super::parser::{AgentEndMode, PiParser};
 use crate::skill::{NoNativeRegistrar, register_native_skills};
-use crate::{apply_launcher_env, resolve_wrix_spawn_bin};
+use crate::{apply_launcher_env, build_wrix_command, resolve_wrix_spawn_bin};
 
 /// Probe id used for the startup `get_state` request. The id appears in
 /// pi's response so the backend can correlate request/response without
@@ -89,7 +89,7 @@ impl PiBackend {
     ///
     /// Returns an error when agent startup, protocol handling, or tool execution fails.
     pub async fn spawn_bridge(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
-        let wrix_bin = resolve_wrix_spawn_bin(config);
+        let wrix_bin = resolve_wrix_spawn_bin(config)?;
         Self::spawn_bridge_with_wrix_bin(config, &wrix_bin).await
     }
 
@@ -126,7 +126,7 @@ impl PiBackend {
             wrix_bin,
             config.profile_config.as_deref(),
             spawn_config.path(),
-        );
+        )?;
         apply_launcher_env(&mut cmd, &config.launcher_env);
         // Readiness detection requires Wrix's verbose container-start marker.
         cmd.env("WRIX_VERBOSE", "1");
@@ -147,7 +147,7 @@ impl PiBackend {
 
 impl AgentBackend for PiBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
-        let wrix_bin = resolve_wrix_spawn_bin(config);
+        let wrix_bin = resolve_wrix_spawn_bin(config)?;
         Self::spawn_with_wrix_bin(config, &wrix_bin).await
     }
 
@@ -199,22 +199,6 @@ struct StateProbeData {
     is_compacting: bool,
     message_count: u64,
     pending_message_count: u64,
-}
-
-pub(crate) fn build_wrix_command(
-    wrix_bin: &OsStr,
-    profile_config: Option<&Path>,
-    spawn_config_path: &Path,
-) -> Command {
-    let mut cmd = Command::new(wrix_bin);
-    if let Some(profile_config) = profile_config {
-        cmd.arg("--profile-config").arg(profile_config);
-    }
-    cmd.arg("spawn")
-        .arg("--spawn-config")
-        .arg(spawn_config_path)
-        .arg("--stdio");
-    cmd
 }
 
 /// Spawn the launcher [`Command`], drive the startup handshake (probe +
@@ -831,7 +815,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let spawn_config_path = dir.path().join("loom-spawn.json");
         let profile_config = Path::new("/nix/store/wrix-rust-pi-profile-config.json");
-        let cmd = build_wrix_command(OsStr::new("wrix"), Some(profile_config), &spawn_config_path);
+        let cmd = build_wrix_command(OsStr::new("wrix"), Some(profile_config), &spawn_config_path)
+            .unwrap();
         let std_cmd = cmd.as_std();
 
         assert_eq!(std_cmd.get_program(), OsStr::new("wrix"));

@@ -66,11 +66,15 @@ is suitable for Home Manager and system profiles:
 For image-backed workflows, Loom also exposes `loom-wrix`: a wrapped binary
 with `wrix` on its internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a
 base/rust/python × claude/pi/direct manifest. Manifest entries also carry the
-raw wrix launcher, so spawn paths do not accidentally recurse through a
-profiled wrapper that already injects `--profile-config`. The wrapper keeps
-`LOOM_WRIX_BIN` on the profiled interactive wrapper and sets
-`LOOM_WRIX_SPAWN_BIN` to the same unprofiled launcher for older/custom
-manifests. Add that explicit package to a wrix devshell when you want
+raw Wrix launcher and immutable profile config. Both interactive and RPC
+sessions launch that raw executable with exactly one `--profile-config`,
+matching the selected profile/runtime, regardless of the configured wrapper.
+`LOOM_WRIX_BIN` configures repository Git initialization, not image selection.
+For an explicit executable override, set `LOOM_WRIX_SPAWN_BIN` to a raw Wrix
+launcher (never a configured wrapper); this changes only the executable for
+both `run` and `spawn`, not the manifest-selected profile config. There is no
+PATH/wrapper fallback for image-backed sessions. Older manifests missing
+`launcher` or `profile_config` must be regenerated with `mkProfileManifest`. Add that explicit package to a wrix devshell when you want
 `loom plan` to work end-to-end without setting the env vars yourself:
 
 ```nix

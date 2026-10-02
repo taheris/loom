@@ -2,10 +2,6 @@ use std::path::Path;
 
 use loom_driver::agent::AgentKind;
 
-/// Default name of the wrix launcher binary on PATH. Tests override via
-/// the `LOOM_WRIX_BIN` env var resolved by [`super::runner::run`].
-pub const WRIX_BIN: &str = "wrix";
-
 /// Build the argv passed to `wrix run` for an interactive `loom plan`
 /// session.
 ///
@@ -21,12 +17,8 @@ pub const WRIX_BIN: &str = "wrix";
 /// matching the spec's "exception" carve-out for the interactive interview.
 /// Pi's native-TUI production path adds session and extension flags in the
 /// shared `pi_tui` launcher helper rather than through this Claude helper.
-/// Profile selection on this path flows through the `WRIX_DEFAULT_IMAGE_REF`
-/// and `WRIX_DEFAULT_IMAGE_SOURCE` env vars exported by
-/// [`super::runner::run`] — `wrix run` does not parse `--profile`; any
-/// trailing tokens after the workspace are forwarded into the container as
-/// the command vector (so adding `--profile <name>` here makes the
-/// entrypoint exec `--profile` and exit 127).
+/// The caller prefixes these subcommand arguments with the selected manifest's
+/// `--profile-config` on its raw launcher. No profile options belong after the workspace.
 /// Returns argv as a `Vec<String>` so callers (and tests) can inspect it
 /// without paying for a real spawn.
 pub fn build_wrix_argv(
@@ -118,7 +110,7 @@ mod tests {
         );
         assert!(
             !argv.iter().any(|a| a == "--profile"),
-            "wrix run has no --profile parser; profile flows via WRIX_DEFAULT_IMAGE_* env vars"
+            "profile configuration belongs before run, not in the container command"
         );
         assert!(!argv.iter().any(|a| a == "spawn"));
         assert!(!argv.iter().any(|a| a == "run-bead"));

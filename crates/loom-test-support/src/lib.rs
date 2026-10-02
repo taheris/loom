@@ -6,6 +6,7 @@
 
 pub mod finding;
 pub mod git_policy;
+pub mod profile_manifest;
 
 use proptest::test_runner::Config as ProptestConfig;
 

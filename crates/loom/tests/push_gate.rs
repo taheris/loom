@@ -44,7 +44,7 @@ mod tests {
                 &bin.join("prek"),
                 "set -euo pipefail\nprintf '%s\\n' \"$*\" >> \"$LOOM_TEST_PREK_LOG\"\nexit 0\n",
             );
-            std::fs::write(home.join("profiles.json"), r#"{"base":{"pi":{"ref":"fixture-pi","source":"/fixture/image","source_kind":"nix-descriptor"}}}"#).unwrap();
+            loom_test_support::profile_manifest::write(&home.join("profiles.json"), r#"{"base":{"pi":{"ref":"fixture-pi","source":"/fixture/image","source_kind":"nix-descriptor"}}}"#, Path::new("/fixture/wrix")).unwrap();
             let bead = state.join("lm-work");
             std::fs::create_dir_all(&bead).unwrap();
             for (field, value) in [
@@ -136,7 +136,7 @@ mod tests {
                 .env("XDG_STATE_HOME", self.home.join("user-state"))
                 .env("GIT_TRACE2_EVENT", self.home.join("git.jsonl"))
                 .env_remove("LOOM_INSIDE")
-                .env_remove("LOOM_WRIX_SPAWN_BIN")
+                .env("LOOM_WRIX_SPAWN_BIN", self.bin.join("wrix"))
                 .env_remove("LOOM_REVIEW_INSPECTION_ONLY")
                 .env_remove("LOOM_REVIEW_EMIT_STDOUT")
                 .env_remove("LOOM_REVIEW_SPEC_LABEL")
@@ -238,7 +238,16 @@ mod tests {
                 1,
                 "only one backend spawn: {wrix_log}"
             );
-            assert!(wrix_log.starts_with("spawn "), "no beads push: {wrix_log}");
+            let tokens: Vec<_> = wrix_log.split_whitespace().collect();
+            assert_eq!(tokens[0], "--profile-config", "{wrix_log}");
+            assert_eq!(tokens[2], "spawn", "no beads push: {wrix_log}");
+            assert_eq!(
+                tokens
+                    .iter()
+                    .filter(|arg| **arg == "--profile-config")
+                    .count(),
+                1
+            );
             let trace = std::fs::read_to_string(self.home.join("git.jsonl")).unwrap();
             let git_commands: Vec<_> = trace
                 .lines()

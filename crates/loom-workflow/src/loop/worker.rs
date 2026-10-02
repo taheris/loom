@@ -269,7 +269,8 @@ mod tests {
         let mut entries = serde_json::Map::new();
         for runtime in [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct] {
             entries.insert(runtime.to_string(), serde_json::json!({
-                "ref": format!("image-{runtime}"), "source": "/fixture/image", "source_kind": "nix-descriptor"
+                "ref": format!("image-{runtime}"), "source": "/fixture/image", "source_kind": "nix-descriptor",
+                "launcher": "/fixture/wrix", "profile_config": "/fixture/profile.json"
             }));
         }
         let manifest_path = dir.path().join("images.json");

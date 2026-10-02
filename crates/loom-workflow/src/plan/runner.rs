@@ -1,6 +1,5 @@
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use tracing::info;
@@ -16,17 +15,9 @@ use loom_driver::state::CacheDb;
 use crate::skill::SkillPlan;
 use crate::spawn::container_workspace_path;
 
-use super::command::{WRIX_BIN, build_wrix_argv};
+use super::command::build_wrix_argv;
 use super::error::PlanError;
 use super::prompt::{PlanPromptInputs, render_prompt};
-
-/// Env var read by `wrix run` to pick the podman ref of the per-profile
-/// image. Mirrors `lib/sandbox/linux/default.nix`.
-pub const WRIX_DEFAULT_IMAGE_REF: &str = "WRIX_DEFAULT_IMAGE_REF";
-
-/// Env var read by `wrix run` to pick the Nix store path handed to
-/// `podman load`. Mirrors `lib/sandbox/linux/default.nix`.
-pub const WRIX_DEFAULT_IMAGE_SOURCE: &str = "WRIX_DEFAULT_IMAGE_SOURCE";
 
 /// Default timeout used by [`run`] — mirrors the phase-lock command surface.
 pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
@@ -34,8 +25,8 @@ pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Options accepted by [`run`].
 pub struct PlanOpts {
     pub anchor_labels: Vec<SpecLabel>,
-    /// Explicit path to the `wrix` launcher. `None` falls back to
-    /// [`WRIX_BIN`] on `PATH`. Tests pass a stub here.
+    /// Explicit raw launcher override. Otherwise use `LOOM_WRIX_SPAWN_BIN`,
+    /// then the selected manifest launcher. The selected profile config is unchanged.
     pub wrix_bin: Option<PathBuf>,
     /// CLI `--profile` override — wins over `[phase.plan]` /
     /// `[phase.default]` resolution per `specs/harness.md` § Profile-Image
@@ -45,10 +36,7 @@ pub struct PlanOpts {
     /// `[phase.default].agent.backend` select the interactive command passed
     /// to `wrix run`.
     pub agent_override: Option<AgentKind>,
-    /// Parsed profile-image manifest. The runner looks the resolved profile
-    /// up against this to populate the `WRIX_DEFAULT_IMAGE_REF` /
-    /// `WRIX_DEFAULT_IMAGE_SOURCE` env vars the launcher reads when no
-    /// `--spawn-config` is supplied (see `lib/sandbox/linux/default.nix`).
+    /// Manifest selecting the matching raw launcher and immutable profile config.
     pub manifest: ProfileImageManifest,
     /// Repository key paths for the `wrix run` launcher process.
     pub launcher_env: Vec<(String, String)>,
@@ -127,7 +115,7 @@ pub fn run_with_timeout(
         .map_err(|source| PlanError::Spawn { source })?;
     let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
 
-    let bin: PathBuf = opts.wrix_bin.unwrap_or_else(|| PathBuf::from(WRIX_BIN));
+    let bin = loom_driver::wrix::resolve_launcher(&image.launcher, opts.wrix_bin.as_deref());
     let argv = match selection.kind() {
         AgentKind::Claude => {
             let claude_settings_path =
@@ -167,12 +155,9 @@ pub fn run_with_timeout(
         }
         AgentKind::Direct => return Err(PlanError::DirectInteractive),
     };
-    let status = Command::new(&bin)
+    let status = loom_driver::wrix::command(bin.as_os_str(), &image.profile_config)
         .args(&argv)
         .envs(opts.launcher_env)
-        .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
-        .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
-        .env("WRIX_AGENT", selection.kind().as_str())
         .status()
         .map_err(|source| PlanError::Spawn { source })?;
     drop(scratch);
@@ -250,17 +235,22 @@ mod tests {
 
     fn three_profile_manifest(dir: &Path) -> Result<ProfileImageManifest> {
         let manifest_path = dir.join("profile-images.json");
-        let body = format!(
-            r#"{{
-              "base":   {{ "claude": {{ "ref": "localhost/wrix-base-claude:abc",   "source": {base:?}, "source_kind": "nix-descriptor" }}, "pi": {{ "ref": "localhost/wrix-base-pi:abc",   "source": {base:?}, "source_kind": "nix-descriptor" }} }},
-              "rust":   {{ "claude": {{ "ref": "localhost/wrix-rust-claude:def",   "source": {rust:?}, "source_kind": "nix-descriptor" }}, "pi": {{ "ref": "localhost/wrix-rust-pi:def",   "source": {rust:?}, "source_kind": "nix-descriptor" }} }},
-              "python": {{ "claude": {{ "ref": "localhost/wrix-python-claude:ghi", "source": {py:?}, "source_kind": "nix-descriptor" }}, "pi": {{ "ref": "localhost/wrix-python-pi:ghi", "source": {py:?}, "source_kind": "nix-descriptor" }} }}
-            }}"#,
-            base = dir.join("base.tar").display().to_string(),
-            rust = dir.join("rust.tar").display().to_string(),
-            py = dir.join("python.tar").display().to_string(),
-        );
-        std::fs::write(&manifest_path, body)?;
+        let mut body = serde_json::json!({});
+        for (profile, tag) in [("base", "abc"), ("rust", "def"), ("python", "ghi")] {
+            for runtime in ["claude", "pi"] {
+                let config = dir.join(format!("{profile}-{runtime}.json"));
+                let entry = serde_json::json!({
+                    "ref": format!("localhost/wrix-{profile}-{runtime}:{tag}"),
+                    "source": dir.join(format!("{profile}.tar")),
+                    "source_kind": "nix-descriptor",
+                    "launcher": dir.join("bin/wrix"), "profile_config": config,
+                    "agent": runtime
+                });
+                std::fs::write(&config, entry.to_string())?;
+                body[profile][runtime] = entry;
+            }
+        }
+        std::fs::write(&manifest_path, body.to_string())?;
         Ok(ProfileImageManifest::from_path(&manifest_path)?)
     }
 
@@ -269,11 +259,9 @@ mod tests {
         std::fs::create_dir_all(&bin_dir)?;
         let bin = bin_dir.join("wrix");
         let script = loom_test_support::bash_script(&format!(
-            "set -euo pipefail\nargv_log={:?}\nenv_log={:?}\nfor arg in \"$@\"; do\n    printf '%s\\n' \"$arg\" >> \"$argv_log\"\ndone\nprintf 'ref=%s\\nsource=%s\\nagent=%s\\n' \"${{{}:-}}\" \"${{{}:-}}\" \"${{WRIX_AGENT:-}}\" > \"$env_log\"\n",
+            "set -euo pipefail\nargv_log={:?}\nenv_log={:?}\nfor arg in \"$@\"; do\n    printf '%s\\n' \"$arg\" >> \"$argv_log\"\ndone\n[[ \"$1\" == --profile-config ]]\njq -r '\"ref=\\(.ref)\\nsource=\\(.source)\\nagent=\\(.agent)\"' \"$2\" > \"$env_log\"\nshift 2\n[[ \"$1\" == run ]]\n",
             dir.join("argv.log").display().to_string(),
             dir.join("env.log").display().to_string(),
-            WRIX_DEFAULT_IMAGE_REF,
-            WRIX_DEFAULT_IMAGE_SOURCE,
         ));
         std::fs::write(&bin, script)?;
         let mut perms = std::fs::metadata(&bin)?.permissions();
@@ -308,7 +296,9 @@ canary_log={canary_log:?}
 for arg in "$@"; do
     printf '%s\n' "$arg" >> "$argv_log"
 done
-printf 'ref=%s\nsource=%s\nagent=%s\n' "${{{ref_env}:-}}" "${{{source_env}:-}}" "${{WRIX_AGENT:-}}" > "$env_log"
+[[ "$1" == --profile-config ]]
+jq -r '"ref=\(.ref)\nsource=\(.source)\nagent=\(.agent)"' "$2" > "$env_log"
+shift 2
 
 if [[ "${{1:-}}" != "run" ]]; then
     printf 'expected wrix run, got: %s\n' "${{1:-}}" >&2
@@ -335,8 +325,6 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             env_log = dir.join("env.log").display().to_string(),
             mock_claude = mock_claude.display().to_string(),
             canary_log = dir.join("canary.log").display().to_string(),
-            ref_env = WRIX_DEFAULT_IMAGE_REF,
-            source_env = WRIX_DEFAULT_IMAGE_SOURCE,
         ));
         std::fs::write(&bin, script)?;
         let mut perms = std::fs::metadata(&bin)?.permissions();
@@ -490,7 +478,8 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             vec![SpecLabel::new("harness").unwrap()]
         );
         let argv_log = std::fs::read_to_string(dir.path().join("argv.log"))?;
-        assert!(argv_log.starts_with("run\n"));
+        assert!(argv_log.starts_with("--profile-config\n"));
+        assert_eq!(argv_log.lines().nth(2), Some("run"));
         assert!(argv_log.contains("# Specification Interview"));
         assert!(argv_log.contains("`harness`"));
         assert!(argv_log.contains("# Loom Docs"));
@@ -703,7 +692,8 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
     fn interactive_pi_shell_out_installs_repin_extension() -> Result<()> {
         let (argv_log, env_log) = run_plan_pi_launch()?;
         let argv: Vec<&str> = argv_log.lines().collect();
-        assert_eq!(argv.first().copied(), Some("run"));
+        assert_eq!(argv.first().copied(), Some("--profile-config"));
+        assert_eq!(argv[2], "run");
         assert!(argv.contains(&"pi"), "expected pi argv: {argv_log}");
         assert!(
             argv.contains(&"--session-dir"),

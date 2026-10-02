@@ -90,7 +90,7 @@ fn manifest(dir: &Path) -> Result<Arc<ProfileImageManifest>> {
       }
     }"#;
     let path = dir.join("profile-images.json");
-    std::fs::write(&path, body)?;
+    loom_test_support::profile_manifest::write(&path, body, Path::new("/fixture/wrix"))?;
     Ok(Arc::new(ProfileImageManifest::from_path(&path)?))
 }
 

@@ -27,7 +27,7 @@ mod prompt;
 mod runner;
 
 pub use args::parse_anchor_labels;
-pub use command::{WRIX_BIN, build_wrix_argv};
+pub use command::build_wrix_argv;
 pub use error::PlanError;
 pub use prompt::{PlanPromptInputs, render_prompt};
-pub use runner::{PlanOpts, PlanReport, WRIX_DEFAULT_IMAGE_REF, WRIX_DEFAULT_IMAGE_SOURCE, run};
+pub use runner::{PlanOpts, PlanReport, run};

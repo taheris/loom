@@ -8,9 +8,7 @@
 //! post-`result` cleanup: drop the writer, wait `grace`, escalate
 //! SIGTERM → SIGKILL.
 
-use std::ffi::OsStr;
 use std::io;
-use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -29,7 +27,7 @@ use tracing::{debug, info, warn};
 
 use super::parser::ClaudeParser;
 use crate::skill::{NoNativeRegistrar, register_native_skills};
-use crate::{apply_launcher_env, resolve_wrix_spawn_bin};
+use crate::{apply_launcher_env, build_wrix_command, resolve_wrix_spawn_bin};
 
 /// Default grace period after observing a Claude `result`.
 ///
@@ -53,7 +51,7 @@ impl AgentBackend for ClaudeBackend {
         register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config = prepare_runtime(config)?;
 
-        let wrix_bin = resolve_wrix_spawn_bin(config);
+        let wrix_bin = resolve_wrix_spawn_bin(config)?;
         info!(
             wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config.path().display(),
@@ -64,7 +62,7 @@ impl AgentBackend for ClaudeBackend {
             &wrix_bin,
             config.profile_config.as_deref(),
             spawn_config.path(),
-        );
+        )?;
         apply_launcher_env(&mut cmd, &config.launcher_env);
 
         let session = spawn_session(cmd, config.denied_tools.clone())?;
@@ -193,22 +191,6 @@ pub(crate) fn spawn_session(
     ))
 }
 
-fn build_wrix_command(
-    wrix_bin: &OsStr,
-    profile_config: Option<&Path>,
-    spawn_config_path: &Path,
-) -> Command {
-    let mut cmd = Command::new(wrix_bin);
-    if let Some(profile_config) = profile_config {
-        cmd.arg("--profile-config").arg(profile_config);
-    }
-    cmd.arg("spawn")
-        .arg("--spawn-config")
-        .arg(spawn_config_path)
-        .arg("--stdio");
-    cmd
-}
-
 /// Wait `grace` for the child to exit. `Ok(Some(code))` means the child
 /// is reaped; `Ok(None)` means the wait timed out and the caller should
 /// escalate.
@@ -254,7 +236,8 @@ mod tests {
     use loom_driver::agent::RePinContent;
     use loom_driver::clock::{MockClock, SystemClock};
     use loom_events::ParsedAgentEvent;
-    use std::path::PathBuf;
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
 
     fn sample_repin() -> RePinContent {
         RePinContent {
@@ -447,7 +430,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let spawn_config_path = dir.path().join("loom-spawn.json");
         let profile_config = Path::new("/nix/store/wrix-claude-profile-config.json");
-        let cmd = build_wrix_command(OsStr::new("wrix"), Some(profile_config), &spawn_config_path);
+        let cmd = build_wrix_command(OsStr::new("wrix"), Some(profile_config), &spawn_config_path)
+            .unwrap();
         let std_cmd = cmd.as_std();
 
         assert_eq!(std_cmd.get_program(), OsStr::new("wrix"));

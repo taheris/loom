@@ -243,7 +243,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-wrix-test"),
             image_source_kind: Some(ImageSourceKind::NixDescriptor),
             wrix_launcher: None,
-            profile_config: None,
+            profile_config: Some(PathBuf::from("/fixture/profile.json")),
             workspace: PathBuf::from("/workspace"),
             env: vec![],
             mounts: vec![],

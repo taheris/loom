@@ -68,7 +68,8 @@ fn write_manifest(dir: &Path) -> Arc<ProfileImageManifest> {
       "base": { "pi": { "ref": "localhost/wrix-base-pi:abc", "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" }, "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude", "source_kind": "nix-descriptor" }, "direct": { "ref": "localhost/wrix-base-direct:abc", "source": "/nix/store/aaa-image-base-direct", "source_kind": "nix-descriptor" } }
     }"#;
     let path = dir.join("profile-images.json");
-    std::fs::write(&path, body).expect("write manifest");
+    loom_test_support::profile_manifest::write(&path, body, Path::new("/fixture/wrix"))
+        .expect("write manifest");
     Arc::new(ProfileImageManifest::from_path(&path).expect("parse manifest"))
 }
 
@@ -122,7 +123,8 @@ fn pair_manifest(dir: &Path) -> Arc<ProfileImageManifest> {
         python_profile = python_profile.display().to_string(),
     );
     let path = dir.join("pair-profile-images.json");
-    std::fs::write(&path, body).expect("write pair manifest");
+    loom_test_support::profile_manifest::write(&path, body, Path::new("/fixture/wrix"))
+        .expect("write pair manifest");
     Arc::new(ProfileImageManifest::from_path(&path).expect("parse pair manifest"))
 }
 

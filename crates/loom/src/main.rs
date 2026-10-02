@@ -2745,7 +2745,7 @@ fn run_plan(
         workspace,
         plan::PlanOpts {
             anchor_labels,
-            wrix_bin: std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from),
+            wrix_bin: None,
             cli_profile: profile.map(|profile| profile.parse()).transpose()?,
             agent_override,
             manifest,
@@ -4584,7 +4584,7 @@ fn run_inbox_chat(
         wrix_bin: None,
         launcher_env,
     };
-    let report = loom_workflow::inbox::chat::run(workspace, opts)?;
+    let report = loom_workflow::inbox::chat::run(workspace, &opts)?;
     if report.items_surfaced == 0 {
         println!("(no outstanding inbox items)");
     } else {

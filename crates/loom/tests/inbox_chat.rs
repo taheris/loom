@@ -108,9 +108,15 @@ for a in "$@"; do
 done
 printf -- '---\n' >> "$argv_log"
 
-printf 'WRIX_DEFAULT_IMAGE_REF=%s\n' "${{WRIX_DEFAULT_IMAGE_REF:-}}" >> "$env_log"
-printf 'WRIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRIX_DEFAULT_IMAGE_SOURCE:-}}" >> "$env_log"
-printf 'WRIX_AGENT=%s\n' "${{WRIX_AGENT:-}}" >> "$env_log"
+[[ "$1" == --profile-config ]]
+profile_config="$2"
+shift 2
+for arg in "$@"; do
+    [[ "$arg" != --profile-config ]]
+done
+printf 'LAUNCHER=%s\nPROFILE_CONFIG=%s\n' "$0" "$profile_config" >> "$env_log"
+jq -r '"IMAGE_REF=\(.image.ref)\nWRIX_AGENT=\(.agent.kind)"' "$profile_config" >> "$env_log"
+printf 'DEPLOY_KEY=%s\nSIGNING_KEY=%s\n' "${{WRIX_DEPLOY_KEY:-}}" "${{WRIX_SIGNING_KEY:-}}" >> "$env_log"
 if [[ -t 0 ]]; then stdin_tty=1; else stdin_tty=0; fi
 if [[ -t 1 ]]; then stdout_tty=1; else stdout_tty=0; fi
 printf 'WRIX_STDIN_TTY=%s\n' "$stdin_tty" >> "$env_log"
@@ -293,11 +299,18 @@ fn write_manifest(dir: &Path) -> PathBuf {
     let source = dir.join("base.tar");
     std::fs::write(&source, "").expect("write base.tar");
     let manifest = dir.join("profile-images.json");
-    let body = format!(
-        r#"{{"base": {{"pi": {{"ref":"localhost/wrix-base-pi:test","source":{source:?}, "source_kind": "nix-descriptor"}}, "claude": {{"ref":"localhost/wrix-base-claude:test","source":{source:?}, "source_kind": "nix-descriptor"}}, "direct": {{"ref":"localhost/wrix-base-direct:test","source":{source:?}, "source_kind": "nix-descriptor"}}}}}}"#,
-        source = source.display().to_string(),
-    );
-    std::fs::write(&manifest, body).expect("write manifest");
+    let mut matrix = serde_json::json!({});
+    for profile in ["base", "rust"] {
+        for runtime in ["pi", "claude", "direct"] {
+            matrix[profile][runtime] = serde_json::json!({
+                "ref": format!("localhost/wrix-{profile}-{runtime}:test"),
+                "source": source, "source_kind": "nix-descriptor"
+            });
+        }
+    }
+    let body = matrix.to_string();
+    loom_test_support::profile_manifest::write(&manifest, body, &dir.join("wrix-bin/wrix-stub"))
+        .expect("write manifest");
     manifest
 }
 
@@ -306,6 +319,7 @@ struct ChatRun {
     state_dir: PathBuf,
     bd_bin_dir: PathBuf,
     wrix_stub: PathBuf,
+    default_wrapper: PathBuf,
     manifest: PathBuf,
     argv_log: PathBuf,
     env_log: PathBuf,
@@ -319,6 +333,15 @@ fn setup_chat() -> ChatRun {
     std::fs::create_dir_all(&state_dir).expect("mkdir state");
     let bd_bin_dir = install_bd_shim(&workspace);
     let wrix_stub = install_wrix_stub(&workspace);
+    let default_wrapper = workspace.join("wrix-rust-pi");
+    loom_test_support::write_executable_bash_script(
+        &default_wrapper,
+        &format!(
+            "set -euo pipefail\nexec \"{}\" --profile-config /baked-rust-pi.json \"$@\"\n",
+            wrix_stub.display()
+        ),
+    )
+    .unwrap();
     let manifest = write_manifest(&workspace);
     ChatRun {
         argv_log: workspace.join("argv.log"),
@@ -327,6 +350,7 @@ fn setup_chat() -> ChatRun {
         state_dir,
         bd_bin_dir,
         wrix_stub,
+        default_wrapper,
         manifest,
         _tmp: tmp,
     }
@@ -471,7 +495,7 @@ fn chat_command(env: &ChatRun, mode: &str, args: &[&str], extra_env: &[(&str, &s
         .arg("chat")
         .args(args)
         .env("PATH", new_path)
-        .env("LOOM_WRIX_BIN", &env.wrix_stub)
+        .env("LOOM_WRIX_BIN", &env.default_wrapper)
         .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("WRIX_STUB_MODE", mode)
         .env("LOOM_PROFILES_MANIFEST", &env.manifest)
@@ -679,9 +703,23 @@ fn loom_inbox_chat_launches_container() {
     );
     let argv = std::fs::read_to_string(&env.argv_log).expect("argv log");
     let lines: Vec<&str> = argv.lines().collect();
-    assert_eq!(lines[0], "run");
-    assert_eq!(lines[1], env.workspace.to_string_lossy());
-    assert_eq!(lines[2], "claude");
+    assert_eq!(lines[0], "--profile-config");
+    assert_eq!(
+        lines[1],
+        env.workspace
+            .join("base-claude-profile.json")
+            .to_string_lossy()
+    );
+    assert_eq!(lines[2], "run");
+    assert_eq!(lines[3], env.workspace.to_string_lossy());
+    assert_eq!(lines[4], "claude");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|arg| **arg == "--profile-config")
+            .count(),
+        1
+    );
     assert!(lines.contains(&"--settings"), "{argv}");
     assert!(
         lines
@@ -693,8 +731,106 @@ fn loom_inbox_chat_launches_container() {
     assert!(!lines.contains(&"--stdio"), "{argv}");
     assert!(!lines.contains(&"--spawn-config"), "{argv}");
     let env_log = std::fs::read_to_string(&env.env_log).expect("env log");
-    assert!(env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base-claude:test"));
+    assert!(env_log.contains("IMAGE_REF=localhost/wrix-base-claude:test"));
     assert!(env_log.contains("WRIX_AGENT=claude"));
+}
+
+#[test]
+fn inbox_chat_raw_override_preserves_selected_config_and_launcher_keys() {
+    let env = setup_chat();
+    let override_bin = env.workspace.join("override-wrix");
+    std::fs::copy(&env.wrix_stub, &override_bin).unwrap();
+    seed_bead(
+        &env.state_dir,
+        "lm-chatkeys",
+        "decision",
+        "blocked",
+        "open",
+        &["loom:blocked"],
+    );
+    let output = run_chat_extra(
+        &env,
+        "resolve-none",
+        &[],
+        &[
+            ("LOOM_WRIX_SPAWN_BIN", override_bin.to_str().unwrap()),
+            ("WRIX_DEPLOY_KEY", "/keys/repo"),
+            ("WRIX_SIGNING_KEY", "/keys/repo-signing"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let argv = std::fs::read_to_string(&env.argv_log).unwrap();
+    assert_eq!(
+        argv.lines().nth(1),
+        Some(
+            env.workspace
+                .join("base-claude-profile.json")
+                .to_str()
+                .unwrap()
+        )
+    );
+    assert_eq!(
+        argv.lines()
+            .filter(|arg| *arg == "--profile-config")
+            .count(),
+        1
+    );
+    let log = std::fs::read_to_string(&env.env_log).unwrap();
+    assert!(
+        log.contains(&format!("LAUNCHER={}\n", override_bin.display())),
+        "{log}"
+    );
+    assert!(
+        log.contains("DEPLOY_KEY=/keys/repo\nSIGNING_KEY=/keys/repo-signing"),
+        "{log}"
+    );
+}
+
+#[test]
+fn inbox_chat_agent_override_selects_matching_profile_config() {
+    let env = setup_chat();
+    std::fs::write(
+        env.workspace.join("loom.toml"),
+        "[phase.inbox]\nprofile = 'rust'\nagent.backend = 'pi'\n",
+    )
+    .unwrap();
+    seed_bead(
+        &env.state_dir,
+        "lm-chatoverride",
+        "decision",
+        "blocked",
+        "open",
+        &["loom:blocked"],
+    );
+    let output = run_chat(&env, "resolve-none", &["--agent", "claude"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let argv = std::fs::read_to_string(&env.argv_log).unwrap();
+    let lines: Vec<_> = argv.lines().collect();
+    assert_eq!(lines[0], "--profile-config");
+    assert_eq!(
+        lines[1],
+        env.workspace
+            .join("rust-claude-profile.json")
+            .to_str()
+            .unwrap()
+    );
+    assert_eq!(lines[2], "run");
+    assert_eq!(lines[4], "claude");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|arg| **arg == "--profile-config")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -722,11 +858,11 @@ fn inbox_chat_passes_resolved_profile_runtime_to_wrix_run() {
     );
     let argv = std::fs::read_to_string(&env.argv_log).expect("argv log");
     let lines: Vec<&str> = argv.lines().collect();
-    assert_eq!(lines[2], "claude");
+    assert_eq!(lines[4], "claude");
     assert!(lines.contains(&"--settings"), "{argv}");
     assert!(lines.contains(&"--dangerously-skip-permissions"), "{argv}");
     let env_log = std::fs::read_to_string(&env.env_log).expect("env log");
-    assert!(env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base-claude:test"));
+    assert!(env_log.contains("IMAGE_REF=localhost/wrix-base-claude:test"));
     assert!(env_log.contains("WRIX_AGENT=claude"));
 }
 

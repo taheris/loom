@@ -29,7 +29,7 @@ pub enum ProfileError {
         source: io::Error,
     },
 
-    /// profile-image manifest at {path} is malformed
+    /// profile-image manifest at {path} is malformed; regenerate it with Loom's mkProfileManifest (launcher and profile_config are required)
     ManifestMalformed {
         path: PathBuf,
         #[source]

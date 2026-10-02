@@ -8,7 +8,6 @@
 //! `{"type": "...", ...}` JSONL frames — see [`DirectParser`] for the
 //! wire shape.
 
-use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -22,7 +21,7 @@ use loom_events::identifier::ToolCallId;
 use loom_events::{DriverEventPayload, DriverKind, ParsedAgentEvent};
 
 use crate::skill::{NoNativeRegistrar, register_native_skills};
-use crate::{apply_launcher_env, resolve_wrix_spawn_bin};
+use crate::{apply_launcher_env, build_wrix_command, resolve_wrix_spawn_bin};
 use serde::{Deserialize, Serialize};
 use tokio::io::BufWriter;
 use tokio::process::Command;
@@ -51,7 +50,7 @@ impl AgentBackend for DirectBackend {
         register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config = prepare_runtime(config)?;
 
-        let wrix_bin = resolve_wrix_spawn_bin(config);
+        let wrix_bin = resolve_wrix_spawn_bin(config)?;
         info!(
             wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config.path().display(),
@@ -62,34 +61,12 @@ impl AgentBackend for DirectBackend {
             &wrix_bin,
             config.profile_config.as_deref(),
             spawn_config.path(),
-        );
+        )?;
         apply_launcher_env(&mut cmd, &config.launcher_env);
         let session = spawn_session(cmd)?;
         spawn_config.retain();
         Ok(session)
     }
-}
-
-/// Build the `<wrix_bin> --profile-config <file> spawn --spawn-config <file>
-/// --stdio` command [`DirectBackend::spawn`] launches. The argv shape is the
-/// load-bearing contract loom owes the wrix wrapper: the wrapper resolves
-/// `<file>` as a JSON [`SpawnConfig`] and `--stdio` selects the JSONL wire path
-/// (rather than a TTY attach). Extracted so tests can pin the contract without
-/// spawning a child or mutating the process env.
-pub(crate) fn build_wrix_command(
-    wrix_bin: &OsStr,
-    profile_config: Option<&Path>,
-    spawn_config_path: &Path,
-) -> Command {
-    let mut cmd = Command::new(wrix_bin);
-    if let Some(profile_config) = profile_config {
-        cmd.arg("--profile-config").arg(profile_config);
-    }
-    cmd.arg("spawn")
-        .arg("--spawn-config")
-        .arg(spawn_config_path)
-        .arg("--stdio");
-    cmd
 }
 
 /// Serialize the [`SpawnConfig`] into the per-session
