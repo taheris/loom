@@ -22,12 +22,14 @@ if [[ "$RC" -ne 0 ]]; then
     exit 1
 fi
 
-if ! STATUS=$(bd show "$BEAD_ID" --json | jq -er 'if type == "array" then .[0].status else .status end'); then
+if ! BEAD_JSON=$(bd show "$BEAD_ID" --json) ||
+    ! STATUS=$(jq -er 'if type == "array" then .[0].status else .status end' <<< "$BEAD_JSON"); then
     log "failed to read bead $BEAD_ID status"
     exit 1
 fi
 if [[ "$STATUS" != "closed" ]]; then
     log "bead $BEAD_ID did not close: status=$STATUS"
+    printf '%s\n' "$BEAD_JSON" >&2
     exit 1
 fi
 log "bead $BEAD_ID closed"

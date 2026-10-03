@@ -129,6 +129,19 @@ fn smoke_unclosed_bead_is_fatal() {
 }
 
 #[test]
+fn smoke_unclosed_bead_reports_notes_and_metadata_for_diagnosis() {
+    for json in [
+        r#"[{"status":"blocked","notes":"host gate rejected the worker","metadata":{"loom.infra.error":"signature verification failed"}}]"#,
+        r#"{"status":"blocked","notes":"host gate rejected the worker","metadata":{"loom.infra.error":"signature verification failed"}}"#,
+    ] {
+        let output = run_smoke_loop(0, json, 0, 44).unwrap();
+        assert_failure(&output, "did not close: status=blocked");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(json), "{stderr}");
+    }
+}
+
+#[test]
 fn smoke_status_fixture_matches_bd_response_contract() {
     let beads: Vec<loom_driver::bd::Bead> = serde_json::from_str(CLOSED).unwrap();
     assert_eq!(beads.len(), 1);

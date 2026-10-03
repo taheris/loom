@@ -662,6 +662,9 @@ owns:
 - Container smoke reports elapsed time and warns after the 30-second soft
       target without failing an otherwise successful run
   [test](smoke_timing_is_advisory)
+- An unclosed smoke bead fails verification and reports its notes and metadata
+      for diagnosis
+  [test](smoke_unclosed_bead_reports_notes_and_metadata_for_diagnosis)
 
 ## Requirements
 

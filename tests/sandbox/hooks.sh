@@ -125,7 +125,7 @@ test_pre_push_skips_nix_but_runs_gate() {
         grep -Fq -- "- hook id: $hook_id" "$log"
     done
     grep -E '^nix flake check\.+Passed$' "$log"
-    grep -E '^nix run \.#test \(full suite\)\.+Passed$' "$log"
+    grep -E '^nix run \.#test-required \(full nextest and system coverage\)\.+Passed$' "$log"
     assert_payload_checked updated
     printf 'bad\n' > payload.txt
     git add payload.txt
