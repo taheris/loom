@@ -40,10 +40,12 @@ const CONTRACTS: &[FileContract] = &[
         path: "nix/flake/apps.nix",
         required: &[
             "test = {",
+            "test-required = {",
             "smoke = {",
             "fuzz-loom = {",
             "smokePrekHooks = wrixLib.prekHooks;",
             "text = builtins.readFile ../../scripts/full-test.sh;",
+            "text = builtins.readFile ../../scripts/required-test.sh;",
         ],
     },
     FileContract {
@@ -71,7 +73,18 @@ const CONTRACTS: &[FileContract] = &[
         path: "scripts/full-test.sh",
         required: &[
             "nix flake check --no-warn-dirty",
+            "cargo clippy --workspace -- -D warnings",
             "cargo clippy --workspace --all-targets -- -D warnings",
+            "cargo nextest run --workspace",
+            "loom gate system --tree",
+        ],
+    },
+    FileContract {
+        path: "scripts/required-test.sh",
+        required: &[
+            "export GIT_CONFIG_GLOBAL=\"$repo_root/tests/fixtures/git/test-gitconfig\"",
+            "export GIT_CONFIG_SYSTEM=/dev/null",
+            "unset WRIX_SIGNING_KEY",
             "cargo nextest run --workspace",
             "loom gate system --tree",
         ],

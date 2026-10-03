@@ -4432,6 +4432,7 @@ export GIT_CONFIG_GLOBAL="$repo_root/tests/fixtures/git/test-gitconfig"
 export GIT_CONFIG_SYSTEM=/dev/null
 unset WRIX_SIGNING_KEY
 nix flake check --no-warn-dirty
+cargo clippy --workspace -- -D warnings
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 loom gate system --tree
@@ -4701,7 +4702,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "nix/flake/apps.nix",
-        "test = {\nsmoke = {\nfuzz-loom = {\nsmokePrekHooks = wrixLib.prekHooks;\ntext = builtins.readFile ../../scripts/full-test.sh;\n",
+        "test = {\ntest-required = {\nsmoke = {\nfuzz-loom = {\nsmokePrekHooks = wrixLib.prekHooks;\ntext = builtins.readFile ../../scripts/full-test.sh;\ntext = builtins.readFile ../../scripts/required-test.sh;\n",
     );
     seed(root, "nix/flake/checks.nix", "checks = { };\n");
     seed(
@@ -4717,7 +4718,12 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "scripts/full-test.sh",
-        "nix flake check --no-warn-dirty\ncargo clippy --workspace --all-targets -- -D warnings\ncargo nextest run --workspace\nloom gate system --tree\n",
+        "nix flake check --no-warn-dirty\ncargo clippy --workspace -- -D warnings\ncargo clippy --workspace --all-targets -- -D warnings\ncargo nextest run --workspace\nloom gate system --tree\n",
+    );
+    seed(
+        root,
+        "scripts/required-test.sh",
+        include_str!("../../../scripts/required-test.sh"),
     );
     seed(
         root,

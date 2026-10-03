@@ -825,10 +825,26 @@ promotion errors or blocking on structural bd state — is owned by
 - Unmatched `[check]` annotations use the fallback path and spawn one
   subprocess per annotation
   [test](dispatcher_spawns_one_subprocess_per_unmatched_check_annotation)
-- `[system]` tier spawns one subprocess per annotation (system
-  verifiers are inherently slow and self-contained; batching doesn't
-  help)
-  [test](dispatcher_spawns_one_subprocess_per_system_annotation)
+- `[system]` tier executes equivalent invocations once per gate run and
+  fans the evidence out to every owning criterion in input order
+  [test](system_dispatch_shares_equivalent_invocations_and_fans_out_evidence)
+- Shared system-runner execution preserves passes, failures, skips,
+  structured metadata, producer errors, and malformed-output failures
+  [test](system_runner_shares_pass_failure_skip_and_invalid_output_without_losing_owners)
+- Equal command strings do not merge distinct system scenarios or runner
+  working directories
+  [test](system_dispatch_keeps_distinct_scenarios_and_runner_cwds_isolated)
+- System execution sharing is lazy and confined to one run with one
+  dispatch scope/environment, never reused by a later gate run
+  [test](system_dispatch_is_lazy_and_never_reuses_execution_across_runs_or_scopes)
+- CLI system sharing retains per-criterion reporting and cache records;
+  skipped coverage stays skipped and cannot mint a marker
+  [test](system_cli_sharing_preserves_per_criterion_reports_failures_skips_and_cache_records)
+- Shared system dispatch errors report every owner without persisting
+  passing evidence
+  [test](system_cli_shared_dispatch_errors_report_every_owner_without_passing_cache_entries)
+- Exact shared system targets execute anew on every gate invocation
+  [test](system_cli_exact_shared_target_executes_again_on_a_later_gate_run)
 - `[test]` tier batches every in-scope target into one runner
   subprocess per invocation
   [test](test_tier_batches_all_targets_into_one_runner_subprocess)
@@ -2560,7 +2576,7 @@ Each criterion's annotation is resolved per its tier:
 |------|--------------|----------|
 | `[check]` | `[check](target)` — a runner identifier (matched by a `[runner.check.<name>]` block in `loom.toml`) or an argv string | Runner-matched targets batch into one subprocess per runner and self-report inputs (see *Runners*); an unmatched target falls back to invoking its own process (often a walk binary the consumer ships). |
 | `[test]` | `[test](path)` — language-native test path (e.g. `crate::module::test_name`, `tests/test_foo.py::test_bar`) | The gate collects all `[test]` targets in a single `loom gate test` invocation and issues **one** runner subprocess (e.g. `cargo nextest run -E 'test(p1) \| test(p2) \| ...'`). One process per invocation, full internal parallelism. |
-| `[system]` | `[system](target)` — a runner identifier (matched by a `[runner.system.<name>]` block in `loom.toml`) or an argv string | One subprocess per `[system]` annotation — never batched. A runner match resolves the target's *inputs* (see *Runners*), but execution stays per-annotation: system verifiers are inherently slow and self-contained, so batching doesn't help. |
+| `[system]` | `[system](target)` — a runner identifier (matched by a `[runner.system.<name>]` block in `loom.toml`) or an argv string | One subprocess per equivalent invocation within a gate run, with evidence fanned out to all owning criteria. Distinct system scenarios remain separate; see *Runners* for equivalence and input discovery. |
 | `[judge]` | `[judge](path)` — file path or criterion id whose content is the LLM rubric | The gate collects all `[judge]` targets and issues concurrent LLM calls (API-level parallelism). |
 
 ##### Command tokenisation
@@ -2814,10 +2830,9 @@ the need.
 **Runners, not verifiers, are the dispatch unit.** A runner executes
 one batch of annotations in a single subprocess. Per-language
 batching avoids the "process per test" cost that dominates wall-clock
-on non-trivial specs. One tier is carved out: `[system]` is
-runner-owned for resolution and input-query, but its execution stays
-per-annotation (see *Execution* below) — system verifiers are slow and
-self-contained, so batching them does not pay.
+on non-trivial specs. `[system]` remains single-scenario execution rather
+than a batch of distinct targets, but equivalent invocations share one
+execution within a gate run (see *Execution* below).
 
 The dispatcher's job:
 
@@ -2825,10 +2840,10 @@ The dispatcher's job:
    scope flag's input set, intersected).
 2. Group by which runner matches them.
 3. For each runner with a batch template, build one command, spawn
-   once, parse per-target verdicts from the output — except `[system]`,
-   whose matched runner resolves inputs but still spawns one subprocess
-   per annotation (see *Execution* below).
-4. For unmatched annotations, fall back to per-annotation spawn.
+   once, parse per-target verdicts from the output. `[system]` renders
+   one scenario at a time and shares equivalent execution (see below).
+4. For unmatched annotations, fall back to literal-command execution;
+   equivalent `[system]` invocations still share within the run.
 
 **Schema: `[runner.<tier>.<name>]` in `<workspace>/loom.toml`.**
 Each runner declares how to recognise its annotations, how to format
@@ -2925,20 +2940,23 @@ loom never falls back to parsing the annotation's argv for it:
 - **Input-query.** Inputs come from the runner's `inputs` query (per
   *Verifier inputs* § Input-query protocol). For the batched tiers
   (`[check]`, `[test]`, `[judge]`) discovery is batched: one query spawn
-  returns the per-target map for the whole matched group. `[system]` is
-  the same exception as for execution (below): a runner match resolves
-  its inputs but discovery stays per-annotation — one query spawn per
-  `[system]` annotation. Discovery thus batches exactly where execution
-  batches, so the parity invariant (§ Verifier inputs → Input-query
-  protocol) holds for a runner-matched `[system]` group without a
-  carve-out.
+  returns the per-target map for the whole matched group. `[system]`
+  queries one target at a time rather than batching distinct scenarios;
+  successful repeated declarations reuse the resolver's session cache.
+  Execution sharing does not change input selection or spec-section
+  auto-inclusion.
 - **Execution.** For the batched tiers (`[check]`, `[test]`, `[judge]`),
   matched annotations batch into one subprocess per runner (the
   dispatcher's step 3 above); per-annotation spawn is only the unmatched
-  fallback. `[system]` is the exception: a runner match resolves its
-  inputs (above) but execution stays per-annotation — one subprocess per
-  `[system]` annotation, matched or not, because system verifiers are
-  inherently slow and self-contained, so batching does not help.
+  fallback. `[system]` executes equivalent invocations once per gate run,
+  matched or not, and retains one result and cache record per criterion.
+  Equivalence includes the rendered command, resolved cwd, dispatch scope
+  (`LOOM_FILES` / `LOOM_SPEC`), inherited environment, and scenario/fixture
+  requirements. Target and matched-runner identity conservatively keep
+  distinct scenarios separate even if their rendered commands coincide.
+  An owning spec/criterion alone is not a distinct scenario. Failure,
+  skip, producer-error and dispatch-error evidence fans out just like a
+  pass; sharing never upgrades coverage. No output is reused across runs.
 
 Unmatched annotations keep literal-command semantics — `tokens[0]`
 resolution, heuristic input extraction, conservative always-run, no

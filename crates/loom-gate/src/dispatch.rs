@@ -2,8 +2,8 @@
 //!
 //! Routes each [`Annotation`] to its verifier per the verifier-runner
 //! contract in `specs/gate.md`. `[check]` annotations use matched-runner
-//! batching with per-annotation fallback; `[system]` annotations spawn one
-//! subprocess per annotation; `[test]` annotations collect into a single
+//! batching with per-annotation fallback; `[system]` annotations share
+//! equivalent executions within a run; `[test]` annotations collect into a single
 //! batched runner invocation (filtered against `--files` scope via the
 //! [`TestScope`] trait); `[judge]` annotations collect into a single
 //! batched runner invocation (no scope filter — judges are LLM-driven
@@ -29,7 +29,8 @@
 //! forward-resolution check (which fires `UnneededPendingMarker`
 //! once the target resolves).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -286,11 +287,9 @@ pub fn run_check(
 
 /// Dispatch all `[system]`-tier annotations.
 ///
-/// One subprocess spawns per annotation — `[system]` execution stays
-/// per-annotation per `specs/gate.md` § Runners (system verifiers are slow
-/// and self-contained, so batching does not pay). A matched runner owns
-/// invocation construction via its `command` template, but the template is
-/// rendered for exactly one target per spawn.
+/// Equivalent invocations execute once per run, retaining one result per
+/// annotation. Distinct targets remain separate scenarios even when a runner
+/// renders identical commands. No execution is reused across gate runs.
 pub fn run_system(
     annotations: &[Annotation],
     specs: &[RunnerSpec],
@@ -298,63 +297,84 @@ pub fn run_system(
     repo_root: &Path,
     tier_cwds: &TierCwds,
 ) -> Vec<Result<DispatchOutcome, DispatchError>> {
-    let system_only: Vec<Annotation> = annotations
-        .iter()
-        .filter(|a| a.tier == Tier::System && !a.pending)
-        .cloned()
-        .collect();
-    run_system_with_runners(&system_only, specs, options, repo_root, tier_cwds)
+    iter_system(annotations, specs, options, repo_root, tier_cwds).collect()
 }
 
-fn run_system_with_runners(
-    annotations: &[Annotation],
-    specs: &[RunnerSpec],
-    options: &DispatchOptions,
-    repo_root: &Path,
-    tier_cwds: &TierCwds,
-) -> Vec<Result<DispatchOutcome, DispatchError>> {
-    let (groups, unmatched) = group_by_runner(specs, annotations);
-    let mut per_index: Vec<Option<Result<DispatchOutcome, DispatchError>>> =
-        (0..annotations.len()).map(|_| None).collect();
-    let position_of: std::collections::HashMap<*const Annotation, usize> = annotations
+#[derive(PartialEq, Eq, Hash)]
+struct SystemInvocation {
+    command: String,
+    cwd: PathBuf,
+    runner: Option<usize>,
+    scenario: String,
+    files: Vec<PathBuf>,
+    spec: Option<String>,
+    environment: BTreeMap<OsString, OsString>,
+}
+
+/// Lazily dispatch system annotations with criterion-level evidence.
+/// Scope, environment and scenario identity bound run-local sharing.
+pub fn iter_system<'a>(
+    annotations: &'a [Annotation],
+    specs: &'a [RunnerSpec],
+    options: &'a DispatchOptions,
+    repo_root: &'a Path,
+    tier_cwds: &'a TierCwds,
+) -> impl Iterator<Item = Result<DispatchOutcome, DispatchError>> + 'a {
+    let mut executions = HashMap::new();
+    annotations
         .iter()
-        .enumerate()
-        .map(|(i, a)| (std::ptr::from_ref::<Annotation>(a), i))
-        .collect();
-
-    for group in groups {
-        for matched in &group.matched {
-            let single = RunnerGroup {
-                spec: group.spec,
-                matched: vec![matched.clone()],
-            };
-            let result = dispatch_group(&single, options, repo_root, tier_cwds)
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| {
-                    Err(DispatchError::MissingFromBatchOutput {
-                        runner: group.spec.name.clone(),
-                        target: matched.rendered_target.clone(),
-                    })
-                });
-            if let Some(&idx) =
-                position_of.get(&std::ptr::from_ref::<Annotation>(matched.annotation))
-            {
-                per_index[idx] = Some(result);
+        .filter(|ann| ann.tier == Tier::System && !ann.pending)
+        .map(move |ann| {
+            let (groups, _) = group_by_runner(specs, std::slice::from_ref(ann));
+            let group = groups.first();
+            let command =
+                group.map_or_else(|| ann.target.trim().to_owned(), RunnerGroup::render_command);
+            if command.is_empty() {
+                return Err(DispatchError::EmptyTarget { tier: Tier::System });
             }
-        }
-    }
-    for ann in unmatched {
-        if let Some(&idx) = position_of.get(&std::ptr::from_ref::<Annotation>(ann)) {
-            let cwd = resolve_cwd(None, tier_cwds.for_tier(ann.tier), repo_root);
-            per_index[idx] = Some(run_single_in(ann, options, Some(cwd.as_path())));
-        }
-    }
-
-    per_index
-        .into_iter()
-        .map(|slot| slot.unwrap_or(Err(DispatchError::EmptyTarget { tier: Tier::System })))
-        .collect()
+            let runner = specs
+                .iter()
+                .position(|spec| spec.applies_to(ann.tier) && spec.matches(&ann.target));
+            let cwd = resolve_cwd(
+                group.and_then(|group| group.spec.cwd.as_deref()),
+                tier_cwds.system.as_deref(),
+                repo_root,
+            );
+            let invocation = SystemInvocation {
+                command: command.clone(),
+                cwd: cwd.clone(),
+                runner,
+                scenario: ann.target.clone(),
+                files: options.files.clone(),
+                spec: options.spec.clone(),
+                environment: std::env::vars_os().collect(),
+            };
+            let output = executions.entry(invocation).or_insert_with(|| {
+                spawn_command(&command, options, Some(&cwd))
+                    .map_err(|error| (error.kind(), error.to_string()))
+            });
+            let output = output
+                .as_ref()
+                .map_err(|(kind, message)| DispatchError::Spawn {
+                    command: command.clone(),
+                    source: std::io::Error::new(*kind, message.clone()),
+                })?;
+            if let Some(group) = group {
+                return interpret_group_output(group, &command, output)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| {
+                        Err(DispatchError::MissingFromBatchOutput {
+                            runner: group.spec.name.clone(),
+                            target: group.matched[0].rendered_target.clone(),
+                        })
+                    });
+            }
+            Ok(DispatchOutcome {
+                annotations: vec![ann.clone()],
+                verdict: interpret_fallback_output(&command, None, output)?,
+            })
+        })
 }
 
 /// Dispatch all `[test]` annotations as one batched runner subprocess.
@@ -503,8 +523,8 @@ pub fn run_judge(
 /// by which spec matches their target (first match wins, declaration
 /// order); each group spawns one subprocess and parses per-target
 /// verdicts via the spec's [`BuiltinParser`]. Annotations no spec
-/// matches fall back to per-annotation spawn (the existing
-/// `[check]` / `[system]` semantics).
+/// matches fall back to per-annotation spawn. System callers use
+/// [`iter_system`] for equivalent-execution sharing.
 ///
 /// Results are returned in input order, one per input annotation:
 ///
@@ -602,6 +622,14 @@ fn dispatch_group(
                 .collect();
         }
     };
+    interpret_group_output(group, &command, &output)
+}
+
+fn interpret_group_output(
+    group: &RunnerGroup<'_, '_>,
+    command: &str,
+    output: &Output,
+) -> Vec<Result<DispatchOutcome, DispatchError>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
@@ -664,7 +692,7 @@ fn dispatch_group(
             .iter()
             .map(|_| {
                 Err(DispatchError::InvalidVerdict {
-                    command: command.clone(),
+                    command: command.to_owned(),
                     detail: format!("unexpected target `{unexpected}`"),
                 })
             })
@@ -747,6 +775,14 @@ fn run_with_fallback(
     cwd: Option<&Path>,
 ) -> Result<VerifierVerdict, DispatchError> {
     let output = spawn_in(command, options, cwd)?;
+    interpret_fallback_output(command, test_targets, &output)
+}
+
+fn interpret_fallback_output(
+    command: &str,
+    test_targets: Option<&[&str]>,
+    output: &Output,
+) -> Result<VerifierVerdict, DispatchError> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
@@ -835,16 +871,22 @@ fn spawn_in(
     options: &DispatchOptions,
     cwd: Option<&std::path::Path>,
 ) -> Result<Output, DispatchError> {
-    let mut tokens = shlex::split(command)
-        .ok_or_else(|| DispatchError::Spawn {
-            command: command.to_string(),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "unbalanced quotes"),
-        })?
-        .into_iter();
-    let head = tokens.next().ok_or_else(|| DispatchError::Spawn {
+    spawn_command(command, options, cwd).map_err(|source| DispatchError::Spawn {
         command: command.to_string(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty command"),
-    })?;
+        source,
+    })
+}
+
+fn spawn_command(
+    command: &str,
+    options: &DispatchOptions,
+    cwd: Option<&Path>,
+) -> std::io::Result<Output> {
+    let invalid = |message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message);
+    let mut tokens = shlex::split(command)
+        .ok_or_else(|| invalid("unbalanced quotes"))?
+        .into_iter();
+    let head = tokens.next().ok_or_else(|| invalid("empty command"))?;
     let tail: Vec<String> = tokens.collect();
     let mut cmd = Command::new(head);
     cmd.args(&tail);
@@ -855,10 +897,7 @@ fn spawn_in(
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    cmd.output().map_err(|e| DispatchError::Spawn {
-        command: command.to_string(),
-        source: e,
-    })
+    cmd.output()
 }
 
 fn encode_files(files: &[PathBuf]) -> String {
@@ -929,6 +968,41 @@ mod tests {
             criterion_line: 1,
             pending: false,
         }
+    }
+
+    #[test]
+    fn system_invocation_equivalence_includes_command_cwd_environment_scope_and_scenario() {
+        let invocation = || SystemInvocation {
+            command: "bash verify.sh".into(),
+            cwd: "scenario".into(),
+            runner: Some(0),
+            scenario: "fixture:a".into(),
+            files: vec!["a.rs".into()],
+            spec: Some("a".into()),
+            environment: [(OsString::from("FIXTURE"), OsString::from("a"))].into(),
+        };
+        assert!(invocation() == invocation());
+        let mut different = invocation();
+        different.command = "bash other.sh".into();
+        assert!(invocation() != different);
+        different = invocation();
+        different.cwd = "other".into();
+        assert!(invocation() != different);
+        different = invocation();
+        different.environment.insert("FIXTURE".into(), "b".into());
+        assert!(invocation() != different);
+        different = invocation();
+        different.files = vec!["b.rs".into()];
+        assert!(invocation() != different);
+        different = invocation();
+        different.spec = Some("b".into());
+        assert!(invocation() != different);
+        different = invocation();
+        different.scenario = "fixture:b".into();
+        assert!(invocation() != different);
+        different = invocation();
+        different.runner = Some(1);
+        assert!(invocation() != different);
     }
 
     #[test]

@@ -214,19 +214,304 @@ fn dispatcher_spawns_one_subprocess_per_unmatched_check_annotation() {
 }
 
 #[test]
-fn dispatcher_spawns_one_subprocess_per_system_annotation() {
+fn system_dispatch_shares_equivalent_invocations_and_fans_out_evidence() {
     let dir = fixture_dir();
     let script = write_script(
         dir.path(),
         "system.sh",
-        "#!/bin/sh\nprintf '{\"pass\": true, \"evidence\": \"system-ok\"}\\n'\n",
+        "set -eu\nprintf 'spawn\\n' >> spawns\nprintf '{\"pass\": true, \"evidence\": \"system-ok\"}\\n'\n",
     );
 
-    let inputs = vec![ann(Tier::System, &script)];
+    let inputs = (1..=4)
+        .map(|line| Annotation {
+            source_spec: PathBuf::from(format!("specs/owner-{line}.md")),
+            line,
+            criterion_line: line,
+            ..ann(Tier::System, &script)
+        })
+        .collect::<Vec<_>>();
     let opts = DispatchOptions::default();
     let results = run_system(&inputs, &[], &opts, dir.path(), &TierCwds::default());
-    assert_eq!(results.len(), 1);
-    assert!(results[0].as_ref().unwrap().verdict.pass);
+    assert_eq!(results.len(), inputs.len());
+    for (annotation, result) in inputs.iter().zip(results) {
+        let outcome = result.unwrap();
+        assert_eq!(
+            outcome.annotations.as_slice(),
+            std::slice::from_ref(annotation)
+        );
+        assert!(outcome.verdict.pass);
+        assert_eq!(outcome.verdict.evidence, "system-ok");
+    }
+    assert_eq!(
+        fs::read_to_string(dir.path().join("spawns"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+/// Process counts and emitted metadata exercise the dispatcher/producer boundary.
+#[test]
+fn system_runner_shares_pass_failure_skip_and_invalid_output_without_losing_owners() {
+    for (record, exit, expected) in [
+        (
+            r#"{"target":"shared","pass":true,"evidence":"ok"}"#,
+            0,
+            Some(loom_gate::Verdict::Pass),
+        ),
+        (
+            r#"{"target":"shared","pass":false,"evidence":"failed"}"#,
+            1,
+            Some(loom_gate::Verdict::Fail),
+        ),
+        (
+            r#"{"target":"shared","outcome":"skipped","evidence":"not run","execution":{"platform":"x86_64-linux","platforms":["x86_64-linux"],"capabilities":["container-runtime"]},"skip_reason":{"kind":"missing-capability","capability":"container-runtime","reason":"unavailable"}}"#,
+            77,
+            Some(loom_gate::Verdict::Skipped),
+        ),
+        (
+            r#"{"target":"shared","pass":true,"evidence":"producer failed"}"#,
+            1,
+            Some(loom_gate::Verdict::Pass),
+        ),
+        ("not json", 0, None),
+        (
+            r#"{"target":"other","pass":true,"evidence":"wrong target"}"#,
+            0,
+            None,
+        ),
+    ] {
+        let dir = fixture_dir();
+        let command = write_script(
+            dir.path(),
+            "producer.sh",
+            &format!(
+                "set -eu\nprintf 'spawn\\n' >> spawns\nprintf '%s\\n' '{record}'\nexit {exit}\n"
+            ),
+        );
+        let runner = RunnerSpec::compile(
+            "shared",
+            None,
+            command,
+            "{name}",
+            " ",
+            BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap();
+        let inputs = [
+            ann(Tier::System, "shared"),
+            Annotation {
+                source_spec: "specs/b.md".into(),
+                criterion_line: 2,
+                ..ann(Tier::System, "shared")
+            },
+        ];
+        let results = run_system(
+            &inputs,
+            &[runner],
+            &DispatchOptions::default(),
+            dir.path(),
+            &TierCwds::default(),
+        );
+        assert_eq!(results.len(), 2);
+        for (annotation, result) in inputs.iter().zip(&results) {
+            if let Some(expected) = expected {
+                let outcome = result.as_ref().unwrap();
+                assert_eq!(
+                    outcome.annotations.as_slice(),
+                    std::slice::from_ref(annotation)
+                );
+                assert_eq!(outcome.verdict.outcome(), expected);
+                assert_eq!(outcome.verdict.accepted(), exit == 0);
+                if expected == loom_gate::Verdict::Skipped {
+                    assert!(outcome.verdict.execution.is_some());
+                    assert!(outcome.verdict.skip_reason.is_some());
+                    assert!(!outcome.verdict.skip_permitted);
+                }
+            } else {
+                assert!(result.is_err());
+            }
+        }
+        if expected.is_some() {
+            assert_eq!(
+                results[0].as_ref().unwrap().verdict,
+                results[1].as_ref().unwrap().verdict
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(dir.path().join("spawns"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
+}
+
+/// A spawn failure is execution evidence, not permission to retry a shared target.
+#[test]
+fn system_dispatch_fans_out_spawn_failure_without_retrying_the_invocation() {
+    let dir = fixture_dir();
+    let path = dir.path().join("initially-missing");
+    let target = path.to_string_lossy().into_owned();
+    let inputs = [ann(Tier::System, &target), ann(Tier::System, &target)];
+    let options = DispatchOptions::default();
+    let cwds = TierCwds::default();
+    let mut results = loom_gate::dispatch::iter_system(&inputs, &[], &options, dir.path(), &cwds);
+    assert!(matches!(
+        results.next().unwrap(),
+        Err(DispatchError::Spawn { .. })
+    ));
+    loom_test_support::write_executable_bash_script(&path, "printf 'spawn\\n' >> spawns\n")
+        .unwrap();
+    assert!(
+        std::process::Command::new(&path)
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(matches!(
+        results.next().unwrap(),
+        Err(DispatchError::Spawn { .. })
+    ));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("spawns"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+/// Equal commands do not imply equal scenario fixtures or working directories.
+#[test]
+fn system_dispatch_keeps_distinct_scenarios_and_runner_cwds_isolated() {
+    let dir = fixture_dir();
+    for subdir in ["first", "second"] {
+        fs::create_dir(dir.path().join(subdir)).unwrap();
+    }
+    let command = write_script(
+        dir.path(),
+        "scenario.sh",
+        "set -eu\nprintf 'spawn\\n' >> spawns\nprintf '%s\\n' \"$PWD\"\n",
+    );
+    let specs = [
+        RunnerSpec::compile(
+            "first",
+            Some("^first:"),
+            &command,
+            "{name}",
+            " ",
+            BuiltinParser::ExitCode,
+            Some("first".into()),
+        )
+        .unwrap(),
+        RunnerSpec::compile(
+            "second",
+            Some("^second:"),
+            &command,
+            "{name}",
+            " ",
+            BuiltinParser::ExitCode,
+            Some("second".into()),
+        )
+        .unwrap(),
+    ];
+    let inputs = ["first:a", "second:a", "first:b", "first:a", "second:a"]
+        .map(|target| ann(Tier::System, target));
+    let results = run_system(
+        &inputs,
+        &specs,
+        &DispatchOptions::default(),
+        dir.path(),
+        &TierCwds::default(),
+    );
+    for (annotation, result) in inputs.iter().zip(results) {
+        let outcome = result.unwrap();
+        assert_eq!(
+            outcome.annotations.as_slice(),
+            std::slice::from_ref(annotation)
+        );
+        assert!(outcome.verdict.pass);
+        assert!(
+            outcome
+                .verdict
+                .evidence
+                .ends_with(annotation.target.split(':').next().unwrap())
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(dir.path().join("first/spawns"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("second/spawns"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+/// Lazy iteration must not run later scenarios before criterion evidence is consumed.
+#[test]
+fn system_dispatch_is_lazy_and_never_reuses_execution_across_runs_or_scopes() {
+    let dir = fixture_dir();
+    let command = write_script(
+        dir.path(),
+        "lazy.sh",
+        "set -eu\nprintf '%s|%s\\n' \"$LOOM_FILES\" \"$LOOM_SPEC\" >> spawns\n",
+    );
+    let inputs = [
+        ann(Tier::System, &command),
+        ann(Tier::System, &command),
+        pending_ann(Tier::System, &command),
+        ann(Tier::Check, &command),
+    ];
+    for (files, spec) in [("a.rs", "a"), ("b.rs", "b"), ("a.rs", "a")] {
+        let options = DispatchOptions {
+            files: vec![files.into()],
+            spec: Some(spec.into()),
+        };
+        let cwds = TierCwds::default();
+        let mut results =
+            loom_gate::dispatch::iter_system(&inputs, &[], &options, dir.path(), &cwds);
+        let before = if dir.path().join("spawns").exists() {
+            fs::read_to_string(dir.path().join("spawns"))
+                .unwrap()
+                .lines()
+                .count()
+        } else {
+            0
+        };
+        assert!(results.next().unwrap().unwrap().verdict.pass);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("spawns"))
+                .unwrap()
+                .lines()
+                .count(),
+            before + 1
+        );
+        assert!(results.next().unwrap().unwrap().verdict.pass);
+        assert!(results.next().is_none());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("spawns"))
+                .unwrap()
+                .lines()
+                .count(),
+            before + 1
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(dir.path().join("spawns")).unwrap(),
+        "a.rs|a\nb.rs|b\na.rs|a\n"
+    );
 }
 
 #[test]
@@ -918,12 +1203,7 @@ fn run_with_runners_tier_default_applies_to_unmatched_per_annotation_fallback() 
     );
 }
 
-/// `[system]` execution stays per-annotation, but the per-spawn cwd still
-/// resolves via the `[runner.system] cwd = "..."` tier default per
-/// `specs/gate.md` § Runners — the section carves `[system]` out only for
-/// batching and input-query, never for cwd. A configured tier-default cwd
-/// that the old `run_system(annotations, options)` signature could not see
-/// must now reach the spawn.
+/// A real process observes the configured system-tier cwd.
 #[test]
 fn run_system_resolves_tier_default_cwd() {
     let dir = fixture_dir();
@@ -950,8 +1230,7 @@ fn run_system_resolves_tier_default_cwd() {
 }
 
 /// A `[runner.system.<name>]` block that matches a `[system]` target owns
-/// invocation construction. Execution stays per-annotation, so the
-/// runner's command template is rendered once per matched annotation.
+/// invocation construction. Distinct scenarios retain separate execution.
 #[test]
 fn run_system_renders_matched_runner_command_per_annotation() {
     let dir = fixture_dir();
@@ -993,7 +1272,10 @@ fn run_system_renders_matched_runner_command_per_annotation() {
     assert_eq!(second.verdict.evidence, "beta");
 
     let spawns = fs::read_to_string(&counter).unwrap().lines().count();
-    assert_eq!(spawns, 2, "system runner must spawn once per annotation");
+    assert_eq!(
+        spawns, 2,
+        "distinct system scenarios must execute separately"
+    );
 }
 
 #[test]

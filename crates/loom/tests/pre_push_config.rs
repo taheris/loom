@@ -19,6 +19,7 @@ impl Fixture {
         let tools = root.path().join("tools");
         let log = root.path().join("pre-push.log");
         std::fs::create_dir_all(workspace.join("bin")).expect("create workspace bin");
+        std::fs::create_dir_all(workspace.join("scripts")).expect("create workspace scripts");
         std::fs::create_dir_all(&tools).expect("create tools");
 
         let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -32,6 +33,14 @@ impl Fixture {
             workspace.join("bin/pre-push-checks"),
         )
         .expect("copy pre-push wrapper");
+
+        for script in ["full-test.sh", "required-test.sh"] {
+            std::fs::copy(
+                source_root.join("scripts").join(script),
+                workspace.join("scripts").join(script),
+            )
+            .expect("copy test script");
+        }
 
         install_recording_command(&tools, "cargo");
         install_recording_command(&tools, "loom");
@@ -297,6 +306,82 @@ fn full_suite_checks_production_and_test_feature_configurations() {
             "cargo\tnextest\trun\t--workspace\ttiers=<unset>",
             "loom\tgate\tsystem\t--tree\ttiers=<unset>",
         ],
+    );
+}
+
+/// Execute the configured stage and real suite script; only external tools are recorded.
+#[test]
+fn pre_push_stage_runs_each_required_verifier_once_without_repeating_lint_hooks() {
+    let fixture = Fixture::new();
+    let nix_body = r#"set -euo pipefail
+printf 'nix' >> "$PRE_PUSH_TEST_LOG"
+for arg in "$@"; do printf '\t%s' "$arg" >> "$PRE_PUSH_TEST_LOG"; done
+printf '\ttiers=<unset>\n' >> "$PRE_PUSH_TEST_LOG"
+if [[ "$1" == run ]]; then
+    case "$2" in
+        '.#test') exec bash scripts/full-test.sh ;;
+        '.#test-required') exec bash scripts/required-test.sh ;;
+        *) exit 2 ;;
+    esac
+fi
+"#;
+    loom_test_support::write_executable_bash_script(fixture.tools.join("nix"), nix_body)
+        .expect("write Nix recorder");
+    for (path, expected_clippy) in [("src/lib.rs", 2), ("notes.txt", 0)] {
+        let base = fixture.head();
+        let head = fixture.commit(path, "changed\n", "Change pushed file");
+        let lines = fixture.run_hooks(&[], &base, &head);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("nix\tflake\tcheck"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("cargo\tclippy"))
+                .count(),
+            expected_clippy
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("cargo\tnextest\trun\t--workspace"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("loom\tgate\tsystem\t--tree"))
+                .count(),
+            1
+        );
+        assert!(lines.contains(&format!(
+            "loom\tgate\tverify\t--diff\t{base}..{head}\ttiers=<unset>"
+        )));
+        assert!(lines.contains(&"nix\trun\t.#test-required\ttiers=<unset>".to_owned()));
+    }
+}
+
+#[test]
+fn required_suite_keeps_full_nextest_and_system_coverage_without_lint_repetition() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .recording_command("bash")
+        .arg("scripts/required-test.sh")
+        .output()
+        .expect("run required suite");
+    assert_success(&output, "required suite");
+    let log = std::fs::read_to_string(&fixture.log).expect("invocation log");
+    assert_eq!(
+        log.lines().collect::<Vec<_>>(),
+        [
+            "cargo\tnextest\trun\t--workspace\ttiers=<unset>",
+            "loom\tgate\tsystem\t--tree\ttiers=<unset>"
+        ]
     );
 }
 

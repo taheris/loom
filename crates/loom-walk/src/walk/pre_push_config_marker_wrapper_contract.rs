@@ -268,7 +268,7 @@ fn validate_pre_push_policy_fields(path: &str, hooks: &[Hook], violations: &mut 
         validate_wrapped_command(
             path,
             hook,
-            "skip-if-missing nix -- nix run .#test",
+            "skip-if-missing nix -- nix run .#test-required",
             violations,
         );
     }
@@ -728,8 +728,8 @@ mod tests {
     #[test]
     fn rejects_nix_command_without_skip_if_missing_wrapper() {
         let config = valid_config().replace(
-            "--hook-entry 'skip-if-missing nix -- nix run .#test' -- skip-if-missing nix -- nix run .#test",
-            "--hook-entry 'nix run .#test' -- nix run .#test",
+            "--hook-entry 'skip-if-missing nix -- nix run .#test-required' -- skip-if-missing nix -- nix run .#test-required",
+            "--hook-entry 'nix run .#test-required' -- nix run .#test-required",
         );
         let got = violations(".pre-commit-config.yaml", &config);
         assert!(

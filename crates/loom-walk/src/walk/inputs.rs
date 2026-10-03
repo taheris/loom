@@ -156,6 +156,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             root.join("nix/flake/apps.nix"),
             root.join("nix/flake/checks.nix"),
             root.join("nix/workspace.nix"),
+            root.join("scripts/full-test.sh"),
         ],
         "test_nix_surface_contract" => vec![
             root.join("flake.nix"),
@@ -164,6 +165,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             root.join("nix/flake/lib.nix"),
             root.join("nix/flake/tests.nix"),
             root.join("scripts/full-test.sh"),
+            root.join("scripts/required-test.sh"),
             root.join("tests/default.nix"),
             root.join("tests/loom/default.nix"),
             root.join("tests/run-tests.sh"),

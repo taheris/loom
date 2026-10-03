@@ -50,6 +50,10 @@ const REQUIRED_SCRIPT_SNIPPETS: &[RequiredAppSnippet] = &[
         needle: "nix flake check --no-warn-dirty",
     },
     RequiredAppSnippet {
+        label: "production clippy",
+        needle: "cargo clippy --workspace -- -D warnings",
+    },
+    RequiredAppSnippet {
         label: "workspace clippy",
         needle: "cargo clippy --workspace --all-targets -- -D warnings",
     },

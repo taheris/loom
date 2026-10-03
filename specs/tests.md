@@ -409,7 +409,7 @@ let
 in
 {
   # Deterministic verifiers — invokes explicit tier subcommands:
-  # `[check]` (one subprocess per `cargo run -p loom-walk -- …` annotation)
+  # `[check]` (batched `cargo run -p loom-walk -- …` annotations)
   # and `[test]` (one batched `cargo nextest run -E 'test(…)'` over every
   # annotated test path). `[system]` is excluded by composing explicit
   # tier subcommands (`loom gate check --tree` + `loom gate test --tree`)
@@ -452,7 +452,11 @@ flake `checks` set. The fast `nix flake check` surface stays limited to
 non-workspace-compile derivations. The full required suite is the
 `nix run .#test` app in `nix/flake/apps.nix`: it runs the fast flake
 tier, workspace clippy, full workspace nextest, and `loom gate system
---tree`. Grep-tier `[check]` annotations across specs use paths relative
+--tree`. Pre-push composes those same required tiers without repetition:
+the standalone fast and both Clippy hooks are followed by
+`nix run .#test-required`, which runs full workspace nextest and
+`loom gate system --tree`. The standalone `nix run .#test` remains complete.
+Grep-tier `[check]` annotations across specs use paths relative
 to the staged-source root (which mirrors the `loom/` workspace flattened
 to `$out/` plus host files like `lib/sandbox/linux/entrypoint.sh`
 mirrored under their host paths), so the explicit tier commands run at
@@ -884,9 +888,8 @@ owns:
    - Annotation parser: walks `specs/*.md`, regex-extracts
      `[tier](target)` annotations, returns typed `Annotation` records
      (tier, target, source spec, line)
-   - Per-tier dispatcher: `[check]` and `[system]` route to one
-     subprocess per annotation; `[test]` and `[judge]` collect targets
-     for batched invocations
+   - Per-tier dispatch, including system equivalent-execution sharing and
+     criterion evidence fan-out, follows [gate.md § Runners](gate.md#runners--per-language-batched-dispatch)
    - Toolchain detection: `Cargo.toml` at root → cargo nextest runner
      template; `pyproject.toml` → pytest; `go.mod` → go test
    - `<workspace>/loom.toml` loading: `[runner.<tier>.<name>]`
@@ -1016,9 +1019,11 @@ owns:
    against the workspace.
 5. **Push-friendly full suite** — `nix flake check` runs the fast
    deterministic derivations that stay inside the interactive push
-   budget. Full workspace nextest plus `[system]`/container verifiers
-   live in the explicit `nix run .#test` full-suite app, which pre-push
-   invokes because this repository has no separate CI safety net. The
+   budget. The standalone `nix run .#test` remains the complete suite.
+   Pre-push runs the fast tier and both Clippy configurations through
+   independent hooks, then full workspace nextest plus `[system]`/container
+   verifiers through `nix run .#test-required`, without repeating lint
+   hooks. This repository has no separate CI safety net. The
    container smoke remains exposed as `nix run .#smoke` because it needs
    podman at runtime; its acceptance criterion is annotated
    `[system](nix run .#smoke)`. Pre-push also runs clippy plus targeted

@@ -1,6 +1,7 @@
 # Exposes user-facing `nix run` entry points:
 #
-# - `.#test`: full required suite for pre-push and manual verification.
+# - `.#test`: complete standalone suite.
+# - `.#test-required`: full nextest and system coverage after pre-push lint hooks.
 # - `.#smoke`: container smoke harness.
 #   Linux checks runtime devices before realizing the image-backed runner;
 #   Darwin returns a no-op stub.
@@ -50,16 +51,24 @@ _:
 
       smokeApp = if isLinux then smokePreflight else smokeRuntime;
 
+      testRuntimeInputs = [
+        pkgs.cargo-nextest
+        pkgs.git
+        pkgs.nix
+        loom.bin
+        loom.toolchain
+      ];
+
       testApp = pkgs.writeShellApplication {
         name = "test";
-        runtimeInputs = [
-          pkgs.cargo-nextest
-          pkgs.git
-          pkgs.nix
-          loom.bin
-          loom.toolchain
-        ];
+        runtimeInputs = testRuntimeInputs;
         text = builtins.readFile ../../scripts/full-test.sh;
+      };
+
+      requiredTestApp = pkgs.writeShellApplication {
+        name = "test-required";
+        runtimeInputs = testRuntimeInputs;
+        text = builtins.readFile ../../scripts/required-test.sh;
       };
 
       fuzzApp = pkgs.writeShellApplication {
@@ -112,6 +121,11 @@ _:
           type = "app";
           program = "${testApp}/bin/test";
           meta.description = "Full required suite: flake check, clippy, full nextest, and system/container verifiers";
+        };
+        test-required = {
+          type = "app";
+          program = "${requiredTestApp}/bin/test-required";
+          meta.description = "Full nextest and system/container verifiers";
         };
         smoke = {
           type = "app";

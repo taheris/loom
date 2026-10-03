@@ -70,8 +70,8 @@ repos:
         pass_filenames: false
 
       - id: full-test-suite
-        name: nix run .#test (full suite)
-        entry: bin/pre-push-checks --hook-id full-test-suite --hook-entry 'skip-if-missing nix -- nix run .#test' -- skip-if-missing nix -- nix run .#test
+        name: nix run .#test-required (full nextest and system coverage)
+        entry: bin/pre-push-checks --hook-id full-test-suite --hook-entry 'skip-if-missing nix -- nix run .#test-required' -- skip-if-missing nix -- nix run .#test-required
         language: system
         stages: [pre-push]
         always_run: true

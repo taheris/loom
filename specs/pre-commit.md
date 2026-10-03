@@ -82,11 +82,13 @@ Target: <10s warm when it runs.
 
 The full required suite and container smoke composition are owned by
 [tests.md — Nix Integration](tests.md#nix-integration). This spec owns only
-their hook placement: `nix run .#test` is a pre-push hook rather than a
-CI-only surface because this repository has no separate CI safety net.
+their hook placement: full nextest and required system coverage run at
+pre-push rather than only in CI because this repository has no separate
+CI safety net. The pre-push test app does not repeat the preceding fast
+and Clippy hooks; the standalone full-suite command remains complete.
 
 The targeted hooks are clippy + `loom gate verify --diff <push-range>`
-+ `nix run .#test`. Prek exports the pushed endpoints as
++ the required nextest/system test app. Prek exports the pushed endpoints as
 `PRE_COMMIT_FROM_REF` / `PRE_COMMIT_TO_REF`; `pre-push-checks` appends
 that exact range to the gate hook instead of deriving it from the branch
 upstream. `loom gate verify --diff` uses the scope-derived contract in
@@ -285,6 +287,12 @@ declared as such.
 - Rust-file selection and pushed-range verification compose without a
   `LOOM_VERIFY_TIERS` override
   [test](pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers)
+- The pre-push stage runs the fast tier, both applicable Clippy modes, full
+  nextest and system coverage once, without repeating preceding lint hooks
+  [test](pre_push_stage_runs_each_required_verifier_once_without_repeating_lint_hooks)
+- The required test app retains full nextest and system coverage without
+  lint repetition
+  [test](required_suite_keeps_full_nextest_and_system_coverage_without_lint_repetition)
 - Nix workspace staging includes the repo-local marker-policy wrapper
   [check](grep -q '"bin/pre-push-checks"' nix/workspace.nix)
 
@@ -413,8 +421,8 @@ consumption.
   `.pre-commit-config.yaml` shape is portable but documenting a
   manual-install path is not this spec's concern.
 
-- **Full test and smoke runners.** `nix run .#test` and
-  `nix run .#smoke` are owned by [tests.md](tests.md); this spec only
+- **Full test and smoke runners.** `nix run .#test`, `nix run .#test-required`,
+  and `nix run .#smoke` are owned by [tests.md](tests.md); this spec only
   specifies when the pre-push hook fires the full suite.
 
 - **Binary cache for `nix flake check`.** A wrix-side binary cache

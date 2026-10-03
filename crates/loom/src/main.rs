@@ -1970,19 +1970,9 @@ fn run_check_with_progress(
     combined
 }
 
-/// Per-annotation dispatch loop for the `[system]` tier with fail-eager,
-/// pass-silent output. On a TTY, an overwriting status line tracks the
-/// currently-running verifier; on a pipe the line is omitted entirely.
-/// Each failing verdict and each dispatch error is printed to stderr
-/// as soon as the verifier returns.
-///
-/// `[check]` shares the same output shape (skip / pass-silent /
-/// fail-loud), but routes through [`run_check_with_progress`] so the
-/// matched-runner batching from `specs/gate.md` § Runners can collapse
-/// N walk shell-outs into one subprocess. `[system]` execution stays
-/// per-annotation per that section, but a matched runner's `cwd` (and the
-/// `[runner.system]` tier-default cwd) still resolves the per-spawn
-/// working directory via [`loom_gate::run_system`].
+/// Report and persist each system criterion as its lazy dispatch completes.
+/// Equivalent executions share output within this run, without delaying
+/// failure diagnostics or changing criterion-level evidence.
 #[expect(
     clippy::too_many_arguments,
     reason = "progress-driving dispatch surface threads cache + commit + runner context together"
@@ -2002,21 +1992,21 @@ fn run_system_with_progress(
     let tier = Tier::System;
     let mut stderr = std::io::stderr();
     let is_tty = stderr.is_terminal();
+    let selected = selected
+        .iter()
+        .filter(|ann| ann.tier == Tier::System && !ann.pending)
+        .cloned()
+        .collect::<Vec<_>>();
     let total = selected.len();
+    let mut results =
+        loom_gate::dispatch::iter_system(&selected, specs, options, repo_root, tier_cwds);
     for (i, ann) in selected.iter().enumerate() {
         if is_tty {
             let target = truncate_for_progress(&ann.target, 60);
             let _ = write!(stderr, "\x1b[2K\rrunning [{}/{total}]: {target}", i + 1);
             let _ = stderr.flush();
         }
-        let results = loom_gate::run_system(
-            std::slice::from_ref(ann),
-            specs,
-            options,
-            repo_root,
-            tier_cwds,
-        );
-        for result in results {
+        if let Some(result) = results.next() {
             match result {
                 Ok(outcome) if outcome.verdict.skipped => {
                     if is_tty {
