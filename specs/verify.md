@@ -541,6 +541,32 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   with discovery batched for the matched group rather than queried per target.
   [test?](filter_by_files_uses_admitted_batched_provider_observations)
 
+- The live check CLI shares each batched provider query between input selection
+  and inputs-protocol integrity auditing
+  [test](cli_selection_and_integrity_query_shared_provider_once)
+
+- Cached malformed or nonzero input queries remain protocol errors for every
+  owning annotation
+  [test](cli_cached_protocol_errors_remain_loud_for_each_owner)
+
+- A later group query cannot hide an earlier cached protocol error
+  [test](cached_protocol_errors_cannot_be_hidden_by_later_group_queries)
+
+- An omitted batch target remains unknown and always-run without another query
+  for that target [test](omitted_batch_target_stays_unknown_without_requery)
+
+- Same-named check and system providers retain separate input declarations
+  [test](runner_query_cache_isolates_same_named_check_and_system_providers)
+
+- Input queries use the runner cwd override or its tier cwd fallback
+  [test](cli_query_respects_tier_cwd_and_runner_override)
+
+- Input-query priming never asks for a pending annotation's target
+  [test](integrity_batch_never_queries_pending_targets)
+
+- Input queries execute anew on each later gate invocation
+  [test](cli_queries_are_not_reused_by_later_gate_invocations)
+
 ### Dispatch — per-tier process model
 
 - Runner-matched `[check]` annotations batch into one subprocess per runner
@@ -1189,6 +1215,15 @@ back to parsing the annotation's argv for it:
   instead of dispatching a unit; it cannot simply replay raw output or cached
   status as current proof. [Exact-target diagnostics](gate.md#scope-flags)
   require fresh execution.
+
+Selection and inputs-protocol integrity auditing share one resolver for one
+dispatch session. A matched check group's query supplies both its per-target
+declarations and protocol verdicts. Reuse is confined to the same runner, tier,
+input-query template and cwd; failures stay loud. Unknown query projections
+cannot establish that an owner is unaffected. Judge collect-mode declarations
+and their protocol verdict also share the script's session query. This sharing
+neither changes provider admission or system execution policy nor persists query
+results across runs.
 
 Literal argv semantics do not exempt a verifier from input admission.
 Unregistered commands with no supported provider contract fail configuration

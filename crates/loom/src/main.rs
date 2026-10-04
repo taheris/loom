@@ -1695,14 +1695,15 @@ fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Resu
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
     let mut candidates = filter_annotations(&parsed.annotations, tier);
     candidates.retain(|ann| !ann.pending);
+    let runner_specs = match tier {
+        Tier::Check if args.target().is_none() => resolve_integrity_runner_context(workspace)?.0,
+        Tier::Check | Tier::System => resolve_runner_context(workspace, tier)?.0,
+        Tier::Test | Tier::Judge => Vec::new(),
+    };
     let mut input_resolver = if args.files().is_some() {
-        let runner_specs = match tier {
-            Tier::Check | Tier::System => resolve_runner_context(workspace, tier)?.0,
-            Tier::Test | Tier::Judge => Vec::new(),
-        };
         build_input_resolver(workspace, &runner_specs)
     } else {
-        InputResolver::new(workspace.to_path_buf())
+        InputResolver::new(workspace.to_path_buf()).with_runners(runner_specs)
     };
     let mut selected = args.select(&candidates, &mut input_resolver);
     if matches!(tier, Tier::Check | Tier::System) && args.is_explicit_files() {
@@ -1712,7 +1713,10 @@ fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Resu
 
     let mut combined: i32 = 0;
     if tier == Tier::Check && args.target().is_none() {
-        combined = combine_verifier_codes(combined, run_integrity_gate(workspace, args)?);
+        combined = combine_verifier_codes(
+            combined,
+            run_integrity_gate(workspace, args, &mut input_resolver)?,
+        );
     }
     if selected.is_empty() {
         eprintln!("loom gate [{tier}]: no annotations matched");
@@ -1826,7 +1830,11 @@ fn partition_pending_for_forward_resolution(
 /// and treats the integrity gate as itself a `[check]`-tier verifier, so
 /// the verify lane fails the same way the per-annotation `[check]`
 /// dispatch does.
-fn run_integrity_gate(workspace: &Path, args: &GateScope) -> anyhow::Result<i32> {
+fn run_integrity_gate(
+    workspace: &Path,
+    args: &GateScope,
+    input_resolver: &mut InputResolver,
+) -> anyhow::Result<i32> {
     use std::io::Write;
 
     let specs_dir = workspace.join("specs");
@@ -1841,10 +1849,9 @@ fn run_integrity_gate(workspace: &Path, args: &GateScope) -> anyhow::Result<i32>
     let cmd_resolver = FsCommandResolver::new(workspace);
     let (specs, tier_cwds) = resolve_integrity_runner_context(workspace)?;
     if args.files().is_some() {
-        let mut input_resolver = build_input_resolver(workspace, &specs);
         let (pending, candidates): (Vec<_>, Vec<_>) =
             partition_pending_for_forward_resolution(annotations);
-        annotations = args.select(&candidates, &mut input_resolver);
+        annotations = args.select(&candidates, input_resolver);
         annotations.extend(pending);
         if args.is_explicit_files() {
             annotations
@@ -1860,7 +1867,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScope) -> anyhow::Result<i32>
         spec: None,
     };
     let pending_executor = DispatchPendingExecutor::new(&specs, options, workspace, tier_cwds);
-    let findings = loom_gate::integrity::check(
+    let findings = loom_gate::integrity::check_with_input_resolver(
         &annotations,
         &specs,
         workspace,
@@ -1868,6 +1875,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScope) -> anyhow::Result<i32>
         &test_resolver,
         &stub_scanner,
         &pending_executor,
+        input_resolver,
     );
     if findings.is_empty() {
         return Ok(0);
@@ -5767,8 +5775,9 @@ mod tests {
         .expect("write spec");
 
         let args = changed_scope(tmp.path());
-
-        let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
+        let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
+        let mut inputs = build_input_resolver(tmp.path(), &specs);
+        let code = run_integrity_gate(tmp.path(), &args, &mut inputs).expect("integrity gate runs");
         assert_eq!(code, 1);
     }
 
@@ -5858,8 +5867,9 @@ mod tests {
             tmp.path(),
             GateScopeRequest::Files(vec![PathBuf::from("src/lib.rs")]),
         );
-
-        let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
+        let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
+        let mut inputs = build_input_resolver(tmp.path(), &specs);
+        let code = run_integrity_gate(tmp.path(), &args, &mut inputs).expect("integrity gate runs");
         assert_eq!(
             code, 1,
             "the resolved pending marker must still fire even when --files excludes its spec",
@@ -5933,8 +5943,9 @@ mod tests {
             tmp.path(),
             GateScopeRequest::Files(vec![tmp.path().join("src/lib.rs")]),
         );
-
-        let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
+        let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
+        let mut inputs = build_input_resolver(tmp.path(), &specs);
+        let code = run_integrity_gate(tmp.path(), &args, &mut inputs).expect("integrity gate runs");
         assert_eq!(code, 0);
     }
 

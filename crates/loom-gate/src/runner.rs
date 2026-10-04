@@ -637,17 +637,23 @@ pub fn compile_tier_runners(
     let mut specs = Vec::new();
     if let Some(tier_block) = config.runner.tier(tier) {
         for (name, entry) in &tier_block.runners {
-            let spec = match owning_tier {
+            let mut spec = match owning_tier {
                 Some(t) => compile_runner_entry(name, entry)?.with_tier(t),
                 None => compile_runner_entry(name, entry)?,
             };
+            if spec.cwd.is_none() {
+                spec.cwd = tier_block.cwd.as_ref().map(PathBuf::from);
+            }
             specs.push(spec);
         }
         if let Some(default_entry) = tier_block.default_runner() {
-            let spec = match owning_tier {
+            let mut spec = match owning_tier {
                 Some(t) => compile_runner_entry("default", &default_entry)?.with_tier(t),
                 None => compile_runner_entry("default", &default_entry)?,
             };
+            if spec.cwd.is_none() {
+                spec.cwd = tier_block.cwd.as_ref().map(PathBuf::from);
+            }
             specs.push(spec);
         }
     }

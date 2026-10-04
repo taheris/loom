@@ -1042,6 +1042,35 @@ pub fn check(
     stub_scanner: &dyn StubScanner,
     pending_executor: &dyn PendingCommandExecutor,
 ) -> Vec<IntegrityFinding> {
+    let mut input_resolver =
+        InputResolver::new(repo_root.to_path_buf()).with_runners(runner_specs.to_vec());
+    check_with_input_resolver(
+        annotations,
+        runner_specs,
+        repo_root,
+        command_resolver,
+        test_resolver,
+        stub_scanner,
+        pending_executor,
+        &mut input_resolver,
+    )
+}
+
+/// Run all integrity directions using the caller's session-local input queries.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the integrity context plus the caller-owned discovery session"
+)]
+pub fn check_with_input_resolver(
+    annotations: &[Annotation],
+    runner_specs: &[RunnerSpec],
+    repo_root: &Path,
+    command_resolver: &dyn CommandResolver,
+    test_resolver: &dyn TestPathResolver,
+    stub_scanner: &dyn StubScanner,
+    pending_executor: &dyn PendingCommandExecutor,
+    input_resolver: &mut InputResolver,
+) -> Vec<IntegrityFinding> {
     let mut findings = check_forward(
         annotations,
         runner_specs,
@@ -1052,9 +1081,7 @@ pub fn check(
         pending_executor,
     );
     findings.extend(check_atomic_acceptance(annotations));
-    let mut input_resolver =
-        InputResolver::new(repo_root.to_path_buf()).with_runners(runner_specs.to_vec());
-    findings.extend(check_inputs_protocol(annotations, &mut input_resolver));
+    findings.extend(check_inputs_protocol(annotations, input_resolver));
     findings
 }
 
@@ -1073,6 +1100,7 @@ pub fn check_inputs_protocol(
     annotations: &[Annotation],
     input_resolver: &mut InputResolver,
 ) -> Vec<IntegrityFinding> {
+    input_resolver.prime_runner_inputs(annotations);
     let mut out = Vec::new();
     for ann in annotations {
         if ann.pending {

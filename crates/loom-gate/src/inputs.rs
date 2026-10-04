@@ -211,6 +211,7 @@ pub struct InputResolver {
     inputs_for_test_command: Option<String>,
     runners: Vec<RunnerSpec>,
     print_inputs_cache: HashMap<String, Vec<PathBuf>>,
+    input_query_probes: HashMap<String, InputQueryProbe>,
 }
 
 impl InputResolver {
@@ -224,6 +225,7 @@ impl InputResolver {
             inputs_for_test_command: None,
             runners: Vec::new(),
             print_inputs_cache: HashMap::new(),
+            input_query_probes: HashMap::new(),
         }
     }
 
@@ -280,7 +282,11 @@ impl InputResolver {
         let declaration = self.collect_declared(annotation);
         let declared_own = declaration.is_known();
         let mut paths = declaration.into_paths();
-        let spec = annotation.source_spec.clone();
+        let spec = annotation
+            .source_spec
+            .strip_prefix(&self.repo_root)
+            .unwrap_or(&annotation.source_spec)
+            .to_path_buf();
         if !paths.iter().any(|p| p == &spec) {
             paths.push(spec);
         }
@@ -320,7 +326,7 @@ impl InputResolver {
     /// `<script> --print-inputs`. A script that does not resolve to a file
     /// is the forward direction's [`UnresolvedAnnotation`], not ours, so it
     /// stays [`InputQueryProbe::NotOptedIn`] here to avoid a double finding.
-    fn probe_judge_query(&self, annotation: &Annotation) -> InputQueryProbe {
+    fn probe_judge_query(&mut self, annotation: &Annotation) -> InputQueryProbe {
         let Some(script) = crate::integrity::resolve_spec_relative_script_path(
             &annotation.target,
             &annotation.source_spec,
@@ -331,35 +337,107 @@ impl InputResolver {
         if !script.is_file() {
             return InputQueryProbe::NotOptedIn;
         }
-        classify_query_run(
-            run_query_capturing(judge_collect_command(&self.repo_root, &script, None)),
-            &format!("loom-judge-harness {}", script.display()),
-        )
+        self.query_judge_inputs(&script)
     }
 
-    /// A `[check]` / `[system]` opts in only when a runner `match`es the
-    /// target *and* declares an `inputs` query. An unmatched target (a
-    /// literal command loom never registered) or a matched runner with no
-    /// `inputs` query stays [`InputQueryProbe::NotOptedIn`] — the gate
-    /// never faults a bare `grep` / `nix` for declining a protocol it never
-    /// opted into.
-    fn probe_command_query(&self, annotation: &Annotation) -> InputQueryProbe {
-        let query = {
+    fn query_judge_inputs(&mut self, script: &Path) -> InputQueryProbe {
+        let cache_key = format!("judge:{}", script.display());
+        if let Some(probe) = self.input_query_probes.get(&cache_key) {
+            return probe.clone();
+        }
+        let probe = match query_inputs(
+            judge_collect_command(&self.repo_root, script, None),
+            &format!("loom-judge-harness {}", script.display()),
+        ) {
+            Ok(InputQueryDocument::Batch(batch)) => {
+                for (function, paths) in batch {
+                    self.print_inputs_cache
+                        .insert(judge_cache_key(script, &function), paths);
+                }
+                InputQueryProbe::Honoured
+            }
+            Ok(InputQueryDocument::Single(_)) => InputQueryProbe::Honoured,
+            Err(detail) => InputQueryProbe::Errored { detail },
+        };
+        self.input_query_probes.insert(cache_key, probe.clone());
+        probe
+    }
+
+    /// Only a matched runner with an `inputs` template opts in. Cached
+    /// declarations and protocol verdicts share the same provider identity.
+    fn probe_command_query(&mut self, annotation: &Annotation) -> InputQueryProbe {
+        let (runner, target, query) = {
             let (groups, _) = group_by_runner(&self.runners, std::slice::from_ref(annotation));
             let Some(group) = groups.into_iter().next() else {
                 return InputQueryProbe::NotOptedIn;
             };
-            match group.render_inputs_query() {
-                Some(query) => query,
-                None => return InputQueryProbe::NotOptedIn,
-            }
-        };
-        let Some(command) = command_query_command(&self.repo_root, &query) else {
-            return InputQueryProbe::Errored {
-                detail: "input-query command could not be parsed".to_owned(),
+            let Some(query) = group.render_inputs_query() else {
+                return InputQueryProbe::NotOptedIn;
             };
+            let Some(matched) = group.matched.first() else {
+                return InputQueryProbe::NotOptedIn;
+            };
+            (group.spec.clone(), matched.rendered_target.clone(), query)
         };
-        classify_query_run(run_query_capturing(command), &query)
+        let key = runner_cache_key(&runner, annotation.tier, &target);
+        if let Some(probe) = self.input_query_probes.get(&key) {
+            return probe.clone();
+        }
+        self.query_runner_inputs(&runner, annotation.tier, &[target], &query)
+    }
+
+    fn query_runner_inputs(
+        &mut self,
+        runner: &RunnerSpec,
+        tier: Tier,
+        targets: &[String],
+        query: &str,
+    ) -> InputQueryProbe {
+        let cwd = runner
+            .cwd
+            .as_ref()
+            .map_or_else(|| self.repo_root.clone(), |cwd| self.repo_root.join(cwd));
+        let result = command_query_command(&cwd, query).map_or_else(
+            || Err("input-query command could not be parsed".to_owned()),
+            |command| query_inputs(command, query),
+        );
+        let probe = match result {
+            Ok(InputQueryDocument::Batch(batch)) => {
+                for (target, paths) in batch {
+                    let key = runner_cache_key(runner, tier, &target);
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        self.input_query_probes.entry(key)
+                    {
+                        self.print_inputs_cache.insert(entry.key().clone(), paths);
+                        entry.insert(InputQueryProbe::Honoured);
+                    }
+                }
+                InputQueryProbe::Honoured
+            }
+            Ok(InputQueryDocument::Single(paths)) if targets.len() == 1 => {
+                if let Some(target) = targets.first() {
+                    self.print_inputs_cache
+                        .insert(runner_cache_key(runner, tier, target), paths);
+                }
+                InputQueryProbe::Honoured
+            }
+            // A flat response cannot safely be assigned to distinct targets.
+            // Preserve the per-target fallback, without suppressing errors.
+            Ok(InputQueryDocument::Single(_)) => return InputQueryProbe::Honoured,
+            Err(detail) => InputQueryProbe::Errored { detail },
+        };
+        for target in targets {
+            let key = runner_cache_key(runner, tier, target);
+            if matches!(probe, InputQueryProbe::Errored { .. }) {
+                self.print_inputs_cache.remove(&key);
+                self.input_query_probes.insert(key, probe.clone());
+            } else {
+                self.input_query_probes
+                    .entry(key)
+                    .or_insert_with(|| probe.clone());
+            }
+        }
+        probe
     }
 
     fn collect_declared(&mut self, annotation: &Annotation) -> InputDeclaration {
@@ -400,16 +478,7 @@ impl InputResolver {
         if let Some(cached) = self.print_inputs_cache.get(&cache_key) {
             return InputDeclaration::Known(cached.clone());
         }
-        let Some(stdout) = run_judge_collect(&self.repo_root, &script, None) else {
-            return InputDeclaration::Unknown;
-        };
-        let Some(batch) = parse_inputs_batch_json(&stdout) else {
-            return InputDeclaration::Unknown;
-        };
-        for (rubric, paths) in batch {
-            self.print_inputs_cache
-                .insert(judge_cache_key(&script, &rubric), paths);
-        }
+        self.query_judge_inputs(&script);
         self.print_inputs_cache
             .get(&cache_key)
             .cloned()
@@ -481,34 +550,16 @@ impl InputResolver {
     /// [`Self::prime_runner_inputs`]; a sibling whose group was primed hits
     /// the cache here and never spawns.
     fn runner_owned_inputs(&mut self, annotation: &Annotation) -> Option<InputDeclaration> {
-        let (runner_name, rendered_target, query) = {
+        let cache_key = {
             let (groups, _) = group_by_runner(&self.runners, std::slice::from_ref(annotation));
             let group = groups.into_iter().next()?;
-            let rendered_target = group.matched.first()?.rendered_target.clone();
-            (
-                group.spec.name.clone(),
-                rendered_target,
-                group.render_inputs_query(),
+            runner_cache_key(
+                group.spec,
+                annotation.tier,
+                &group.matched.first()?.rendered_target,
             )
         };
-        let cache_key = runner_cache_key(&runner_name, &rendered_target);
-        if let Some(cached) = self.print_inputs_cache.get(&cache_key) {
-            return Some(InputDeclaration::Known(cached.clone()));
-        }
-        let Some(query) = query else {
-            return Some(InputDeclaration::Unknown);
-        };
-        let Some(stdout) = run_command_query(&self.repo_root, &query) else {
-            return Some(InputDeclaration::Unknown);
-        };
-        if let Some(batch) = parse_inputs_batch_json(&stdout) {
-            for (target, paths) in batch {
-                self.print_inputs_cache
-                    .insert(runner_cache_key(&runner_name, &target), paths);
-            }
-        } else if let Some(paths) = parse_inputs_json(&stdout) {
-            self.print_inputs_cache.insert(cache_key.clone(), paths);
-        }
+        self.probe_command_query(annotation);
         Some(
             self.print_inputs_cache
                 .get(&cache_key)
@@ -526,58 +577,47 @@ impl InputResolver {
     /// the per-target batch map primes the cache that [`Self::resolve`] then
     /// hits without re-querying.
     ///
-    /// `[system]` annotations are excluded — per the spec carve-out their
-    /// discovery stays per-annotation, matching their per-annotation
-    /// execution. Groups already fully cached, runners without an `inputs`
-    /// template, and unmatched annotations are skipped. Priming is
-    /// best-effort: a failed or single-target response to a multi-sibling
-    /// query leaves the group to the per-annotation path in
-    /// [`Self::resolve`], preserving correctness at the per-annotation spawn
-    /// cost.
+    /// `[system]` remains per-annotation. Pending targets, cached groups,
+    /// and runners without an `inputs` template are skipped. Failed queries
+    /// remain unknown for selection and retain each owner's protocol error.
+    /// A flat response to a multi-target query falls back to per-target
+    /// discovery because it cannot identify a target's declaration.
     pub fn prime_runner_inputs(&mut self, annotations: &[Annotation]) {
         let check: Vec<Annotation> = annotations
             .iter()
-            .filter(|a| a.tier == Tier::Check)
+            .filter(|a| a.tier == Tier::Check && !a.pending)
             .cloned()
             .collect();
         if check.is_empty() {
             return;
         }
-        let plans: Vec<(String, String, Option<String>)> = {
+        let plans: Vec<(RunnerSpec, String, Vec<String>)> = {
             let (groups, _) = group_by_runner(&self.runners, &check);
             groups
                 .into_iter()
                 .filter_map(|group| {
-                    let fully_cached = group.matched.iter().all(|m| {
-                        self.print_inputs_cache
-                            .contains_key(&runner_cache_key(&group.spec.name, &m.rendered_target))
-                    });
-                    if fully_cached {
+                    if group.matched.iter().all(|matched| {
+                        self.input_query_probes.contains_key(&runner_cache_key(
+                            group.spec,
+                            Tier::Check,
+                            &matched.rendered_target,
+                        ))
+                    }) {
                         return None;
                     }
                     let query = group.render_inputs_query()?;
-                    let single = (group.matched.len() == 1)
-                        .then(|| group.matched.first().map(|m| m.rendered_target.clone()))
-                        .flatten();
-                    Some((group.spec.name.clone(), query, single))
+                    let mut targets = Vec::new();
+                    for matched in &group.matched {
+                        if !targets.contains(&matched.rendered_target) {
+                            targets.push(matched.rendered_target.clone());
+                        }
+                    }
+                    Some((group.spec.clone(), query, targets))
                 })
                 .collect()
         };
-        for (runner_name, query, single) in plans {
-            let Some(stdout) = run_command_query(&self.repo_root, &query) else {
-                continue;
-            };
-            if let Some(batch) = parse_inputs_batch_json(&stdout) {
-                for (target, paths) in batch {
-                    self.print_inputs_cache
-                        .insert(runner_cache_key(&runner_name, &target), paths);
-                }
-            } else if let Some(paths) = parse_inputs_json(&stdout)
-                && let Some(target) = single
-            {
-                self.print_inputs_cache
-                    .insert(runner_cache_key(&runner_name, &target), paths);
-            }
+        for (runner, query, targets) in plans {
+            self.query_runner_inputs(&runner, Tier::Check, &targets, &query);
         }
     }
 
@@ -872,9 +912,8 @@ fn parse_inputs_batch_json(stdout: &str) -> Option<HashMap<String, Vec<PathBuf>>
 
 /// Build the judge collect-mode `Command` under the loom judge-harness
 /// preamble. With `function` set the harness emits the single-target
-/// document (`{"inputs":[...]}`); with `None`, the batch map. Shared by the
-/// silent resolve path ([`run_judge_collect`]) and the integrity gate's
-/// inputs-protocol probe so both spawn byte-identical argv.
+/// document (`{"inputs":[...]}`); with `None`, the batch map. Selection and
+/// integrity share the same query and its session-local verdict.
 fn judge_collect_command(repo_root: &Path, script: &Path, function: Option<&str>) -> Command {
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
@@ -889,31 +928,6 @@ fn judge_collect_command(repo_root: &Path, script: &Path, function: Option<&str>
     cmd
 }
 
-/// Run a judge rubric script in collect mode under the loom judge-harness
-/// preamble. With `function` set, returns the single-target document's
-/// stdout (`{"inputs":[...]}`); with `None`, the batch map's stdout. Falls
-/// through to `None` when the harness fails to spawn or exits non-zero, so
-/// the resolver lands on the *Conservative default* rather than the gate
-/// crashing over a malformed rubric.
-fn run_judge_collect(repo_root: &Path, script: &Path, function: Option<&str>) -> Option<String> {
-    let mut cmd = judge_collect_command(repo_root, script, function);
-    let output = match cmd.output() {
-        Ok(output) => output,
-        Err(source) => {
-            let err = InputsError::Spawn {
-                command: format!("loom-judge-harness {}", script.display()),
-                source,
-            };
-            tracing::warn!(err = ?err, "judge collect-mode spawn failed; conservative always-run default applies");
-            return None;
-        }
-    };
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 /// Per-session cache key for one rubric's collect-mode inputs. Shares
 /// [`InputResolver::print_inputs_cache`] with the `[check]` / `[system]`
 /// `--print-inputs` results; the `<script>#<fn>` shape keeps judge keys
@@ -926,14 +940,17 @@ fn judge_cache_key(script: &Path, function: &str) -> String {
 /// result. The `runner:` prefix keeps these distinct from raw command
 /// strings and `<script>#<fn>` judge keys sharing the same map, and the
 /// rendered target lets a batch response prime every sibling in the group.
-fn runner_cache_key(runner: &str, rendered_target: &str) -> String {
-    format!("runner:{runner}\u{1f}{rendered_target}")
+/// Tier, query template and cwd retain each provider's ownership.
+fn runner_cache_key(runner: &RunnerSpec, tier: Tier, rendered_target: &str) -> String {
+    format!(
+        "runner:{tier}:{}:{:?}:{:?}\u{1f}{rendered_target}",
+        runner.name, runner.cwd, runner.inputs,
+    )
 }
 
 /// Build the `Command` for a runner's rendered input-query string, or
-/// `None` when the string has no leading token. Shared by the silent
-/// resolve path ([`run_command_query`]) and the integrity gate's
-/// inputs-protocol probe so both spawn byte-identical argv.
+/// `None` when the string has no leading token. Selection and integrity
+/// share the captured declaration and protocol verdict.
 fn command_query_command(repo_root: &Path, command: &str) -> Option<Command> {
     let mut tokens = shlex::split(command)?.into_iter();
     let head = tokens.next()?;
@@ -943,84 +960,31 @@ fn command_query_command(repo_root: &Path, command: &str) -> Option<Command> {
     Some(cmd)
 }
 
-/// Spawn a runner's rendered input-query command in `repo_root` and return
-/// its stdout, or `None` when the command fails to spawn or exits
-/// non-zero. A non-zero exit falls through to the conservative always-run
-/// default here; surfacing it as a loud `inputs-protocol-error` is the
-/// integrity gate's job (see `specs/gate.md` § Inputs-protocol error).
-fn run_command_query(repo_root: &Path, command: &str) -> Option<String> {
-    let mut cmd = command_query_command(repo_root, command)?;
-    let output = match cmd.output() {
-        Ok(output) => output,
-        Err(source) => {
-            let err = InputsError::Spawn {
-                command: command.to_string(),
-                source,
-            };
-            tracing::warn!(err = ?err, "input-query spawn failed; conservative always-run default applies");
-            return None;
-        }
-    };
+enum InputQueryDocument {
+    Single(Vec<PathBuf>),
+    Batch(HashMap<String, Vec<PathBuf>>),
+}
+
+/// Capture one opted-in query without collapsing errors into empty inputs.
+fn query_inputs(mut cmd: Command, command: &str) -> Result<InputQueryDocument, String> {
+    let output = cmd.output().map_err(|source| {
+        let err = InputsError::Spawn {
+            command: command.to_owned(),
+            source,
+        };
+        tracing::warn!(err = ?err, "opted-in input-query spawn failed");
+        "input-query failed to spawn".to_owned()
+    })?;
     if !output.status.success() {
-        return None;
+        return Err("input-query exited non-zero".to_owned());
     }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// Outcome of spawning an opted-in input-query for the integrity gate's
-/// inputs-protocol probe: the process ran (carrying its exit success and
-/// captured stdout) or could not be spawned at all.
-enum QueryRun {
-    Ran { success: bool, stdout: String },
-    SpawnFailed { source: std::io::Error },
-}
-
-/// Spawn `cmd`, capturing exit success and stdout. Unlike
-/// [`run_command_query`] this does *not* collapse a non-zero exit into the
-/// silent always-run default — the inputs-protocol probe needs the exit
-/// status to tell a protocol error from a well-formed narrow.
-fn run_query_capturing(mut cmd: Command) -> QueryRun {
-    match cmd.output() {
-        Ok(output) => QueryRun::Ran {
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        },
-        Err(source) => QueryRun::SpawnFailed { source },
-    }
-}
-
-/// Map a captured input-query run to an [`InputQueryProbe`] verdict. A
-/// spawn failure, a non-zero exit, or stdout that parses as neither the
-/// single (`{"inputs":[...]}`) nor batch (`{"inputs":{...}}`) document is
-/// the loud `inputs-protocol-error`. A well-formed document is honoured,
-/// including the deliberate narrow `{"inputs":[]}` shape.
-fn classify_query_run(run: QueryRun, command: &str) -> InputQueryProbe {
-    match run {
-        QueryRun::SpawnFailed { source } => {
-            let err = InputsError::Spawn {
-                command: command.to_string(),
-                source,
-            };
-            tracing::warn!(err = ?err, "opted-in input-query spawn failed");
-            InputQueryProbe::Errored {
-                detail: "input-query failed to spawn".to_owned(),
-            }
-        }
-        QueryRun::Ran { success: false, .. } => InputQueryProbe::Errored {
-            detail: "input-query exited non-zero".to_owned(),
-        },
-        QueryRun::Ran {
-            success: true,
-            stdout,
-        } => {
-            if parse_inputs_batch_json(&stdout).is_some() || parse_inputs_json(&stdout).is_some() {
-                InputQueryProbe::Honoured
-            } else {
-                InputQueryProbe::Errored {
-                    detail: "input-query emitted a malformed inputs document".to_owned(),
-                }
-            }
-        }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if let Some(batch) = parse_inputs_batch_json(&stdout) {
+        Ok(InputQueryDocument::Batch(batch))
+    } else if let Some(paths) = parse_inputs_json(&stdout) {
+        Ok(InputQueryDocument::Single(paths))
+    } else {
+        Err("input-query emitted a malformed inputs document".to_owned())
     }
 }
 
@@ -1125,6 +1089,52 @@ mod tests {
             criterion_line: 9,
             pending: false,
         }
+    }
+
+    const FILTER_INPUTS: &str = r#"printf '{"inputs":{'
+first=1
+for target in "$@"; do
+    [ "$target" = "--print-inputs" ] && continue
+    [ "$first" = 1 ] || printf ','
+    printf '"%s":["src/%s.rs"]' "$target" "$target"
+    first=0
+done
+printf '}}\n'"#;
+
+    fn counting_runner(dir: &Path, body: &str, tier: Tier) -> RunnerSpec {
+        let responder = dir.join(format!("inputs-{tier}.sh"));
+        let counter = dir.join("queries.txt");
+        fs::write(&counter, "").unwrap();
+        fs::write(
+            &responder,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}\n",
+                counter.display(),
+            ),
+        )
+        .unwrap();
+        RunnerSpec::compile(
+            "walk",
+            Some(r"^walk -- (\S+)$"),
+            "walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_tier(tier)
+        .with_inputs(Some(format!(
+            "sh {} {{print_inputs}} {{targets}}",
+            responder.display(),
+        )))
+    }
+
+    fn query_count(dir: &Path) -> usize {
+        fs::read_to_string(dir.join("queries.txt"))
+            .unwrap()
+            .lines()
+            .count()
     }
 
     fn wait_for_executable(path: &Path) {
@@ -1523,6 +1533,280 @@ mod tests {
         );
     }
 
+    #[test]
+    fn integrity_and_selection_share_one_runner_query_in_either_order() {
+        for integrity_first in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = counting_runner(dir.path(), FILTER_INPUTS, Tier::Check);
+            let mut resolver =
+                InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+            let annotations = vec![
+                ann(Tier::Check, "walk -- alpha", "specs/gate.md"),
+                ann(Tier::Check, "walk -- beta", "specs/gate.md"),
+            ];
+            if integrity_first {
+                assert!(
+                    crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty()
+                );
+            }
+            let selected = filter_by_files(
+                &annotations,
+                &[PathBuf::from("src/alpha.rs")],
+                &mut resolver,
+            );
+            assert_eq!(selected, vec![annotations[0].clone()]);
+            assert!(
+                crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty()
+            );
+            assert_eq!(
+                query_count(dir.path()),
+                1,
+                "one query owns selection and integrity"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_integrity_batch_stays_loud_cached_and_always_run() {
+        for body in [r#"printf '{"inputs":null}\n'"#, "exit 7"] {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = counting_runner(dir.path(), body, Tier::Check);
+            let mut resolver =
+                InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+            let annotations = vec![
+                ann(Tier::Check, "walk -- alpha", "specs/gate.md"),
+                ann(Tier::Check, "walk -- beta", "specs/gate.md"),
+            ];
+            assert_eq!(
+                filter_by_files(&annotations, &[PathBuf::from("unrelated")], &mut resolver),
+                annotations,
+                "failed declarations must not exclude owners",
+            );
+            for _ in 0..2 {
+                let findings = crate::integrity::check_inputs_protocol(&annotations, &mut resolver);
+                assert_eq!(findings.len(), 2, "both owners retain the protocol error");
+                assert!(findings.iter().all(|finding| matches!(
+                    finding,
+                    crate::integrity::IntegrityFinding::InputsProtocolError { .. }
+                )));
+            }
+            assert_eq!(
+                query_count(dir.path()),
+                1,
+                "failed queries are not retried by the audit"
+            );
+        }
+    }
+
+    #[test]
+    fn cached_protocol_errors_cannot_be_hidden_by_later_group_queries() {
+        for fail_first in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let marker = dir.path().join("fail");
+            let body = format!("[ ! -e '{}' ] || exit 7\n{FILTER_INPUTS}", marker.display());
+            let runner = counting_runner(dir.path(), &body, Tier::Check);
+            let mut resolver =
+                InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+            let alpha = ann(Tier::Check, "walk -- alpha", "specs/gate.md");
+            let gamma = ann(Tier::Check, "walk -- gamma", "specs/gate.md");
+            if fail_first {
+                fs::write(&marker, "").unwrap();
+            }
+            let first = crate::integrity::check_inputs_protocol(
+                std::slice::from_ref(&alpha),
+                &mut resolver,
+            );
+            assert_eq!(first.len(), usize::from(fail_first));
+            if fail_first {
+                fs::remove_file(&marker).unwrap();
+            } else {
+                fs::write(&marker, "").unwrap();
+            }
+            let annotations = vec![alpha.clone(), gamma];
+            let findings = crate::integrity::check_inputs_protocol(&annotations, &mut resolver);
+            assert_eq!(findings.len(), if fail_first { 1 } else { 2 });
+            assert_eq!(
+                filter_by_files(&annotations, &[PathBuf::from("unrelated")], &mut resolver),
+                if fail_first {
+                    vec![alpha]
+                } else {
+                    annotations.clone()
+                },
+                "an error must clear stale declared paths and never be upgraded to a pass",
+            );
+            assert_eq!(query_count(dir.path()), 2);
+        }
+    }
+
+    #[test]
+    fn omitted_batch_target_stays_unknown_without_requery() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = counting_runner(
+            dir.path(),
+            r#"printf '{"inputs":{"alpha":["src/alpha.rs"]}}\n'"#,
+            Tier::Check,
+        );
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+        let annotations = vec![
+            ann(Tier::Check, "walk -- alpha", "specs/gate.md"),
+            ann(Tier::Check, "walk -- beta", "specs/gate.md"),
+        ];
+        assert_eq!(
+            filter_by_files(
+                &annotations,
+                &[PathBuf::from("src/alpha.rs")],
+                &mut resolver
+            ),
+            annotations,
+            "an omitted target is unknown, not a declared empty input set",
+        );
+        assert!(resolver.declares_no_inputs(&annotations[1]));
+        assert!(crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty());
+        assert_eq!(query_count(dir.path()), 1);
+    }
+
+    #[test]
+    fn runner_query_cache_isolates_same_named_check_and_system_providers() {
+        let dir = tempfile::tempdir().unwrap();
+        let check = counting_runner(
+            dir.path(),
+            r#"printf '{"inputs":["src/check.rs"]}\n'"#,
+            Tier::Check,
+        );
+        let system = counting_runner(
+            dir.path(),
+            r#"printf '{"inputs":["src/system.rs"]}\n'"#,
+            Tier::System,
+        );
+        let mut resolver =
+            InputResolver::new(dir.path().to_path_buf()).with_runners(vec![check, system]);
+        for (tier, path) in [
+            (Tier::Check, "src/check.rs"),
+            (Tier::System, "src/system.rs"),
+        ] {
+            let annotation = ann(tier, "walk -- alpha", "specs/gate.md");
+            assert!(
+                resolver
+                    .resolve(&annotation)
+                    .paths
+                    .contains(&PathBuf::from(path))
+            );
+            assert_eq!(
+                resolver.probe_input_query(&annotation),
+                InputQueryProbe::Honoured
+            );
+        }
+        assert_eq!(
+            query_count(dir.path()),
+            2,
+            "tier ownership must not alias cache entries"
+        );
+    }
+
+    #[test]
+    fn judge_protocol_audit_reuses_collect_mode_declarations() {
+        for integrity_first in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let script = dir.path().join("judge.sh");
+            fs::write(dir.path().join("queries.txt"), "").unwrap();
+            fs::write(
+                &script,
+                format!(
+                    "printf 'query\\n' >> '{}'\n\
+                     judge_alpha() {{ judge_files src/alpha.rs; }}\n\
+                     judge_beta() {{ judge_files src/beta.rs; }}\n",
+                    dir.path().join("queries.txt").display(),
+                ),
+            )
+            .unwrap();
+            let annotations = vec![
+                ann(
+                    Tier::Judge,
+                    &format!("{}#judge_alpha", script.display()),
+                    "specs/gate.md",
+                ),
+                ann(
+                    Tier::Judge,
+                    &format!("{}#judge_beta", script.display()),
+                    "specs/gate.md",
+                ),
+            ];
+            let mut resolver = InputResolver::new(dir.path().to_path_buf());
+            if integrity_first {
+                assert!(
+                    crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty()
+                );
+            }
+            assert_eq!(
+                filter_by_files(
+                    &annotations,
+                    &[PathBuf::from("src/alpha.rs")],
+                    &mut resolver
+                ),
+                vec![annotations[0].clone()],
+            );
+            assert!(
+                crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty()
+            );
+            assert_eq!(query_count(dir.path()), 1);
+        }
+    }
+
+    #[test]
+    fn runner_query_cache_isolates_working_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        for cwd in ["alpha", "beta"] {
+            fs::create_dir(dir.path().join(cwd)).unwrap();
+        }
+        let mut alpha = counting_runner(
+            dir.path(),
+            r#"printf '{"inputs":["src/%s.rs"]}\n' "${PWD##*/}""#,
+            Tier::Check,
+        );
+        alpha.cwd = Some(PathBuf::from("alpha"));
+        let mut beta = alpha.clone();
+        beta.cwd = Some(PathBuf::from("beta"));
+        let annotation = ann(Tier::Check, "walk -- target", "specs/gate.md");
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![alpha]);
+        assert!(
+            resolver
+                .resolve(&annotation)
+                .paths
+                .contains(&PathBuf::from("src/alpha.rs"))
+        );
+        resolver = resolver.with_runners(vec![beta]);
+        assert!(
+            resolver
+                .resolve(&annotation)
+                .paths
+                .contains(&PathBuf::from("src/beta.rs"))
+        );
+        assert_eq!(
+            resolver.probe_input_query(&annotation),
+            InputQueryProbe::Honoured
+        );
+        assert_eq!(query_count(dir.path()), 2);
+    }
+
+    #[test]
+    fn integrity_batch_never_queries_pending_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = counting_runner(
+            dir.path(),
+            r#"printf '{"inputs":["src/alpha.rs"]}\n'"#,
+            Tier::Check,
+        );
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+        let alpha = ann(Tier::Check, "walk -- alpha", "specs/gate.md");
+        let mut beta = ann(Tier::Check, "walk -- beta", "specs/gate.md");
+        beta.pending = true;
+        assert!(crate::integrity::check_inputs_protocol(&[alpha, beta], &mut resolver).is_empty());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("queries.txt")).unwrap(),
+            "--print-inputs alpha\n"
+        );
+    }
+
     /// The runner input-query seam (`render_inputs_query` →
     /// `run_command_query` → `parse_inputs_batch_json` cache-prime) batches
     /// across siblings: a batch response (`{"inputs":{"<target>":[...]}}`)
@@ -1843,8 +2127,11 @@ mod tests {
         )
         .unwrap();
 
-        let stdout =
-            run_judge_collect(dir.path(), &script, Some("judge_x")).expect("collect mode runs");
+        let output = judge_collect_command(dir.path(), &script, Some("judge_x"))
+            .output()
+            .expect("collect mode runs");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let paths = parse_inputs_json(&stdout).expect("single-target inputs document");
         assert_eq!(
             paths,
@@ -1872,7 +2159,11 @@ mod tests {
         )
         .unwrap();
 
-        let stdout = run_judge_collect(dir.path(), &script, None).expect("batch collect runs");
+        let output = judge_collect_command(dir.path(), &script, None)
+            .output()
+            .expect("batch collect runs");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let map = parse_inputs_batch_json(&stdout).expect("batch inputs document");
         assert_eq!(
             map.get("judge_a"),
