@@ -2,111 +2,102 @@
 
 What a spec is, what it isn't, and how to author one.
 
-A spec is a **forward-facing contract** about what a component does
-and why. It is the *intent floor* of the system — no downstream
-process (`loom todo`, the agent, `loom gate verify`, `loom gate
-review`, the push gate) can recover more about intent than the spec
-contains. The spec is what every other artefact in the loop is held
-against.
+A spec is a **forward-facing contract** about what a component does and why. It
+is the _intent floor_ of the system — no downstream process (`loom todo`, the
+agent, `loom gate verify`, `loom gate review`, the push gate) can recover more
+about intent than the spec contains. The spec is what every other artefact in
+the loop is held against.
 
-Specs are read frequently and edited rarely. When in doubt, write
-less; put the rest in implementation notes (`loom note set`) or
-commit messages.
+Specs are read frequently and edited rarely. When in doubt, write less; put the
+rest in implementation notes (`loom note set`) or commit messages.
 
 ## In scope
 
 A spec defines:
 
-1. **Purpose.** What problem this component solves and why. One
-   paragraph; if it takes more, the problem may be the spec's
-   scope — consider splitting.
-2. **External-observable contracts.** Things outside the system can
-   see and depend on:
+1. **Purpose.** What problem this component solves and why. One paragraph; if it
+   takes more, the problem may be the spec's scope — consider splitting.
+2. **External-observable contracts.** Things outside the system can see and
+   depend on:
    - CLI surface (commands, flags, exit codes, marker outputs)
    - Wire formats (JSON shapes, event schemas, RPC protocols)
-   - Database schema (table/column shapes that any tool with read
-     access can interpret)
+   - Database schema (table/column shapes that any tool with read access can
+     interpret)
    - Public Rust crate API (types, traits, public re-exports)
-3. **Architecture.** Load-bearing structural commitments and their
-   rationale. This includes **language-conditional architecture** —
-   choices shaped by the language but still load-bearing within it:
+3. **Architecture.** Load-bearing structural commitments and their rationale.
+   This includes **language-conditional architecture** — choices shaped by the
+   language but still load-bearing within it:
    - Rust crate layout (workspace member crates, their roles)
    - Inter-crate dependency direction
    - Module boundaries that are part of a public API
-4. **Architecture-bearing types.** Types whose *shape* enforces an
-   architectural claim — when the type's structure is how an
-   invariant is made unrepresentable, the type is part of the
-   contract. Examples:
-   - **Newtype identifiers at parse boundaries** (`BeadId`,
-     `SpecLabel`, etc.). The newtype shape encodes "raw strings are
-     parsed into validated identifiers at the boundary; downstream
-     code receives the typed form, never `String`".
+4. **Architecture-bearing types.** Types whose _shape_ enforces an architectural
+   claim — when the type's structure is how an invariant is made
+   unrepresentable, the type is part of the contract. Examples:
+   - **Newtype identifiers at parse boundaries** (`BeadId`, `SpecLabel`, etc.).
+     The newtype shape encodes "raw strings are parsed into validated
+     identifiers at the boundary; downstream code receives the typed form, never
+     `String`".
    - **Typestate state machines** (`AgentSession<Idle>` /
-     `AgentSession<Active>`). The two states plus the operations
-     available in each ARE the protocol-correctness invariant.
-   - **Parse-stamp split types** (e.g., `ParsedAgentEvent` →
-     `AgentEvent`). The two-type split encodes that an unstamped
-     event cannot reach a consumer.
+     `AgentSession<Active>`). The two states plus the operations available in
+     each ARE the protocol-correctness invariant.
+   - **Parse-stamp split types** (e.g., `ParsedAgentEvent` → `AgentEvent`). The
+     two-type split encodes that an unstamped event cannot reach a consumer.
 
-   The discriminator: does the type's **shape** make a spec claim
-   structurally unrepresentable? If yes, the type belongs in spec.
-   Types that are pure convenience (helper structs, internal
-   control-flow enums) do not.
-5. **Invariants.** Properties that must never be violated, in code
-   or in sibling specs. Five categories — architectural decisions,
-   data-structure choices, explicit constraints, non-functional
-   requirements, out-of-scope items.
-6. **Non-functional contracts.** Performance bounds, security
-   posture, portability requirements, isolation guarantees.
-7. **Cross-spec relationships.** Where this spec defers to a sibling
-   and where it owns a concern siblings reference.
-8. **Verifier bindings.** Each success criterion carries one
-   annotation (`[check]`, `[test]`, `[system]`, or `[judge]`)
-   pointing at the verifier that proves the claim. See *Trust tiers*
-   below.
+   The discriminator: does the type's **shape** make a spec claim structurally
+   unrepresentable? If yes, the type belongs in spec. Types that are pure
+   convenience (helper structs, internal control-flow enums) do not.
+
+5. **Invariants.** Properties that must never be violated, in code or in sibling
+   specs. Five categories — architectural decisions, data-structure choices,
+   explicit constraints, non-functional requirements, out-of-scope items.
+6. **Non-functional contracts.** Performance bounds, security posture,
+   portability requirements, isolation guarantees.
+7. **Cross-spec relationships.** Where this spec defers to a sibling and where
+   it owns a concern siblings reference.
+8. **Verifier bindings.** Each success criterion carries one annotation
+   (`[check]`, `[test]`, `[system]`, or `[judge]`) pointing at the verifier that
+   proves the claim. See _Trust tiers_ below.
 
 ## Out of scope
 
 A spec does NOT contain:
 
-1. **Implementation status.** No `[x]` / `[ ]` checkboxes, no "TODO",
-   no "in progress", no progress percentages. Status is **computed**
-   by running the verifier, not stored in spec markdown. Past passes
-   do not grant immunity from re-evaluation; the current code-spec
-   pair is what counts.
-2. **Internal implementation organization** with no architectural
-   role:
+1. **Implementation status.** No `[x]` / `[ ]` checkboxes, no "TODO", no "in
+   progress", no progress percentages. Status is **computed** by running the
+   verifier, not stored in spec markdown. Past passes do not grant immunity from
+   re-evaluation; the current code-spec pair is what counts.
+2. **Internal implementation organization** with no architectural role:
    - File paths inside a crate (`src/foo/bar.rs`, line numbers)
-   - Helper structs, internal control-flow enums, private utility
-     functions
+   - Helper structs, internal control-flow enums, private utility functions
    - Module layout within a crate
 
-   (Types whose *shape* enforces an architectural claim — newtype
-   IDs, typestate state machines, parse-stamp splits — ARE spec
-   content; see *In scope #4*.)
-3. **Specific tool configuration** when the *rule* lives elsewhere:
+   (Types whose _shape_ enforces an architectural claim — newtype IDs, typestate
+   state machines, parse-stamp splits — ARE spec content; see _In scope #4_.)
+
+3. **Specific tool configuration** when the _rule_ lives elsewhere:
    - Specific dependency version pins (live in `Cargo.toml`)
    - Specific clippy lints (the rule lives in `docs/style-rules.md`)
-   - Specific pre-commit hook commands (live in
-     `.pre-commit-config.yaml`)
-4. **Historical narrative.** No decision archaeology, no "previous
-   approach was X but we switched to Y", no change logs. Commit
-   messages and git history carry that. The spec is a snapshot of
-   *current intent*, not a history of how we got here.
-5. **Implementation hints.** Transient per-session guidance (file
-   paths to touch, hidden constraints, recovery shortcuts) belongs
-   in `loom note set <label> --kind implementation`, not in the spec
-   body. The hints are consumed and deleted; the spec is durable.
-6. **Affected-file lists that enumerate what THIS edit touches.**
-   The spec is not a PR description. An "Affected Files" section is
-   acceptable only when it enumerates what files the spec *owns* as
-   source of truth (e.g., "this spec owns `.pre-commit-config.yaml`
-   and the `tests/integration/` tree"). Listing files an in-flight
-   change happens to modify is TODO-list shape, not spec shape.
+   - Specific pre-commit hook commands (live in `.pre-commit-config.yaml`)
+4. **Historical narrative.** No decision archaeology, no "previous approach was
+   X but we switched to Y", no change logs. Commit messages and git history
+   carry that. The spec is a snapshot of _current intent_, not a history of how
+   we got here.
+5. **Implementation hints.** Transient per-session guidance (file paths to
+   touch, hidden constraints, recovery shortcuts) belongs in
+   `loom note set <label> --kind implementation`, not in the spec body. The
+   hints are consumed and deleted; the spec is durable.
+6. **Affected-file lists that enumerate what THIS edit touches.** The spec is
+   not a PR description. An "Affected Files" section is acceptable only when it
+   enumerates what files the spec _owns_ as source of truth (e.g., "this spec
+   owns `.pre-commit-config.yaml` and the `tests/integration/` tree"). Listing
+   files an in-flight change happens to modify is TODO-list shape, not spec
+   shape.
 
 ## Spec packages
 
-The canonical spec is a package:
+The target canonical spec is a package. Physical adoption follows the
+[bootstrap cutover rule](#bootstrap-authoring-before-cutover), not the order in
+which contracts are authored:
 
 ```text
 specs/<label>/
@@ -119,7 +110,7 @@ specs/<label>/
 boundaries, and navigation. `tests.md` carries behavioral acceptance criteria
 with adjacent verifier annotations and the verification strategy; it is not
 merely a command list. Models and other supporting documents load on demand.
-[Harness](../specs/harness.md#spec-packages) owns discovery, stable labels,
+[Specs](../specs/specs.md#spec-packages) owns discovery, stable labels,
 indexing, and tracked package inputs.
 [Templates](../specs/templates.md#acceptance-context-and-progressive-disclosure)
 owns explicit task-acceptance delivery and progressive disclosure.
@@ -128,12 +119,29 @@ Supporting documents are not additional implicit acceptance files. Judge links
 resolve relative to the actual annotation document, including after package
 relocation.
 
+### Bootstrap authoring before cutover
+
+Until package-aware tooling is implemented and tested, author and index one
+`specs/<label>.md` per owner, with an inline `## Success Criteria` section.
+Contract-to-acceptance links point to named sections in that file; do not copy
+annotations beside contract prose. The same 2,000-line ownership budget applies.
+Target-package contracts and their pending verifiers remain in these flat specs.
+
+Discovery, index parsing, annotation parsing, changed-spec tracking, cache
+rebuilding, CLI queries, and plan/todo/loop context loading must support the
+target layout before the repository switches to it. Validate those paths
+end-to-end, then move documents and their index/links together; no intermediate
+state may hide acceptance or make workers load missing files. The cutover
+preserves labels, claims, and verifier bindings. Flat authoring is bootstrap
+sequencing, not a permanent parallel discovery mode or a second copy of the
+contract.
+
 ### Contract coverage
 
 Every behavioral contract section and every behavioral lifecycle, decision, or
 contract table row maps to checkable criteria in the same package's `tests.md`.
-The mapped criteria must cover all behavior asserted by the section or row;
-an unrelated annotation or equal counts of rows and annotations do not establish
+The mapped criteria must cover all behavior asserted by the section or row; an
+unrelated annotation or equal counts of rows and annotations do not establish
 coverage. Each criterion carries exactly one verifier binding, adjacent to its
 behavioral claim. `spec.md` references the acceptance criteria rather than
 copying their annotations. Genuine non-goals belong in its Out of Scope with
@@ -150,32 +158,32 @@ for typed criterion/evidence identities.
 
 Link destinations and heading fragments must resolve. Link resolution and
 annotation structure are deterministic integrity checks; verifier bindings
-follow Gate's resolution and pending policy. Whether the linked criteria
-capture the contract remains a planning and semantic-review question; a valid
-link alone does not prove it.
+follow Gate's resolution and pending policy. Whether the linked criteria capture
+the contract remains a planning and semantic-review question; a valid link alone
+does not prove it.
 
 ## Verification strategy
 
 Coverage requirements and strategy belong in the owning package's `tests.md`:
-property-group filters, justified role exceptions, additional roles, and explicit
-stage applicability. Optional fences whose exact info string is `loom-verify`
-carry typed TOML declarations. Plain criteria, annotations, and rationale need
-no block; ordinary TOML examples are not policy. Invalid TOML, unknown fields,
-and conflicting declarations fail validation. Absence retains baseline
-obligations rather than disabling verification. Supported Rust/Nix workflows use
-the built-in baseline policy without custom strategy blocks; declarations express
-exceptions or additional requirements, not settings users must maintain to keep
-the gate sound.
+property-group filters, justified role exceptions, additional roles, and
+explicit stage applicability. Optional fences whose exact info string is
+`loom-verify` carry typed TOML declarations. Plain criteria, annotations, and
+rationale need no block; ordinary TOML examples are not policy. Invalid TOML,
+unknown fields, and conflicting declarations fail validation. Absence retains
+baseline obligations rather than disabling verification. Supported Rust/Nix
+workflows use the built-in baseline policy without custom strategy blocks;
+declarations express exceptions or additional requirements, not settings users
+must maintain to keep the gate sound.
 
 An annotated criterion's optional stage declaration belongs in a `loom-verify`
 block inside that criterion's Markdown bullet, directly after its verifier
 annotation. Markdown containment supplies the association; authors do not repeat
 the target or criterion ID in a separate mapping. The declaration qualifies only
-that criterion, not its section, package, or other criteria sharing the verifier.
-Detached or ambiguous criterion-stage declarations fail validation rather than
-being inferred from the nearest annotation or treated as global defaults.
-Package-wide property filters and role declarations remain separate strategy
-concerns, not implied contents of a criterion-local stage block.
+that criterion, not its section, package, or other criteria sharing the
+verifier. Detached or ambiguous criterion-stage declarations fail validation
+rather than being inferred from the nearest annotation or treated as global
+defaults. Package-wide property filters and role declarations remain separate
+strategy concerns, not implied contents of a criterion-local stage block.
 
 The stage exception is deliberately small: `defer_until = "publication"`
 postpones that obligation's routine execution requirement until publication.
@@ -194,58 +202,65 @@ mandatory publication coverage remain unchanged.
 
 `loom.toml` supplies execution wiring, not an independent or duplicated coverage
 policy. Required obligations cannot disappear through missing or changed wiring.
-Actual resources and dependencies remain in tracked/checked execution definitions,
-not copied input lists in strategy blocks. Pending annotations retain their
-separate policy below. [Gate](../specs/gate.md#verification-planning) owns strategy
-validation, applicability, and enforcement; [Tests](../specs/tests.md#selective-property-campaigns)
-owns native property grouping; [Simulation](../specs/simulation.md#when-to-model)
-owns when a stateful workflow warrants modeling.
+Actual resources and dependencies remain in tracked/checked execution
+definitions, not copied input lists in strategy blocks. Pending annotations
+retain their separate policy below.
+[Verify](../specs/verify.md#verification-planning) owns strategy validation,
+applicability, and enforcement;
+[Verify](../specs/verify.md#selective-property-campaigns) owns native property
+grouping; [Simulation](../specs/simulation.md#when-to-model) owns when a
+stateful workflow warrants modeling.
 
 ## Trust tiers
 
-Every functional claim in a spec MUST name how it's verified.
-Reliability is a property of *gate composition*, not of individual
-claims; binding each claim to a tier is how the gate composes
-honestly.
+Every functional claim in a spec MUST name how it's verified. Reliability is a
+property of _gate composition_, not of individual claims; binding each claim to
+a tier is how the gate composes honestly.
 
-Three cost-and-confidence tiers, partitioned by what decides whether
-the claim holds (code, LLM, or human):
+Three cost-and-confidence tiers, partitioned by what decides whether the claim
+holds (code, LLM, or human):
 
-| Tier | What it proves | Annotation forms |
-|------|----------------|------------------|
-| **Deterministic** | Structural correctness (the code does X for input Y) | `[check]`, `[test]`, `[system]` |
-| **Stochastic** | Semantic correctness (the implementation matches the *intent*, the test is honest, the style rule holds) | `[judge]` |
-| **Oracle (human)** | Ground truth on intent (the criterion captures what was actually wanted) | Implicit — the human accepts a `loom plan` interview |
+| Tier               | What it proves                                                                                           | Annotation forms                                     |
+| ------------------ | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| **Deterministic**  | Structural correctness (the code does X for input Y)                                                     | `[check]`, `[test]`, `[system]`                      |
+| **Stochastic**     | Semantic correctness (the implementation matches the _intent_, the test is honest, the style rule holds) | `[judge]`                                            |
+| **Oracle (human)** | Ground truth on intent (the criterion captures what was actually wanted)                                 | Implicit — the human accepts a `loom plan` interview |
 
 ### Deterministic annotations
 
-The three deterministic annotations partition by *what activity
-verifies the claim*:
+The three deterministic annotations partition by _what activity verifies the
+claim_:
 
-| Annotation | What the verifier does | Target shape |
-|------------|------------------------|--------------|
-| **`[check]`** | Static analysis of source (presence, absence, structural property across files) | `[check](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that runs a walk / lint / AST analysis. Admitted providers derive inputs from execution definitions (see gate.md § Runners); matching runners batch targets. Literal commands still require an admitted provider. |
-| **`[test]`** | Runs the code in isolation and asserts behaviour | `[test](path)` — a language-native test path (e.g. `crate::module::test_name` for Rust, `tests/test_foo.py::test_bar` for Python). The gate batches all `[test]` targets in a single `loom gate test` invocation into one runner subprocess. |
-| **`[system]`** | Runs the assembled system (containers, packaging, end-to-end) | `[system](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that exercises the full system. Runner matches own resolution and input discovery; equivalent invocations share one execution per gate run without merging distinct scenarios, as defined by [gate.md § Runners](../specs/gate.md#runners--per-language-batched-dispatch). |
+| Annotation     | What the verifier does                                                          | Target shape                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`[check]`**  | Static analysis of source (presence, absence, structural property across files) | `[check](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that runs a walk / lint / AST analysis. Admitted providers derive inputs from execution definitions (see Verify § Runners); matching runners batch targets. Literal commands still require an admitted provider.                                                             |
+| **`[test]`**   | Runs the code in isolation and asserts behaviour                                | `[test](path)` — a language-native test path (e.g. `crate::module::test_name` for Rust, `tests/test_foo.py::test_bar` for Python). The gate batches all `[test]` targets in a single `loom gate test` invocation into one runner subprocess.                                                                                                                                           |
+| **`[system]`** | Runs the assembled system (containers, packaging, end-to-end)                   | `[system](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that exercises the full system. Runner matches own resolution and input discovery; equivalent invocations share one execution per gate run without merging distinct scenarios, as defined by [Verify — Runners](../specs/verify.md#runners--per-language-batched-dispatch). |
+
+Command-target whitespace is executable data, including inside quoted shell
+arguments. When formatting Markdown, preserve the target bytes rather than
+rewrapping them as prose. Place `<!-- prettier-ignore -->` immediately before a
+criterion with a whitespace-bearing command target; keep its prose readable and
+its single verifier binding adjacent. Do not put formatting directives inside
+the requirement or command string.
 
 ### Stochastic annotation
 
-`[judge]` invokes an LLM to evaluate a claim that requires semantic
-judgement — code-quality dimensions structural analysis cannot
-capture (error-message clarity, doc-comment usefulness, API
-ergonomics, naming consistency).
+`[judge]` invokes an LLM to evaluate a claim that requires semantic judgement —
+code-quality dimensions structural analysis cannot capture (error-message
+clarity, doc-comment usefulness, API ergonomics, naming consistency).
 
-| Annotation | Target shape |
-|------------|--------------|
+| Annotation    | Target shape                                                                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **`[judge]`** | `[judge](path)` — a file path or criterion id whose content is the rubric the LLM evaluates against. The gate batches `[judge]` invocations to use API-level concurrency. |
 
 ### Pending modifier
 
-A `?` between the tier name and the closing `]` marks an
-annotation as **pending** — its target is expected not to resolve
-yet because the verifier will be implemented in a follow-on bead.
-Grammar: `[tier?](target)`. The modifier is uniform across all
-four tiers (`[check?]`, `[test?]`, `[system?]`, `[judge?]`).
+A `?` between the tier name and the closing `]` marks an annotation as
+**pending** — its target is expected not to resolve yet because the verifier
+will be implemented in a follow-on bead. Grammar: `[tier?](target)`. The
+modifier is uniform across all four tiers (`[check?]`, `[test?]`, `[system?]`,
+`[judge?]`).
 
 ```
 - The integrity gate self-checks resolution
@@ -258,71 +273,64 @@ four tiers (`[check?]`, `[test?]`, `[system?]`, `[judge?]`).
   [test?](crate::module::test_future_thing)
 ```
 
-The modifier is modelled on Rust's `#[expect(...)]`, not
-`#[allow(...)]`: presence is silently tolerated while the target
-does not resolve; the moment the target *does* resolve, the marker
-itself becomes a finding (`UnneededPendingMarker`) and the
-implementing diff must drop the `?`. This binds *"target now
-resolves"* and *"marker now removed"* into the same commit, so the
-spec tree never carries stale markers.
+The modifier is modelled on Rust's `#[expect(...)]`, not `#[allow(...)]`:
+presence is silently tolerated while the target does not resolve; the moment the
+target _does_ resolve, the marker itself becomes a finding
+(`UnneededPendingMarker`) and the implementing diff must drop the `?`. This
+binds _"target now resolves"_ and _"marker now removed"_ into the same commit,
+so the spec tree never carries stale markers.
 
 When to apply the modifier:
 
-- **Plan-stage authoring.** When `loom plan` writes a Success
-  Criteria bullet whose verifier implementation will land in a
-  follow-on `loom loop` bead, mark the annotation pending. Applying
-  the marker is part of the plan-stage Completeness check.
-- **Per-diff implementation.** When `loom loop` lands the verifier,
-  drop the `?` from the annotation in the same diff that adds the
-  implementation. The push gate enforces co-incidence via
-  `UnneededPendingMarker`.
+- **Plan-stage authoring.** When `loom plan` writes a Success Criteria bullet
+  whose verifier implementation will land in a follow-on `loom loop` bead, mark
+  the annotation pending. Applying the marker is part of the plan-stage
+  Completeness check.
+- **Per-diff implementation.** When `loom loop` lands the verifier, drop the `?`
+  from the annotation in the same diff that adds the implementation. The push
+  gate enforces co-incidence via `UnneededPendingMarker`.
 
 When not to apply it:
 
-- **Atomic-acceptance violations.** A criterion carrying two
-  annotations is wrong regardless of either's resolution state;
-  `?` does not suppress that finding.
-- **Long-term-deferred work.** The modifier is for the plan→loop
-  handoff window, not a perpetual exemption. If a criterion has no
-  near-term plan to gain a real verifier, the right move is to drop
-  the criterion (or move it to `## Out of Scope`), not to mark it
-  pending and forget.
+- **Atomic-acceptance violations.** A criterion carrying two annotations is
+  wrong regardless of either's resolution state; `?` does not suppress that
+  finding.
+- **Long-term-deferred work.** The modifier is for the plan→loop handoff window,
+  not a perpetual exemption. If a criterion has no near-term plan to gain a real
+  verifier, the right move is to drop the criterion (or move it to
+  `## Out of Scope`), not to mark it pending and forget.
 
-See [gate.md — Pending modifier](../specs/gate.md#pending-modifier)
-for the integrity gate's per-annotation outcome matrix and the
-`UnneededPendingMarker` finding semantics.
+See [Verify — Pending modifier](../specs/verify.md#pending-modifier) for the
+integrity gate's per-annotation outcome matrix and the `UnneededPendingMarker`
+finding semantics.
 
 ### Annotation flags
 
-A criterion without an annotation is a flag at `loom gate verify`
-(no resolvable verifier). A criterion whose annotation points at a
-missing or stubbed verifier is a flag at the same audit — **unless**
-the annotation carries the pending modifier `?`, in which case the
-gate accepts it silently until the modifier becomes stale. A
-criterion whose annotation is satisfied by a unit-test pass but
+A criterion without an annotation is a flag at `loom gate verify` (no resolvable
+verifier). A criterion whose annotation points at a missing or stubbed verifier
+is a flag at the same audit — **unless** the annotation carries the pending
+modifier `?`, in which case the gate accepts it silently until the modifier
+becomes stale. A criterion whose annotation is satisfied by a unit-test pass but
 production diverges from that unit is a flag at `loom gate review`'s
-verifier-honesty walk; pending-marked annotations are exempt from
-that walk until the modifier is dropped.
+verifier-honesty walk; pending-marked annotations are exempt from that walk
+until the modifier is dropped.
 
 ### Deterministic ceiling
 
-Structural correctness ≠ semantic correctness. A deterministic
-annotation passing proves the verifier passes; it does not prove
-the system does the right thing. Anything that requires judgement
-(mock discipline, scope appropriateness, style-rule conformance for
-prose rules, conformance trace through current code) is
-`[judge]`-tier, not deterministic. Choosing the wrong tier is itself
-a flag.
+Structural correctness ≠ semantic correctness. A deterministic annotation
+passing proves the verifier passes; it does not prove the system does the right
+thing. Anything that requires judgement (mock discipline, scope appropriateness,
+style-rule conformance for prose rules, conformance trace through current code)
+is `[judge]`-tier, not deterministic. Choosing the wrong tier is itself a flag.
 
 ### No tier-skipping
 
-A claim whose verification depends on running the production code
-path is not satisfied by a unit test that runs the underlying
-function in isolation. A function can be unit-tested and correct
-while production calls a different function entirely; the unit
-test's pass status says nothing about whether production satisfies
-the claim. The criterion's verifier must exercise the **live path**
-— same binary, same argv shape, same env as the real invocation.
+A claim whose verification depends on running the production code path is not
+satisfied by a unit test that runs the underlying function in isolation. A
+function can be unit-tested and correct while production calls a different
+function entirely; the unit test's pass status says nothing about whether
+production satisfies the claim. The criterion's verifier must exercise the
+**live path** — same binary, same argv shape, same env as the real invocation.
 
 ## Section structure
 
@@ -371,27 +379,29 @@ elaborating on a criterion above.>
 
 Sections NOT in the standard set (omit unless genuinely needed):
 
-- `## Affected Files` — usually a TODO list in disguise; omit. If a
-  spec genuinely owns a set of files as source-of-truth, name them
-  in *Architecture* or a dedicated *Source-of-truth Files* section,
-  with the framing "this spec owns X" not "this change modifies X".
-- `## Implementation Notes` — never. Notes belong in
-  `loom note set`, not in spec body.
-- `## Decisions Log` — never. Commit messages and PR descriptions
-  carry decision history. The spec is the current contract.
-- `## Changelog` / `## History` — never. See *Out of scope #4*.
+- `## Affected Files` — usually a TODO list in disguise; omit. If a spec
+  genuinely owns a set of files as source-of-truth, name them in _Architecture_
+  or a dedicated _Source-of-truth Files_ section, with the framing "this spec
+  owns X" not "this change modifies X".
+- `## Implementation Notes` — never. Notes belong in `loom note set`, not in
+  spec body.
+- `## Decisions Log` — never. Commit messages and PR descriptions carry decision
+  history. The spec is the current contract.
+- `## Changelog` / `## History` — never. See _Out of scope #4_.
 
 ## Length guidance
 
-A spec should be the smallest document that fully states the
-contract. As a soft target: spec body (everything before *Success
-Criteria*) under 500 lines for most components, under 1000 lines for
-the most complex (e.g., a multi-crate workspace).
+A spec should be the smallest package that fully states one responsibility. The
+combined `spec.md` and `tests.md` ceiling is **2,000 Markdown lines per
+package**. Splitting acceptance into another file does not reset that budget. Do
+not evade it through normative appendices, dropped requirements, or arbitrary
+numbered parts. Prefer substantially smaller packages; split by cohesive
+ownership and move behavior and acceptance together, updating references under
+[Specs' identity contract](../specs/specs.md#cross-label-relocation).
 
 If a spec is sprawling past this, the cause is usually one of:
 
-- Implementation detail leaked into the body (re-audit against
-  *Out of scope*).
+- Implementation detail leaked into the body (re-audit against _Out of scope_).
 - Historical narrative accumulated (delete; commit messages own it).
 - Multiple concerns merged into one spec (split into sibling specs;
   cross-reference).
@@ -400,83 +410,73 @@ If a spec is sprawling past this, the cause is usually one of:
 
 For Rust workspaces, the following are spec content:
 
-- **Crate enumeration.** The list of workspace member crates and
-  what each one is for. One short paragraph per crate is enough.
-- **Crate roles.** Which crate is the public contract (e.g.,
-  `loom-events`); which crates are internal runtime.
-- **Inter-crate dependency direction.** What each crate may
-  import; what it must not. The dep graph is architecture, not
-  organization.
-- **Public type-contract shape.** For each crate that carries a
-  public contract: the *shape* of its public types (e.g., "flat
-  tagged enum"), the *variant set* (one-line meaning per variant),
-  the *envelope* (shared fields across variants), and the
-  *evolution policy* (semver, schema-version).
+- **Crate enumeration.** The list of workspace member crates and what each one
+  is for. One short paragraph per crate is enough.
+- **Crate roles.** Which crate is the public contract (e.g., `loom-events`);
+  which crates are internal runtime.
+- **Inter-crate dependency direction.** What each crate may import; what it must
+  not. The dep graph is architecture, not organization.
+- **Public type-contract shape.** For each crate that carries a public contract:
+  the _shape_ of its public types (e.g., "flat tagged enum"), the _variant set_
+  (one-line meaning per variant), the _envelope_ (shared fields across
+  variants), and the _evolution policy_ (semver, schema-version).
 
-The following are NOT spec content (live in code, generated docs,
-or `docs/style-rules.md`):
+The following are NOT spec content (live in code, generated docs, or
+`docs/style-rules.md`):
 
-- **Per-field details inside a variant.** A variant's full field
-  list, types, and serde attributes are in the Rust source; the
-  crate's API docs are the place to find them. The spec names the
-  variant and any fields the contract depends on (e.g., the
-  envelope's `kind` discriminator). Fields that are pure payload
-  shape live in code; fields whose type encodes architecture (e.g.,
-  a newtype-wrapped field at a parse boundary) are spec per
-  *In scope #4*.
-- **Workspace `Cargo.toml` enumerations.** Specific dependency
-  versions, feature flags, lint denials — all implementation. The
-  *pattern* (workspace-deps + workspace-lints, RS-3) lives in
-  `docs/style-rules.md`; the *contents* live in `Cargo.toml` and
-  `clippy.toml`.
-- **Internal module paths.** Whether a crate organizes its code
-  as `src/foo.rs` or `src/foo/mod.rs` + submodules is implementer's
-  choice.
+- **Per-field details inside a variant.** A variant's full field list, types,
+  and serde attributes are in the Rust source; the crate's API docs are the
+  place to find them. The spec names the variant and any fields the contract
+  depends on (e.g., the envelope's `kind` discriminator). Fields that are pure
+  payload shape live in code; fields whose type encodes architecture (e.g., a
+  newtype-wrapped field at a parse boundary) are spec per _In scope #4_.
+- **Workspace `Cargo.toml` enumerations.** Specific dependency versions, feature
+  flags, lint denials — all implementation. The _pattern_ (workspace-deps +
+  workspace-lints, RS-3) lives in `docs/style-rules.md`; the _contents_ live in
+  `Cargo.toml` and `clippy.toml`.
+- **Internal module paths.** Whether a crate organizes its code as `src/foo.rs`
+  or `src/foo/mod.rs` + submodules is implementer's choice.
 
 ## Single source of truth
 
-Each fact belongs to exactly one spec. Cross-reference; do not
-duplicate.
+Each fact belongs to exactly one spec. Cross-reference; do not duplicate.
 
-- If a fact appears in two specs identically, one of them is wrong
-  (drift incoming).
-- If two specs need the same fact stated differently, one of them
-  is paraphrasing — replace the paraphrase with a cross-reference.
-- If two specs disagree on a fact, the contradiction is a flag
-  raised by `loom gate review`'s cross-spec walk.
+- If a fact appears in two specs identically, one of them is wrong (drift
+  incoming).
+- If two specs need the same fact stated differently, one of them is
+  paraphrasing — replace the paraphrase with a cross-reference.
+- If two specs disagree on a fact, the contradiction is a flag raised by
+  `loom gate review`'s cross-spec walk.
 
 ## Migration
 
 This convention applies immediately to:
 
 - New spec sections added in a `loom plan [SPEC_LABEL ...]` session
-- Edits to existing spec sections made in a `loom plan [SPEC_LABEL ...]`
-  session
+- Edits to existing spec sections made in a `loom plan [SPEC_LABEL ...]` session
 
-Existing spec content that pre-dates this convention may be
-non-compliant. The compliance audit is incremental — each `loom
-plan` session is expected to bring touched sections into
-compliance; sections not touched in a given session may remain
-non-compliant until a future session migrates them. A dedicated
-compliance-migration epic per spec tracks the remaining work
-explicitly.
+Existing spec content that pre-dates this convention may be non-compliant. The
+compliance audit is incremental — each `loom plan` session is expected to bring
+touched sections into compliance; sections not touched in a given session may
+remain non-compliant until a future session migrates them. A dedicated
+compliance-migration epic per spec tracks the remaining work explicitly.
 
 ## How the gate enforces this
 
 The loom gates carry the enforcement:
 
-- `loom gate verify` enumerates every criterion annotation and
-  reports pass/fail by running the verifier. Status is live.
-  Tier-specific subcommands (`loom gate check`, `loom gate test`,
-  `loom gate system`) run one tier in isolation.
-- `loom gate review` walks the conformance / style / test-quality
-  rubric, citing every applicable rule from `docs/style-rules.md`
-  and every applicable convention from this document.
-- Plain `loom gate` reads cached results from the last verifier run
-  (sqlite-backed) and prints a fast status report — no verifiers
-  run, no network, no spawn cost.
-- `loom plan` pins this document so every planning session has the
-  convention in context.
+- `loom gate verify` enumerates every criterion annotation and reports pass/fail
+  by running the verifier. Status is live. Tier-specific subcommands
+  (`loom gate check`, `loom gate test`, `loom gate system`) run one tier in
+  isolation.
+- `loom gate review` walks the conformance / style / test-quality rubric, citing
+  every applicable rule from `docs/style-rules.md` and every applicable
+  convention from this document.
+- `loom gate status` reads cached results for an explicit scope without
+  executing verifiers. Bare `loom gate` prints help, following the
+  [Gate command contract](../specs/gate.md#commands).
+- `loom plan` pins this document so every planning session has the convention in
+  context.
 
-A spec violation discovered by any of these gates is a flag,
-treated like any other style-rule violation.
+A spec violation discovered by any of these gates is a flag, treated like any
+other style-rule violation.

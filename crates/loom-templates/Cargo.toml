@@ -21,6 +21,7 @@ displaydoc = { workspace = true }
 loom-test-support = { workspace = true }
 anyhow = { workspace = true }
 insta = { workspace = true }
+pulldown-cmark = { workspace = true }
 toml = { workspace = true }
 
 [lints]

@@ -16,7 +16,7 @@ The discipline is template-agnostic: it applies to whatever workspace layout the
 
 The `criterion_status` audit governs **how** the injected changed-spec work decomposes into beads — split, merge, dependency-order — **not whether** driver-provided planning inputs get authored at all. Implementation notes and changed-spec diffs describe the next batch of planned work; a green row is evidence about prior coverage, not proof that a new planned change is already shipped.
 
-The audit's role is to discipline the *shape* of the decomposition: which notes collapse into a single bead, which split across several, how the resulting beads order against each other, and whether any proposed bead is redundant because representative source inspection confirms the contract is already covered.
+The audit's role is to discipline the _shape_ of the decomposition: which notes collapse into a single bead, which split across several, how the resulting beads order against each other, and whether any proposed bead is redundant because representative source inspection confirms the contract is already covered.
 
 ### Acceptable session outcomes
 
@@ -29,7 +29,7 @@ Omitted specs, duplicate specs, pending outcomes, and generic `LOOM_COMPLETE` / 
 
 ### Clarify or block on the work epic
 
-When coverage cannot be determined by inspection — the spec is ambiguous, verifier targets conflict, cursor/index state is inconsistent, or your judgement of the status cache's trustworthiness is contestable — emit `LOOM_CLARIFY`. Persist both the question and the canonical `## Options — …` block to the **driver-created work epic** notes per the *Options Format Contract* in `specs/gate.md` before emitting the marker. The verdict gate applies `loom:clarify` to the work epic; the human resolves via `loom inbox`, and a subsequent `loom todo` invocation reuses the pending work epic.
+When coverage cannot be determined by inspection — the spec is ambiguous, verifier targets conflict, cursor/index state is inconsistent, or your judgement of the status cache's trustworthiness is contestable — emit `LOOM_CLARIFY`. Persist both the question and the canonical `## Options — …` block to the **driver-created work epic** notes per the _Options Format Contract_ in `specs/gate.md` before emitting the marker. The verdict gate applies `loom:clarify` to the work epic; the human resolves via `loom inbox`, and a subsequent `loom todo` invocation reuses the pending work epic.
 
 When you have no candidate resolutions to enumerate, emit `LOOM_BLOCKED` with a non-empty prior-line reason explaining why options cannot be safely surfaced; the work epic remains the session-stable carrier for the blocked decomposition batch. If candidate options can be framed, use `LOOM_CLARIFY` instead so those options reach bead state.
 

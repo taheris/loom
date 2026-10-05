@@ -1,33 +1,33 @@
-  ```markdown
-  ## Options — <one-line summary of the decision, ≤80 chars>
+```markdown
+## Options — <one-line summary of the decision, ≤80 chars>
 
-  ### Option 1 — <short title>
-  <body paragraph(s) describing the option, naming its cost>
+### Option 1 — <short title>
+<body paragraph(s) describing the option, naming its cost>
 
-  ### Option 2 — <short title>
-  <body, including cost>
+### Option 2 — <short title>
+<body, including cost>
 
-  ### Option 3 — <short title>
-  <body, including cost>
-  ```
+### Option 3 — <short title>
+<body, including cost>
+```
 
-  **Rules:**
+**Rules:**
 
-  - The `## Options` header carries a one-line summary (≤50 chars)
-    separated from the word `Options` by em-dash `—` (default),
-    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
-    tolerate any of these; emit em-dash by default.
-  - Each option is `### Option N — <title>` where `N` is 1-based
-    sequential. Numbering is required so `loom inbox` can parse and
-    render each option consistently.
-  - Each option body extends from its `### Option N` heading until
-    the next `### Option` or the next `##` heading; name the cost
-    (churn, debt, coupling, risk).
-  - Use contextual options per decision — typically 2–4, each
-    naming its cost. Do NOT emit a fixed A/B/C menu.
+- The `## Options` header carries a one-line summary (≤50 chars)
+  separated from the word `Options` by em-dash `—` (default),
+  en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
+  tolerate any of these; emit em-dash by default.
+- Each option is `### Option N — <title>` where `N` is 1-based
+  sequential. Numbering is required so `loom inbox` can parse and
+  render each option consistently.
+- Each option body extends from its `### Option N` heading until
+  the next `### Option` or the next `##` heading; name the cost
+  (churn, debt, coupling, risk).
+- Use contextual options per decision — typically 2–4, each
+  naming its cost. Do NOT emit a fixed A/B/C menu.
 
-  `loom inbox` parses this format to render the SUMMARY column,
-  enumerate options for view mode, and provide structured chat context.
-  A malformed block — or one that lives only in your prose, never
-  persisted to bead state — leaves the options invisible to
-  `loom inbox`'s queue and chat context.
+`loom inbox` parses this format to render the SUMMARY column,
+enumerate options for view mode, and provide structured chat context.
+A malformed block — or one that lives only in your prose, never
+persisted to bead state — leaves the options invisible to
+`loom inbox`'s queue and chat context.

@@ -30,16 +30,28 @@ The current spec index is pinned below. Use it to understand existing specs, ter
 
 Labels passed to `loom plan [SPEC_LABEL ...]` are initial context anchors only. They do not define the touched set; Git records the files that changed.
 
+
+
 - `harness` — if `specs/harness.md` exists, read it before interviewing; if it is missing, treat it as a proposed new spec.
+
+
+
 - `future-spec` — if `specs/future-spec.md` exists, read it before interviewing; if it is missing, treat it as a proposed new spec.
+
 
 
 ## Companions
 
 The following companion directories are in scope. Read each one's `manifest.md` on demand:
 
+
+
 - lib/sandbox/
+
+
+
 - crates/loom-templates/templates/
+
 
 
 ## Spec-Authoring Conventions
@@ -94,6 +106,7 @@ this phase **before** you finish.
 Do not rewrite or truncate prior contents; the recovery payload is the full
 running log.
 
+
 ## Interview Guidelines
 
 1. Ask one focused question at a time.
@@ -122,7 +135,7 @@ During this session you may read and edit **any spec in `specs/`** when a change
 
 **Creating a new sibling spec is also a valid outcome** when the planner judges that a section warrants its own spec. In that case create `specs/<label>.md` and record the new row in `docs/README.md` in the same edit. Before finishing, verify every new `specs/<label>.md` file has exactly one `docs/README.md` index row; unindexed specs are invisible to `loom todo`. Do not allocate a bead or epic during planning; `loom todo` creates spec/work epics later.
 
-**Commits are not automatic.** Planning sessions edit specs in place but do **not** commit those edits. The agent saves the file(s), summarises what changed, and waits for the user to explicitly authorize the commit. Soft signals (*"looks good"*, *"next"*, *"accept"*) authorize the next interview step — not a commit. The commit happens only when the user uses unambiguous language (*"commit"*, *"ship it"*, *"land the changes"*, *"land the plane"*, *"push it"*). The same discipline applies to `git push`, `wrix beads push`, and any operation that mutates shared state — wait for the explicit trigger.
+**Commits are not automatic.** Planning sessions edit specs in place but do **not** commit those edits. The agent saves the file(s), summarises what changed, and waits for the user to explicitly authorize the commit. Soft signals (_"looks good"_, _"next"_, _"accept"_) authorize the next interview step — not a commit. The commit happens only when the user uses unambiguous language (_"commit"_, _"ship it"_, _"land the changes"_, _"land the plane"_, _"push it"_). The same discipline applies to `git push`, `wrix beads push`, and any operation that mutates shared state — wait for the explicit trigger.
 
 ## Interview Flow
 
@@ -146,7 +159,7 @@ open until the user resolves it.
 Every requirement the user expressed must have a checkable surface in the
 spec:
 
-- A *Success Criteria* bullet carrying a `[check]`, `[test]`, `[system]`, or `[judge]` annotation
+- A _Success Criteria_ bullet carrying a `[check]`, `[test]`, `[system]`, or `[judge]` annotation
 - An explicit `## Out of Scope` declaration
 
 Lifecycle, decision, and contract table rows elaborate those criteria.
@@ -165,8 +178,8 @@ target will not resolve at commit time — typically a newly-authored claim
 whose verifier implementation will land in a follow-on `loom loop` bead —
 must carry the pending modifier `?` between the tier name and the closing
 bracket. Grammar: `[tier?](target)`, uniform across all four tiers
-(`[check?]`, `[test?]`, `[system?]`, `[judge?]`). See the *Pending
-modifier* subsection of `docs/spec-conventions.md` for the per-annotation
+(`[check?]`, `[test?]`, `[system?]`, `[judge?]`). See the _Pending
+modifier_ subsection of `docs/spec-conventions.md` for the per-annotation
 outcome matrix and the self-cleaning `UnneededPendingMarker` enforcement.
 
 Applying the marker is **part of this completeness check, not a separate
@@ -240,7 +253,7 @@ anchors. Invariant categories:
 - **Out-of-scope items** — things the spec deliberately excludes
 
 When a potential clash is detected, **pause the interview** and ask the user to
-pick a path. Propose *contextual* options tailored to the specific clash —
+pick a path. Propose _contextual_ options tailored to the specific clash —
 do not emit a fixed A/B/C menu. Typically 2–4 options per clash, each naming
 the cost.
 
@@ -306,8 +319,8 @@ collapses the user's real answer into a shape it doesn't fit.
   the container; treat it as working notes for the current session only, not
   as durable storage.
 - **The "one by one" sub-mode is planning-specific.** When the planning
-  interview is in that sub-mode, it means *one question per chat turn*,
-  not *one picker per turn* — the chat-discipline rules above still
+  interview is in that sub-mode, it means _one question per chat turn_,
+  not _one picker per turn_ — the chat-discipline rules above still
   apply within the sub-mode. Outside the planning templates the sub-mode
   is not in play.
 
@@ -344,13 +357,13 @@ phase-specific meaning is:
 
 If this phase pins self-report markers and you cannot finish — needing
 human input or a decision among multiple resolutions — emit one of the
-self-report markers documented separately (see *Self-Report Markers*).
+self-report markers documented separately (see _Self-Report Markers_).
 Interactive plan/inbox sessions resolve friction with the human in-turn
 instead of worker self-report markers.
 
 **Emit the terminal marker on the final turn only.** This is a multi-turn chat,
 not a single-shot worker phase. The "end your response with the marker"
-instruction in *Exit Signals* above refers to the **final assistant turn of
+instruction in _Exit Signals_ above refers to the **final assistant turn of
 the session** — the wrap-up turn after the user signals they are done (e.g.
 "thanks, that's all", "stop", explicit goodbye) or after the chat queue is
 exhausted.

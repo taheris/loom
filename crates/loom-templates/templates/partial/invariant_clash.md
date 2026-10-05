@@ -12,7 +12,7 @@ anchors. Invariant categories:
 - **Out-of-scope items** — things the spec deliberately excludes
 
 When a potential clash is detected, **pause the interview** and ask the user to
-pick a path. Propose *contextual* options tailored to the specific clash —
+pick a path. Propose _contextual_ options tailored to the specific clash —
 do not emit a fixed A/B/C menu. Typically 2–4 options per clash, each naming
 the cost.
 

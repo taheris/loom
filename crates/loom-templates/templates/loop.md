@@ -10,6 +10,7 @@
 
 {% include "partial/scratchpad.md" %}
 {% include "partial/skill_index.md" %}
+
 ## Current Spec
 
 Read: {{ spec_path }}
@@ -44,10 +45,14 @@ Review notes:
 
 ## Instructions
 
-{% if previous_failure.is_some() && attempt > 0 %}> Re-read the previous failure block above and address its specific
+{% if previous_failure.is_some() && attempt > 0 %}
+
+> Re-read the previous failure block above and address its specific
 > concern before re-implementing.
 
-{% endif %}1. **Understand**: Read the spec and issue thoroughly before making changes
+{% endif %}
+
+1. **Understand**: Read the spec and issue thoroughly before making changes
 2. **Test Strategy**: Decide between:
    - Property-based tests: For functions with clear invariants, mathematical properties
    - Unit tests: For specific behaviors, edge cases, integration points
@@ -112,6 +117,7 @@ are relevant to this issue's work.
 ## Quality Gates
 
 Before outputting LOOM_COMPLETE:
+
 - Tests written and passing
 - Lint checks pass
 - Changes staged (`git add`)

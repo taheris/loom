@@ -19,8 +19,8 @@ bd close <id>
 bd dep add <issue> <depends-on>
 ```
 
-Flow: ready → claim → implement → close. Priorities: 0-4. Types: `task`,
-`bug`, `feature`, `epic`.
+Flow: ready → claim → implement → close. Priorities: 0-4. Types: `task`, `bug`,
+`feature`, `epic`.
 
 ## Workspaces
 
@@ -56,8 +56,8 @@ worktree; do not run broad worktree pruning.
 
 ## Verify
 
-Run both Clippy commands separately: `--all-targets` enables test-only dependency
-features and does not cover the production-only configuration.
+Run both Clippy commands separately: `--all-targets` enables test-only
+dependency features and does not cover the production-only configuration.
 
 ```bash
 nix fmt

@@ -6,6 +6,9 @@ metadata:
     phases: ["todo", "loop"]
     profiles: ["rust"]
 ---
+
 # Rust Change Planning
 
-Locate the owning module and public API before editing Rust code. Prefer typed boundaries, small modules, and tests that exercise behavior through the public seam rather than assertions on implementation text.
+Locate the owning module and public API before editing Rust code. Prefer typed
+boundaries, small modules, and tests that exercise behavior through the public
+seam rather than assertions on implementation text.

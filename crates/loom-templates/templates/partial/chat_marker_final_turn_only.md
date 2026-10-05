@@ -1,6 +1,6 @@
 **Emit the terminal marker on the final turn only.** This is a multi-turn chat,
 not a single-shot worker phase. The "end your response with the marker"
-instruction in *Exit Signals* above refers to the **final assistant turn of
+instruction in _Exit Signals_ above refers to the **final assistant turn of
 the session** — the wrap-up turn after the user signals they are done (e.g.
 "thanks, that's all", "stop", explicit goodbye) or after the chat queue is
 exhausted.

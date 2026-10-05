@@ -10,7 +10,7 @@ You are an **independent reviewer** assessing the completed deliverable for spec
 
 This phase is **inspection-only**. You stream findings as structured
 JSON lines on stdout and terminate with one marker — the wire format
-is documented under *Findings — Streaming Wire Format* below. You
+is documented under _Findings — Streaming Wire Format_ below. You
 do **NOT** mutate `bd` state — the driver consumes your streamed
 findings and mints the fix-up beads itself (per `loom gate mint` in
 `specs/gate.md`).
@@ -32,7 +32,10 @@ Spec file: specs/harness.md
 
 The following companion directories are in scope. Read each one's `manifest.md` on demand:
 
+
+
 - lib/sandbox/
+
 
 
 ## Style Rules
@@ -86,6 +89,7 @@ this phase **before** you finish.
 Do not rewrite or truncate prior contents; the recovery payload is the full
 running log.
 
+
 ## Current Spec
 
 Read: specs/harness.md
@@ -107,6 +111,8 @@ verifiers ran. `[check]` / `[system]` command strings have no source body
 to inline here. Judge live-path coverage and mock discipline from the
 sources below.
 
+
+
 ### tests/run-tests.sh
 
 ```
@@ -115,11 +121,15 @@ test_review_inputs() { :; }
 ```
 
 
+
+
 ## `[judge]` Rubrics
 
 These `[judge]` annotations name LLM-judgement criteria the deliverable
 must satisfy. Each rubric file's body follows; locate the function
 referenced by the annotation to read the per-criterion rubric.
+
+
 
 ### tests/judges/loom.sh
 
@@ -130,6 +140,7 @@ judge_live_path_coverage() { :; }
 
 
 
+
 ## Instructions
 
 1. **Read the spec** at `specs/harness.md` thoroughly
@@ -137,6 +148,8 @@ judge_live_path_coverage() { :; }
 3. **Respect the dispatch scope** shown in the pinned context or command line:
    - For `--diff <range>` reviews, run `git diff <range>` and `git log <range> --oneline` against the exact range the driver supplied. For the current molecule context, the usual range is `abc1234..HEAD` unless the driver pinned a different `--diff` range.
    - For `--tree` reviews, do **not** use a base-to-HEAD diff or log as the review scope. The scope is every file in the workspace; use `git status --short`, `git ls-files`, and targeted reads/tests as needed.
+
+
 
 ## Review Dimensions
 
@@ -165,7 +178,7 @@ invocation. Bypass shapes to flag:
 
 - The bead's full deterministic-tier annotation set is entirely mocks —
   no script runs the live path end-to-end.
-- A test that asserts `result/bin/loom` exists instead of *running* the
+- A test that asserts `result/bin/loom` exists instead of _running_ the
   binary at that path.
 - A `cargo build` / `cargo check` standing in for a behavioural test on
   a module the diff never imports.
@@ -188,7 +201,7 @@ shapes to flag:
   or any predicate that holds for every possible value of the variable.
 - A test whose only assertion is "no panic" on a code path that never
   panics.
-- An assertion that the call returned (without checking *what* it
+- An assertion that the call returned (without checking _what_ it
   returned) on a function whose only error case is unreachable in the
   test fixture.
 
@@ -213,7 +226,7 @@ fails, emit one finding line per failing sub-check (`verifier-bypass`,
 spec claim it purports to verify in `evidence`. The walk's terminator
 is `LOOM_CONCERN` carrying a one-sentence summary; per-finding routing
 is decided by the driver from each finding's `token`, not by the
-terminal marker. See *Findings — Streaming Wire Format* in the prompt
+terminal marker. See _Findings — Streaming Wire Format_ in the prompt
 body for the full wire-format contract.
 
 ## Mock Discipline
@@ -253,9 +266,9 @@ diff may contradict, use spec conventions as anchors:
   `NEVER`, `ALWAYS`, "is the single source of truth", "is the only
   caller". Each such sentence is an invariant statement; check the diff
   against it.
-- **Architectural claims** — phrasings like *"X never calls Y"*, *"Z is
-  reconstructable from the on-disk state"*, *"the binary has no `foo`
-  subcommand"*. A diff that violates the claim is a clash.
+- **Architectural claims** — phrasings like _"X never calls Y"_, _"Z is
+  reconstructable from the on-disk state"_, _"the binary has no `foo`
+  subcommand"_. A diff that violates the claim is a clash.
 - **Schema / data-structure declarations** — type signatures, table
   definitions, JSON shapes, decision-table rows embedded in the spec. A
   diff that changes the shape silently is a clash.
@@ -271,7 +284,7 @@ misses.
 
 Command / flag / grouping / removed-surface drift is **not** an LLM
 rubric dimension — `loom gate verify` is the deterministic audit (see
-FR13 in `specs/harness.md` and *Surface-conformance audit* in
+FR13 in `specs/harness.md` and _Surface-conformance audit_ in
 `specs/gate.md`). Do not duplicate it in the LLM walk.
 
 Surface failures produced by `loom gate verify` are still part of this
@@ -284,8 +297,8 @@ a spec/code mismatch beyond the deterministic failure, use
 ## Cross-Spec Walk (`--tree` scope only)
 
 When this review runs at `--tree` scope, walk every spec under `specs/`
-and flag contradictions **between** specs. Per the *Single source of
-truth* rule in `docs/spec-conventions.md`:
+and flag contradictions **between** specs. Per the _Single source of
+truth_ rule in `docs/spec-conventions.md`:
 
 - If a fact appears in two specs identically, one is wrong (drift
   incoming) — flag `cross-spec-clash` and name the spec that should
@@ -342,7 +355,7 @@ For each drift, emit a finding line with `token = "template-spec-drift"`,
 the offending template path in `target`, and the spec section it
 contradicts in `evidence`. Terminate the walk with `LOOM_CONCERN`
 carrying a one-sentence summary per the wire-format contract in
-*Findings — Streaming Wire Format*.
+_Findings — Streaming Wire Format_.
 
 ## Spec-Conventions Walk (`--tree` scope, and spec edits)
 
@@ -351,13 +364,13 @@ against `docs/spec-conventions.md`; the standing safety net must catch
 spec-convention drift even when no diff edited the spec. At `--diff` /
 `--bead` scope, run this walk only when the diff edits spec markdown and
 limit it to the touched spec sections. In both cases, walk the
-convention's *In scope* / *Out of scope* / *Section structure* /
-*Trust tiers* / *Single source of truth* / *Length guidance* sections:
+convention's _In scope_ / _Out of scope_ / _Section structure_ /
+_Trust tiers_ / _Single source of truth_ / _Length guidance_ sections:
 
 - Status checkboxes (`[ ]` / `[x]`) inside Success Criteria → flag.
 - `## Affected Files` listing an in-flight change → flag (the
   convention permits the section only when it enumerates files the spec
-  *owns* as source of truth).
+  _owns_ as source of truth).
 - `## Implementation Notes` / `## Decisions Log` / `## Changelog` /
   `## History` sections in the spec body → flag.
 - Internal file paths, line numbers, or module-layout claims with no
@@ -373,14 +386,14 @@ For each violation, emit a finding line with
 `token = "spec-conventions-violation"`, a `Criterion` target naming the
 offending spec/anchor, and the convention section by name in `evidence`.
 Terminate the walk with `LOOM_CONCERN` carrying a one-sentence summary
-per the wire-format contract in *Findings — Streaming Wire Format*.
+per the wire-format contract in _Findings — Streaming Wire Format_.
 
 ## Style-Rule Conformance
 
 The diff must satisfy every applicable rule in `docs/style-rules.md`. This
 is the load-bearing defense for any rule that linters cannot mechanically
 enforce — most rules in the document are prose, and the LLM judge is what
-enforces them. *"Style looks fine"* is not an acceptable answer; the
+enforces them. _"Style looks fine"_ is not an acceptable answer; the
 output must enumerate which rules were checked.
 
 **How to walk the document.** Open `docs/style-rules.md` and walk every rule
@@ -389,7 +402,7 @@ from the document itself; do not assume a fixed prefix list.
 
 For each rule, judge whether the diff satisfies it. A rule that does not
 apply to this diff (for instance, a shell-family rule against a pure-Rust
-diff) is *checked and dismissed*, not skipped silently — say so in the
+diff) is _checked and dismissed_, not skipped silently — say so in the
 output.
 
 **Citation contract.** For every violation you identify, the output
@@ -409,8 +422,8 @@ violation, emit a finding line with `token = "style-rule-violation"`,
 the offending file and line range in `target`, and the rule id in
 `evidence`. Terminate the walk with `LOOM_CONCERN` carrying a
 one-sentence summary that names the most load-bearing violation by
-rule id, per the wire-format contract in *Findings — Streaming Wire
-Format*; per-violation citations above carry the full list in the
+rule id, per the wire-format contract in _Findings — Streaming Wire
+Format_; per-violation citations above carry the full list in the
 visible body of your response.
 
 ## Invariant-Clash Detection
@@ -456,39 +469,39 @@ not the only one.
 **Required shape** (embed inside `evidence` verbatim — let the
 three-paths principle above shape the actual options):
 
-  ```markdown
-  ## Options — <one-line summary of the decision, ≤80 chars>
+```markdown
+## Options — <one-line summary of the decision, ≤80 chars>
 
-  ### Option 1 — <short title>
-  <body paragraph(s) describing the option, naming its cost>
+### Option 1 — <short title>
+<body paragraph(s) describing the option, naming its cost>
 
-  ### Option 2 — <short title>
-  <body, including cost>
+### Option 2 — <short title>
+<body, including cost>
 
-  ### Option 3 — <short title>
-  <body, including cost>
-  ```
+### Option 3 — <short title>
+<body, including cost>
+```
 
-  **Rules:**
+**Rules:**
 
-  - The `## Options` header carries a one-line summary (≤50 chars)
-    separated from the word `Options` by em-dash `—` (default),
-    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
-    tolerate any of these; emit em-dash by default.
-  - Each option is `### Option N — <title>` where `N` is 1-based
-    sequential. Numbering is required so `loom inbox` can parse and
-    render each option consistently.
-  - Each option body extends from its `### Option N` heading until
-    the next `### Option` or the next `##` heading; name the cost
-    (churn, debt, coupling, risk).
-  - Use contextual options per decision — typically 2–4, each
-    naming its cost. Do NOT emit a fixed A/B/C menu.
+- The `## Options` header carries a one-line summary (≤50 chars)
+  separated from the word `Options` by em-dash `—` (default),
+  en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
+  tolerate any of these; emit em-dash by default.
+- Each option is `### Option N — <title>` where `N` is 1-based
+  sequential. Numbering is required so `loom inbox` can parse and
+  render each option consistently.
+- Each option body extends from its `### Option N` heading until
+  the next `### Option` or the next `##` heading; name the cost
+  (churn, debt, coupling, risk).
+- Use contextual options per decision — typically 2–4, each
+  naming its cost. Do NOT emit a fixed A/B/C menu.
 
-  `loom inbox` parses this format to render the SUMMARY column,
-  enumerate options for view mode, and provide structured chat context.
-  A malformed block — or one that lives only in your prose, never
-  persisted to bead state — leaves the options invisible to
-  `loom inbox`'s queue and chat context.
+`loom inbox` parses this format to render the SUMMARY column,
+enumerate options for view mode, and provide structured chat context.
+A malformed block — or one that lives only in your prose, never
+persisted to bead state — leaves the options invisible to
+`loom inbox`'s queue and chat context.
 
 **Persistence (REQUIRED — the gate does NOT parse your prose).** The
 gate routes on mechanical signals (the streamed finding lines,
@@ -517,7 +530,7 @@ LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<
 ```
 
 - **`token`** — concern identifier from the closed-set enum listed
-  under *Concern tokens* below.
+  under _Concern tokens_ below.
 - **`route`** — workflow route for this finding: `blocking` retries
   the current bead, `deferred` records remediation outside the current
   bead's hot path, and `clarify` creates human-decision work with an
@@ -543,28 +556,28 @@ tokens, target JSON, or other structural JSON across prose outside the object.
 
 ### Canonical target shapes per token
 
-| Token | `target` shape |
-|---|---|
-| `spec-coherence-fail` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` |
-| `orphan-integration` | `{"kind":"Contract","id":"<contract-id>"}` |
-| `style-rule-violation` | `{"kind":"StyleRule","rule_id":"<rule-id>","subject":"<stable-subject>"}` |
-| `verifier-bypass` | `{"kind":"Annotation","target_string":"<target>"}` |
-| `weak-assertion` | `{"kind":"Annotation","target_string":"<target>"}` |
-| `fabricated-result` | `{"kind":"Annotation","target_string":"<target>"}` |
-| `coincidental-pass` | `{"kind":"Annotation","target_string":"<target>"}` |
-| `mock-discipline` | `{"kind":"TestPath","path":"<path>"}` |
-| `verifier-too-narrow` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` |
-| `concurrency-untested` | `{"kind":"LockSite","file":"<file>","line":<line>}` |
-| `judge-flag` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` |
-| `invariant-clash` | `{"kind":"Invariant","spec":"<spec>","section":"<section>","tag":"<tag>"}` |
-| `template-spec-drift` | `{"kind":"Template","path":"<path>"}` — `--tree` scope only |
-| `cross-spec-clash` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
+| Token                        | `target` shape                                                                   |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| `spec-coherence-fail`        | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}`                       |
+| `orphan-integration`         | `{"kind":"Contract","id":"<contract-id>"}`                                       |
+| `style-rule-violation`       | `{"kind":"StyleRule","rule_id":"<rule-id>","subject":"<stable-subject>"}`        |
+| `verifier-bypass`            | `{"kind":"Annotation","target_string":"<target>"}`                               |
+| `weak-assertion`             | `{"kind":"Annotation","target_string":"<target>"}`                               |
+| `fabricated-result`          | `{"kind":"Annotation","target_string":"<target>"}`                               |
+| `coincidental-pass`          | `{"kind":"Annotation","target_string":"<target>"}`                               |
+| `mock-discipline`            | `{"kind":"TestPath","path":"<path>"}`                                            |
+| `verifier-too-narrow`        | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}`                       |
+| `concurrency-untested`       | `{"kind":"LockSite","file":"<file>","line":<line>}`                              |
+| `judge-flag`                 | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}`                       |
+| `invariant-clash`            | `{"kind":"Invariant","spec":"<spec>","section":"<section>","tag":"<tag>"}`       |
+| `template-spec-drift`        | `{"kind":"Template","path":"<path>"}` — `--tree` scope only                      |
+| `cross-spec-clash`           | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
 | `spec-conventions-violation` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
 
 `scope-creep` and `scope-shortfall` are per-bead-only tokens; do not
 emit them at `--tree` scope. `template-spec-drift`, `cross-spec-clash`,
 and `spec-conventions-violation` apply at `--tree` scope only (see
-`specs/gate.md` § *Standing-safety-net checks*).
+`specs/gate.md` § _Standing-safety-net checks_).
 
 Example records:
 
@@ -688,6 +701,7 @@ The remaining tokens cover the other rubric dimensions:
 
   The driver attaches `loom:clarify` to the minted bead and lifts
   the block into its description.
+
 - `template-spec-drift` — at `--tree` scope, a prompt template under
   `crates/loom-templates/templates/` directs agents toward behaviour
   a spec contradicts (Invariant 3 from `specs/gate.md`).
@@ -726,14 +740,14 @@ preserving any well-formed findings streamed before the bad terminator.
 The summary is for the verdict log only; per-finding routing is decided
 from each streamed finding's `route`, not from the terminal marker.
 
-| Findings streamed | Terminator | Verdict |
-|---|---|---|
-| 0 | `LOOM_COMPLETE` | clean — phase done |
-| ≥1 | `LOOM_CONCERN: {"summary":"..."}` | recovery — findings minted, summary threaded into `previous_failure` |
-| 0 | `LOOM_CONCERN: {...}` | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration |
-| ≥1 | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count, findings }` — findings streamed but terminator claims clean, and the parsed findings ride through to the recovery prompt |
-| any well-formed stream | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings }` — payload parse failure preserves the literal payload and any well-formed findings |
-| any | missing or duplicate marker | `SwallowedMarker` (existing) |
+| Findings streamed      | Terminator                                                      | Verdict                                                                                                                                                                    |
+| ---------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0                      | `LOOM_COMPLETE`                                                 | clean — phase done                                                                                                                                                         |
+| ≥1                     | `LOOM_CONCERN: {"summary":"..."}`                               | recovery — findings minted, summary threaded into `previous_failure`                                                                                                       |
+| 0                      | `LOOM_CONCERN: {...}`                                           | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration                                                                                        |
+| ≥1                     | `LOOM_COMPLETE`                                                 | `BadWalk::FindingsWithoutConcern { finding_count, findings }` — findings streamed but terminator claims clean, and the parsed findings ride through to the recovery prompt |
+| any well-formed stream | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings }` — payload parse failure preserves the literal payload and any well-formed findings                                         |
+| any                    | missing or duplicate marker                                     | `SwallowedMarker` (existing)                                                                                                                                               |
 
 **Agent's mental model.** Review the diff. Every time you identify a
 concern, immediately emit a `LOOM_FINDING:` record with the structured
@@ -780,7 +794,7 @@ phase-specific meaning is:
 
 If this phase pins self-report markers and you cannot finish — needing
 human input or a decision among multiple resolutions — emit one of the
-self-report markers documented separately (see *Self-Report Markers*).
+self-report markers documented separately (see _Self-Report Markers_).
 Interactive plan/inbox sessions resolve friction with the human in-turn
 instead of worker self-report markers.
 

@@ -38,7 +38,10 @@ Loom orchestrates the spec-to-implementation workflow.
 
 The following companion directories are in scope. Read each one's `manifest.md` on demand:
 
+
+
 - lib/sandbox/
+
 
 
 ## Scratchpad
@@ -88,6 +91,8 @@ running log.
 
 ## Visible Inbox Items
 
+
+
 ### 1. lm-clar.1 — [clarify] [spec:harness] State storage choice
 
 **Bead id:** `lm-clar.1`
@@ -95,15 +100,22 @@ running log.
 **Flow:** `loom:clarify` — options below are the existing decision frame.
 
 
+
 ## Options — State JSON vs. dedicated table
+
+
 
 #### Option 1 — Keep state in JSON
 
 Add a companions array.
 
+
+
 #### Option 2 — Migrate to a table
 
 Use a SQLite table.
+
+
 
 #### Canonical body
 
@@ -125,10 +137,10 @@ Use a SQLite table.
    guessing. Then draft the resolution, confirm with the user, and persist
    only after confirmation.
 4. For bead-backed clarify/blocked/infra items, bd writes are authorized in
-   chat: `bd update <id> --notes "..."`, `bd update <id>
-   --remove-label=loom:clarify --status=open` / `bd update <id>
-   --remove-label=loom:blocked --status=open` / `bd update <id>
-   --remove-label=loom:infra --status=open`, status changes, and
+   chat: `bd update <id> --notes "..."`,
+   `bd update <id> --remove-label=loom:clarify --status=open` /
+   `bd update <id> --remove-label=loom:blocked --status=open` /
+   `bd update <id> --remove-label=loom:infra --status=open`, status changes, and
    `bd close <id>` when the user decides no further implementation is needed.
    Pair label removal with `--status=open` unless closing the bead.
 5. For tune proposals, use the bead body/metadata as durable state and local
@@ -213,8 +225,8 @@ collapses the user's real answer into a shape it doesn't fit.
   the container; treat it as working notes for the current session only, not
   as durable storage.
 - **The "one by one" sub-mode is planning-specific.** When the planning
-  interview is in that sub-mode, it means *one question per chat turn*,
-  not *one picker per turn* — the chat-discipline rules above still
+  interview is in that sub-mode, it means _one question per chat turn_,
+  not _one picker per turn_ — the chat-discipline rules above still
   apply within the sub-mode. Outside the planning templates the sub-mode
   is not in play.
 
@@ -223,7 +235,7 @@ interview the user, so this partial is not pinned there.
 
 **Emit the terminal marker on the final turn only.** This is a multi-turn chat,
 not a single-shot worker phase. The "end your response with the marker"
-instruction in *Exit Signals* above refers to the **final assistant turn of
+instruction in _Exit Signals_ above refers to the **final assistant turn of
 the session** — the wrap-up turn after the user signals they are done (e.g.
 "thanks, that's all", "stop", explicit goodbye) or after the chat queue is
 exhausted.

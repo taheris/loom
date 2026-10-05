@@ -15,7 +15,7 @@ invocation. Bypass shapes to flag:
 
 - The bead's full deterministic-tier annotation set is entirely mocks —
   no script runs the live path end-to-end.
-- A test that asserts `result/bin/loom` exists instead of *running* the
+- A test that asserts `result/bin/loom` exists instead of _running_ the
   binary at that path.
 - A `cargo build` / `cargo check` standing in for a behavioural test on
   a module the diff never imports.
@@ -38,7 +38,7 @@ shapes to flag:
   or any predicate that holds for every possible value of the variable.
 - A test whose only assertion is "no panic" on a code path that never
   panics.
-- An assertion that the call returned (without checking *what* it
+- An assertion that the call returned (without checking _what_ it
   returned) on a function whose only error case is unreachable in the
   test fixture.
 
@@ -63,7 +63,7 @@ fails, emit one finding line per failing sub-check (`verifier-bypass`,
 spec claim it purports to verify in `evidence`. The walk's terminator
 is `LOOM_CONCERN` carrying a one-sentence summary; per-finding routing
 is decided by the driver from each finding's `token`, not by the
-terminal marker. See *Findings — Streaming Wire Format* in the prompt
+terminal marker. See _Findings — Streaming Wire Format_ in the prompt
 body for the full wire-format contract.
 
 ## Mock Discipline
@@ -103,9 +103,9 @@ diff may contradict, use spec conventions as anchors:
   `NEVER`, `ALWAYS`, "is the single source of truth", "is the only
   caller". Each such sentence is an invariant statement; check the diff
   against it.
-- **Architectural claims** — phrasings like *"X never calls Y"*, *"Z is
-  reconstructable from the on-disk state"*, *"the binary has no `foo`
-  subcommand"*. A diff that violates the claim is a clash.
+- **Architectural claims** — phrasings like _"X never calls Y"_, _"Z is
+  reconstructable from the on-disk state"_, _"the binary has no `foo`
+  subcommand"_. A diff that violates the claim is a clash.
 - **Schema / data-structure declarations** — type signatures, table
   definitions, JSON shapes, decision-table rows embedded in the spec. A
   diff that changes the shape silently is a clash.
@@ -121,7 +121,7 @@ misses.
 
 Command / flag / grouping / removed-surface drift is **not** an LLM
 rubric dimension — `loom gate verify` is the deterministic audit (see
-FR13 in `specs/harness.md` and *Surface-conformance audit* in
+FR13 in `specs/harness.md` and _Surface-conformance audit_ in
 `specs/gate.md`). Do not duplicate it in the LLM walk.
 
 Surface failures produced by `loom gate verify` are still part of this
@@ -134,8 +134,8 @@ a spec/code mismatch beyond the deterministic failure, use
 ## Cross-Spec Walk (`--tree` scope only)
 
 When this review runs at `--tree` scope, walk every spec under `specs/`
-and flag contradictions **between** specs. Per the *Single source of
-truth* rule in `docs/spec-conventions.md`:
+and flag contradictions **between** specs. Per the _Single source of
+truth_ rule in `docs/spec-conventions.md`:
 
 - If a fact appears in two specs identically, one is wrong (drift
   incoming) — flag `cross-spec-clash` and name the spec that should
@@ -192,7 +192,7 @@ For each drift, emit a finding line with `token = "template-spec-drift"`,
 the offending template path in `target`, and the spec section it
 contradicts in `evidence`. Terminate the walk with `LOOM_CONCERN`
 carrying a one-sentence summary per the wire-format contract in
-*Findings — Streaming Wire Format*.
+_Findings — Streaming Wire Format_.
 
 ## Spec-Conventions Walk (`--tree` scope, and spec edits)
 
@@ -201,13 +201,13 @@ against `docs/spec-conventions.md`; the standing safety net must catch
 spec-convention drift even when no diff edited the spec. At `--diff` /
 `--bead` scope, run this walk only when the diff edits spec markdown and
 limit it to the touched spec sections. In both cases, walk the
-convention's *In scope* / *Out of scope* / *Section structure* /
-*Trust tiers* / *Single source of truth* / *Length guidance* sections:
+convention's _In scope_ / _Out of scope_ / _Section structure_ /
+_Trust tiers_ / _Single source of truth_ / _Length guidance_ sections:
 
 - Status checkboxes (`[ ]` / `[x]`) inside Success Criteria → flag.
 - `## Affected Files` listing an in-flight change → flag (the
   convention permits the section only when it enumerates files the spec
-  *owns* as source of truth).
+  _owns_ as source of truth).
 - `## Implementation Notes` / `## Decisions Log` / `## Changelog` /
   `## History` sections in the spec body → flag.
 - Internal file paths, line numbers, or module-layout claims with no
@@ -223,14 +223,14 @@ For each violation, emit a finding line with
 `token = "spec-conventions-violation"`, a `Criterion` target naming the
 offending spec/anchor, and the convention section by name in `evidence`.
 Terminate the walk with `LOOM_CONCERN` carrying a one-sentence summary
-per the wire-format contract in *Findings — Streaming Wire Format*.
+per the wire-format contract in _Findings — Streaming Wire Format_.
 
 ## Style-Rule Conformance
 
 The diff must satisfy every applicable rule in `{{ style_rules }}`. This
 is the load-bearing defense for any rule that linters cannot mechanically
 enforce — most rules in the document are prose, and the LLM judge is what
-enforces them. *"Style looks fine"* is not an acceptable answer; the
+enforces them. _"Style looks fine"_ is not an acceptable answer; the
 output must enumerate which rules were checked.
 
 **How to walk the document.** Open `{{ style_rules }}` and walk every rule
@@ -239,7 +239,7 @@ from the document itself; do not assume a fixed prefix list.
 
 For each rule, judge whether the diff satisfies it. A rule that does not
 apply to this diff (for instance, a shell-family rule against a pure-Rust
-diff) is *checked and dismissed*, not skipped silently — say so in the
+diff) is _checked and dismissed_, not skipped silently — say so in the
 output.
 
 **Citation contract.** For every violation you identify, the output
@@ -259,6 +259,6 @@ violation, emit a finding line with `token = "style-rule-violation"`,
 the offending file and line range in `target`, and the rule id in
 `evidence`. Terminate the walk with `LOOM_CONCERN` carrying a
 one-sentence summary that names the most load-bearing violation by
-rule id, per the wire-format contract in *Findings — Streaming Wire
-Format*; per-violation citations above carry the full list in the
+rule id, per the wire-format contract in _Findings — Streaming Wire
+Format_; per-violation citations above carry the full list in the
 visible body of your response.

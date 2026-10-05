@@ -191,11 +191,10 @@ pub fn parse_content(source_spec: &Path, content: &str) -> ParsedSpecs {
     let line_index = LineIndex::from(content);
     let structure = StructuralPass::run(content);
 
+    let hits = structure.bindings(content);
+    let excluded = structure.text_exclusions(&hits);
     let mut annotations: Vec<Annotation> = Vec::new();
-    for hit in scan_tokens(content) {
-        if structure.is_inside_code(hit.start) {
-            continue;
-        }
+    for hit in hits {
         let line = line_index.line_of(hit.start);
         let criterion_line = structure
             .innermost_item_containing(hit.start)
@@ -210,17 +209,13 @@ pub fn parse_content(source_spec: &Path, content: &str) -> ParsedSpecs {
         });
     }
 
-    let criterion_lines: Vec<u32> = structure.criterion_bullet_lines.iter().copied().collect();
-    let next_lines: std::collections::BTreeMap<u32, u32> = criterion_lines
-        .windows(2)
-        .map(|pair| (pair[0], pair[1]))
-        .collect();
-    let criteria = criterion_lines
-        .into_iter()
-        .map(|line| Criterion {
+    let criteria = structure
+        .criterion_bullet_lines
+        .iter()
+        .map(|&line| Criterion {
             source_spec: source_spec.to_path_buf(),
             line,
-            text: criterion_text_for_line(content, line, next_lines.get(&line).copied()),
+            text: structure.text_for_line(content, line, &excluded),
         })
         .collect();
 
@@ -233,6 +228,7 @@ pub fn parse_content(source_spec: &Path, content: &str) -> ParsedSpecs {
 /// One annotation token recovered by the byte-level scanner.
 struct TokenHit {
     start: usize,
+    end: usize,
     tier: Tier,
     target: String,
     pending: bool,
@@ -286,6 +282,7 @@ fn scan_tokens(content: &str) -> Vec<TokenHit> {
         let target = String::from_utf8_lossy(target_bytes).into_owned();
         out.push(TokenHit {
             start: i,
+            end: rparen + 1,
             tier,
             target,
             pending,
@@ -309,27 +306,13 @@ fn match_tier(s: &[u8]) -> Option<(Tier, usize)> {
     }
 }
 
-/// Return the normalized Success-Criteria bullet text used for criterion ids.
-pub fn criterion_text_for_line(content: &str, line: u32, next_line: Option<u32>) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let start = line.saturating_sub(1) as usize;
-    let end = next_line
-        .map_or(lines.len(), |n| n.saturating_sub(1) as usize)
-        .min(lines.len());
-    let mut parts = Vec::new();
-    for (idx, raw) in lines[start..end].iter().enumerate() {
-        let without_bullet = if idx == 0 {
-            strip_bullet_marker(raw)
-        } else {
-            raw.trim()
-        };
-        let without_annotation = strip_annotation_tokens(without_bullet);
-        let trimmed = without_annotation.trim();
-        if !trimmed.is_empty() {
-            parts.push(trimmed.to_string());
-        }
-    }
-    normalize_whitespace(&parts.join(" "))
+/// Return normalized item text, or the containing paragraph for a prose annotation.
+///
+/// Markdown boundaries delimit the requirement; callers cannot supply a wider range.
+pub fn criterion_text_for_line(content: &str, line: u32) -> String {
+    let structure = StructuralPass::run(content);
+    let excluded = structure.text_exclusions(&structure.bindings(content));
+    structure.text_for_line(content, line, &excluded)
 }
 
 /// Return the stable criterion id for a spec label and normalized criterion text.
@@ -348,46 +331,36 @@ pub fn criterion_id_for(
 
 fn strip_bullet_marker(line: &str) -> &str {
     let trimmed = line.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("- ") {
-        return rest;
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = trimmed.strip_prefix(marker) {
+            return rest;
+        }
     }
-    if let Some(rest) = trimmed.strip_prefix("* ") {
-        return rest;
-    }
-    if let Some((digits, rest)) = trimmed.split_once(". ")
-        && !digits.is_empty()
-        && digits.chars().all(|c| c.is_ascii_digit())
-    {
-        return rest;
+    for delimiter in [". ", ") "] {
+        if let Some((digits, rest)) = trimmed.split_once(delimiter)
+            && !digits.is_empty()
+            && digits.chars().all(|c| c.is_ascii_digit())
+        {
+            return rest;
+        }
     }
     trimmed
 }
 
-fn strip_annotation_tokens(line: &str) -> String {
-    let mut out = String::new();
-    let mut rest = line;
-    while let Some(start) = rest.find('[') {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 1..];
-        let Some(close) = after.find(']') else {
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let label = &after[..close];
-        let tier = label.strip_suffix('?').unwrap_or(label);
-        let target_start = start + 1 + close + 1;
-        if matches!(tier, "check" | "test" | "system" | "judge")
-            && rest[target_start..].starts_with('(')
-            && let Some(end) = rest[target_start + 1..].find(')')
-        {
-            rest = &rest[target_start + 1 + end + 1..];
+fn text_without_ranges(content: &str, range: &Range<usize>, excluded: &[Range<usize>]) -> String {
+    let mut text = String::new();
+    let mut cursor = range.start;
+    for skip in excluded {
+        if skip.end <= cursor || skip.start >= range.end {
             continue;
         }
-        out.push('[');
-        rest = after;
+        if skip.start > cursor {
+            text.push_str(&content[cursor..skip.start]);
+        }
+        cursor = skip.end.min(range.end);
     }
-    out.push_str(rest);
-    out
+    text.push_str(&content[cursor..range.end]);
+    normalize_whitespace(strip_bullet_marker(&text))
 }
 
 fn normalize_whitespace(value: &str) -> String {
@@ -431,6 +404,8 @@ const fn find_balanced_close(bytes: &[u8], lparen: usize) -> Option<usize> {
 /// Structural metadata derived from one pulldown-cmark pass.
 struct StructuralPass {
     code_ranges: Vec<Range<usize>>,
+    comment_ranges: Vec<Range<usize>>,
+    paragraph_ranges: Vec<Range<usize>>,
     item_ranges: Vec<(Range<usize>, u32)>,
     criterion_bullet_lines: BTreeSet<u32>,
 }
@@ -439,6 +414,8 @@ impl StructuralPass {
     fn run(content: &str) -> Self {
         let line_index = LineIndex::from(content);
         let mut code_ranges: Vec<Range<usize>> = Vec::new();
+        let mut comment_ranges: Vec<Range<usize>> = Vec::new();
+        let mut paragraph_ranges: Vec<Range<usize>> = Vec::new();
         let mut item_ranges: Vec<(Range<usize>, u32)> = Vec::new();
         let mut criterion_bullet_lines: BTreeSet<u32> = BTreeSet::new();
 
@@ -474,6 +451,15 @@ impl StructuralPass {
                 Event::Start(Tag::CodeBlock(_)) | Event::Code(_) => {
                     code_ranges.push(range);
                 }
+                Event::Start(Tag::HtmlBlock)
+                    if content[range.clone()].trim_start().starts_with("<!--") =>
+                {
+                    comment_ranges.push(range);
+                }
+                Event::InlineHtml(ref text) if text.trim_start().starts_with("<!--") => {
+                    comment_ranges.push(range);
+                }
+                Event::Start(Tag::Paragraph) => paragraph_ranges.push(range),
                 Event::Start(Tag::Item) => {
                     let bullet_line = line_index.line_of(range.start);
                     item_ranges.push((range, bullet_line));
@@ -487,13 +473,48 @@ impl StructuralPass {
 
         Self {
             code_ranges,
+            comment_ranges,
+            paragraph_ranges,
             item_ranges,
             criterion_bullet_lines,
         }
     }
 
-    fn is_inside_code(&self, offset: usize) -> bool {
-        self.code_ranges.iter().any(|r| r.contains(&offset))
+    fn bindings(&self, content: &str) -> Vec<TokenHit> {
+        scan_tokens(content)
+            .into_iter()
+            .filter(|hit| {
+                !self
+                    .code_ranges
+                    .iter()
+                    .chain(&self.comment_ranges)
+                    .any(|range| range.contains(&hit.start))
+            })
+            .collect()
+    }
+
+    fn text_exclusions(&self, hits: &[TokenHit]) -> Vec<Range<usize>> {
+        let mut ranges = self.comment_ranges.clone();
+        ranges.extend(hits.iter().map(|hit| hit.start..hit.end));
+        ranges.sort_unstable_by_key(|range| range.start);
+        ranges
+    }
+
+    fn text_for_line(&self, content: &str, line: u32, excluded: &[Range<usize>]) -> String {
+        let item = self.item_ranges.iter().find(|(_, start)| *start == line);
+        if let Some((range, _)) = item {
+            return text_without_ranges(content, range, excluded);
+        }
+        let index = LineIndex::from(content);
+        self.paragraph_ranges
+            .iter()
+            .find(|range| {
+                index.line_of(range.start) <= line
+                    && line <= index.line_of(range.end.saturating_sub(1))
+            })
+            .map_or_else(String::new, |range| {
+                text_without_ranges(content, range, excluded)
+            })
     }
 
     /// Returns the line of the innermost (smallest, most recently

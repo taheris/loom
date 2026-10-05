@@ -2167,14 +2167,14 @@ fn criterion_id_for_annotation(
         )
     })?;
     let parsed = loom_gate::annotation::parse_content(source_spec, &content);
-    let next_line = parsed
+    let criterion_text = parsed
         .criteria
         .iter()
-        .map(|criterion| criterion.line)
-        .filter(|line| *line > ann.criterion_line)
-        .min();
-    let criterion_text =
-        loom_workflow::todo::criterion_text_for_line(&content, ann.criterion_line, next_line);
+        .find(|criterion| criterion.line == ann.criterion_line)
+        .map_or_else(
+            || loom_workflow::todo::criterion_text_for_line(&content, ann.criterion_line),
+            |criterion| criterion.text.clone(),
+        );
     let label: SpecLabel = spec_label_from_path(&ann.source_spec).parse()?;
     Ok(
         loom_workflow::todo::criterion_id_for(&label, &criterion_text)

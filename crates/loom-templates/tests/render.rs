@@ -26,6 +26,7 @@ use loom_templates::run::{
 use loom_templates::todo::{
     SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext,
 };
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 
 const PINNED_CONTEXT_BODY: &str =
     "# Project Overview\n\nLoom orchestrates the spec-to-implementation workflow.";
@@ -140,6 +141,209 @@ fn plan_ctx() -> PlanContext {
         spec_conventions: "docs/spec-conventions.md".to_string(),
         skill_index: SkillIndexMarkdown::empty(),
     }
+}
+
+fn markdown_headings(body: &str) -> Vec<(usize, HeadingLevel, String)> {
+    let mut headings = Vec::new();
+    let mut list_depth = 0;
+    let mut heading = None;
+    for event in Parser::new(body) {
+        match event {
+            Event::Start(Tag::List(_)) => list_depth += 1,
+            Event::End(TagEnd::List(_)) => list_depth -= 1,
+            Event::Start(Tag::Heading { level, .. }) => {
+                heading = Some((list_depth, level, String::new()));
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(value) = heading.take() {
+                    headings.push(value);
+                }
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if let Some((_, _, body)) = &mut heading {
+                    body.push_str(&text);
+                }
+            }
+            _ => {}
+        }
+    }
+    headings
+}
+
+fn markdown_list_items(body: &str, depth: usize) -> Vec<String> {
+    let mut items: Vec<String> = Vec::new();
+    let mut list_depth = 0;
+    for event in Parser::new(body) {
+        match event {
+            Event::Start(Tag::List(_)) => list_depth += 1,
+            Event::End(TagEnd::List(_)) => list_depth -= 1,
+            Event::Start(Tag::Item) if list_depth == depth => items.push(String::new()),
+            Event::Text(text) | Event::Code(text) if list_depth == depth => {
+                if let Some(item) = items.last_mut() {
+                    item.push_str(&text);
+                }
+            }
+            _ => {}
+        }
+    }
+    items
+}
+
+#[test]
+fn loop_render_preserves_instruction_list_structure_on_fresh_and_retry_dispatch() -> Result<()> {
+    for previous_failure in [
+        None,
+        Some(PreviousFailure::from_agent_error("compile failed")),
+    ] {
+        let ctx = LoopContext {
+            bead_base: git_sha(TEST_SHA),
+            pinned_context: PINNED_CONTEXT_BODY.into(),
+            label: SpecLabel::new("harness")?,
+            spec_path: "specs/harness.md".into(),
+            companion_paths: vec![],
+            molecule_id: None,
+            issue_id: None,
+            title: None,
+            description: None,
+            attempt: u32::from(previous_failure.is_some()),
+            previous_failure,
+            workspace_recovery: None,
+            review_notes: None,
+            scratchpad_path: SCRATCHPAD_PATH_BODY.into(),
+            style_rules: "docs/style-rules.md".into(),
+            skill_index: SkillIndexMarkdown::empty(),
+        };
+        let rendered = ctx.render()?;
+        let instructions = rendered
+            .split_once("## Instructions\n")
+            .unwrap()
+            .1
+            .split_once("## Spec Verifications\n")
+            .unwrap()
+            .0;
+        let items = markdown_list_items(instructions, 1);
+        let labels: Vec<_> = items
+            .iter()
+            .map(|item| item.split_once(':').unwrap().0)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Understand",
+                "Test Strategy",
+                "Implement",
+                "Discovered Work",
+                "Quality Gates",
+                "Blocked vs Waiting",
+                "Already Implemented",
+                "Closing the bead"
+            ]
+        );
+        let nested = markdown_list_items(instructions, 2);
+        assert_eq!(
+            nested[0],
+            "Property-based tests: For functions with clear invariants, mathematical properties"
+        );
+        assert_eq!(
+            nested[1],
+            "Unit tests: For specific behaviors, edge cases, integration points"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn shared_options_partial_preserves_call_site_list_nesting() -> Result<()> {
+    let out = todo_context(vec![], vec![]).render()?;
+    let self_report = out
+        .split_once("## Self-Report Markers\n")
+        .unwrap()
+        .1
+        .split_once("## Todo Success Marker\n")
+        .unwrap()
+        .0;
+    let items = markdown_list_items(self_report, 1);
+    let markers: Vec<_> = items
+        .iter()
+        .map(|item| item.split_once(" — ").unwrap().0)
+        .collect();
+    assert_eq!(markers, ["LOOM_RETRY", "LOOM_CLARIFY", "LOOM_BLOCKED"]);
+    assert!(items[1].contains("After persisting, the gate applies"));
+    let nested = markdown_list_items(self_report, 2);
+    assert_eq!(nested.len(), 4);
+    assert!(nested[0].starts_with("The ## Options header carries a one-line summary"));
+    Ok(())
+}
+
+#[test]
+fn inbox_render_preserves_dynamic_item_and_option_headings() -> Result<()> {
+    let mut item = inbox_item(
+        "lm-clar.2",
+        "harness",
+        "Choose the complete runtime behavior",
+        ItemKind::Clarify,
+    );
+    item.options_summary = Some("Runtime alternatives".into());
+    item.options = vec![
+        ClarifyOption {
+            n: 1,
+            title: Some("Keep the existing protocol".into()),
+            body: Some("Use the current path.".into()),
+        },
+        ClarifyOption {
+            n: 2,
+            title: None,
+            body: Some("Use the alternative.".into()),
+        },
+    ];
+    let out = inbox_ctx(vec![item]).render()?;
+    let headings = markdown_headings(&out);
+    for (level, title) in [
+        (
+            HeadingLevel::H3,
+            "1. lm-clar.2 — [clarify] [spec:harness] Choose the complete runtime behavior",
+        ),
+        (HeadingLevel::H2, "Options — Runtime alternatives"),
+        (HeadingLevel::H4, "Option 1 — Keep the existing protocol"),
+        (HeadingLevel::H4, "Option 2"),
+        (HeadingLevel::H4, "Canonical body"),
+    ] {
+        assert!(
+            headings.contains(&(0, level, title.into())),
+            "missing heading {title}: {headings:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn todo_render_keeps_sections_outside_dynamic_lists() -> Result<()> {
+    let row = CriterionStatus {
+        spec_label: SpecLabel::new("harness")?,
+        criterion_id: criterion_id("criterion-0123456789abcdef")?,
+        criterion_text: "A complete obligation".into(),
+        annotation: CriterionAnnotation {
+            tier: AnnotationTier::Test,
+            target: AnnotationTarget::new("the_verifier"),
+            pending: false,
+        },
+        evidence: EvidenceState::Missing,
+    };
+    let out = todo_context(vec!["Keep the requirement".into()], vec![row]).render()?;
+    let headings = markdown_headings(&out);
+    for title in [
+        "Companions",
+        "Implementation Notes",
+        "Criterion Status",
+        "Decomposition Discipline",
+        "Task Breakdown Guidelines",
+    ] {
+        assert!(
+            headings.contains(&(0, HeadingLevel::H2, title.into())),
+            "nested or missing section {title}: {headings:?}"
+        );
+    }
+    Ok(())
 }
 
 #[test]

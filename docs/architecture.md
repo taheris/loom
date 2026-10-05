@@ -1,9 +1,9 @@
 # Loom Architecture
 
 Loom is a Rust workflow orchestrator that drives an AI agent through a
-spec-to-implementation pipeline. The full behavioural contract lives in
-[`../specs/harness.md`](../specs/harness.md); this document is a brief
-orientation.
+spec-to-implementation pipeline. The behavioural contracts are divided by
+responsibility in [the spec index](README.md#specs); this document is a brief
+orientation, not another contract owner.
 
 ## Design Principles
 
@@ -15,11 +15,11 @@ orientation.
 3. **Independent work roots** — host-only locks serialize plan, todo, tune,
    initialization, and each mutating bead/work-epic root. Git's `index.lock`
    protects short integration operations; push races fetch, rebase, and re-gate.
-4. **Verifiable annotations** — package acceptance criteria carry
-   `[check]` / `[test]` / `[system]` / `[judge]` links. Gate composes
-   deterministic verification with semantic review.
-5. **Backend-agnostic agent layer** — the `Session` trait lets pi-mono,
-   Claude stream-json, and the Direct backend share the same workflow code.
+4. **Verifiable annotations** — package acceptance criteria carry `[check]` /
+   `[test]` / `[system]` / `[judge]` links. Gate composes deterministic
+   verification with semantic review.
+5. **Backend-agnostic agent layer** — the `Session` trait lets pi-mono, Claude
+   stream-json, and the Direct backend share the same workflow code.
 6. **Executable workflow models** — Quint simulation and bounded checking
    compare the optimized gate with an independent reference; conformance
    exercises production providers and workflow seams, not a second planner.
@@ -43,57 +43,63 @@ orientation.
 
 ## Crates
 
-| Crate | Purpose |
-|-------|---------|
-| `loom` | CLI entry point and process plumbing |
-| `loom-agent` | Backend abstraction: pi-mono RPC, Claude stream-json, and Direct |
-| `loom-direct-runner` | Sandbox-aware tool runtime for the Direct backend |
-| `loom-driver` | State store (SQLite), bd shim, lock manager, scratchpads, git client |
-| `loom-events` | Typed event identifiers (`BeadId`, `SpecLabel`, `MoleculeId`, …) |
-| `loom-gate` | Quality gate: `loom gate verify` (deterministic) + `loom gate review` (LLM judge) |
-| `loom-protocol` | Public-contract wire protocol types parsed by workflow, templates, and external consumers |
-| `loom-llm` | Public-contract LLM primitives: `LlmClient`, `Conversation`, observers |
-| `loom-render` | Streaming output formatters and event sinks |
-| `loom-skill` | Public skill artifact model and registry stages |
-| `loom-templates` | Askama prompt templates with typed contexts |
-| `loom-test-support` | Shared test fixtures and helpers |
-| `loom-tune` | Internal tuning registry, case, score, and proposal types |
-| `loom-walk` | Mechanical source and contract checks consumed by the gate |
-| `loom-workflow` | Phase implementations: `plan`, `todo`, `loop`, `gate`, `inbox` |
+| Crate                | Purpose                                                                                   |
+| -------------------- | ----------------------------------------------------------------------------------------- |
+| `loom`               | CLI entry point and process plumbing                                                      |
+| `loom-agent`         | Backend abstraction: pi-mono RPC, Claude stream-json, and Direct                          |
+| `loom-direct-runner` | Sandbox-aware tool runtime for the Direct backend                                         |
+| `loom-driver`        | State store (SQLite), bd shim, lock manager, scratchpads, git client                      |
+| `loom-events`        | Typed event identifiers (`BeadId`, `SpecLabel`, `MoleculeId`, …)                          |
+| `loom-gate`          | Quality gate: `loom gate verify` (deterministic) + `loom gate review` (LLM judge)         |
+| `loom-protocol`      | Public-contract wire protocol types parsed by workflow, templates, and external consumers |
+| `loom-llm`           | Public-contract LLM primitives: `LlmClient`, `Conversation`, observers                    |
+| `loom-render`        | Streaming output formatters and event sinks                                               |
+| `loom-skill`         | Public skill artifact model and registry stages                                           |
+| `loom-templates`     | Askama prompt templates with typed contexts                                               |
+| `loom-test-support`  | Shared test fixtures and helpers                                                          |
+| `loom-tune`          | Internal tuning registry, case, score, and proposal types                                 |
+| `loom-walk`          | Mechanical source and contract checks consumed by the gate                                |
+| `loom-workflow`      | Phase implementations: `plan`, `todo`, `loop`, `gate`, `inbox`                            |
 
 ## Phases
 
-| Phase | Command | Lock | Inputs | Outputs |
-|-------|---------|------|--------|---------|
-| Plan | `loom plan [SPEC_LABEL ...]` | `plan.lock` | Project context, spec index, optional anchors | Spec/index markdown + notes |
-| Todo | `loom todo` | `todo.lock` | Changed specs, spec-epic cursors | New work epic and child beads |
-| Loop | `loom loop [BEAD_OR_EPIC_ID ...]` | `<bead-or-epic-id>.lock` | Explicit roots or active work epic, agent | Code changes, bead transitions, gated integration |
-| Gate (verify) | `loom gate verify` | none | Spec annotations | Deterministic pass/fail |
-| Gate (review) | `loom gate review` | none | Diff, judge rubrics | LLM verdict |
-| Inbox | `loom inbox` / `loom inbox chat` | targeted chat locks addressed bead | `loom:clarify`, `loom:blocked`, `loom:infra`, tune proposal beads | Human decision / diagnostic list/view/chat |
-| Tune | `loom tune` subcommands | `tune.lock` for proposal allocation | Effective registry, cases, budget | Isolated replays, scored proposals for inbox review |
+| Phase         | Command                           | Lock                                | Inputs                                                            | Outputs                                             |
+| ------------- | --------------------------------- | ----------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------- |
+| Plan          | `loom plan [SPEC_LABEL ...]`      | `plan.lock`                         | Project context, spec index, optional anchors                     | Spec/index markdown + notes                         |
+| Todo          | `loom todo`                       | `todo.lock`                         | Changed specs, spec-epic cursors                                  | New work epic and child beads                       |
+| Loop          | `loom loop [BEAD_OR_EPIC_ID ...]` | `<bead-or-epic-id>.lock`            | Explicit roots or active work epic, agent                         | Code changes, bead transitions, gated integration   |
+| Gate (verify) | `loom gate verify`                | none                                | Spec annotations                                                  | Deterministic pass/fail                             |
+| Gate (review) | `loom gate review`                | none                                | Diff, judge rubrics                                               | LLM verdict                                         |
+| Inbox         | `loom inbox` / `loom inbox chat`  | targeted chat locks addressed bead  | `loom:clarify`, `loom:blocked`, `loom:infra`, tune proposal beads | Human decision / diagnostic list/view/chat          |
+| Tune          | `loom tune` subcommands           | `tune.lock` for proposal allocation | Effective registry, cases, budget                                 | Isolated replays, scored proposals for inbox review |
 
-See [`../specs/harness.md`](../specs/harness.md) for the lock matrix and full
-command set; [`../specs/gate.md`](../specs/gate.md) for the verification
-model; and [`../specs/agent.md`](../specs/agent.md) for the backend
-abstraction. [Harness](../specs/harness.md#spec-packages) owns canonical spec
-packages, [Templates](../specs/templates.md#acceptance-context-and-progressive-disclosure)
-owns progressive disclosure, and [Simulation](../specs/simulation.md) owns
-modeling and implementation conformance. Gate retains selection, evidence, and
-publication rules; the model is not a competing behavioral contract.
+[Harness](../specs/harness.md) owns platform layering and the command index;
+[Workspaces](../specs/workspaces.md) owns locks and checkout isolation;
+[Agent](../specs/agent.md) owns backend sessions. Each workflow phase has its
+own contract. [Specs](../specs/specs.md) owns packages and criterion identity;
+[Templates](../specs/templates.md) delivers resolved context.
+
+[Verify](../specs/verify.md) derives and executes obligations;
+[Evidence](../specs/evidence.md) admits results and preserves safety history;
+[Findings](../specs/findings.md) resolves and materializes defects.
+[Gate](../specs/gate.md) composes review and publication authority;
+[Loop](../specs/loop.md) performs workflow effects, and
+[Pre-commit](../specs/pre-commit.md) consumes Gate admission.
+[Simulation](../specs/simulation.md) checks these contracts through a whole-gate
+model and production conformance, not a competing behavioral path.
 
 ## Workflow Boundaries
 
 `loom-workflow::loop::schedule` owns parallel scheduling, retry budgets,
-parking, and stabilization behind a typed request and a spawn callback. The
-CLI supplies backend transport and rendering. Sequential and parallel dispatch
-share `loop::worker` preparation: clone recovery, profiles, skills, prompts,
-scratch ownership, and typed static-fault outcomes.
+parking, and stabilization behind a typed request and a spawn callback. The CLI
+supplies backend transport and rendering. Sequential and parallel dispatch share
+`loop::worker` preparation: clone recovery, profiles, skills, prompts, scratch
+ownership, and typed static-fault outcomes.
 
 Gate CLI flags become one `loom-gate::scope::Request`, then an immutable
 `Resolved` selection. Explicit files, diff-derived files, whole tree, and exact
-targets retain their distinct meanings; an empty diff is a finite empty set,
-not whole-tree authorization. Evidence seals remain separate from selection.
+targets retain their distinct meanings; an empty diff is a finite empty set, not
+whole-tree authorization. Evidence seals remain separate from selection.
 Inspection runs one reviewer session without work-root locks or publication;
 bead/context labels are metadata, not filters. Exact judge targets retain
 selectors and matching declarations across specs. Only a full diff review
@@ -101,8 +107,8 @@ consuming matching verified evidence can produce push-gate review evidence;
 partial inspection never does. Live inspection rendering uses stderr, leaving
 stdout free of prompt examples that could be mistaken for result records.
 
-Native LLM clients retain their public provider-specific types while sharing
-one private transport/conversion/event path for text and structured output.
+Native LLM clients retain their public provider-specific types while sharing one
+private transport/conversion/event path for text and structured output.
 Mechanical style enforcement has one owner in `loom-walk`; its fixtures cover
 both violations and the real workspace, including event sentinels and renderer
 logging-test dependencies.
@@ -125,14 +131,15 @@ Advisory locks live outside container mounts at
 `$XDG_STATE_HOME/loom/locks/<workspace-basename>/` (or the standard user-state
 fallback), not under `.loom/`. Read-only inspection takes no lock.
 
-The cache DB is rebuildable from durable workspace sources (`loom init --rebuild`):
-the spec index, spec files, bd epics, git history, and Gate-owned evidence for
-verification views. It is not the sole authority for correctness-sensitive state.
-[Gate](../specs/gate.md#retained-safety-evidence) owns compact canonical safety
-records and required replay witnesses that survive ordinary transcript expiry;
-[Events](../specs/events.md#persisted-logs-and-replay) owns log cleanup. This is a
-lifetime boundary within existing evidence handling, not a second cache service
-or authorization path.
+The cache DB is rebuildable from durable workspace sources
+(`loom init --rebuild`): the spec index, spec files, bd epics, git history, and
+Evidence-owned records for verification views. It is not the sole authority for
+correctness-sensitive state.
+[Evidence](../specs/evidence.md#retained-safety-evidence) owns compact canonical
+safety records and required replay witnesses that survive ordinary transcript
+expiry; [Events](../specs/events.md#persisted-logs-and-replay) owns log cleanup.
+This is a lifetime boundary within existing evidence handling, not a second
+cache service or authorization path.
 
 ## Compatibility and Retired Internals
 
@@ -143,30 +150,31 @@ callers can still supply `LoopContext.review_notes`; workflow drivers leave it
 unset. The `ReviewConcern` display vocabulary also remains available.
 
 `loom-protocol::gate::Finding` is a resolved, immutable value. External
-consumers migrate direct literals or serde input to `RawFinding::resolve`,
-and field reads to borrowed accessors; serialized JSON and finding IDs/hashes
-are unchanged. Deterministic normalization also produces raw records until
-they resolve against workspace declarations. `GateSuccess` likewise exposes
-read-only accessors, closing post-construction mutation of validated evidence.
+consumers migrate direct literals or serde input to `RawFinding::resolve`, and
+field reads to borrowed accessors; serialized JSON and finding IDs/hashes are
+unchanged. Deterministic normalization also produces raw records until they
+resolve against workspace declarations. `GateSuccess` likewise exposes read-only
+accessors, closing post-construction mutation of validated evidence.
 `WalkOutput`, `MarkerProof`, `VerifiedScope`, and `ReviewedScope` retain their
 existing sealed boundaries; ordinary wire DTOs are not gate authorization.
 
-Configuration parses phase keys and known values at ingestion; `agent_for`
-now applies fallback infallibly. `BackendSettings` carries runtime-specific
-settings, and checked suppressions expose only borrowed selectors/reasons.
-Beads status/type/priority values are shared by response models and command
-options, with unknown statuses/types rejected explicitly. Numeric/string wire
-formats and creation defaults remain unchanged. Open `ModelName`/`ProviderName`
-tokens live in `loom-events`; LLM fallback variants carry checked names instead
-of arbitrary strings. `ModelId` parsing and Direct conversation construction
-are fallible for malformed names, while valid unknown model routing is retained.
+Configuration parses phase keys and known values at ingestion; `agent_for` now
+applies fallback infallibly. `BackendSettings` carries runtime-specific
+settings, and checked suppressions expose only borrowed selectors/reasons. Beads
+status/type/priority values are shared by response models and command options,
+with unknown statuses/types rejected explicitly. Numeric/string wire formats and
+creation defaults remain unchanged. Open `ModelName`/`ProviderName` tokens live
+in `loom-events`; LLM fallback variants carry checked names instead of arbitrary
+strings. `ModelId` parsing and Direct conversation construction are fallible for
+malformed names, while valid unknown model routing is retained.
 
 The following unused workspace-internal APIs have been retired:
 
 - `GateError::Unimplemented`: implemented gate modules expose their own errors.
-- `BdUpdateFn` and `CacheDb::consume_notes_and_refresh_base_commit`: current todo
-  finalization owns durable metadata updates and compensation, then mirrors
-  cursors/work state and consumes implementation notes via `CacheDb::finalize_todo`.
+- `BdUpdateFn` and `CacheDb::consume_notes_and_refresh_base_commit`: current
+  todo finalization owns durable metadata updates and compensation, then mirrors
+  cursors/work state and consumes implementation notes via
+  `CacheDb::finalize_todo`.
 - `resolve_or_mint_open_epics`: the mint path uses the singular resolver.
 
 No user command or agent wire alias is removed by this cleanup. In particular,

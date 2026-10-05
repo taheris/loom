@@ -30,29 +30,35 @@ loom loop
 
 Loom drives a five-phase pipeline per spec:
 
-1. `loom plan [SPEC_LABEL ...]` — interactive spec interview with optional anchors
+1. `loom plan [SPEC_LABEL ...]` — interactive spec interview with optional
+   anchors
 2. `loom todo` — decompose changed specs into beads
-3. `loom loop [BEAD_OR_EPIC_ID ...]` — execute beads through the configured agent
+3. `loom loop [BEAD_OR_EPIC_ID ...]` — execute beads through the configured
+   agent
 4. `loom gate verify` / `loom gate review` — deterministic checks + LLM judge
-5. `loom inbox` / `loom inbox chat` — resolve clarifies, blockers, and tune proposals
+5. `loom inbox` / `loom inbox chat` — resolve clarifies, blockers, and tune
+   proposals
 
-See `specs/harness.md` for the full command surface and `specs/gate.md` for the
-verification model.
+See [Harness](specs/harness.md) for the command index and [Gate](specs/gate.md)
+for verification/review composition and publication.
 
 ## Specs
 
-The behavioural contract lives in [`specs/`](specs/). Each `.md` file is a
-self-contained specification; the index — along with the crate map and repo
-layout — lives in [`docs/README.md`](docs/README.md).
+The behavioural contract lives in [`specs/`](specs/), with one
+`specs/<label>.md` per owner and inline Success Criteria, at most 2,000 lines
+per spec. The ownership index lives in [`docs/README.md`](docs/README.md). The
+intended `spec.md` / `tests.md` package split follows tested tooling support;
+see the
+[cutover rule](docs/spec-conventions.md#bootstrap-authoring-before-cutover).
 
 Author specs per [`docs/spec-conventions.md`](docs/spec-conventions.md); follow
 [`docs/style-rules.md`](docs/style-rules.md) for code and tests.
 
 ## Using Loom
 
-The flake's default `loom` package is the host-native CLI only. It does not
-pull Wrix sandbox images or profile manifests into the package closure, so it
-is suitable for Home Manager and system profiles:
+The flake's default `loom` package is the host-native CLI only. It does not pull
+Wrix sandbox images or profile manifests into the package closure, so it is
+suitable for Home Manager and system profiles:
 
 ```nix
 { inputs', ... }:
@@ -63,19 +69,20 @@ is suitable for Home Manager and system profiles:
 }
 ```
 
-For image-backed workflows, Loom also exposes `loom-wrix`: a wrapped binary
-with `wrix` on its internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a
+For image-backed workflows, Loom also exposes `loom-wrix`: a wrapped binary with
+`wrix` on its internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a
 base/rust/python × claude/pi/direct manifest. Manifest entries also carry the
 raw Wrix launcher and immutable profile config. Both interactive and RPC
 sessions launch that raw executable with exactly one `--profile-config`,
 matching the selected profile/runtime, regardless of the configured wrapper.
 `LOOM_WRIX_BIN` configures repository Git initialization, not image selection.
 For an explicit executable override, set `LOOM_WRIX_SPAWN_BIN` to a raw Wrix
-launcher (never a configured wrapper); this changes only the executable for
-both `run` and `spawn`, not the manifest-selected profile config. There is no
+launcher (never a configured wrapper); this changes only the executable for both
+`run` and `spawn`, not the manifest-selected profile config. There is no
 PATH/wrapper fallback for image-backed sessions. Older manifests missing
-`launcher` or `profile_config` must be regenerated with `mkProfileManifest`. Add that explicit package to a wrix devshell when you want
-`loom plan` to work end-to-end without setting the env vars yourself:
+`launcher` or `profile_config` must be regenerated with `mkProfileManifest`. Add
+that explicit package to a wrix devshell when you want `loom plan` to work
+end-to-end without setting the env vars yourself:
 
 ```nix
 {
@@ -149,5 +156,5 @@ wrix can hand to `mkSandbox`:
 }
 ```
 
-Loom itself has no Nix dependency on wrix — it just expects the binary on
-PATH and the standard env vars.
+Loom itself has no Nix dependency on wrix — it just expects the binary on PATH
+and the standard env vars.

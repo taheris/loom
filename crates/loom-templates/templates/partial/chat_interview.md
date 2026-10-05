@@ -33,8 +33,8 @@ collapses the user's real answer into a shape it doesn't fit.
   the container; treat it as working notes for the current session only, not
   as durable storage.
 - **The "one by one" sub-mode is planning-specific.** When the planning
-  interview is in that sub-mode, it means *one question per chat turn*,
-  not *one picker per turn* — the chat-discipline rules above still
+  interview is in that sub-mode, it means _one question per chat turn_,
+  not _one picker per turn_ — the chat-discipline rules above still
   apply within the sub-mode. Outside the planning templates the sub-mode
   is not in play.
 

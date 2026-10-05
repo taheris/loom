@@ -77,8 +77,7 @@ fn write_spec(workspace: &Path, label: &str, body: &str) -> PathBuf {
 fn criterion_id(label: &SpecLabel, body: &str, line_index: usize) -> String {
     let parsed = parse_content(Path::new("specs/alpha.md"), body);
     let line = parsed.criteria[line_index].line;
-    let next = parsed.criteria.get(line_index + 1).map(|c| c.line);
-    criterion_id_for(label, &criterion_text_for_line(body, line, next))
+    criterion_id_for(label, &criterion_text_for_line(body, line))
         .as_str()
         .to_string()
 }
@@ -94,6 +93,66 @@ fn cache_row(label: &str, id: String, target: &str, commit: String) -> CacheRow 
         verdict: Verdict::Pass,
         evidence: "ok".into(),
     }
+}
+
+#[tokio::test]
+async fn todo_criterion_identity_survives_markdown_formatting() {
+    let dir = init_git_repo();
+    let workspace = dir.path();
+    let label = SpecLabel::new("alpha").unwrap();
+    let body = "## Success Criteria\n\n- A criterion [check](cargo test)\n";
+    let spec_rel = write_spec(workspace, "alpha", body);
+    let git = GitClient::open(workspace).unwrap();
+    let cache_path = workspace.join(".loom/cache.db");
+    let cache = StatusCache::open(&cache_path).unwrap();
+    let expected_id = criterion_id_for(&label, "A criterion");
+    cache
+        .upsert(&cache_row(
+            "alpha",
+            expected_id.as_str().into(),
+            "cargo test",
+            head_sha(workspace),
+        ))
+        .unwrap();
+    drop(cache);
+
+    let initial = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let formatted = "## Success Criteria\n\n<!-- prettier-ignore -->\n- A\n  criterion\n  [check](cargo test)\n\n## Requirements\n\nUnrelated prose.\n";
+    write_spec(workspace, "alpha", formatted);
+    let current = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].criterion_text, "A criterion");
+    assert_eq!(current[0].criterion_id, expected_id);
+    assert_eq!(current, initial);
+    assert!(matches!(current[0].evidence, EvidenceState::Current { .. }));
+}
+
+#[tokio::test]
+async fn todo_does_not_reuse_evidence_for_contaminated_criterion_ids() {
+    let dir = init_git_repo();
+    let workspace = dir.path();
+    let label = SpecLabel::new("alpha").unwrap();
+    let body = "## Success Criteria\n\n- A criterion [check](cargo test)\n\n## Requirements\n\nUnrelated prose.\n";
+    let spec_rel = write_spec(workspace, "alpha", body);
+    let git = GitClient::open(workspace).unwrap();
+    let cache_path = workspace.join(".loom/cache.db");
+    let cache = StatusCache::open(&cache_path).unwrap();
+    let old_id = criterion_id_for(&label, "A criterion ## Requirements Unrelated prose.");
+    cache
+        .upsert(&cache_row(
+            "alpha",
+            old_id.as_str().into(),
+            "cargo test",
+            head_sha(workspace),
+        ))
+        .unwrap();
+    drop(cache);
+
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].criterion_text, "A criterion");
+    assert_ne!(rows[0].criterion_id, old_id);
+    assert!(matches!(rows[0].evidence, EvidenceState::Missing));
 }
 
 #[tokio::test]

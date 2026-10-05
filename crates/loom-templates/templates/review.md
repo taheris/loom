@@ -6,7 +6,7 @@ You are an **independent reviewer** assessing the completed deliverable for spec
 
 This phase is **inspection-only**. You stream findings as structured
 JSON lines on stdout and terminate with one marker — the wire format
-is documented under *Findings — Streaming Wire Format* below. You
+is documented under _Findings — Streaming Wire Format_ below. You
 do **NOT** mutate `bd` state — the driver consumes your streamed
 findings and mints the fix-up beads itself (per `loom gate mint` in
 `specs/gate.md`).
@@ -21,6 +21,7 @@ findings and mints the fix-up beads itself (per `loom gate mint` in
 
 {% include "partial/scratchpad.md" %}
 {% include "partial/skill_index.md" %}
+
 ## Current Spec
 
 Read: {{ spec_path }}
@@ -43,21 +44,27 @@ to inline here. Judge live-path coverage and mock discipline from the
 sources below.
 
 {% if test_sources.is_empty() %}—
-{% else %}{% for source in test_sources %}### {{ source.path }}
+{% else %}{% for source in test_sources %}
+
+### {{ source.path }}
 
 ```
 {{ source.body }}
 ```
 
 {% endfor %}{% endif %}
-{% if lane.includes_judge() %}## `[judge]` Rubrics
+{% if lane.includes_judge() %}
+
+## `[judge]` Rubrics
 
 These `[judge]` annotations name LLM-judgement criteria the deliverable
 must satisfy. Each rubric file's body follows; locate the function
 referenced by the annotation to read the per-criterion rubric.
 
 {% if judge_rubrics.is_empty() %}—
-{% else %}{% for source in judge_rubrics %}### {{ source.path }}
+{% else %}{% for source in judge_rubrics %}
+
+### {{ source.path }}
 
 ```
 {{ source.body }}
@@ -65,6 +72,7 @@ referenced by the annotation to read the per-criterion rubric.
 
 {% endfor %}{% endif %}
 {% endif %}
+
 ## Instructions
 
 1. **Read the spec** at `{{ spec_path }}` thoroughly
@@ -73,7 +81,9 @@ referenced by the annotation to read the per-criterion rubric.
    - For `--diff <range>` reviews, run `git diff <range>` and `git log <range> --oneline` against the exact range the driver supplied. {% match base_commit %}{% when Some with (commit) %}For the current molecule context, the usual range is `{{ commit }}..HEAD` unless the driver pinned a different `--diff` range.{% when None %}Use the driver-pinned range rather than inventing one.{% endmatch %}
    - For `--tree` reviews, do **not** use a base-to-HEAD diff or log as the review scope. The scope is every file in the workspace; use `git status --short`, `git ls-files`, and targeted reads/tests as needed.
 
-{% if lane.includes_rubric() %}## Review Dimensions
+{% if lane.includes_rubric() %}
+
+## Review Dimensions
 
 Assess the deliverable against these dimensions:
 

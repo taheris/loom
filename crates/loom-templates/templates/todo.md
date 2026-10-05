@@ -19,32 +19,47 @@ You are decomposing the driver-injected changed-spec roster into bead work. The 
 Decompose exactly the specs listed here. Every label in this roster must appear exactly once in the final `LOOM_TODO:` payload.
 
 {% if changed_specs.is_empty() %}_No changed specs were injected. Treat this as a preflight problem and self-report instead of emitting success._
-{% else %}{% for spec in changed_specs %}### {{ spec.label }}
+{% else %}{% for spec in changed_specs %}
+
+### {{ spec.label }}
 
 - Spec file: `{{ spec.spec_path }}`
+
 {% match spec.diff %}{% when Some with (diff) %}
 Diff:
 
 ```diff
 {{ diff }}
 ```
-{% when None %}- Diff: not provided; read the spec file and use the criterion-status evidence below.
+
+{% when None %}
+
+- Diff: not provided; read the spec file and use the criterion-status evidence below.
+
 {% endmatch %}
 {% endfor %}{% endif %}
+
 ## Spec Epic Metadata
 
 {% if spec_epics.is_empty() %}_No cached spec epic metadata was injected._
-{% else %}{% for epic in spec_epics %}- **{{ epic.label }}** · epic {% match epic.epic_id %}{% when Some with (id) %}{{ id }}{% when None %}—{% endmatch %} · todo cursor {% match epic.todo_cursor %}{% when Some with (cursor) %}`{{ cursor }}`{% when None %}—{% endmatch %}
+{% else %}{% for epic in spec_epics %}
+
+- **{{ epic.label }}** · epic {% match epic.epic_id %}{% when Some with (id) %}{{ id }}{% when None %}—{% endmatch %} · todo cursor {% match epic.todo_cursor %}{% when Some with (cursor) %}`{{ cursor }}`{% when None %}—{% endmatch %}
+
 {% endfor %}{% endif %}
+
 {% include "partial/companions_context.md" %}
 
 {% include "partial/scratchpad.md" %}
 {% include "partial/skill_index.md" %}{% if self.has_implementation_notes() %}
+
 ## Implementation Notes
 
 The following implementation notes were captured during planning. **Every note below describes work that MUST become one or more beads in this session** unless you persist a structured clarify question to the work epic and self-report.
 
-{% for group in implementation_notes %}{% if !group.notes.is_empty() %}### {{ group.label }}
+{% for group in implementation_notes %}{% if !group.notes.is_empty() %}
+
+### {{ group.label }}
 
 {% for note in group.notes %}<implementation-note>
 <agent-output>
@@ -52,13 +67,18 @@ The following implementation notes were captured during planning. **Every note b
 </agent-output>
 </implementation-note>
 {% endfor %}{% endif %}{% endfor %}{% endif %}
+
 ## Criterion Status
 
 The status cache below shows the latest cached verifier verdict for each Success-Criteria bullet in scope. Use these typed rows to distinguish criteria already covered by fresh positive evidence from stale, missing, failed, or skipped evidence.
 
 {% if criterion_status.is_empty() %}_No parsed criterion-status rows were injected. Treat this as a preflight problem, not as evidence of no work._
-{% else %}{% for row in criterion_status %}- **{{ row.spec_label }} / {{ row.criterion_id }}** · {{ row.criterion_text }} · annotation `{{ row.annotation }}` · evidence `{{ row.evidence.as_str() }}` · result {{ row.evidence.result_label() }} · last commit {{ row.evidence.last_commit_label() }} · commits since {{ row.evidence.commits_since_label() }} · last timestamp {{ row.evidence.last_timestamp_label() }} · cached annotation `{{ row.evidence.cached_annotation_label() }}`
+{% else %}{% for row in criterion_status %}
+
+- **{{ row.spec_label }} / {{ row.criterion_id }}** · {{ row.criterion_text }} · annotation `{{ row.annotation }}` · evidence `{{ row.evidence.as_str() }}` · result {{ row.evidence.result_label() }} · last commit {{ row.evidence.last_commit_label() }} · commits since {{ row.evidence.commits_since_label() }} · last timestamp {{ row.evidence.last_timestamp_label() }} · cached annotation `{{ row.evidence.cached_annotation_label() }}`
+
 {% endfor %}{% endif %}
+
 {% include "partial/decomposition_discipline.md" %}
 
 ## Task Breakdown Guidelines
@@ -71,11 +91,11 @@ The status cache below shows the latest cached verifier verdict for each Success
 
 ## Profile Assignment
 
-| Task Type | Profile | When to Use |
-|-----------|---------|-------------|
-| Rust implementation | `profile:rust` | Tasks touching `.rs` files or using cargo |
+| Task Type             | Profile          | When to Use                                    |
+| --------------------- | ---------------- | ---------------------------------------------- |
+| Rust implementation   | `profile:rust`   | Tasks touching `.rs` files or using cargo      |
 | Python implementation | `profile:python` | Tasks touching `.py` files or using pytest/pip |
-| Nix/shell/docs | `profile:base` | Tasks touching only `.nix`, `.sh`, `.md` files |
+| Nix/shell/docs        | `profile:base`   | Tasks touching only `.nix`, `.sh`, `.md` files |
 
 ## Instructions
 

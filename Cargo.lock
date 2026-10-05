@@ -2674,6 +2674,7 @@ dependencies = [
  "loom-events",
  "loom-protocol",
  "loom-test-support",
+ "pulldown-cmark",
  "thiserror",
  "toml",
 ]

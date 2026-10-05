@@ -7,9 +7,10 @@ This document has two roles:
 2. When this repository tunes itself, it is also the repo-wide tuning guidance
    loaded by `loom tune`.
 
-The normative owner is [`specs/skills.md`](../specs/skills.md) / `spec:skills`.
-Changes to checker ids, checker domains, case syntax, or tuning acceptance rules
-are planned through that spec.
+The normative owner is [Tuning](../specs/tuning.md) / `spec:tuning`.
+[Skills](../specs/skills.md) owns the registry; [Inbox](../specs/inbox.md) owns
+human review and the trusted apply handoff. Changes to checker ids, checker
+domains, case syntax, or tuning acceptance rules are planned through that spec.
 
 ## SkillOpt Adaptation
 
@@ -81,13 +82,13 @@ contains = ["docs/style-rules.md", "style rule"]
 
 Top-level fields:
 
-| Field | Required | Meaning |
-|-------|----------|---------|
-| `id` | yes | Stable case id, globally unique across loaded tuning docs. |
-| `checker` | yes | Built-in behavioral checker id. |
-| `targets` | yes | Non-empty array of explicit concrete tune targets. |
-| `role` | no | Defaults to `regression`; this is the only v1 role. |
-| `input` | checker-specific | Input schema owned by the checker implementation. |
+| Field      | Required         | Meaning                                                     |
+| ---------- | ---------------- | ----------------------------------------------------------- |
+| `id`       | yes              | Stable case id, globally unique across loaded tuning docs.  |
+| `checker`  | yes              | Built-in behavioral checker id.                             |
+| `targets`  | yes              | Non-empty array of explicit concrete tune targets.          |
+| `role`     | no               | Defaults to `regression`; this is the only v1 role.         |
+| `input`    | checker-specific | Input schema owned by the checker implementation.           |
 | `expected` | checker-specific | Expected-result schema owned by the checker implementation. |
 
 Unknown fields, unknown tables, TOML parse failures, wrong types, duplicate case
@@ -108,8 +109,8 @@ no consecutive hyphens
 globally unique across all loaded tuning docs
 ```
 
-No dots, slashes, colons, or path semantics are allowed. Source file and line are
-recorded separately for diagnostics.
+No dots, slashes, colons, or path semantics are allowed. Source file and line
+are recorded separately for diagnostics.
 
 ### Checker Ids
 
@@ -149,19 +150,19 @@ partial:<partial-name>
 Wildcards (`skill:*`, `phase:*`, `partial:*`) and `all` are invalid in
 `loom-case` blocks.
 
-Repo-wide `docs/tuning.md` may target any known skill, phase, or partial. Unknown
-targets are hard errors. Known but inactive targets are valid and skipped for a
-particular run. A case is selected when its targets are known/applicable and at
-least one target intersects the current tune target set.
+Repo-wide `docs/tuning.md` may target any known skill, phase, or partial.
+Unknown targets are hard errors. Known but inactive targets are valid and
+skipped for a particular run. A case is selected when its targets are
+known/applicable and at least one target intersects the current tune target set.
 
-Package `tuning.md` cases must include the owning `skill:<name>` target. They may
-also include additional targets such as `phase:review`.
+Package `tuning.md` cases must include the owning `skill:<name>` target. They
+may also include additional targets such as `phase:review`.
 
 ### Paths
 
-Relative paths inside a case resolve relative to the markdown file containing the
-block. `..` is allowed only when the normalized/canonical result remains inside
-the repo root.
+Relative paths inside a case resolve relative to the markdown file containing
+the block. `..` is allowed only when the normalized/canonical result remains
+inside the repo root.
 
 Every referenced path must:
 
@@ -212,29 +213,31 @@ contract requires it.
 
 ### Preflight Validators
 
-Preflight validators are legality checks that run automatically by applicability.
-They are not valid `loom-case.checker` values. V1 starts with coarse stable ids:
+Preflight validators are legality checks that run automatically by
+applicability. They are not valid `loom-case.checker` values. V1 starts with
+coarse stable ids:
 
-| Checker | Purpose |
-|---------|---------|
-| `preflight.skill.registry` | Skill parse/frontmatter/name/duplicate/override registry legality. |
-| `preflight.skill.materialization` | Safe materialization paths and backend disclosure/registration inputs. |
+| Checker                             | Purpose                                                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `preflight.skill.registry`          | Skill parse/frontmatter/name/duplicate/override registry legality.                                      |
+| `preflight.skill.materialization`   | Safe materialization paths and backend disclosure/registration inputs.                                  |
 | `preflight.skill.protocol-boundary` | Skill content cannot weaken compiled phase protocol, terminal markers, gate rules, or safety contracts. |
-| `preflight.template.compile` | Candidate phase/partial templates compile against typed Askama contexts. |
-| `preflight.template.conformance` | Include graph, marker ownership, options/findings wire-format, and surface-reference walkers pass. |
-| `preflight.tune.case-validation` | Loaded tuning docs and `loom-case` blocks parse, validate, and reference known targets legally. |
+| `preflight.template.compile`        | Candidate phase/partial templates compile against typed Askama contexts.                                |
+| `preflight.template.conformance`    | Include graph, marker ownership, options/findings wire-format, and surface-reference walkers pass.      |
+| `preflight.tune.case-validation`    | Loaded tuning docs and `loom-case` blocks parse, validate, and reference known targets legally.         |
 
 ## Behavioral Checker Set
 
-Scores consume actual replay observations, never descriptions of intended actions.
-Repository changes compare frozen bytes and permissions, including untracked files
-and edits hidden by agent commits. Ordered checks use paired successful backend
-tool-call/result events for audited read/edit/write/bash tools. Missing traces,
-unknown tools, or opaque shell commands that could conceal relevant operations
-are unavailable, not a fabricated pass. Verify commands must exactly match a
-configured expected command and finish successfully after the final relevant edit.
-Scope and protocol checks are deterministic; non-review hard/soft scores are
-binary. Review soft scores retain matched-predicate fractions and penalize extras.
+Scores consume actual replay observations, never descriptions of intended
+actions. Repository changes compare frozen bytes and permissions, including
+untracked files and edits hidden by agent commits. Ordered checks use paired
+successful backend tool-call/result events for audited read/edit/write/bash
+tools. Missing traces, unknown tools, or opaque shell commands that could
+conceal relevant operations are unavailable, not a fabricated pass. Verify
+commands must exactly match a configured expected command and finish
+successfully after the final relevant edit. Scope and protocol checks are
+deterministic; non-review hard/soft scores are binary. Review soft scores retain
+matched-predicate fractions and penalize extras.
 
 State-dependent evidence is deliberately limited: `must_update_beads` cannot be
 certified until isolated state transitions are captured. Push/forbidden-command
@@ -288,13 +291,13 @@ forbidden_specs = ["llm"]
 ```
 
 Hard pass requires exactly one parseable `LOOM_TODO`, no generic success marker,
-valid spec labels, required spec coverage, forbidden spec absence, and item count
-inside bounds.
+valid spec labels, required spec coverage, forbidden spec absence, and item
+count inside bounds.
 
 ### `behavior.loop.verify-after-edit`
 
-Runs a loop fixture and verifies the agent actually ran a relevant verifier after
-the final relevant edit.
+Runs a loop fixture and verifies the agent actually ran a relevant verifier
+after the final relevant edit.
 
 ```toml
 [input]
@@ -349,8 +352,8 @@ must_not_push = true
 
 ### `behavior.tune.apply-handoff`
 
-Runs an accepted tune-proposal fixture and scores a valid `LOOM_APPLY` handoff to
-the trusted driver without chat-side push or `.loom/integration` mutation.
+Runs an accepted tune-proposal fixture and scores a valid `LOOM_APPLY` handoff
+to the trusted driver without chat-side push or `.loom/integration` mutation.
 
 ```toml
 [input]
@@ -382,8 +385,8 @@ must_read_before_edit = [
 edited_paths = ["src/lib.rs"]
 ```
 
-If a backend cannot expose read/edit ordering, this checker is not applicable for
-that backend and must be reported unavailable rather than faked.
+If a backend cannot expose read/edit ordering, this checker is not applicable
+for that backend and must be reported unavailable rather than faked.
 
 ### Fixture Layout
 
@@ -439,8 +442,8 @@ declared regressions are reported with guidance to use `full` or increase caps.
 Only selected cases can block a proposal.
 
 `max_wall_time_secs` is a shared deadline starting at candidate checks, covering
-preflights, fixture setup, and both replay sides. It does not cover harvesting or
-candidate generation. The compatibility key `max_llm_judge_calls` counts
+preflights, fixture setup, and both replay sides. It does not cover harvesting
+or candidate generation. The compatibility key `max_llm_judge_calls` counts
 **evaluation session starts**, not model turns or tokens: current and candidate
 each consume one credit before launch. Exhaustion blocks the proposal with
 incomplete validation. Zero wall budget starts no check; zero evaluation credits
@@ -458,8 +461,8 @@ stable-success
 
 Default regression epsilon is `0.01` for soft-score comparisons. A candidate
 regresses a case when `candidate.hard < current.hard`, or when hard is equal and
-`candidate.soft < current.soft - epsilon`. Improvement mirrors that relation.
-V1 aggregates use equal case weights.
+`candidate.soft < current.soft - epsilon`. Improvement mirrors that relation. V1
+aggregates use equal case weights.
 
 Acceptance policy:
 
@@ -474,10 +477,10 @@ Acceptance policy:
 ## Evidence Mining and Splits
 
 V1 mines Loom-owned evidence first: JSONL events, gate/review outputs, bead
-state, git diffs, criterion evidence, workspace-contained transcripts, and loaded
-tuning docs. External transcripts require explicit `[tune.evidence].external_roots`
-configuration and are printed before harvesting. Evidence is redacted before it is
-persisted in proposal artifacts.
+state, git diffs, criterion evidence, workspace-contained transcripts, and
+loaded tuning docs. External transcripts require explicit
+`[tune.evidence].external_roots` configuration and are printed before
+harvesting. Evidence is redacted before it is persisted in proposal artifacts.
 
 Mined evidence has two stable splits in v1:
 
@@ -489,24 +492,23 @@ selection
 `[tune.evidence].selection_fraction` defaults to `0.34` and must satisfy
 `0.0 < selection_fraction < 1.0`.
 
-Split membership uses SHA-256 over
-`repo_or_workspace_salt || evidence_item_id`, maps the digest to `[0,1)`, and
-assigns the item to `selection` when the value is less than
-`[tune.evidence].selection_fraction`; all other items are `train`. The salt is an
-opaque stable repository/workspace identity owned by the mining algorithm.
-Reports record only the salt id; local manifests may record workspace/cache paths
-separately for resume/debug, but never as salt material. Split membership does
-not depend on the tune-run seed. Reports/manifests also record the split
-algorithm version and selection fraction. Train evidence may be shown to
-candidate generation. Selection evidence is withheld and used for checking/gating.
-V1 has no mined `test` split.
+Split membership uses SHA-256 over `repo_or_workspace_salt || evidence_item_id`,
+maps the digest to `[0,1)`, and assigns the item to `selection` when the value
+is less than `[tune.evidence].selection_fraction`; all other items are `train`.
+The salt is an opaque stable repository/workspace identity owned by the mining
+algorithm. Reports record only the salt id; local manifests may record
+workspace/cache paths separately for resume/debug, but never as salt material.
+Split membership does not depend on the tune-run seed. Reports/manifests also
+record the split algorithm version and selection fraction. Train evidence may be
+shown to candidate generation. Selection evidence is withheld and used for
+checking/gating. V1 has no mined `test` split.
 
 Harvested selection text currently has no executable expected-result oracle.
-Selecting such an item blocks validation as **not evaluated**, before agent launch;
-nonempty model output is never treated as a passing mined result. Training text
-can still guide candidate generation. `fast` runs preflights only; behavioral
-runs need supported declared cases, and any selected unavailable evidence blocks
-rather than being silently dropped.
+Selecting such an item blocks validation as **not evaluated**, before agent
+launch; nonempty model output is never treated as a passing mined result.
+Training text can still guide candidate generation. `fast` runs preflights only;
+behavioral runs need supported declared cases, and any selected unavailable
+evidence blocks rather than being silently dropped.
 
 Declared `loom-case` cases are tracked regression cases. They are not secret
 selection evidence.
@@ -514,8 +516,8 @@ selection evidence.
 ## Tune Proposal Records
 
 The tune bead is the canonical durable record. Local `.loom/tune/<id>/`
-artifacts (`repo/`, `manifest.json`, `evidence.md`, logs, and evidence cache) are
-resume/debug material. Bead metadata records `loom.tune.id`, state, targets,
+artifacts (`repo/`, `manifest.json`, `evidence.md`, logs, and evidence cache)
+are resume/debug material. Bead metadata records `loom.tune.id`, state, targets,
 level, seed, base commit, proposal branch/head, plan hash, case counts, outcome
 counts, and any apply-failure payload. If local artifacts are missing but the
 proposal branch/head still exists, Loom may regenerate them; if the branch or
@@ -523,9 +525,9 @@ commits are missing/unreachable, the item remains in the inbox as a blocked tune
 item rather than being skipped.
 
 Accepted tune proposals are applied as an all-or-nothing batch by the trusted
-driver, not by chat. `cherry_pick_conflict`, `verify_failed`, `review_failed`, or
-`push_failed` aborts the batch, pushes nothing, and attaches shared diagnostics
-to every proposal in the batch.
+driver, not by chat. `cherry_pick_conflict`, `verify_failed`, `review_failed`,
+or `push_failed` aborts the batch, pushes nothing, and attaches shared
+diagnostics to every proposal in the batch.
 
 ## CLI Summary
 

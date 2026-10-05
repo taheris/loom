@@ -21,7 +21,10 @@ Spec file: specs/harness.md
 
 The following companion directories are in scope. Read each one's `manifest.md` on demand:
 
+
+
 - lib/sandbox/
+
 
 
 ## Style Rules
@@ -75,6 +78,7 @@ this phase **before** you finish.
 Do not rewrite or truncate prior contents; the recovery payload is the full
 running log.
 
+
 ## Current Spec
 
 Read: specs/harness.md
@@ -109,8 +113,12 @@ assertion failed: expected reframe in prompt
 
 ## Instructions
 
+
+
 > Re-read the previous failure block above and address its specific
 > concern before re-implementing.
+
+
 
 1. **Understand**: Read the spec and issue thoroughly before making changes
 2. **Test Strategy**: Decide between:
@@ -177,6 +185,7 @@ are relevant to this issue's work.
 ## Quality Gates
 
 Before outputting LOOM_COMPLETE:
+
 - Tests written and passing
 - Lint checks pass
 - Changes staged (`git add`)
@@ -246,7 +255,7 @@ phase-specific meaning is:
 
 If this phase pins self-report markers and you cannot finish — needing
 human input or a decision among multiple resolutions — emit one of the
-self-report markers documented separately (see *Self-Report Markers*).
+self-report markers documented separately (see _Self-Report Markers_).
 Interactive plan/inbox sessions resolve friction with the human in-turn
 instead of worker self-report markers.
 
@@ -334,6 +343,7 @@ exactly one, on its own line, as the final output of the session.
   bead/work epic and exits without entering recovery; other beads in the
   molecule continue running. The labelled bead or work epic waits for
   `loom inbox` resolution.
+
 - `LOOM_BLOCKED` — Genuine semantic dead end: you cannot proceed,
   do not expect retry to succeed, and cannot safely enumerate candidate
   resolutions. Write a non-empty reason on the line immediately before

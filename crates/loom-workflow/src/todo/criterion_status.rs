@@ -63,12 +63,6 @@ pub async fn build_criterion_status(
         .map(|row| (row.criterion_anchor.clone(), row))
         .collect();
 
-    let next_lines: BTreeMap<u32, u32> = parsed
-        .criteria
-        .windows(2)
-        .map(|pair| (pair[0].line, pair[1].line))
-        .collect();
-
     let mut out: Vec<CriterionStatus> = Vec::new();
     for crit in &parsed.criteria {
         let Some(anns) = annotations_by_line.get(&crit.line) else {
@@ -78,8 +72,7 @@ pub async fn build_criterion_status(
             continue;
         }
         let ann = anns[0];
-        let criterion_text =
-            criterion_text_for_line(&content, crit.line, next_lines.get(&crit.line).copied());
+        let criterion_text = crit.text.clone();
         let criterion_id = criterion_id_for(spec_label, &criterion_text);
         let annotation = annotation_from_parsed(ann);
         let evidence = match cache_by_id.get(criterion_id.as_str()).copied() {
@@ -101,8 +94,8 @@ pub fn criterion_id_for(spec_label: &SpecLabel, criterion_text: &str) -> Criteri
     CriterionId::for_spec_text(spec_label, criterion_text)
 }
 
-pub fn criterion_text_for_line(content: &str, line: u32, next_line: Option<u32>) -> String {
-    loom_gate::annotation::criterion_text_for_line(content, line, next_line)
+pub fn criterion_text_for_line(content: &str, line: u32) -> String {
+    loom_gate::annotation::criterion_text_for_line(content, line)
 }
 
 async fn evidence_from_row(
@@ -198,10 +191,10 @@ mod tests {
     fn criterion_text_strips_bullet_and_annotation() {
         let content = "## Success Criteria\n\n- A criterion spans\n  continuation text\n  [test](crate::test_name)\n- Next criterion [check](cargo test)\n";
         assert_eq!(
-            criterion_text_for_line(content, 3, Some(6)),
+            criterion_text_for_line(content, 3),
             "A criterion spans continuation text",
         );
-        assert_eq!(criterion_text_for_line(content, 6, None), "Next criterion",);
+        assert_eq!(criterion_text_for_line(content, 6), "Next criterion",);
     }
 
     #[test]

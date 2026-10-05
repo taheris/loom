@@ -20,7 +20,10 @@ Labels passed to `loom plan [SPEC_LABEL ...]` are initial context anchors only. 
 
 {% if anchor_labels.is_empty() %}
 No anchor labels were supplied. Start from the project overview and spec index.
-{% else %}{% for label in anchor_labels %}- `{{ label }}` — if `specs/{{ label }}.md` exists, read it before interviewing; if it is missing, treat it as a proposed new spec.
+{% else %}{% for label in anchor_labels %}
+
+- `{{ label }}` — if `specs/{{ label }}.md` exists, read it before interviewing; if it is missing, treat it as a proposed new spec.
+
 {% endfor %}{% endif %}
 
 {% include "partial/companions_context.md" %}
@@ -29,6 +32,7 @@ No anchor labels were supplied. Start from the project overview and spec index.
 
 {% include "partial/scratchpad.md" %}
 {% include "partial/skill_index.md" %}
+
 ## Interview Guidelines
 
 1. Ask one focused question at a time.

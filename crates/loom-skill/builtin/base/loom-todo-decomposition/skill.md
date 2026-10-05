@@ -5,12 +5,15 @@ metadata:
   loom:
     phases: ["todo"]
 ---
+
 # Todo Decomposition
 
-Break spec work into beads that each have a clear acceptance boundary, relevant profile labels, and verifier expectations. Add dependencies when ordering matters and keep independent work unblocked.
+Break spec work into beads that each have a clear acceptance boundary, relevant
+profile labels, and verifier expectations. Add dependencies when ordering
+matters and keep independent work unblocked.
 
-`loom todo` is a decomposition pass, not the implementation or review pass.
-Use the injected diffs and criterion-status rows first, inspect only the
+`loom todo` is a decomposition pass, not the implementation or review pass. Use
+the injected diffs and criterion-status rows first, inspect only the
 representative code needed to choose bead boundaries, and create an explicit
 audit/implementation bead when broad missing or stale evidence would otherwise
 require exhaustive investigation.

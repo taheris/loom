@@ -26,7 +26,10 @@ git stash show -p {{ recovery.stash.commit }}
 Then intentionally choose one recovery path: apply the stash, cherry-pick relevant hunks, leave it unapplied for a justified follow-up, or drop it when it is irrelevant after inspection. Do not silently ignore preserved local work.
 
 {% if recovery.alignment.is_conflict() %}Alignment is in conflict. Treat this as agent-owned merge-conflict recovery: inspect the conflict files, resolve them, and continue, abort, or retry the rebase as appropriate before normal implementation work. Conflict files rendered by the driver:
-{% for file in recovery.alignment.conflict_files() %}- `{{ file }}`
+{% for file in recovery.alignment.conflict_files() %}
+
+- `{{ file }}`
+
 {% endfor %}
 Use `LOOM_CLARIFY` with a persisted Options block if the conflict requires a human decision.
 

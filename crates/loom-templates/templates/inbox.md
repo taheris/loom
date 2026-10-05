@@ -32,7 +32,9 @@ known; read that spec and companions on demand for the current item.
 
 ## Visible Inbox Items
 
-{% for item in inbox_items %}### {{ item.index }}. {{ item.id }} — [{{ item.kind_tag() }}] [spec:{{ item.spec_label }}] {{ item.title }}
+{% for item in inbox_items %}
+
+### {{ item.index }}. {{ item.id }} — [{{ item.kind_tag() }}] [spec:{{ item.spec_label }}] {{ item.title }}
 
 **Bead id:** `{{ item.bead_id }}`
 
@@ -57,26 +59,35 @@ known; read that spec and companions on demand for the current item.
 ```text
 {{ tail }}
 ```
+
 {% when None %}{% endmatch %}{% match infra.spawn_error_tail %}{% when Some with (tail) %}- Spawn error tail:
 
 ```text
 {{ tail }}
 ```
+
 {% when None %}{% endmatch %}{% match infra.log_path %}{% when Some with (path) %}- Log path: `{{ path }}`
 {% when None %}{% endmatch %}{% when None %}{% endmatch %}{% else %}**Flow:** {% if item.is_blocked() %}`loom:blocked` — enumerate candidate resolutions with the user before updating bd state.{% else %}`loom:clarify` — options below are the existing decision frame.{% endif %}
 {% endif %}
 {% match item.options_summary %}{% when Some with (s) %}
+
 ## Options — {{ s }}
 
-{% when None %}{% endmatch %}{% for opt in item.options %}#### Option {{ opt.n }}{% match opt.title %}{% when Some with (t) %} — {{ t }}{% when None %}{% endmatch %}
+{% when None %}{% endmatch %}{% for opt in item.options %}
+
+#### Option {{ opt.n }}{% match opt.title %}{% when Some with (t) %} — {{ t }}{% when None %}{% endmatch %}
 
 {% match opt.body %}{% when Some with (b) %}{{ b }}
 
-{% when None %}{% endmatch %}{% endfor %}#### Canonical body
+{% when None %}{% endmatch %}{% endfor %}
+
+#### Canonical body
 
 {{ item.body }}
 
-{% match item.notes %}{% when Some with (notes) %}#### Notes
+{% match item.notes %}{% when Some with (notes) %}
+
+#### Notes
 
 {{ notes }}
 
@@ -96,10 +107,10 @@ known; read that spec and companions on demand for the current item.
    guessing. Then draft the resolution, confirm with the user, and persist
    only after confirmation.
 4. For bead-backed clarify/blocked/infra items, bd writes are authorized in
-   chat: `bd update <id> --notes "..."`, `bd update <id>
-   --remove-label=loom:clarify --status=open` / `bd update <id>
-   --remove-label=loom:blocked --status=open` / `bd update <id>
-   --remove-label=loom:infra --status=open`, status changes, and
+   chat: `bd update <id> --notes "..."`,
+   `bd update <id> --remove-label=loom:clarify --status=open` /
+   `bd update <id> --remove-label=loom:blocked --status=open` /
+   `bd update <id> --remove-label=loom:infra --status=open`, status changes, and
    `bd close <id>` when the user decides no further implementation is needed.
    Pair label removal with `--status=open` unless closing the bead.
 5. For tune proposals, use the bead body/metadata as durable state and local

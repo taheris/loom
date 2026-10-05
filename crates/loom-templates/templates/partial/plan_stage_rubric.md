@@ -10,7 +10,7 @@ open until the user resolves it.
 Every requirement the user expressed must have a checkable surface in the
 spec:
 
-- A *Success Criteria* bullet carrying a `[check]`, `[test]`, `[system]`, or `[judge]` annotation
+- A _Success Criteria_ bullet carrying a `[check]`, `[test]`, `[system]`, or `[judge]` annotation
 - An explicit `## Out of Scope` declaration
 
 Lifecycle, decision, and contract table rows elaborate those criteria.
@@ -29,8 +29,8 @@ target will not resolve at commit time — typically a newly-authored claim
 whose verifier implementation will land in a follow-on `loom loop` bead —
 must carry the pending modifier `?` between the tier name and the closing
 bracket. Grammar: `[tier?](target)`, uniform across all four tiers
-(`[check?]`, `[test?]`, `[system?]`, `[judge?]`). See the *Pending
-modifier* subsection of `{{ spec_conventions }}` for the per-annotation
+(`[check?]`, `[test?]`, `[system?]`, `[judge?]`). See the _Pending
+modifier_ subsection of `{{ spec_conventions }}` for the per-annotation
 outcome matrix and the self-cleaning `UnneededPendingMarker` enforcement.
 
 Applying the marker is **part of this completeness check, not a separate

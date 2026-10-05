@@ -44,12 +44,13 @@ exactly one, on its own line, as the final output of the session.
   the bead to `loom:blocked` with cause `clarify-without-options`.
   The block MUST use the canonical heading shape:
 
-{% include "partial/options_format.md" %}
+  {% filter indent(2) %}{% include "partial/options_format.md" %}{% endfilter %}
 
   After persisting, the gate applies `loom:clarify` to the target
   bead/work epic and exits without entering recovery; other beads in the
   molecule continue running. The labelled bead or work epic waits for
   `loom inbox` resolution.
+
 - `LOOM_BLOCKED` — Genuine semantic dead end: you cannot proceed,
   do not expect retry to succeed, and cannot safely enumerate candidate
   resolutions. Write a non-empty reason on the line immediately before

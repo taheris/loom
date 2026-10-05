@@ -30,9 +30,12 @@ Loom orchestrates the spec-to-implementation workflow.
 
 Decompose exactly the specs listed here. Every label in this roster must appear exactly once in the final `LOOM_TODO:` payload.
 
+
+
 ### harness
 
 - Spec file: `specs/harness.md`
+
 
 Diff:
 
@@ -42,15 +45,24 @@ Diff:
 ```
 
 
+
+
 ## Spec Epic Metadata
 
+
+
 - **harness** · epic lm-spec · todo cursor `0123456789abcdef0123456789abcdef01234567`
+
+
 
 ## Companions
 
 The following companion directories are in scope. Read each one's `manifest.md` on demand:
 
+
+
 - lib/sandbox/
+
 
 
 ## Scratchpad
@@ -96,9 +108,12 @@ this phase **before** you finish.
 Do not rewrite or truncate prior contents; the recovery payload is the full
 running log.
 
+
 ## Implementation Notes
 
 The following implementation notes were captured during planning. **Every note below describes work that MUST become one or more beads in this session** unless you persist a structured clarify question to the work epic and self-report.
+
+
 
 ### harness
 
@@ -108,14 +123,28 @@ Carry the unified todo protocol into snapshots.
 </agent-output>
 </implementation-note>
 
+
 ## Criterion Status
 
 The status cache below shows the latest cached verifier verdict for each Success-Criteria bullet in scope. Use these typed rows to distinguish criteria already covered by fresh positive evidence from stale, missing, failed, or skipped evidence.
 
+
+
 - **templates / criterion-0000000000000001** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `0123456789abcdef0123456789abcdef01234567` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`
+
+
+
 - **templates / criterion-0000000000000002** · Rendered output is stable across runs. · annotation `[test](template_renders_are_byte_stable_across_runs)` · evidence `Current` · result Fail · last commit `1111111111111111111111111111111111111111` · commits since 7 · last timestamp 1716200000000 · cached annotation `—`
+
+
+
 - **templates / criterion-0000000000000003** · Todo prompts render typed criterion status rows. · annotation `[test](todo_template_renders_typed_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`
+
+
+
 - **templates / criterion-0000000000000004** · Every non-pending pinning cell matches the include graph. · annotation `[check](cargo run -p loom-walk -- template_pinning_matrix)` · evidence `Current` · result Skipped · last commit `2222222222222222222222222222222222222222` · commits since 3 · last timestamp 1716250000000 · cached annotation `—`
+
+
 
 ## Decomposition Discipline
 
@@ -135,7 +164,7 @@ The discipline is template-agnostic: it applies to whatever workspace layout the
 
 The `criterion_status` audit governs **how** the injected changed-spec work decomposes into beads — split, merge, dependency-order — **not whether** driver-provided planning inputs get authored at all. Implementation notes and changed-spec diffs describe the next batch of planned work; a green row is evidence about prior coverage, not proof that a new planned change is already shipped.
 
-The audit's role is to discipline the *shape* of the decomposition: which notes collapse into a single bead, which split across several, how the resulting beads order against each other, and whether any proposed bead is redundant because representative source inspection confirms the contract is already covered.
+The audit's role is to discipline the _shape_ of the decomposition: which notes collapse into a single bead, which split across several, how the resulting beads order against each other, and whether any proposed bead is redundant because representative source inspection confirms the contract is already covered.
 
 ### Acceptable session outcomes
 
@@ -148,7 +177,7 @@ Omitted specs, duplicate specs, pending outcomes, and generic `LOOM_COMPLETE` / 
 
 ### Clarify or block on the work epic
 
-When coverage cannot be determined by inspection — the spec is ambiguous, verifier targets conflict, cursor/index state is inconsistent, or your judgement of the status cache's trustworthiness is contestable — emit `LOOM_CLARIFY`. Persist both the question and the canonical `## Options — …` block to the **driver-created work epic** notes per the *Options Format Contract* in `specs/gate.md` before emitting the marker. The verdict gate applies `loom:clarify` to the work epic; the human resolves via `loom inbox`, and a subsequent `loom todo` invocation reuses the pending work epic.
+When coverage cannot be determined by inspection — the spec is ambiguous, verifier targets conflict, cursor/index state is inconsistent, or your judgement of the status cache's trustworthiness is contestable — emit `LOOM_CLARIFY`. Persist both the question and the canonical `## Options — …` block to the **driver-created work epic** notes per the _Options Format Contract_ in `specs/gate.md` before emitting the marker. The verdict gate applies `loom:clarify` to the work epic; the human resolves via `loom inbox`, and a subsequent `loom todo` invocation reuses the pending work epic.
 
 When you have no candidate resolutions to enumerate, emit `LOOM_BLOCKED` with a non-empty prior-line reason explaining why options cannot be safely surfaced; the work epic remains the session-stable carrier for the blocked decomposition batch. If candidate options can be framed, use `LOOM_CLARIFY` instead so those options reach bead state.
 
@@ -166,11 +195,11 @@ A fixed decomposition axis applied across the board irrespective of evidence —
 
 ## Profile Assignment
 
-| Task Type | Profile | When to Use |
-|-----------|---------|-------------|
-| Rust implementation | `profile:rust` | Tasks touching `.rs` files or using cargo |
+| Task Type             | Profile          | When to Use                                    |
+| --------------------- | ---------------- | ---------------------------------------------- |
+| Rust implementation   | `profile:rust`   | Tasks touching `.rs` files or using cargo      |
 | Python implementation | `profile:python` | Tasks touching `.py` files or using pytest/pip |
-| Nix/shell/docs | `profile:base` | Tasks touching only `.nix`, `.sh`, `.md` files |
+| Nix/shell/docs        | `profile:base`   | Tasks touching only `.nix`, `.sh`, `.md` files |
 
 ## Instructions
 
@@ -184,39 +213,39 @@ A fixed decomposition axis applied across the board irrespective of evidence —
 4. Set execution order with `bd dep add <later-task> <earlier-task>` where required.
 5. When finished, stop using tools and emit success only through the typed todo payload described below as your final assistant message. Do not use `bash`, `python`, `echo`, `printf`, or any other tool to print the terminal line.
 
-  ```markdown
-  ## Options — <one-line summary of the decision, ≤80 chars>
+```markdown
+## Options — <one-line summary of the decision, ≤80 chars>
 
-  ### Option 1 — <short title>
-  <body paragraph(s) describing the option, naming its cost>
+### Option 1 — <short title>
+<body paragraph(s) describing the option, naming its cost>
 
-  ### Option 2 — <short title>
-  <body, including cost>
+### Option 2 — <short title>
+<body, including cost>
 
-  ### Option 3 — <short title>
-  <body, including cost>
-  ```
+### Option 3 — <short title>
+<body, including cost>
+```
 
-  **Rules:**
+**Rules:**
 
-  - The `## Options` header carries a one-line summary (≤50 chars)
-    separated from the word `Options` by em-dash `—` (default),
-    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
-    tolerate any of these; emit em-dash by default.
-  - Each option is `### Option N — <title>` where `N` is 1-based
-    sequential. Numbering is required so `loom inbox` can parse and
-    render each option consistently.
-  - Each option body extends from its `### Option N` heading until
-    the next `### Option` or the next `##` heading; name the cost
-    (churn, debt, coupling, risk).
-  - Use contextual options per decision — typically 2–4, each
-    naming its cost. Do NOT emit a fixed A/B/C menu.
+- The `## Options` header carries a one-line summary (≤50 chars)
+  separated from the word `Options` by em-dash `—` (default),
+  en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
+  tolerate any of these; emit em-dash by default.
+- Each option is `### Option N — <title>` where `N` is 1-based
+  sequential. Numbering is required so `loom inbox` can parse and
+  render each option consistently.
+- Each option body extends from its `### Option N` heading until
+  the next `### Option` or the next `##` heading; name the cost
+  (churn, debt, coupling, risk).
+- Use contextual options per decision — typically 2–4, each
+  naming its cost. Do NOT emit a fixed A/B/C menu.
 
-  `loom inbox` parses this format to render the SUMMARY column,
-  enumerate options for view mode, and provide structured chat context.
-  A malformed block — or one that lives only in your prose, never
-  persisted to bead state — leaves the options invisible to
-  `loom inbox`'s queue and chat context.
+`loom inbox` parses this format to render the SUMMARY column,
+enumerate options for view mode, and provide structured chat context.
+A malformed block — or one that lives only in your prose, never
+persisted to bead state — leaves the options invisible to
+`loom inbox`'s queue and chat context.
 
 ## Self-Report Markers
 
@@ -302,6 +331,7 @@ exactly one, on its own line, as the final output of the session.
   bead/work epic and exits without entering recovery; other beads in the
   molecule continue running. The labelled bead or work epic waits for
   `loom inbox` resolution.
+
 - `LOOM_BLOCKED` — Genuine semantic dead end: you cannot proceed,
   do not expect retry to succeed, and cannot safely enumerate candidate
   resolutions. Write a non-empty reason on the line immediately before

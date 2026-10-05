@@ -13,7 +13,7 @@ LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<
 ```
 
 - **`token`** — concern identifier from the closed-set enum listed
-  under *Concern tokens* below.
+  under _Concern tokens_ below.
 - **`route`** — workflow route for this finding: `blocking` retries
   the current bead, `deferred` records remediation outside the current
   bead's hot path, and `clarify` creates human-decision work with an
@@ -39,28 +39,28 @@ tokens, target JSON, or other structural JSON across prose outside the object.
 
 ### Canonical target shapes per token
 
-| Token | `target` shape |
-|---|---|
-| `spec-coherence-fail` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` |
-| `orphan-integration` | `{"kind":"Contract","id":"<contract-id>"}` |
-| `style-rule-violation` | `{"kind":"StyleRule","rule_id":"<rule-id>","subject":"<stable-subject>"}` |
-| `verifier-bypass` | `{"kind":"Annotation","target_string":"<target>"}` |
-| `weak-assertion` | `{"kind":"Annotation","target_string":"<target>"}` |
-| `fabricated-result` | `{"kind":"Annotation","target_string":"<target>"}` |
-| `coincidental-pass` | `{"kind":"Annotation","target_string":"<target>"}` |
-| `mock-discipline` | `{"kind":"TestPath","path":"<path>"}` |
-| `verifier-too-narrow` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` |
-| `concurrency-untested` | `{"kind":"LockSite","file":"<file>","line":<line>}` |
-| `judge-flag` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` |
-| `invariant-clash` | `{"kind":"Invariant","spec":"<spec>","section":"<section>","tag":"<tag>"}` |
-| `template-spec-drift` | `{"kind":"Template","path":"<path>"}` — `--tree` scope only |
-| `cross-spec-clash` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
+| Token                        | `target` shape                                                                   |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| `spec-coherence-fail`        | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}`                       |
+| `orphan-integration`         | `{"kind":"Contract","id":"<contract-id>"}`                                       |
+| `style-rule-violation`       | `{"kind":"StyleRule","rule_id":"<rule-id>","subject":"<stable-subject>"}`        |
+| `verifier-bypass`            | `{"kind":"Annotation","target_string":"<target>"}`                               |
+| `weak-assertion`             | `{"kind":"Annotation","target_string":"<target>"}`                               |
+| `fabricated-result`          | `{"kind":"Annotation","target_string":"<target>"}`                               |
+| `coincidental-pass`          | `{"kind":"Annotation","target_string":"<target>"}`                               |
+| `mock-discipline`            | `{"kind":"TestPath","path":"<path>"}`                                            |
+| `verifier-too-narrow`        | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}`                       |
+| `concurrency-untested`       | `{"kind":"LockSite","file":"<file>","line":<line>}`                              |
+| `judge-flag`                 | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}`                       |
+| `invariant-clash`            | `{"kind":"Invariant","spec":"<spec>","section":"<section>","tag":"<tag>"}`       |
+| `template-spec-drift`        | `{"kind":"Template","path":"<path>"}` — `--tree` scope only                      |
+| `cross-spec-clash`           | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
 | `spec-conventions-violation` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
 
 `scope-creep` and `scope-shortfall` are per-bead-only tokens; do not
 emit them at `--tree` scope. `template-spec-drift`, `cross-spec-clash`,
 and `spec-conventions-violation` apply at `--tree` scope only (see
-`specs/gate.md` § *Standing-safety-net checks*).
+`specs/gate.md` § _Standing-safety-net checks_).
 
 Example records:
 
@@ -148,10 +148,11 @@ The remaining tokens cover the other rubric dimensions:
   the minted bead to `loom:blocked` with cause
   `clarify-without-options`):
 
-{% include "partial/options_format.md" %}
+  {% filter indent(2) %}{% include "partial/options_format.md" %}{% endfilter %}
 
   The driver attaches `loom:clarify` to the minted bead and lifts
   the block into its description.
+
 - `template-spec-drift` — at `--tree` scope, a prompt template under
   `crates/loom-templates/templates/` directs agents toward behaviour
   a spec contradicts (Invariant 3 from `specs/gate.md`).
@@ -190,14 +191,14 @@ preserving any well-formed findings streamed before the bad terminator.
 The summary is for the verdict log only; per-finding routing is decided
 from each streamed finding's `route`, not from the terminal marker.
 
-| Findings streamed | Terminator | Verdict |
-|---|---|---|
-| 0 | `LOOM_COMPLETE` | clean — phase done |
-| ≥1 | `LOOM_CONCERN: {"summary":"..."}` | recovery — findings minted, summary threaded into `previous_failure` |
-| 0 | `LOOM_CONCERN: {...}` | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration |
-| ≥1 | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count, findings }` — findings streamed but terminator claims clean, and the parsed findings ride through to the recovery prompt |
-| any well-formed stream | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings }` — payload parse failure preserves the literal payload and any well-formed findings |
-| any | missing or duplicate marker | `SwallowedMarker` (existing) |
+| Findings streamed      | Terminator                                                      | Verdict                                                                                                                                                                    |
+| ---------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0                      | `LOOM_COMPLETE`                                                 | clean — phase done                                                                                                                                                         |
+| ≥1                     | `LOOM_CONCERN: {"summary":"..."}`                               | recovery — findings minted, summary threaded into `previous_failure`                                                                                                       |
+| 0                      | `LOOM_CONCERN: {...}`                                           | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration                                                                                        |
+| ≥1                     | `LOOM_COMPLETE`                                                 | `BadWalk::FindingsWithoutConcern { finding_count, findings }` — findings streamed but terminator claims clean, and the parsed findings ride through to the recovery prompt |
+| any well-formed stream | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings }` — payload parse failure preserves the literal payload and any well-formed findings                                         |
+| any                    | missing or duplicate marker                                     | `SwallowedMarker` (existing)                                                                                                                                               |
 
 **Agent's mental model.** Review the diff. Every time you identify a
 concern, immediately emit a `LOOM_FINDING:` record with the structured

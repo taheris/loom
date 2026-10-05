@@ -28,6 +28,6 @@ phase-specific meaning is:
 
 If this phase pins self-report markers and you cannot finish — needing
 human input or a decision among multiple resolutions — emit one of the
-self-report markers documented separately (see *Self-Report Markers*).
+self-report markers documented separately (see _Self-Report Markers_).
 Interactive plan/inbox sessions resolve friction with the human in-turn
 instead of worker self-report markers.
