@@ -153,12 +153,13 @@ failure identifies the source location and applicable rule.
 
 **Convention.** Parsers and codecs ship with a proptest invariant —
 minimally no-panic-on-arbitrary-input and (where applicable) round-trip
-identity. State machines lean on typestate (per RS-12 / RS-7 in
-[`docs/style-rules.md`](../docs/style-rules.md)) to make invalid
-transitions unrepresentable at compile time; proptests on
-state-transition logic are redundant when the type system already
-enforces them. Parsers and codecs without proptest coverage are
-flagged at `loom gate review`.
+identity. State machines use typestate (per RS-12 / RS-7 in
+[`docs/style-rules.md`](../docs/style-rules.md)) where it makes invalid
+transitions unrepresentable. Tests need not duplicate a fact established solely
+by type checking, but types do not establish temporal correctness, input
+completeness, or evidence freshness. Consequential workflow behavior follows
+[Simulation's model-admission and conformance contract](simulation.md#when-to-model).
+Parsers and codecs without proptest coverage are flagged at `loom gate review`.
 
 **Suite configuration**: property tests use 32 cases in the explicit full test
 suite, overridable via `PROPTEST_CASES` to `2048+` for local exhaustive runs.
@@ -187,6 +188,27 @@ public seam.
 proves valuable for byte-level edge cases proptest misses (e.g.,
 JSONL framing under adversarial input), it's exposed as
 `nix run .#fuzz-loom` for on-demand or nightly use, never gating PRs.
+
+### Selective Property Campaigns
+
+Discovered Rust tests default to the ordinary broad suite. Explicit nextest-style
+filters in the owning package's `tests.md` select property-group members from
+the current inventory; unmatched tests remain in the ordinary suite. Filters may
+select tests within shared binaries or entire binaries, without a separately
+maintained individual-target list or property-name heuristic. Strategy syntax
+and authority are owned by [spec conventions](../docs/spec-conventions.md#verification-strategy).
+
+Property campaigns have individually selectable exact execution/result identities
+with admitted dependencies under [Gate](gate.md#verifier-inputs-1). Classification
+cannot silently drop a test or reduce mandatory publication coverage. Ordinary
+unit/integration suites need not be fragmented for finer selection.
+
+Properties can share libraries, binaries, and compilation while retaining their
+own runtime fixtures and campaign parameters. An independent runtime fixture may
+invalidate only one property; a shared executable-input change may correctly
+invalidate several. Neither crate splitting nor precise function-level semantic
+impact analysis is required. Build/result reuse and stage applicability follow
+Gate; selecting feedback work is not redefining full-publication obligations.
 
 ### Snapshot Testing
 
@@ -581,10 +603,27 @@ owns:
 ### Annotation gate
 
 - Every `[check]` / `[test]` / `[system]` / `[judge]` annotation in
-      `specs/*.md` resolves to a valid verifier for its tier
-  [test](end_to_end_specs_dir_check_combines_both_directions)
+      canonical package acceptance documents is checked under Gate's resolution
+      and pending policy.
+  [test?](end_to_end_package_specs_check_combines_integrity_directions)
 
 ### Property-based testing
+
+- Explicit nextest-style property filters partition the current discovered Rust
+  test inventory into property groups and the remaining ordinary suite. Filters
+  can select members within shared binaries; new unmatched tests stay in the
+  broad suite rather than disappearing or requiring a duplicate target list.
+  [test?](quint_property_filters_partition_discovered_tests)
+- Ordinary native unit/integration suites may remain broad, while property
+  campaigns have individually selectable exact targets and results. Every
+  discovered native test is accounted for by a suite or property group; grouping
+  does not silently drop tests or alter required full-publication coverage.
+  [system?](nix run .#test-quint -- property-selection)
+- Property executions share libraries/build artifacts without requiring crate
+  splits or duplicate compilation. Distinct runtime fixtures/campaign inputs
+  invalidate their dependent properties; changed shared execution inputs may
+  correctly invalidate several properties without implying a scope defect.
+  [system?](nix run .#test-quint -- shared-property-artifacts)
 
 - JSONL backend parsers never panic on arbitrary bounded text
   [test](jsonl_arbitrary_bytes_never_panic)
@@ -849,7 +888,7 @@ owns:
    - `loom init` is idempotent: running twice does not clobber existing
      notes or cache rows that can still be validated against durable state
    - `loom init --rebuild` drops and repopulates cache rows from the spec
-     index, `specs/*.md`, mock bd spec/work epics, and companions;
+     index, canonical spec packages, mock bd spec/work epics, and companions;
      iteration counters reset to 0
    - `loom status` prints active work epic, pending `loom:todo` work epic,
      iteration count, and cache health in a stable parseable format
@@ -888,7 +927,7 @@ owns:
      and fail cases against synthetic source under `tempfile::tempdir`
 
    #### loom-gate
-   - Annotation parser: walks `specs/*.md`, regex-extracts
+   - Annotation parser: walks canonical package acceptance documents, extracts
      `[tier](target)` annotations, returns typed `Annotation` records
      (tier, target, source spec, line)
    - Per-tier dispatch, including system equivalent-execution sharing and
@@ -1030,10 +1069,10 @@ owns:
    container smoke remains exposed as `nix run .#smoke` because it needs
    podman at runtime; its acceptance criterion is annotated
    `[system](nix run .#smoke)`. Pre-push also runs clippy plus targeted
-   `loom gate verify --diff`; scope-derived gate policy excludes
-   `[system]` from finite diff verification while project-specific hook
-   composition, stage budgets, and lock semantics live in
-   [pre-commit.md](pre-commit.md).
+   `loom gate verify --diff` under
+   [Gate's deterministic verify contract](gate.md#deterministic-verify-lanes).
+   Project-specific hook composition, stage budgets, and lock semantics live
+   in [pre-commit.md](pre-commit.md).
 6. **Real bd** — the container smoke runs against live `bd` (not a
    mock). The integration tier may mock `bd` where the test concern
    is orthogonal to the issue tracker, but the smoke validates that
@@ -1080,6 +1119,13 @@ owns:
     on the affected crate.
 
 ## Out of Scope
+
+- Fine-grained selection of ordinary unit/integration suites, precise
+  function-level Rust impact analysis, or forced crate/library splits for
+  selective properties. Shared compilation is legitimate; Gate admits the
+  dependency boundaries used for selection.
+- Owning model-checking policy or a separate conformance execution route.
+  [Simulation](simulation.md) owns modeling; Gate supplies the existing path.
 
 - **Real-binary behavioral tests** — no test invokes real Claude Code or uses
   real Pi for a conversation, prompt, protocol turn, or LLM API request. Mock

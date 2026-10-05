@@ -13,7 +13,7 @@ repo-local marker-aware policy wrapper at `bin/pre-push-checks`.
 
 A project's commit hook is the only check authors run reliably, so the
 composition has to satisfy two opposing constraints. Commits stay cheap
-(~1s) so authors keep using `git commit` instead of batching; the
+so authors keep using `git commit` instead of batching; the
 integration cost (workspace-scope clippy + tests + review) runs at push
 time where occasional latency is acceptable. Two further pressures
 shape the architecture:
@@ -60,12 +60,30 @@ to bare NixOS. The shell-reexec check rejects a shell script that re-executes
 itself through its shebang resolution rather than naming the interpreter; this
 keeps script fixtures runnable in Nix sandboxes where `/usr/bin/env` is absent.
 
+### Fast-feedback cost
+
+Measure the complete fast-feedback path, including discovery, planning, Nix
+evaluation, and selected routine simulation/conformance, rather than quoting
+isolated verifier timings. Warm measurements have tools and current build
+artifacts available; they include affected verification-result misses, not only
+no-op cache hits. Record the environment and baseline. Cold provisioning and
+rebuild costs are reported separately alongside total changed-code iteration
+time, rather than hidden in a warm claim. This plan does not set a fixed
+wall-clock threshold before profiling the real consumers.
+
+Low latency is not permission to finish with required work outstanding.
+Spec-owned publication deferrals can postpone expensive obligations; omitted
+exceptions instead retain conservative earlier checking. Full publication and
+full-tree coverage remain mandatory. Concrete finite routine/deep campaign
+bounds belong to shipped model execution definitions, not settings every user
+must tune; exhausting a campaign budget cannot be reported as success.
+
 ### Pre-push hook budget and marker coverage
 
 The pre-push chain has independently wrapped hooks. A hook may be
-short-circuited only when the marker proves that exact hook entry was
-covered for the same tree, config, and push range; otherwise the wrapper
-falls through and executes the hook. Coverage, not a fast/slow label,
+short-circuited only when Gate admits the marker for that exact hook entry,
+including its tree/config/range, evidence, freshness, and publication-attempt
+context; otherwise the wrapper falls through and executes the hook. Coverage, not a fast/slow label,
 controls the shortcut.
 
 `nix flake check` is budgeted as the first pre-push hook. Its test-tier
@@ -91,10 +109,10 @@ The targeted hooks are clippy + `loom gate verify --diff <push-range>`
 + the required nextest/system test app. Prek exports the pushed endpoints as
 `PRE_COMMIT_FROM_REF` / `PRE_COMMIT_TO_REF`; `pre-push-checks` appends
 that exact range to the gate hook instead of deriving it from the branch
-upstream. `loom gate verify --diff` uses the scope-derived contract in
-[gate.md](gate.md): project pre-commit hooks for the range, then affected
-`[check]` / `[test]` annotations; no `LOOM_VERIFY_TIERS` environment
-override exists. Each hook runs as an independent prek entry
+upstream. `loom gate verify --diff` uses
+[Gate's deterministic verify contract](gate.md#deterministic-verify-lanes)
+for its scope and stage; no `LOOM_VERIFY_TIERS` environment override exists.
+Each hook runs as an independent prek entry
 with its own `files:` regex where applicable so file-pattern selectivity
 composes with marker-aware fallthrough. On the driver-loop integration
 push the wrapper can short-circuit every covered hook in sub-second
@@ -122,13 +140,16 @@ What this catches in-session:
   agent fixes annotations or stages the corrective change).
 - `[check]`-tier verifier failures whose inputs intersect staged
   files (same pre-commit hook).
-- Project pre-commit failures and affected `[check]` / `[test]`
-  failures on the final loop self-check range defined by
+- Project pre-commit failures and affected stage-required deterministic
+  annotation failures on the final loop self-check range defined by
   [templates.md — Loop completion self-check and self-review](templates.md#loop-completion-self-check-and-self-review),
   including hooks such as clippy when the project config places them in
   the pre-commit lane.
-  Full workspace nextest and `[system]` verifiers are explicit
-  pre-push/full-suite or operator-invoked responsibilities.
+  Full workspace nextest and system verification required solely by
+  publication-only obligations retain their pre-push/full-suite or
+  operator-invoked placement. Annotation applicability follows
+  [Gate's obligation-level rule](gate.md#deterministic-verify-lanes) through the
+  existing verification path, not a blanket exclusion of shared system targets.
 
 What it does *not* do: act as the trust source for the driver-side
 verdict gate. The agent's hook chain is **feedback only**. The driver
@@ -161,7 +182,8 @@ Gate-owned marker surface to the pre-push hook composition:
   `--hook-entry` metadata. The wrapper asks Gate to validate the marker
   for the current hook and short-circuits only on covered success;
   marker absence, mismatch, dirty tree, config/range drift, missing
-  evidence, or uncovered hooks fall through to the underlying command.
+  evidence, disqualified outcomes, ineligible attempt context, or uncovered
+  hooks fall through to the underlying command.
 - `.pre-commit-config.yaml` does not register `loom gate verify-marker`
   as a standalone hook. That subcommand remains a diagnostic and wrapper
   dependency per Gate; marker absence is a fall-through condition for
@@ -171,9 +193,7 @@ Gate-owned marker surface to the pre-push hook composition:
 
 `core.hooksPath`, the hook shim scripts, the flock that serializes
 prek's stash/restore window across overlapping commits, the
-`push-verified` SHA stamp (the pre-push shim writes it on overall
-pre-push success; the user's git-push re-run consumes it instantly
-to decouple from SSH latency), and the `skip-if-missing` wrapper
+generic `push-verified` transaction-stamp mechanism, and the `skip-if-missing` wrapper
 (PATH-conditional exec for hooks whose binary may be absent in some
 contexts, notably `nix` inside the bead container) are packaged in the
 `wrix.prekHooks` derivation and installed by `wrixLib.mkDevShell` when
@@ -190,14 +210,18 @@ agent commit consumes this repo-local policy uniformly with a host commit.
 The downstream project maintains its marker wrapper and policy config, but not
 hook shims, lock scripts, or installation logic.
 
-`pre-push-checks` and `push-verified` are **complementary**, not
-successor and predecessor: the SHA stamp short-circuits the entire
-prek pre-push chain on the user's second `git push` attempt after a
-successful first attempt (SSH-decoupling); `pre-push-checks` is a
-per-hook short-circuit inside the chain itself, gated on the
-content-addressed `MarkerProof` written by the driver-side verdict
-gate (see *Marker integration* above). Both stay shipped; both stay
-active.
+For Loom-governed hooks, the outer `push-verified` whole-chain shortcut is
+disabled through Wrix-owned plumbing. Matching a commit, remote, and Git ref
+transaction does not establish current evidence admissibility. Every push
+attempt enters the configured hook chain and its Gate-owned marker validation;
+a transaction stamp cannot bypass a newly observed failure, freshness check,
+or publication-attempt boundary.
+
+This is a consumer hook policy, not a Loom fork of generic shims. Wrix retains
+ownership of the mechanism and its configuration surface. Loom keeps per-hook
+marker handoff and admissible unit/build reuse through the existing verification
+path. Retries pay hook startup and validation costs, not necessarily fresh
+execution of every independent unit.
 
 `skip-if-missing` is the upstream mechanism for hooks whose
 underlying binary is not guaranteed in every context — the bead
@@ -282,7 +306,8 @@ declared as such.
   through matching marker metadata
   [check](cargo run -p loom-walk -- pre_push_config_marker_wrapper_contract)
 - The pre-push gate receives prek's concrete pushed endpoints rather than a
-  potentially stale branch upstream, and uses scope-derived tiers
+  potentially stale branch upstream and invokes Gate's shared verification
+  entry point
   [test](pre_push_config_runs_verify_diff_for_pushed_range)
 - Rust-file selection and pushed-range verification compose without a
   `LOOM_VERIFY_TIERS` override
@@ -306,6 +331,13 @@ declared as such.
 
 ### Fast tier composition
 
+- Representative fast-feedback measurements cover the complete production
+  hook/verification path, including required routine model/conformance work and
+  affected result-cache misses, with the environment and baseline recorded.
+  Reports distinguish warm feedback, cold provisioning, rebuilds, and total
+  iteration time; incomplete required work is not a successful fast result.
+  [system?](nix run .#test-quint -- cost-evidence)
+
 - `loom gate check` is exposed as a flake-check derivation distinct
   from the targeted pre-push hooks
   [check](cargo run -p loom-walk -- loom_gate_check_derivation_exists)
@@ -321,6 +353,22 @@ declared as such.
   [system](nix run .#test-sandbox)
 
 ### Marker integration
+
+- The installed Wrix pre-push path for Loom-governed hooks enters the configured
+  chain on every attempt; a matching `push-verified` transaction stamp cannot
+  bypass Gate validation, including after transport failure followed by a
+  trusted verifier failure at unchanged Git state.
+  [system?](nix run .#test-quint -- hook-shortcut-admission)
+- Per-hook marker consumption obeys Gate's same-attempt handoff, failure
+  invalidation, and freshness rules without creating another authorization path.
+  A marker left by a failed or interrupted push cannot resume the ended attempt;
+  reuse-disabled earlier-attempt evidence falls through to required verification
+  even when the Git transaction is unchanged.
+  [system?](nix run .#test-quint -- hook-attempt-handoff)
+- The complete publication path retains required hook, native-test, system,
+  and review coverage owned by the component specs; incremental selection and
+  reuse do not silently replace full publication policy with worker policy.
+  [system?](nix run .#test-quint -- publication-coverage)
 
 The marker schema and diagnostic CLI outcomes are owned and verified by
 [gate.md § Marker](gate.md#marker). This section verifies only pre-push
@@ -380,12 +428,11 @@ consumption.
 
 ### Non-Functional
 
-1. **Cheap commits.** Pre-commit wall-time targets ~1s for ordinary
-   staged-file changes so authors keep using `git commit` frequently
-   rather than batching changes to avoid the hook. Unknown-input
-   `[check]` / `[test]` annotations may run conservatively until their
-   verifiers implement input queries; that is a verifier-contract issue,
-   not a hook-bypass reason.
+1. **Cheap commits.** Keep the complete pre-commit feedback path cheap enough
+   for frequent commits, with [end-to-end cost evidence](#fast-feedback-cost)
+   guiding optimization instead of a premature numeric threshold. Gate's strict
+   input-contract admission distinguishes configuration failures from valid cold or explicitly
+   broad verification; discovery failure is not a hook-bypass reason.
 
 2. **Marker-fast driver-loop pre-push.** On the driver-loop integration
    push, the marker short-circuits covered hooks so pre-push completes
@@ -402,14 +449,14 @@ consumption.
 ## Out of Scope
 
 - **Generic hook plumbing.** Locks, shim shape, install lifecycle, the
-  `push-verified` SHA stamp (SSH-decoupling mechanism, written by the
-  pre-push shim on overall pre-push success), and the
+  generic `push-verified` transaction-stamp mechanism, and the
   `skip-if-missing` wrapper (PATH-conditional exec for hooks whose
   binary may be absent in some contexts) are owned upstream by
   `wrix.prekHooks`. Failures in serialization, prek shim
   regeneration, generic wrapper-script behaviour, or stamp lifecycle
-  belong to that project. The repo-local marker-aware policy wrapper is
-  not part of this out-of-scope set; this spec owns it via
+  belong to that project. This spec owns disabling the whole-chain shortcut
+  for Loom-governed hooks, not its generic implementation. The repo-local
+  marker-aware policy wrapper is not part of this out-of-scope set; it is owned via
   `bin/pre-push-checks` and the Marker integration contract above.
   Loom-owned `core.hooksPath` placement in `.loom/integration` and bead
   clones is specified in [harness.md](harness.md); this spec consumes

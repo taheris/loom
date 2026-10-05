@@ -322,9 +322,18 @@ fails loudly. Bare `loom logs` never auto-follows a running bead or phase
 session; live tailing requires `--follow`, and follow stays on the selected
 file.
 
-Logs older than `[logs] retention_days` are swept on `loom loop` startup;
-`0` disables sweeping. Retention failures are best-effort diagnostics and do
-not abort the run.
+Ordinary event logs older than `[logs] retention_days` are swept on `loom loop`
+startup; `0` disables sweeping. [Gate's retained safety evidence](gate.md#retained-safety-evidence)
+has a separate lifetime: normal transcript cleanup must preserve its compact
+canonical records and required replay witnesses. This boundary is automatic,
+not an instruction to disable retention or keep all transcripts indefinitely.
+Gate owns the records' admission and recovery semantics; they are not a second
+renderer, driver log, or replacement transcript for `loom logs`.
+
+Retention failures are best-effort diagnostics and do not abort the run. Cleanup
+must leave safety evidence intact if it cannot safely complete. Loss or corruption
+of required Gate evidence is an admission failure under Gate's contract, not a
+best-effort cleanup error that can be ignored to authorize publication.
 
 ## Success Criteria
 
@@ -407,8 +416,13 @@ not abort the run.
   [test](follow_raw_blocks_past_eof_until_budget_expires)
 - Bare `loom logs` handles an empty log root as a normal zero-log state
   [test](empty_root_returns_no_logs)
-- Log retention deletes files older than `[logs] retention_days` and preserves recent files
+- Log retention deletes ordinary transcript files older than `[logs] retention_days` and preserves recent files
   [test](log_retention_sweep)
+- Normal retention removes expired ordinary transcripts and preserves recent
+  transcripts while leaving Gate's compact safety records and required replay
+  witnesses intact, including on cleanup failure. No retention opt-out or
+  indefinite retention of all transcripts is required.
+  [test?](log_retention_preserves_gate_safety_evidence)
 - `[logs] retention_days = 0` disables retention sweeping
   [test](log_retention_disabled)
 - Retention sweep failures do not abort `loom loop`

@@ -185,6 +185,32 @@ already computed the changed-spec set; the prompt's job is to decompose
 that exact set, report `Decomposed` or `NoWork` for every changed spec,
 and emit `LOOM_TODO:` as the success marker.
 
+### Acceptance Context and Progressive Disclosure
+
+[Harness](harness.md#spec-packages) owns package discovery;
+[spec conventions](../docs/spec-conventions.md#spec-packages) own document roles.
+Templates deliver the applicable contract and acceptance obligations, rather
+than unconditionally pinning every package's full `tests.md` and model.
+
+- Planning receives the package contract and can retrieve detailed criteria.
+- Decomposition receives relevant changed contracts, criteria, and evidence.
+- Workers receive assigned acceptance obligations explicitly alongside the
+  applicable contract; task acceptance is not optional supporting reading.
+- Review receives applicable invariants, criteria, diff, and evidence.
+
+When context selection is uncertain it broadens context rather than omitting
+obligations. Models and supporting detail load on demand. Compaction recovery
+restores the selected contract and explicit acceptance context under Harness's
+existing prompt-repin protocol; agents need not rediscover their obligations.
+[Harness](harness.md#task-acceptance-references) supplies typed, snapshot-resolved
+task acceptance. Worker context construction consumes that resolved form and
+renders each obligation's `(SpecLabel, CriterionId)`, full current criterion
+text, and current verifier binding. It does not independently parse task
+reference strings, resolve links, or omit unresolved members. Compaction restores
+that dispatched acceptance context rather than reinterpreting references against
+a different snapshot. Resolving references does not itself establish a verifier
+pass.
+
 ### Template Variables
 
 Each top-level value rendered by a template or exposed on a workflow context
@@ -365,9 +391,13 @@ pub enum CriterionResult {
 parser computes it from canonical bytes containing `spec_label` plus the
 normalized criterion text (bullet marker stripped, continuation lines
 joined with single spaces, surrounding whitespace trimmed, internal
-whitespace collapsed, annotation line excluded). It deliberately excludes
-annotation tier and target so changing `[check]` to `[test]` does not make
-a new requirement id. Stale verifier evidence is represented by
+whitespace collapsed, annotation line excluded). Under
+[spec conventions](../docs/spec-conventions.md#verification-strategy), attached
+strategy blocks are metadata parsed separately from requirement text. Changing
+that metadata, annotation tier, or target does not make a new requirement id.
+Current strategy still governs Gate planning and evidence admission; stable
+requirement identity is not permission to retain old policy. Stale verifier
+evidence is represented by
 `EvidenceState::StaleAnnotation` instead. Duplicate normalized criterion
 text inside one spec is an integrity error because it would collide.
 
@@ -392,6 +422,14 @@ epic title plus exactly the changed specs the driver injected, using
 audited no-implementation outcome. `Blocked`, `pending`, or omitted specs
 are not success states; the agent emits `LOOM_CLARIFY` or `LOOM_BLOCKED`
 instead.
+
+For decomposed tasks, the prompt asks the agent to propose task-to-criterion
+assignments using the injected criterion identities and the shared typed todo
+handoff. It does not ask the agent to compute IDs or write binding metadata with
+`bd`. [Harness](harness.md#binding-proposal-and-persistence) owns the Rust
+resolution, serialization, and persistence boundary; the template does not
+maintain a separate Beads JSON schema. Ordinary task creation, descriptions,
+labels, and dependencies remain part of decomposition.
 
 ### Typed `PreviousFailure`
 
@@ -849,7 +887,12 @@ calls; the driver applies the default profile when minting from
 planning interview's pre-commit gate (completeness / coherence /
 invariant-clash) **and** the pending-modifier discipline that
 determines whether the planning session's spec edits can pass the push
-gate.
+gate. Its completeness guidance applies
+[Gate's package-scoped coverage rule](gate.md#plan-stage-checks): contract
+sections and behavioral table rows map to acceptance in the owning package's
+`tests.md`, using ordinary Markdown section links under
+[spec conventions](../docs/spec-conventions.md#contract-coverage), without
+requiring duplicate annotations in `spec.md` or a mapping registry.
 
 The partial body MUST spell out the pending-modifier discipline
 unambiguously, because the planning session's biggest failure mode
@@ -932,8 +975,8 @@ the planning agent:
    interview.
 3. **Creating a new sibling spec is a valid outcome** when the
    planner judges that a section warrants its own spec. The planner
-   creates `specs/<label>.md` and records its index entry in
-   `docs/README.md`; it does **not** allocate a bead/epic. `loom todo`
+   creates the canonical `specs/<label>/` package and records its index entry
+   in `docs/README.md`; it does **not** allocate a bead/epic. `loom todo`
    creates the spec epic and work epic later during deterministic
    preflight.
 4. **Commits are never automatic.** Planning sessions edit specs
@@ -1059,6 +1102,26 @@ documents in front of the agent with zero configuration.
   [check](cargo run -p loom-walk -- templates_no_removed_surface)
 
 ### Pinning policy
+
+- Planning receives the package contract and can retrieve detailed criteria;
+  decomposition receives relevant changed contracts, criteria, and evidence;
+  workers receive their applicable acceptance obligations explicitly; review
+  receives applicable invariants, criteria, and evidence. Uncertain context
+  selection broadens context rather than omitting obligations.
+  [test?](quint_phase_context_preserves_applicable_obligations)
+- Compaction recovery restores the dispatched contract and resolved acceptance
+  context, including criterion identities, text, and bindings, without requiring
+  rediscovery or reinterpreting references against a different snapshot.
+  [test?](quint_context_selection_survives_compaction)
+- Worker context construction consumes the resolved acceptance form supplied by
+  Harness and renders each assigned criterion's typed identity, full text, and
+  current binding. It neither reparses reference strings nor treats resolution
+  as a verifier pass.
+  [test?](worker_context_consumes_resolved_acceptance)
+- Context selection avoids unconditional pinning of every package's full
+  acceptance document and model; task-relevant obligations are not optional
+  supporting reads.
+  [test?](quint_progressive_disclosure_separates_obligations_from_support)
 
 - `style_rules.md` partial renders the `style_rules` variable
   [check](grep -q '{{ style_rules' crates/loom-templates/templates/partial/style_rules.md)
@@ -1195,6 +1258,13 @@ documents in front of the agent with zero configuration.
 
 ### Planning-rubric pending discipline
 
+- The rendered planning rubric directs the agent to map contract sections and
+  behavioral table rows to the owning package's `tests.md` criteria through
+  ordinary Markdown section links, preserves exactly one binding per criterion
+  and the pending policy, and does not demand duplicated annotations in
+  `spec.md`, a mapping registry, or equal row/annotation counts.
+  [test?](plan_rubric_maps_contracts_to_package_acceptance)
+
 - `partial/plan_stage_rubric.md` exists and is included by `plan.md`
   only
   [check](cargo run -p loom-walk -- template_pinning_matrix)
@@ -1248,6 +1318,11 @@ documents in front of the agent with zero configuration.
 
 ### Todo success shape
 
+- The rendered todo prompt asks for task-to-criterion assignment proposals using
+  supplied criterion IDs in the shared typed handoff, delegates binding metadata
+  persistence to Rust, and does not instruct the agent to compute IDs or issue
+  binding-metadata writes through `bd`.
+  [test?](todo_prompt_proposes_bindings_for_driver_persistence)
 - `partial/todo_success.md` is the single source of truth for the
   `LOOM_TODO: <json>` success marker and names the
   `loom-protocol::todo::TodoSuccess` type
@@ -1523,6 +1598,13 @@ documents in front of the agent with zero configuration.
 
 ### Criterion-status surface
 
+- Criterion identity derived through the production parser and criterion-status
+  construction excludes attached verification-strategy metadata. Adding, editing,
+  or removing a local stage declaration preserves the requirement ID when the
+  normalized requirement text is unchanged; changing that text still changes
+  the ID. Strategy metadata remains available for current-policy interpretation
+  rather than being discarded as irrelevant.
+  [test?](criterion_identity_excludes_strategy_metadata)
 - `TodoContext` carries `criterion_status: Vec<CriterionStatus>`; no
   other phase context does
   [check](cargo run -p loom-walk -- todo_contexts_carry_criterion_status)

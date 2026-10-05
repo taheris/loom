@@ -71,22 +71,20 @@ the Mayor via `bd human` instead.
   <reason>` line in the PR description.* Snapshots cover contract
   surfaces (Askama templates, CLI `--help`); silent diffs there are
   accidental drift, not a deliberate change.
-- **TST-5** — *Every spec contract has a working verifier.* A contract
-  is any spec element that asserts behaviour: a Success Criteria
-  bullet, a row in a lifecycle / decision / contract table, or
-  imperative-keyword prose (`MUST` / `MUST NOT` / `REQUIRES` /
-  `CANNOT` / `NEVER` / `SHALL`). Each contract must carry — or live
-  in a section that carries — a `[check]`, `[test]`, `[system]`, or
-  `[judge]` annotation pointing at a real verifier. `loom gate verify`
-  enforces this across every contract surface and fails pre-commit on
-  any of:
-  - **Annotations:** target does not resolve (command's first token
-    missing on PATH; test path doesn't match any function; judge file
-    absent)
-  - **Tables:** row count does not match matching verifier-entry count
-    in the same section
-  - **Normative prose:** section contains imperative-keyword
-    sentences but carries no verifier annotation
+- **TST-5** — *Every spec contract maps to verified acceptance.* Every
+  behavioral contract section and every behavioral lifecycle / decision /
+  contract table row maps to annotated criteria in the same package's
+  `tests.md`, per [Spec conventions — Contract coverage](spec-conventions.md#contract-coverage).
+  Bindings stay beside those criteria; `spec.md` does not duplicate annotations.
+  An unrelated annotation or equal row/annotation counts do not establish coverage.
+  `loom gate verify` checks annotation integrity under Gate's resolution and
+  pending rules; planning and `loom gate review` assess whether the mapped
+  criteria cover the behavior. Findings include:
+  - **Annotations:** missing, multiple, malformed, or unresolved bindings under
+    the applicable pending policy.
+  - **Tables:** behavioral rows not covered by mapped acceptance criteria.
+  - **Normative prose:** behavioral claims absent from the mapped criteria,
+    even when another claim in the section has a verifier.
 - **TST-6** — *Orphan walk-tier verifiers are flagged.* A consumer's
   `[check]`-tier walk binary (e.g. one that takes named walks as
   positional args) must accept only walks referenced by some spec

@@ -15,11 +15,14 @@ orientation.
 3. **Independent work roots** — host-only locks serialize plan, todo, tune,
    initialization, and each mutating bead/work-epic root. Git's `index.lock`
    protects short integration operations; push races fetch, rebase, and re-gate.
-4. **Verifiable annotations** — success criteria in specs carry
-   `[verify]` / `[check]` / `[test]` / `[system]` / `[judge]` links so
-   `loom gate verify` can run them deterministically.
+4. **Verifiable annotations** — package acceptance criteria carry
+   `[check]` / `[test]` / `[system]` / `[judge]` links. Gate composes
+   deterministic verification with semantic review.
 5. **Backend-agnostic agent layer** — the `Session` trait lets pi-mono,
    Claude stream-json, and the Direct backend share the same workflow code.
+6. **Executable workflow models** — Quint simulation and bounded checking
+   compare the optimized gate with an independent reference; conformance
+   exercises production providers and workflow seams, not a second planner.
 
 ## Repo Layout
 
@@ -55,7 +58,7 @@ orientation.
 | `loom-templates` | Askama prompt templates with typed contexts |
 | `loom-test-support` | Shared test fixtures and helpers |
 | `loom-tune` | Internal tuning registry, case, score, and proposal types |
-| `loom-walk` | Spec-annotation walker for `[verify]` / `[check]` / `[system]` |
+| `loom-walk` | Mechanical source and contract checks consumed by the gate |
 | `loom-workflow` | Phase implementations: `plan`, `todo`, `loop`, `gate`, `inbox` |
 
 ## Phases
@@ -73,7 +76,11 @@ orientation.
 See [`../specs/harness.md`](../specs/harness.md) for the lock matrix and full
 command set; [`../specs/gate.md`](../specs/gate.md) for the verification
 model; and [`../specs/agent.md`](../specs/agent.md) for the backend
-abstraction.
+abstraction. [Harness](../specs/harness.md#spec-packages) owns canonical spec
+packages, [Templates](../specs/templates.md#acceptance-context-and-progressive-disclosure)
+owns progressive disclosure, and [Simulation](../specs/simulation.md) owns
+modeling and implementation conformance. Gate retains selection, evidence, and
+publication rules; the model is not a competing behavioral contract.
 
 ## Workflow Boundaries
 
@@ -118,9 +125,14 @@ Advisory locks live outside container mounts at
 `$XDG_STATE_HOME/loom/locks/<workspace-basename>/` (or the standard user-state
 fallback), not under `.loom/`. Read-only inspection takes no lock.
 
-The cache DB is rebuildable from the workspace (`loom init --rebuild`) by
-replaying the spec index, spec files, bd epics, and git history — so it carries
-no load-bearing information that doesn't already live in those sources.
+The cache DB is rebuildable from durable workspace sources (`loom init --rebuild`):
+the spec index, spec files, bd epics, git history, and Gate-owned evidence for
+verification views. It is not the sole authority for correctness-sensitive state.
+[Gate](../specs/gate.md#retained-safety-evidence) owns compact canonical safety
+records and required replay witnesses that survive ordinary transcript expiry;
+[Events](../specs/events.md#persisted-logs-and-replay) owns log cleanup. This is a
+lifetime boundary within existing evidence handling, not a second cache service
+or authorization path.
 
 ## Compatibility and Retired Internals
 

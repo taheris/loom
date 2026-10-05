@@ -227,9 +227,15 @@ review or mint a push marker.
 After all molecule work and promoted remediation drain, the push gate fetches
 origin, resolves the actual push range, runs pre-push deterministic checks, runs
 LLM review, constructs the gate-owned `GateSuccess` receipt, mints the marker,
-and pushes inside one critical section. Any changed range invalidates prior
-evidence and reruns the gate. Successful Git and Beads publication is followed
-by inside-out closure of ancestor epics whose direct children are closed.
+and pushes inside one critical section. This supplies the context for Gate's
+[single publication-attempt handoff](gate.md#publication-attempt-handoff), not
+an independent authorization mechanism. Any changed range invalidates prior
+whole-scope authorization and reruns gate planning; unit evidence is assessed
+under Gate's admission rules. The driver applies Gate's attempt-ending boundary
+to failed or interrupted pushes, including recovery after process loss; a retry
+resolves current remote state and enters a new admitted attempt rather than
+resuming the old handoff. Successful Git and Beads publication is followed by
+inside-out closure of ancestor epics whose direct children are closed.
 
 Infrastructure failures remain distinct from semantic worker outcomes. Static
 configuration/dispatch faults pause the bead as `loom:infra` without transport
@@ -381,6 +387,12 @@ rule set and override policy live only in
 Raw CLI values, manifest JSON, Beads JSON, cache rows, and backend protocol
 frames are parsed once at their boundaries. Downstream workflow code receives
 typed domain values and canonical events rather than re-parsing strings.
+Syntactic parsing and context-dependent resolution are distinct typed transitions:
+well-formed identifiers alone do not establish that their references resolve.
+Checked construction returns the richer immutable domain value or a typed error,
+not a validation boolean leaving raw or partially resolved data downstream.
+Snapshot-dependent facts are bound to that snapshot; a type is not a claim that
+mutable external state remains valid forever.
 
 `BeadId`, `SpecLabel`, `MoleculeId`, `ProfileName`, `SessionId`, `ToolCallId`,
 and `RequestId` are transparent newtypes. `BeadId` validates its canonical
@@ -432,6 +444,84 @@ restart at zero.
 
 ## Companions
 
+## Spec Packages
+
+The canonical spec is one `specs/<label>/` package with `spec.md` and `tests.md`,
+plus an optional `model.qnt` and supporting files. Document roles and acceptance
+syntax are owned by [spec conventions](../docs/spec-conventions.md#spec-packages);
+phase context is owned by [Templates](templates.md#acceptance-context-and-progressive-disclosure).
+Labels remain stable. Discovery, indexing, annotation locations, relative links,
+and cache rebuilding agree on this package boundary. There is no permanent
+parallel flat-file discovery mode.
+
+Every package has exactly one spec-index row. Missing required documents,
+ambiguous packages, duplicate/unindexed labels, and index/path disagreement are
+errors rather than partial discovery. Relocation preserves acceptance claims
+and verifier bindings. Package change tracking includes contracts, criteria,
+models, imports, and tracked supporting verification inputs, so a model-only
+edit participates in changed-spec decomposition even without a Markdown diff.
+
+### Task acceptance references
+
+Tasks refer to assigned criteria using the existing typed pair
+`(SpecLabel, CriterionId)`, not line numbers, heading links, or a second
+identifier scheme. [Templates](templates.md#criterion-status-surface) owns the
+criterion identity algorithm. Package relocation and verifier-only edits preserve
+reference identity; changes to normalized requirement wording require deliberate
+rebinding. The driver does not silently retarget by similarity or follow a
+changed requirement under an unresolved reference.
+
+#### Binding proposal and persistence
+
+The todo agent proposes which criteria each task addresses, using criterion
+identities supplied in its context. Those assignments accompany the decomposed
+tasks in the typed todo handoff; they are not inferred from task descriptions.
+The Rust driver parses the proposals, resolves their criterion references against
+the todo preflight snapshot, and checks that their target tasks belong to the
+accepted decomposition before writing bindings. This resolution checks referential
+integrity, not the semantic adequacy of the agent's task decomposition.
+
+The Rust driver owns serialization and persistence of these bindings into
+structured Beads task metadata during todo finalization. It serializes a typed
+reference payload through Serde and the existing Beads boundary, preserving
+unrelated task metadata; the agent does not issue hand-crafted metadata writes
+for these bindings. Task descriptions remain prose. Metadata stores criterion references, not copied requirement text,
+verifier commands, cached verdicts, or a claim that resolution has already
+succeeded for a future snapshot.
+
+Serde ingestion produces typed references with checked identifiers, never an
+already-resolved acceptance value supplied by external JSON. Snapshot resolution
+is a separate fallible construction step. Invalid assignments or failure to
+persist required bindings prevent successful todo finalization: the new batch
+cannot become active, cursors cannot advance, and implementation notes cannot
+be consumed on that basis. Existing finalization guarantees still apply.
+
+#### Dispatch resolution
+
+At the dispatch boundary, the driver parses external references into typed
+identifiers, then resolves every declared reference against the current package
+snapshot selected for dispatch. Resolution produces an immutable acceptance set
+containing the reference, current criterion text, and current verifier binding.
+Parsed references and resolved obligations are distinct types: downstream dispatch
+and prompt construction consume the resolved form, not raw strings or references
+accompanied by a success flag. Construction cannot succeed with unresolved
+members or an empty placeholder standing in for failed resolution.
+
+Malformed identifiers, unknown packages, missing criteria, or ambiguous
+resolution return typed errors before spawning the worker. No failed member is
+silently dropped from the set. A changed dispatch snapshot requires fresh
+resolution; it cannot inherit the old snapshot's resolved context. A surviving
+reference uses the current verifier binding, not a copied historical annotation
+or cached status. Resolving task acceptance does not grant verification evidence
+or publication authority. A pending criterion can resolve while its verifier
+has not been implemented: the binding here is parsed metadata, not an admitted
+executable verifier or a passing result. Gate owns that separate boundary.
+
+[Templates](templates.md#acceptance-context-and-progressive-disclosure) delivers
+these resolved obligations explicitly and restores the dispatched context after
+compaction. Ordinary Markdown contract-to-acceptance links remain the separate
+author-facing navigation surface.
+
 ## Spec and Work Epic Lifecycle
 
 A spec epic is the durable metadata carrier for one indexed spec, labelled
@@ -448,8 +538,8 @@ Standing tree remediation similarly creates a non-empty active work epic only
 after actionable findings exist. `loom:active` selects the default loop root;
 it does not select changed specs for todo.
 
-Todo preflight derives changed specs from the current index, spec blobs, Git
-ancestry, and each spec epic's cursor. It ensures one spec epic per indexed
+Todo preflight derives changed specs from the current index, package contents
+and tracked supporting inputs, Git ancestry, and each spec epic's cursor. It ensures one spec epic per indexed
 spec, surfaces missing or invalid durable metadata, parses every changed spec's
 criteria, and represents absent cache evidence as missing. No changed specs
 means no agent, no work epic, and no cursor movement.
@@ -457,8 +547,11 @@ means no agent, no work epic, and no cursor movement.
 Todo success is the public `loom-protocol::todo::TodoSuccess` wire value. It
 binds the preflight head and fingerprint, pending work epic, final non-empty
 title, and exactly one outcome for each changed spec. A decomposed outcome names
-non-empty child beads under the work epic; a no-work outcome gives a non-empty
-reason. Validation failure leaves pending state and every cursor unchanged.
+non-empty child beads under the work epic and carries their proposed acceptance
+assignments under [Task acceptance references](#task-acceptance-references);
+a no-work outcome gives a non-empty reason. Successful finalization includes
+driver persistence of admitted assignments. Validation or binding-persistence
+failure leaves pending state and every cursor unchanged.
 
 Implementation notes are typed, transient cache hints. Planning may merge them;
 validated todo finalization renders and consumes notes for the changed specs.
@@ -947,6 +1040,53 @@ populates that validated host-only state:
       spawn` child process environment before exec
   [test](apply_launcher_env_sets_child_process_env)
 
+### Spec packages
+
+- Spec discovery accepts the canonical `specs/<label>/{spec.md,tests.md}` package,
+  preserves labels, rejects ambiguous or incomplete packages, and does not retain
+  a parallel flat-file discovery mode.
+  [test?](quint_package_discovery_is_canonical)
+- Package relocation preserves acceptance claims and verifier bindings; every
+  package has exactly one index entry, and references and rebuildable discovery
+  state resolve after relocation.
+  [system?](nix run .#test-quint -- package-migration)
+- Changes to package contracts, criteria, models, imports, or tracked supporting
+  verification inputs participate in changed-spec decomposition; a model-only
+  edit cannot disappear because no Markdown file changed.
+  [test?](quint_package_change_tracking_includes_model_inputs)
+
+### Task acceptance
+
+- Serde round-trips the typed criterion-reference metadata without copying
+  requirement text, verifier bindings, or verdicts. Malformed identifiers fail
+  ingestion; externally supplied JSON cannot construct snapshot-resolved
+  acceptance without the separate resolution boundary.
+  [test?](task_acceptance_metadata_serde_preserves_reference_boundary)
+- The production todo finalizer resolves agent-proposed assignments against its
+  preflight snapshot and accepted tasks, then serializes and writes reference
+  metadata through the Rust Beads boundary without replacing unrelated metadata.
+  Invalid assignments or binding-write failures prevent activation, cursor
+  advancement, and note consumption; prose
+  descriptions cannot substitute for the structured proposals.
+  [system?](nix run .#test-quint -- todo-acceptance-persistence)
+- Parsing task references and resolving them against a package snapshot are
+  distinct fallible typed transitions. Only complete immutable resolved
+  obligations, carrying identity, current text, and current binding, can enter
+  downstream dispatch context; raw values, booleans, and partial-result
+  placeholders cannot stand in for them.
+  [test?](task_acceptance_resolution_produces_typed_obligations)
+- The production worker-dispatch path rejects malformed, unknown, missing, or
+  ambiguous declared acceptance references before spawning an agent rather than
+  dropping them. Valid pending criteria remain assignable before their verifiers
+  exist. Changing the dispatch snapshot requires fresh resolution and uses
+  current bindings, not historical annotations or cached passes.
+  [system?](nix run .#test-quint -- task-acceptance-dispatch)
+- Task references retain identity across package relocation and verifier-only
+  edits. Changes to normalized requirement wording leave old references
+  unresolved until explicitly rebound; no text-similarity fallback substitutes
+  a different requirement.
+  [test?](task_acceptance_references_require_rebinding_after_requirement_edits)
+
 ### Workflow commands
 
 - `loom plan [SPEC_LABEL ...]` spawns an interactive container with
@@ -1268,6 +1408,18 @@ populates that validated host-only state:
 
 ### Verdict gate
 
+- Worker feedback, trusted post-integration verification, and full publication
+  remain distinct stages. Missing worker capabilities remain visible feedback
+  gaps to be discharged by the required trusted stage.
+  [system?](nix run .#test-quint -- stage-handoff)
+- The driver carries Gate-admitted publication-attempt context through actual
+  verification, review, and Git pre-push consumption. Failed or interrupted
+  pushes, including process loss before outcome recording, cannot resume that
+  context on retry. The production retry path observes actual remote state and
+  obtains new admission under Gate's evidence rules, not authority from an old
+  receipt or marker.
+  [system?](nix run .#test-quint -- workflow-publication-attempt)
+
 - After every per-bead `loom loop` worker phase, the verdict-gate
       decision table classifies the terminal marker plus mechanical
       signals (bd-closed, diff, tree cleanliness) without an LLM call
@@ -1366,11 +1518,12 @@ populates that validated host-only state:
       capped at 30 entries with a "+N more" suffix when truncated
   [test](tree_not_clean_detail_enumerates_and_caps_dirty_paths)
 - Post-integration per-bead verify runs the project pre-commit lane and
-      every affected `[check]` / `[test]` verifier for
-      `<pre-integration-head>..HEAD`; `[system]` is excluded from the
-      finite diff default; none of the eligible lanes short-circuit each
-      other, and per-hook/verifier pass/fail + stderr is captured
-  [test](post_integration_verify_runs_project_precommit_and_affected_check_test)
+      every affected deterministic annotation required for integration by
+      [Gate's verify contract](gate.md#deterministic-verify-lanes), including
+      stage-required system checks, for `<pre-integration-head>..HEAD`;
+      no eligible lane short-circuits another, and per-hook/verifier outcomes
+      plus stderr are captured
+  [test?](post_integration_verify_includes_stage_required_system_annotations)
 - One or more `loom gate verify` failures → recovery with cause
       `verify-fail`; `previous_failure` carries every failure (not just
       the first), with a 4000-char budget split across them
@@ -1539,11 +1692,13 @@ two agent-loop observers.
       set) and `.loom/cache.db` with the default cache schema
   [test](run_creates_config_and_cache_db)
 - `loom init --rebuild` drops and repopulates `.loom/cache.db` from
-      durable sources: the spec index, `specs/*.md`, bd spec/work
-      epics, and each spec's `## Companions` section. It also folds
+      durable sources: the spec index, canonical spec packages, bd spec/work
+      epics, and each package contract's `## Companions` section. It also folds
       gate criterion-status storage into the unified cache; there is no
-      `.loom/gate-cache.sqlite`
-  [test](rebuild_drops_and_repopulates_cache_db)
+      `.loom/gate-cache.sqlite`. Gate evidence views remain derived from
+      [Gate-owned durable evidence](gate.md#retained-safety-evidence); rebuilding
+      the cache cannot erase or reset that safety history.
+  [test?](rebuild_drops_and_repopulates_cache_db_from_packages)
 - `loom status` prints the active work epic, any pending `loom:todo`
       work epic, cached iteration counts, and cache health; no active
       spec/current-spec value is displayed or read
@@ -1562,10 +1717,10 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       `criterion_status`, and `meta`)
   [test](cache_db_init_creates_tables)
 - `CacheDb::rebuild` populates `specs` from `docs/README.md`'s spec
-      index and cross-checks `specs/*.md`; unindexed spec files,
-      missing indexed files, duplicate labels, and label/path mismatches
+      index and cross-checks canonical packages; unindexed/incomplete packages,
+      missing indexed packages, duplicate labels, and label/path mismatches
       fail loud
-  [test](cache_rebuild_cross_checks_spec_index_and_files)
+  [test?](cache_rebuild_cross_checks_spec_index_and_packages)
 - `CacheDb::rebuild` mirrors exactly one `loom:spec spec:<label>` spec
       epic per indexed spec, regardless of epic status; duplicates fail
       with conflicting IDs
@@ -1872,7 +2027,8 @@ owned by [agent.md § Compaction Handling](agent.md#compaction-handling).
      `--rebuild` drops and repopulates the cache from the spec index,
      spec files, bd spec/work epics, and each spec's `## Companions`
      section. The cache is non-authoritative; hot correctness paths
-     re-read durable Git/Beads inputs.
+     re-read durable Git/Beads inputs and, for verification admission,
+     [Gate-owned evidence](gate.md#retained-safety-evidence).
    - `loom use <label>` — legacy active-spec selector retained for
      compatibility; deterministic `loom todo` does not read it, and
      `loom loop` defaults from `loom:active` work-epic state instead.
@@ -1918,7 +2074,9 @@ owned by [agent.md § Compaction Handling](agent.md#compaction-handling).
    spec rows, spec/work epic mirrors, criterion evidence cache,
    companions, iteration counters, and implementation notes. It is
    reconstructable or disposable: correctness-sensitive decisions use
-   Git + Beads/Dolt metadata + current spec files/index. There is no
+   Git + Beads/Dolt metadata + current spec files/index, with verification
+   admission consulting [Gate-owned evidence](gate.md#retained-safety-evidence)
+   rather than treating evidence-cache loss as empty safety history. There is no
    `current_spec` pointer. `loom:active` is a bd label on the default
    work epic for `loom loop`, not cache state and not a todo-discovery
    input.

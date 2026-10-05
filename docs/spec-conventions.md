@@ -104,6 +104,103 @@ A spec does NOT contain:
    and the `tests/integration/` tree"). Listing files an in-flight
    change happens to modify is TODO-list shape, not spec shape.
 
+## Spec packages
+
+The canonical spec is a package:
+
+```text
+specs/<label>/
+  spec.md
+  tests.md
+  model.qnt       # optional generally
+```
+
+`spec.md` carries purpose, architecture, shared invariants, assumptions,
+boundaries, and navigation. `tests.md` carries behavioral acceptance criteria
+with adjacent verifier annotations and the verification strategy; it is not
+merely a command list. Models and other supporting documents load on demand.
+[Harness](../specs/harness.md#spec-packages) owns discovery, stable labels,
+indexing, and tracked package inputs.
+[Templates](../specs/templates.md#acceptance-context-and-progressive-disclosure)
+owns explicit task-acceptance delivery and progressive disclosure.
+
+Supporting documents are not additional implicit acceptance files. Judge links
+resolve relative to the actual annotation document, including after package
+relocation.
+
+### Contract coverage
+
+Every behavioral contract section and every behavioral lifecycle, decision, or
+contract table row maps to checkable criteria in the same package's `tests.md`.
+The mapped criteria must cover all behavior asserted by the section or row;
+an unrelated annotation or equal counts of rows and annotations do not establish
+coverage. Each criterion carries exactly one verifier binding, adjacent to its
+behavioral claim. `spec.md` references the acceptance criteria rather than
+copying their annotations. Genuine non-goals belong in its Out of Scope with
+their rationale, not disguised as unverified positive requirements.
+
+Mappings use ordinary Markdown links from contract sections or table rows to
+named sections in the same package's `tests.md`, for example
+`[Fresh execution](tests.md#fresh-execution)`. A section-level link may cover
+several rows when its linked criteria cover every row; repeating the same link
+in each row is unnecessary. Heading changes update their incoming links. No
+custom mapping registry or duplicated criterion list is required. These links
+are navigation and coverage references, not verifier annotations or replacements
+for typed criterion/evidence identities.
+
+Link destinations and heading fragments must resolve. Link resolution and
+annotation structure are deterministic integrity checks; verifier bindings
+follow Gate's resolution and pending policy. Whether the linked criteria
+capture the contract remains a planning and semantic-review question; a valid
+link alone does not prove it.
+
+## Verification strategy
+
+Coverage requirements and strategy belong in the owning package's `tests.md`:
+property-group filters, justified role exceptions, additional roles, and explicit
+stage applicability. Optional fences whose exact info string is `loom-verify`
+carry typed TOML declarations. Plain criteria, annotations, and rationale need
+no block; ordinary TOML examples are not policy. Invalid TOML, unknown fields,
+and conflicting declarations fail validation. Absence retains baseline
+obligations rather than disabling verification. Supported Rust/Nix workflows use
+the built-in baseline policy without custom strategy blocks; declarations express
+exceptions or additional requirements, not settings users must maintain to keep
+the gate sound.
+
+An annotated criterion's optional stage declaration belongs in a `loom-verify`
+block inside that criterion's Markdown bullet, directly after its verifier
+annotation. Markdown containment supplies the association; authors do not repeat
+the target or criterion ID in a separate mapping. The declaration qualifies only
+that criterion, not its section, package, or other criteria sharing the verifier.
+Detached or ambiguous criterion-stage declarations fail validation rather than
+being inferred from the nearest annotation or treated as global defaults.
+Package-wide property filters and role declarations remain separate strategy
+concerns, not implied contents of a criterion-local stage block.
+
+The stage exception is deliberately small: `defer_until = "publication"`
+postpones that obligation's routine execution requirement until publication.
+Without it, affected checks are eligible during ordinary feedback. There is no
+arbitrary stage allowlist or disable switch; unsupported values fail parsing.
+Removing the exception restores earlier eligibility, never removes publication
+coverage. Deferral needs documented rationale and is reserved for work whose
+cost justifies later failure feedback, not a substitute for correct input
+selection or reuse. Ordinary checks need neither a block nor a copied default.
+
+Strategy blocks are verification metadata, separate from requirement text and
+verifier annotations; they neither add a criterion nor count as another verifier
+binding. Gate resolves applicability per obligation before shared execution, so
+postponing one criterion cannot suppress work required by another. Full-tree and
+mandatory publication coverage remain unchanged.
+
+`loom.toml` supplies execution wiring, not an independent or duplicated coverage
+policy. Required obligations cannot disappear through missing or changed wiring.
+Actual resources and dependencies remain in tracked/checked execution definitions,
+not copied input lists in strategy blocks. Pending annotations retain their
+separate policy below. [Gate](../specs/gate.md#verification-planning) owns strategy
+validation, applicability, and enforcement; [Tests](../specs/tests.md#selective-property-campaigns)
+owns native property grouping; [Simulation](../specs/simulation.md#when-to-model)
+owns when a stateful workflow warrants modeling.
+
 ## Trust tiers
 
 Every functional claim in a spec MUST name how it's verified.
@@ -127,7 +224,7 @@ verifies the claim*:
 
 | Annotation | What the verifier does | Target shape |
 |------------|------------------------|--------------|
-| **`[check]`** | Static analysis of source (presence, absence, structural property across files) | `[check](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that runs a walk / lint / AST analysis. Runner-matched targets batch and self-report inputs (see gate.md § Runners); an unmatched command invokes its own process. |
+| **`[check]`** | Static analysis of source (presence, absence, structural property across files) | `[check](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that runs a walk / lint / AST analysis. Admitted providers derive inputs from execution definitions (see gate.md § Runners); matching runners batch targets. Literal commands still require an admitted provider. |
 | **`[test]`** | Runs the code in isolation and asserts behaviour | `[test](path)` — a language-native test path (e.g. `crate::module::test_name` for Rust, `tests/test_foo.py::test_bar` for Python). The gate batches all `[test]` targets in a single `loom gate test` invocation into one runner subprocess. |
 | **`[system]`** | Runs the assembled system (containers, packaging, end-to-end) | `[system](target)` — a runner identifier (matched by a `[runner]` block in `loom.toml`) or a shell command that exercises the full system. Runner matches own resolution and input discovery; equivalent invocations share one execution per gate run without merging distinct scenarios, as defined by [gate.md § Runners](../specs/gate.md#runners--per-language-batched-dispatch). |
 
@@ -229,8 +326,10 @@ the claim. The criterion's verifier must exercise the **live path**
 
 ## Section structure
 
-Standard top-level sections, in this order. Spec authors omit
-sections that don't apply rather than padding them with "N/A".
+Standard logical sections, in this order. In a package, `tests.md` owns Success
+Criteria and verification strategy; `spec.md` owns the other sections and links
+to `tests.md` rather than copying its criteria. Spec authors omit sections that
+don't apply rather than padding them with "N/A".
 
 ```
 # <Spec Title>
@@ -251,11 +350,11 @@ spec's topic dictates what belongs here. No section in this slot
 is required; include only those that earn their place.>
 
 ## Success Criteria
-<Plain bullets — NO `[ ]` / `[x]`. Each bullet is a checkable
-property with a `[check]`, `[test]`, `[system]`, or `[judge]`
-annotation. The criteria ARE the contract surface — what the gate
-actually checks. Place them up front so a reader sees the testable
-claims before the prose that elaborates them.>
+<In tests.md: plain bullets — NO `[ ]` / `[x]`. Each bullet is a checkable
+property with exactly one `[check]`, `[test]`, `[system]`, or `[judge]`
+annotation. The criteria ARE the acceptance surface — what the gate checks.
+Keep each binding adjacent to its behavioral claim, and link this acceptance
+document prominently from spec.md.>
 
 ## Requirements
 

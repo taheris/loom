@@ -19,13 +19,14 @@ sessions.
 |------|------|------|---------|
 | [agent.md](../specs/agent.md) | [`crates/loom-agent/`](../crates/loom-agent/) | `lm-4y0q` | Agent backend abstraction: pi-mono RPC, Claude Code stream-json, Direct (`loom-llm` + sandbox-aware tools via `loom-direct-runner`) |
 | [events.md](../specs/events.md) | [`crates/loom-events/`](../crates/loom-events/) and [`crates/loom-render/`](../crates/loom-render/) | — | Typed event stream, command-wide live/replay rendering, LLM-visible transcript surface, persisted JSONL event logs, and diagnostic tracing boundary |
-| [gate.md](../specs/gate.md) | [`crates/loom-gate/`](../crates/loom-gate/) | `lm-fbst` | Quality gate: conformance + style + test-quality dimensions, plan/per-diff/standing stages, `loom gate verify` (deterministic) + `loom gate review` (LLM judge) |
-| [harness.md](../specs/harness.md) | [`crates/`](../crates/) | `lm-9ehh` | Platform: crate structure, workspace lints, process architecture, cache store, command set |
+| [gate.md](../specs/gate.md) | [`crates/loom-gate/`](../crates/loom-gate/) | `lm-fbst` | Quality gate: obligations, tracked/checked inputs, selection, admissible evidence and publication authorization; deterministic verify + LLM review |
+| [harness.md](../specs/harness.md) | [`crates/`](../crates/) | `lm-9ehh` | Platform: spec packages, workflow/publication orchestration, crate structure, workspace lints, process architecture, cache store, command set |
 | [llm.md](../specs/llm.md) | [`crates/loom-llm/`](../crates/loom-llm/) | `lm-ywph` | Public-contract LLM primitives: `LlmClient`, typed `CacheControl`, `Conversation` with built-in tool-use loop, agent-loop observers (doom-loop, duplicate-result) |
-| [pre-commit.md](../specs/pre-commit.md) | [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) | `lm-q50m` | Hook composition policy: pre-commit (fast, ~1s) + pre-push (slow, ~10s + smoke) staged via `.pre-commit-config.yaml`; plumbing (lock, shim, install) delegated to `wrix.prekHooks` |
+| [pre-commit.md](../specs/pre-commit.md) | [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) | `lm-q50m` | Hook composition policy: pre-commit (fast, measured feedback) + pre-push (slow, ~10s + smoke) staged via `.pre-commit-config.yaml`; plumbing (lock, shim, install) delegated to `wrix.prekHooks` |
+| [simulation.md](../specs/simulation.md) | [`crates/loom-gate/`](../crates/loom-gate/), [`crates/loom-workflow/`](../crates/loom-workflow/), and [`nix/`](../nix/) | — | Quint simulation, bounded model checking, production conformance, reproducibility, and verification budgets; whole-gate pilot integrating Loom and Wrix |
 | [skills.md](../specs/skills.md) | [`crates/loom-skill/`](../crates/loom-skill/) and [`crates/loom-tune/`](../crates/loom-tune/) | — | Dynamic agent skill registry, built-in/profile-scoped skills, internal SkillOpt-style tuning engine, and `loom inbox` human review for tuned artifacts |
-| [templates.md](../specs/templates.md) | [`crates/loom-templates/`](../crates/loom-templates/) | `lm-pe00` | Askama templates, partials inventory, per-phase pinning policy |
-| [tests.md](../specs/tests.md) | [`tests/`](../tests/) | `lm-lsyj` | Test strategy: unit, integration, system tests |
+| [templates.md](../specs/templates.md) | [`crates/loom-templates/`](../crates/loom-templates/) | `lm-pe00` | Askama templates, explicit acceptance context, progressive disclosure, partials inventory, and per-phase pinning |
+| [tests.md](../specs/tests.md) | [`tests/`](../tests/) | `lm-lsyj` | Test strategy: native suites, selectively scheduled property campaigns, shared test artifacts, integration and system tests |
 
 ## Terminology Index
 
@@ -51,8 +52,10 @@ sessions.
 | **Spec epic** | Durable per-spec Beads epic labelled `loom:spec` + `spec:<label>`; carries metadata such as `loom.todo_cursor` |
 | **Skill** | Markdown agent capability package or loose skill file, identified by frontmatter `name` and progressively disclosed to agent backends |
 | **Skill registry** | Effective per-session set of built-in, repo, configured, and override skills after profile/phase filtering and duplicate-name validation |
-| **SpecLabel** | The kebab-case identifier matching a `specs/<label>.md` file |
+| **SpecLabel** | The stable kebab-case identifier of a canonical `specs/<label>/` package |
 | **Tune proposal** | Tune bead plus local `.loom/tune/<bead-id>/` envelope (`repo/`, manifest, evidence appendix) containing SkillOpt-style candidate edits awaiting human review through `loom inbox` |
 | **Tuning case** | Strict TOML `loom-case` block in `docs/tuning.md` or package `tuning.md`, naming a built-in behavioral checker and explicit tune targets |
 | **Workspace recovery stash** | Driver-created git stash preserving dirty `.loom/beads/<id>/` work before a `loom loop` dispatch; exposed to the worker as `workspace_recovery` context |
+| **Publication attempt** | Gate-admitted verification, review, and actual pre-push handoff for one publication request; not identified solely by unchanged Git fingerprints |
+| **Verification unit** | An admitted execution mapped to obligations, with input identity and result provenance distinct from compiled build artifacts |
 | **Work epic** | Per-`loom todo` decomposition batch epic; `loom:todo` while pending, `loom:active` when it is the default `loom loop` target |

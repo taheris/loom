@@ -30,7 +30,550 @@ Verdict Gate](harness.md#verdict-gate) owns the worker and per-bead execution
 mechanics that consume those results.  Only `loom gate mint` mutates bd state;
 verification and review remain inspection paths.
 
+### Verification planning
+
+The trust-bearing request consists of a repository snapshot, requested scope,
+and validated stage. The gate derives applicable obligations from current
+contracts and policy, then joins them to exact verifier targets and admitted
+execution units. A caller-picked test list, provider inventory, or cached target
+set cannot substitute for required coverage. Exact-target diagnostics remain
+non-authorizing.
+
+Package `tests.md` owns coverage and strategy under
+[spec conventions](../docs/spec-conventions.md#verification-strategy).
+`loom.toml` supplies execution wiring, not a second policy authority. Missing or
+changed wiring cannot erase required obligations. Pending declarations retain
+their separate pending policy.
+
+Baseline coverage, conservative stage defaults, and evidence admission are
+built-in behavior for supported Rust/Nix workflows, not opt-in safety settings.
+Ordinary use requires no custom strategy block or manually maintained input list;
+providers still supply admitted execution definitions. Missing optional policy
+cannot silently remove required work. Invalid declarations or missing required
+execution contracts fail admission instead of selecting a permissive mode.
+Observed slowness never automatically defers or drops an obligation: performance
+is improved through sound selection, sharing, reuse, or an explicit spec-owned
+exception. A fast-feedback success is not publication authorization.
+
+Repository-wide subject discovery is independent of verifier declarations and
+cached results. Built-in Rust/Nix policies derive roles and baseline obligations
+from actual project definitions: owning-target build/lint/applicable tests for
+Rust, evaluation/check responsibilities for Nix, responsible consumers/producers
+for fixtures/generated inputs, and document obligations for docs/specs.
+Projects declare justified exceptions and additional roles, not a duplicate
+per-file registry. Unclassified subjects and missing required coverage block
+trusted success. This accounts for responsibilities; it does not establish
+semantic adequacy or require a separate test per file.
+
+A verification unit maps one admitted execution to the obligations it can
+discharge. Units may batch many criteria or tests; a derivation per annotation
+or native test is not required. [Verifier inputs](#verifier-inputs-1) owns the
+tracked/constructed dependency boundary. [Tests](tests.md#selective-property-campaigns)
+owns property grouping and shared native artifacts.
+
+For Nix-enabled consumers, external routine deterministic verification uses
+hermetic Nix units with pinned tools, explicit sources/fixtures, controlled
+environments, and no undeclared network access. Loom-owned analysis uses
+tracked inputs. Invoking a host application through `nix run` does not itself
+establish hermeticity. Host services, containers, kernel behavior, and LLM
+review use an explicit effectful lane where those effects are inherent;
+capabilities, environment assumptions, and applicability remain visible.
+
+Discovered obligations, resolved plans, observed results, admissible evidence,
+and publication authorization are distinct typed boundaries. Unchecked strings,
+booleans, partial results, or mutation of validated fields cannot construct a
+later trusted state. Applying
+[Harness's parse/resolve discipline](harness.md#parse-dont-validate), admission
+constructs richer snapshot-bound values or typed errors rather than returning
+validation flags beside unchanged input data. Downstream stages consume those
+values; invalidated context requires re-deriving the affected state. These
+boundaries constrain the implementation; the
+[whole-gate model and production conformance](simulation.md) check sequencing,
+input construction, optimization, and authorization against an independent
+reference procedure.
+
+#### Provider authoring and description boundary
+
+The normal authoring path is one checked definition: tracked Rust checks register
+through the shared input boundary, and deterministic Nix checks use checked
+execution/resource constructors. The definition supplies execution and a typed
+JSON unit description through the existing runner-query mechanism; a built-in
+provider can supply the equivalent value directly. Authors do not maintain a
+second input table, hand-author unit-description JSON, or implement a new plugin
+protocol for an ordinary supported check.
+
+Descriptions identify the exact target and execution definition, offered subject
+responsibility, resources and source origins, discovery/observation contract,
+execution requirements, and result mapping. Nix resource handles retain origins
+while constructing the actual staged sources and transitive execution graph;
+querying Nix afterward does not magically reconstruct missing provenance.
+Descriptions reference that graph rather than independently asserting a smaller
+input closure. They do not define repository-wide obligations, declare their
+own completeness, or constitute verification results.
+
+Parsing produces typed candidate descriptions, not admitted units or authority.
+Fallible resolution against the current snapshot, independent inventory, and
+actual provider definition constructs immutable admitted values or typed errors.
+Downstream planning consumes the resolved form, not raw metadata with validation
+flags. Unknown or incompatible shapes, duplicate/ambiguous targets, and
+inconsistent definitions cannot be silently normalized into an admissible plan.
+Valid cold observation collection remains distinct from invalid registration.
+
+Shipped authoring guidance exposes minimal working Rust and Nix examples through
+normal project/API documentation, including a failing example and its correction.
+Those examples use the production constructors and query/admission path, not a
+mock protocol. New checks follow the documented defaults without reverse
+engineering private registries. Raw I/O outside the tracked boundary remains a
+boundary violation to enforce and test; neither JSON nor Rust types alone prove
+that arbitrary checker code has no hidden reads or enforces the intended rule.
+
+#### Corrective feedback
+
+Detect malformed definitions and admission failures at the earliest boundary
+that has the necessary information, including ordinary local verification rather
+than waiting for publication. Work needed for discovery, evaluation, or building
+an authoritative descriptor can still be necessary; this is not a promise of
+compile-free discovery or a fixed latency threshold. Preserve hook ordering and
+re-derive snapshot-dependent admission when hooks change relevant state.
+
+Once an admission failure is known, do not dispatch that invalid plan, start
+review on its supposed success, or construct authorization. Surface the failure
+without waiting for unrelated verification merely to finish reporting. Diagnostics
+identify the target and owning annotation, the producer definition/resource when
+available, the specific cause, and an actionable correction or investigation
+with an existing verification command to retry. Distinguish invalid contracts,
+unavailable capabilities, valid cold collection, and actual verifier failures;
+do not recommend an always-run fallback, weaker scope, or bypass as the repair.
+
+The actionable cause is visible in normal command/driver feedback, not only in
+verbose output or tracing. Use existing output and event channels, preserve
+machine-readable query output, and bound/redact supporting tool diagnostics.
+Correcting the definition and rerunning re-enters ordinary parsing/admission;
+no override flag or separate repair gate is needed. Pending claims and accepted
+worker capability skips retain their existing policies and cannot mint authority.
+
+### Cache and evidence reuse
+
+Every required obligation is discharged by fresh execution or admissible
+evidence of an equivalent execution. Build reuse is not result reuse: a cached
+library or test executable avoids compilation but does not establish a pass.
+A successful Nix unit that actually verifies targets may supply result evidence
+subject to provenance and policy.
+
+Execution identity covers requested verifiers/targets, checker/artifact
+identities, observed inputs, fixtures, effective invocation and cwd, campaign
+parameters, relevant environment/configuration, and freshness policy. Traces
+include membership and absence observations. Dependency traces and result
+references extend normal gate evidence and Nix artifacts, not a parallel
+receipt or general-purpose cache service. SQLite status/lookup indexes remain
+rebuildable views, not authority.
+
+Valid providers without admissible prior results execute and collect missing
+observations; a missing trace is not an empty dependency set. This cold path is
+not a substitute for admitting a provider contract. Malformed contracts fail
+admission. Current contracts and inventory, never cached targets, determine
+required coverage. Unchanged unit evidence can survive an unrelated edit;
+whole-scope authorization must still match the current request and state.
+Changes between validation and use invalidate affected evidence or authorization.
+
+#### Nix-cache result admission
+
+Results imported from trusted Nix caches are eligible verification evidence,
+not limited to builds performed locally. Gate admits them only for an admitted
+verification unit that actually verified the required targets, with matching
+execution identity and environment assumptions and accepted provenance binding
+the result to that execution. A store path, successful substitution, or cached
+ordinary build does not by itself establish a verifier pass. A valid signature
+authenticates its signed artifact; it does not by itself establish semantic
+coverage or environment equivalence.
+
+Cache signer trust comes from Nix's effective configured signing-key trust for
+the verification context. Loom maintains no separate cache/signer allowlist and
+does not accept trust roots declared by the imported artifact itself. Store
+acceptance without authenticated signer provenance is not, by itself, evidence
+of that provenance. Gate separately checks the unit, execution context, and
+result eligibility; Nix trust does not replace those checks.
+
+Admission requires provenance valid under current signing-key trust; store
+acceptance under an earlier policy is not sufficient. Trust changes require
+re-admission of affected imported evidence, including artifacts already present
+in the store. Changing signing trust neither creates
+fresh execution nor erases the recorded history of an unchanged execution
+identity.
+
+Imported artifacts enter the same parse-and-admit boundary as other evidence;
+external data cannot deserialize directly into trusted evidence or publication
+authority. Imports remain subject to current inventory, freshness, recorded
+failure history, and publication-attempt rules. Fetching or reimporting a result
+is not fresh verification and cannot satisfy exact-target execution intent or
+restore a disqualified pass. Changing where a result is cached does not create
+a new execution identity or erase its recorded history.
+
+Missing or inadmissible imported evidence leaves required work to the ordinary
+execution path; it does not justify skipping or weaken provider-contract
+admission. Eligible unit evidence can be reused without repeating verification,
+but authorization is still derived for the current request.
+
+#### Failure invalidation
+
+A trusted fresh verifier failure disqualifies earlier passes for that execution
+identity, including dependent publication markers. This applies across runs
+and includes exact-target diagnostics. Reloading or reimporting an older pass
+does not make it new evidence; status insertion order is not authority.
+
+Once trusted executions disagree between pass and failure, result reuse stays
+disabled for that identity even after a later fresh pass. Required checks remain
+executable, and fresh outcomes enter the normal gate procedure. This is neither
+a permanent failure verdict nor an automatic retry policy. Independent admissible
+results and build/image caches remain usable. A different admitted identity
+follows ordinary rules without erasing the old identity's history or bypassing
+the claim-level counterexample rule below.
+
+Inability to start or obtain an outcome remains distinct from an observed
+verifier failure. Neither may be reported as a pass or weaken failure, skip,
+or freshness rules.
+
+#### Confirmed counterexamples across campaigns
+
+A confirmed counterexample to an applicable claim blocks publication of the
+affected state even if a routine campaign passes or has reusable passing
+results. A deeper campaign's different bounds, seeds, or execution identity do
+not isolate that knowledge from ordinary verification. Confirmation binds the
+witness to the violated claim and relevant model/implementation inputs and
+assumptions through the normal evidence-admission boundary; an unchecked report,
+tool failure, or timeout is not a confirmed counterexample. Required incomplete
+or failed checks still follow their ordinary failure rules.
+
+The confirmed witness becomes a regression obligation through the existing
+planner and evidence path. Replay the witness against the applicable current
+state rather than require the full deep search again merely to recover the
+same defect. Switching campaigns, changing cache keys, reimporting passes, or
+restarting cannot discard an unresolved counterexample. Model or implementation
+changes require re-evaluating the regression, not assuming a new identity fixed
+it. Resolution needs admissible evidence addressing the witness under current
+requirements and assumptions; a routine pass that never exercises it is not
+resolution.
+
+Counterexample admission invalidates dependent authorization, including earlier
+receipts and markers. Preserve the witness and its resolution history in normal
+gate evidence, not only the latest status row. Unrelated claims and otherwise
+admissible unit/build evidence remain usable. Resolving the counterexample does
+not erase an execution identity's separate pass/fail disagreement history.
+
+#### Retained safety evidence
+
+Gate retains compact canonical safety records and required replay witnesses
+independently of [ordinary event-log expiry](events.md#persisted-logs-and-replay).
+They preserve the admitted outcome facts needed for failure invalidation and
+pass/fail disagreement, plus confirmed counterexamples, their claim/input
+attribution, and resolution history. Required provenance and replay inputs remain
+available; a path into an expired transcript or a latest-status scalar is not
+sufficient. Transcript age, restart, index rebuilding, or cache import cannot
+reset these facts or remove a regression obligation.
+
+These records belong to existing typed Gate evidence handling, not a second
+result cache, authorization route, or mutable summary with independent authority.
+Compaction may consolidate representation, but cannot change the safety facts or
+their admission meaning. Recording and consolidation must preserve them across
+interruption, including before a complete `GateRun` end event exists. Cleanup
+must not remove the last usable copy before its retained replacement and required
+witnesses are durable. Missing, corrupt, or incomplete required safety evidence
+blocks dependent reuse and authorization with actionable diagnostics; it is not
+an empty history. A fresh pass cannot silently repair lost disagreement or
+counterexample knowledge.
+
+Ordinary transcripts still expire automatically; users need not disable
+retention or retain every full log indefinitely. Compact safety records do not
+replace the successful run evidence required by a receipt, extend an attempt's
+lifetime, or establish a current pass. Missing positive evidence follows ordinary
+execution/admission rules. Independent admissible evidence remains reusable.
+
+#### Claim-specific freshness
+
+Freshness follows the claim, not its tier or use of containers. Artifact and
+controlled-integration evidence may survive gate runs when complete execution
+identity and admitted environment assumptions match, including relevant
+launcher/harness code, images, fixtures, configuration, and campaign inputs.
+Image/version strings alone do not establish equivalence. A new gate run or
+container use alone does not invalidate evidence.
+
+Live-service, actual Git publication-state, and explicit current-host-readiness
+claims require fresh observations. Artifact smoke coverage does not implicitly
+claim publisher-host readiness. Refreshing mutable facts does not force
+independent artifact checks to rerun; authorization must cover current
+obligations and state. [Exact-target intent](#scope-flags) separately requires
+fresh verification without invalidating reusable build/image artifacts.
+
+#### Publication-attempt handoff
+
+Driver verification, review, and the actual pre-push handoff form one
+publication attempt. Fresh evidence can complete that same attempt under the
+ordinary freshness and invalidation rules, including when contradictory history
+prohibits later result reuse. Consuming that evidence at the hook handoff is not
+a second verification-result cache hit. On a later attempt, a reuse-disabled
+identity must execute again even if content/range/config fingerprints match.
+Receipts and markers cannot turn same-attempt evidence into authorization for a
+later attempt.
+
+A failed or interrupted `git push` ends the publication attempt, including
+process loss without a recorded outcome. A retry starts a new attempt and
+re-enters Gate planning and admission; unchanged fingerprints or surviving
+receipts cannot resume the ended attempt. Reuse-disabled identities execute
+afresh, and freshness-sensitive claims receive fresh observations. Independent
+admissible unit results and build/image caches remain reusable. Failure or
+interruption does not prove that the remote stayed unchanged: the retry resolves
+actual current Git publication state. This boundary does not introduce automatic
+retries or change existing retry budgets.
+
+[Harness](harness.md#verdict-gate) supplies workflow context; this spec owns its
+admission. [Pre-commit](pre-commit.md#plumbing-ownership-split) prevents outer
+hook shortcuts from bypassing that admission. Attempt representation belongs to
+the caller protocol, not inference solely from a SHA or transaction stamp.
+
 ## Success Criteria
+
+### Planning, coverage, and strategy
+
+- Contract-to-acceptance mappings use ordinary Markdown links to named sections
+  in the owning package's `tests.md`; missing destinations or heading fragments
+  fail integrity validation. Resolution needs no custom mapping registry and
+  does not treat a heading link as a verifier binding or criterion identity.
+  [test?](package_contract_links_resolve_to_acceptance_sections)
+- Planning and semantic review assess contract coverage across `spec.md` and
+  its package's `tests.md`, flagging unmapped behavioral claims and table rows
+  or linked criteria that do not cover them. Annotations need not be duplicated
+  in contract prose, and unrelated bindings or matching counts do not establish
+  coverage.
+  [judge?](../tests/judges/package-contract-coverage.md)
+- Trust-bearing requests supply snapshot, scope, and stage; the production gate
+  derives required obligations from current contracts and policy rather than
+  accepting a caller-picked test list as complete coverage. Exact-target
+  diagnostics remain non-authorizing.
+  [system?](nix run .#test-quint -- request-boundary)
+- Independent repository inventory and role policy account for all subjects and
+  their required obligations. An unclassified file, unsupported new source kind,
+  orphan production source, or missing required verifier blocks trusted success;
+  fixture/generated/documentation roles receive their own policy, not implicit
+  coverage from an unrelated verifier.
+  [system?](nix run .#test-quint -- coverage-admission)
+- Built-in Rust/Nix role policies derive baseline obligations from project
+  definitions: owning-target build/lint/tests for Rust, evaluation/checks for
+  Nix, responsible consumers/producers for fixtures/generated inputs, and
+  document checks for documentation/specs. Ordinary subjects require no second
+  per-file registry; exceptions and additional roles are explicit spec declarations.
+  [test?](quint_builtin_role_policies_derive_baseline_obligations)
+- Verification strategy and coverage declarations, including property filters
+  and justified role exceptions, are owned by `tests.md`. Changes to `loom.toml`
+  execution wiring cannot override those declarations or remove required targets;
+  missing wiring remains an admission failure, not reduced coverage. Pending
+  declarations retain their separate policy under spec conventions.
+  [system?](nix run .#test-quint -- spec-policy-authority)
+- Supported Rust/Nix projects with no custom strategy blocks retain baseline
+  coverage and ordinary affected checking through the production gate. Removing
+  an optional exception cannot omit publication work; malformed declarations,
+  unsupported stage values, or missing required provider contracts cannot yield
+  permissive success. No tuning flag or timeout converts required work into an
+  implicit deferral or pass.
+  [system?](nix run .#test-quint -- default-policy)
+- Optional `loom-verify` fences in `tests.md` are parsed as typed TOML strategy
+  declarations, distinct from ordinary code examples. A criterion-stage block
+  belongs inside its owning bullet directly after the annotation; containment,
+  not a repeated target/ID or nearest-annotation heuristic, determines its owner.
+  Strategy metadata is separate from criterion text and verifier bindings.
+  The optional stage exception is `defer_until = "publication"`, not a stage
+  allowlist or disable switch. Invalid TOML, unsupported values, unknown fields,
+  conflicting declarations, or detached/ambiguous criterion-stage blocks fail
+  validation. Absence retains criteria and baseline obligations; local
+  declarations do not become package-wide defaults.
+  [test?](quint_verify_blocks_parse_optional_strict_strategy)
+
+### Admitted inputs and selection
+
+- An executable verifier resolves to an exact target, its subject inventory and
+  input-discovery contract, its execution requirements, and its result mapping.
+  Missing contracts, ambiguous targets, malformed metadata, or discovery failures
+  are configuration failures, not silent always-run fallback or permission to
+  skip. Pending declarations retain the separate pending policy defined by spec
+  conventions.
+  [test?](quint_verifier_admission_requires_resolved_scope)
+- Intentionally broad or global verification is explicit and justified; it is
+  distinguishable from failed discovery in the execution plan.
+  [test?](quint_global_scope_is_explicit)
+- Registration, generated descriptions/input queries, and execution derive
+  their subjects and inputs from one checked definition, rather than independent
+  registries or hand-authored input metadata.
+  [test?](quint_verifier_definition_drives_discovery_and_execution)
+- Production Rust/Nix constructors expose generated typed unit descriptions
+  through the existing query/provider path, retaining exact target identity,
+  responsibility, actual execution dependencies, and source origins. Parsing is
+  not admission: inconsistent metadata or an input-only assertion cannot replace
+  resolution against the current provider definition and independent inventory.
+  Single-target and batched queries retain complete per-target attribution.
+  [system?](nix run .#test-quint -- provider-descriptions)
+- Published minimal Rust/Nix authoring examples use production constructors and
+  default verification entrypoints to add and run a check without a second input
+  registry or hand-authored metadata. Their documented failure/correction example
+  is executable and returns through normal admission, not a test-only shortcut.
+  [system?](nix run .#test-quint -- provider-authoring)
+- Ordinary verification reports provider/admission errors as soon as the failing
+  boundary has enough information, without dispatching the invalid plan or
+  waiting for unrelated verification/review to supply the actionable cause.
+  Normal feedback identifies the target, source context, cause, and correction
+  or investigation/retry path. Corrected definitions can succeed through the
+  same path; cold collection and capability limits are not mislabeled as invalid
+  contracts, and no bypass converts failure into success.
+  [system?](nix run .#test-quint -- provider-admission-feedback)
+- Loom-owned checks consume tracked provider inputs; traces record membership,
+  contents, existence, path resolution, and relevant configuration/checker
+  identity. Provider-conformance cases expose deliberately omitted reads,
+  including new files and formerly absent configuration.
+  [system?](nix run .#test-quint -- tracked-inputs)
+- Selective external execution and reuse require checked constructors whose
+  actual staged sources and transitive execution dependencies correspond to the
+  admitted definition. An arbitrary self-reported smaller input list cannot
+  authorize exclusion or reuse.
+  [system?](nix run .#test-quint -- unit-construction)
+- Subject discovery responds correctly to additions, deletions, renames, new
+  workspace targets, and configuration changes; adversarial fixtures detect
+  omitted subjects even when the resulting execution would be hermetic.
+  [system?](nix run .#test-quint -- subject-completeness)
+- Dependency-contract tests cover verifier code, manifests, lockfiles, fixtures,
+  templates, generated inputs, model imports, and tool/configuration changes;
+  omitted relevant inputs are detected rather than treated as unaffected.
+  [system?](nix run .#test-quint -- input-completeness)
+- A finite scope includes every affected eligible verifier and excludes every
+  verifier established to be unaffected. Explicit global responsibility is part
+  of applicability, not an exemption from declaring scope.
+  [test?](quint_selection_is_complete_and_precise)
+- Empty finite scopes, invalid diffs, exact targets, and whole-tree requests
+  retain distinct meanings throughout planning and authorization.
+  [test?](quint_scope_meaning_survives_the_pipeline)
+- Selection scope is distinct from analysis scope: selecting a cross-file
+  verifier does not remove unchanged subjects it needs to inspect. Changed-file
+  execution is used only for verifiers whose declared semantics permit it.
+  [test?](quint_selection_does_not_truncate_analysis_inputs)
+- Hermetic Nix units cannot read undeclared workspace inputs or use undeclared
+  network access; changes to declared inputs or execution definitions invalidate
+  their result identity.
+  [system?](nix run .#test-quint -- hermetic-inputs)
+- Input partitioning preserves complete subject coverage without attaching the
+  whole repository to every unit by default; independent verifier inputs permit
+  independent invalidation.
+  [system?](nix run .#test-quint -- independent-units)
+- An inspectable execution plan reports selection/exclusion reasons, scope and
+  dependency provenance, shared executions, reuse decisions, and unresolved
+  requirements; completed runs report observed durations and invocation counts.
+  [system?](nix run .#test-quint -- explain-plan)
+
+### Execution and admissible evidence
+
+- Batching preserves obligations and per-criterion results. Equivalent eligible
+  invocations share execution, while different scenarios, inputs, environments,
+  scopes, or freshness requirements are not conflated.
+  [test?](quint_batching_preserves_execution_identity_and_results)
+- Reuse requires matching execution identity, observed inputs, campaign
+  parameters, environment, and freshness policy plus trusted successful
+  evidence. Missing, corrupted, incomplete, stale, failed, skipped, or untrusted
+  artifacts cannot discharge an obligation.
+  [test?](quint_reuse_requires_admissible_matching_evidence)
+- The production Nix-cache import and Gate admission path reuses a trusted
+  verification-unit result with matching execution context without rerunning the
+  verifier. Signer trust follows effective Nix configuration without a second
+  Loom allowlist; signing-trust changes require re-evaluating admission even when
+  the artifact remains in the store. Store acceptance alone cannot substitute for
+  authenticated provenance. Build-only, untrusted, incomplete, mismatched, stale,
+  or disqualified imports cannot discharge obligations; reimport, a different
+  cache source, or changed signing trust cannot manufacture fresh execution or
+  reset failure history. Current request
+  authorization remains separate from accepting the imported unit result.
+  [system?](nix run .#test-quint -- nix-cache-evidence)
+- A trusted fresh verifier failure disqualifies earlier passes for that same
+  execution identity on subsequent verification and publication, including
+  marker reuse. Reloading or reimporting those passes cannot restore their
+  eligibility; independent, otherwise admissible evidence remains usable.
+  [system?](nix run .#test-quint -- failure-invalidates-prior-passes)
+- Trusted pass/fail disagreement disables verification-result reuse for that
+  execution identity, even after a later fresh pass. Required checks remain
+  executable under ordinary gate rules; build/image reuse and independent
+  admissible evidence remain available. Different admitted execution identities
+  follow the ordinary reuse policy without resetting the conflicted identity
+  or bypassing an unresolved applicable counterexample.
+  [system?](nix run .#test-quint -- conflicting-outcomes-disable-reuse)
+- A confirmed deeper-campaign counterexample blocks the affected claim's
+  publication despite routine passes at a different campaign identity, including
+  cached passes and earlier receipts/markers. Production admission retains a
+  replayable regression across restarts and campaign/cache changes; current
+  resolution addresses the witness without requiring the original deep search.
+  Timeouts or unchecked reports are not confirmed counterexamples, and unrelated
+  admissible evidence remains reusable.
+  [system?](nix run .#test-quint -- counterexample-invalidates-routine-evidence)
+- Compact canonical safety records and required replay witnesses survive normal
+  transcript expiry, restart, and index rebuilding. Production admission still
+  rejects disqualified passes and unresolved counterexample bypasses after cache
+  reimport, while independent evidence remains reusable and expired ordinary
+  transcripts are removed without disabling retention.
+  [system?](nix run .#test-quint -- evidence-retention)
+- Interrupted safety-record persistence or consolidation cannot erase admitted
+  facts or required witnesses, including observations before a run's end event.
+  Missing, corrupt, or incomplete required safety evidence produces actionable
+  rejection of dependent reuse and authorization, not empty-history success or
+  repair by a fresh pass alone. Retained facts are not replacement positive
+  evidence for a receipt.
+  [system?](nix run .#test-quint -- evidence-retention-recovery)
+- Artifact and controlled system-test evidence can be reused across gate runs
+  when complete admitted execution inputs and environment assumptions match.
+  Container use alone does not force execution; image-only or version-only
+  matches cannot substitute for omitted relevant launcher, harness, fixture,
+  configuration, or runtime context.
+  [system?](nix run .#test-quint -- system-artifact-reuse)
+- Claims about current external-service or Git publication state, and explicit
+  current-host-readiness claims, obtain fresh observations even when source
+  inputs are unchanged. Those observations do not force unrelated artifact
+  checks to rerun when their evidence remains admissible; old whole-scope
+  authorization is not carried forward.
+  [system?](nix run .#test-quint -- live-state-freshness)
+- Cached build artifacts are not verification results. Only evidence from an
+  execution that actually verified the requested targets can discharge them;
+  a successful build or cached status scalar cannot substitute for that evidence.
+  [system?](nix run .#test-quint -- build-versus-result-cache)
+- A required check with a valid provider but no admissible prior result executes;
+  missing tracked observations are collected rather than treated as an empty
+  dependency set. Unusable prior evidence never authorizes skipping, and missing
+  provider contracts remain admission failures rather than cold runs.
+  [test?](quint_cold_execution_is_distinct_from_invalid_admission)
+- Current validated inventory determines obligations independently of cached
+  targets: new tests, subjects, and required lanes cannot be omitted because
+  no cache entry exists for them.
+  [test?](quint_cached_targets_do_not_define_required_coverage)
+- Unchanged admissible unit evidence can survive unrelated edits, but cannot
+  carry old whole-scope authorization into a new request. Changes after cache
+  validation invalidate affected evidence or authorization before publication.
+  [system?](nix run .#test-quint -- cache-authorization)
+- Effectful checks declare capabilities and applicability; unavailable,
+  inapplicable, failed, pending, skipped, and passed outcomes remain distinct.
+  A selected required check that did not pass cannot become passed through
+  aggregation or a successful wrapper exit code.
+  [test?](quint_effectful_outcomes_do_not_collapse_into_success)
+- Rust API boundaries distinguish discovered obligations, resolved executable
+  plans, observed results, policy-admissible evidence, and authorization;
+  callers cannot construct downstream trusted states from unchecked strings,
+  booleans, partial results, or mutable validated fields. Deserializing a unit
+  description cannot construct an admitted unit; only current-context resolution
+  produces the immutable form consumed by planning.
+  [test?](quint_evidence_boundaries_reject_invalid_transitions)
+- Publication rejects mismatched content, scope, policy, configuration, hook
+  coverage, or review evidence, including after retries, rebase, or interrupted
+  execution. Worker feedback and partial inspections cannot authorize a push.
+  [system?](nix run .#test-quint -- publication-boundary)
+- Fresh evidence may flow through verification, review, and pre-push handoff in
+  one publication attempt without redundant execution. Failed or interrupted
+  pushes end the attempt; retries re-enter admission with fresh observations and
+  fresh execution of reuse-disabled identities, while independent admissible
+  results remain reusable. Old receipts or markers cannot resume an ended attempt
+  even at unchanged fingerprints, and an unknown push outcome cannot establish
+  unchanged remote state. Same-attempt handoff never overrides invalidation or
+  freshness.
+  [system?](nix run .#test-quint -- publication-attempt-handoff)
 
 The gate's spec defines the verifier-annotation taxonomy, so these criteria
 self-host — they use the same `[check]` / `[test]` / `[system]` / `[judge]`
@@ -42,12 +585,13 @@ first token is on PATH, and a `[judge]` annotation pointing at the gate's own
 
 ### Annotation parsing
 
-- Parser walks every `.md` file in the specs directory in lexical order
-  [test](parse_walks_all_md_files_in_lex_order)
-- Parser skips non-`.md` files in the specs directory
-  [test](parse_skips_non_markdown_files_in_specs_dir)
-- Parser aggregates criteria across multiple spec files into a single
-  `ParsedSpecs` [test](parse_aggregates_criteria_across_files)
+- Parser discovers criteria in each canonical package's `tests.md` in lexical
+  package order, without treating supporting Markdown or model files as
+  additional acceptance documents.
+  [test?](parse_walks_canonical_package_acceptance_documents)
+- Parser aggregates criteria across packages into a single `ParsedSpecs`,
+  retaining package identity and each annotation's actual source document.
+  [test?](parse_aggregates_criteria_across_packages)
 - Parser returns a typed read-directory error when the specs directory is
   missing rather than producing an empty result
   [test](parse_returns_read_dir_error_for_missing_directory)
@@ -55,10 +599,9 @@ first token is on PATH, and a `[judge]` annotation pointing at the gate's own
 ### Integrity gate — four directions
 
 Directions 1–3 (forward resolution, stub-pointing, atomic acceptance) are
-covered by the criteria below. Direction 4 (inputs-protocol honesty) is covered
-by the `inputs-protocol-error` criteria under *Verifier inputs* below — opt-in
-resolution, opted-in query failure, and conservative fall-through for unowned
-queries.
+covered by the criteria below. Direction 4 (input-contract admission and
+protocol honesty) is covered by *Admitted inputs and selection* and *Verifier
+inputs*. Target existence is necessary but does not itself admit a provider.
 
 - **Forward — baseline.** A spec with all valid annotations yields no findings
   [test](parse_then_check_with_all_valid_annotations_yields_no_findings)
@@ -632,6 +1175,11 @@ Functional](harness.md#functional).
   matches fail loudly; cross-tier matches under `verify --target` fail and
   suggest a tier subcommand; multiple criteria sharing the same target inside
   one tier are accepted [test](gate_target_exact_match_and_ambiguity_rules)
+- Explicit `--target` requests require fresh verifier execution rather than
+  verification-result reuse at the gate or provider boundary. Build and image
+  artifacts remain reusable; a cached verification result cannot be reported
+  as a fresh execution.
+  [system?](nix run .#test-quint -- target-fresh-execution)
 - `loom gate verify --diff <base>..<head>` runs the project pre-commit lane via
   prek for the resolved range before the spec annotation lane; if a hook
   modifies the working tree the run exits non-zero with a tree-modified-by-hook
@@ -641,11 +1189,17 @@ Functional](harness.md#functional).
   records a skipped gate event with reason `parent-diff-gate` and exits 0;
   correctness does not depend on the project's hook id
   [test](nested_verify_files_under_parent_diff_gate_records_skip)
-- Scope-derived tier policy has no `LOOM_VERIFY_TIERS` override: `verify
-  --files` runs affected `[check]`/`[test]`, `verify --diff` runs project
-  pre-commit plus affected `[check]`/`[test]`, and `verify --tree` runs full
-  `[check]`/`[test]`/`[system]`
-  [test](verify_tier_policy_is_scope_derived_without_env_override)
+- Finite `verify --files` and `verify --diff` select affected `[check]`,
+  `[test]`, and `[system]` annotations by default. Stage-based exclusions require
+  a criterion-local spec declaration, such as publication-only applicability;
+  absence never implicitly excludes the system tier. An eligible criterion still
+  requires its verifier when another criterion sharing that verifier is deferred;
+  local deferral neither leaks to siblings nor overrides execution sharing.
+  Stage-only edits change planning under the current policy even when criterion
+  IDs and verifier targets remain unchanged. `verify --tree` and mandatory publication retain full required coverage. All
+  callers use the same planning and dispatch path, with no `LOOM_VERIFY_TIERS`
+  override or separate conformance hook.
+  [system?](nix run .#test-quint -- finite-verify-stages)
 - `loom gate status --diff <range>` / `--files <paths...>` / `--tree` reads
   criterion evidence from `.loom/cache.db` and prints the report per `Status
   cache` above; status without an explicit scope prints help and runs no cache
@@ -681,10 +1235,10 @@ Functional](harness.md#functional).
 
 ### Verifier inputs
 
-- `[test]` annotations resolve declared inputs as the union of the owning
-  crate's source directories (via `cargo metadata`) and the spec section the
-  annotation lives in (spec-section auto-include)
-  [test](test_tier_resolution_uses_cargo_metadata_plus_spec_autoinclude)
+- `[test]` input resolution uses an admitted native provider and includes the
+  applicable spec contract; Cargo target metadata alone is not accepted as the
+  complete execution-input closure.
+  [test?](test_tier_resolution_requires_provider_closure_and_spec_contract)
 - A `[judge]` target is located by shared selector-stripping (`#fn` / `::fn` /
   `::attr`) plus spec-relative resolution, the same helper the integrity gate
   uses, so the input resolver and integrity gate cannot disagree about where the
@@ -695,34 +1249,26 @@ Functional](harness.md#functional).
   `judge_criterion` and the LLM call are skipped, and the recorded paths are
   emitted as `{"inputs":[...]}`
   [test](judge_collect_mode_records_judge_files_paths)
-- The input-query batch form maps each target to its globs in one spawn —
-  `<script> --print-inputs` with no `<fn>` emits `{"inputs":{"<fn>":[...]}}`
-  for every rubric, so discovery spawns no more processes than batched execution
+- The judge collect-mode batch projection maps each rubric to its globs in one
+  spawn — `<script> --print-inputs` with no `<fn>` emits
+  `{"inputs":{"<fn>":[...]}}` for every rubric, rather than querying per rubric
   [test](batch_print_inputs_maps_each_target_to_its_globs)
 - The `--print-inputs` query is issued through the verifier's command template,
   not by prepending the flag to the command's first token, so a `cargo run -p
   <crate> -- <walk>` verifier is queried as the walk's own argument
   [test](print_inputs_issued_through_command_template_not_argv_head)
-- A verifier that reports no inputs of its own always runs under a `--files`
-  scope — the resolver never narrows an undeterminable input set to the spec
-  section alone [test](undeclared_verifier_always_runs_under_files_scope)
-- An opted-in input-query that exits non-zero or emits a malformed inputs
-  document is flagged `inputs-protocol-error` — opt-in being a `[judge]` collect
-  mode or a `[check]` / `[system]` runner that declares an `inputs` query
-  [test](opted_in_input_query_failure_flagged_inputs_protocol_error)
-- A verifier whose input-query contract loom does not own — an unregistered
-  command, or a runner with no `inputs` query — falls through to the
-  conservative always-run default without an `inputs-protocol-error`
-  [test](unowned_verifier_input_query_falls_through_silently)
+- A declared provider input-query that exits non-zero or emits malformed
+  metadata is flagged `inputs-protocol-error`; it cannot silently fall back to
+  a different provider, always-run behavior, or the spec contract alone.
+  [test?](provider_input_query_failure_blocks_admission)
 - A `[check]` / `[system]` target that matches a runner resolves via that
   runner, not via a `tokens[0]` PATH/file check; only an unmatched target falls
   back to the `tokens[0]` check
   [test](runner_matched_target_resolves_via_runner_not_token_path_check)
-- A runner-matched verifier's queried inputs decide its `--files` scope
-  inclusion: the scope filter keeps the matched sibling whose queried glob is
-  staged and drops the one whose glob is disjoint, priming the matched `[check]`
-  group in a single query spawn
-  [test](filter_by_files_keeps_runner_matched_check_sibling_whose_queried_input_is_staged)
+- A runner's admitted dependency observations decide its `--files` inclusion:
+  affected siblings are selected and established-unaffected siblings excluded,
+  with discovery batched for the matched group rather than queried per target.
+  [test?](filter_by_files_uses_admitted_batched_provider_observations)
 
 ### Scope handling
 
@@ -735,10 +1281,6 @@ Functional](harness.md#functional).
 - Live-workspace scope for a `[test](crate::module::test)` annotation includes
   the owning crate's files plus its transitive dependency files
   [test](live_workspace_scope_includes_own_files_and_transitive_dep_files)
-- Live-workspace scope for an annotation referencing an unknown crate is empty
-  [test](live_workspace_scope_for_unknown_crate_is_empty)
-- Live-workspace scope for a `[test](<crate>)` placeholder-target annotation is
-  empty [test](live_workspace_scope_for_crate_placeholder_target_is_empty)
 
 ### Dispatch — per-tier process model
 
@@ -747,8 +1289,8 @@ Functional](harness.md#functional).
 - Unmatched `[check]` annotations use the fallback path and spawn one subprocess
   per annotation
   [test](dispatcher_spawns_one_subprocess_per_unmatched_check_annotation)
-- `[system]` tier executes equivalent invocations once per gate run and fans the
-  evidence out to every owning criterion in input order
+- When `[system]` invocations require execution, equivalent invocations execute
+  once per gate run and fan evidence out to every owning criterion in input order
   [test](system_dispatch_shares_equivalent_invocations_and_fans_out_evidence)
 - Shared system-runner execution preserves passes, failures, skips, structured
   metadata, producer errors, and malformed-output failures
@@ -756,8 +1298,8 @@ Functional](harness.md#functional).
 - Equal command strings do not merge distinct system scenarios or runner working
   directories
   [test](system_dispatch_keeps_distinct_scenarios_and_runner_cwds_isolated)
-- System execution sharing is lazy and confined to one run with one dispatch
-  scope/environment, never reused by a later gate run
+- System dispatcher memoization is lazy and confined to one run with one
+  dispatch scope/environment; a later dispatcher invocation does not inherit it
   [test](system_dispatch_is_lazy_and_never_reuses_execution_across_runs_or_scopes)
 - CLI system sharing retains per-criterion reporting and cache records; skipped
   coverage stays skipped and cannot mint a marker
@@ -765,7 +1307,8 @@ Functional](harness.md#functional).
 - Shared system dispatch errors report every owner without persisting passing
   evidence
   [test](system_cli_shared_dispatch_errors_report_every_owner_without_passing_cache_entries)
-- Exact shared system targets execute anew on every gate invocation
+- Shared system targets selected by explicit `--target` execute anew on each
+  request
   [test](system_cli_exact_shared_target_executes_again_on_a_later_gate_run)
 - `[test]` tier batches every in-scope target into one runner subprocess per
   invocation [test](test_tier_batches_all_targets_into_one_runner_subprocess)
@@ -988,7 +1531,7 @@ kind of inspection or act path runs:
 | **`loom gate verify`** | Deterministic | Runs deterministic gate lanes for an explicit scope. Diff scope includes both the project pre-commit lane and spec annotations; file/tree scope is spec-annotation only. |
 | **`loom gate check`** | Deterministic, one tier | Runs only `[check]`-tier spec annotations for an explicit scope or exact `--target`. |
 | **`loom gate test`** | Deterministic, one tier | Runs only `[test]`-tier spec annotations for an explicit scope or exact `--target`, batched into one runner subprocess per invocation. |
-| **`loom gate system`** | Deterministic, one tier | Runs only `[system]`-tier spec annotations for an explicit scope or exact `--target`. Slow by default; used by `verify --tree`, CI, standing sweeps, or an operator's explicit `system` invocation. |
+| **`loom gate system`** | Deterministic, one tier | Runs only `[system]`-tier spec annotations for an explicit scope or exact `--target`. The same system dispatcher serves stage-required finite verification and full-tree verification; this subcommand remains available for explicit tier inspection. |
 | **`loom gate review`** | LLM judge, inspection | Runs the LLM rubric for an explicit `--diff` or `--tree` scope. Inspection-only: emits `LOOM_FINDING:` records + terminal marker to stdout, makes no bd writes, and does not mint a marker. Push-eligible review consumes a typed `VerifiedScope` for the same resolved content/scope rather than a scalar exit-code flag. |
 | **`loom gate judge`** | LLM judge, one lane | Runs criterion-attached `[judge]` verifiers for an explicit scope or exact `--target`; skips the rubric walk. Inspection-only, like `review`. |
 | **`loom gate rubric`** | LLM judge, one lane | Runs only the rubric walk for an explicit `--diff` or `--tree` scope; skips criterion-attached judges. Inspection-only, like `review`. |
@@ -1017,17 +1560,18 @@ marker check. This includes bare `loom gate verify`: users must choose what
 trust surface they are asking about.
 
 The scope flag defines the **input set** — the files the gate is being asked
-about. A verifier whose inputs the gate can derive runs iff those inputs
-intersect the input set (see *Verifier inputs* below); a verifier whose inputs
-cannot be derived runs conservatively for the eligible tier. An undeterminable
-input set is never grounds to skip an eligible `[check]` or `[test]` verifier.
+about. The admitted dependency contract determines affectedness, including
+membership and absence observations, subject changes, and explicit global
+responsibility. Stage applicability then determines eligible obligations.
+Invalid or missing contracts fail admission; valid cold providers collect
+observations through execution rather than being mistaken for unaffected work.
 
 | Flag | Valid subcommands | Input set / meaning | Typical caller |
 |---|---|---|---|
-| `--files <paths...>` | `verify`, `check`, `test`, `system`, `judge`, `status` | Explicit file list. `verify --files` runs spec annotations only: eligible `[check]` and `[test]` targets whose inputs intersect the file set, plus conservative unknown-input targets. | pre-commit hook (`loom gate verify --files <staged files>`); local debugging |
+| `--files <paths...>` | `verify`, `check`, `test`, `system`, `judge`, `status` | Explicit file list. `verify --files` runs affected spec annotations eligible for the current stage, including required `[system]` checks; it runs no project hook lane. | pre-commit hook (`loom gate verify --files <staged files>`); local debugging |
 | `--diff <range>` | `verify`, tier commands, `review`, `rubric`, `judge`, `audit`, `status` | `git diff <range> --name-only`, resolved to concrete base/head commits when the run is trust-bearing. | worker self-check, driver per-bead post-integration verify, push-range verify/review, CI scoped to a PR |
 | `--tree` | `verify`, tier commands, `review`, `rubric`, `judge`, `audit`, `status`, and `mint` | Every file in the workspace. `verify --tree` runs `[check]`, `[test]`, and `[system]` spec annotations. | standing safety net, nightly CI, on-demand full inspection |
-| `--target <annotation target>` | `verify`, `check`, `test`, `system`, `judge` | Exact annotation-target match. No project hook lane runs. | operator repeats one known target discovered via `loom spec <label> --targets` |
+| `--target <annotation target>` | `verify`, `check`, `test`, `system`, `judge` | Fresh exact-target diagnostic; no verification-result reuse or project hook lane. | operator repeats one known target discovered via `loom spec <label> --targets` |
 | `-m`, `--molecule <id>` | `mint` only | The molecule's deferred finding set. | stabilization promotion |
 
 `--target` is mutually exclusive with `--files`, `--diff`, and `--tree`.
@@ -1037,6 +1581,14 @@ exists. Zero matches fail loudly. A target that matches annotations in multiple
 tiers fails on `verify --target` and suggests the tier-specific subcommand;
 multiple criteria sharing the same target inside one tier are accepted and run
 as one target selection.
+
+An explicit `--target` request requires fresh verifier execution, not replay of
+an earlier result. This intent bypasses verification-result reuse at both the
+gate and provider boundary; it does not disable build or image reuse. If fresh
+execution cannot be completed, ordinary failure/skip reporting applies rather
+than substituting an earlier pass. Exact-target diagnostics cannot authorize
+publication. Normal verification may instead consume
+[admissible equivalent-execution evidence](#cache-and-evidence-reuse).
 
 `--bead` is not a deterministic scope. Deterministic trust paths use explicit
 diffs because the git range is the content being verified.  `loom gate review`
@@ -1062,10 +1614,10 @@ but is never marker-eligible.
 
 | Invocation | Project hook lane | Spec annotation lane |
 |---|---|---|
-| `loom gate verify --files <paths...>` | none | Affected `[check]` and `[test]`; `[system]` excluded |
-| `loom gate verify --diff <base>..<head>` | `prek run --hook-stage pre-commit --from-ref <base> --to-ref <head>` | Affected `[check]` and `[test]`; `[system]` excluded |
+| `loom gate verify --files <paths...>` | none | Affected `[check]`, `[test]`, and `[system]`, subject to explicit stage declarations |
+| `loom gate verify --diff <base>..<head>` | `prek run --hook-stage pre-commit --from-ref <base> --to-ref <head>` | Affected `[check]`, `[test]`, and `[system]`, subject to explicit stage declarations |
 | `loom gate verify --tree` | none | Full-tree `[check]`, `[test]`, and `[system]` |
-| `loom gate verify --target <target>` | none | Exact matched target in its tier; no scope filtering |
+| `loom gate verify --target <target>` | none | Fresh execution of the exact matched target in its tier; no scope filtering or verification-result reuse |
 
 The project hook lane is first-class trust, not hidden magic: project policy
 lives in `.pre-commit-config.yaml`, and prek decides hook file selection,
@@ -1083,12 +1635,27 @@ invocation records a skipped gate event with reason `parent-diff-gate` and exits
 The canonical hook id may be used as an optimization, but correctness cannot
 depend on it.
 
-`[system]` does not run by default under finite `verify --diff` or `verify
---files` scopes. It runs under `verify --tree`, explicit `loom gate system
---diff`, CI/standing sweeps, or explicit project pre-push hooks. Expensive
-`[check]` and `[test]` verifiers that should skip under finite scopes must
-implement an input-query contract; unknown inputs for eligible tiers run
-conservatively.
+Affected deterministic annotations are eligible under finite `verify --diff`
+and `verify --files` by default. A spec must explicitly declare later-stage
+applicability to postpone a check. The annotation tier describes how the claim
+is verified, not when to omit it; an absent stage declaration does not mean
+publication-only. Selected systems use the existing verify planning and system
+dispatch path, with no conformance-only hook or parallel verification procedure.
+Strategy declarations follow
+[spec-owned verification strategy](../docs/spec-conventions.md#verification-strategy).
+
+Stage applicability belongs to the criterion's obligation, not to a target or
+runner globally. An explicitly publication-only obligation does not itself
+require earlier-stage execution when its inputs change. Another eligible
+criterion can still require the shared verifier at that earlier stage; deferral
+is not a prohibition on executing the unit for other obligations. Execution
+sharing and evidence admission follow their ordinary rules. Full-tree and
+mandatory publication coverage are not reduced.
+Worker capability acceptance remains governed by
+[Sandbox-capability results](#sandbox-capability-results):
+missing capability is not an observed pass or publication evidence. Affectedness
+uses the verifier-input contract; expense alone does not make a selected check
+optional.
 
 The composition: `loom gate audit` ≡ `loom gate verify && loom gate review` for
 the same explicit `--diff` or `--tree` scope. Both are inspection paths; `audit`
@@ -1103,8 +1670,8 @@ cost-of-failure differ; the underlying trust surfaces are explicit.
 | Stage | Where | Scope | Cost-of-failure | Primary catches |
 |---|---|---|---|---|
 | **Plan** | `loom plan [SPEC_LABEL ...]` | Anchored specs plus siblings touched during interview | Lowest — no code yet | Missing claims, weak claims, missing verifier surfaces, invariant clashes in proposed spec changes |
-| **Worker self-check** | In the bead container before `LOOM_COMPLETE`: `loom gate verify --diff <bead-base>..HEAD` plus prompt-level self-review | The bead branch's committed work against its injected base range | Low — the agent is still in-session | Formatting/hook failures, affected `[check]`/`[test]` failures, obvious criteria/style misses the agent can fix before final marker |
-| **Per-bead integration** | In `.loom/integration` after rebase/ff: `loom gate verify --diff <pre-integration-head>..HEAD` | The exact commits just integrated into the loom workspace | Medium — one bead's worth | Cross-bead deterministic breakage after integration, project pre-commit failures, affected `[check]`/`[test]` failures. On failure, integration rolls back and the same bead retries with the gate log in `previous_failure` |
+| **Worker self-check** | In the bead container before `LOOM_COMPLETE`: `loom gate verify --diff <bead-base>..HEAD` plus prompt-level self-review | The bead branch's committed work against its injected base range | Low — the agent is still in-session | Formatting/hook failures, affected stage-required deterministic failures, obvious criteria/style misses the agent can fix before final marker |
+| **Per-bead integration** | In `.loom/integration` after rebase/ff: `loom gate verify --diff <pre-integration-head>..HEAD` | The exact commits just integrated into the loom workspace | Medium — one bead's worth | Cross-bead deterministic breakage after integration, project pre-commit failures, affected stage-required deterministic failures. On failure, integration rolls back and the same bead retries with the gate log in `previous_failure` |
 | **Stabilization** | `loom gate mint -m <molecule-id>` after no original non-deferred work remains ready | The molecule's `loom:deferred` remediation beads | Medium — amortized over a molecule, not one tiny finding | Promotes deferred remediation batches so the loop drains them before push; coalesces repeated finding hashes instead of reminting tiny beads |
 | **Push** | Fetch/rebase to `origin/<integration-branch>`, resolve the remote tip and `HEAD` to concrete OIDs, run the actual prek pre-push chain for `<remote-oid>..<head-oid>`, then `loom gate review --diff <remote-oid>..<head-oid>` | The actual push range, not merely the molecule's original base range | Highest — **blocks push**. `GateSuccess` is constructible only from matching `VerifiedScope`, `ReviewedScope`, pre-push hook coverage, marker evidence, and clean tree/config/range fingerprints | Conformance gaps in the pushed range, project pre-push failures, integrity-gate findings in affected annotations, review concerns, dispatch errors, origin-advanced races |
 | **Standing safety net** | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled) | Entire spec tree × entire implementation | Catches **verifier-input under-reporting** — any verifier a finite scope would have skipped because its derived input set was too narrow is surfaced here | Cross-file incoherence finite diffs did not surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-reported input sets that are too narrow |
@@ -1143,14 +1710,14 @@ The stage runs inside the planning interview — the agent's rubric. Three check
 must satisfy before the interview can commit:
 
 1. **Completeness check.** Every requirement the user expressed has a checkable
-   surface: a Success Criteria bullet with a `[check]`, `[test]`, `[system]`, or
-   `[judge]` annotation, or an explicit `## Out of Scope` declaration.
-   Lifecycle, decision, and contract table rows elaborate those criteria; every
-   behavioral row maps to an annotated criterion in the same section rather than
-   standing as an unverified contract. Implicit functional assumptions are
-   surfaced and converted into annotated, checkable claims; genuine non-goals
-   move to `Out of Scope` with their rationale rather than remaining as
-   unverifiable contract text.  Annotations whose targets will not resolve at
+   surface: a Success Criteria bullet in the package's `tests.md` with exactly
+   one `[check]`, `[test]`, `[system]`, or `[judge]` annotation, or an explicit
+   `## Out of Scope` declaration in `spec.md`. Contract sections and behavioral
+   table rows map to those criteria under
+   [Spec conventions — Contract coverage](../docs/spec-conventions.md#contract-coverage),
+   without duplicating annotations beside contract prose. Implicit functional
+   assumptions become checkable claims; genuine non-goals move to Out of Scope
+   with their rationale rather than remaining as unverified positive contracts.  Annotations whose targets will not resolve at
    commit time — typically newly-authored claims whose verifier implementation
    lands in a follow-on `loom loop` bead — carry the pending modifier `?` (see
    [*Pending modifier*](#pending-modifier)). Applying the marker is part of
@@ -1187,10 +1754,10 @@ is a diagnostic working-tree check and is not the worker completion contract. If
 the agent makes another commit or a hook changes the tree after the self-check,
 the prompt requires the agent to rerun the self-check before final marker emit.
 
-The self-check runs the same deterministic diff contract every caller gets:
-project pre-commit hooks via prek, then affected `[check]` and `[test]`
-annotations. This is fast feedback for the agent, not authoritative gate
-evidence. The worker also performs prompt-level self-review before completion:
+The self-check uses the shared [deterministic verify lanes](#deterministic-verify-lanes):
+project pre-commit hooks via prek, then the affected annotation obligations for
+that stage. This is feedback for the agent, not authoritative gate evidence.
+The worker also performs prompt-level self-review before completion:
 re-read the bead criteria, inspect the diff, check style/spec fit, and fix
 issues or emit the appropriate worker self-report marker.
 
@@ -1550,7 +2117,7 @@ remediation for compatibility.
 | `unresolved-annotation` | Integrity gate forward-resolution (tree-scope and push-gate scope) | `Annotation { target_string }` | deferred |
 | `stub-pointing` | Integrity gate stub-pointing (tree-scope and push-gate scope) | `Annotation { target_string }` | deferred |
 | `unneeded-pending-marker` | Integrity gate stale pending modifier (tree-scope and push-gate scope) | `Annotation { target_string }` | deferred |
-| `inputs-protocol-error` | Integrity gate inputs-protocol check (tree-scope and push-gate scope) — an opted-in input-query (a `[judge]` collect mode, or a `[check]` / `[system]` runner that declares an `inputs` query) exited non-zero or emitted a malformed inputs document | `Annotation { target_string }` | deferred |
+| `inputs-protocol-error` | Integrity/verification provider-query admission — a required description or observation query exited non-zero or emitted malformed metadata, including during local feedback | `Annotation { target_string }` | deferred |
 | `multiple-annotations` | Integrity gate atomic-acceptance (tree-scope only) | `Criterion { spec, anchor }` | deferred |
 | `pending-marker-resolved` | Sweeping walker (any scope) — a pending element (`?` or `~`) in structured spec input has resolved against the pending direction (`?` + present, or `~` + absent), so the author must drop the marker to its resolved value | `MatrixCell { spec, partial, template }` / `SurfaceElement { spec, kind, name }` / per-walker variant | deferred |
 
@@ -1669,7 +2236,7 @@ into, then applies the same routing flow uniformly. The mapping:
 | Integrity gate: stub-pointing | `stub-pointing` | same | `Annotation { target_string }` | "annotation points at stub function" |
 | Integrity gate: atomic-acceptance violation | `multiple-annotations` | same | `Criterion { spec, anchor }` | "criterion carries N annotations, expected 1" |
 | Integrity gate: stale pending modifier | `unneeded-pending-marker` | same | `Annotation { target_string }` | "annotation is now resolved — drop the ? marker" with spec:line |
-| Integrity gate: inputs-protocol error | `inputs-protocol-error` | `[<spec owning the annotation>]` | `Annotation { target_string }` | "opted-in input-query errored / emitted a malformed inputs document" with spec:line |
+| Integrity gate: inputs-protocol error | `inputs-protocol-error` | `[<spec owning the annotation>]` | `Annotation { target_string }` | "provider query errored / emitted malformed metadata" with annotation/producer context and actionable cause |
 
 The owning spec for `bonds` is the spec containing the annotation the verifier
 was dispatched for — the same spec-section auto-include the verifier's input set
@@ -2150,8 +2717,11 @@ the mint run (per *Deferred remediation processing* step 1).
 Gate trust is represented as typed evidence in the normal JSONL event stream,
 not as ad-hoc sidecar receipts. Every `loom gate` invocation that runs work
 writes a gate log under `.loom/logs/gate/` and emits `driver_event` records with
-typed `DriverKind` values. The log is the replay/audit source; sqlite status and
-lookup indexes are caches over that stream.
+typed `DriverKind` values. The log is the full replay/audit source while retained;
+[compact retained safety evidence](#retained-safety-evidence) preserves the
+required admitted facts and replay witnesses beyond transcript expiry. SQLite
+status and lookup indexes are rebuildable views over those evidence sources,
+not authority and not the sole surviving record of safety history.
 
 ##### GateRun lifecycle
 
@@ -2192,11 +2762,18 @@ the coverage fingerprints match both scopes; the gate logs exist and end
 successfully; and the molecule is clean. The structural seal prevents callers
 from bypassing these checks with a struct literal.
 
+Receipt construction and consumption also require current
+[evidence admission](#cache-and-evidence-reuse) and
+[publication-attempt context](#publication-attempt-handoff). Matching successful
+logs are necessary, not sufficient: disqualified outcomes, unmet freshness, or an
+ended attempt cannot acquire authority through a sealed receipt. A receipt does
+not make the facts checked at its construction permanently current.
+
 Matching is content-based, not argv-string-based: same workspace tree, same
 scope kind, same resolved base/head commits for diff scope, same changed-file
 digest, no gate-narrowing filters, required lanes present, and matching relevant
-config digests (`.pre-commit-config.yaml`, `loom.toml`, and the spec annotation
-digest).
+config digests (`.pre-commit-config.yaml`, `loom.toml`, and the current spec
+annotation and verification-strategy digests).
 
 ##### Marker
 
@@ -2243,6 +2820,14 @@ Marker validation is two-layered:
    id/entry as passed, and successful `VerifiedScope` and `ReviewedScope` exist
    for the same push range.
 
+Referenced verification evidence must remain admissible under
+[failure invalidation](#failure-invalidation),
+[confirmed counterexample admission](#confirmed-counterexamples-across-campaigns),
+[claim-specific freshness](#claim-specific-freshness), and the
+[publication-attempt boundary](#publication-attempt-handoff).
+Matching fingerprints and earlier successful logs do not override evidence
+disqualification or authorize reuse-disabled evidence on a later attempt.
+
 If any element is absent or mismatched — dirty tree, different tree OID, changed
 pre-commit config, different push range, missing/deleted gate log evidence, hook
 not covered, failed lane, or missing review success — the wrapper falls through
@@ -2256,7 +2841,10 @@ overwritten on each mint. Atomic write uses `<path>.tmp` + rename. The file
 lives in the loom workspace only; operator and bead workspaces do not contain a
 trusted marker. Gate logs referenced by the active marker are evidence;
 retention should preserve them while the marker is active when possible. If
-evidence is missing, validation fails and hooks run.
+positive run evidence is missing, validation fails and hooks run. Separately,
+[retained safety evidence](#retained-safety-evidence) remains required for current
+admission; neither falling through to a hook nor an old marker can bypass lost
+or disqualifying safety history.
 
 ##### Mint trigger
 
@@ -2278,8 +2866,11 @@ The sequence is:
 6. `GateSuccess` is constructed from the matching evidence; the marker is minted
    and written.
 7. `git push origin <integration-branch>` runs inside the same critical section.
-   A non-fast-forward invalidates the marker and forces a new fetch/rebase/gate
-   attempt rather than reusing the old evidence.
+   Failure or interruption ends the attempt under
+   [Publication-attempt handoff](#publication-attempt-handoff); any retry requires
+   new attempt admission, not replay of its marker. A non-fast-forward additionally
+   forces fetch/rebase against the actual remote state. Independently admissible
+   unit evidence remains reusable under the ordinary rules.
 
 Per-bead integration steps acquire the same lock for rebase + ff + verify but
 release without minting. The push gate waits for any in-flight integration to
@@ -2576,8 +3167,9 @@ The dispatcher's job:
 3. For each runner with a batch template, build one command, spawn once, parse
    per-target verdicts from the output. `[system]` renders one scenario at a
    time and shares equivalent execution (see below).
-4. For unmatched annotations, fall back to literal-command execution; equivalent
-   `[system]` invocations still share within the run.
+4. Literal commands may execute only through an admitted provider, whether
+   configured or built in. Unmatched/ambiguous provider contracts fail admission;
+   equivalent `[system]` invocations still share within the run.
 
 **Schema: `[runner.<tier>.<name>]` in `<workspace>/loom.toml`.**  Each runner
 declares how to recognise its annotations, how to format each target, how to
@@ -2591,7 +3183,7 @@ join into a batch, how to parse per-target results, and where to run from.
 | `join` | String inserted between formatted targets to build `{filter}` / `{targets}`. |
 | `parse` | Named built-in parser (see below) that extracts per-target verdicts from the runner's stdout. |
 | `cwd` | Repo-relative directory to run the command from. Override the tier-default cwd. |
-| `inputs` | Optional command template for the runner's **input-query** — how it asks its verifiers to self-report inputs, with `{print_inputs}` marking where the `--print-inputs` flag lands in the verifier's own argv (omit the placeholder and the flag is appended after the verifier's own arguments). Declaring `inputs` opts the runner into the input-query protocol: its verifiers MUST emit a well-formed inputs document or the gate raises `inputs-protocol-error` (see *Verifier inputs*). Omitted → the runner's annotations fall to the conservative always-run default — no precision, no protocol enforcement. |
+| `inputs` | Command template for a provider's batched **description/input query**, with `{print_inputs}` locating `--print-inputs` in the verifier's own argv (without the placeholder it is appended). Checked definitions generate unit descriptions; an admitted provider may also consume an observation projection such as judge collect-mode paths. Neither is a separately maintained input/policy registry. A query is unnecessary when a built-in provider supplies the equivalent contract directly; omission never grants silent always-run admission. Missing contracts or invalid query results fail admission. |
 
 **Built-in parsers** ship with loom — consumers add new runners that emit one of
 these formats, rather than authoring custom parsers:
@@ -2647,9 +3239,9 @@ Resolution order when spawning a command:
 **Loom-the-library ships defaults** for the common toolchains — nextest for
 `[test]` if a `Cargo.toml` is detected, nix for `[system]` derivations, pytest
 if a `pyproject.toml` is detected.  Consumers extend or override in
-`<workspace>/loom.toml`. **Loom- the-library has no privileged knowledge of any
-consumer's layout** — the defaults are heuristics for common shapes, not
-assumptions.
+`<workspace>/loom.toml`. **Loom-the-library has no privileged knowledge of any
+consumer's layout** — defaults discover and validate native project definitions;
+heuristics alone do not admit an execution-input contract.
 
 **Runner-owned resolution, invocation, and input-query.** A runner that
 `match`es an annotation **owns** that annotation end to end — loom never falls
@@ -2658,73 +3250,95 @@ back to parsing the annotation's argv for it:
 - **Resolution.** The annotation resolves (integrity gate, direction 1) because
   a runner claims it, not because its first token is on PATH. The
   `tokens[0]`-on-PATH check is the fallback for annotations no runner matches.
-  Registering a runner — rather than wrapping logic in `sh -c "…"` so
-  `tokens[0]` happens to be `sh` — is what earns precise scoping, batched
-  dispatch, and loud input-query errors; the `sh -c` wrapper defeats all three
-  and is no longer the only way to satisfy resolution.
+  Existence or runner matching is only target resolution, not input admission.
+  A configured or built-in provider must also supply the admitted execution
+  contract; wrapping a command in `sh -c "…"` cannot avoid that requirement.
 - **Invocation.** The `command` template is the single definition of how the
   verifier is spawned. Loom does not reconstruct the command by token-splitting
   the annotation; `--print-inputs` (and every other argument) lands where the
   template places it, so a `cargo run -p loom-walk -- {targets}` runner queries
   the walk, never `cargo`.
-- **Input-query.** Inputs come from the runner's `inputs` query (per *Verifier
-  inputs* § Input-query protocol). For the batched tiers (`[check]`, `[test]`,
-  `[judge]`) discovery is batched: one query spawn returns the per-target map
-  for the whole matched group. `[system]` queries one target at a time rather
-  than batching distinct scenarios; successful repeated declarations reuse the
-  resolver's session cache.  Execution sharing does not change input selection
-  or spec-section auto-inclusion.
+- **Input-query.** The provider supplies inputs from its tracked/checked
+  execution definition, directly or through the runner's `inputs` query. For
+  batched tiers (`[check]`, `[test]`, `[judge]`), one query returns the per-target
+  map for the matched group. `[system]` may query distinct scenarios separately;
+  repeated equivalent declarations reuse discovery within the session.
+  Execution sharing does not change input admission or spec-contract inclusion.
 - **Execution.** For the batched tiers (`[check]`, `[test]`, `[judge]`), matched
   annotations batch into one subprocess per runner (the dispatcher's step 3
   above); per-annotation spawn is only the unmatched fallback. `[system]`
-  executes equivalent invocations once per gate run, matched or not, and retains
-  one result and cache record per criterion.  Equivalence includes the rendered
-  command, resolved cwd, dispatch scope (`LOOM_FILES` / `LOOM_SPEC`), inherited
-  environment, and scenario/fixture requirements. Target and matched-runner
-  identity conservatively keep distinct scenarios separate even if their
-  rendered commands coincide.  An owning spec/criterion alone is not a distinct
-  scenario. Failure, skip, producer-error and dispatch-error evidence fans out
-  just like a pass; sharing never upgrades coverage. No output is reused across
-  runs.
+  shares equivalent invocations that require execution once per gate run,
+  matched or not, and retains one result and cache record per criterion.
+  Equivalence includes the rendered command, resolved cwd, dispatch scope
+  (`LOOM_FILES` / `LOOM_SPEC`), inherited environment, and scenario/fixture
+  requirements. Target and matched-runner identity conservatively keep distinct
+  scenarios separate even if their rendered commands coincide. An owning
+  spec/criterion alone is not a distinct scenario. Failure, skip, producer-error
+  and dispatch-error evidence fans out just like a pass; sharing never upgrades
+  coverage. This dispatcher memo is run-local, not cross-run authority. Normal
+  verification can consume [admissible prior evidence](#cache-and-evidence-reuse)
+  instead of dispatching a unit; it cannot simply replay raw output or cached
+  status as current proof. [Exact-target diagnostics](#scope-flags) require
+  fresh execution.
 
-Unmatched annotations keep literal-command semantics — `tokens[0]` resolution,
-heuristic input extraction, conservative always-run, no protocol enforcement.
-The runner-owned path is the opt-in to precision; the literal path is the floor.
+Literal argv semantics do not exempt a verifier from input admission.
+Unregistered commands with no supported provider contract fail configuration
+admission rather than acquiring guessed inputs or an implicit global scope.
 
 ###### Verifier inputs
 
-A verifier's inputs are the **files it examines** — the gate intersects them
-with a scope's input set to decide whether to run the verifier: it runs iff
-`inputs ∩ scope input set ≠ ∅`. Inputs are a **derived property of the
-verifier**, computed from the same definition that does the verifying — never a
-parallel, hand-maintained list that can drift from what the verifier actually
-reads.
+Selection correctness asks whether the right obligations are selected given
+complete dependency information. Dependency completeness separately requires
+both the **subject inventory** a verifier is responsible for and the
+**execution-input closure** needed to examine it. A hermetic check can still
+examine the wrong universe; neither Nix nor Rust types establish semantic
+coverage.
 
-The wire format is a list of **gitignore-style glob patterns relative to repo
-root**. How the gate derives them depends on verifier kind:
+Loom-owned checks consume immutable tracked provider inputs: domain membership,
+content, existence, path resolution, and relevant configuration/tool identity.
+Filesystem/environment access belongs at that boundary. Dependency reporting
+and execution use the same accesses, not parallel registration/input lists.
 
-| Verifier kind | Source of inputs |
-|---|---|
-| `[test](name)` | Test-framework metadata. For Rust: walk `cargo metadata`, resolve the test's owning crate, resolve the crate's source dirs. For pytest: pytest's collection output. For other frameworks: `<workspace>/loom.toml` `[runner.<tier>] inputs_for_test = "<command>"`. |
-| `[check]` / `[system]` / `[judge]` whose target resolves to a **script or binary supporting the input-query protocol** | The verifier reports its own inputs: `<target> --print-inputs <remaining-argv>` prints JSON `{"inputs": ["glob1", "glob2"]}` to stdout (for `[judge]`, the remaining argv is the `#fn` selector — see *Judge collect mode*). |
-| `[check]` / `[system]` — heuristic | Path extraction from genuine command tokens. `grep -q 'X' path/to/file` → `path/to/file`; `cargo test -p mycrate --lib testname` → `mycrate`'s sources via cargo metadata. Only tokens that are the verifier's own command arguments — never a guess at what a script reads internally. |
+External execution uses checked constructors. Construction starts with the
+independent repository inventory, resolves subject/resource domains and native
+targets, constructs the unit, and exposes its actual transitive execution graph
+and source identities. Resource declarations supply execution itself; no second
+smaller self-reported list may authorize selection or reuse. Cargo metadata
+helps locate targets but omits many runtime/build/fixture inputs; Nix metadata
+reflects declarations, not proof that the subjects/resources are complete.
+
+Precision is relative to admitted responsibility and dependencies. Shared inputs
+are normal. Independence fixtures identify changes that must not select unrelated
+work; genuinely global checks are explicit and justified. File-count thresholds
+and claims of semantic minimality do not replace provider conformance and
+verifier-honesty review.
+
+The input-query transport can expose repo-relative gitignore-style globs as a
+projection of an admitted definition. A glob list alone does not establish
+complete scope. Metadata discovery, actual observations, and execution resources
+must agree; raw argv path guessing is not an admission mechanism.
 
 **Input-query protocol.** The `--print-inputs` query is issued through the
 verifier's runner / command template — **never by prepending the flag to the
 command's first token.** The template decides where the flag lands, so a `cargo
 run -p loom-walk -- foo` verifier is queried as the walk's own argument (after
 the `--` boundary), not as an argument to `cargo`, and a `sh -c "<script>"`
-verifier is queried by running the script, not by token-scanning for a path. Two
-response shapes:
+verifier is queried by running the script, not by token-scanning for a path.
+The [provider description boundary](#provider-authoring-and-description-boundary)
+extends this mechanism with generated typed JSON descriptions for one target or
+an identified batch. Required target descriptions cannot be omitted, duplicated,
+or attributed to another target. Keep discovery batched where execution batches;
+scoping does not add a query subprocess per criterion or native test.
 
-- **Single-target** — `{"inputs": ["glob", ...]}`, the inputs for the one target
-  queried.
-- **Batch** — `{"inputs": {"<target>": ["glob", ...], ...}}`, a per-target map.
-  A runner that batches *execution* (one subprocess for many targets — see
-  *Dispatch — per-tier process model*) reports inputs the same way: **one query
-  spawn learns the inputs for its whole matched group**, never one spawn per
-  target. Discovery batches exactly where execution batches, so scoping a large
-  tree costs no more processes than running it.
+An already admitted provider may consume a narrower dependency-observation
+projection, notably the judge collect-mode shapes below:
+
+- **Single-target projection** — `{"inputs": ["glob", ...]}`.
+- **Batch projection** — `{"inputs": {"<target>": ["glob", ...], ...}}`.
+
+These projections supplement the provider's checked contract. A bare list of
+paths or globs is not a replacement for a generated unit description or direct
+checked provider definition and cannot establish complete scope on its own.
 
 **Target resolution.** A `[judge]` target is located by selector-stripping +
 spec-relative resolution: a `#fn` / `::fn` / `::attr` selector is stripped
@@ -2755,55 +3369,39 @@ the loom judge-harness preamble (which supplies `judge_files` /
 inputs document is a loud finding, not a silent fallback (see *Inputs-protocol
 error*).
 
-**Spec-section auto-include.** The spec section the annotation lives in is
-*always* part of the verifier's inputs — added automatically, never declared.
-Editing the spec section re-runs the verifier. The auto-include is an
-*additional* input, not the resolution floor: when a verifier reports no inputs
-of its own, the gate does not narrow it to the spec section alone (see
-*Conservative default*).
+**Spec-contract inclusion.** Applicable package contracts, owning criteria, and
+strategy participate automatically in affectedness and evidence validation.
+Changing them cannot leave old authorization intact. Their inclusion is
+additional to the verifier's own dependency closure, never a replacement for a
+missing input contract.
 
-**Conservative default.** A verifier that reports no inputs of its own — no
-test-framework metadata, no `--print-inputs` support, no heuristic path token —
-**always runs** under every scope. Inputs are an optimization that lets the gate
-*skip* verifiers it can prove are unaffected; an undeterminable input set is
-never grounds to skip.  Incremental skipping must never silently drop a verifier
-that should have fired, so "inputs unknown" resolves to *run*, not to *narrow to
-the spec section*. Precision is opt-in (via `--print-inputs` or `[test]`
-framework metadata); imprecision costs wasted work, never a missed verifier.
+**Strict admission.** Every executable verifier has an exact target, subject
+inventory, supported discovery contract, execution requirements, and result
+mapping. Missing contracts, ambiguous targets, malformed metadata, or discovery
+failures block trusted planning. An explicit justified broad/global contract is
+valid; silently converting failed discovery into always-run is not. A valid cold
+tracked provider may execute to collect observations. Absence of earlier traces
+does not mean an empty dependency set or a malformed contract.
 
-**Inputs-protocol error.** Reporting inputs is opt-in, and the opt-in is an
-**explicit signal, not a guess.** A verifier has opted in when loom owns its
-input-query contract:
-
-- a `[judge]` — the harness preamble guarantees `--print-inputs <fn>` is a real
-  code path; or
-- a `[check]` / `[system]` matched by a runner that declares an `inputs` query
-  (see *Runners*).
-
-An opted-in verifier that exits non-zero or emits a malformed inputs document is
-a loud `inputs-protocol-error` finding (see *Concern tokens and target
-variants*) — deterministic, emitted by the integrity gate during `loom gate
-verify` / `check`, exiting non-zero at the push gate and minting as a
-remediation at tree scope. This is the integrity gate's fourth direction; see
-*Integrity gate*, Direction 4.  Because the opt-in is explicit, loudness never
-mis-fires: a verifier whose contract loom does *not* own — an unregistered
-literal command, or a runner with no `inputs` query — falls through to the
-conservative always-run default, **silently**. The gate never faults a `grep` or
-`nix` invocation for declining a protocol it never opted into. (A well-formed
-empty `{"inputs":[]}` from an opted-in verifier is a deliberate narrow, honoured
-as-is — not an error.)
+**Inputs-protocol error.** A provider query that fails or emits malformed
+metadata produces `inputs-protocol-error`; there is no heuristic or alternate
+provider fallback. Missing contract admission is likewise a configuration
+failure, even when a literal command exists on PATH. No command is probed by
+guessing unsupported flags: configured or built-in providers own their queries.
+An empty query projection is accepted only when the admitted definition really
+has no corresponding file inputs; it cannot erase membership, configuration,
+tool, or contract dependencies. Pending annotations retain their separate
+pending policy rather than requiring a not-yet-existing verifier contract.
 
 **Repo-agnostic.** The `--print-inputs` convention works for any script or
 binary in any language, and the `[runner.<tier>] inputs_for_test` config knob
 handles non-default test frameworks — loom-the-library imposes no layout of its
 own.
 
-Spec annotations stay **clean** — `[tier](target)` and nothing else.  No inline
-metadata, no HTML-comment companions, no syntax extensions, **and no in-script
-`# loom-inputs:` header** — a verifier reports its inputs by executing, not by
-carrying a comment a reader must keep in sync. The reporting mechanism lives in
-the verifier's own definition (test metadata, `--print-inputs`, command
-arguments), never beside the annotation and never as a parallel declaration.
+Spec annotations stay **clean** — `[tier](target)` and nothing else. No inline
+input metadata, HTML-comment companions, or in-script `# loom-inputs:` list is
+required. Execution-owned dependencies are distinct from spec-owned strategy
+in `loom-verify` blocks; neither is a parallel manually maintained input list.
 
 ##### Verifier-runner contract
 
@@ -2855,9 +3453,9 @@ presence/absence checks viable without wrapping each one in a Rust walk.
 
 The worker-stage policy is distinct from later host testing. Workers execute
 locally in their sandbox; no SSH access, host-verifier bridge, remote per-bead
-receipts, host provisioning or live Darwin evidence is required. Host system
-tests remain a separate end-of-loop/integration-test-branch stage, configured by
-the consumer; worker acceptance never substitutes for that stage.
+receipts, host provisioning or live Darwin evidence is required. Required host
+testing follows [stage applicability](#deterministic-verify-lanes); worker
+acceptance never substitutes for that coverage.
 [test](worker_accepts_foreign_platform_and_declared_capability_skips_without_verifying_them)
 
 A modern JSON-lines producer emits exactly one record per requested target:
@@ -2931,21 +3529,16 @@ and runner integration, not the consumer's system tests.
 
 ##### `--files` scope handling
 
-For file-filterable batched execution paths, the gate filters annotations to
-those whose scope intersects `--files` before issuing the batched invocation:
+The planner selects eligible obligations using admitted dependencies before
+batching or system dispatch. This applies across tiers rather than delegating
+system affectedness to an arbitrary shell command. Native suite/property
+boundaries follow [Tests](tests.md#selective-property-campaigns).
 
-- `[test]`-tier scope = files in `crate(test)` ∪ files in `crate(test)`'s
-  transitive dependencies (Rust; computed via `cargo metadata`). Other
-  toolchains supply analogous mappings.
-- Runner-matched `[check]` scope = the matched runner's per-target `inputs`
-  query result, plus the spec-section auto-include. There is no cargo-metadata
-  crate map for `[check]`; a matched runner that has no `inputs` query falls
-  back to the conservative always-run default before the batch is formed.
-  `[judge]` dispatch is batched but not file-filtered under `--files`.
-- For non-batched execution paths (`[system]` and unmatched fallback
-  annotations), the gate passes `LOOM_FILES` as env and the verifier decides
-  whether to filter. Most verifiers can be dumb (run the same way regardless);
-  walks that benefit from scope filtering read the env var.
+Selection scope is not analysis scope: `LOOM_FILES` identifies requested changes
+but does not authorize omitting unchanged subjects needed by a cross-file check.
+A verifier narrows execution to changed files only when its admitted semantics
+permit that narrowing. A known-unaffected unit is excluded; a required unit runs
+or consumes admissible evidence under the same rules as other scopes.
 
 ##### Test-tier silent-zero-match
 
@@ -2996,17 +3589,13 @@ part of `loom gate check`. Four directions:
    by `?` — having two annotations on one criterion is wrong regardless of
    either's resolution state.
 
-4. **Inputs-protocol honesty — an opted-in input-query must honour its
-   contract** (`inputs-protocol-error`). A verifier opts in when loom owns its
-   query: a `[judge]` (the harness preamble guarantees `<script> --print-inputs
-   <fn>`) or a `[check]` / `[system]` whose runner declares an `inputs` query
-   (see *Runners*). An opted-in query that exits non-zero or emits a malformed
-   inputs document is unambiguously broken and the gate flags it. This is the
-   loud counterpart to the *Conservative default*: a verifier whose contract
-   loom does not own falls through to always-run silently, so no `grep` / `nix`
-   command is ever mis-flagged. The pending modifier suppresses
-   `inputs-protocol-error` the same way it suppresses `UnresolvedAnnotation` — a
-   `[tier?]` annotation has no verifier yet to hold to the protocol.
+4. **Input-contract admission and protocol honesty.** Executable verifiers
+   require admitted providers; target existence alone cannot establish a scope.
+   Missing/ambiguous contracts and discovery failures block trusted success.
+   A declared query that fails or emits malformed metadata produces
+   `inputs-protocol-error`. No silent always-run or heuristic fallback is
+   permitted. The pending modifier retains its separate treatment of absent
+   verifiers and suppresses `inputs-protocol-error` during that pending window.
 
 Failure output (one per finding):
 
@@ -3332,10 +3921,40 @@ unreachable.
    scope; stale evidence cannot authorize a push.
 2. Cached status reporting retains its hard latency target independently of
    corpus size.
-3. Verifier dispatch remains repository-agnostic and conservative when an input
-   set cannot be derived.
+3. Verifier dispatch remains repository-agnostic with explicit input-contract
+   admission. Invalid discovery fails loudly; valid cold execution and justified
+   broad responsibility remain distinct from configuration failure.
+
+## Refinement Questions
+
+- Which changes to responsibility domains, resource footprints, or role
+  exceptions need explicit semantic scrutiny in the existing review path?
+- What minimal typed declarations express property filters, justified role
+  exceptions, and additional roles without duplicating execution inputs or
+  turning built-in defaults into per-project configuration?
+- How do callers represent validated stage and publication-attempt context,
+  enforce the attempt-ending boundary across process interruption, and discharge
+  worker capability gaps at the required trusted host stage?
+- How do providers represent authenticated Nix-cache provenance and reusable
+  system-test environment assumptions at the typed admission boundary? Additional
+  general-purpose non-Nix provider backends are outside this pilot.
 
 ## Out of Scope
+
+- Additional general-purpose trusted provider backends for projects without Nix.
+  The pilot targets the actual Loom/Wrix Rust/Nix integrations; shared APIs remain
+  repository-agnostic. This does not remove tracked Rust analysis, existing
+  native feedback, or explicit effectful lanes, and unsupported providers do not
+  gain a heuristic admission fallback.
+- A new general-purpose incremental-query engine, speculative scheduler, or
+  separate persistent trace/result-cache service. Tracked-input invalidation and
+  existing gate evidence/Nix reuse bound the design.
+- Coverage-based selectors trusted to omit required Rust tests, or a promise of
+  precise function-level Rust impact analysis. Native grouping is owned by Tests.
+- Inferring semantic test adequacy from input closure, hermeticity, or Rust types.
+  Those boundaries do not prove that a checker enforces the intended rule.
+- Replacing mandatory local publication coverage with nightly or CI-only checks;
+  hook policy is owned by Pre-commit.
 
 The gate enforces; it does not own:
 
@@ -3348,8 +3967,8 @@ The gate enforces; it does not own:
   walks live in a dedicated crate, are scattered across source crates, or are
   shell scripts is the consumer's choice. The gate dispatches whatever
   annotation says, however the consumer chooses to back it.
-- Workflow events (push, merge, bead lifecycle, remediation bonding, molecule
-  progress). Those are downstream of the gate's verdict, not properties the gate
-  evaluates.
+- Performing workflow effects (push, merge, bead lifecycle, remediation bonding,
+  molecule progress). Harness owns orchestration; Gate owns the admissibility of
+  evidence and authorization consumed at those boundaries.
 - The `loom:clarify` resolution channel itself — `loom inbox` is the surface,
   defined in [harness.md § Inbox Modes](harness.md#inbox-modes).
