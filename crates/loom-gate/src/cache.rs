@@ -116,6 +116,7 @@ pub struct CacheRow {
 /// schema on first use and migrates older versions in place.
 pub struct StatusCache {
     conn: Mutex<Connection>,
+    path: PathBuf,
 }
 
 impl StatusCache {
@@ -133,7 +134,7 @@ impl StatusCache {
                 source,
             })?;
         }
-        let _init_lock = lock_initialization(path)?;
+        let _write_lock = lock_writer(path)?;
         let mut conn = Connection::open(path).map_err(|source| CacheError::Open {
             path: path.to_path_buf(),
             source,
@@ -160,6 +161,7 @@ impl StatusCache {
         tx.commit()?;
         Ok(Self {
             conn: Mutex::new(conn),
+            path: path.to_path_buf(),
         })
     }
 
@@ -239,6 +241,7 @@ impl StatusCache {
             return Ok(());
         }
         let mut conn = self.lock_conn()?;
+        let _write_lock = lock_writer(&self.path)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for row in rows {
             ensure_spec_row(&tx, &row.spec_label)?;
@@ -259,7 +262,7 @@ impl StatusCache {
     }
 }
 
-fn lock_initialization(path: &Path) -> Result<std::fs::File, CacheError> {
+fn lock_writer(path: &Path) -> Result<std::fs::File, CacheError> {
     let mut lock_path = path.as_os_str().to_os_string();
     lock_path.push(".lock");
     let lock_path = PathBuf::from(lock_path);
@@ -273,7 +276,7 @@ fn lock_initialization(path: &Path) -> Result<std::fs::File, CacheError> {
         lock.lock()?;
         Ok(lock)
     };
-    acquire().map_err(|source| CacheError::InitializationLock {
+    acquire().map_err(|source| CacheError::WriterLock {
         path: lock_path,
         source,
     })
@@ -400,8 +403,8 @@ pub enum CacheError {
         #[source]
         source: std::io::Error,
     },
-    /// failed to lock cache initialization at {path}
-    InitializationLock {
+    /// failed to lock cache writer at {path}
+    WriterLock {
         path: PathBuf,
         #[source]
         source: std::io::Error,

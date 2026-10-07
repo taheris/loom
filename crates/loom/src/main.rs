@@ -2177,6 +2177,7 @@ fn persist_outcome(
         });
     }
     if let Err(err) = cache.upsert_many(&rows) {
+        let err = anyhow::Error::new(err);
         eprintln!("loom gate: failed to upsert cache batch: {err:#}");
     }
 }
