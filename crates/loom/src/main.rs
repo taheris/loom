@@ -97,7 +97,7 @@ impl From<AgentBackendArg> for AgentKind {
 #[derive(Debug, Subcommand)]
 enum GateSubcommand {
     #[command(about = "Read cached gate results for an explicit scope.")]
-    Status(GateScopeArgs),
+    Status(GateStatusArgs),
     #[command(about = "Run deterministic verification followed by LLM review.")]
     Audit(GateScopeArgs),
     #[command(about = "Run scope-derived deterministic verifier lanes.")]
@@ -183,6 +183,36 @@ struct GateScopeArgs {
     /// Scope to every file in the workspace.
     #[arg(long)]
     tree: bool,
+}
+
+#[derive(Debug, clap::Args)]
+#[command(group(
+    ArgGroup::new("gate_scope")
+        .args(["files", "diff", "tree"])
+        .multiple(false)
+        .required(false),
+))]
+struct GateStatusArgs {
+    /// Scope to verifiers whose declared inputs intersect this file set.
+    #[arg(long, value_name = "PATH", value_delimiter = ',', num_args = 1..)]
+    files: Vec<PathBuf>,
+    /// Scope to a git diff range.
+    #[arg(long, value_name = "RANGE")]
+    diff: Option<String>,
+    /// Scope to every file in the workspace.
+    #[arg(long)]
+    tree: bool,
+}
+
+impl From<GateStatusArgs> for GateScopeArgs {
+    fn from(args: GateStatusArgs) -> Self {
+        Self {
+            files: args.files,
+            target: None,
+            diff: args.diff,
+            tree: args.tree,
+        }
+    }
 }
 
 /// Subcommands of `loom note`.
@@ -1198,7 +1228,7 @@ fn run_gate(
             return run_gate_mint(workspace, &args, agent_override, host_key);
         }
         Some(GateSubcommand::VerifyMarker(args)) => return run_gate_verify_marker(workspace, args),
-        Some(GateSubcommand::Status(args)) => (GateOperation::Status, args),
+        Some(GateSubcommand::Status(args)) => (GateOperation::Status, args.into()),
         Some(GateSubcommand::Verify(args)) => (GateOperation::Verify, args),
         Some(GateSubcommand::Check(args)) => (GateOperation::Tier(Tier::Check), args),
         Some(GateSubcommand::Test(args)) => (GateOperation::Tier(Tier::Test), args),

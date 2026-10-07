@@ -184,6 +184,29 @@ fn loom_gate_status_help_snapshot() {
 }
 
 #[test]
+fn loom_gate_status_help_lists_only_supported_scopes() {
+    let help = loom_help(&["gate", "status"]);
+    assert!(
+        !help.contains("--target"),
+        "status has no target scope: {help}"
+    );
+    for flag in ["--files <PATH>...", "--diff <RANGE>", "--tree"] {
+        assert!(help.contains(flag), "status must retain {flag}: {help}");
+    }
+}
+
+#[test]
+fn loom_gate_target_commands_still_advertise_target_scope() {
+    for subcommand in ["verify", "check", "test", "system", "judge"] {
+        let help = loom_help(&["gate", subcommand]);
+        assert!(
+            help.contains("--target <TARGET>"),
+            "gate {subcommand} must retain target scope: {help}",
+        );
+    }
+}
+
+#[test]
 fn loom_gate_verify_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["gate", "verify"]));
 }
