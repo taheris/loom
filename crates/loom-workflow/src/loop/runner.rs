@@ -904,6 +904,7 @@ fn emit_infra_failure<C: AgentLoopController>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::r#loop;
     use loom_driver::bd::{Bead, Label};
     use loom_driver::identifier::BeadId;
     use loom_gate::GateFailReason;
@@ -1116,8 +1117,18 @@ mod tests {
 
         assert_eq!(summary.beads_processed, 1);
         assert_eq!(c.run_calls.len(), 1);
-        assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert_eq!(c.review_calls, 1, "successful work must run the push gate");
         Ok(())
     }
@@ -1139,9 +1150,22 @@ mod tests {
                 ..
             }
         ));
-        assert!(c.per_bead_gate_calls.is_empty());
-        assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.per_bead_gate_calls,
+            [] as [loom_driver::identifier::BeadId; 0]
+        );
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         Ok(())
     }
 
@@ -1164,10 +1188,23 @@ mod tests {
         assert_eq!(summary.beads_processed, 2);
         assert_eq!(summary.beads_waiting, 1);
         assert_eq!(controller.run_calls.len(), 2);
-        assert!(controller.per_bead_gate_calls.is_empty());
+        assert_eq!(
+            controller.per_bead_gate_calls,
+            [] as [loom_driver::identifier::BeadId; 0]
+        );
         assert_eq!(controller.review_calls, 0);
-        assert!(controller.clarified.is_empty());
-        assert!(controller.blocked.is_empty());
+        assert_eq!(
+            controller.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            controller.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         Ok(())
     }
 
@@ -1208,8 +1245,18 @@ mod tests {
 
         assert_eq!(summary.beads_processed, 3);
         // All three reach Done; driver does not call bd close.
-        assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert!(summary.outer_iterations >= 1);
         Ok(())
     }
@@ -1257,7 +1304,10 @@ mod tests {
         assert_eq!(c.run_calls[1].1.as_deref(), Some("err-0"));
         assert_eq!(c.run_calls[2].1.as_deref(), Some("err-1"));
 
-        assert!(c.clarified.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
         assert_eq!(c.blocked.len(), 1);
         assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
         assert_eq!(c.blocked[0].1, RETRY_EXHAUSTED_CAUSE);
@@ -1293,8 +1343,18 @@ mod tests {
             "second attempt threads the LOOM_RETRY reason verbatim",
         );
         // Done — Retry succeeded on retry, no escalation.
-        assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         let kinds: Vec<&str> = c.driver_events.iter().map(|(k, _, _)| k.as_str()).collect();
         assert_eq!(kinds, vec!["retry_dispatch"]);
         assert_eq!(c.driver_events[0].2["cause"].as_str(), Some("agent-retry"));
@@ -1357,7 +1417,14 @@ mod tests {
             c.run_calls[1].1.as_deref(),
             Some("zero-progress: preserved workspace"),
         );
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert_eq!(summary.beads_blocked, 0);
         Ok(())
     }
@@ -1376,8 +1443,18 @@ mod tests {
         assert_eq!(c.run_calls.len(), 2);
         assert_eq!(c.run_calls[1].1.as_deref(), Some("boom"));
         // Done — driver does not close, no clarify, no blocked.
-        assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert_eq!(summary.beads_clarified, 0);
         Ok(())
     }
@@ -1495,7 +1572,14 @@ mod tests {
         let summary = run_loop(&mut c, RetryPolicy::default(), 10).await?;
 
         assert_eq!(c.run_calls.len(), 1);
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert_eq!(c.infra.len(), 1);
         assert_eq!(c.infra[0].1.cause, UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE);
         assert_eq!(c.infra[0].1.infra_class, "static");
@@ -1555,7 +1639,14 @@ mod tests {
         .await?;
 
         assert_eq!(c.run_calls.len(), 1);
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert_eq!(c.infra.len(), 1);
         let diagnostic = &c.infra[0].1;
         assert_eq!(diagnostic.cause, INFRA_INTERRUPTED_CAUSE);
@@ -1619,8 +1710,21 @@ mod tests {
 
         let order: Vec<String> = c.run_calls.iter().map(|(id, _)| id.to_string()).collect();
         assert_eq!(order, vec!["lm-a", "lm-b", "lm-a"]);
-        assert!(c.infra.is_empty());
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.infra,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                r#loop::outcome::InfraDiagnostic
+            ); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert_eq!(summary.beads_processed, 2);
         Ok(())
     }
@@ -1637,9 +1741,25 @@ mod tests {
         let summary = run_loop(&mut c, RetryPolicy { max_retries: 2 }, 10).await?;
 
         assert_eq!(c.run_calls.len(), 2);
-        assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty());
-        assert!(c.infra.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
+        assert_eq!(
+            c.infra,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                r#loop::outcome::InfraDiagnostic
+            ); 0]
+        );
         assert_eq!(summary.beads_blocked, 0);
         Ok(())
     }
@@ -1664,8 +1784,17 @@ mod tests {
         assert_eq!(c.run_calls[1].1, None);
         assert_eq!(c.run_calls[2].1.as_deref(), Some("agent-err-0"));
         assert_eq!(c.run_calls[3].1.as_deref(), Some("agent-err-1"));
-        assert!(c.clarified.is_empty());
-        assert!(c.infra.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.infra,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                r#loop::outcome::InfraDiagnostic
+            ); 0]
+        );
         assert_eq!(c.blocked.len(), 1);
         assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
         assert_eq!(c.blocked[0].1, RETRY_EXHAUSTED_CAUSE);
@@ -1698,7 +1827,14 @@ mod tests {
 
         assert_eq!(c.run_calls.len(), 2);
         assert_eq!(c.run_calls[1].1.as_deref(), Some("verify failed"));
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert_eq!(c.infra.len(), 1);
         assert_eq!(c.infra[0].1.cause, INFRA_PREFLIGHT_CAUSE);
         assert_eq!(summary.beads_blocked, 1);
@@ -1735,7 +1871,13 @@ mod tests {
         .await?;
 
         assert_eq!(second.run_calls.len(), 1);
-        assert!(second.infra.is_empty());
+        assert_eq!(
+            second.infra,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                r#loop::outcome::InfraDiagnostic
+            ); 0]
+        );
         assert_eq!(summary.beads_processed, 1);
         Ok(())
     }
@@ -1770,8 +1912,18 @@ mod tests {
             "one handoff per pass (initial + fix-up pass)",
         );
         assert_eq!(summary.outer_iterations, 2);
-        assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         Ok(())
     }
 
@@ -2165,8 +2317,18 @@ mod tests {
             BeadId::new("lm-1").expect("valid")
         );
         // Clean outcome → Done (verified by exclusion: not clarified, not blocked).
-        assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert_eq!(summary.beads_processed, 1);
         Ok(())
     }
@@ -2195,8 +2357,18 @@ mod tests {
             vec![BeadId::new("lm-1").expect("valid")]
         );
         assert_eq!(c.run_calls.len(), 1, "gate runs after a single agent run");
-        assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty());
+        assert_eq!(
+            c.clarified,
+            [] as [(loom_driver::identifier::BeadId, std::string::String); 0]
+        );
+        assert_eq!(
+            c.blocked,
+            [] as [(
+                loom_driver::identifier::BeadId,
+                std::string::String,
+                std::string::String
+            ); 0]
+        );
         assert_eq!(summary.beads_processed, 1);
         Ok(())
     }

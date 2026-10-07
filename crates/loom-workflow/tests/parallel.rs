@@ -129,7 +129,7 @@ async fn parallel_preparation_preserves_dirty_work_in_recovery_stash() -> Result
         git_capture(&worktree.path, &["show", &format!("{commit}^3:loose.txt")])?,
         "preserve untracked\n"
     );
-    assert!(git_capture(&worktree.path, &["status", "--porcelain"])?.is_empty());
+    assert_eq!(git_capture(&worktree.path, &["status", "--porcelain"])?, "");
     Ok(())
 }
 
@@ -1050,10 +1050,9 @@ async fn integration_step_rejects_untrusted_driver_signature() -> Result<()> {
     );
     assert_eq!(git_capture(&loom, &["rev-parse", "main"])?, main_tip);
     assert!(!loom.join("worker.txt").exists());
-    assert!(
-        git_capture(&loom, &["branch", "--list", &branch])?
-            .trim()
-            .is_empty()
+    assert_eq!(
+        git_capture(&loom, &["branch", "--list", &branch])?.trim(),
+        ""
     );
     assert_eq!(
         git_capture(&loom, &["config", "user.signingkey"])?.trim(),

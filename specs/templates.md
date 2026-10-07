@@ -1178,10 +1178,15 @@ bundled documents in front of the agent with zero configuration.
 - `TodoContext` carries `criterion_status: Vec<CriterionStatus>`; no other phase
   context does [check](cargo run -p loom-walk -- todo_contexts_carry_criterion_status)
 
-- `todo.md` rendered prompts surface every changed spec's `CriterionStatus` rows
+- Inline `todo.md` rendering surfaces every changed spec's `CriterionStatus` rows
   with criterion text, annotation, and evidence state so the agent can
   distinguish recorded results from stale annotations or missing observations
   [test](todo_template_renders_typed_criterion_status_rows)
+
+- Dossier-mode Todo rendering keeps the complete roster and explicit evidence
+  index without inlining large diffs or notes, and supplies durable-draft
+  resumption guidance without weakening the final success protocol.
+  [test](todo_dossier_render_keeps_roster_and_resumption_without_inlining_evidence)
 
 ### Decomposition discipline
 
@@ -1365,7 +1370,14 @@ bundled documents in front of the agent with zero configuration.
    [Evidence-owned coverage projection](evidence.md#coverage-projection),
    including freshness requirements, blockers, and unavailable admission;
    neither elapsed age nor a historical `Current` pass establishes
-   admissibility.
+   admissibility. `TodoContext` separates inline display from dossier-backed
+   disclosure through `EvidenceDelivery`; this is presentation, not a second
+   workflow or a coverage decision. Production uses
+   [Todo's bounded evidence delivery](todo.md#bounded-evidence-delivery-and-resumption),
+   retaining the roster and manifest in the entry prompt while complete typed
+   rows, notes, and diffs are available through the referenced pages. Inline
+   rendering remains available for focused composition and rendering tests; both
+   use the same criterion-row presentation.
 
 ### Recovery context
 

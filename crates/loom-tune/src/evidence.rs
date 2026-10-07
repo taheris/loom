@@ -483,8 +483,8 @@ impl Splitter {
         let bucket = u64::from_be_bytes(bytes);
         let high = u32::try_from(bucket >> 32).unwrap_or(u32::MAX);
         let low = u32::try_from(bucket & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-        let unit =
-            (f64::from(high) * 4_294_967_296.0 + f64::from(low)) / 18_446_744_073_709_551_616.0;
+        let unit = (f64::from(high).mul_add(4_294_967_296.0, f64::from(low)))
+            / 18_446_744_073_709_551_616.0;
         if unit < self.selection_fraction.get() {
             Split::Selection
         } else {

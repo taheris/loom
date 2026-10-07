@@ -32,12 +32,12 @@ use super::context::{
     implementation_notes_context, spec_epic_context, todo_fingerprint,
 };
 use super::criterion_status::build_criterion_status;
+use super::cursor::{CURSOR_KEY as TODO_CURSOR_METADATA_KEY, Cursor};
 use super::error::TodoError;
 use super::runner::{TodoController, TodoRecord, TodoSession, TodoSpecSummary};
 
 const TODO_HEAD_METADATA_KEY: &str = "loom.todo_head";
 const TODO_FINGERPRINT_METADATA_KEY: &str = "loom.todo_fingerprint";
-const TODO_CURSOR_METADATA_KEY: &str = "loom.todo_cursor";
 const TODO_SPECS_METADATA_KEY: &str = "loom.todo_specs";
 const PENDING_WORK_EPIC_TITLE: &str = "Pending todo decomposition";
 
@@ -73,8 +73,7 @@ struct ChangedSpec {
     label: SpecLabel,
     spec_path: String,
     spec_epic: BeadId,
-    todo_cursor: Option<String>,
-    initialized: bool,
+    cursor: Cursor,
 }
 
 #[derive(Debug, Clone)]
@@ -106,7 +105,7 @@ enum Compensation {
     },
     Cursor {
         bead_id: BeadId,
-        previous: Option<String>,
+        previous: Cursor,
     },
     WorkEpic {
         bead_id: BeadId,
@@ -119,6 +118,7 @@ enum Compensation {
 struct BuiltTodoPrompt {
     prompt: String,
     skill_plan: SkillPlan,
+    dossier: super::dossier::Dossier,
 }
 
 impl<R: CommandRunner> ProductionTodoController<R> {
@@ -284,12 +284,12 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         for spec in &indexed {
             self.state.upsert_spec(&spec.label, &spec.spec_path)?;
             let epic = self.ensure_spec_epic(spec).await?;
-            if epic.initialized {
+            if epic.cursor.is_uninitialized() {
                 changed.push(epic);
                 continue;
             }
             if self
-                .spec_changed_since_cursor(spec, epic.todo_cursor.as_deref())
+                .spec_changed_since_cursor(spec, epic.cursor.as_str())
                 .await?
             {
                 changed.push(epic);
@@ -309,8 +309,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 spec_path: spec.spec_path.clone(),
                 spec_blob_sha: blob.to_string(),
                 spec_epic_id: spec.spec_epic.clone(),
-                todo_cursor: spec.todo_cursor.clone(),
-                initialized: spec.initialized,
+                todo_cursor: spec.cursor.as_str().map(str::to_owned),
+                initialized: spec.cursor.is_uninitialized(),
             });
         }
         let fingerprint = todo_fingerprint(&head, docs_blob.as_str(), &fingerprint_specs);
@@ -339,33 +339,28 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 ids,
             });
         }
-        let (spec_epic, todo_cursor, initialized) = if let Some(bead) = epics.first() {
-            let cursor = metadata_string(bead, TODO_CURSOR_METADATA_KEY).ok_or_else(|| {
-                TodoError::MissingSpecCursor {
-                    label: spec.label.to_string(),
-                    epic_id: bead.id.to_string(),
-                }
-            })?;
-            self.validate_cursor(&spec.label, &bead.id, &cursor).await?;
+        let (spec_epic, cursor) = if let Some(bead) = epics.first() {
+            let cursor = Cursor::parse(bead, spec.label.as_str())?;
+            if let Cursor::Finalized(sha) = &cursor {
+                self.validate_cursor(&spec.label, &bead.id, sha).await?;
+            }
             self.close_spec_epic_if_needed(&bead.id, bead.status.as_str())
                 .await?;
-            (bead.id.clone(), Some(cursor), false)
+            (bead.id.clone(), cursor)
         } else {
-            let id = self.create_spec_epic(spec).await?;
-            (id, None, true)
+            (self.create_spec_epic(spec).await?, Cursor::Uninitialized)
         };
         let molecule_id = spec_epic.as_str().parse()?;
         self.state.upsert_spec_epic(&SpecEpicRow {
             spec_label: spec.label.clone(),
             epic_id: molecule_id,
-            todo_cursor: todo_cursor.clone(),
+            todo_cursor: cursor.as_str().map(str::to_owned),
         })?;
         Ok(ChangedSpec {
             label: spec.label.clone(),
             spec_path: spec.spec_path.clone(),
             spec_epic,
-            todo_cursor,
-            initialized,
+            cursor,
         })
     }
 
@@ -378,6 +373,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 issue_type: Some(loom_driver::bd::IssueType::Epic),
                 priority: Some(loom_driver::bd::Priority::P2),
                 labels: vec!["loom:spec".to_string(), format!("spec:{}", spec.label)],
+                metadata: Some(Cursor::creation_metadata()),
                 ..CreateOpts::default()
             })
             .await?;
@@ -409,6 +405,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                     issue_type: Some(loom_driver::bd::IssueType::Epic),
                     label: Some(format!("spec:{label}")),
                     statuses: vec![status],
+                    limit: Some(0),
                     ..Default::default()
                 })
                 .await?;
@@ -421,16 +418,9 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         &self,
         label: &SpecLabel,
         epic_id: &BeadId,
-        cursor: &str,
+        cursor: &GitSha,
     ) -> Result<(), TodoError> {
-        if GitSha::new(cursor).is_err() {
-            return Err(TodoError::InvalidSpecCursor {
-                label: label.to_string(),
-                epic_id: epic_id.to_string(),
-                cursor: cursor.to_string(),
-                reason: "not a full git SHA".to_string(),
-            });
-        }
+        let cursor = cursor.as_str();
         if !self.git.rev_exists(cursor).await? {
             return Err(TodoError::InvalidSpecCursor {
                 label: label.to_string(),
@@ -559,6 +549,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 issue_type: Some(loom_driver::bd::IssueType::Epic),
                 label: Some("loom:todo".to_string()),
                 statuses: vec![loom_driver::bd::Status::Open],
+                limit: Some(0),
                 ..Default::default()
             })
             .await?;
@@ -590,9 +581,9 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             spec_epics.push(spec_epic_context(
                 spec.label.clone(),
                 Some(spec.spec_epic.as_str().parse()?),
-                spec.todo_cursor.clone(),
+                spec.cursor.as_str().map(str::to_owned),
             ));
-            let diff = match spec.todo_cursor.as_deref() {
+            let diff = match spec.cursor.as_str() {
                 Some(cursor) => Some(
                     self.git
                         .diff_spec(cursor, Path::new(&spec.spec_path))
@@ -636,7 +627,15 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             self.runtime,
             &self.skills_cfg,
         )?;
-        let skill_session = skill_plan.materialize(scratch_dir, &self.workspace)?;
+        // The index needs materialized skill paths. Own this preview so render or
+        // budget errors clean it up; build_session recreates the final layout.
+        let preview = loom_driver::scratch::ScratchSession::open(
+            &self.workspace,
+            key,
+            "",
+            &format!("loom todo @ {}", preflight.work_epic),
+        )?;
+        let skill_session = skill_plan.materialize(preview.path(), &self.workspace)?;
         let spec_index = std::fs::read_to_string(self.workspace.join("docs/README.md"))?;
         let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path);
         let base = TemplateBaseFields {
@@ -652,11 +651,23 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
             skill_index: skill_session.skill_index,
         };
-        let ctx = build_template_context(base, criterion_status);
+        let mut ctx = build_template_context(base, criterion_status);
+        let dossier = super::dossier::Dossier::build(&ctx)?;
+        ctx.evidence_delivery = loom_templates::todo::EvidenceDelivery::Dossier {
+            manifest_path: container_workspace_path(
+                &self.workspace,
+                &scratch_dir.join("evidence/index.md"),
+            )
+            .to_string_lossy()
+            .into_owned(),
+        };
+        let prompt = ctx.render()?;
+        super::dossier::check_bound("entry prompt", prompt.len())?;
         self.preflight = Some(preflight);
         Ok(Some(BuiltTodoPrompt {
-            prompt: ctx.render()?,
+            prompt,
             skill_plan,
+            dossier,
         }))
     }
 
@@ -863,18 +874,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                         ..UpdateOpts::default()
                     },
                 ),
-                Compensation::Cursor { bead_id, previous } => {
-                    let mut update = UpdateOpts::default();
-                    match previous {
-                        Some(cursor) => update
-                            .set_metadata
-                            .push((TODO_CURSOR_METADATA_KEY.to_string(), cursor.clone())),
-                        None => update
-                            .unset_metadata
-                            .push(TODO_CURSOR_METADATA_KEY.to_string()),
-                    }
-                    (bead_id, update)
-                }
+                Compensation::Cursor { bead_id, previous } => (bead_id, previous.update()),
                 Compensation::WorkEpic {
                     bead_id,
                     title,
@@ -941,16 +941,10 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         for spec in &preflight.changed_specs {
             self.update_or_rollback(
                 &spec.spec_epic,
-                UpdateOpts {
-                    set_metadata: vec![(
-                        TODO_CURSOR_METADATA_KEY.to_string(),
-                        preflight.head.to_string(),
-                    )],
-                    ..UpdateOpts::default()
-                },
+                Cursor::Finalized(preflight.head.clone()).update(),
                 Compensation::Cursor {
                     bead_id: spec.spec_epic.clone(),
-                    previous: spec.todo_cursor.clone(),
+                    previous: spec.cursor.clone(),
                 },
                 &mut completed,
             )
@@ -1114,6 +1108,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             scratch_dir = %scratch.path().display(),
             "loom todo: building spawn config",
         );
+        built_prompt.dossier.write(scratch.path())?;
         let scratch_dir = scratch.path().to_path_buf();
         let mounts = crate::r#loop::sccache_mount(&self.loom_cfg)
             .map_err(|source| TodoError::Protocol(loom_driver::agent::ProtocolError::Io(source)))?

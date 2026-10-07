@@ -40,6 +40,16 @@ pub enum TodoError {
     /// {diagnostic}
     PendingTodoEpicConflict { ids: String, diagnostic: String },
 
+    /// formatting todo evidence failed
+    EvidenceFormat(#[from] std::fmt::Error),
+
+    /// todo {surface} is {bytes} bytes, exceeding the {limit}-byte dispatch bound; no content was truncated; reduce oversized index/skill context or extend dossier paging before retrying the unchanged batch
+    ContextTooLarge {
+        surface: &'static str,
+        bytes: usize,
+        limit: usize,
+    },
+
     /// no specs changed since their durable `loom.todo_cursor`; no todo agent was run
     NoChangedSpecs,
 

@@ -2140,7 +2140,7 @@ async fn loop_startup_gc_no_op_when_base_dir_missing() -> Result<()> {
 
     let removed = client.sweep_orphan_bead_clones(&bd, &molecule).await?;
 
-    assert!(removed.is_empty());
+    assert_eq!(removed, [] as [std::path::PathBuf; 0]);
     Ok(())
 }
 

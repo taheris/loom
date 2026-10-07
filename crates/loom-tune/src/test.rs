@@ -152,7 +152,7 @@ contains = ["missing test"]
             seed: 99,
         })
         .expect("plan builds");
-        assert!(!plan.checker_plan.is_empty());
+        assert_ne!(plan.checker_plan.len(), 0);
         assert_eq!(plan.selected_cases.len(), 1);
         assert_eq!(plan.outcome_skeletons.len(), plan.selected_cases.len());
         let rebuilt = build(Request {

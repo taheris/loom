@@ -102,10 +102,9 @@ pub fn all_rs_files(root: &Path) -> Vec<PathBuf> {
 /// Production and test Rust files, including verifier fixtures.
 pub fn all_rs_files_including_verifiers(root: &Path) -> Vec<PathBuf> {
     let mut out = all_rs_files(root);
-    for path in [root.join("crates/loom-walk/tests/fixture.rs")] {
-        if path.is_file() {
-            out.push(path);
-        }
+    let path = root.join("crates/loom-walk/tests/fixture.rs");
+    if path.is_file() {
+        out.push(path);
     }
     out
 }

@@ -662,7 +662,7 @@ mod tests {
             seed: 7,
         })
         .expect("plan");
-        assert!(plan.selected_cases.is_empty());
+        assert_eq!(plan.selected_cases.len(), 0);
         assert!(
             plan.checker_plan
                 .iter()
@@ -688,7 +688,7 @@ mod tests {
             evidence: EvidenceConfig::default(),
         };
         let plan = build(request(&cases, &evidence, &config, &registry, 1)).expect("plan");
-        assert!(plan.selected_cases.is_empty());
+        assert_eq!(plan.selected_cases.len(), 0);
         assert!(
             plan.skipped_cases
                 .iter()
@@ -764,7 +764,7 @@ mod tests {
         };
         let config = TuneConfig::default();
         let plan = build(request(&cases, &evidence, &config, &registry, 1)).expect("plan");
-        assert!(!plan.preflight_checkers.is_empty());
+        assert_ne!(plan.preflight_checkers.len(), 0);
         assert_eq!(
             plan.checker_plan.iter().cloned().collect::<BTreeSet<_>>(),
             plan.preflight_checkers

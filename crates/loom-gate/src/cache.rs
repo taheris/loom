@@ -817,7 +817,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = StatusCache::open(&db_path(&dir)).unwrap();
         let rows = cache.read_all().unwrap();
-        assert!(rows.is_empty());
+        assert_eq!(rows.len(), 0);
     }
 
     #[test]
@@ -965,7 +965,7 @@ mod tests {
     fn stale_threshold_zero_disables_stale_flagging() {
         let rows = vec![row("a", "1", Tier::Test, Verdict::Pass, 0)];
         let report = render_from_rows(&rows, &ParsedSpecs::default(), &[], i64::MAX / 2, 0);
-        assert!(report.annotation_health.stale_runs.is_empty());
+        assert_eq!(report.annotation_health.stale_runs.len(), 0);
     }
 
     #[test]

@@ -495,8 +495,14 @@ integration_branch = "trunk"
             absent.loom.sccache_container_path,
             PathBuf::from("/sccache"),
         );
-        assert!(absent.loom.container_sccache_env().is_empty());
-        assert!(absent.loom.host_sccache_env().is_empty());
+        assert_eq!(
+            absent.loom.container_sccache_env(),
+            [] as [(std::string::String, std::string::String); 0]
+        );
+        assert_eq!(
+            absent.loom.host_sccache_env(),
+            [] as [(std::string::String, std::string::String); 0]
+        );
 
         let src = r#"
 [loom]
@@ -881,7 +887,7 @@ agent.model_id = "deepseek-v3"
         assert!(run.provider.is_none());
         let claude = run.claude_settings().expect("claude_settings");
         assert_eq!(claude.post_result_grace_secs, 5);
-        assert!(claude.denied_tools.is_empty());
+        assert_eq!(claude.denied_tools, [] as [std::string::String; 0]);
 
         Ok(())
     }
@@ -1074,7 +1080,7 @@ profile = "rust"
         let cfg = LoomConfig::from_toml_str("")?;
         assert_eq!(cfg.skills.registration, SkillRegistration::Auto);
         assert_eq!(cfg.skills.show_paths, SkillPathDisplay::Needed);
-        assert!(cfg.skills.paths.is_empty());
+        assert_eq!(cfg.skills.paths, [] as [std::path::PathBuf; 0]);
         Ok(())
     }
 

@@ -1738,7 +1738,7 @@ const TUNE_MAIN: &str = concat!(
 );
 
 fn seed_tune_surface(ws: &TempDir, main_body: &str) {
-    seed(ws.path(), "specs/harness.md", TUNE_SPEC);
+    seed(ws.path(), "specs/tuning.md", TUNE_SPEC);
     seed(ws.path(), "crates/loom/src/main.rs", main_body);
 }
 
@@ -2047,6 +2047,8 @@ fn seed_surface_spec_with(ws: &TempDir, fr1_body: &str, logs_section: &str) {
         "# Loom Harness\n\n{logs_section}\n## Requirements\n\n### Functional\n\n1. **Command set** — header\n\n{fr1_body}\n2. **Compiled templates** — sentinel\n",
     );
     seed(ws.path(), "specs/harness.md", &body);
+    seed(ws.path(), "specs/events.md", logs_section);
+    seed(ws.path(), "specs/inbox.md", INBOX_MODES_SECTION);
 }
 
 fn seed_surface_main(ws: &TempDir, tuples_body: &str) {
@@ -2132,6 +2134,64 @@ fn surface_conformance_pass_when_spec_and_binary_agree() {
     seed_surface_main(&ws, HELP_GROUPS_MINIMAL);
     let out = invoke(&["surface_conformance"], Some(ws.path()), None);
     assert_pass(&out);
+}
+
+#[test]
+fn surface_conformance_reads_linked_command_owners() {
+    let ws = make_workspace();
+    seed_surface_spec(
+        &ws,
+        &SPEC_FR1_MINIMAL.replace("`loom plan`", "[`loom plan`](plan.md)"),
+    );
+    seed_surface_main(&ws, HELP_GROUPS_MINIMAL);
+    assert_pass(&invoke(&["surface_conformance"], Some(ws.path()), None));
+    seed_surface_main(&ws, &HELP_GROUPS_MINIMAL.replace("\"plan\"", "\"todo\""));
+    assert_fail(
+        &invoke(&["surface_conformance"], Some(ws.path()), None),
+        "plan",
+    );
+    seed_surface_main(&ws, HELP_GROUPS_MINIMAL);
+    seed_surface_spec(
+        &ws,
+        &SPEC_FR1_MINIMAL.replace("`loom plan`", "![`loom plan`](diagram.svg)"),
+    );
+    assert_fail(
+        &invoke(&["surface_conformance"], Some(ws.path()), None),
+        "plan",
+    );
+}
+
+#[test]
+fn surface_conformance_checks_extracted_owner_files_and_inputs() {
+    let ws = make_workspace();
+    seed_surface_spec(&ws, SPEC_FR1_MINIMAL);
+    seed_surface_main(&ws, HELP_GROUPS_MINIMAL);
+    assert_pass(&invoke(&["surface_conformance"], Some(ws.path()), None));
+    seed(
+        ws.path(),
+        "specs/events.md",
+        &LOGS_UX_TABLE.replace("--follow", "--wrong"),
+    );
+    assert_fail(
+        &invoke(&["surface_conformance"], Some(ws.path()), None),
+        "specs/events.md",
+    );
+    seed(ws.path(), "specs/events.md", LOGS_UX_TABLE);
+    seed(ws.path(), "specs/inbox.md", "# Inbox\n");
+    assert_fail(
+        &invoke(&["surface_conformance"], Some(ws.path()), None),
+        "Inbox Modes",
+    );
+    let inputs = invoke(
+        &["surface_conformance", "--print-inputs"],
+        Some(ws.path()),
+        None,
+    );
+    let output = String::from_utf8_lossy(&inputs.stdout);
+    assert!(inputs.status.success(), "{output}");
+    for owner in ["specs/harness.md", "specs/events.md", "specs/inbox.md"] {
+        assert!(output.contains(owner), "{output}");
+    }
 }
 
 #[test]
@@ -2357,7 +2417,6 @@ fn surface_conformance_long_attr_with_explicit_value_is_recognised() {
             "        #[arg(long)]\n",
             "        raw: bool,\n",
             "    },\n",
-            "    Inbox(InboxArgs),\n",
             "}\n",
         ),
     );

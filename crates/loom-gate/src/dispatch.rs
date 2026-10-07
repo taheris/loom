@@ -1108,7 +1108,7 @@ mod tests {
     fn empty_scope_returns_empty_for_every_annotation() {
         let scope = EmptyScope;
         let a = ann(Tier::Test, "crate::a::ok");
-        assert!(scope.scope_for(&a).is_empty());
+        assert_eq!(scope.scope_for(&a).len(), 0);
     }
 
     struct StubScope(std::collections::HashMap<String, Vec<PathBuf>>);
@@ -1161,7 +1161,7 @@ mod tests {
         let scope = EmptyScope;
         let files = vec![PathBuf::from("src/a.rs")];
         let kept = filter_by_files(&candidates, &files, &scope);
-        assert!(kept.is_empty());
+        assert_eq!(kept.len(), 0);
     }
 
     #[test]
@@ -1182,7 +1182,7 @@ mod tests {
     #[test]
     fn dispatch_options_default_is_unfiltered() {
         let opts = DispatchOptions::default();
-        assert!(opts.files.is_empty());
+        assert_eq!(opts.files.len(), 0);
         assert!(opts.spec.is_none());
     }
 

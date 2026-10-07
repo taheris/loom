@@ -1625,7 +1625,7 @@ mod tests {
             ann(Tier::Test, "crate::a::ok", "specs/a.md", 5, 4),
             ann(Tier::Check, "cargo run", "specs/a.md", 8, 7),
         ];
-        assert!(check_atomic_acceptance(&annotations).is_empty());
+        assert_eq!(check_atomic_acceptance(&annotations).len(), 0);
     }
 
     #[test]

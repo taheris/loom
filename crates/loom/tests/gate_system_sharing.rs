@@ -163,12 +163,12 @@ fn system_cli_shared_dispatch_errors_report_every_owner_without_passing_cache_en
                 .count(),
             1
         );
-        assert!(
+        assert_eq!(
             StatusCache::open(&dir.path().join(".loom/cache.db"))
                 .unwrap()
                 .read_all()
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [loom_gate::CacheRow; 0]
         );
     }
 }

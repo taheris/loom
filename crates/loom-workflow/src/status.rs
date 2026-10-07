@@ -90,7 +90,10 @@ mod tests {
         let db = fresh_db(dir.path())?;
         let report = load(&db, "main".to_string())?;
         assert!(report.active_work_epic.is_none());
-        assert!(report.pending_todo.is_empty());
+        assert_eq!(
+            report.pending_todo,
+            [] as [loom_driver::state::WorkEpicRow; 0]
+        );
         let body = render(&report);
         assert!(body.contains("active work epic: <none>"), "body: {body}");
         assert!(body.contains("pending loom:todo: <none>"), "body: {body}");

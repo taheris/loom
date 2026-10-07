@@ -699,7 +699,7 @@ mod tests {
 - Example syntax: `[test](crate::not::real)` lives inline
 ";
         let parsed = parse_content(&spec_path(), md);
-        assert!(parsed.annotations.is_empty());
+        assert_eq!(parsed.annotations.len(), 0);
     }
 
     #[test]

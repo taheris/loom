@@ -464,6 +464,7 @@ pub struct ReadyOpts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bd;
     use crate::bd::Label;
     use anyhow::{Result, anyhow};
     use std::collections::VecDeque;
@@ -767,7 +768,7 @@ mod tests {
         let runner = CapturingRunner::new([ok(b"null\n")]);
         let client = BdClient::with_runner(runner);
         let beads = client.list(ListOpts::default()).await?;
-        assert!(beads.is_empty());
+        assert_eq!(beads, [] as [bd::models::Bead; 0]);
         Ok(())
     }
 
@@ -1147,7 +1148,7 @@ mod tests {
         let runner = CapturingRunner::new([ok(b"null\n")]);
         let client = BdClient::with_runner(runner);
         let beads = client.ready(ReadyOpts::default()).await?;
-        assert!(beads.is_empty());
+        assert_eq!(beads, [] as [bd::models::Bead; 0]);
         Ok(())
     }
 

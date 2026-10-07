@@ -2032,7 +2032,7 @@ printf '%s\n' \
     #[test]
     fn classify_react_commands_empty_batch_is_continue_no_steers() {
         match classify_react_commands(vec![]) {
-            ReactAction::Continue { steers } => assert!(steers.is_empty()),
+            ReactAction::Continue { steers } => assert_eq!(steers, [] as [std::string::String; 0]),
             other @ ReactAction::Abort { .. } => panic!("expected Continue, got {other:?}"),
         }
     }

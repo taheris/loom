@@ -597,7 +597,7 @@ mod tests {
         write_two_crate_fixture(dir.path());
         let scope = CargoMetadataScope::from_metadata(fixture_metadata(dir.path())).unwrap();
 
-        assert!(scope.scope_for(&ann("nonexistent::tests::x")).is_empty());
+        assert_eq!(scope.scope_for(&ann("nonexistent::tests::x")).len(), 0);
         assert!(
             scope.scope_for(&ann("crate::placeholder")).is_empty(),
             "literal `crate::` placeholder cannot disambiguate"

@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn missing_section_yields_zero_paths() {
         let md = "# Spec\n\nSome body.\n\n## Architecture\n\n- nothing here\n";
-        assert!(parse_companions(md).is_empty());
+        assert_eq!(parse_companions(md), [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn case_sensitive_heading_does_not_match_companions_lowercase() {
         let md = "## companions\n\n- `nope/`\n";
-        assert!(parse_companions(md).is_empty());
+        assert_eq!(parse_companions(md), [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -185,6 +185,6 @@ Body text.
 - `not/real/`
 ```
 ";
-        assert!(parse_companions(md).is_empty());
+        assert_eq!(parse_companions(md), [] as [std::string::String; 0]);
     }
 }

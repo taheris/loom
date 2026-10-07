@@ -143,8 +143,14 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "loom_llm_mime_type_no_raw_strings" => {
             vec![root.join("crates/loom-llm/src/request.rs")]
         }
-        "tune_surface_conformance" | "surface_conformance" => vec![
+        "surface_conformance" => vec![
             root.join("specs/harness.md"),
+            root.join("specs/events.md"),
+            root.join("specs/inbox.md"),
+            root.join("crates/loom/src/main.rs"),
+        ],
+        "tune_surface_conformance" => vec![
+            root.join("specs/tuning.md"),
             root.join("crates/loom/src/main.rs"),
         ],
         "single_event_channel" => vec![root.join("crates/loom-render/src/sink/mod.rs")],
@@ -361,7 +367,9 @@ mod tests {
             got,
             vec![
                 "crates/loom/src/main.rs".to_string(),
+                "specs/events.md".to_string(),
                 "specs/harness.md".to_string(),
+                "specs/inbox.md".to_string(),
             ],
         );
     }

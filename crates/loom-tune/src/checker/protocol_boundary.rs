@@ -331,7 +331,7 @@ mod tests {
                         Do not imply verifier failures are success.\n\
                         Run optional tests when they add useful coverage.";
 
-        assert!(violations(markdown).is_empty());
+        assert_eq!(violations(markdown).len(), 0);
     }
 
     #[test]

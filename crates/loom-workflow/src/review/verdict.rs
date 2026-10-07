@@ -147,7 +147,10 @@ mod tests {
     fn diff_empty_when_no_new() {
         let before = vec![b("lm-a"), b("lm-b")];
         let after = vec![b("lm-a"), b("lm-b")];
-        assert!(diff_new_bead_ids(&before, &after).is_empty());
+        assert_eq!(
+            diff_new_bead_ids(&before, &after),
+            [] as [loom_driver::identifier::BeadId; 0]
+        );
     }
 
     #[test]

@@ -1545,8 +1545,9 @@ printf '}}\n'"#;
                 ann(Tier::Check, "walk -- beta", "specs/gate.md"),
             ];
             if integrity_first {
-                assert!(
-                    crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty()
+                assert_eq!(
+                    crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
+                    [] as [crate::integrity::IntegrityFinding; 0]
                 );
             }
             let selected = filter_by_files(
@@ -1555,8 +1556,9 @@ printf '}}\n'"#;
                 &mut resolver,
             );
             assert_eq!(selected, vec![annotations[0].clone()]);
-            assert!(
-                crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty()
+            assert_eq!(
+                crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
+                [] as [crate::integrity::IntegrityFinding; 0]
             );
             assert_eq!(
                 query_count(dir.path()),
@@ -1661,7 +1663,10 @@ printf '}}\n'"#;
             "an omitted target is unknown, not a declared empty input set",
         );
         assert!(resolver.declares_no_inputs(&annotations[1]));
-        assert!(crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty());
+        assert_eq!(
+            crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
+            [] as [crate::integrity::IntegrityFinding; 0]
+        );
         assert_eq!(query_count(dir.path()), 1);
     }
 
@@ -1733,8 +1738,9 @@ printf '}}\n'"#;
             ];
             let mut resolver = InputResolver::new(dir.path().to_path_buf());
             if integrity_first {
-                assert!(
-                    crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty()
+                assert_eq!(
+                    crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
+                    [] as [crate::integrity::IntegrityFinding; 0]
                 );
             }
             assert_eq!(
@@ -1745,8 +1751,9 @@ printf '}}\n'"#;
                 ),
                 vec![annotations[0].clone()],
             );
-            assert!(
-                crate::integrity::check_inputs_protocol(&annotations, &mut resolver).is_empty()
+            assert_eq!(
+                crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
+                [] as [crate::integrity::IntegrityFinding; 0]
             );
             assert_eq!(query_count(dir.path()), 1);
         }
@@ -1800,7 +1807,10 @@ printf '}}\n'"#;
         let alpha = ann(Tier::Check, "walk -- alpha", "specs/gate.md");
         let mut beta = ann(Tier::Check, "walk -- beta", "specs/gate.md");
         beta.pending = true;
-        assert!(crate::integrity::check_inputs_protocol(&[alpha, beta], &mut resolver).is_empty());
+        assert_eq!(
+            crate::integrity::check_inputs_protocol(&[alpha, beta], &mut resolver),
+            [] as [crate::integrity::IntegrityFinding; 0]
+        );
         assert_eq!(
             fs::read_to_string(dir.path().join("queries.txt")).unwrap(),
             "--print-inputs alpha\n"

@@ -110,6 +110,7 @@ fn todo_ctx() -> Result<TodoContext> {
         criterion_status: snapshot_criterion_status()?,
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         skill_index: SkillIndexMarkdown::empty(),
+        evidence_delivery: loom_templates::todo::EvidenceDelivery::Inline,
     })
 }
 

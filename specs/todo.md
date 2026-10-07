@@ -54,7 +54,12 @@ A spec epic is the durable metadata carrier for one indexed spec, labelled
 `loom:spec` and `spec:<label>`. Exactly one exists per indexed spec. Its
 `loom.todo_cursor` records the Git commit through which decomposition was
 finalized; status does not affect lookup, and implementation beads are not
-parented beneath it.
+parented beneath it. Creation records `loom.todo_state=uninitialized` without
+inventing a cursor. That explicit state survives interruption, including before
+closing the metadata epic, and remains changed on retry. Successful finalization
+replaces it with the cursor and removes the initialization state. A missing
+cursor without this state, malformed state, or contradictory state plus cursor
+is an error, not an invitation to restart discovery from an invented baseline.
 
 A work epic is an execution batch. `loom todo` creates or reuses one pending
 `loom:todo` epic for the deterministic changed-spec roster. A validated
@@ -85,6 +90,28 @@ Implementation notes are typed, transient cache hints. Planning may merge them;
 validated todo finalization renders and consumes notes for the changed specs.
 Failed or non-finalized decomposition leaves them intact. Rebuild drops them
 without changing durable workflow truth.
+
+### Bounded evidence delivery and resumption
+
+[Acceptance](#bounded-context-and-retry).
+
+The entry prompt, also the fixed portion of compaction re-pinning, retains the
+complete roster, batch identity, workflow rules, and an explicit evidence index,
+not every raw diff and criterion. The index addresses complete per-spec
+criterion/status, note, and diff sections in bounded UTF-8 pages. Splitting
+preserves exact content, including multiline verifier commands; no criterion or
+note is silently truncated or omitted to fit. Oversized entry/index context
+fails before spawn with an actionable diagnostic rather than dispatching an
+incomplete batch. Byte and line bounds govern delivery, not a claim about every
+model's token capacity or a new way to select fewer specs.
+
+The agent inspects every owner's criterion and note pages, consulting diff pages
+and representative source selectively. It works one topic at a time, merges
+concise progress into the existing work epic's description, and inspects that
+epic and all existing child drafts before creating more work. Checkpoints
+preserve prior human decisions and are hints to recheck, not trusted acceptance,
+cursor advancement, or partial success. Scratch pages are recreated on retry;
+Beads drafts survive it. Finalization still requires the complete fixed roster.
 
 ### Todo Success Marker
 
@@ -226,7 +253,8 @@ layouts.
 - `loom todo` ensures exactly one `loom:spec spec:<label>` spec epic per indexed
   spec. Missing spec epics are created and make the spec uninitialized/changed;
   duplicate spec epics block with conflicting IDs; missing cursor metadata on an
-  existing spec epic blocks with an exact repair diagnostic
+  existing epic without explicit uninitialized state blocks with an exact repair
+  diagnostic
   [test](todo_missing_spec_epic_initializes_existing_missing_cursor_blocks)
 
 - `loom todo` creates or reuses one `loom:todo` work epic for the preflight
@@ -269,17 +297,17 @@ layouts.
   [test](cache_rebuild_requires_one_spec_epic_per_indexed_spec)
 
 - `loom todo` creates a missing spec epic during preflight, treats the spec as
-  uninitialized/changed, and blocks when an existing spec epic lacks
-  `loom.todo_cursor` metadata
+  uninitialized/changed, and blocks when an existing spec epic lacks both a
+  `loom.todo_cursor` and explicit uninitialized metadata
   [test](todo_missing_spec_epic_initializes_existing_missing_cursor_blocks)
 
 - `loom todo` closes driver-created or already-open spec metadata epics with
   reason `spec metadata carrier`, so spec epics do not remain open solely
   because they carry metadata [test](todo_preflight_closes_spec_metadata_epics)
 
-- `loom todo` rejects malformed, missing, non-ancestor, or unknown
-  `loom.todo_cursor` SHAs with diagnostics that name the spec epic and repair
-  surface [test](todo_invalid_spec_cursor_blocks_loudly)
+- `loom todo` rejects malformed, non-ancestor, or unknown `loom.todo_cursor`
+  SHAs with diagnostics that name the spec epic and repair surface
+  [test](todo_invalid_spec_cursor_blocks_loudly)
 
 - `loom todo` discovers changed specs by comparing each spec/index row at `HEAD`
   against the spec epic's durable cursor; it includes inactive/stale specs and
@@ -328,6 +356,45 @@ layouts.
   relevant work beads and deletes those notes only after the spec cursor
   advances during validated finalization
   [test](todo_consumes_notes_only_after_validated_finalization)
+
+### Bounded context and retry
+
+- Interrupted initialization reuses the same explicitly uninitialized spec and
+  work epics without advancing a cursor. Finalization writes the actual
+  preflight cursor and removes the initialization state; a subsequent unchanged
+  preflight has no new work.
+  [test](todo_retries_uninitialized_specs_without_advancing_cursors)
+
+- Interruption after spec-epic creation but before closing it leaves an explicit
+  uninitialized record that retry closes and reuses without duplicate creation.
+  [test](todo_retries_after_spec_creation_before_close)
+
+- A failed finalization compensates a new spec back to its explicit
+  uninitialized state, preserving retry without inventing a cursor.
+  [test](todo_failed_finalization_restores_uninitialized_cursor_state)
+
+- Malformed or contradictory initialization metadata is rejected before
+  dispatch, rather than treating damaged finalized state as a new spec.
+  [test](todo_rejects_contradictory_initialization_metadata)
+
+- Production preflight handles a twenty-owner, thousand-plus-criterion batch
+  with a bounded fixed entry prompt for dispatch/re-pin and complete per-spec
+  evidence pages. Retrying recreates those pages without duplicate epics or lost
+  notes, drafts, or checkpoints; an incomplete final roster remains invalid.
+  [test](todo_large_batch_pages_all_evidence_and_resumes_fixed_roster)
+
+- Evidence pages preserve long Unicode rows, CRLF, and exact quoted command
+  bytes when reconstructed in order.
+  [test](pages_preserve_long_unicode_rows_and_exact_command_bytes)
+
+- Evidence pages bound short-line counts as well as bytes, so many short lines
+  cannot defeat bounded disclosure. [test](pages_also_bound_many_short_lines)
+
+- Exceeding the entry/index size bound is an explicit error, not truncated
+  context accepted as complete. Production rejects oversized pinned context
+  before dispatch while retaining the same retryable batch and untouched
+  cursors.
+  [test](todo_oversized_context_blocks_before_dispatch_without_losing_retry_state)
 
 ### Integration tests
 

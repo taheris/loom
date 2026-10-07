@@ -50,6 +50,7 @@ pub fn build_template_context(
         criterion_status,
         scratchpad_path: base.scratchpad_path,
         skill_index: base.skill_index,
+        evidence_delivery: loom_templates::todo::EvidenceDelivery::Inline,
     }
 }
 

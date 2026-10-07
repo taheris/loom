@@ -13,8 +13,8 @@
 //!   the order of `HELP_GROUPS` tuples (and per-tuple slice order).
 //! - **Flag set** — long flag names in the *Logs UX* and
 //!   *Inbox Modes* tables ↔ the corresponding clap `#[arg(...)]`
-//!   declarations; removed flags are checked against top-level command
-//!   variants and nested inbox args.
+//!   declarations; Events owns Logs UX, and Inbox owns Inbox Modes. Removed
+//!   flags are checked against top-level command variants and nested inbox args.
 //!
 //! `HELP_GROUPS` is the canonical declaration the binary regroups
 //! clap's flat `Commands:` block against, so parsing it as text is the
@@ -30,6 +30,8 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "surface_conformance — binary surface matches specs/harness.md FR1";
 const SPEC: &str = "specs/harness.md";
+const LOGS_SPEC: &str = "specs/events.md";
+const INBOX_SPEC: &str = "specs/inbox.md";
 const MAIN_RS: &str = "crates/loom/src/main.rs";
 const SPEC_GROUP_ORDER: &[&str] = &["Workflow", "Inspection", "State"];
 
@@ -86,8 +88,18 @@ pub fn run(_input: &WalkInput) -> Verdict {
         &main_file,
         &mut violations,
     );
-    check_command_flag_set(&spec_body, &main_file, "logs", "Logs", &mut violations);
-    check_inbox_surface(&spec_body, &main_file, &mut violations);
+    if let Some(logs) = read_to_string(&locate_rel(&root, LOGS_SPEC)) {
+        check_command_flag_set(&logs, &main_file, "logs", "Logs", &mut violations);
+    } else {
+        violations.push(format!("{LOGS_SPEC} not readable"));
+    }
+    if binary_top_commands.contains("inbox") {
+        if let Some(inbox) = read_to_string(&locate_rel(&root, INBOX_SPEC)) {
+            check_inbox_surface(&inbox, &main_file, &mut violations);
+        } else {
+            violations.push(format!("{INBOX_SPEC} not readable"));
+        }
+    }
     violations.retain(|v| !SURFACE_ALLOWLIST.iter().any(|allow| v.contains(allow)));
     verdict_from(RULE, violations)
 }
@@ -126,12 +138,12 @@ fn check_command_flag_set(
     };
     for flag in spec_flags.difference(&binary_flags) {
         violations.push(format!(
-            "{SPEC} `loom {cmd_label}` flag `--{flag}` documented but not declared on `Command::{variant}` in {MAIN_RS}",
+            "{LOGS_SPEC} `loom {cmd_label}` flag `--{flag}` documented but not declared on `Command::{variant}` in {MAIN_RS}",
         ));
     }
     for flag in binary_flags.difference(&spec_flags) {
         violations.push(format!(
-            "{MAIN_RS} `Command::{variant}` declares `--{flag}` but it is not documented in {SPEC} `loom {cmd_label}` flag table",
+            "{MAIN_RS} `Command::{variant}` declares `--{flag}` but it is not documented in {LOGS_SPEC} `loom {cmd_label}` flag table",
         ));
     }
 }
@@ -299,6 +311,9 @@ fn inbox_flags(main_file: &syn::File) -> Result<Vec<cli_surface::Flag>, String> 
 
 fn check_inbox_surface(spec_body: &str, main_file: &syn::File, violations: &mut Vec<String>) {
     let Some(expected_subcommands) = parse_spec_inbox_subcommands(spec_body, violations) else {
+        violations.push(format!(
+            "{INBOX_SPEC} missing valid Inbox Modes subcommands"
+        ));
         return;
     };
     let expected_flags = match parse_spec_inbox_long_flags(spec_body) {
@@ -382,12 +397,12 @@ fn compare_named_set(
 ) {
     for missing in expected.difference(actual) {
         violations.push(format!(
-            "{SPEC} documents {label} `{missing}` but {MAIN_RS} does not declare it",
+            "{INBOX_SPEC} documents {label} `{missing}` but {MAIN_RS} does not declare it",
         ));
     }
     for extra in actual.difference(expected) {
         violations.push(format!(
-            "{MAIN_RS} declares {label} `{extra}` but {SPEC} does not document it",
+            "{MAIN_RS} declares {label} `{extra}` but {INBOX_SPEC} does not document it",
         ));
     }
 }
@@ -426,7 +441,9 @@ fn parse_spec_inbox_subcommands(
         .iter()
         .position(|line| line.trim_start().starts_with("| Mode "))
     else {
-        violations.push(format!("{SPEC} Inbox Modes table missing `| Mode ` header"));
+        violations.push(format!(
+            "{INBOX_SPEC} Inbox Modes table missing `| Mode ` header"
+        ));
         return None;
     };
     let mut out = BTreeSet::new();
@@ -442,7 +459,9 @@ fn parse_spec_inbox_subcommands(
         }
     }
     if out.is_empty() {
-        violations.push(format!("{SPEC} Inbox Modes table parsed no subcommands"));
+        violations.push(format!(
+            "{INBOX_SPEC} Inbox Modes table parsed no subcommands"
+        ));
         None
     } else {
         Some(out)
@@ -456,7 +475,7 @@ fn parse_spec_inbox_long_flags(body: &str) -> Result<Option<BTreeSet<String>>, S
     let header_idx = section
         .iter()
         .position(|line| line.trim_start().starts_with("| Flag "))
-        .ok_or_else(|| format!("{SPEC} Inbox Modes missing `| Flag ` table header"))?;
+        .ok_or_else(|| format!("{INBOX_SPEC} Inbox Modes missing `| Flag ` table header"))?;
     let mut out = BTreeSet::new();
     for line in section.iter().skip(header_idx + 2) {
         let trimmed = line.trim_start();
@@ -473,7 +492,7 @@ fn parse_spec_inbox_long_flags(body: &str) -> Result<Option<BTreeSet<String>>, S
     }
     if out.is_empty() {
         Err(format!(
-            "{SPEC} Inbox Modes flag table parsed no long flags"
+            "{INBOX_SPEC} Inbox Modes flag table parsed no long flags"
         ))
     } else {
         Ok(Some(out))
@@ -627,16 +646,22 @@ fn strip_group_header(line: &str) -> Option<&str> {
 
 fn extract_loom_subcommand(line: &str) -> Option<String> {
     let after_dash = line.strip_prefix("- ")?;
-    let after_tick = after_dash.strip_prefix('`')?;
-    let end = after_tick.find('`')?;
-    let inside = &after_tick[..end];
-    let cmd = inside.strip_prefix("loom ")?;
-    let name = cmd.split_whitespace().next()?;
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
-    }
+    let first = pulldown_cmark::Parser::new(after_dash).find(|event| {
+        !matches!(
+            event,
+            pulldown_cmark::Event::Start(
+                pulldown_cmark::Tag::Paragraph | pulldown_cmark::Tag::Link { .. }
+            )
+        )
+    })?;
+    let pulldown_cmark::Event::Code(invocation) = first else {
+        return None;
+    };
+    invocation
+        .strip_prefix("loom ")?
+        .split_whitespace()
+        .next()
+        .map(str::to_owned)
 }
 
 fn parse_binary_help_groups(body: &str) -> Result<Vec<(String, Vec<String>)>, String> {
@@ -693,14 +718,14 @@ fn parse_logs_ux_flags(body: &str) -> Result<BTreeSet<String>, String> {
     let heading = lines
         .iter()
         .position(|l| l.trim_start().starts_with("### Logs UX"))
-        .ok_or_else(|| format!("{SPEC} missing `### Logs UX` heading"))?;
+        .ok_or_else(|| format!("{LOGS_SPEC} missing `### Logs UX` heading"))?;
     let header = lines
         .iter()
         .enumerate()
         .skip(heading + 1)
         .find(|(_, l)| l.trim_start().starts_with("| Flag "))
         .map(|(i, _)| i)
-        .ok_or_else(|| format!("{SPEC} Logs UX missing `| Flag ` table header"))?;
+        .ok_or_else(|| format!("{LOGS_SPEC} Logs UX missing `| Flag ` table header"))?;
     let mut out = BTreeSet::new();
     for line in lines.iter().skip(header + 2) {
         let trimmed = line.trim_start();
@@ -716,7 +741,7 @@ fn parse_logs_ux_flags(body: &str) -> Result<BTreeSet<String>, String> {
         }
     }
     if out.is_empty() {
-        return Err(format!("{SPEC} Logs UX table parsed no long flags"));
+        return Err(format!("{LOGS_SPEC} Logs UX table parsed no long flags"));
     }
     Ok(out)
 }

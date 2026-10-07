@@ -1027,7 +1027,7 @@ mod tests {
         let resp = tokio_test::block_on(conv.run(&client)).expect("run completes");
 
         assert_eq!(resp.text, "done");
-        assert!(resp.tool_calls.is_empty());
+        assert_eq!(resp.tool_calls.len(), 0);
         assert_eq!(
             *calls
                 .lock()
@@ -1567,7 +1567,7 @@ mod tests {
         conv.user("first user turn");
 
         let resp = tokio_test::block_on(conv.run(&client)).expect("run completes");
-        assert!(resp.tool_calls.is_empty());
+        assert_eq!(resp.tool_calls.len(), 0);
 
         let steer_turn_count = conv
             .history

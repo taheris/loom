@@ -213,9 +213,9 @@ mod tests {
         let payload = big_payload("a");
         obs.emit(&tool_result(0, "call-1", &payload));
         obs.emit(&tool_result(1, "call-2", &payload));
-        assert!(obs.react().is_empty());
+        assert_eq!(obs.react().len(), 0);
         let _ = obs.take_pending();
-        assert!(obs.react().is_empty());
+        assert_eq!(obs.react().len(), 0);
     }
 
     #[test]
@@ -239,7 +239,7 @@ mod tests {
         let payload = big_payload("a");
         obs.emit(&tool_result(0, "call-1", &payload));
         obs.emit(&tool_result(1, "call-2", &payload));
-        assert!(obs.take_pending().is_empty());
+        assert_eq!(obs.take_pending().len(), 0);
         assert_eq!(obs.seen_len(), 0);
     }
 
@@ -276,7 +276,7 @@ mod tests {
         let mut obs = DuplicateResultObserver::new();
         obs.emit(&tool_result(0, "call-1", &big_payload("a")));
         obs.emit(&tool_result(1, "call-2", &big_payload("b")));
-        assert!(obs.take_pending().is_empty());
+        assert_eq!(obs.take_pending().len(), 0);
         assert_eq!(obs.seen_len(), 2);
     }
 
@@ -318,6 +318,6 @@ mod tests {
             text: "x".repeat(1024),
         });
         assert_eq!(obs.seen_len(), 0);
-        assert!(obs.take_pending().is_empty());
+        assert_eq!(obs.take_pending().len(), 0);
     }
 }

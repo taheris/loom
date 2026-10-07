@@ -10,6 +10,8 @@
 
 mod context;
 mod criterion_status;
+mod cursor;
+mod dossier;
 mod error;
 mod exit;
 mod fanout;

@@ -443,5 +443,5 @@ async fn missing_spec_file_returns_empty_vec() {
     let git = GitClient::open(workspace).unwrap();
     let cache_path = workspace.join(".loom/cache.db");
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
-    assert!(rows.is_empty());
+    assert_eq!(rows, [] as [loom_templates::CriterionStatus; 0]);
 }

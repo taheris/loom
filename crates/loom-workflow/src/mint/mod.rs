@@ -3108,7 +3108,7 @@ mod tests {
 
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].id, child);
-        assert!(ready.is_empty());
+        assert_eq!(ready, [] as [loom_driver::bd::Bead; 0]);
         assert_eq!(
             state.bonds(),
             vec![(MoleculeId::new("lm-mol").unwrap(), child)]
@@ -4829,7 +4829,7 @@ reason = "false positive"
             summary.routing[0].options_parse_result,
             Some(OptionsParseResult::MissingOrMalformed),
         );
-        assert!(!summary.routing[0].evidence_hash.is_empty());
+        assert_ne!(summary.routing[0].evidence_hash, "");
         assert_eq!(summary.routing[0].evidence_excerpt, malformed_evidence);
         let event_kinds = summary
             .routing_events()

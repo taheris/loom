@@ -229,7 +229,7 @@ fn previous_failure_public_variant_contract_is_constructible() {
     ];
 
     for variant in variants {
-        assert!(!variant.to_string().is_empty());
+        assert_ne!(variant.to_string(), "");
     }
 }
 
@@ -322,6 +322,7 @@ fn todo_context_is_publicly_constructible_from_crate_root() {
         criterion_status: vec![],
         scratchpad_path: String::new(),
         skill_index: SkillIndexMarkdown::empty(),
+        evidence_delivery: loom_templates::todo::EvidenceDelivery::Inline,
     };
 }
 

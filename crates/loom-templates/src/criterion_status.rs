@@ -24,6 +24,25 @@ pub struct CriterionStatus {
     pub evidence: EvidenceState,
 }
 
+impl fmt::Display for CriterionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "**{} / {}** · {} · annotation `{}` · evidence `{}` · result {} · last commit {} · commits since {} · last timestamp {} · cached annotation `{}`",
+            self.spec_label,
+            self.criterion_id,
+            self.criterion_text,
+            self.annotation,
+            self.evidence.as_str(),
+            self.evidence.result_label(),
+            self.evidence.last_commit_label(),
+            self.evidence.commits_since_label(),
+            self.evidence.last_timestamp_label(),
+            self.evidence.cached_annotation_label()
+        )
+    }
+}
+
 /// Stable identifier for a success criterion within one spec.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CriterionId(String);

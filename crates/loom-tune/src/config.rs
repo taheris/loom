@@ -129,11 +129,11 @@ mod tests {
             config.evidence.selection_fraction.get().to_bits(),
             0.34_f64.to_bits()
         );
-        assert!(config.evidence.external_roots.is_empty());
+        assert_eq!(config.evidence.external_roots.len(), 0);
         assert_eq!(config.checks.max_behavior_cases, 3);
         assert_eq!(config.checks.max_wall_time_secs, 1_800);
         assert_eq!(config.checks.max_llm_judge_calls, 10);
-        assert!(config.checks.disabled.is_empty());
+        assert_eq!(config.checks.disabled.len(), 0);
     }
 
     #[test]

@@ -313,7 +313,7 @@ mod tests {
             .materialize(scratch.path(), workspace.path())
             .expect("materialize auto skills");
         assert_eq!(auto.registered.disclosure(), DisclosureMode::Prompt);
-        assert!(!auto.registered.registry().skills().is_empty());
+        assert_ne!(auto.registered.registry().skills(), []);
         let auto_config = spawn_config(
             auto.registered.clone(),
             auto.skill_index.as_str().to_owned(),

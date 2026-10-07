@@ -409,7 +409,7 @@ mod tests {
         assert!(!prompt.contains("../judges/missing.sh#other"));
         assert!(!prompt.contains("## Review Dimensions"));
         fixture.assert_read_only(&before);
-        assert!(fixture.review_runs().is_empty());
+        assert_eq!(fixture.review_runs(), [] as [loom_gate::GateRun; 0]);
     }
 
     #[test]
@@ -454,7 +454,7 @@ mod tests {
                 "target {target} cannot select a judge"
             );
             assert!(!fixture.home.join("wrix.log").exists());
-            assert!(fixture.events().is_empty());
+            assert_eq!(fixture.events(), [] as [loom_events::AgentEvent; 0]);
         }
     }
 
@@ -471,7 +471,7 @@ mod tests {
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("does not match verified scope"));
         assert!(!fixture.home.join("wrix.log").exists());
-        assert!(fixture.review_runs().is_empty());
+        assert_eq!(fixture.review_runs(), [] as [loom_gate::GateRun; 0]);
     }
 
     #[test]
@@ -556,7 +556,7 @@ mod tests {
                 !fixture.home.join("wrix.log").exists(),
                 "reject before agent dispatch"
             );
-            assert!(fixture.review_runs().is_empty());
+            assert_eq!(fixture.review_runs(), [] as [loom_gate::GateRun; 0]);
         }
     }
 

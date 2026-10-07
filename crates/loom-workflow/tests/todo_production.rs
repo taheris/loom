@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
+use std::fmt::Write;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -157,6 +158,8 @@ struct FakeBead {
     parent: Option<String>,
     metadata: BTreeMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     notes: Option<String>,
 }
 
@@ -166,6 +169,7 @@ struct StatefulBd {
     calls: Vec<Vec<String>>,
     update_attempt: usize,
     fail_update: Option<usize>,
+    fail_close: Option<String>,
 }
 
 #[derive(Clone)]
@@ -190,6 +194,7 @@ impl StatefulRunner {
                         "loom.todo_cursor".to_string(),
                         serde_json::Value::String(base.to_string()),
                     )]),
+                    description: None,
                     notes: None,
                 },
             );
@@ -204,6 +209,7 @@ impl StatefulRunner {
                 labels: vec!["loom:active".to_string()],
                 parent: None,
                 metadata: BTreeMap::new(),
+                description: None,
                 notes: None,
             },
         );
@@ -297,9 +303,17 @@ fn stateful_create(state: &mut StatefulBd, argv: &[String]) -> Result<RunOutput,
         .map(|value| value.split(',').map(ToOwned::to_owned).collect::<Vec<_>>())
         .unwrap_or_default();
     let id = if labels.iter().any(|label| label == "loom:todo") {
-        "lm-work"
+        "lm-work".to_string()
+    } else if labels.iter().any(|label| label == "spec:gamma") {
+        "lm-created".to_string()
     } else {
-        "lm-created"
+        format!(
+            "lm-{}",
+            labels
+                .iter()
+                .find_map(|label| label.strip_prefix("spec:"))
+                .unwrap_or("created")
+        )
     };
     let metadata = flag_value(argv, "--metadata")
         .map(serde_json::from_str)
@@ -311,22 +325,27 @@ fn stateful_create(state: &mut StatefulBd, argv: &[String]) -> Result<RunOutput,
         })?
         .unwrap_or_default();
     state.beads.insert(
-        id.to_string(),
+        id.clone(),
         FakeBead {
-            id: id.to_string(),
+            id: id.clone(),
             title: flag_value(argv, "--title").unwrap_or_default().to_string(),
             status: "open".to_string(),
             issue_type: flag_value(argv, "--type").unwrap_or("task").to_string(),
             labels,
             parent: flag_value(argv, "--parent").map(ToOwned::to_owned),
             metadata,
+            description: flag_value(argv, "--description").map(ToOwned::to_owned),
             notes: flag_value(argv, "--notes").map(ToOwned::to_owned),
         },
     );
-    Ok(created(id))
+    Ok(created(&id))
 }
 
 fn stateful_close(state: &mut StatefulBd, argv: &[String]) -> RunOutput {
+    if state.fail_close.as_ref() == argv.get(1) {
+        state.fail_close = None;
+        return failed("injected close failure");
+    }
     let Some(bead) = argv.get(1).and_then(|id| state.beads.get_mut(id)) else {
         return failed("missing fake bead");
     };
@@ -350,6 +369,7 @@ fn stateful_update(state: &mut StatefulBd, argv: &[String]) -> RunOutput {
             "--title" => bead.title = value,
             "--status" => bead.status = value,
             "--notes" => bead.notes = Some(value),
+            "--description" => bead.description = Some(value),
             "--add-label" => {
                 if !bead.labels.iter().any(|label| label == &value) {
                     bead.labels.push(value);
@@ -562,10 +582,10 @@ fn multi_spec_preflight_responses(base: &str) -> Vec<RunOutput> {
     ]
 }
 
-fn controller(
+fn controller<R: CommandRunner + 'static>(
     workspace: &Path,
-    runner: CapturingRunner,
-) -> Result<ProductionTodoController<CapturingRunner>> {
+    runner: R,
+) -> Result<ProductionTodoController<R>> {
     Ok(ProductionTodoController::for_workspace(
         workspace.to_path_buf(),
         Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?),
@@ -1021,24 +1041,8 @@ async fn todo_finalization_sets_active_and_advances_all_cursors() -> Result<()> 
     .await?;
 
     let calls = calls.calls()?;
-    assert!(calls.iter().any(|argv| {
-        argv == &[
-            "update",
-            "lm-alpha",
-            "--set-metadata",
-            &format!("loom.todo_cursor={head}"),
-        ]
-        .map(str::to_string)
-    }));
-    assert!(calls.iter().any(|argv| {
-        argv == &[
-            "update",
-            "lm-gamma",
-            "--set-metadata",
-            &format!("loom.todo_cursor={head}"),
-        ]
-        .map(str::to_string)
-    }));
+    assert_cursor_finalized(&calls, "lm-alpha", &head);
+    assert_cursor_finalized(&calls, "lm-gamma", &head);
     assert!(
         calls.iter().any(|argv| {
             argv.iter().any(|arg| arg == "--title")
@@ -1063,6 +1067,434 @@ async fn todo_finalization_sets_active_and_advances_all_cursors() -> Result<()> 
             && argv.iter().any(|arg| arg == "--remove-label")
             && argv.iter().any(|arg| arg == "loom:active")
     }));
+    Ok(())
+}
+
+fn assert_cursor_finalized(calls: &[Vec<String>], bead: &str, head: &str) {
+    assert!(
+        calls.iter().any(|argv| argv
+            == &[
+                "update",
+                bead,
+                "--set-metadata",
+                &format!("loom.todo_cursor={head}"),
+                "--unset-metadata",
+                "loom.todo_state",
+            ]
+            .map(str::to_owned)),
+        "missing finalized cursor/state transition: {calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn todo_retries_uninitialized_specs_without_advancing_cursors() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = StatefulRunner::new(&base, None);
+    let mut first = controller(dir.path(), runner.clone())?;
+    let session = first.build_session().await?;
+    let prompt = session.config.initial_prompt.clone();
+    let original = runner.bead("lm-created")?;
+    assert_eq!(
+        original.metadata.get("loom.todo_state"),
+        Some(&serde_json::json!("uninitialized"))
+    );
+    assert!(!original.metadata.contains_key("loom.todo_cursor"));
+    drop(session);
+    drop(first);
+
+    let mut retry = controller(dir.path(), runner.clone())?;
+    let session = retry.build_session().await?;
+    assert_eq!(session.config.initial_prompt, prompt);
+    assert_eq!(runner.bead("lm-alpha")?.metadata["loom.todo_cursor"], base);
+    let success = todo_success(&session.config.initial_prompt, &["alpha", "gamma"])?;
+    retry
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            Some(&success),
+        )
+        .await?;
+    let finalized = runner.bead("lm-created")?;
+    assert_eq!(finalized.metadata["loom.todo_cursor"], head);
+    assert!(!finalized.metadata.contains_key("loom.todo_state"));
+    drop(session);
+    let mut after = controller(dir.path(), runner)?;
+    assert!(matches!(
+        after.build_session().await,
+        Err(TodoError::NoChangedSpecs)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_retries_after_spec_creation_before_close() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, _) = init_workspace(dir.path())?;
+    let runner = StatefulRunner::new(&base, None);
+    runner.state.lock().map_err(|_| anyhow!("lock"))?.fail_close = Some("lm-created".into());
+    let mut first = controller(dir.path(), runner.clone())?;
+    assert!(matches!(first.build_session().await, Err(TodoError::Bd(_))));
+    let created = runner.bead("lm-created")?;
+    assert_eq!(created.status, "open");
+    assert_eq!(
+        created.metadata.get("loom.todo_state"),
+        Some(&serde_json::json!("uninitialized"))
+    );
+    assert!(!created.metadata.contains_key("loom.todo_cursor"));
+    drop(first);
+    let mut retry = controller(dir.path(), runner.clone())?;
+    let session = retry.build_session().await?;
+    assert!(session.config.initial_prompt.contains("### gamma"));
+    assert_eq!(runner.bead("lm-created")?.status, "closed");
+    assert_eq!(
+        runner
+            .state
+            .lock()
+            .map_err(|_| anyhow!("lock"))?
+            .calls
+            .iter()
+            .filter(|args| args.first().is_some_and(|a| a == "create"))
+            .count(),
+        2
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_failed_finalization_restores_uninitialized_cursor_state() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, _) = init_workspace(dir.path())?;
+    let runner = StatefulRunner::new(&base, Some(4));
+    let mut first = controller(dir.path(), runner.clone())?;
+    let session = first.build_session().await?;
+    let success = todo_success(&session.config.initial_prompt, &["alpha", "gamma"])?;
+    assert!(
+        first
+            .record_outcome(
+                &SessionOutcome {
+                    exit_code: 0,
+                    cost_usd: None
+                },
+                None,
+                Some(&success)
+            )
+            .await
+            .is_err()
+    );
+    let restored = runner.bead("lm-created")?;
+    assert_eq!(
+        restored.metadata.get("loom.todo_state"),
+        Some(&serde_json::json!("uninitialized"))
+    );
+    assert!(!restored.metadata.contains_key("loom.todo_cursor"));
+    drop(session);
+    let mut retry = controller(dir.path(), runner)?;
+    let session = retry.build_session().await?;
+    assert!(session.config.initial_prompt.contains("### gamma"));
+    Ok(())
+}
+
+fn read_dossier_section(root: &Path) -> Result<String> {
+    let mut paths = std::fs::read_dir(root)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.sort();
+    let mut body = String::new();
+    for path in paths {
+        let page = std::fs::read_to_string(path)?;
+        assert!(page.len() <= 16 * 1024);
+        assert!(page.lines().count() <= 200);
+        body.push_str(&page);
+    }
+    Ok(body)
+}
+
+#[tokio::test]
+async fn todo_large_batch_pages_all_evidence_and_resumes_fixed_roster() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    init_workspace(dir.path())?;
+    for label in ["alpha", "beta", "gamma"] {
+        std::fs::remove_file(dir.path().join(format!("specs/{label}.md")))?;
+    }
+    let labels = (0..20).map(|i| format!("owner{i:02}")).collect::<Vec<_>>();
+    let index = |labels: &[String]| -> Result<String> {
+        let mut body = String::new();
+        for label in labels {
+            writeln!(body, "- [{label}](../specs/{label}.md)")?;
+        }
+        Ok(body)
+    };
+    std::fs::write(dir.path().join("docs/README.md"), index(&labels[..9])?)?;
+    for label in &labels[..9] {
+        std::fs::write(
+            dir.path().join(format!("specs/{label}.md")),
+            format!("# {label}\n{}", "Prior contract narrative.\n".repeat(6000)),
+        )?;
+    }
+    run_git(dir.path(), &["add", "--all"])?;
+    run_git(dir.path(), &["commit", "-qm", "seed large baseline"])?;
+    let base = git_output(dir.path(), &["rev-parse", "HEAD"])?;
+    std::fs::write(dir.path().join("docs/README.md"), index(&labels)?)?;
+    for label in &labels {
+        let mut criteria = String::new();
+        for i in 0..55 {
+            writeln!(
+                criteria,
+                "- {label} requirement {i}: {} [test?](case_{i})",
+                "λ precise behavior ".repeat(12)
+            )?;
+        }
+        std::fs::write(
+            dir.path().join(format!("specs/{label}.md")),
+            format!(
+                "# {label}\n\n## Success Criteria\n\n{criteria}\n## Requirements\nUnrelated prose.\n"
+            ),
+        )?;
+    }
+    run_git(dir.path(), &["add", "--all"])?;
+    run_git(dir.path(), &["commit", "-qm", "change twenty owners"])?;
+    let runner = StatefulRunner::new(&base, None);
+    {
+        let mut state = runner.state.lock().map_err(|_| anyhow!("lock"))?;
+        let mut prototype = state.beads["lm-alpha"].clone();
+        state.beads.clear();
+        for label in &labels[..9] {
+            prototype.id = format!("lm-{label}");
+            prototype.title = label.clone();
+            prototype.labels = vec!["loom:spec".into(), format!("spec:{label}")];
+            state.beads.insert(prototype.id.clone(), prototype.clone());
+        }
+    }
+    let cache = CacheDb::open(dir.path().join(".loom/cache.db"))?;
+    let mut notes = BTreeMap::new();
+    for (i, label) in labels.iter().enumerate() {
+        let entries = (0..if i < 17 { 3 } else { 2 })
+            .map(|n| {
+                format!(
+                    "{label} note {n}: {}",
+                    "implementation detail λ ".repeat(90)
+                )
+            })
+            .collect::<Vec<_>>();
+        for note in &entries {
+            cache.notes_add(&SpecLabel::new(label)?, "implementation", note, 1)?;
+        }
+        notes.insert(label.clone(), entries);
+    }
+    let mut first = controller(dir.path(), runner.clone())?;
+    let session = first.build_session().await?;
+    let prompt = session.config.initial_prompt.clone();
+    assert!(prompt.len() < 64 * 1024, "{} bytes", prompt.len());
+    let scratch = dir.path().join(".loom/scratch/lm-work");
+    assert_eq!(std::fs::read_to_string(scratch.join("prompt.txt"))?, prompt);
+    let manifest = std::fs::read_to_string(scratch.join("evidence/index.md"))?;
+    assert!(manifest.len() < 64 * 1024);
+    let git = GitClient::open(dir.path())?;
+    let mut dossier_bytes = 0;
+    for label in &labels {
+        assert!(prompt.contains(&format!("### {label}")));
+        assert!(manifest.contains(&format!("## {label}")));
+        let body = read_dossier_section(&scratch.join(format!("evidence/{label}/criteria")))?;
+        let rows = loom_workflow::todo::build_criterion_status(
+            dir.path(),
+            &dir.path().join(".loom/cache.db"),
+            &SpecLabel::new(label)?,
+            Path::new(&format!("specs/{label}.md")),
+            &git,
+        )
+        .await;
+        assert_eq!(rows.len(), 55);
+        let mut expected = String::new();
+        for row in &rows {
+            writeln!(expected, "- {row}\n")?;
+        }
+        assert_eq!(body, expected);
+        dossier_bytes += body.len();
+        let body = read_dossier_section(&scratch.join(format!("evidence/{label}/notes")))?;
+        for note in &notes[label] {
+            assert!(body.contains(note));
+            assert!(!prompt.contains(note));
+        }
+        dossier_bytes += body.len();
+        if let Some(cursor) = runner
+            .bead(&format!("lm-{label}"))?
+            .metadata
+            .get("loom.todo_cursor")
+        {
+            assert_eq!(cursor, &serde_json::json!(base));
+            let diff = git
+                .diff_spec(&base, Path::new(&format!("specs/{label}.md")))
+                .await?;
+            assert_eq!(
+                read_dossier_section(&scratch.join(format!("evidence/{label}/diff")))?,
+                diff
+            );
+            dossier_bytes += diff.len();
+        }
+    }
+    assert!(
+        dossier_bytes > 1_500_000,
+        "fixture must exceed a typical context: {dossier_bytes}"
+    );
+    assert_eq!(cache.notes_list(None, Some("implementation"))?.len(), 57);
+    let creations = runner
+        .state
+        .lock()
+        .map_err(|_| anyhow!("lock"))?
+        .calls
+        .iter()
+        .filter(|args| args.first().is_some_and(|a| a == "create"))
+        .count();
+    assert_eq!(creations, 12); // Eleven new spec epics and one work epic.
+    let checkpoint = "Audited owner00; existing draft lm-draft; remaining owners need inspection.";
+    BdClient::with_runner(runner.clone())
+        .update(
+            &loom_driver::identifier::BeadId::new("lm-work")?,
+            loom_driver::bd::UpdateOpts {
+                description: Some(checkpoint.into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let mut draft = runner.bead("lm-work")?;
+    draft.id = "lm-draft".into();
+    draft.parent = Some("lm-work".into());
+    draft.issue_type = "task".into();
+    draft.labels = vec!["spec:owner00".into()];
+    runner
+        .state
+        .lock()
+        .map_err(|_| anyhow!("lock"))?
+        .beads
+        .insert(draft.id.clone(), draft);
+    drop(session);
+    drop(first);
+    assert!(!scratch.exists());
+    let mut retry = controller(dir.path(), runner.clone())?;
+    let session = retry.build_session().await?;
+    assert_eq!(session.config.initial_prompt, prompt);
+    assert_eq!(
+        runner.bead("lm-work")?.description.as_deref(),
+        Some(checkpoint)
+    );
+    assert_eq!(runner.bead("lm-draft")?.parent.as_deref(), Some("lm-work"));
+    assert!(prompt.contains("bd list --parent lm-work --all --limit 0 --json"));
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("evidence/index.md"))?,
+        manifest
+    );
+    assert_eq!(
+        runner
+            .state
+            .lock()
+            .map_err(|_| anyhow!("lock"))?
+            .calls
+            .iter()
+            .filter(|args| args.first().is_some_and(|a| a == "create"))
+            .count(),
+        creations
+    );
+    let subset = labels[..19].iter().map(String::as_str).collect::<Vec<_>>();
+    let incomplete = todo_success(&prompt, &subset)?;
+    assert!(matches!(
+        retry
+            .record_outcome(
+                &SessionOutcome {
+                    exit_code: 0,
+                    cost_usd: None
+                },
+                None,
+                Some(&incomplete)
+            )
+            .await,
+        Err(TodoError::TodoValidation { .. })
+    ));
+    assert_eq!(cache.notes_list(None, Some("implementation"))?.len(), 57);
+    for label in &labels[9..] {
+        assert!(
+            !runner
+                .bead(&format!("lm-{label}"))?
+                .metadata
+                .contains_key("loom.todo_cursor")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_oversized_context_blocks_before_dispatch_without_losing_retry_state() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, _) = init_workspace(dir.path())?;
+    let index_path = dir.path().join("docs/README.md");
+    let index = std::fs::read_to_string(&index_path)?;
+    std::fs::write(
+        &index_path,
+        format!("{index}\n{}", "Extra index prose. ".repeat(5000)),
+    )?;
+    run_git(dir.path(), &["add", "docs/README.md"])?;
+    run_git(dir.path(), &["commit", "-qm", "oversized index"])?;
+    let runner = StatefulRunner::new(&base, None);
+    for _ in 0..2 {
+        let mut ctrl = controller(dir.path(), runner.clone())?;
+        assert!(matches!(
+            ctrl.build_session().await,
+            Err(TodoError::ContextTooLarge {
+                surface: "entry prompt",
+                ..
+            })
+        ));
+        assert!(!dir.path().join(".loom/scratch/lm-work").exists());
+        assert_eq!(runner.bead("lm-alpha")?.metadata["loom.todo_cursor"], base);
+        assert!(
+            !runner
+                .bead("lm-created")?
+                .metadata
+                .contains_key("loom.todo_cursor")
+        );
+    }
+    assert_eq!(
+        runner
+            .state
+            .lock()
+            .map_err(|_| anyhow!("lock"))?
+            .calls
+            .iter()
+            .filter(|args| args.first().is_some_and(|a| a == "create"))
+            .count(),
+        2
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_rejects_contradictory_initialization_metadata() -> Result<()> {
+    for state in [
+        serde_json::json!("uninitialized"),
+        serde_json::json!(true),
+        serde_json::json!("unknown"),
+    ] {
+        let dir = tempfile::tempdir()?;
+        let (base, _) = init_workspace(dir.path())?;
+        let runner = StatefulRunner::new(&base, None);
+        runner
+            .state
+            .lock()
+            .map_err(|_| anyhow!("lock"))?
+            .beads
+            .get_mut("lm-alpha")
+            .ok_or_else(|| anyhow!("alpha"))?
+            .metadata
+            .insert("loom.todo_state".into(), state);
+        let mut ctrl = controller(dir.path(), runner)?;
+        assert!(matches!(
+            ctrl.build_session().await,
+            Err(TodoError::InvalidSpecCursor { .. })
+        ));
+    }
     Ok(())
 }
 
@@ -1312,24 +1744,8 @@ async fn todo_no_work_outcome_advances_cursor_with_reason() -> Result<()> {
                 && row.outcome == "no-work: audited")
     );
     let calls = calls.calls()?;
-    assert!(calls.iter().any(|argv| {
-        argv == &[
-            "update",
-            "lm-alpha",
-            "--set-metadata",
-            &format!("loom.todo_cursor={head}"),
-        ]
-        .map(str::to_string)
-    }));
-    assert!(calls.iter().any(|argv| {
-        argv == &[
-            "update",
-            "lm-gamma",
-            "--set-metadata",
-            &format!("loom.todo_cursor={head}"),
-        ]
-        .map(str::to_string)
-    }));
+    assert_cursor_finalized(&calls, "lm-alpha", &head);
+    assert_cursor_finalized(&calls, "lm-gamma", &head);
     Ok(())
 }
 
@@ -1398,7 +1814,7 @@ async fn todo_clarify_marks_work_epic() -> Result<()> {
         )
         .await?;
 
-    assert!(record.spec_outcomes.is_empty());
+    assert_eq!(record.spec_outcomes.len(), 0);
     let calls = calls.calls()?;
     assert!(
         calls
@@ -1523,13 +1939,12 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
     )
     .await?;
 
-    assert!(
-        state
-            .notes_list(
-                Some(&SpecLabel::new("alpha").unwrap()),
-                Some("implementation")
-            )?
-            .is_empty()
+    assert_eq!(
+        state.notes_list(
+            Some(&SpecLabel::new("alpha").unwrap()),
+            Some("implementation")
+        )?,
+        [] as [loom_driver::state::NoteRow; 0]
     );
     let calls = calls.calls()?;
     assert!(calls.iter().any(|argv| {

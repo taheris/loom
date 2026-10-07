@@ -112,6 +112,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::todo;
     use loom_driver::agent::RePinContent;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -212,7 +213,10 @@ mod tests {
         .expect("run ok");
         assert_eq!(summary.exit_code, 0);
         assert_eq!(summary.cost_usd, Some(0.42));
-        assert!(summary.spec_outcomes.is_empty());
+        assert_eq!(
+            summary.spec_outcomes,
+            [] as [todo::runner::TodoSpecSummary; 0]
+        );
         assert_eq!(controller.recorded.load(Ordering::SeqCst), 1);
         assert_eq!(*controller.last_exit.lock().unwrap(), Some(0));
         assert_eq!(

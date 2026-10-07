@@ -200,7 +200,7 @@ fn worker_accepts_foreign_platform_and_declared_capability_skips_without_verifyi
         assert_eq!(reported["coverage_verified"], false);
         let runs =
             parse_gate_runs_from_jsonl(&dir.path().join(".loom/logs/gate/worker-acceptance.jsonl"));
-        assert!(!runs.is_empty());
+        assert_ne!(runs, [] as [loom_gate::GateRun; 0]);
         assert!(
             runs.iter()
                 .all(|run| run.status == GateRunStatus::AcceptedWithSkips

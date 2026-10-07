@@ -355,7 +355,7 @@ mod tests {
         let (tests, judge) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
 
         assert_eq!(tests.len(), 1, "shared file collapsed to one entry");
-        assert!(judge.is_empty());
+        assert_eq!(judge, [] as [loom_templates::ReviewSource; 0]);
     }
 
     #[test]
@@ -471,7 +471,7 @@ mod tests {
         );
 
         let (tests, _) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
-        assert!(tests.is_empty());
+        assert_eq!(tests, [] as [loom_templates::ReviewSource; 0]);
     }
 
     #[test]

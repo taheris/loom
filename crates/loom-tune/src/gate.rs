@@ -195,7 +195,7 @@ fn count_as_f64(value: usize) -> f64 {
     let value = u64::try_from(value).unwrap_or(u64::MAX);
     let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
     let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    f64::from(high) * 4_294_967_296.0 + f64::from(low)
+    f64::from(high).mul_add(4_294_967_296.0, f64::from(low))
 }
 
 fn classify(current: Scores, candidate: Scores, epsilon: f64) -> Outcome {

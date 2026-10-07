@@ -295,7 +295,7 @@ mod tests {
     fn parses_system_init() {
         let line = r#"{"type":"system","subtype":"init","session_id":"sess-abc"}"#;
         let p = parse(&empty(), line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(p.response.is_none());
     }
 
@@ -438,7 +438,7 @@ mod tests {
     fn unknown_message_type_returns_empty_events() {
         let line = r#"{"type":"newfangled","extra":42}"#;
         let p = parse(&empty(), line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(p.response.is_none());
     }
 
@@ -449,7 +449,7 @@ mod tests {
         let line =
             r#"{"type":"control_request","id":"req_01","tool":"Read","input":{"path":"/tmp/x"}}"#;
         let p = parse(&empty(), line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         let resp = p.response.expect("control_response present");
         assert!(resp.contains(r#""type":"control_response""#));
         assert!(resp.contains(r#""id":"req_01""#));
@@ -704,7 +704,7 @@ mod tests {
         let parsed = parser
             .parse_line(r#"{"type":"new_feature_event","data":"something"}"#)
             .expect("unknown event must not error");
-        assert!(parsed.events.is_empty());
+        assert_eq!(parsed.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(parsed.response.is_none());
     }
 

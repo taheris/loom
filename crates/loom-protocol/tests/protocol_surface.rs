@@ -92,8 +92,8 @@ fn walk_output_fields_private_only_constructor_is_from_stdout() {
 
     let walk = WalkOutput::from_stdout("LOOM_COMPLETE\n", DispatchScope::Tree, &AcceptAll);
     assert_eq!(walk.terminal(), &TerminalSurface::Complete);
-    assert!(walk.findings().is_empty());
-    assert!(walk.finding_errors().is_empty());
+    assert_eq!(walk.findings(), []);
+    assert_eq!(walk.finding_errors(), []);
 
     trybuild::TestCases::new().compile_fail("tests/ui/walk_output_literal.rs");
 }

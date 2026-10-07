@@ -1238,7 +1238,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(blocked_ids, vec![BeadId::new("lm-1").expect("valid")]);
-                assert!(clarify_ids.is_empty());
+                assert_eq!(clarify_ids, [] as [loom_driver::identifier::BeadId; 0]);
             }
             other => panic!("expected PushBlocked, got {other:?}"),
         }
@@ -1296,8 +1296,8 @@ mod tests {
                 deferred_ids,
                 infra_ids,
             } => {
-                assert!(blocked_ids.is_empty());
-                assert!(clarify_ids.is_empty());
+                assert_eq!(blocked_ids, [] as [loom_driver::identifier::BeadId; 0]);
+                assert_eq!(clarify_ids, [] as [loom_driver::identifier::BeadId; 0]);
                 assert_eq!(deferred_ids, vec![BeadId::new("lm-3").expect("valid")]);
                 assert_eq!(infra_ids, vec![BeadId::new("lm-2").expect("valid")]);
             }

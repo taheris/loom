@@ -505,8 +505,8 @@ mod tests {
             }
         }
         assert!(db.spec_epic(&probe)?.is_none());
-        assert!(db.companions(&probe)?.is_empty());
-        assert!(db.work_epics()?.is_empty());
+        assert_eq!(db.companions(&probe)?, [] as [std::string::String; 0]);
+        assert_eq!(db.work_epics()?, [] as [loom_driver::state::WorkEpicRow; 0]);
         Ok(())
     }
 

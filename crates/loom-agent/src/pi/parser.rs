@@ -662,7 +662,7 @@ mod tests {
         // ignores them, then the second pass deserializes into PiEvent.
         let line = r#"{"type":"turn_start","novel":42,"extra":{"x":1}}"#;
         let p = parse(line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(p.response.is_none());
     }
 
@@ -671,7 +671,7 @@ mod tests {
         // type=response → second pass populates PiResponse.command/success.
         let line = r#"{"type":"response","id":"r1","command":"prompt","success":true}"#;
         let p = parse(line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(p.response.is_none());
     }
 
@@ -682,7 +682,7 @@ mod tests {
         // requires ids.
         let line = r#"{"type":"response","command":"prompt","success":true}"#;
         let p = parse(line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(p.response.is_none());
     }
 
@@ -712,7 +712,7 @@ mod tests {
         let line =
             r#"{"type":"extension_ui_request","id":"u1","method":"select","payload":{"opt":1}}"#;
         let p = parse(line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(p.response.is_some());
     }
 
@@ -769,12 +769,9 @@ mod tests {
     fn message_end_after_streamed_text_does_not_duplicate_text() {
         let parser = PiParser::new();
         let start = r#"{"type":"message_start","message":{"role":"assistant","content":[]}}"#;
-        assert!(
-            parser
-                .parse_line(start)
-                .expect("start parses")
-                .events
-                .is_empty()
+        assert_eq!(
+            parser.parse_line(start).expect("start parses").events,
+            [] as [loom_events::ParsedAgentEvent; 0]
         );
         let delta = r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}"#;
         assert!(matches!(
@@ -782,12 +779,9 @@ mod tests {
             [ParsedAgentEvent::TextDelta { .. }]
         ));
         let end = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}"#;
-        assert!(
-            parser
-                .parse_line(end)
-                .expect("end parses")
-                .events
-                .is_empty()
+        assert_eq!(
+            parser.parse_line(end).expect("end parses").events,
+            [] as [loom_events::ParsedAgentEvent; 0]
         );
     }
 
@@ -842,7 +836,7 @@ mod tests {
         // the parser accepts and ignores the chunk.
         let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","contentIndex":1,"delta":"{\"file_path\":\"a\"}","partial":{}}}"#;
         let p = parse(line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(p.response.is_none());
     }
 
@@ -851,7 +845,7 @@ mod tests {
         // Forward-compat: a brand-new delta type does not fail the parse.
         let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"mystery_delta","field":1}}"#;
         let p = parse(line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
     }
 
     #[test]
@@ -1100,7 +1094,7 @@ mod tests {
         let p = parse(line);
         assert_eq!(p.events.len(), 1);
         match &p.events[0] {
-            ParsedAgentEvent::Error { message, .. } => assert!(message.is_empty()),
+            ParsedAgentEvent::Error { message, .. } => assert_eq!(message, ""),
             other => panic!("expected Error, got {other:?}"),
         }
     }
@@ -1197,7 +1191,7 @@ mod tests {
         // parse — the catch-all variant is hit and the parser logs at trace.
         let line = r#"{"type":"mystery_event","payload":1}"#;
         let p = parse(line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(p.response.is_none());
     }
 
@@ -1219,7 +1213,7 @@ mod tests {
             let malformed = parser
                 .parse_line(line)
                 .expect("malformed JSON line is skipped");
-            assert!(malformed.events.is_empty());
+            assert_eq!(malformed.events, [] as [loom_events::ParsedAgentEvent; 0]);
             assert!(malformed.response.is_none());
         }
         let captured = std::fs::read_to_string(log.path()).unwrap();
@@ -1269,7 +1263,7 @@ mod tests {
     // -- test_pi_extension_ui_passthrough ---------------------------------
 
     fn assert_ui_cancellation(parsed: ParsedLine, id: &str) {
-        assert!(parsed.events.is_empty());
+        assert_eq!(parsed.events, [] as [loom_events::ParsedAgentEvent; 0]);
         let response = parsed.response.expect("auto-cancel response present");
         assert!(response.ends_with('\n'));
         assert_eq!(response.lines().count(), 1);
@@ -1309,7 +1303,7 @@ mod tests {
         // notify-style methods do not block the agent — no auto-cancel.
         let line = r#"{"type":"extension_ui_request","id":"u-9","method":"notify","payload":{}}"#;
         let p = parse(line);
-        assert!(p.events.is_empty());
+        assert_eq!(p.events, [] as [loom_events::ParsedAgentEvent; 0]);
         assert!(p.response.is_none());
     }
 

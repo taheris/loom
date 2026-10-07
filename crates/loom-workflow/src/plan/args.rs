@@ -25,7 +25,7 @@ mod tests {
     #[test]
     fn parse_anchor_labels_accepts_empty_roster() {
         let labels = parse_anchor_labels(Vec::new()).expect("labels");
-        assert!(labels.is_empty());
+        assert_eq!(labels, [] as [loom_driver::identifier::SpecLabel; 0]);
     }
 
     #[test]

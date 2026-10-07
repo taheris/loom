@@ -120,7 +120,30 @@ fn todo_context(notes: Vec<String>, criterion_status: Vec<CriterionStatus>) -> T
         criterion_status,
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         skill_index: SkillIndexMarkdown::empty(),
+        evidence_delivery: loom_templates::todo::EvidenceDelivery::Inline,
     }
+}
+
+#[test]
+fn todo_dossier_render_keeps_roster_and_resumption_without_inlining_evidence() -> Result<()> {
+    let note = "large planning note λ ".repeat(4000);
+    let mut context = todo_context(vec![note.clone()], vec![]);
+    assert!(context.render()?.contains(&note));
+    context.changed_specs[0].diff = Some("unique diff body".repeat(4000));
+    context.evidence_delivery = loom_templates::todo::EvidenceDelivery::Dossier {
+        manifest_path: "/workspace/.loom/scratch/lm-work/evidence/index.md".into(),
+    };
+    let rendered = context.render()?;
+    assert!(rendered.contains("### harness"));
+    assert!(rendered.contains("/workspace/.loom/scratch/lm-work/evidence/index.md"));
+    assert!(rendered.contains("bd show lm-work --json"));
+    assert!(rendered.contains("bd list --parent lm-work --all --limit 0 --json"));
+    assert!(rendered.contains("preserving prior human decisions"));
+    assert!(rendered.contains("Every implementation note"));
+    assert!(!rendered.contains(&note));
+    assert!(!rendered.contains("unique diff body"));
+    assert!(rendered.contains("LOOM_TODO:"));
+    Ok(())
 }
 
 #[expect(

@@ -21,9 +21,23 @@ pub struct TodoContext {
     pub criterion_status: Vec<CriterionStatus>,
     pub scratchpad_path: String,
     pub skill_index: SkillIndexMarkdown,
+    pub evidence_delivery: EvidenceDelivery,
+}
+
+/// Inline display or snapshot evidence disclosed through bounded pages.
+pub enum EvidenceDelivery {
+    Inline,
+    Dossier { manifest_path: String },
 }
 
 impl TodoContext {
+    pub const fn dossier_manifest(&self) -> Option<&str> {
+        match &self.evidence_delivery {
+            EvidenceDelivery::Inline => None,
+            EvidenceDelivery::Dossier { manifest_path } => Some(manifest_path.as_str()),
+        }
+    }
+
     pub fn has_implementation_notes(&self) -> bool {
         self.implementation_notes
             .iter()
@@ -85,6 +99,7 @@ mod tests {
             criterion_status: vec![],
             scratchpad_path: SCRATCH.to_string(),
             skill_index: SkillIndexMarkdown::empty(),
+            evidence_delivery: EvidenceDelivery::Inline,
         }
     }
 

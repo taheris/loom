@@ -50,7 +50,7 @@ fn status_cache_open_preserves_unified_cache_db_schema_version() {
     let _status_cache = StatusCache::open(&path).unwrap();
     let reopened = CacheDb::open(&path).unwrap();
 
-    assert!(reopened.work_epics().unwrap().is_empty());
+    assert_eq!(reopened.work_epics().unwrap().len(), 0);
 }
 
 #[test]

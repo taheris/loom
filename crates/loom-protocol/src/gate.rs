@@ -2106,8 +2106,8 @@ mod tests {
         }
         let walk = WalkOutput::from_stdout("LOOM_COMPLETE\n", DispatchScope::Tree, &AlwaysValid);
         assert_eq!(walk.terminal(), &TerminalSurface::Complete);
-        assert!(walk.findings().is_empty());
-        assert!(walk.finding_errors().is_empty());
+        assert_eq!(walk.findings(), []);
+        assert_eq!(walk.finding_errors(), []);
     }
 
     #[test]
@@ -2344,7 +2344,7 @@ mod tests {
     fn retry_at_start_with_no_prior_lines_yields_empty_reason() {
         let out = "LOOM_RETRY";
         match parse_exit_signal(out) {
-            Some(ExitSignal::Retry { reason }) => assert!(reason.is_empty()),
+            Some(ExitSignal::Retry { reason }) => assert_eq!(reason, ""),
             other => panic!("expected Retry with empty reason, got {other:?}"),
         }
     }
@@ -2818,7 +2818,7 @@ mod tests {
         let output = "preamble with no findings and no markers\n";
         let findings =
             parse_walk_output(output, DispatchScope::Tree, &AlwaysValid).expect("vacuous case");
-        assert!(findings.is_empty());
+        assert_eq!(findings.len(), 0);
     }
 
     #[test]

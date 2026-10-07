@@ -413,7 +413,7 @@ mod contract {
             seed: 7,
         })
         .unwrap();
-        assert!(!plan.selected_cases.is_empty());
+        assert_ne!(plan.selected_cases.len(), 0);
         assert!(matches!(
             run(&plan, &cases, &[], &registry, &AcceptAllFindings),
             Err(Error::UncheckableSelection { .. })

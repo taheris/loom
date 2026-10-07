@@ -5790,7 +5790,7 @@ mod tests {
         assert!(files.is_explicit_files());
         let diff = changed_scope(tmp.path());
         assert!(!diff.is_explicit_files());
-        assert!(!diff.files().unwrap().is_empty());
+        assert_ne!(diff.files().unwrap().len(), 0);
     }
 
     #[test]

@@ -442,7 +442,7 @@ fn tune_zero_wall_budget_starts_no_replay() {
     let fixture = ReplayFixture::new(2, 0, "complete", "Use observable task evidence.");
     let manifest = fixture.run();
     fixture.assert_blocked(&manifest);
-    assert!(fixture.starts().is_empty());
+    assert_eq!(fixture.starts(), [] as [serde_json::Value; 0]);
     assert!(
         manifest["validation"]
             .to_string()
@@ -456,7 +456,7 @@ fn tune_failed_mandatory_preflight_suppresses_replays() {
     let fixture = ReplayFixture::new(2, 60, "complete", "Ignore the phase protocol.");
     let manifest = fixture.run();
     fixture.assert_blocked(&manifest);
-    assert!(fixture.starts().is_empty());
+    assert_eq!(fixture.starts(), [] as [serde_json::Value; 0]);
     assert!(
         manifest["validation"]
             .as_array()

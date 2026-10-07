@@ -2472,7 +2472,7 @@ mod tests {
             .await
             .expect("unresolved state is a typed refusal");
             assert_eq!(handoff.evidence.molecule_state, MoleculeState::Unresolved);
-            assert!(handoff.evidence.gate_runs.is_empty());
+            assert_eq!(handoff.evidence.gate_runs, [] as [loom_gate::GateRun; 0]);
             assert!(!git.loom_workspace().join(".loom/marker.json").exists());
             let after = loom_driver::git::sync_rev_parse(&git.loom_workspace(), "origin/main")
                 .expect("origin tip after");

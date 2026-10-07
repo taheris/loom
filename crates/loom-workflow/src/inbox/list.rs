@@ -555,6 +555,7 @@ fn summary_for(bead: &Bead) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inbox;
     use loom_driver::identifier::BeadId;
     use serde_json::json;
 
@@ -642,7 +643,7 @@ mod tests {
         let list = build_queue(&[epic.clone()], None, None, true);
         let chat = build_queue(&[epic], None, None, false);
         assert_eq!(list.len(), 1);
-        assert!(chat.is_empty());
+        assert_eq!(chat, [] as [inbox::list::InboxItem; 0]);
     }
 
     #[test]

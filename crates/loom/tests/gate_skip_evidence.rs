@@ -275,5 +275,5 @@ fn malformed_junit_fails_without_persisting_partial_passes() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("invalid junit-xml"), "{stderr}");
     let cache = StatusCache::open(&dir.path().join(".loom/cache.db")).unwrap();
-    assert!(cache.read_all().unwrap().is_empty());
+    assert_eq!(cache.read_all().unwrap(), [] as [loom_gate::CacheRow; 0]);
 }

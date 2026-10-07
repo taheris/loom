@@ -320,12 +320,13 @@ fn consume_to_heading_end(iter: &mut OffsetIter<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inbox;
 
     #[test]
     fn missing_options_section_returns_default() {
         let parse = parse_options("Just a body, no options.");
-        assert!(parse.summary.is_empty());
-        assert!(parse.options.is_empty());
+        assert_eq!(parse.summary, "");
+        assert_eq!(parse.options, [] as [inbox::options::OptionEntry; 0]);
     }
 
     #[test]
@@ -443,8 +444,8 @@ ignored
     #[test]
     fn parse_options_in_returns_default_when_neither_source_has_options() {
         let parse = parse_options_in(Some("just notes"), "just a description");
-        assert!(parse.summary.is_empty());
-        assert!(parse.options.is_empty());
+        assert_eq!(parse.summary, "");
+        assert_eq!(parse.options, [] as [inbox::options::OptionEntry; 0]);
     }
 
     #[test]

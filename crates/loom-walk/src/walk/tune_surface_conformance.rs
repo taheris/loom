@@ -1,4 +1,4 @@
-//! Tune-surface conformance walk for `specs/harness.md`.
+//! Tune-surface conformance walk for `specs/tuning.md`.
 
 use std::collections::BTreeSet;
 
@@ -6,8 +6,8 @@ use super::cli_surface::{self, VariantShape};
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "tune_surface_conformance — `loom sync` is absent and `loom tune` matches specs/harness.md Tune Modes";
-const SPEC: &str = "specs/harness.md";
+const RULE: &str = "tune_surface_conformance — `loom sync` is absent and `loom tune` matches specs/tuning.md Tune Modes";
+const SPEC: &str = "specs/tuning.md";
 const MAIN_RS: &str = "crates/loom/src/main.rs";
 const EXPECTED_TUNE_ACTIONS: &[&str] = &["skill", "phase", "partial", "checker", "all"];
 const EXPECTED_LEVELS: &[&str] = &["fast", "run", "full"];

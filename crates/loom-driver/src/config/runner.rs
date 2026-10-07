@@ -476,7 +476,10 @@ inputs = "verifier {print_inputs}"
         assert_eq!(runner.skip_policy, SkipPolicy::SandboxCapability);
         assert_eq!(runner.skip_capabilities, ["container-runtime", "kvm"]);
         assert_eq!(RunnerEntry::default().skip_policy, SkipPolicy::Deny);
-        assert!(RunnerEntry::default().skip_capabilities.is_empty());
+        assert_eq!(
+            RunnerEntry::default().skip_capabilities,
+            [] as [std::string::String; 0]
+        );
         assert!(
             LoomConfig::from_toml_str(
                 "[runner.check]\ncommand='verify'\nskip_policy='allow-anything'\n"

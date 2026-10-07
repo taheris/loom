@@ -410,6 +410,7 @@ pub trait AgentBackend: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent;
     use crate::agent::repin::RePinContent;
 
     fn sample_config(model: Option<ModelSelection>) -> SpawnConfig {
@@ -893,7 +894,7 @@ mod tests {
             "denied_tools key must be absent from JSON: {json}",
         );
         let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.denied_tools.is_empty());
+        assert_eq!(back.denied_tools, [] as [std::string::String; 0]);
     }
 
     /// `launcher_env` is host-only state (deploy/signing key paths handed to
@@ -954,7 +955,10 @@ mod tests {
         let cfg = sample_config(None);
         let json = serde_json::to_string(&cfg).expect("serialize");
         let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.launcher_env.is_empty());
+        assert_eq!(
+            back.launcher_env,
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     /// Legacy fixtures without a `mounts` key parse as an empty vector —
@@ -972,6 +976,6 @@ mod tests {
             "repin": {"orientation":"o","pinned_context":"p","partial_bodies":[]}
         }"#;
         let cfg: SpawnConfig = serde_json::from_str(legacy).expect("legacy fixture parses");
-        assert!(cfg.mounts.is_empty());
+        assert_eq!(cfg.mounts, [] as [agent::backend::MountSpec; 0]);
     }
 }

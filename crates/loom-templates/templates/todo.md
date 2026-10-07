@@ -25,7 +25,7 @@ Decompose exactly the specs listed here. Every label in this roster must appear 
 
 - Spec file: `{{ spec.spec_path }}`
 
-{% match spec.diff %}{% when Some with (diff) %}
+{% if self.dossier_manifest().is_none() %}{% match spec.diff %}{% when Some with (diff) %}
 Diff:
 
 ```diff
@@ -36,7 +36,7 @@ Diff:
 
 - Diff: not provided; read the spec file and use the criterion-status evidence below.
 
-{% endmatch %}
+{% endmatch %}{% endif %}
 {% endfor %}{% endif %}
 
 ## Spec Epic Metadata
@@ -51,7 +51,17 @@ Diff:
 {% include "partial/companions_context.md" %}
 
 {% include "partial/scratchpad.md" %}
-{% include "partial/skill_index.md" %}{% if self.has_implementation_notes() %}
+{% include "partial/skill_index.md" %}{% match self.dossier_manifest() %}{% when Some with (manifest) %}
+
+## Evidence Dossier and Resumption
+
+Read `{{ manifest }}` first. It identifies this fixed batch's complete per-spec criterion, implementation-note, and diff pages. Page paths are relative to that manifest. Read pages one owner/topic at a time; do not concatenate the entire dossier into context. Nothing was truncated or inferred from missing cache rows.
+
+Every implementation note describes work that must become one or more beads unless you persist a structured clarify question to the work epic and self-report. Before decomposing an owner, inspect all its criterion/status and implementation-note pages. Consult diff pages and representative source as needed; formatting or ownership changes and `Missing` evidence do not by themselves require implementation beads. Preserve every owner in the final result, including justified no-work outcomes. A partial audit is not success.
+
+Before creating tasks, inspect durable drafts with `bd show {{ work_epic }} --json` and `bd list --parent {{ work_epic }} --all --limit 0 --json`. Reconcile and reuse existing children rather than duplicating them. Merge concise progress (audited owners, child IDs, evidence references and remaining questions) into the work epic's **description** after each topic, preserving prior human decisions; driver diagnostics may replace its notes. This checkpoint is a hint to recheck, not authoritative acceptance or permission to advance cursors. Scratch pages are regenerated on retry; the work epic and child beads survive.
+
+{% when None %}{% if self.has_implementation_notes() %}
 
 ## Implementation Notes
 
@@ -75,9 +85,9 @@ The status cache below shows the latest cached verifier verdict for each Success
 {% if criterion_status.is_empty() %}_No parsed criterion-status rows were injected. Treat this as a preflight problem, not as evidence of no work._
 {% else %}{% for row in criterion_status %}
 
-- **{{ row.spec_label }} / {{ row.criterion_id }}** · {{ row.criterion_text }} · annotation `{{ row.annotation }}` · evidence `{{ row.evidence.as_str() }}` · result {{ row.evidence.result_label() }} · last commit {{ row.evidence.last_commit_label() }} · commits since {{ row.evidence.commits_since_label() }} · last timestamp {{ row.evidence.last_timestamp_label() }} · cached annotation `{{ row.evidence.cached_annotation_label() }}`
+- {{ row }}
 
-{% endfor %}{% endif %}
+{% endfor %}{% endif %}{% endmatch %}
 
 {% include "partial/decomposition_discipline.md" %}
 

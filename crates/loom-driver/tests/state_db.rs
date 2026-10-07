@@ -532,7 +532,7 @@ fn notes_clear_kind_only_or_all_kinds() -> Result<()> {
 
     db.notes_clear(&label, None)?;
     let rows = db.notes_list(Some(&label), None)?;
-    assert!(rows.is_empty());
+    assert_eq!(rows, [] as [loom_driver::state::NoteRow; 0]);
     Ok(())
 }
 
@@ -930,9 +930,9 @@ fn cache_corruption_recovery_never_implies_clean_todo() -> Result<()> {
     assert!(CacheDb::open(&db_path).is_err());
     let db = CacheDb::recreate(&db_path)?;
     db.upsert_spec(&SpecLabel::new("alpha").unwrap(), "specs/alpha.md")?;
-    assert!(
-        db.criterion_evidence_for_spec(&SpecLabel::new("alpha").unwrap())?
-            .is_empty()
+    assert_eq!(
+        db.criterion_evidence_for_spec(&SpecLabel::new("alpha").unwrap())?,
+        [] as [loom_driver::state::CriterionEvidenceRow; 0]
     );
     Ok(())
 }

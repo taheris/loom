@@ -183,8 +183,11 @@ mod tests {
         let missing = dir.path().join("does/not/exist");
         let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
         let report = sweep_retention_at(&missing, 14, now);
-        assert!(report.deleted.is_empty());
-        assert!(report.failed.is_empty());
+        assert_eq!(report.deleted, [] as [std::path::PathBuf; 0]);
+        assert_eq!(
+            report.failed,
+            [] as [(std::path::PathBuf, std::io::ErrorKind); 0]
+        );
     }
 
     #[test]

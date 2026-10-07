@@ -53,8 +53,14 @@ mod tests {
 
     #[test]
     fn clean_tree_yields_empty_vec() {
-        assert!(dirty_paths_from_porcelain("").is_empty());
-        assert!(dirty_paths_from_porcelain("\n\n\n").is_empty());
+        assert_eq!(
+            dirty_paths_from_porcelain(""),
+            [] as [std::string::String; 0]
+        );
+        assert_eq!(
+            dirty_paths_from_porcelain("\n\n\n"),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]

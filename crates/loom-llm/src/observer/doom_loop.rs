@@ -640,7 +640,7 @@ mod tests {
             "stale ToolCall must not pair with post-reset ToolResult",
         );
         let commands = obs.react();
-        assert!(commands.is_empty());
+        assert_eq!(commands.len(), 0);
         let _ = CompactionReason::ContextLimit;
     }
 
@@ -665,6 +665,6 @@ mod tests {
             obs.react().is_empty(),
             "stage 2 already fired — further identical pairs must not re-abort",
         );
-        assert!(obs.take_pending().is_empty());
+        assert_eq!(obs.take_pending().len(), 0);
     }
 }
