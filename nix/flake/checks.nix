@@ -120,8 +120,10 @@ _:
           ''
             set -euo pipefail
             export HOME="$TMPDIR/home"
-            mkdir -p "$HOME"
-            [[ "$(${sandboxProfileEnv}/bin/nix eval --offline --raw --expr '"worker-nix-ok"')" == worker-nix-ok ]]
+            export NIX_CONF_DIR="$TMPDIR/nix-conf"
+            export NIX_CONFIG='experimental-features ='
+            mkdir -p "$HOME" "$NIX_CONF_DIR"
+            [[ "$(${sandboxProfileEnv}/bin/nix --extra-experimental-features nix-command eval --offline --raw --expr '"worker-nix-ok"')" == worker-nix-ok ]]
             touch "$out"
           '';
 

@@ -26,13 +26,15 @@ The pre-commit stage provides fast feedback on the staged files: native
 whitespace/conflict sanitation, formatting drift, explicit-interpreter safety
 for shell self re-exec, and affected deterministic annotation checks. The
 pre-push stage composes the fast Nix tier, Rust linting when Rust files changed,
-exact pushed-range verification, and the full required suite. Existing
-feedback-only capability skips remain available, while non-Nix checks continue.
-For host publication, a missing required tool blocks whenever the obligation
-lacks currently admissible coverage. A wrapper's successful absent-tool no-op is
-not execution evidence and cannot satisfy hook coverage, a receipt, or a marker.
-Apply this rule to driver publication, marker-free operator pushes, and host
-pre-push rehearsals; worker feedback never substitutes for host coverage.
+exact pushed-range verification, and the full required suite. The hook chain
+stops at the first failure rather than launching later verification tiers.
+Existing feedback-only capability skips remain available, while non-Nix checks
+continue. For host publication, a missing required tool blocks whenever the
+obligation lacks currently admissible coverage. A wrapper's successful
+absent-tool no-op is not execution evidence and cannot satisfy hook coverage, a
+receipt, or a marker. Apply this rule to driver publication, marker-free
+operator pushes, and host pre-push rehearsals; worker feedback never substitutes
+for host coverage.
 
 Every pre-push entry is independently marker-aware. There is no standalone
 marker gate: the wrapper either proves coverage for that entry or executes it.
@@ -158,16 +160,12 @@ post-integration verify and molecule push gate (per
 cannot mint a `MarkerProof` and cannot bypass driver verification by emitting a
 structured "I verified" report.
 
-The bead container has no `nix`. Hooks whose entry runs `nix` are wrapped as
-`entry: skip-if-missing nix -- <command>` in `.pre-commit-config.yaml` (the
-wrapper is shipped from `wrix.prekHooks` per _Plumbing ownership split_ below);
-inside the bead container the wrapper observes `nix` absent on `PATH` and exits
-0 silently, no-op-ing the feedback hook. This wrapper behavior is not a trusted
+Worker profiles retain Nix and execute Nix-dependent hooks in their private
+single-user store. Hooks still use `skip-if-missing` for feedback environments
+where Nix is unavailable; that wrapper's absent-tool no-op is not a trusted
 pass. Host publication must establish required coverage or report the missing
-capability as blocking; it cannot assume a devShell supplied Nix or promote the
-wrapper's no-op to success. When Nix is available, the command executes
-normally. Non-`nix` pre-commit hooks run uniformly across host and
-bead-container contexts.
+capability as blocking. Non-Nix hooks run uniformly across host and worker
+contexts.
 
 ### Marker integration
 
@@ -198,15 +196,15 @@ that Gate-owned marker surface to the pre-push hook composition:
 `core.hooksPath`, the hook shim scripts, the flock that serializes prek's
 stash/restore window across overlapping commits, the generic `push-verified`
 transaction-stamp mechanism, and the `skip-if-missing` wrapper (PATH-conditional
-exec for hooks whose binary may be absent in some contexts, notably `nix` inside
-the bead container) are packaged in the `wrix.prekHooks` derivation and
-installed by `wrixLib.mkDevShell` when this project's `nix develop` is entered.
-The marker-aware `pre-push-checks` wrapper is repo-local at
-`bin/pre-push-checks`, and pre-push hook entries invoke it by that path rather
-than relying on ambient PATH. Loom owns that wrapper's hook-id, hook-entry,
-push-range, marker-validation, and fall-through policy; wrix owns the reusable
-hook shim, lock, install, stamp, and skip-if-missing plumbing around it. The
-same packaged hooks are present in the worker image, while
+exec for hooks whose binary may be absent in some feedback contexts) are
+packaged in the `wrix.prekHooks` derivation and installed by
+`wrixLib.mkDevShell` when this project's `nix develop` is entered. The
+marker-aware `pre-push-checks` wrapper is repo-local at `bin/pre-push-checks`,
+and pre-push hook entries invoke it by that path rather than relying on ambient
+PATH. Loom owns that wrapper's hook-id, hook-entry, push-range,
+marker-validation, and fall-through policy; wrix owns the reusable hook shim,
+lock, install, stamp, and skip-if-missing plumbing around it. The same packaged
+hooks are present in the worker image, while
 [Workspaces — Bead Dispatch](workspaces.md#bead-dispatch) exclusively owns where
 Loom installs and repairs their `core.hooksPath`. Given that placement, an agent
 commit consumes this repo-local policy uniformly with a host commit. The
@@ -227,13 +225,13 @@ path. Retries pay hook startup and validation costs, not necessarily fresh
 execution of every independent unit.
 
 `skip-if-missing` is the upstream mechanism for hooks whose underlying binary is
-not guaranteed in every context — the bead container has no `nix`, so any hook
-that runs `nix` is wrapped as `entry: skip-if-missing nix -- <command>`. The
-wrapper exits 0 silently when the named binary isn't on `PATH` and execs the
-command otherwise. Wrix does **not** maintain a hook-id skip list, and does not
-stub `nix` on the container `PATH`; the absence is observable at the hook's
-entry, tagged via the wrapper at the point of use. This generic helper does not
-own publication admission: the Loom-governed hook composition must preserve
+not guaranteed in every feedback context. Nix hooks use
+`entry: skip-if-missing nix -- <command>`; the wrapper exits 0 when the named
+binary isn't on `PATH` and executes the command otherwise. Wrix does **not**
+maintain a hook-id skip list, and does not stub `nix` on the container `PATH`;
+the absence is observable at the hook's entry, tagged via the wrapper at the
+point of use. This generic helper does not own publication admission: the
+Loom-governed hook composition must preserve
 [the host coverage boundary](#stage-composition), using Wrix-owned plumbing
 rather than forking a shim or trusting the helper's exit code as proof.
 
@@ -323,6 +321,10 @@ declared as such.
   nextest and system coverage once, without repeating preceding lint hooks
   [test](pre_push_stage_runs_each_required_verifier_once_without_repeating_lint_hooks)
 
+- A failed fast-tier pre-push hook prevents later Clippy, Gate, and full-suite
+  verifiers from launching.
+  [test](pre_push_stage_stops_after_failed_flake_check)
+
 - The required test app retains full nextest and system coverage without lint
   repetition
   [test](required_suite_keeps_full_nextest_and_system_coverage_without_lint_repetition)
@@ -361,8 +363,8 @@ declared as such.
   run the configured pre-commit checks [system](nix run .#test-sandbox)
 
 <!-- prettier-ignore -->
-- The same sandbox contains no Nix executable: Nix-dependent pre-push entries
-  skip through the packaged wrapper while a non-Nix gate entry still executes
+- The same sandbox executes Nix-dependent pre-push entries in its private store
+  alongside the non-Nix gate entry
   [system](nix run .#test-sandbox)
 
 ### Marker integration

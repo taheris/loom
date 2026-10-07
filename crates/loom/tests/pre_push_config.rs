@@ -103,9 +103,8 @@ impl Fixture {
         command
     }
 
-    fn run_hooks(&self, hooks: &[&str], from_ref: &str, to_ref: &str) -> Vec<String> {
-        let output = self
-            .recording_command("prek")
+    fn run_hooks_output(&self, hooks: &[&str], from_ref: &str, to_ref: &str) -> Output {
+        self.recording_command("prek")
             .args(["run"])
             .args(hooks)
             .args([
@@ -117,7 +116,11 @@ impl Fixture {
                 to_ref,
             ])
             .output()
-            .expect("spawn prek");
+            .expect("spawn prek")
+    }
+
+    fn run_hooks(&self, hooks: &[&str], from_ref: &str, to_ref: &str) -> Vec<String> {
+        let output = self.run_hooks_output(hooks, from_ref, to_ref);
         assert_success(&output, "prek pre-push");
 
         std::fs::read_to_string(&self.log)
@@ -364,6 +367,34 @@ fi
         )));
         assert!(lines.contains(&"nix\trun\t.#test-required\ttiers=<unset>".to_owned()));
     }
+}
+
+/// Real prek and repository policy must stop before launching any later verifier.
+#[test]
+fn pre_push_stage_stops_after_failed_flake_check() {
+    let fixture = Fixture::new();
+    loom_test_support::write_executable_bash_script(
+        fixture.tools.join("nix"),
+        "set -euo pipefail\nprintf 'nix\\t%s\\n' \"$*\" >> \"$PRE_PUSH_TEST_LOG\"\nexit 1\n",
+    )
+    .expect("write failing Nix command");
+    let base = fixture.head();
+    let head = fixture.commit("src/lib.rs", "changed\n", "Change pushed Rust file");
+
+    let output = fixture.run_hooks_output(&[], &base, &head);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log).expect("invocation log"),
+        "nix\tflake check\n",
+        "a failed fast tier must not launch Clippy, Gate, or the required suite",
+    );
 }
 
 #[test]
