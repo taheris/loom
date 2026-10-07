@@ -182,6 +182,7 @@ fn run_loom_with_env(
     entries.extend(std::env::split_paths(&path_var));
     let new_path = std::env::join_paths(entries).expect("join PATH");
     let mut command = Command::new(env!("CARGO_BIN_EXE_loom"));
+    loom_test_support::scrub_git_local_env(&mut command);
     loom_test_support::configure_hermetic_git(&mut command);
     command
         .arg("--workspace")
@@ -286,7 +287,7 @@ max_changed_files = 2
         write_file(
             &shim,
             &format!(
-                "#!{}\nset -euo pipefail\nexec python3 '{}' '{}' '{}' \"$@\"\n",
+                "#!{}\nset -euo pipefail\nexport LOOM_TEST_REPLAY_WALL_SECONDS={wall}\nexec python3 '{}' '{}' '{}' \"$@\"\n",
                 find_bash().display(),
                 fake.display(),
                 record.display(),
@@ -410,6 +411,34 @@ fn tune_replay_launches_independent_fixtures_and_preserves_events() {
     }
 }
 
+/// A real child must inherit hook-local Git variables before fixture launch scrubs them.
+#[test]
+fn tune_replay_isolated_from_parent_hook_git_environment() {
+    let parent = tempfile::tempdir().unwrap();
+    init_workspace(parent.path());
+    git(
+        parent.path(),
+        &["remote", "add", "origin", "https://example.invalid/parent"],
+    );
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tune_replay_launches_independent_fixtures_and_preserves_events",
+            "--nocapture",
+        ])
+        .env("GIT_DIR", parent.path().join(".git"))
+        .env("GIT_WORK_TREE", parent.path())
+        .env("GIT_INDEX_FILE", parent.path().join(".git/index"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 #[test]
 fn tune_scope_regression_uses_repository_bytes_even_after_agent_commits() {
     let fixture = ReplayFixture::new(2, 60, "regress", "Use observable task evidence.");
@@ -476,12 +505,13 @@ fn tune_nonzero_replay_cleans_up_and_blocks() {
     fixture.assert_clean();
 }
 
+/// The OS lifecycle budget includes CLI setup before the mutating launcher starts.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn tune_wall_timeout_terminates_mutating_launcher_and_descendant() {
     use loom_driver::clock::{Clock, SystemClock};
     let clock = SystemClock::new();
-    let fixture = ReplayFixture::new(2, 2, "hang", "Use observable task evidence.");
+    let fixture = ReplayFixture::new(2, 10, "hang", "Use observable task evidence.");
     let manifest = fixture.run();
     fixture.assert_blocked(&manifest);
     let starts = fixture.starts();

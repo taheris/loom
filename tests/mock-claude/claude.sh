@@ -27,11 +27,6 @@ MODE="${1:-default}"
 CANARY_NONCE="LOOM_COMPACTION_CANARY_NONCE_4f0b3f0f"
 POLISH_NO_EDIT_PHRASE="Propose specific edits or findings, but do not apply edits unless explicitly asked to apply them."
 
-# stream-json envelopes are JSONL: one complete object per line. unbuffer
-# stdout (stdbuf -oL) so the consumer reads each line as soon as it is
-# written rather than waiting on the default block-buffered flush.
-exec 1> >(stdbuf -oL cat)
-
 emit() {
     printf '%s\n' "$1"
 }
@@ -181,6 +176,8 @@ case "$MODE" in
         exit 0
         ;;
     ignore-stdin)
+        # The watchdog must escalate to SIGKILL, even immediately after observing the result.
+        trap '' TERM PIPE
         # Drain the driver's initial prompt so the write returns. The
         # mode name refers to ignoring stdin *close* (and the subsequent
         # SIGTERM), not refusing to read at all; constrained sandboxes
@@ -193,13 +190,8 @@ case "$MODE" in
         fi
         emit_result_success
 
-        # Trap SIGTERM and SIGPIPE so the test's shutdown watchdog must
-        # escalate to SIGKILL. SIGKILL is uncatchable.
-        trap '' TERM PIPE
-        # Loop forever — kernel reaps us via SIGKILL.
-        while true; do
-            sleep 0.1
-        done
+        # Preserve ignored signals through exec without descendants holding test pipes open.
+        exec sleep 3600
         ;;
     interactive-compaction-canary)
         run_interactive_compaction_canary "${@:2}"

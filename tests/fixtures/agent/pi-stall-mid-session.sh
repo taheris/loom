@@ -20,4 +20,7 @@ if [[ "$prompt_line" != *'"type":"prompt"'* ]]; then
 fi
 printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","text":"ack"}}'
 
-exec sleep 3600
+# Stay silent while the driver owns stdin; EOF cleans up when the test kills that driver.
+while IFS= read -r _; do
+    :
+done

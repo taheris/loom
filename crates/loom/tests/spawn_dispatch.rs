@@ -37,8 +37,12 @@ fn git_command() -> Command {
     command
 }
 
-/// Runs a process group to completion or kills and reaps it at the deadline.
-fn bounded_output(command: &mut Command, deadline: Duration) -> Output {
+/// Bounds startup separately from execution when an owned launcher receipt is supplied.
+fn bounded_output(
+    command: &mut Command,
+    deadline: Duration,
+    execution: Option<(&Path, Duration)>,
+) -> Output {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -61,11 +65,24 @@ fn bounded_output(command: &mut Command, deadline: Duration) -> Output {
     });
 
     let started = Instant::now();
+    let mut execution_started = None;
     let status = loop {
+        let elapsed = started.elapsed();
+        if let Some((receipt, _)) = execution
+            && execution_started.is_none()
+            && elapsed < deadline
+            && receipt.exists()
+        {
+            execution_started = Some(elapsed);
+        }
+        let (elapsed, deadline) = match (execution_started, execution) {
+            (Some(started), Some((_, budget))) => (elapsed.saturating_sub(started), budget),
+            _ => (elapsed, deadline),
+        };
         if let Some(status) = child.try_wait().expect("poll bounded child") {
             break status;
         }
-        if started.elapsed() >= deadline {
+        if elapsed >= deadline {
             if kill(process_group_id, Signal::SIGKILL).is_err() {
                 child
                     .kill()
@@ -2088,7 +2105,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
     // This is only the outer deadlock-reaping budget. The assertions below
     // still verify the watchdog's two-second escalation path; allow loaded CI
     // enough scheduler headroom to reach those assertions.
-    let output = bounded_output(&mut command, Duration::from_secs(30));
+    let output = bounded_output(&mut command, Duration::from_secs(30), None);
     let elapsed = started.elapsed();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2160,7 +2177,6 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     seed_active_spec(workspace, loom_bin, "agent");
     let new_path = bd_stub_path(workspace, "[]");
-    let started = Instant::now();
     let mut command = Command::new(loom_bin);
     command
         .arg("--workspace")
@@ -2180,8 +2196,11 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the todo dispatch path under test.
         .env_remove("LOOM_INSIDE");
-    let output = bounded_output(&mut command, Duration::from_secs(10));
-    let elapsed = started.elapsed();
+    let output = bounded_output(
+        &mut command,
+        Duration::from_secs(30),
+        Some((&spawn_copy, Duration::from_secs(10))),
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2191,10 +2210,10 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         "loom todo must fail when the pi probe hangs — exited successfully \
          which means the timeout is not wired. stdout={stdout} stderr={stderr}",
     );
+    assert!(spawn_copy.is_file(), "the real agent launcher must start");
     assert!(
-        elapsed < Duration::from_secs(15),
-        "loom todo must surface HandshakeTimeout within the configured \
-         budget — elapsed {elapsed:?} suggests a hung probe. stderr={stderr}",
+        stderr.contains("probe") && stderr.contains("500ms"),
+        "{stderr}"
     );
     assert!(
         stderr.contains("pi handshake timed out") || stderr.contains("HandshakeTimeout"),

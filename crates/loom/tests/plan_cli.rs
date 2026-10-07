@@ -125,6 +125,7 @@ impl LaunchFixture {
 for arg in "${@:3}"; do [[ "$arg" != --profile-config ]]; done
 jq -n --arg launcher "$0" --args '{launcher:$launcher, argv:$ARGS.positional}' -- "$@" > "$LAUNCH_LOG"
 if [[ "${READ_INPUT:-0}" == 1 ]]; then
+    printf 'launcher-ready\n'
     read -r input
     printf 'stdout:%s\n' "$input"
     printf 'stderr:%s\n' "$input" >&2
@@ -171,6 +172,7 @@ exit "${LAUNCH_EXIT:-0}"
             .env("LOOM_WRIX_BIN", &self.wrapper)
             .env_remove("LOOM_WRIX_SPAWN_BIN")
             .env("LAUNCH_LOG", self.root.path().join("launch.json"))
+            .env("XDG_STATE_HOME", self.root.path().join("state"))
             .env_remove("LOOM_INSIDE");
         command
     }
@@ -328,6 +330,32 @@ fn plan_inherits_stdio_and_reports_nonzero_launcher_status() {
 }
 
 #[test]
+fn plan_fixtures_isolate_phase_locks_across_workspaces() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let first = LaunchFixture::new();
+    let second = LaunchFixture::new();
+    let mut child = first
+        .command()
+        .env("READ_INPUT", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut ready = String::new();
+    stdout.read_line(&mut ready).unwrap();
+    let second_output = second.command().output().unwrap();
+    child.stdin.take().unwrap().write_all(b"finish\n").unwrap();
+    let first_output = child.wait_with_output().unwrap();
+    assert_eq!(ready, "launcher-ready\n");
+    assert!(first_output.status.success(), "{first_output:?}");
+    assert!(second_output.status.success(), "{second_output:?}");
+}
+
+#[test]
 fn plan_does_not_create_epic_or_touch_bd() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workspace = dir.path().join("workspace");
@@ -367,6 +395,7 @@ fn plan_does_not_create_epic_or_touch_bd() {
         .env("WRIX_LOG", &wrix_log)
         .env("BD_READ_LOG", &bd_read_log)
         .env("BD_STATE_DIR", &bd_state)
+        .env("XDG_STATE_HOME", dir.path().join("state"))
         .env("PATH", shimmed_path)
         .env_remove("LOOM_INSIDE")
         .output()

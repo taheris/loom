@@ -182,15 +182,31 @@ pub(crate) fn unstructured_test_outcome(
                 .get(1)
                 .is_some_and(|kind| kind.as_str() == "failed")
             {
-                return Some((Verdict::Fail, line.to_string()));
+                return Some((Verdict::Fail, batch_diagnostics(kind, stdout, stderr)));
             }
             skipped = Some((
                 Verdict::Skipped,
-                format!("per-target outcomes unavailable; test batch contains skips: {line}"),
+                format!(
+                    "per-target outcomes unavailable; test batch contains skips: {}",
+                    batch_diagnostics(kind, stdout, stderr)
+                ),
             ));
         }
     }
     skipped
+}
+
+fn batch_diagnostics(kind: RunnerKind, stdout: &str, stderr: &str) -> String {
+    stdout
+        .lines()
+        .chain(stderr.lines())
+        .filter(|line| {
+            let line = line.trim_start();
+            kind != RunnerKind::CargoNextest
+                || !(line.starts_with("PASS [") || line.starts_with("SKIP ["))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Human nextest summaries count filtered tests as skips. Only explicit pass
@@ -1920,6 +1936,50 @@ test result: ok. 3 passed; 0 failed
             .is_ok()
         );
         assert!(check_zero_match("cargo test", "running 0 tests\nrunning 0 tests\n", "").is_err());
+    }
+
+    #[test]
+    fn failed_nextest_batch_retains_test_identities_and_output_from_both_streams() {
+        let stdout = "---- failed stdout ----\nassertion failed: expected receipt\n";
+        let stderr = concat!(
+            "PASS [ 0.010s] crate tests::passing\n",
+            "SKIP [ 0.000s] crate tests::filtered\n",
+            "FAIL [ 0.020s] crate tests::broken\n",
+            "EXECFAIL [ 0.000s] crate tests::spawn_failed\n",
+            "Resource temporarily unavailable\n",
+            "Summary [ 0.030s] 3 tests run: 1 passed, 1 failed, 1 exec failed\n",
+        );
+        let (verdict, evidence) =
+            unstructured_test_outcome("cargo nextest run", stdout, stderr).unwrap();
+        assert_eq!(verdict, Verdict::Fail);
+        for diagnostic in [
+            "tests::broken",
+            "tests::spawn_failed",
+            "assertion failed: expected receipt",
+            "Resource temporarily unavailable",
+            "Summary",
+        ] {
+            assert!(evidence.contains(diagnostic), "{evidence}");
+        }
+        assert!(!evidence.contains("tests::passing"), "{evidence}");
+        assert!(!evidence.contains("tests::filtered"), "{evidence}");
+    }
+
+    #[test]
+    fn incomplete_nextest_batch_retains_leaky_test_identity() {
+        let stderr = concat!(
+            "PASS [ 0.010s] crate tests::passing\n",
+            "LEAK [ 0.010s] crate tests::leaky\n",
+            "SKIP [ 0.000s] crate tests::filtered\n",
+            "Summary [ 0.030s] 2 tests run: 2 passed (1 leaky), 1 skipped\n",
+        );
+        let (verdict, evidence) =
+            unstructured_test_outcome("cargo nextest run", "", stderr).unwrap();
+        assert_eq!(verdict, Verdict::Skipped);
+        assert!(evidence.contains("tests::leaky"), "{evidence}");
+        assert!(!evidence.contains("tests::passing"), "{evidence}");
+        assert!(!evidence.contains("tests::filtered"), "{evidence}");
+        assert!(!nextest_targets_passed(&["leaky"], "", stderr));
     }
 
     #[test]

@@ -947,7 +947,7 @@ fn run_tune(workspace: &Path, args: TuneArgs, host_key: bool) -> anyhow::Result<
         }
         _ => Vec::new(),
     };
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = command_runtime()?;
     let prepared = runtime
         .block_on(loom_workflow::tune::prepare(workspace))?
         .with_launcher_env(launcher_env);
@@ -1021,7 +1021,7 @@ fn tune_surface_request(
     reason = "this command renders its initialization report to stdout"
 )]
 fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = command_runtime()?;
     let molecules = if rebuild {
         runtime.block_on(async {
             let bd = BdClient::new();
@@ -1332,8 +1332,14 @@ fn run_gate_verify_marker(workspace: &Path, args: GateVerifyMarkerArgs) -> anyho
     }
 }
 
+fn command_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 fn resolve_gate_scope(workspace: &Path, request: GateScopeRequest) -> anyhow::Result<GateScope> {
-    Ok(tokio::runtime::Runtime::new()?.block_on(request.resolve(workspace))?)
+    Ok(command_runtime()?.block_on(request.resolve(workspace))?)
 }
 
 fn gate_dispatch_options(args: &GateScope) -> DispatchOptions {
@@ -2138,6 +2144,7 @@ fn persist_outcome(
     if let Err(error) = append_verifier_report(workspace, outcome, now_ms) {
         eprintln!("loom gate: cannot persist verifier report: {error:#}");
     }
+    let mut rows = Vec::with_capacity(outcome.annotations.len());
     for ann in &outcome.annotations {
         let source_spec = if ann.source_spec.is_absolute() {
             ann.source_spec.clone()
@@ -2151,7 +2158,7 @@ fn persist_outcome(
                 continue;
             }
         };
-        let row = CacheRow {
+        rows.push(CacheRow {
             spec_label: spec_label_from_path(&ann.source_spec),
             criterion_anchor: criterion_id,
             tier: ann.tier,
@@ -2160,10 +2167,10 @@ fn persist_outcome(
             last_run_commit: commit.to_string(),
             verdict,
             evidence: evidence.clone(),
-        };
-        if let Err(err) = cache.upsert(&row) {
-            eprintln!("loom gate: failed to upsert cache row: {err:#}");
-        }
+        });
+    }
+    if let Err(err) = cache.upsert_many(&rows) {
+        eprintln!("loom gate: failed to upsert cache batch: {err:#}");
     }
 }
 
@@ -2229,7 +2236,7 @@ fn spec_label_from_path(path: &Path) -> String {
 
 fn current_commit(workspace: &Path) -> anyhow::Result<String> {
     let git = GitClient::open(workspace)?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = command_runtime()?;
     let oid = runtime.block_on(async { git.head_commit_sha().await })?;
     Ok(oid.to_string())
 }
@@ -2254,7 +2261,7 @@ fn run_gate_mint(
     let head_commit = current_commit(workspace).unwrap_or_default();
     let scope = resolve_mint_scope(workspace, args)?;
 
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = command_runtime()?;
     let summary = match scope {
         ResolvedMintScope::Molecule(molecule) => {
             let _guard = acquire_work_root_lock(workspace, molecule.as_str())?;
@@ -2837,7 +2844,7 @@ fn run_logs(
             .get()
     };
     let clock: Arc<dyn loom_driver::clock::Clock> = Arc::new(loom_driver::clock::SystemClock);
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = command_runtime()?;
     runtime.block_on(logs_cmd::replay_with_tool_body_limit(
         logs_cmd::ReplayOpts {
             path: &path,
@@ -2968,7 +2975,7 @@ fn run_loop_cmd(
     let direct_output_limits = config.direct_output_limits();
     let repo_git_policy = prepare_wrix_git_policy(&workspace.join(".loom/integration"), host_key)?;
 
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = command_runtime()?;
     let roots = runtime.block_on(async {
         let bd = BdClient::new();
         resolve_loop_work_roots(&bd, work_roots).await
@@ -4403,7 +4410,7 @@ fn run_review(
     let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_review_label(workspace, &opts.scope)?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = command_runtime()?;
     let verified_scope = verified_scope_from_env()?;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
@@ -4752,7 +4759,7 @@ fn run_inbox_chat(
 }
 
 fn load_inbox_beads() -> anyhow::Result<Vec<Bead>> {
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = command_runtime()?;
     Ok(runtime.block_on(async {
         let bd = BdClient::new();
         bd.list(ListOpts {
@@ -4977,7 +4984,7 @@ fn run_todo(
         config.loom.integration_branch.clone(),
     )?);
     let bd = Arc::new(BdClient::new());
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = command_runtime()?;
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
     let logs_root_for_controller = logs_root.clone();
@@ -5313,6 +5320,88 @@ fn run_spec(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_runtime_keeps_async_tasks_concurrent_without_per_cpu_workers() {
+        let runtime = command_runtime().unwrap();
+        assert_eq!(
+            runtime.handle().runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::CurrentThread,
+        );
+        runtime.block_on(async {
+            let barrier = Arc::new(tokio::sync::Barrier::new(17));
+            let tasks = (0..16)
+                .map(|index| {
+                    let barrier = barrier.clone();
+                    tokio::spawn(async move {
+                        barrier.wait().await;
+                        index
+                    })
+                })
+                .collect::<Vec<_>>();
+            barrier.wait().await;
+            let mut total = 0;
+            for task in tasks {
+                total += task.await.unwrap();
+            }
+            assert_eq!(total, (0..16).sum::<usize>());
+        });
+    }
+
+    #[test]
+    fn batched_outcome_persistence_retains_every_criterion_and_producer_failure() {
+        use std::fmt::Write as _;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("specs/fixture.md");
+        std::fs::create_dir(source.parent().unwrap()).unwrap();
+        let mut content = String::from("# Fixture\n\n## Success Criteria\n\n");
+        for index in 0..128 {
+            writeln!(content, "- Criterion {index}. [test](case_{index})").unwrap();
+        }
+        std::fs::write(&source, &content).unwrap();
+        let annotations = loom_gate::annotation::parse_content(&source, &content).annotations;
+        assert_eq!(annotations.len(), 128);
+        let cache = StatusCache::open(&workspace.path().join(".loom/cache.db")).unwrap();
+        let mut verdict = loom_gate::dispatch::VerifierVerdict::from_outcome(
+            Verdict::Pass,
+            "each test reported pass".into(),
+        );
+        verdict.producer_error = Some("producer exited 1".into());
+        let outcome = loom_gate::DispatchOutcome {
+            annotations,
+            verdict,
+        };
+        persist_outcome(
+            workspace.path(),
+            &cache,
+            &outcome,
+            Verdict::Pass,
+            123,
+            "commit",
+        );
+        let rows = cache.read_all().unwrap();
+        assert_eq!(rows.len(), 128);
+        let evidence = outcome.verdict.cache_evidence().unwrap();
+        for row in rows {
+            assert_eq!(row.verdict, Verdict::Fail);
+            assert_eq!(row.evidence, evidence);
+            assert_eq!(row.last_run_ts_ms, 123);
+            assert_eq!(row.last_run_commit, "commit");
+        }
+        let report = std::fs::read_to_string(
+            workspace
+                .path()
+                .join(".loom/logs/gate/verifier-results.jsonl"),
+        )
+        .unwrap();
+        assert_eq!(report.lines().count(), 128);
+        for line in report.lines() {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(record["coverage_verified"], false);
+            assert_eq!(record["result"]["producer_error"], "producer exited 1");
+        }
+    }
     use loom_workflow::review::FindingValidator;
     use std::collections::VecDeque;
     use std::ffi::OsString;

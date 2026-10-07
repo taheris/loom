@@ -7,4 +7,7 @@ if [[ "$probe_line" != *'"type":"get_state"'* ]]; then
     exit 2
 fi
 
-exec sleep 3600
+# Leave the probe unanswered until the driver closes its owned stdin.
+while IFS= read -r _; do
+    :
+done

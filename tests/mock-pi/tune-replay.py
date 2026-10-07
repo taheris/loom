@@ -38,7 +38,7 @@ entry = {"workspace": str(workspace), "head": head, "pid": os.getpid()}
 if mode == "hang":
     child = os.fork()
     if child == 0:
-        time.sleep(3)
+        time.sleep(int(os.environ["LOOM_TEST_REPLAY_WALL_SECONDS"]) + 1)
         Path(record + ".escaped").write_text("descendant survived cancellation")
         sys.exit(0)
     entry["child"] = child

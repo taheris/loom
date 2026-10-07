@@ -3806,7 +3806,9 @@ mod tests {
         );
     }
 
-    async fn clean_push_fixture() -> (tempfile::TempDir, HandoffEvidence, PathBuf) {
+    async fn clean_push_fixture(
+        parent_git: Option<&std::path::Path>,
+    ) -> (tempfile::TempDir, HandoffEvidence, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("gamma").unwrap();
@@ -3815,8 +3817,21 @@ mod tests {
         let gate_workspace = git.loom_workspace();
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
+        let parent_git_env = parent_git
+            .map(|parent| {
+                format!(
+                    "export GIT_DIR={:?}\nexport GIT_WORK_TREE={:?}\nexport GIT_INDEX_FILE={:?}\n",
+                    parent.join(".git"),
+                    parent,
+                    parent.join(".git/index"),
+                )
+            })
+            .unwrap_or_default();
         let stub_body = format!(
             "set -euo pipefail\n\
+             {parent_git_env}\
+             mapfile -t git_local_vars < <(git rev-parse --local-env-vars)\n\
+             unset \"${{git_local_vars[@]}}\"\n\
              printf '%s\\n' \"$*\" >> {argv}\n\
              [[ \"$1\" == --host-key ]]\n\
              shift\n\
@@ -3875,7 +3890,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn handoff_evidence_populates_typed_gate_scope_values() {
-        let (_dir, handoff, gate_workspace) = clean_push_fixture().await;
+        let (_dir, handoff, gate_workspace) = clean_push_fixture(None).await;
         assert_eq!(handoff.molecule_state, MoleculeState::Clean);
         assert_eq!(handoff.gate_runs.len(), 2, "{:#?}", handoff.gate_runs);
         assert_eq!(handoff.gate_log_paths.len(), 2);
@@ -3906,7 +3921,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn clean_push_mints_marker_after_covered_verify_and_review() {
-        let (_dir, handoff, gate_workspace) = clean_push_fixture().await;
+        let (_dir, handoff, gate_workspace) = clean_push_fixture(None).await;
         assert!(handoff.verified.is_some());
         assert!(handoff.reviewed.is_some());
         let marker = loom_gate::verify_marker(&gate_workspace).expect("current marker");
@@ -3921,6 +3936,23 @@ mod tests {
             local, remote,
             "clean gate must push after minting the marker"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clean_push_fixture_isolated_from_parent_hook_git_environment() {
+        let parent = tempfile::tempdir().expect("parent repository");
+        let _parent_workspace = git_workspace(parent.path());
+        std::fs::write(parent.path().join("foreign-file"), "foreign tree").unwrap();
+        loom_driver::git::GitClient::open(parent.path())
+            .unwrap()
+            .commit_all_allow_empty("foreign tree")
+            .await
+            .unwrap();
+        let (_dir, handoff, gate_workspace) = clean_push_fixture(Some(parent.path())).await;
+        let verified = handoff.verified.as_ref().expect("verified scope");
+        let reviewed = handoff.reviewed.as_ref().expect("reviewed scope");
+        assert_eq!(verified.tree_oid(), reviewed.tree_oid());
+        loom_gate::verify_marker(&gate_workspace).expect("fixture marker for its own tree");
     }
 
     /// `specs/gate.md` § Rubric suppression registry: molecule handoff
