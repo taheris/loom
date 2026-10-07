@@ -133,13 +133,16 @@ impl StatusCache {
                 source,
             })?;
         }
+        let _init_lock = lock_initialization(path)?;
         let mut conn = Connection::open(path).map_err(|source| CacheError::Open {
             path: path.to_path_buf(),
             source,
         })?;
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000;")?;
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000; PRAGMA journal_mode = WAL;",
+        )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(SCHEMA)?;
         let version: Option<String> = tx
             .query_row(
                 "SELECT value FROM meta WHERE key = ?1",
@@ -221,23 +224,7 @@ impl StatusCache {
     ///
     /// Returns an error when cache metadata cannot be read, validated, or updated.
     pub fn upsert(&self, row: &CacheRow) -> Result<(), CacheError> {
-        let conn = self.lock_conn()?;
-        ensure_spec_row(&conn, &row.spec_label)?;
-        let annotation_json = annotation_json(row).map_err(|source| CacheError::Json { source })?;
-        conn.execute(
-            UPSERT_SQL,
-            params![
-                row.spec_label.as_str(),
-                row.criterion_anchor.as_str(),
-                annotation_json,
-                row.verdict.as_wire(),
-                row.last_run_ts_ms,
-                row.last_run_commit.as_str(),
-                row.evidence.as_str(),
-            ],
-        )?;
-        drop(conn);
-        Ok(())
+        self.upsert_many(std::slice::from_ref(row))
     }
 
     /// Batched form of [`Self::upsert`]: every row lands inside one
@@ -252,7 +239,7 @@ impl StatusCache {
             return Ok(());
         }
         let mut conn = self.lock_conn()?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for row in rows {
             ensure_spec_row(&tx, &row.spec_label)?;
         }
@@ -270,6 +257,26 @@ impl StatusCache {
     fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, CacheError> {
         self.conn.lock().map_err(|_| CacheError::Poisoned)
     }
+}
+
+fn lock_initialization(path: &Path) -> Result<std::fs::File, CacheError> {
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let lock_path = PathBuf::from(lock_path);
+    let acquire = || -> std::io::Result<std::fs::File> {
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        lock.lock()?;
+        Ok(lock)
+    };
+    acquire().map_err(|source| CacheError::InitializationLock {
+        path: lock_path,
+        source,
+    })
 }
 
 const UPSERT_SQL: &str = "INSERT INTO criterion_status(
@@ -389,6 +396,12 @@ pub enum CacheError {
     },
     /// failed to create cache parent for {path}: {source}
     OpenIo {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// failed to lock cache initialization at {path}
+    InitializationLock {
         path: PathBuf,
         #[source]
         source: std::io::Error,

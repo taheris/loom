@@ -2225,8 +2225,9 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
 /// The dedicated fixture answers the probe and acks one prompt, then
 /// sleeps; with `LOOM_STALL_WARN_MS=300` the run loop must
 /// emit `"no agent event for stall window"` to stderr while the agent
-/// remains spawned. The test kills loom after observing the warning so
-/// the never-exiting fixture does not stretch the suite; an in-process parser
+/// remains spawned. Startup has a separate deadline; the warning window begins
+/// only after the fixture acknowledges the prompt. The test kills loom after
+/// observing the warning; an in-process parser
 /// test cannot exercise the workflow watchdog around the pending event read.
 #[test]
 fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
@@ -2264,7 +2265,8 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         "",
     );
 
-    // The process group lets cleanup kill loom and its fixture sleep without leaving stderr open.
+    let session_ready = workspace.join("stall-session-ready");
+    // The process group lets cleanup kill loom and its fixture without leaving stderr open.
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     seed_active_spec(workspace, loom_bin, "agent");
     let new_path = bd_stub_path(workspace, "[]");
@@ -2281,6 +2283,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("LOOM_STALL_WARN_MS", "300")
+        .env("LOOM_TEST_STALL_READY", &session_ready)
         .env("RUST_LOG", "loom_workflow=warn")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
@@ -2299,7 +2302,8 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     let buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let buf_thread = Arc::clone(&buf);
     let reader = thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        for line in BufReader::new(stderr).lines() {
+            let line = line.expect("read stalled stderr");
             let mut g = buf_thread.lock().unwrap();
             g.push_str(&line);
             g.push('\n');
@@ -2307,25 +2311,43 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     });
 
     let needle = "no agent event for stall window";
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut deadline = Instant::now() + Duration::from_secs(30);
+    let mut session_started = false;
     let mut saw_warning = false;
-    while Instant::now() < deadline {
-        if buf.lock().unwrap().contains(needle) {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        if !session_started && session_ready.is_file() {
+            session_started = true;
+            deadline = now + Duration::from_secs(10);
+        }
+        if session_started && buf.lock().unwrap().contains(needle) {
             saw_warning = true;
+            break;
+        }
+        if child.try_wait().expect("poll stalled loom child").is_some() {
             break;
         }
         thread::sleep(Duration::from_millis(50));
     }
 
-    kill(process_group_id, Signal::SIGKILL).expect("kill stalled process group");
+    match kill(process_group_id, Signal::SIGKILL) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        Err(error) => panic!("cannot kill stalled process group: {error}"),
+    }
     child.wait().expect("reap stalled loom child");
     reader.join().expect("join stalled stderr reader");
 
     let body = buf.lock().unwrap().clone();
     assert!(
+        session_started,
+        "agent did not acknowledge the prompt within 30s; stderr=\n{body}"
+    );
+    assert!(
         saw_warning,
-        "expected stall warning `{needle}` within 10s of LOOM_STALL_WARN_MS=300 \
-         — absence means the heartbeat is not wired through run_agent. \
-         stderr=\n{body}",
+        "expected stall warning `{needle}` within 10s after prompt acknowledgement \
+         with LOOM_STALL_WARN_MS=300; stderr=\n{body}",
     );
 }

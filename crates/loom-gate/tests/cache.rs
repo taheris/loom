@@ -90,6 +90,94 @@ fn unversioned_verifier_evidence_is_invalidated_once() {
 }
 
 #[test]
+fn status_reader_does_not_block_verifier_batch() {
+    let dir = tempdir().unwrap();
+    let path = cache_path(&dir);
+    let cache = StatusCache::open(&path).unwrap();
+    let old = cache_row("gate", "old", Tier::Test, Verdict::Pass);
+    cache.upsert(&old).unwrap();
+    let reader = rusqlite::Connection::open(&path).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT * FROM criterion_status;")
+        .unwrap();
+
+    let new = cache_row("gate", "new", Tier::Test, Verdict::Fail);
+    cache.upsert_many(std::slice::from_ref(&new)).unwrap();
+    assert_eq!(
+        reader
+            .query_row("SELECT count(*) FROM criterion_status", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "reader retains its snapshot while a batch commits",
+    );
+    reader.execute_batch("COMMIT").unwrap();
+    assert_eq!(cache.read_all().unwrap(), vec![new, old]);
+}
+
+/// Independent gate processes must not lose batches while opening the shared SQLite cache.
+#[test]
+fn concurrent_cache_open_and_upsert_preserve_every_batch() -> std::io::Result<()> {
+    const WORKERS: usize = 32;
+    const BATCHES: usize = 4;
+    const ROWS: usize = 8;
+    let dir = tempdir()?;
+    if !loom_test_support::parallel_process::run(
+        "concurrent_cache_open_and_upsert_preserve_every_batch",
+        dir.path(),
+        WORKERS,
+        |root, worker| {
+            for batch in 0..BATCHES {
+                let cache =
+                    StatusCache::open(&root.join("cache.db")).map_err(std::io::Error::other)?;
+                let rows = (0..ROWS)
+                    .map(|index| {
+                        cache_row(
+                            &format!("spec-{worker}"),
+                            &format!("{batch}-{index}"),
+                            Tier::Test,
+                            Verdict::Pass,
+                        )
+                    })
+                    .map(|mut row| {
+                        row.evidence = "large verifier output\n".repeat(2048);
+                        row
+                    })
+                    .collect::<Vec<_>>();
+                cache.upsert_many(&rows).map_err(std::io::Error::other)?;
+            }
+            Ok(())
+        },
+    )? {
+        return Ok(());
+    }
+    let cache = StatusCache::open(&cache_path(&dir)).unwrap();
+    let rows = cache.read_all().unwrap();
+    assert_eq!(rows.len(), WORKERS * BATCHES * ROWS);
+    for worker in 0..WORKERS {
+        let actual = cache.read_for_spec(&format!("spec-{worker}")).unwrap();
+        let mut expected = (0..BATCHES)
+            .flat_map(|batch| {
+                (0..ROWS).map(move |index| {
+                    cache_row(
+                        &format!("spec-{worker}"),
+                        &format!("{batch}-{index}"),
+                        Tier::Test,
+                        Verdict::Pass,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for row in &mut expected {
+            row.evidence = "large verifier output\n".repeat(2048);
+        }
+        expected.sort_by(|left, right| left.criterion_anchor.cmp(&right.criterion_anchor));
+        assert_eq!(actual, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn round_trip_through_sqlite_preserves_every_field() {
     let dir = tempdir().unwrap();
     let cache = StatusCache::open(&cache_path(&dir)).unwrap();
