@@ -536,6 +536,20 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   back to the `tokens[0]` check
   [test](runner_matched_target_resolves_via_runner_not_token_path_check)
 
+- Explicit-files feedback keeps runner-owned logical targets, including failed
+  verifiers, rather than treating their identifiers as missing bare binaries.
+  [test](cli_runner_owned_failures_block_explicit_files)
+
+- Explicit-files system dispatch retains targets owned by a system runner.
+  [test](cli_system_files_keeps_runner_owned_targets)
+
+- Runner ownership never claims an annotation from another tier; unclaimed
+  missing bare binaries retain the explicit-files exception.
+  [test](cli_runner_ownership_does_not_cross_tiers)
+
+- Explicit-files feedback still reports unclaimed missing paths.
+  [test](cli_explicit_files_still_reports_unclaimed_missing_paths)
+
 - A runner's admitted dependency observations decide its `--files` inclusion:
   affected siblings are selected and established-unaffected siblings excluded,
   with discovery batched for the matched group rather than queried per target.

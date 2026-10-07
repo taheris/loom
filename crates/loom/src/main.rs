@@ -25,6 +25,7 @@ use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::logging::{LogSink, sweep_retention_at};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::CacheDb;
+use loom_gate::integrity::runner_owns_target;
 use loom_gate::scope::{Request as GateScopeRequest, Resolved as GateScope};
 use loom_gate::{
     self, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
@@ -1739,12 +1740,15 @@ fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Resu
     let mut input_resolver = if args.files().is_some() {
         build_input_resolver(workspace, &runner_specs)
     } else {
-        InputResolver::new(workspace.to_path_buf()).with_runners(runner_specs)
+        InputResolver::new(workspace.to_path_buf()).with_runners(runner_specs.clone())
     };
     let mut selected = args.select(&candidates, &mut input_resolver);
     if matches!(tier, Tier::Check | Tier::System) && args.is_explicit_files() {
         let cmd_resolver = FsCommandResolver::new(workspace);
-        selected.retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver));
+        selected.retain(|ann| {
+            runner_owns_target(&runner_specs, ann.tier, &ann.target)
+                || !is_missing_binary_target(&ann.target, &cmd_resolver)
+        });
     }
 
     let mut combined: i32 = 0;
@@ -1890,8 +1894,11 @@ fn run_integrity_gate(
         annotations = args.select(&candidates, input_resolver);
         annotations.extend(pending);
         if args.is_explicit_files() {
-            annotations
-                .retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver) || ann.pending);
+            annotations.retain(|ann| {
+                ann.pending
+                    || runner_owns_target(&specs, ann.tier, &ann.target)
+                    || !is_missing_binary_target(&ann.target, &cmd_resolver)
+            });
         }
         if annotations.is_empty() {
             return Ok(0);
