@@ -207,6 +207,7 @@ let
       export LOOM_TEST_PRE_PUSH_CHECKS=${../../bin/pre-push-checks}
       export LOOM_TEST_SEED_BEADS=${../smoke/seed-beads.sh}
       export LOOM_TEST_LOOP=${../smoke/loop.sh}
+      export LOOM_TEST_WAIT_DOLT=${../smoke/wait-dolt.sh}
       export WRIX_PREK_HOOKS=${smokePrekHooks}
       export WRIX_SERVICE_IMAGE=${smokeServiceImage.ref}
       export WRIX_SERVICE_IMAGE_SOURCE=${smokeServiceImage.source}

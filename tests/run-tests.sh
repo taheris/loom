@@ -24,6 +24,7 @@ set -euo pipefail
 #   LOOM_TEST_PRE_PUSH_CHECKS — canonical repository pre-push wrapper
 #   LOOM_TEST_SEED_BEADS     — script seeding spec metadata and ready smoke work
 #   LOOM_TEST_LOOP           — script running the bead and checking its result
+#   LOOM_TEST_WAIT_DOLT      — bounded startup readiness and failure diagnostics
 #   WRIX_PREK_HOOKS          — canonical packaged wrix prek hook directory
 #   LOOM_SMOKE_KEEP          — set to 1 to preserve the temp workspace after
 #                              a failed run for diagnosis
@@ -165,7 +166,7 @@ mkdir -p .beads/dolt
 chmod 700 .beads
 "$LOOM_WRIX_SERVICE_BIN" service start >/dev/null
 DOLT_SERVICE_STARTED=1
-"$LOOM_WRIX_SERVICE_BIN" service dolt wait >/dev/null
+bash "${LOOM_TEST_WAIT_DOLT:?missing Dolt readiness helper}" "$LOOM_WRIX_SERVICE_BIN" >/dev/null
 DOLT_SOCKET=$("$LOOM_WRIX_SERVICE_BIN" service dolt socket)
 unset BEADS_DOLT_SERVER_HOST BEADS_DOLT_SERVER_PORT
 export BEADS_DOLT_SERVER_SOCKET="$DOLT_SOCKET"
