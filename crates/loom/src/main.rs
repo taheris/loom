@@ -2184,19 +2184,19 @@ fn append_verifier_report(
     std::fs::create_dir_all(&directory)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(directory.join("verifier-results.jsonl"))?;
+    file.lock()?;
     for annotation in &outcome.annotations {
-        serde_json::to_writer(
-            &mut file,
-            &serde_json::json!({
-                "kind": "verifier-result", "target": annotation.target, "tier": annotation.tier.as_wire(),
-                "timestamp_ms": now_ms, "execution_platform": loom_gate::runner::result::current_platform(),
-                "outcome": outcome.verdict.outcome().as_wire(), "result": outcome.verdict,
-                "coverage_verified": outcome.verdict.pass && outcome.verdict.producer_error.is_none(),
-            }),
-        )?;
-        writeln!(file)?;
+        let mut record = serde_json::to_vec(&serde_json::json!({
+            "kind": "verifier-result", "target": annotation.target, "tier": annotation.tier.as_wire(),
+            "timestamp_ms": now_ms, "execution_platform": loom_gate::runner::result::current_platform(),
+            "outcome": outcome.verdict.outcome().as_wire(), "result": outcome.verdict,
+            "coverage_verified": outcome.verdict.pass && outcome.verdict.producer_error.is_none(),
+        }))?;
+        record.push(b'\n');
+        file.write_all(&record)?;
     }
     Ok(())
 }
@@ -5405,6 +5405,88 @@ mod tests {
     use loom_workflow::review::FindingValidator;
     use std::collections::VecDeque;
     use std::ffi::OsString;
+
+    fn concurrent_report_outcome(worker: usize, batch: usize) -> loom_gate::DispatchOutcome {
+        let mut verdict = loom_gate::VerifierVerdict::from_outcome(
+            [
+                Verdict::Pass,
+                Verdict::Fail,
+                Verdict::Skipped,
+                Verdict::Pass,
+            ][batch % 4],
+            format!("worker {worker}, batch {batch}: {}", "\"\\\nλ".repeat(8192)),
+        );
+        if batch % 4 == 3 {
+            verdict.producer_error = Some("producer exited unsuccessfully".to_owned());
+        }
+        loom_gate::DispatchOutcome {
+            annotations: (0..3)
+                .map(|owner| loom_gate::Annotation {
+                    tier: Tier::Check,
+                    target: format!("worker-{worker}-batch-{batch}-owner-{owner}"),
+                    source_spec: PathBuf::from("specs/report.md"),
+                    line: 1,
+                    criterion_line: 1,
+                    pending: false,
+                })
+                .collect(),
+            verdict,
+        }
+    }
+
+    /// Threads cannot reproduce independent gate processes sharing an append file.
+    #[test]
+    fn concurrent_verifier_reports_preserve_every_record() -> anyhow::Result<()> {
+        const WORKERS: usize = 8;
+        const BATCHES: usize = 16;
+        let dir = tempfile::tempdir()?;
+        if !loom_test_support::parallel_process::run(
+            "tests::concurrent_verifier_reports_preserve_every_record",
+            dir.path(),
+            WORKERS,
+            |workspace, worker| {
+                for batch in 0..BATCHES {
+                    append_verifier_report(
+                        workspace,
+                        &concurrent_report_outcome(worker, batch),
+                        42,
+                    )
+                    .map_err(std::io::Error::other)?;
+                }
+                Ok(())
+            },
+        )? {
+            return Ok(());
+        }
+        let body =
+            std::fs::read_to_string(dir.path().join(".loom/logs/gate/verifier-results.jsonl"))?;
+        assert!(body.ends_with('\n'));
+        let mut records = std::collections::BTreeMap::new();
+        for line in body.lines() {
+            let record: serde_json::Value = serde_json::from_str(line)?;
+            let target = record["target"].as_str().expect("target").to_owned();
+            assert!(records.insert(target, record).is_none(), "duplicate record");
+        }
+        assert_eq!(records.len(), WORKERS * BATCHES * 3);
+        for worker in 0..WORKERS {
+            for batch in 0..BATCHES {
+                let outcome = concurrent_report_outcome(worker, batch);
+                for annotation in &outcome.annotations {
+                    assert_eq!(
+                        records[&annotation.target],
+                        serde_json::json!({
+                            "kind": "verifier-result", "target": annotation.target, "tier": "check",
+                            "timestamp_ms": 42,
+                            "execution_platform": loom_gate::runner::result::current_platform(),
+                            "outcome": outcome.verdict.outcome().as_wire(), "result": outcome.verdict,
+                            "coverage_verified": outcome.verdict.pass && outcome.verdict.producer_error.is_none(),
+                        })
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[derive(Clone)]
     struct ScriptedRunner {

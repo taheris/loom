@@ -526,15 +526,18 @@ pub fn append_gate_run_lifecycle_events(path: &Path, run: &GateRun) -> Result<()
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let seq_start = next_seq_in_log(path);
-    let events = gate_run_lifecycle_events(path, run, seq_start);
     let mut file = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(path)?;
+    file.lock()?;
+    let seq_start = next_seq_in_log(path);
+    let events = gate_run_lifecycle_events(path, run, seq_start);
     for event in events {
-        serde_json::to_writer(&mut file, &event).map_err(std::io::Error::other)?;
-        writeln!(&mut file)?;
+        let mut record = serde_json::to_vec(&event).map_err(std::io::Error::other)?;
+        record.push(b'\n');
+        file.write_all(&record)?;
         file.flush()?;
     }
     Ok(())
@@ -1086,6 +1089,119 @@ mod tests {
         let runs = parse_gate_runs_from_jsonl(log.path());
         assert_eq!(runs.len(), 1);
         assert!(VerifiedScope::from_run(&runs[0]).is_some());
+    }
+
+    fn concurrent_run(path: &Path, worker: usize, batch: usize) -> GateRun {
+        let mut run = GateRun::successful_verify(
+            "origin/main..HEAD".to_owned(),
+            format!("tree-{worker}-{batch}"),
+            "config-a".to_owned(),
+            path.to_path_buf(),
+            (0..3)
+                .map(|lane| hook(&format!("hook-{lane}"), &"\"\\\nλ".repeat(128)))
+                .collect(),
+        );
+        if batch % 2 == 1 {
+            run.status = GateRunStatus::Failed;
+            run.exit_code = Some(1);
+            run.marker = None;
+        }
+        run
+    }
+
+    /// Sequence allocation and append locking must work across independent processes.
+    #[test]
+    fn concurrent_lifecycle_appends_preserve_runs_and_sequence_order() -> std::io::Result<()> {
+        const WORKERS: usize = 8;
+        const BATCHES: usize = 8;
+        let dir = tempfile::tempdir()?;
+        if !loom_test_support::parallel_process::run(
+            "gate_outcome::tests::concurrent_lifecycle_appends_preserve_runs_and_sequence_order",
+            dir.path(),
+            WORKERS,
+            |root, worker| {
+                let path = root.join("gate.jsonl");
+                for batch in 0..BATCHES {
+                    append_gate_run_lifecycle_events(&path, &concurrent_run(&path, worker, batch))?;
+                }
+                Ok(())
+            },
+        )? {
+            return Ok(());
+        }
+        let path = dir.path().join("gate.jsonl");
+        let body = std::fs::read_to_string(&path)?;
+        assert!(body.ends_with('\n'));
+        let events = body
+            .lines()
+            .map(serde_json::from_str::<AgentEvent>)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(events.len(), WORKERS * BATCHES * 6);
+        for (seq, event) in events.iter().enumerate() {
+            let AgentEvent::DriverEvent { envelope, .. } = event else {
+                panic!("expected driver event");
+            };
+            assert_eq!(envelope.seq, u64::try_from(seq).unwrap());
+        }
+        for run_events in events.as_chunks::<6>().0 {
+            let kinds = run_events
+                .iter()
+                .map(|event| {
+                    let AgentEvent::DriverEvent {
+                        driver_kind,
+                        payload,
+                        ..
+                    } = event
+                    else {
+                        panic!("expected driver event");
+                    };
+                    let AgentEvent::DriverEvent { payload: first, .. } = &run_events[0] else {
+                        panic!("expected run start");
+                    };
+                    assert_eq!(payload["run_id"], first["run_id"]);
+                    driver_kind.as_wire()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                kinds,
+                [
+                    "gate_run_start",
+                    "gate_run_scope",
+                    "gate_run_lane",
+                    "gate_run_lane",
+                    "gate_run_lane",
+                    "gate_run_end"
+                ]
+            );
+        }
+        let mut runs = parse_gate_runs_from_jsonl(&path);
+        runs.sort_by(|left, right| left.tree_oid.cmp(&right.tree_oid));
+        let mut expected = (0..WORKERS)
+            .flat_map(|worker| (0..BATCHES).map(move |batch| (worker, batch)))
+            .map(|(worker, batch)| concurrent_run(&path, worker, batch))
+            .collect::<Vec<_>>();
+        expected.sort_by(|left, right| left.tree_oid.cmp(&right.tree_oid));
+        assert_eq!(runs, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_gate_end_is_not_reusable_success() {
+        let log = NamedTempFile::new().expect("tempfile");
+        let run = concurrent_run(log.path(), 0, 0);
+        append_gate_run_lifecycle_events(log.path(), &run).expect("append run");
+        let body = std::fs::read_to_string(log.path()).expect("read log");
+        let end_start = body[..body.len() - 1].rfind('\n').expect("end event");
+        std::fs::write(
+            log.path(),
+            format!("{}\n{{malformed end\n", &body[..end_start]),
+        )
+        .expect("corrupt terminal record");
+        let runs = parse_gate_runs_from_jsonl(log.path());
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, GateRunStatus::Incomplete);
+        assert!(!runs[0].is_success());
+        assert!(VerifiedScope::from_run(&runs[0]).is_none());
     }
 
     #[test]
