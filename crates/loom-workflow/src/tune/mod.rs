@@ -15,7 +15,7 @@ use displaydoc::Display;
 use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
 use loom_driver::agent::{ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::bd::{BdClient, CreateOpts, ListOpts, UpdateOpts};
-use loom_driver::clock::SystemClock;
+use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomConfig, LoomConfigError, Phase};
 use loom_driver::git::{GitClient, GitError, GitOid, read_origin_url};
 use loom_driver::identifier::BeadId;
@@ -169,6 +169,19 @@ impl PreparedRun {
     ///
     /// Returns an error when tuning setup, execution, evidence, or validation fails.
     pub async fn execute(self, request: Request) -> Result<Response, TuneError> {
+        self.execute_with_clock(request, &SystemClock::new()).await
+    }
+
+    /// Execute with one clock for phase-lock acquisition and the shared evaluation budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same setup, execution, evidence, and validation errors as [`Self::execute`].
+    pub async fn execute_with_clock(
+        self,
+        request: Request,
+        clock: &dyn Clock,
+    ) -> Result<Response, TuneError> {
         match request {
             Request::List(surface) => Ok(Response::Listing(self.context.render_listing(surface))),
             Request::Propose(proposal) => {
@@ -177,7 +190,7 @@ impl PreparedRun {
                     let plan = context.plan(&proposal)?;
                     Ok(Response::DryRun(render_dry_run(&context, &plan)))
                 } else {
-                    create_proposal(context, &proposal)
+                    create_proposal(context, &proposal, clock)
                         .await
                         .map(Response::Proposal)
                 }
@@ -603,12 +616,12 @@ struct LoadedTuning {
 async fn create_proposal(
     context: HarvestedContext,
     proposal: &ProposeRequest,
+    clock: &dyn Clock,
 ) -> Result<ProposalReport, TuneError> {
     let prepared = context.plan(proposal)?;
     let lock_manager = LockManager::new(&context.workspace)?;
-    let clock = SystemClock::new();
     let _guard = lock_manager
-        .acquire_phase_async(PhaseLock::Tune, &clock)
+        .acquire_phase_async(PhaseLock::Tune, clock)
         .await?;
     let labels = preparation_labels(&prepared.targets);
     let title = format!(
@@ -651,7 +664,7 @@ async fn create_proposal(
                         touched: &touched,
                         artifacts: &artifacts,
                     },
-                    &clock,
+                    clock,
                 )
                 .await?
             }

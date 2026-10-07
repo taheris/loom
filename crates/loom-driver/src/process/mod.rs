@@ -235,10 +235,30 @@ pub(crate) mod tests {
         }
     }
 
+    tokio::task_local! {
+        static STARTED: Arc<Notify>;
+    }
+
+    fn startup_complete() {
+        STARTED.with(|started| started.notify_one());
+    }
+
     pub async fn bounded<T>(future: impl Future<Output = T>) -> T {
-        tokio::time::timeout(Duration::from_secs(5), future)
+        let started = Arc::new(Notify::new());
+        STARTED
+            .scope(started.clone(), async {
+                tokio::pin!(future);
+                tokio::select! {
+                    result = &mut future => return result,
+                    ready = tokio::time::timeout(Duration::from_secs(30), started.notified()) => {
+                        ready.expect("subprocess lifecycle fixture exceeded its startup deadline");
+                    }
+                }
+                tokio::time::timeout(Duration::from_secs(5), future)
+                    .await
+                    .expect("subprocess lifecycle fixture exceeded its cleanup deadline")
+            })
             .await
-            .expect("subprocess lifecycle fixture exceeded its cleanup deadline")
     }
 
     pub struct Fixture {
@@ -318,6 +338,7 @@ fi
                     live: true,
                 });
             }
+            startup_complete();
             peers
         }
 
@@ -373,6 +394,28 @@ fi
                 }
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn subprocess_watchdog_separates_startup_from_cleanup() {
+        let clock = MockClock::new();
+        bounded(async {
+            clock.sleep(Duration::from_secs(20)).await;
+            startup_complete();
+            clock.sleep(Duration::from_secs(4)).await;
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "subprocess lifecycle fixture exceeded its cleanup deadline")]
+    async fn subprocess_watchdog_retains_five_second_cleanup_deadline() {
+        let clock = MockClock::new();
+        bounded(async {
+            startup_complete();
+            clock.sleep(Duration::from_secs(6)).await;
+        })
+        .await;
     }
 
     #[tokio::test(start_paused = true)]

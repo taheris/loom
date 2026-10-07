@@ -1,10 +1,22 @@
-//! End-to-end `loom tune` CLI surface tests.
+//! `loom tune` CLI surface tests and deterministic-clock replay workflow tests.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+#[path = "common/tune_clock.rs"]
+mod tune_clock;
+#[path = "common/tune_worker.rs"]
+mod tune_worker;
+
+/// Re-executed with per-fixture environment; every replay acceptance test invokes this worker.
+#[tokio::test]
+#[ignore = "process entry point requires the replay fixture environment"]
+async fn tune_replay_clock_worker() {
+    tune_worker::run().await;
+}
 
 fn find_bash() -> PathBuf {
     let path_var = std::env::var_os("PATH").expect("PATH");
@@ -233,6 +245,8 @@ struct ReplayFixture {
     state: PathBuf,
     manifest: PathBuf,
     record: PathBuf,
+    hang: bool,
+    wall: u64,
 }
 
 impl ReplayFixture {
@@ -287,7 +301,7 @@ max_changed_files = 2
         write_file(
             &shim,
             &format!(
-                "#!{}\nset -euo pipefail\nexport LOOM_TEST_REPLAY_WALL_SECONDS={wall}\nexec python3 '{}' '{}' '{}' \"$@\"\n",
+                "#!{}\nset -euo pipefail\nexec python3 '{}' '{}' '{}' \"$@\"\n",
                 find_bash().display(),
                 fake.display(),
                 record.display(),
@@ -301,29 +315,47 @@ max_changed_files = 2
             state,
             manifest,
             record,
+            hang: mode == "hang",
+            wall,
         }
     }
 
     fn run(&self) -> serde_json::Value {
-        let args = [
-            "tune",
-            "skill",
-            "run",
-            "--seed",
-            "7",
-            "loom-scope-discipline",
-        ];
-        let output = run_loom_with_env(
-            &self.workspace,
-            &self.bin,
-            &self.state,
-            &args,
-            &[
-                ("BD_CREATE_ID", "lm-replay.1"),
-                ("LOOM_PROFILES_MANIFEST", self.manifest.to_str().unwrap()),
-            ],
-        );
-        assert_success(&output, &args);
+        self.run_worker(false)
+    }
+
+    fn run_worker(&self, release: bool) -> serde_json::Value {
+        // The worker has its own environment for real bd/Git/Wrix subprocesses, but uses
+        // logical time for the production shared budget. CLI parsing is covered below.
+        let path_var = std::env::var_os("PATH").unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(self.bin.clone()).chain(std::env::split_paths(&path_var)),
+        )
+        .unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        loom_test_support::scrub_git_local_env(&mut command);
+        loom_test_support::configure_hermetic_git(&mut command);
+        let output = command
+            .args([
+                "--exact",
+                "tune_replay_clock_worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("PATH", path)
+            .env("BD_STATE_DIR", &self.state)
+            .env("BD_CREATE_ID", "lm-replay.1")
+            .env("LOOM_PROFILES_MANIFEST", &self.manifest)
+            .env("XDG_STATE_HOME", self.state.join("state-home"))
+            .env("LOOM_TEST_REPLAY_WORKSPACE", &self.workspace)
+            .env("LOOM_TEST_REPLAY_HANG", self.hang.to_string())
+            .env("LOOM_TEST_REPLAY_RELEASE", release.to_string())
+            .env("LOOM_TEST_REPLAY_WALL", self.wall.to_string())
+            .env_remove("LOOM_CONFIG")
+            .env_remove("LOOM_INSIDE")
+            .output()
+            .unwrap();
+        assert_success(&output, &["replay clock worker"]);
         serde_json::from_str(
             &std::fs::read_to_string(self.workspace.join(".loom/tune/lm-replay.1/manifest.json"))
                 .unwrap(),
@@ -369,6 +401,18 @@ max_changed_files = 2
             "blocked"
         );
     }
+}
+
+#[test]
+fn replay_launcher_fixture_writes_only_after_release() {
+    let fixture = ReplayFixture::new(1, 10, "hang", "Use observable task evidence.");
+    fixture.run_worker(true);
+    assert_eq!(fixture.starts().len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(fixture.record.with_extension("escaped")).unwrap(),
+        "process survived cancellation"
+    );
+    fixture.assert_clean();
 }
 
 #[test]
@@ -505,7 +549,7 @@ fn tune_nonzero_replay_cleans_up_and_blocks() {
     fixture.assert_clean();
 }
 
-/// The OS lifecycle budget includes CLI setup before the mutating launcher starts.
+/// Logical budget expiry occurs only after the real mutating launcher and descendant are ready.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn tune_wall_timeout_terminates_mutating_launcher_and_descendant() {
@@ -514,6 +558,11 @@ async fn tune_wall_timeout_terminates_mutating_launcher_and_descendant() {
     let fixture = ReplayFixture::new(2, 10, "hang", "Use observable task evidence.");
     let manifest = fixture.run();
     fixture.assert_blocked(&manifest);
+    assert!(
+        manifest["validation"]
+            .to_string()
+            .contains("wall-time budget exhausted")
+    );
     let starts = fixture.starts();
     assert_eq!(starts.len(), 1, "{manifest}");
     for field in ["pid", "child"] {

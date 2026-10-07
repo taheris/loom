@@ -542,6 +542,7 @@ fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
         eprintln!("bd-shim: bead {id} not found");
         return ExitCode::from(1);
     }
+    let mut metadata = None;
     let mut i = 1;
     while i < args.len() {
         let flag = &args[i];
@@ -595,7 +596,13 @@ fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
             }
             "--set-metadata" => {
                 let val = args.get(i + 1).cloned().unwrap_or_default();
-                set_metadata_value(&bead_dir, &val);
+                let metadata = metadata.get_or_insert_with(|| {
+                    let serde_json::Value::Object(metadata) = metadata_json(state_dir, id) else {
+                        panic!("bead metadata must be an object");
+                    };
+                    metadata
+                });
+                set_metadata_value(metadata, &val);
                 i += 2;
             }
             other => {
@@ -604,21 +611,20 @@ fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
             }
         }
     }
+    if let Some(metadata) = metadata {
+        // One bd invocation is one update, not a read/truncate/write cycle per key.
+        fs::write(
+            bead_dir.join("metadata.json"),
+            serde_json::to_string(&metadata).expect("metadata json"),
+        )
+        .expect("write metadata");
+    }
     ExitCode::SUCCESS
 }
 
-fn set_metadata_value(bead_dir: &Path, assignment: &str) {
+fn set_metadata_value(metadata: &mut serde_json::Map<String, serde_json::Value>, assignment: &str) {
     let (key, value) = assignment.split_once('=').unwrap_or((assignment, ""));
-    let path = bead_dir.join("metadata.json");
-    let current = fs::read_to_string(&path).unwrap_or_default();
-    let mut metadata = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&current)
-        .unwrap_or_default();
     metadata.insert(key.to_owned(), parse_metadata_value(value));
-    fs::write(
-        path,
-        serde_json::to_string(&serde_json::Value::Object(metadata)).expect("metadata json"),
-    )
-    .expect("write metadata");
 }
 
 fn parse_metadata_value(value: &str) -> serde_json::Value {

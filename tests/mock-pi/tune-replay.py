@@ -2,9 +2,9 @@
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
-import time
 
 record, mode, *args = sys.argv[1:]
 config = json.loads(Path(args[args.index("--spawn-config") + 1]).read_text())
@@ -35,17 +35,29 @@ if mode == "regress" and "Tuned Guidance" in prompt["message"]:
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                     "-c", "commit.gpgSign=false", "commit", "-qm", "hide changes from status"], cwd=workspace, check=True)
 entry = {"workspace": str(workspace), "head": head, "pid": os.getpid()}
+
+def hold():
+    # A live process writes only on release. EOF after cancellation proves it was stopped,
+    # without spending production budget on Python/Git startup or sleeping after expiry.
+    host, port = os.environ["LOOM_TEST_REPLAY_ENDPOINT"].rsplit(":", 1)
+    with socket.create_connection((host, int(port))) as peer:
+        peer.sendall(f"{os.getpid()}\n".encode())
+        if peer.recv(32):
+            Path(record + ".escaped").write_text("process survived cancellation")
+            peer.sendall(b"escaped\n")
+
 if mode == "hang":
     child = os.fork()
     if child == 0:
-        time.sleep(int(os.environ["LOOM_TEST_REPLAY_WALL_SECONDS"]) + 1)
-        Path(record + ".escaped").write_text("descendant survived cancellation")
+        hold()
         sys.exit(0)
     entry["child"] = child
 with open(record, "a") as log:
     log.write(json.dumps(entry) + "\n")
 if mode == "hang":
-    time.sleep(60)
+    hold()
+    os.waitpid(child, 0)
+    sys.exit(0)
 if mode == "fail":
     sys.exit(17)
 print(json.dumps({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "text": "src/lib.rs\nLOOM_COMPLETE"}}), flush=True)

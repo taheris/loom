@@ -9,6 +9,8 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "TST-3 #[ignore] is limited to enumerated process entry points";
 const ALLOWLIST: &[(&str, &str)] = &[
+    // Replay acceptance tests re-execute this worker with isolated subprocess environment.
+    ("crates/loom/tests/tune_cli.rs", "tune_replay_clock_worker"),
     (
         "crates/loom-driver/tests/lock_manager.rs",
         "crash_helper_take_lock_then_exit",
