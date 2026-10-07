@@ -33,9 +33,15 @@ fn git_command() -> Command {
 }
 
 fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
-    let status = git_command().arg("-C").arg(workspace).args(args).status()?;
-    if !status.success() {
-        return Err(anyhow!("git {args:?} failed: {status}"));
+    // Capture and drain both pipes rather than handing the test harness's descriptors
+    // to Git helpers. The fixture owns their output until all writers have closed it.
+    let output = git_command().arg("-C").arg(workspace).args(args).output()?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git {args:?} failed: {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
     Ok(())
 }
@@ -658,6 +664,60 @@ async fn todo_discovers_active_inactive_and_new_specs_from_cursors() -> Result<(
             .iter()
             .any(|argv| argv.iter().any(|arg| arg == "loom:spec,spec:gamma"))
     );
+    Ok(())
+}
+
+/// A detached Git helper cannot retain the test harness's output after fixture return.
+#[tokio::test]
+async fn git_fixture_drains_detached_helper_pipes_before_returning() -> Result<()> {
+    use loom_driver::clock::{Clock, SystemClock};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let clock = SystemClock::new();
+    clock
+        .timeout(Duration::from_secs(30), async {
+            let dir = tempfile::tempdir()?;
+            run_git(dir.path(), &["init", "-q"])?;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let port = listener.local_addr()?.port();
+            let script = dir.path().join(".git/hold.sh");
+            let marker = dir.path().join(".git/released");
+            std::fs::write(
+                &script,
+                r#"set -euo pipefail
+{
+    exec 3<>"/dev/tcp/127.0.0.1/${1}"
+    printf 'ready\n' >&3
+    if IFS= read -r token <&3; then
+        printf 'released\n' > "$2"
+    fi
+} &
+"#,
+            )?;
+            let workspace = dir.path().to_path_buf();
+            let alias = format!(
+                "alias.loom-fixture=!bash '{}' {port} '{}'",
+                script.display(),
+                marker.display()
+            );
+            let operation = tokio::task::spawn_blocking(move || {
+                run_git(&workspace, &["-c", &alias, "loom-fixture"])
+            });
+            let (peer, _) = listener.accept().await?;
+            let mut peer = BufReader::new(peer);
+            let mut ready = String::new();
+            peer.read_line(&mut ready).await?;
+            assert_eq!(ready, "ready\n");
+            assert!(
+                !operation.is_finished(),
+                "fixture returned while a helper retained its output pipe"
+            );
+            assert!(!marker.exists());
+            peer.get_mut().write_all(b"go\n").await?;
+            operation.await??;
+            assert_eq!(std::fs::read_to_string(marker)?, "released\n");
+            Ok::<(), anyhow::Error>(())
+        })
+        .await??;
     Ok(())
 }
 

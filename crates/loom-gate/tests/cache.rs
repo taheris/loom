@@ -272,6 +272,45 @@ fn row_for_helper_writes_round_trip_row() {
 }
 
 #[test]
+fn disk_report_matches_memory_projection_with_escaped_text_and_staleness() {
+    let dir = tempdir().unwrap();
+    let cache = StatusCache::open(&cache_path(&dir)).unwrap();
+    let mut rows: Vec<CacheRow> = (0..128)
+        .map(|i| CacheRow {
+            spec_label: format!("spec-{}", i % 8),
+            criterion_anchor: format!("{i}"),
+            tier: match i % 4 {
+                0 => Tier::Check,
+                1 => Tier::Test,
+                2 => Tier::System,
+                _ => Tier::Judge,
+            },
+            annotation_target: format!("target-{i} \"quoted\" \\ escaped 😀"),
+            last_run_ts_ms: i64::from(i),
+            last_run_commit: "commit".into(),
+            verdict: match i % 3 {
+                0 => Verdict::Pass,
+                1 => Verdict::Fail,
+                _ => Verdict::Skipped,
+            },
+            evidence: format!("evidence-{i}"),
+        })
+        .collect();
+    cache.upsert_many(&rows).unwrap();
+    rows.sort_by(|a, b| {
+        (&a.spec_label, &a.criterion_anchor).cmp(&(&b.spec_label, &b.criterion_anchor))
+    });
+    assert_eq!(cache.read_all().unwrap(), rows);
+    let parsed = ParsedSpecs::default();
+    for threshold in [0, 1] {
+        assert_eq!(
+            render_report(&cache, &parsed, &[], 172_800_000, threshold).unwrap(),
+            render_from_rows(&rows, &parsed, &[], 172_800_000, threshold),
+        );
+    }
+}
+
+#[test]
 fn render_under_500ms_on_2000_row_corpus() {
     // Hard target from specs/gate.md status-cache section: report
     // renders in <500ms on a corpus of arbitrary size. The 2000-row seed

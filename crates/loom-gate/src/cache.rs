@@ -16,6 +16,7 @@
 //! ceiling against a 2000-row seeded cache so a future schema or
 //! rendering regression is caught at gate time.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -207,15 +208,14 @@ impl StatusCache {
              FROM criterion_status
              ORDER BY spec_label, criterion_id",
         )?;
-        let rows = stmt
-            .query_map([], row_to_cache_row)?
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(row_to_cache_row(row)??);
+        }
+        drop(rows);
         drop(stmt);
         drop(conn);
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            out.push(row?);
-        }
         Ok(out)
     }
 
@@ -335,25 +335,33 @@ fn annotation_json(row: &CacheRow) -> serde_json::Result<String> {
 }
 
 #[derive(Deserialize)]
-struct CachedAnnotation {
-    tier: String,
-    target: String,
+struct CachedAnnotation<'a> {
+    #[serde(borrow)]
+    tier: Cow<'a, str>,
+    #[serde(borrow)]
+    target: Cow<'a, str>,
 }
 
-fn parse_annotation_json(value: &str) -> serde_json::Result<CachedAnnotation> {
+fn parse_annotation_json(value: &str) -> serde_json::Result<CachedAnnotation<'_>> {
     serde_json::from_str(value)
 }
 
 fn row_to_cache_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CacheRow, CacheError>> {
     let spec_label: String = row.get(0)?;
     let criterion_anchor: String = row.get(1)?;
-    let annotation_json: String = row.get(2)?;
-    let annotation = parse_annotation_json(&annotation_json).map_err(|source| {
+    let annotation_value = row.get_ref(2)?;
+    let annotation_json = annotation_value.as_str().map_err(|source| {
+        rusqlite::Error::FromSqlConversionFailure(2, annotation_value.data_type(), Box::new(source))
+    })?;
+    let annotation = parse_annotation_json(annotation_json).map_err(|source| {
         rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(source))
     })?;
     let last_run_ts_ms: Option<i64> = row.get(3)?;
     let last_run_commit: Option<String> = row.get(4)?;
-    let verdict_wire: String = row.get(5)?;
+    let verdict_value = row.get_ref(5)?;
+    let verdict_wire = verdict_value.as_str().map_err(|source| {
+        rusqlite::Error::FromSqlConversionFailure(5, verdict_value.data_type(), Box::new(source))
+    })?;
     let evidence: Option<String> = row.get(6)?;
 
     let tier_wire = annotation.tier;
@@ -362,20 +370,20 @@ fn row_to_cache_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CacheRow
     let Some(tier) = Tier::from_wire(&tier_wire) else {
         return Ok(Err(CacheError::BadTier {
             row_key: format!("{spec_label}/{criterion_anchor}"),
-            tier: tier_wire,
+            tier: tier_wire.into_owned(),
         }));
     };
-    let Some(verdict) = Verdict::from_wire(&verdict_wire) else {
+    let Some(verdict) = Verdict::from_wire(verdict_wire) else {
         return Ok(Err(CacheError::BadVerdict {
             row_key: format!("{spec_label}/{criterion_anchor}"),
-            verdict: verdict_wire,
+            verdict: verdict_wire.to_owned(),
         }));
     };
     Ok(Ok(CacheRow {
         spec_label,
         criterion_anchor,
         tier,
-        annotation_target,
+        annotation_target: annotation_target.into_owned(),
         last_run_ts_ms: last_run_ts_ms.unwrap_or_default(),
         last_run_commit: last_run_commit.unwrap_or_default(),
         verdict,
@@ -588,18 +596,16 @@ fn summarise_specs(parsed: &ParsedSpecs) -> Vec<SpecReport> {
 }
 
 fn summarise_tiers(rows: &[CacheRow]) -> Vec<TierSummary> {
-    let mut per_tier: BTreeMap<u8, TierBuilder> = BTreeMap::new();
+    let mut per_tier = [None, None, None, None];
     for row in rows {
-        let entry = per_tier
-            .entry(tier_ord(row.tier))
-            .or_insert_with(|| TierBuilder {
-                tier: row.tier,
-                last_run_ts_ms: None,
-                pass_count: 0,
-                fail_count: 0,
-                skipped_count: 0,
-                failing: Vec::new(),
-            });
+        let entry = per_tier[tier_ord(row.tier)].get_or_insert_with(|| TierBuilder {
+            tier: row.tier,
+            last_run_ts_ms: None,
+            pass_count: 0,
+            fail_count: 0,
+            skipped_count: 0,
+            failing: Vec::new(),
+        });
         match row.verdict {
             Verdict::Pass => entry.pass_count += 1,
             Verdict::Fail => {
@@ -619,7 +625,8 @@ fn summarise_tiers(rows: &[CacheRow]) -> Vec<TierSummary> {
         });
     }
     per_tier
-        .into_values()
+        .into_iter()
+        .flatten()
         .map(|b| TierSummary {
             tier: b.tier,
             last_run_ts_ms: b.last_run_ts_ms,
@@ -700,6 +707,9 @@ fn summarise_health(
 
 fn summarise_stale_annotations(rows: &[CacheRow], parsed: &ParsedSpecs) -> Vec<StaleAnnotation> {
     let current = current_annotation_snapshots(parsed);
+    if current.is_empty() {
+        return Vec::new();
+    }
     rows.iter()
         .filter_map(|row| {
             let key = (row.spec_label.clone(), row.criterion_anchor.clone());
@@ -750,7 +760,7 @@ struct TierBuilder {
     failing: Vec<FailingCriterion>,
 }
 
-const fn tier_ord(tier: Tier) -> u8 {
+const fn tier_ord(tier: Tier) -> usize {
     match tier {
         Tier::Check => 0,
         Tier::Test => 1,
