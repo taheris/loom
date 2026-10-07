@@ -113,12 +113,11 @@ test_commit_accepts_repaired_input() {
     printf 'sandbox-commit-hooks-ok\n'
 }
 
-test_pre_push_skips_nix_but_runs_gate() {
-    local hook_id
-    if command -v nix > /dev/null 2>&1; then
-        fail 'nix unexpectedly present in the worker image'
-    fi
+test_pre_push_runs_nix_and_gate() {
+    local hook_id nix_check_output
     [[ ! -f .loom/marker.json ]] || fail 'fixture unexpectedly has a push marker'
+    nix_check_output=$(nix eval --offline --raw ".#checks.$nix_system.fixture.outPath")
+    [[ ! -e "$nix_check_output" ]] || fail 'fixture Nix check was already built'
     : > .git/payload-checks
     prek run --hook-stage pre-push --from-ref HEAD~1 --to-ref HEAD --verbose > "$log" 2>&1
     for hook_id in nix-flake-check full-test-suite loom-gate-verify-diff; do
@@ -126,6 +125,8 @@ test_pre_push_skips_nix_but_runs_gate() {
     done
     grep -E '^nix flake check\.+Passed$' "$log"
     grep -E '^nix run \.#test-required \(full nextest and system coverage\)\.+Passed$' "$log"
+    [[ -x "$nix_check_output" ]] || fail 'Nix flake check did not build fixture'
+    grep -Eq '^[[:space:]]*sandbox-nix-required-ok$' "$log" || fail 'Nix required-test app did not run'
     assert_payload_checked updated
     printf 'bad\n' > payload.txt
     git add payload.txt
@@ -157,7 +158,33 @@ cp "$source_root/scripts/check-shell-reexec" scripts/
 cp "$source_root/tests/sandbox/verify-payload.sh" checks/
 chmod +x bin/pre-push-checks scripts/check-shell-reexec checks/verify-payload.sh
 printf '.loom/\n' > .gitignore
-printf '{ }\n' > flake.nix
+nix_system=$(nix eval --offline --impure --raw --expr builtins.currentSystem)
+nix_builder=$(realpath "$(command -v bash)")
+nix_chmod=$(command -v chmod)
+cat > flake.nix <<NIX
+{
+  outputs = { self }:
+    let
+      fixture = suffix: builtins.derivation {
+        name = "sandbox-hook-nix-${work##*/}-\${suffix}";
+        system = "$nix_system";
+        builder = "$nix_builder";
+        args = [ "-euc" ''
+          printf '#!$nix_builder\\nprintf "sandbox-nix-required-ok\\\\n"\\n' > "\$out"
+          $nix_chmod +x "\$out"
+        '' ];
+      };
+    in {
+      checks.$nix_system.fixture = fixture "check";
+      apps.$nix_system.test-required = {
+        type = "app";
+        program = "\${fixture "app"}";
+        meta.description = "Disposable sandbox hook fixture";
+      };
+    };
+}
+NIX
+treefmt flake.nix >/dev/null
 printf '# Sandbox fixture\n\n## Success Criteria\n\n- Accept valid payloads [check](./checks/verify-payload.sh)\n' > specs/sandbox.md
 printf 'good\n' > payload.txt
 printf 'clean\n' > sanitation.txt
@@ -180,4 +207,4 @@ test_commit_shell_reexec
 test_commit_integrity_gate
 test_commit_check_failure
 test_commit_accepts_repaired_input
-test_pre_push_skips_nix_but_runs_gate
+test_pre_push_runs_nix_and_gate

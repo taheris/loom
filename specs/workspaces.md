@@ -129,6 +129,11 @@ launches exec the selected raw launcher with
 `--profile-config <selected-profile-config> run <workspace> <agent-command>`.
 Configured wrappers are not an image-selection mechanism.
 
+Worker profiles retain their tool packages, including Nix. Nix evaluation and
+additive builds use Wrix's private single-user container store, without a host
+Nix daemon socket or host-execution bridge. The Rust profile also supplies Cargo
+and rustc.
+
 Every manifest entry requires `launcher` and `profile_config`; older/custom
 manifests missing either field fail ingestion with regeneration guidance.
 
@@ -500,6 +505,12 @@ for worker feedback.
   [test](apply_launcher_env_sets_child_process_env)
 
 ### Bead Dispatch
+
+<!-- prettier-ignore -->
+- A real Rust worker image can evaluate Nix and build a disposable non-Git
+  derivation offline in its private single-user store, without a daemon socket
+  or host-execution bridge; Cargo and rustc also launch successfully.
+  [system](nix run .#test-sandbox)
 
 - Profile manifest entries missing launcher or immutable profile configuration
   fail ingestion with regeneration guidance.

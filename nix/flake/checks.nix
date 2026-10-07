@@ -115,14 +115,15 @@ _:
         touch "$out"
       '';
 
-      sandbox-profile-env-omits-nix = wrixLinuxPkgs.runCommand "sandbox-profile-env-omits-nix" { } ''
-        set -euo pipefail
-        if [[ -e ${sandboxProfileEnv}/bin/nix ]]; then
-          printf 'worker sandbox profile PATH unexpectedly includes nix at %s/bin/nix\n' ${sandboxProfileEnv} >&2
-          exit 1
-        fi
-        touch "$out"
-      '';
+      sandbox-profile-env-evaluates-nix =
+        wrixLinuxPkgs.runCommand "sandbox-profile-env-evaluates-nix" { }
+          ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            [[ "$(${sandboxProfileEnv}/bin/nix eval --offline --raw --expr '"worker-nix-ok"')" == worker-nix-ok ]]
+            touch "$out"
+          '';
 
       image-runtime-binaries-launch = wrixLinuxPkgs.runCommand "image-runtime-binaries-launch" { } ''
         set -euo pipefail
@@ -231,8 +232,17 @@ _:
               health-only)
                 printf 'sandbox-agent-health-ok\n'
                 ;;
-              complete)
+              nix-eval-only)
+                printf '%s\n' sandbox-agent-health-ok sandbox-nix-eval-ok
+                ;;
+              hooks-only)
                 printf '%s\n' sandbox-agent-health-ok sandbox-commit-hooks-ok sandbox-pre-push-hooks-ok sandbox-hook-self-tests-ok
+                ;;
+              nix-only)
+                printf '%s\n' sandbox-agent-health-ok sandbox-nix-eval-ok sandbox-nix-build-ok
+                ;;
+              complete)
+                printf '%s\n' sandbox-agent-health-ok sandbox-nix-eval-ok sandbox-nix-build-ok sandbox-commit-hooks-ok sandbox-pre-push-hooks-ok sandbox-hook-self-tests-ok
                 ;;
               *)
                 printf 'unknown fake sandbox result\n' >&2
@@ -443,7 +453,7 @@ _:
             export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
             export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
             export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-            for result in health-only check-failure; do
+            for result in health-only nix-eval-only hooks-only nix-only check-failure; do
               export LOOM_TEST_SANDBOX_RESULT="$result"
               status=0
               bash ${../../scripts/test-sandbox.sh} > "$TMPDIR/output" 2>&1 || status=$?
@@ -451,11 +461,20 @@ _:
                 printf 'expected failed sandbox checks, not success or skip (%s):\n%s\n' "$status" "$(<"$TMPDIR/output")" >&2
                 exit 1
               fi
-              if [[ "$result" == health-only ]]; then
-                grep -Fq 'sandbox-commit-hooks-ok canary missing' "$TMPDIR/output"
-              else
-                grep -Fq 'sandbox verification failed' "$TMPDIR/output"
-              fi
+              case "$result" in
+                health-only | hooks-only)
+                  grep -Fq 'sandbox-nix-eval-ok canary missing' "$TMPDIR/output"
+                  ;;
+                nix-eval-only)
+                  grep -Fq 'sandbox-nix-build-ok canary missing' "$TMPDIR/output"
+                  ;;
+                nix-only)
+                  grep -Fq 'sandbox-commit-hooks-ok canary missing' "$TMPDIR/output"
+                  ;;
+                check-failure)
+                  grep -Fq 'sandbox verification failed' "$TMPDIR/output"
+                  ;;
+              esac
             done
             touch "$out"
           '';
@@ -607,7 +626,7 @@ _:
           image-runtime-binaries-launch
           sandbox-profile-env-has-loom
           sandbox-profile-env-has-wrix
-          sandbox-profile-env-omits-nix
+          sandbox-profile-env-evaluates-nix
           ;
       };
     in

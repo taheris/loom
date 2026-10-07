@@ -42,14 +42,20 @@ test_disabled_pre_push_gate_is_detected() {
         'gate did not check payload: updated'
 }
 
-test_unwrapped_nix_entries_are_detected() {
-    assert_rejects_policy_mutation 's/skip-if-missing nix -- //g' \
-        'exec: nix: not found'
+test_disabled_nix_check_is_detected() {
+    assert_rejects_policy_mutation 's/-- skip-if-missing nix -- nix flake check$/-- true/' \
+        'Nix flake check did not build fixture'
+}
+
+test_disabled_nix_required_app_is_detected() {
+    assert_rejects_policy_mutation 's/-- skip-if-missing nix -- nix run .#test-required$/-- true/' \
+        'Nix required-test app did not run'
 }
 
 test_real_hook_policy_passes
 test_disabled_commit_gate_is_detected
 test_disabled_formatter_is_detected
 test_disabled_pre_push_gate_is_detected
-test_unwrapped_nix_entries_are_detected
+test_disabled_nix_check_is_detected
+test_disabled_nix_required_app_is_detected
 printf 'sandbox-hook-self-tests-ok\n'

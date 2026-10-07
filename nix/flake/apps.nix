@@ -5,7 +5,7 @@
 # - `.#smoke`: container smoke harness.
 #   Linux checks runtime devices before realizing the image-backed runner;
 #   Darwin returns a no-op stub.
-# - `.#test-sandbox`: checks offline Pi health and the real sandbox hook chain.
+# - `.#test-sandbox`: checks offline Pi health, private Nix builds, and sandbox hooks.
 #   Skips with exit 77 when the platform cannot run the container runtime.
 # - `.#fuzz-loom`: on-demand `cargo fuzz` driver.
 #   This is intentionally not gated by `nix flake check`.
@@ -135,7 +135,7 @@ _:
         test-sandbox = {
           type = "app";
           program = "${sandboxSmokeApp}/bin/test-sandbox";
-          meta.description = "Offline agent health and hook-chain checks for the Rust sandbox image (Linux only; Darwin stub)";
+          meta.description = "Offline agent health, private Nix builds, and hook-chain checks for the Rust sandbox image (Linux only; Darwin stub)";
         };
 
         fuzz-loom = {
