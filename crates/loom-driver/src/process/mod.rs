@@ -248,9 +248,12 @@ pub(crate) mod tests {
         STARTED
             .scope(started.clone(), async {
                 tokio::pin!(future);
+                // Keep construction outside macro tokens so the clock audit sees both deadlines.
+                let startup_timeout =
+                    tokio::time::timeout(Duration::from_secs(30), started.notified());
                 tokio::select! {
                     result = &mut future => return result,
-                    ready = tokio::time::timeout(Duration::from_secs(30), started.notified()) => {
+                    ready = startup_timeout => {
                         ready.expect("subprocess lifecycle fixture exceeded its startup deadline");
                     }
                 }

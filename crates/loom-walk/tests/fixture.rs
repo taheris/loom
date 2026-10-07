@@ -795,6 +795,19 @@ fn no_tokio_sleep_outside_clock_rejects_unpaused_test_time() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn no_tokio_timeout_outside_clock_repository_matches_exact_exception_counts() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap();
+    assert_pass(&invoke(
+        &["no_tokio_timeout_outside_clock"],
+        Some(root),
+        None,
+    ));
+}
+
+#[test]
 fn no_tokio_timeout_outside_clock_pass_allowed_site() {
     let ws = make_workspace();
     let target = seed(
