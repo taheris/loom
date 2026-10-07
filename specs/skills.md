@@ -5,14 +5,15 @@ disclosed skill registry.
 
 ## Problem Statement
 
-Discovers and resolves capability artifacts into a filtered, progressively
-disclosed skill registry. This package is one contract owner, not a new crate or
-command tree.
+Agents need relevant capabilities without loading every skill or resolving
+conflicting definitions themselves. The registry selects, validates, and
+progressively discloses skills for the current profile and phase.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [templates](templates.md), [agent](agent.md), [tuning](tuning.md).
+Discovery and override resolution produce a typed registry for materialization
+and backend disclosure. Related owners: [templates](templates.md),
+[agent](agent.md), [tuning](tuning.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -355,44 +356,42 @@ recorded in logs/manifests, not in the normal skill index.
    filtering, and materialization through a public `loom-skill` crate. Consumers
    can use the same registry model outside the Loom binary.
 
-### Functional
-
-3. **Standard package discovery.** Auto-discovery walks git-tracked workspace
+2. **Standard package discovery.** Auto-discovery walks git-tracked workspace
    files for package documents whose basename matches `skill.md`
    case-insensitively at any depth. Each containing directory is one skill
    package; generated package documents use lowercase `skill.md`, and multiple
    case variants in one directory are hard errors. Package-local `tuning.md`
    documents follow the same case-insensitive/lowercase-generated duplicate
    policy.
-4. **Explicit loose skill paths.** `[skills].paths` lists non-standard files or
+3. **Explicit loose skill paths.** `[skills].paths` lists non-standard files or
    directories. Files load as single loose-file skills; directories recurse
    through Markdown files and load each as one loose-file skill. No wildcard or
    glob syntax exists in v1.
-5. **Frontmatter identity.** Registered skills require `name` and `description`.
+4. **Frontmatter identity.** Registered skills require `name` and `description`.
    Loom never infers either field. Duplicate `name` values fail fast except for
    valid built-in overrides from `.loom-override/skills/`.
-6. **Built-in bundles.** Loom ships the accepted v1 built-in skill catalog by
+5. **Built-in bundles.** Loom ships the accepted v1 built-in skill catalog by
    profile. `base` built-ins are always eligible; profile-specific built-ins are
    eligible only when the resolved profile matches. Built-in names use the
    `loom-` prefix.
-7. **Built-in override root.** Consumers override tuned built-ins by committing
+6. **Built-in override root.** Consumers override tuned built-ins by committing
    loose Markdown files or packages under `.loom-override/skills/`. The
    frontmatter `name` must match a known built-in. Overrides never shadow
    repo/configured skills.
-8. **Progressive disclosure.** Phase prompts include only a compact skill index;
+7. **Progressive disclosure.** Phase prompts include only a compact skill index;
    agents load full skill bodies on demand. Backends with native skill support
    receive native registration in `registration = "auto"`; prompt disclosure is
    used for Direct/no-native backends or `registration = "prompt"`.
 
 ### Non-Functional
 
-3. **Prompt budget.** Skills use progressive disclosure; full bodies are read on
+1. **Prompt budget.** Skills use progressive disclosure; full bodies are read on
    demand, not pinned into every phase prompt.
-4. **Portability.** Repo skills and built-in overrides use Agent
+2. **Portability.** Repo skills and built-in overrides use Agent
    Skills-compatible names/frontmatter. Directory packages remain available for
    assets and helper files; loose files are allowed only where explicitly
    configured or under the override root.
-5. **SemVer.** Removing or renaming public `loom-skill` types or fields is a
+3. **SemVer.** Removing or renaming public `loom-skill` types or fields is a
    major version change; adding new optional metadata or diagnostics is minor.
 
 ## Out of Scope

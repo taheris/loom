@@ -5,19 +5,20 @@ typed task assignments and work epics.
 
 ## Problem Statement
 
-Derives changed-spec work from durable cursors, decomposes it, and finalizes
-typed task assignments and work epics. This package is one contract owner, not a
-new crate or command tree.
+Spec changes must become the right implementation work without duplicating
+already-satisfied requirements or trusting stale passes. Todo fixes the changed
+roster, guides evidence-led decomposition, and finalizes explicit task bindings.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [specs](specs.md), [plan](plan.md), [loop](loop.md),
-[harness](harness.md), [templates](templates.md).
+Deterministic preflight supplies the roster and coverage; the agent proposes
+work, and the driver resolves and persists the accepted handoff. Related owners:
+[specs](specs.md), [plan](plan.md), [loop](loop.md), [harness](harness.md),
+[templates](templates.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
-#### Binding proposal and persistence
+### Binding proposal and persistence
 
 [Acceptance](#success-criteria).
 
@@ -98,7 +99,7 @@ LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>"
 
 The JSON shape is derived from `loom-protocol::todo::TodoSuccess` as specified
 in [Todo — Spec and Work Epic Lifecycle](#spec-and-work-epic-lifecycle). The
-template tells the agent to include a required non-empty final work- epic title
+template tells the agent to include a required non-empty final work-epic title
 plus exactly the changed specs the driver injected, using `Decomposed { beads }`
 for non-empty work and `NoWork { reason }` for an audited no-implementation
 outcome. `Blocked`, `pending`, or omitted specs are not success states; the
@@ -123,15 +124,19 @@ roster and created or reused the `loom:todo` work epic. The agent must decompose
 
 Before authoring any non-audit bead, the agent must:
 
-1. Consult the `criterion_status` surface (see _Criterion-Status Surface_) for
-   each criterion in each changed spec.
-   `EvidenceState::Current { result: Pass, commits_since: 0, ... }` is positive
-   evidence of coverage; `Missing` or `StaleAnnotation` is absence/staleness of
-   evidence, not a reason to treat the criterion as already complete.
+1. Consult [Specs' criterion-status surface](specs.md#criterion-status-surface)
+   for each criterion in each changed spec.
+   [Current coverage](evidence.md#coverage-projection) is distinct from an
+   observed pass. A matching annotation or `commits_since: 0` does not establish
+   admissibility; inspect the supplied coverage projection and retained
+   blockers. `Missing`, `StaleAnnotation`, or unavailable admission never means
+   the criterion is complete. Reuse-disabled results do not themselves prove
+   missing implementation or a permanent criterion failure.
 
 2. Read representative existing implementations and verifier functions for
-   criteria where evidence is missing, stale, failed, skipped, or the agent
-   judges the verifier target may not exercise the live system per
+   criteria where coverage is not established, evidence is failed or skipped, a
+   retained blocker applies, or the agent judges the verifier target may not
+   exercise the live system per
    [spec-conventions.md](../docs/spec-conventions.md)'s "no tier-skipping" rule.
    A directory listing proves a file exists; it does not prove the file contains
    the named target. The audit is targeted: the injected diffs/status rows are
@@ -159,10 +164,10 @@ Decision-needed or dead-end outcomes use worker self-report markers:
   — spec ambiguity, conflicting verifier targets, cursor/index inconsistency
   needing human choice, or contestable cache trust — the agent emits
   `LOOM_CLARIFY` with the question and `## Options — …` block persisted to the
-  **`loom:todo` work epic's** notes/description per the _Options Format
-  Contract_ in [Gate](gate.md). The verdict gate applies `loom:clarify` to that
-  work epic; the human resolves via `loom inbox`, and a subsequent `loom todo`
-  invocation reuses the matching pending work epic.
+  **`loom:todo` work epic's** notes/description per the
+  [Options Format Contract](inbox.md#options-format-contract). The verdict gate
+  applies `loom:clarify` to that work epic; the human resolves via `loom inbox`,
+  and a subsequent `loom todo` invocation reuses the matching pending work epic.
 - **Blocked on the work epic.** When the agent has no candidate resolutions to
   enumerate, it emits `LOOM_BLOCKED` with a reason explaining why options cannot
   be safely surfaced; the work epic remains non-active and spec cursors do not
@@ -337,9 +342,19 @@ layouts.
 
 ### Decomposition Discipline
 
-- Decomposition treats zero-commit current passing verifier evidence as positive
-  coverage evidence instead of blindly creating implementation work.
-  [test](todo_template_requires_zero_commit_pass_evidence)
+- Rendered decomposition guidance distinguishes admissible coverage from
+  historical passes, requires attention to retained blockers and unavailable
+  admission, and avoids both cache-driven no-work claims and automatic
+  implementation tasks merely because result reuse is disabled.
+  [test?](todo_template_distinguishes_current_coverage_from_historical_results)
+
+<!-- prettier-ignore -->
+- Actual todo preflight and prompt construction supply current coverage and
+  retained blockers alongside historical criterion observations. Disqualifying
+  same-commit trust/history changes cannot leave an unqualified coverage pass
+  in the agent's context. Inspection does not rerun verifiers or grant publication authority,
+  and missing evidence still permits targeted audit rather than blind fan-out.
+  [system?](nix run .#test-quint -- coverage-projection)
 
 ## Requirements
 
@@ -359,33 +374,33 @@ layouts.
 
 ### Functional
 
-18. **Decomposition-phase wiring.** `loom todo` runs deterministic changed-spec
-    preflight before rendering the prompt, creates or reuses the `loom:todo`
-    work epic, and surfaces a per-criterion `CriterionStatus` row (shape owned
-    by [Templates](templates.md)) for every changed spec. Criterion evidence is
-    read from the unified `.loom/cache.db`; empty cache surfaces as
-    `EvidenceState::Missing` rows — staleness is exposed, not papered over. The
-    todo agent's only success terminal is `LOOM_TODO: <json>`, parsed by
-    `loom-protocol::todo` and validated for a final work-epic title plus the
-    preflight roster. `LOOM_CLARIFY` from a todo session targets the `loom:todo`
-    work epic because the child beads under negotiation may not yet exist.
+1. **Decomposition-phase wiring.** `loom todo` runs deterministic changed-spec
+   preflight before rendering the prompt, creates or reuses the `loom:todo` work
+   epic, and surfaces a per-criterion `CriterionStatus` row (shape owned by
+   [Specs](specs.md#criterion-status-surface)) for every changed spec.
+   Historical observations come from `.loom/cache.db`; empty cache surfaces as
+   `EvidenceState::Missing`. Evidence's current coverage projection accompanies
+   those rows, exposing inadmissibility and retained blockers without treating a
+   cached pass as authority. The todo agent's only success terminal is
+   `LOOM_TODO: <json>`, parsed by `loom-protocol::todo` and validated for a
+   final work-epic title plus the preflight roster. `LOOM_CLARIFY` from a todo
+   session targets the `loom:todo` work epic because the child beads under
+   negotiation may not yet exist.
 
-### Functional
+2. **Decomposition discipline in `todo`.**
+   `partial/decomposition_discipline.md`, pinned in `todo` only, requires the
+   decomposition agent to decompose the driver-injected changed-spec roster
+   exactly, confirm missing work by consulting `criterion_status` and
+   representative implementations before authoring non-audit beads, create beads
+   only under the injected `loom:todo` work epic, and use `LOOM_TODO: <json>` as
+   the only success marker. `LOOM_CLARIFY` targets the work epic with a
+   `## Options — …` block when coverage cannot be determined.
 
-17. **Decomposition discipline in `todo`.**
-    `partial/decomposition_discipline.md`, pinned in `todo` only, requires the
-    decomposition agent to decompose the driver-injected changed-spec roster
-    exactly, confirm missing work by consulting `criterion_status` and
-    representative implementations before authoring non-audit beads, create
-    beads only under the injected `loom:todo` work epic, and use
-    `LOOM_TODO: <json>` as the only success marker. `LOOM_CLARIFY` targets the
-    work epic with a `## Options — …` block when coverage cannot be determined.
-
-### Functional
+### Lifecycle coverage
 
 - Todo preflight, terminal validation, and lifecycle tests execute the
-  [harness-owned Todo contract](harness.md#functional), including production CLI
-  routing where cursor discovery is the behavior under test
+  [Todo lifecycle contract](#spec-and-work-epic-lifecycle), including production
+  CLI routing where cursor discovery is the behavior under test
 
 ## Out of Scope
 

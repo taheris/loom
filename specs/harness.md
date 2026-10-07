@@ -5,14 +5,15 @@ bootstrap, and reconstructable platform state.
 
 ## Problem Statement
 
-Defines shared crate layering, typed configuration and process boundaries,
-bootstrap, and reconstructable platform state. This package is one contract
-owner, not a new crate or command tree.
+Workflow phases need consistent process, configuration, and persistence
+boundaries rather than their own platform conventions. Harness defines those
+shared facilities while leaving phase behavior to its owning contracts.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [workspaces](workspaces.md), [specs](specs.md), [loop](loop.md),
+Shared crates parse external configuration and identifiers, isolate subprocess
+access, and expose reconstructable state to workflow consumers. Related owners:
+[workspaces](workspaces.md), [specs](specs.md), [loop](loop.md),
 [todo](todo.md), [events](events.md), [templates](templates.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
@@ -648,9 +649,9 @@ halves of the pipeline; no per-line versioning needed.
    | `loom inbox pick` / `loom inbox reply` / `loom inbox resolve` | options are chat context, not a host-side executable menu                                                               |
    | `loom inbox apply`                                            | tune proposals may be applied only through `LOOM_APPLY` emitted by `loom inbox chat` and executed by the trusted driver |
 
-### Functional
+### Cache and Beads
 
-3. **SQLite cache store** — workflow cache persisted in `.loom/cache.db`
+1. **SQLite cache store** — workflow cache persisted in `.loom/cache.db`
    (renamed from `.loom/state.db`). Tracks indexed spec rows, spec/work epic
    mirrors, criterion evidence cache, companions, iteration counters, and
    implementation notes. It is reconstructable or disposable:
@@ -660,33 +661,33 @@ halves of the pipeline; no per-line versioning needed.
    treating evidence-cache loss as empty safety history. There is no
    `current_spec` pointer. `loom:active` is a bd label on the default work epic
    for `loom loop`, not cache state and not a todo-discovery input.
-4. **Beads integration** — interacts with beads via the `bd` CLI (subprocess
+2. **Beads integration** — interacts with beads via the `bd` CLI (subprocess
    calls). Bead operations: create, show, close, update, list, dep add, mol
    bond, mol progress. CLI output parsed into typed Rust structs.
 
-### Functional
+### Surface conformance
 
-13. **Surface conformance** — the surface-conformance walk (registered as a
-    `[check]`-tier verifier dispatched by `loom gate check`) audits the binary's
-    user-facing surface against this spec, hard-failing on any drift across four
-    dimensions: (1) **Command set** — FR1's commands ↔ the `Command` enum's
-    variants; (2) **Flag set** — flags documented in the spec's indexed owners'
-    per-command tables (including Inbox, Tuning, Gate, and Events), not a
-    duplicated Harness-only flag registry ↔ declared `#[arg(...)]`; (3)
-    **Removed surface** — the `Removed` table is absent from the binary; (4)
-    **Grouping order** — both `loom --help` AND bare `loom` render `Workflow:` /
-    `Inspection:` / `State:` in FR1's declared order. Help-text wording is _not_
-    a dimension — CLI-1 style is enforced by `loom gate review`'s style-rule
-    walk. The audit exists because an earlier multi-bead molecule closed despite
-    cross-component drift that the success-criteria walk did not catch.
+**FR13 — Surface conformance** — the surface-conformance walk (registered as a
+`[check]`-tier verifier dispatched by `loom gate check`) audits the binary's
+user-facing surface against this spec, hard-failing on any drift across four
+dimensions: (1) **Command set** — FR1's commands ↔ the `Command` enum's
+variants; (2) **Flag set** — flags documented in the spec's indexed owners'
+per-command tables (including Inbox, Tuning, Gate, and Events), not a duplicated
+Harness-only flag registry ↔ declared `#[arg(...)]`; (3) **Removed surface** —
+the `Removed` table is absent from the binary; (4) **Grouping order** — both
+`loom --help` AND bare `loom` render `Workflow:` / `Inspection:` / `State:` in
+FR1's declared order. Help-text wording is _not_ a dimension — CLI-1 style is
+enforced by `loom gate review`'s style-rule walk. The audit exists because an
+earlier multi-bead molecule closed despite cross-component drift that the
+success-criteria walk did not catch.
 
-### Functional
+### LLM crate boundary
 
-15. **`loom-llm` public-contract crate** — typed multi-provider LLM primitives +
-    `Conversation` with built-in tool-use loop + agent-loop observers. Surface,
-    dependency graph constraints, and observer behavior owned by [Llm](llm.md).
-    Loom-harness's role is the crate-graph placement (public-contract leaf, dep
-    floor) — see _Crate Layout_ and _Dependency Graph_ above.
+1. **`loom-llm` public-contract crate** — typed multi-provider LLM primitives +
+   `Conversation` with built-in tool-use loop + agent-loop observers. Surface,
+   dependency graph constraints, and observer behavior owned by [Llm](llm.md).
+   Loom-harness's role is the crate-graph placement (public-contract leaf, dep
+   floor) — see _Crate Layout_ and _Dependency Graph_ above.
 
 ### Non-Functional
 
@@ -749,7 +750,7 @@ halves of the pipeline; no per-line versioning needed.
   canonical spec packages, mock bd spec/work epics, and companions; iteration
   counters reset to 0
 
-### Functional
+### CLI summary
 
 - CLI surface: `loom --help` lists every v1 command (`plan`, `todo`, `loop`,
   `gate`, `inbox`, `tune`, `spec`, `init`, `status`, `logs`, `note`)

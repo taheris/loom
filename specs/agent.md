@@ -5,13 +5,15 @@ and Direct.
 
 ## Problem Statement
 
-Defines agent session, launch, transport, and tool contracts across Pi, Claude,
-and Direct. This package is one contract owner, not a new crate or command tree.
+Workflow code needs consistent session behavior despite different agent
+transports and tool runtimes. Backend adapters preserve that common contract
+while making backend capabilities and failures explicit.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [harness](harness.md), [workspaces](workspaces.md), [events](events.md),
+Backend adapters expose common sessions and typed events while owning their
+runtime-specific launch, transport, and tools. Related owners:
+[harness](harness.md), [workspaces](workspaces.md), [events](events.md),
 [llm](llm.md), [skills](skills.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
@@ -1730,7 +1732,7 @@ letting the entrypoint run the wrong runtime.
    `async-trait` needed — `async fn` in traits is stable and works directly with
    static dispatch.
 
-### Functional
+### Launch and protocol coverage
 
 - `SpawnConfig` JSON serialization round-trips with stable field ordering and
   key names at the [agent-owned launch boundary](#spawnconfig). Adding a field

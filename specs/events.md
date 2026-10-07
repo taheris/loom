@@ -5,14 +5,15 @@ retention pipeline.
 
 ## Problem Statement
 
-Defines one typed event, rendering, transcript, replay, and ordinary-log
-retention pipeline. This package is one contract owner, not a new crate or
-command tree.
+Live output, persisted logs, and replay must describe the same activity without
+losing tool output or presenting duplicate messages. A common typed event stream
+keeps those surfaces consistent and separates them from diagnostic tracing.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [harness](harness.md), [agent](agent.md), [evidence](evidence.md).
+Backends and the driver emit typed events into shared rendering and persistence;
+replay consumes the same event contract. Related owners: [harness](harness.md),
+[agent](agent.md), [evidence](evidence.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -583,17 +584,17 @@ publication.
 
 ## Requirements
 
-### Functional
+### Sink composition
 
-16. **`EventSink` trait and composition** — owned by
-    [Events](#events-and-rendering). Sinks compose via chainable `.tee(other)`;
-    the driver applies `react()` after every non-streaming event and processes
-    returned `SessionCommand`s with `Abort` as terminal priority. The
-    `EventSink` trait lives in `loom-events` so any AgentEvent consumer (Loom
-    binary, external `loom-llm` `Conversation` consumer, SSE bridge, log
-    analyzer) can implement and compose it.
+1. **`EventSink` trait and composition** — owned by
+   [Events](#events-and-rendering). Sinks compose via chainable `.tee(other)`;
+   the driver applies `react()` after every non-streaming event and processes
+   returned `SessionCommand`s with `Abort` as terminal priority. The `EventSink`
+   trait lives in `loom-events` so any AgentEvent consumer (Loom binary,
+   external `loom-llm` `Conversation` consumer, SSE bridge, log analyzer) can
+   implement and compose it.
 
-### Functional
+### Rendering and replay coverage
 
 - `loom logs` rendering, replay, follow, raw, and path-selection cases are owned
   by [Events](#events-and-rendering)

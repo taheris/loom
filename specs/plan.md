@@ -5,15 +5,15 @@ edits checkable contracts with explicit commit consent.
 
 ## Problem Statement
 
-Conducts planning-only interviews, resolves intent and invariant clashes, and
-edits checkable contracts with explicit commit consent. This package is one
-contract owner, not a new crate or command tree.
+Ambiguous requirements and conflicting invariants become expensive once work is
+decomposed or implemented. Planning resolves them with the user while preserving
+checkable acceptance, limited edit authority, and explicit commit consent.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [specs](specs.md), [templates](templates.md), [gate](gate.md),
-[todo](todo.md).
+The interview edits contracts and notes; its rubric checks intent before Todo
+turns the changed specs into work. Related owners: [specs](specs.md),
+[templates](templates.md), [gate](gate.md), [todo](todo.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -46,8 +46,8 @@ responsible for preserving them through the pinned prompt; see
 interview's pre-commit gate (completeness / coherence / invariant-clash) **and**
 the pending-modifier discipline that determines whether the planning session's
 spec edits can pass the push gate. Its completeness guidance applies
-[Gate's package-scoped coverage rule](#plan-stage-checks): contract sections and
-behavioral table rows map to acceptance in the owning package's `tests.md`,
+[the package-scoped completeness rule](#plan-stage-checks): contract sections
+and behavioral table rows map to acceptance in the owning package's `tests.md`,
 using ordinary Markdown section links under
 [spec conventions](../docs/spec-conventions.md#contract-coverage), without
 requiring duplicate annotations in `spec.md` or a mapping registry.
@@ -71,9 +71,12 @@ grep-able by an integrity verifier so the partial cannot quietly drift:
      `[check?](grep -q 'pub enum NewVariant' crates/foo/src/existing_file.rs)`
      where the file exists but the new symbol hasn't been added).
 
-   Both shapes use the same `?` modifier. For command tiers, a spawn failure or
-   non-zero exit silent-passes under `loom gate verify`; exit 0 fires
-   `UnneededPendingMarker` because the pending condition has resolved.
+   Both shapes use the same `?` modifier. Honest prospective absence and a
+   completed nonzero readiness assertion remain pending; an admitted pass fires
+   `UnneededPendingMarker`. Verify owns execution admission and scheduling:
+   malformed offered providers and unavailable required host capabilities are
+   not proof of honest absence or a pending assertion. The planning prompt must
+   not recommend `?` as a way to bypass those boundaries.
 
 2. **"Added" and "modified" annotations both count.** The partial names this
    explicitly, with a worked example: _"if you changed an annotation's command —
@@ -87,7 +90,7 @@ grep-able by an integrity verifier so the partial cannot quietly drift:
 3. **Structured walker input uses `?` and `~` cells.** When the planning session
    edits structured input read by a sweeping walker (the pinning-matrix cell
    values, the FR1 command-set entries the surface-conformance walker reads, the
-   canonical- partial path the anti-drift wire-format walker reads), the pending
+   canonical-partial path the anti-drift wire-format walker reads), the pending
    value is `?` (pending addition — will resolve to the present marker) or `~`
    (pending removal — will resolve to the absent marker) _in the input element
    itself_, not in the SC annotation. Per
@@ -144,6 +147,12 @@ planning agent:
   linked criteria that do not cover them. Annotations need not be duplicated in
   contract prose, and unrelated bindings or matching counts do not establish
   coverage. [judge?](../tests/judges/package-contract-coverage.md)
+
+- Rendered planning guidance preserves binary/assertion pending and mandatory
+  marker removal while explaining that executable probes use Verify's admitted
+  planner; provider errors and required capability gaps cannot be excused by
+  adding `?` or called passing evidence.
+  [test?](plan_stage_rubric_preserves_readiness_admission_boundary)
 
 ### Interview authority and modes
 

@@ -5,15 +5,15 @@ locking, and preserved worker work.
 
 ## Problem Statement
 
-Defines checkout isolation, repository Git authority, launch profiles, mounts,
-locking, and preserved worker work. This package is one contract owner, not a
-new crate or command tree.
+Concurrent agents must not corrupt integration state, lose dirty work, or write
+host-owned safety evidence. Workspace isolation provides the checkout, launch,
+and locking boundaries that workflow phases rely on.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [harness](harness.md), [agent](agent.md), [loop](loop.md),
-[tuning](tuning.md).
+Operator, integration, bead, and tune checkouts have distinct roles; launch and
+mount policy preserves their authority boundaries. Related owners:
+[harness](harness.md), [agent](agent.md), [loop](loop.md), [tuning](tuning.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -53,6 +53,22 @@ A bead container mounts its clone at `/workspace` and the authoritative Beads
 Dolt socket at `/workspace/.wrix/dolt.sock`. A configured shared sccache
 directory is an additional mount. `SpawnConfig` owns these per-launch mounts;
 [Agent — SpawnConfig](agent.md#spawnconfig) owns their wire shape.
+
+### Gate safety-history isolation
+
+[Acceptance](#safety-history-isolation).
+
+Workspace preparation resolves the operator/integration checkout association
+used by
+[Evidence's local safety history](evidence.md#local-workspace-safety-history).
+Host Gate invocations through either checkout reach that history through the
+same evidence-admission boundary. Canonical records and required witness
+artifacts are not worker-writable, whether through container mounts or direct
+write interfaces; a worker cannot replace, erase, or append trusted history by
+editing its clone or reporting another workspace identity. Deterministic worker
+feedback remains available without canonical-history write authority. This
+association does not expose the integration checkout or its marker to workers;
+Gate retains publication authority and Evidence owns history admission.
 
 ### Repository Git Isolation
 
@@ -193,6 +209,17 @@ for worker feedback.
   (`status`, `logs`, `spec`, and deterministic `loom gate` subcommands such as
   `verify`) still run normally
   [test](readonly_and_deterministic_gate_subcommands_run_under_loom_inside_set)
+
+### Safety-history isolation
+
+<!-- prettier-ignore -->
+- Production workspace resolution associates the operator and integration
+  checkouts with the shared host-owned safety history while the actual worker
+  launch keeps canonical records and replay artifacts non-writable. Worker
+  file edits, reports, or claimed workspace identities cannot mutate that
+  history; ordinary deterministic worker feedback still works without exposing
+  the integration checkout or transferring marker authority.
+  [system?](nix run .#test-quint -- workspace-safety-history)
 
 ### Bead dispatch
 
@@ -486,21 +513,19 @@ for worker feedback.
 
 ### Functional
 
-5. **Profile/runtime selection** — reads `profile:X` labels from beads, resolves
+1. **Profile/runtime selection** — reads `profile:X` labels from beads, resolves
    the phase backend to an `AgentRuntime`, and resolves the pair via the
    [Profile-Image Manifest](#profile-image-manifest). Unknown labels or missing
    runtime variants fail at dispatch as static `loom:infra` diagnostics (no
    silent default, no transport retry). `--profile` overrides bead labels.
 
-### Functional
-
-10. **Beads via shared Dolt socket** — every container has the host's
-    `wrix-beads` Dolt server bind-mounted at `/workspace/.wrix/dolt.sock` via
-    `SpawnConfig.mounts` (see [Bead Dispatch](#bead-dispatch)); in-container
-    `bd` writes go straight to the authoritative state. No per-bead
-    `bd dolt push/pull` handoff. Loom on the host reads the same state through
-    the same socket. The legacy `.beads/issues.jsonl` path is not used — beads
-    no longer supports it.
+2. **Beads via shared Dolt socket** — every container has the host's
+   `wrix-beads` Dolt server bind-mounted at `/workspace/.wrix/dolt.sock` via
+   `SpawnConfig.mounts` (see [Bead Dispatch](#bead-dispatch)); in-container `bd`
+   writes go straight to the authoritative state. No per-bead
+   `bd dolt push/pull` handoff. Loom on the host reads the same state through
+   the same socket. The legacy `.beads/issues.jsonl` path is not used — beads no
+   longer supports it.
 
 #### Concurrency & locking (loom-driver)
 

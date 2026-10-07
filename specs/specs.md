@@ -5,14 +5,15 @@ criterion references against current snapshots.
 
 ## Problem Statement
 
-Discovers canonical spec packages, parses acceptance, and resolves stable
-criterion references against current snapshots. This package is one contract
-owner, not a new crate or command tree.
+Discovery, task assignment, and evidence attribution must agree on which
+requirements exist and how they are identified. Package relocation must not hide
+acceptance, and changed requirements must not silently inherit old authority.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [todo](todo.md), [loop](loop.md), [templates](templates.md),
+Package discovery and structural acceptance parsing produce identities and
+snapshot-resolved references for workflow consumers. Related owners:
+[todo](todo.md), [loop](loop.md), [templates](templates.md),
 [verify](verify.md), [evidence](evidence.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
@@ -55,14 +56,21 @@ acceptance inventory. This ordering does not add a permanent dual-layout mode.
 
 [Acceptance](#task-acceptance).
 
-Tasks refer to assigned criteria using the existing typed pair
-`(SpecLabel, CriterionId)`, not line numbers, heading links, or a second
-identifier scheme. The [criterion identity algorithm](#criterion-status-surface)
-is owned here; Templates only consumes and renders the resulting values. Package
-relocation and verifier-only edits preserve reference identity; changes to
-normalized requirement wording require deliberate rebinding. The driver does not
-silently retarget by similarity or follow a changed requirement under an
-unresolved reference.
+Ordinary implementation tasks refer to assigned criteria using the existing
+typed pair `(SpecLabel, CriterionId)`, not line numbers, heading links, or a
+second identifier scheme. The
+[criterion identity algorithm](#criterion-status-surface) is owned here;
+Templates only consumes and renders the resulting values. Package relocation and
+verifier-only edits preserve reference identity; changes to normalized
+requirement wording require deliberate rebinding. The driver does not silently
+retarget by similarity or follow a changed requirement under an unresolved
+reference.
+
+[Loop](loop.md#task-acceptance-at-dispatch) applies this boundary to ordinary
+tasks from every producer, not only Todo. Findings owns the distinct
+[remediation goal](findings.md#remediation-task-acceptance) used to repair
+missing or malformed acceptance; it is not an empty or fabricated criterion
+assignment, nor a fallback when an ordinary reference fails.
 
 #### Dispatch resolution
 
@@ -97,12 +105,22 @@ author-facing navigation surface.
 
 [Acceptance](#criterion-status-surface-1).
 
-`criterion_status` is the per-criterion record that gives the `todo`
-decomposition agent evidence of which Success-Criteria bullets already have
-current verifier evidence before it fans out beads. The driver builds it by
-parsing the changed specs' Success Criteria, computing typed criterion ids, and
-joining against `.loom/cache.db`'s criterion evidence cache. Cache absence is
-represented as missing evidence, never as no work.
+`criterion_status` identifies current criteria and their historical verifier
+observations. The driver parses the changed specs' Success Criteria, computes
+typed criterion ids, and joins `.loom/cache.db`'s observation rows. Cache
+absence is missing evidence, never no work. The observation shape below is not a
+current-admission certificate: `Current` means the annotation matches, not that
+the result remains usable.
+
+Alongside these observations, the driver supplies a typed per-criterion
+[coverage projection from Evidence](evidence.md#coverage-projection), resolved
+against current requirements, policy, execution context, and retained safety
+facts. Decomposition and status consumers can distinguish observed outcomes,
+established current coverage, unresolved blockers, and coverage that cannot be
+established. No commit-distance test, matching annotation, or serialized status
+row can construct an admitted coverage value. The projection does not run
+verifiers, turn a reuse restriction into a failed criterion, or grant
+publication authority.
 
 ```rust
 pub struct CriterionStatus {
@@ -209,6 +227,13 @@ rather than silently detached.
   declarations do not become package-wide defaults.
   [test?](quint_verify_blocks_parse_optional_strict_strategy)
 
+- Package-level strategy parsing accepts `[rust].property_filters` as an array
+  of nextest expression strings and repeatable `[[role_exception]]` tables with
+  `subject`, `role`, and `reason`. It rejects malformed field types and retains
+  typed references and source context for separate inventory resolution; the
+  ordinary TOML example in conventions does not become active policy.
+  [test?](quint_verify_blocks_parse_property_filters_and_role_exceptions)
+
 ### Annotation parsing
 
 - Parser discovers criteria in each canonical package's `tests.md` in lexical
@@ -269,9 +294,10 @@ rather than silently detached.
   `[check]`/`[system]` command strings in the named spec, printing the required
   nixpkgs [test](deps_for_label_walks_file_targets_and_command_strings)
 
-- `loom spec <label> --targets` prints one annotation per line as
+- `loom spec <label> --targets` prints one entry per annotation as
   `[tier] target`; `--tier <tier>` narrows to that tier; `--plain` prints exact
-  target strings without the `[tier] ` prefix
+  target strings without the `[tier] ` prefix. Embedded target newlines are
+  preserved, so entries need not occupy one physical line
   [test](spec_targets_lists_annotation_targets_with_tier_and_plain_modes)
 
 ### Cache database
@@ -291,6 +317,14 @@ rather than silently detached.
   rows (not an error) [test](cache_db_rebuild_companions)
 
 ### Criterion-status surface
+
+- Criterion-status construction pairs historical observations with a typed
+  current coverage projection. Disqualifying same-commit policy/trust/history
+  changes and unresolved counterexamples prevent a cached pass from appearing as
+  admitted coverage; unavailable admission is explicit, not success or a
+  fabricated failure. Projection never executes verifiers or grants publication
+  authority.
+  [test?](criterion_status_separates_observation_from_admissible_coverage)
 
 - Criterion text ends at its actual Markdown item boundary, not the next
   criterion or end of file; unrelated prose, headings, and following sections
@@ -347,19 +381,16 @@ rather than silently detached.
 
 ### Functional
 
-11. **Spec label parsing** — workflow commands that accept spec labels parse
-    them into `SpecLabel` values at the CLI boundary. No command falls back to a
-    `current_spec` cache key: `loom plan` labels are optional anchors,
-    `loom todo` discovers specs from durable cursors, and `loom loop` executes
-    work roots. `loom gate` is not a spec-scoped surface; gate affectedness
-    comes from work scopes and target discovery uses
-    `loom spec <label> --targets`.
+1. **Spec label parsing** — workflow commands that accept spec labels parse them
+   into `SpecLabel` values at the CLI boundary. No command falls back to a
+   `current_spec` cache key: `loom plan` labels are optional anchors,
+   `loom todo` discovers specs from durable cursors, and `loom loop` executes
+   work roots. `loom gate` is not a spec-scoped surface; gate affectedness comes
+   from work scopes and target discovery uses `loom spec <label> --targets`.
 
-### Functional
-
-- `loom spec <label> --deps` parses the named spec's `[check]` / `[test]` /
-  `[system]` / `[judge]` annotations, opens each referenced verifier source, and
-  prints the deduplicated set of nixpkgs needed
+2. `loom spec <label> --deps` parses the named spec's `[check]` / `[test]` /
+   `[system]` / `[judge]` annotations, opens each referenced verifier source,
+   and prints the deduplicated set of nixpkgs needed
 
 ### Package size
 
@@ -373,6 +404,8 @@ evidence rules above.
 
 ## Out of Scope
 
-- Task assignment persistence belongs to Todo; executable admission belongs to
-  Verify. Package relocation does not implement permanent legacy aliases or
-  preserve authority through relabeling.
+- Todo owns decomposition assignment persistence; Findings owns remediation
+  goals, and Loop owns the common task-dispatch boundary. Executable admission
+  belongs to Verify and evidence eligibility to Evidence. Package relocation
+  does not implement permanent legacy aliases or preserve authority through
+  relabeling.

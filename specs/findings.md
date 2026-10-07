@@ -5,15 +5,16 @@ scoped, bonded, deduplicated remediation.
 
 ## Problem Statement
 
-Resolves untrusted finding records into immutable findings and materializes
-scoped, bonded, deduplicated remediation. This package is one contract owner,
-not a new crate or command tree.
+Untrusted verifier and reviewer output must not create misattributed, duplicate,
+or out-of-scope work. Findings resolves records before suppression, routing, and
+remediation, retaining the evidence needed to repair the defect.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [gate](gate.md), [verify](verify.md), [specs](specs.md),
-[inbox](inbox.md), [loop](loop.md), [harness](harness.md).
+Raw records resolve into immutable findings; inspection reports them, while
+act-mode consumers materialize scoped remediation. Related owners:
+[gate](gate.md), [verify](verify.md), [specs](specs.md), [inbox](inbox.md),
+[loop](loop.md), [harness](harness.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -113,6 +114,34 @@ needs diverge from the spec's default.
 `review.md` remains inspection-only and does not emit `bd create` calls; the
 driver applies the default profile when minting from `LOOM_FINDING:` records.
 
+### Remediation task acceptance
+
+[Acceptance](#remediation-acceptance).
+
+The driver constructs remediation goals from resolved findings, their batch
+membership, targets, and evidence. It persists typed goal references through the
+existing Beads boundary; descriptions and `finding:` labels alone cannot
+manufacture resolved acceptance. At dispatch, the driver resolves a complete,
+immutable goal set against the task and current workspace context. Raw records,
+caller-supplied validation flags, missing records, and unrelated findings cannot
+stand in for that set.
+
+This goal is distinct from an implementation task's criterion assignments. A
+finding about missing or malformed acceptance can be addressed without first
+turning that broken criterion into a valid `CriterionStatus` or inventing a
+CriterionId. Finding target resolution still applies: source locations and
+malformation evidence must be real, rather than an exemption for arbitrary
+unresolved references. Resolution failure is actionable and blocks dispatch;
+changing the task kind is not an automatic fallback for bad criterion bindings.
+
+Minted batches and remediation follow-ups, including worker-proposed splits,
+retain explicit finding attribution through driver-owned persistence before
+becoming dispatchable. Process the batch under the existing worker-discretion
+contract: fix it, make permitted partial progress with explicit remaining work,
+or seek clarification. Processing is not a claim that every finding was fixed,
+that retained safety facts were resolved, or that publication is authorized.
+[Loop](loop.md#task-acceptance-at-dispatch) owns the common dispatch boundary.
+
 ### Relocation and attribution
 
 [Acceptance](#relocation-and-attribution-1).
@@ -125,6 +154,16 @@ retains linkage under Evidence. This transition does not introduce a permanent
 legacy alias registry.
 
 ## Success Criteria
+
+### Remediation acceptance
+
+<!-- prettier-ignore -->
+- Real minting, promotion, and remediation-split paths persist driver-resolved
+  finding goals and deliver complete typed acceptance at dispatch, including a
+  task repairing malformed acceptance without a fabricated criterion identity.
+  Missing or forged goal references block before spawn; processed-batch
+  acceptance preserves partial-work attribution and does not assert all
+  findings resolved or grant publication authority. [system?](nix run .#test-quint -- remediation-acceptance)
 
 ### Standing-safety-net bonding
 
@@ -198,7 +237,8 @@ legacy alias registry.
 
 - A walk that streams one or more `LOOM_FINDING:` records and terminates with
   `LOOM_COMPLETE` surfaces as
-  `RecoveryCause::BadWalk(BadWalk:: FindingsWithoutConcern { finding_count })`
+  `RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern { finding_count, findings })`,
+  retaining the streamed findings for recovery
   [test](findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
 
 <!-- prettier-ignore -->
@@ -533,9 +573,13 @@ legacy alias registry.
   `-m/--molecule` calls the deferred-promotion path and never constructs a
   placeholder empty findings vector
   [test](run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion)
-  Per-bead routing and subprocess policy are owned by
-  [Loop — Verdict Gate](loop.md#verdict-gate). This spec receives the resulting
-  deterministic gate evidence and owns its trust semantics.
+
+Per-bead routing and subprocess policy are owned by
+[Loop — Verdict Gate](loop.md#verdict-gate). Findings owns finding-record
+resolution and remediation, not verification-result admission or publication
+trust. Those boundaries belong to
+[Evidence](evidence.md#cache-and-evidence-reuse) and
+[Gate](gate.md#gate-success-receipt), respectively.
 
 ### Molecule mint summary semantics
 
@@ -551,7 +595,7 @@ legacy alias registry.
 
 Loop-side interpretation of these exit codes — retrying transient promotion
 errors or blocking on structural bd state — is owned by
-[Harness](harness.md#functional).
+[Loop — Verdict Gate](loop.md#verdict-gate).
 
 ### Workflow commands
 
@@ -654,10 +698,13 @@ errors or blocking on structural bd state — is owned by
 
 [Acceptance](#findings-and-minting).
 
-`loom gate mint` is the gate's sole driver-side mint surface — the one command
-that walks the rubric and produces remediation beads. Every other gate
-subcommand is inspection-only (no bd writes). Mint is what makes the rubric's
-concerns actionable.
+`loom gate mint` is the only gate CLI command that materializes findings as
+remediation Beads: tree scope walks and materializes; molecule scope promotes
+already-recorded deferred work. Trusted Loop orchestration also records and
+routes molecule-review findings through this owner's materialization boundary.
+Every other gate subcommand is inspection-only with respect to Beads. The
+[inspection/act partition](#inspection-vs-act-partition) distinguishes command
+inspection from trusted driver effects.
 
 ##### Canonical contract location
 
@@ -738,32 +785,37 @@ verdict-log human-readable cause labels (derived from `findings[0].token` or a
 
 [Acceptance](#findings-and-minting).
 
-Every gate subcommand except `loom gate mint` is **inspection-only** — it walks
-rules and emits findings to stdout but performs no `bd` writes. `mint` is the
-sole bd-mutation chokepoint. The partition is structural, not advisory: no code
-path inside `loom gate audit` / `verify` / `review` / `judge` / `rubric` /
-`check` / `test` / `system` / `verify-marker` may call into the mint pipeline's
-`bd` write surface as a side-effect. A `[check?]`-tier verifier asserts this
-(deferred to land alongside the broad forward-resolution change under
-[_Pending modifier_](verify.md#pending-modifier) below) by scanning production
-sources for `mint_findings` / `mint_finding_with_options` invocations outside
-`loom-workflow::mint` and outside `loom loop`'s verdict-gate routing path.
+Every gate subcommand except `loom gate mint` is **inspection-only with respect
+to Beads**: it may inspect or verify state and report results but performs no
+`bd` writes. Among gate CLI commands, only `mint` enters the Findings-owned
+materialization boundary. Trusted workflow orchestration can also enter that
+boundary; this does not authorize inspection commands or reviewing agents to
+mutate Beads. The partition is structural: no code path inside `loom gate audit`
+/ `verify` / `review` / `judge` / `rubric` / `check` / `test` / `system` /
+`verify-marker` may call the pipeline's `bd` write surface as a side-effect. The
+source verifier enforces this separation while permitting trusted Loop routing
+into `loom-workflow::mint`.
 
-The driver's `loom loop` per-bead path is an **operator-level composition**
-around the gate, not a side-effect of any inspection subcommand: after
-integration it runs deterministic `verify --diff <pre-integration-head>..HEAD`
-and records a typed gate log. The molecule-completion push gate deliberately
-composes pre-push deterministic verification with
-`review --diff <actual-push-range>` without invoking `mint`; findings ride
-through the review-log file and through the typed recovery/remediation surfaces.
-Stabilization or an explicit `loom gate mint` invocation is what consumes
-findings as bd state.
+The driver's `loom loop` is an **operator-level composition** around the gate,
+not a side-effect of an inspection subcommand. Its per-bead path runs
+deterministic `verify --diff <pre-integration-head>..HEAD` after integration and
+records a typed gate log without materializing findings. The molecule-completion
+push gate composes pre-push deterministic verification with
+`review --diff <actual-push-range>`. That review command remains read-only with
+respect to Beads; the driver then resolves and routes its findings through
+[deferred remediation processing](#deferred-remediation-processing), recording
+or updating remediation and clarify work as required before any later promotion.
+Stabilization's `loom gate mint -m <molecule>` promotes already-recorded
+deferred beads rather than being their first persistence step.
+[Loop — Verdict Gate](loop.md#verdict-gate) owns when these operations run; this
+spec owns their materialization rules.
 
-The `MarkerProof` mint at the molecule-completion push gate (see `## Marker`
-below) is a **separate** mint surface, owned by `loom-gate::marker` with its own
-`pub(crate)` constructor — it writes a single content-addressed JSON file to
-`.loom/marker.json`, never bd state. "Audit makes no bd writes" remains true
-through that path; the marker is filesystem state, not bd state.
+The `MarkerProof` mint at the molecule-completion push gate (see
+[Gate — Marker](gate.md#marker)) is a **separate** mint surface, owned by
+`loom-gate::marker` with its own `pub(crate)` constructor — it writes a single
+content-addressed JSON file to `.loom/marker.json`, never bd state. "Audit makes
+no bd writes" remains true through that path; the marker is filesystem state,
+not bd state.
 
 ##### Wire-format mixed-shape principle
 
@@ -947,7 +999,7 @@ mismatching `token`'s expected variant, or unresolved target content (criterion
 anchor not in spec, file path absent on disk) — surfaces as
 `BadWalk::MalformedFinding { errors, terminal }` per the pairing-rule table
 below, with the well-formed terminal preserved alongside the per-record errors.
-**No silent skip.** The substring-then-strict- validate shape catches
+**No silent skip.** The substring-then-strict-validate shape catches
 accidentally-fenced finding emit while loudly typing the malformation, which is
 what makes the wire format observable rather than fragile.
 
@@ -1082,7 +1134,7 @@ boundary, and `WalkOutput::from_stdout` is `pub` (consumers depending on
 `loom-protocol` need to call it). Field privacy is what makes the silent-loss
 class unrepresentable — struct-literal construction with bogus fields cannot
 compile, so any `WalkOutput` reaching the classifier ran the typed parse
-pipeline. This mirrors the sealed-`MarkerProof` pattern (`## Marker` below):
+pipeline. This mirrors the [sealed-`MarkerProof` pattern](gate.md#marker):
 validated construction through a single entry point is the type-shape contract
 for trust handoff.
 
@@ -1503,21 +1555,21 @@ pair, tree, config, and push range, not a historical fact.
 
 ### Functional
 
-20. **Options-block requirement on clarify-bound findings.**
-    `partial/findings_walk.md` requires every clarify-bound finding (any token
-    whose mint would label the resulting bead `loom:clarify`, not only
-    `invariant-clash`) to embed the canonical `## Options — <summary>` block
-    (with at least one `### Option <N> — <title>` subsection) inside its
-    `evidence` payload. The driver-side `loom gate mint` validates the evidence
-    at parse time; clarify-bound findings whose evidence lacks a well-formed
-    options block fall back to `loom:blocked` with cause
-    `clarify-without-options` per
-    [Inbox — Options Format Contract](inbox.md#options-format-contract). No
-    wire-format extension to the `LOOM_FINDING:` JSON payload — the contract
-    lives in the `evidence` field's content, with the enforcement at the mint
-    chokepoint. The agent should emit `LOOM_BLOCKED` directly when it cannot
-    articulate options, with a reason explaining why no options can be safely
-    surfaced, rather than emitting a clarify-bound finding without them.
+1. **Options-block requirement on clarify-bound findings.**
+   `partial/findings_walk.md` requires every clarify-bound finding (any token
+   whose mint would label the resulting bead `loom:clarify`, not only
+   `invariant-clash`) to embed the canonical `## Options — <summary>` block
+   (with at least one `### Option <N> — <title>` subsection) inside its
+   `evidence` payload. The driver-side `loom gate mint` validates the evidence
+   at parse time; clarify-bound findings whose evidence lacks a well-formed
+   options block fall back to `loom:blocked` with cause
+   `clarify-without-options` per
+   [Inbox — Options Format Contract](inbox.md#options-format-contract). No
+   wire-format extension to the `LOOM_FINDING:` JSON payload — the contract
+   lives in the `evidence` field's content, with the enforcement at the mint
+   chokepoint. The agent should emit `LOOM_BLOCKED` directly when it cannot
+   articulate options, with a reason explaining why no options can be safely
+   surfaced, rather than emitting a clarify-bound finding without them.
 
 ## Out of Scope
 

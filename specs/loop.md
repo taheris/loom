@@ -5,17 +5,50 @@ integrates and publishes only through the shared gate.
 
 ## Problem Statement
 
-Schedules isolated workers, reconciles outcomes, retries bounded failures, and
-integrates and publishes only through the shared gate. This package is one
-contract owner, not a new crate or command tree.
+Worker completion is not proof that changes are safe to integrate or publish.
+Loop reconciles task acceptance and outcomes, bounds recovery, and coordinates
+isolated work through the shared verification and publication boundaries.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [workspaces](workspaces.md), [specs](specs.md), [todo](todo.md),
+The driver resolves acceptance before dispatch, reconciles the worker outcome,
+and performs integration/publication effects only through Gate admission.
+Related owners: [workspaces](workspaces.md), [specs](specs.md), [todo](todo.md),
 [gate](gate.md), [findings](findings.md), [templates](templates.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
+
+### Task acceptance at dispatch
+
+[Acceptance](#task-acceptance).
+
+Every task producer uses the same driver-owned acceptance boundary. Ordinary
+implementation tasks, including manually created or split follow-ups, require
+explicit criterion assignments resolved under
+[Specs](specs.md#task-acceptance-references). Remediation tasks instead carry
+[Findings' resolved goals](findings.md#remediation-task-acceptance). The driver
+parses the task's declared purpose and references, resolves them against the
+current dispatch snapshot, and supplies the corresponding immutable acceptance
+form to Templates. Neither prose, labels, an empty default, nor external JSON
+claiming to be resolved authorizes dispatch.
+
+The persisted acceptance-reference payload is one tagged sum: either a nonempty
+set of criterion references or a nonempty set of remediation-goal references.
+Its typed shape excludes mixed purposes and empty acceptance, rather than
+allowing two independent optional fields. Parsing produces reference candidates,
+not resolved goals; a tag alone proves neither task purpose nor finding
+membership. Only the separate driver resolution constructs immutable dispatch
+acceptance. Metadata does not store copied resolved authority.
+
+Missing or invalid ordinary bindings require explicit binding or rebinding
+before spawn; they cannot silently become remediation. Missing or invalid
+remediation goals likewise block with corrective context. This permits repair of
+broken acceptance without relaxing finding resolution or ordinary task binding.
+Producer-specific handoffs use existing workflow/Beads boundaries, not a second
+queue, ad-hoc IDs, or agent-authored trusted metadata. Pending criteria remain
+assignable under Specs' existing rule. Worker terminal reconciliation,
+integration verification, and publication admission are unchanged; resolved
+goals are instructions, not passing evidence.
 
 ### Verdict Gate
 
@@ -239,7 +272,7 @@ the typed `previous_failure` block.
 [Acceptance](#worker-self-check).
 
 `loop.md`'s quality-gate block instructs the worker to finish by verifying the
-exact injected bead range, not by relying on a working- tree shorthand. The
+exact injected bead range, not by relying on a working-tree shorthand. The
 rendered command names `loom gate verify --diff <bead-base>..HEAD` (or
 `@{u}..HEAD` only when the upstream is the injected base), and tells the agent
 to rerun the self-check after any later commit or hook-generated file change.
@@ -247,7 +280,8 @@ The prompt also requires a structured self-review before the final marker:
 re-read the bead's criteria, inspect the final diff, check style/spec fit, and
 either fix the issue or emit the appropriate worker self-report marker. This is
 prompt-level feedback discipline; the driver-side trust boundary remains the
-post-integration verify and molecule push gate in [Harness](harness.md).
+[post-integration workflow](#worker-and-per-bead-integration-checks) and
+[Gate's push receipt](gate.md#gate-success-receipt).
 
 ### Dependency-Wait Terminal
 
@@ -265,6 +299,19 @@ blocker is invalid and enters recovery.
 ## Success Criteria
 
 ### Task acceptance
+
+- The task-acceptance reference type and its metadata parser admit exactly one
+  nonempty criterion-reference or remediation-reference variant. Mixed, empty,
+  malformed, and unknown variants fail ingestion; parsed candidates cannot stand
+  in for the separately resolved immutable dispatch value.
+  [test?](task_acceptance_refs_are_exclusive_nonempty_variants)
+
+<!-- prettier-ignore -->
+- Actual dispatch distinguishes explicitly bound implementation tasks from
+  driver-resolved finding remediation, including non-Todo and split tasks.
+  Missing, malformed, or forged acceptance blocks before spawn without a
+  purpose-changing fallback; a valid repair goal can address malformed
+  acceptance while ordinary broken references still fail. [system?](nix run .#test-quint -- remediation-acceptance)
 
 <!-- prettier-ignore -->
 - The production worker-dispatch path rejects malformed, unknown, missing, or
@@ -927,9 +974,9 @@ per molecule — silent skip is structurally unrepresentable (see
 an epic as a worker task. Together, the conditions for the original gate-skip
 class are structurally unreachable.
 
-### Functional
+### Scheduling and publication
 
-6. **Bead dispatch** — `loom loop --parallel N` (alias `-p N`) dispatches up to
+1. **Bead dispatch** — `loom loop --parallel N` (alias `-p N`) dispatches up to
    N ready beads, each in its own clone of the loom workspace under
    `.loom/beads/<id>/` on a per-bead branch. The operator's `/workspace` is
    never the bead's workdir. `--parallel 1` (default) runs one bead at a time;
@@ -943,13 +990,13 @@ class are structurally unreachable.
    [Verdict Gate § Loom-workspace integration outcomes](#verdict-gate)). Workers
    never push. A valid `LOOM_WAITING` slot is not merged or gated and its clone
    remains in place while blocker-aware `bd ready` schedules other work.
-7. **Retry with context** — on in-session worker failure (or explicit agent
+2. **Retry with context** — on in-session worker failure (or explicit agent
    self-report via `LOOM_RETRY`), retries with the prior error output injected
    as the `previous_failure` template variable. Configurable max retries per
    bead (default 2; `LOOM_RETRY` consumes one slot per emission). After
    in-session retries exhaust, the phase ends; the verdict is delegated to the
    [Verdict Gate](#verdict-gate).
-8. **Verdict gate per phase** — worker sessions are classified by the verdict
+3. **Verdict gate per phase** — worker sessions are classified by the verdict
    gate after the agent emits its terminal marker. Per-bead `loop` workers use
    the decision table above; review uses the review-specific terminal handling
    documented there. For implementation beads, the driver then runs
@@ -968,7 +1015,7 @@ class are structurally unreachable.
    the driver does not mutate bd state as a consequence of an interactive
    session. See [Verdict Gate § Interactive vs worker sessions](#verdict-gate)
    for the full no-reconciliation contract.
-9. **Push gate — consume the gate-owned receipt.** Loop owns the
+4. **Push gate — consume the gate-owned receipt.** Loop owns the
    molecule-completion orchestration: require resolved molecule state,
    synchronize the integration branch with origin, resolve the actual push
    range, execute deterministic pre-push verification followed by review, and
@@ -1005,108 +1052,109 @@ class are structurally unreachable.
    `verify-fail`, `integrity-finding`, or any bead carrying `loom:blocked` /
    `loom:clarify`) — those paths leave the gate before the `Clean` arm runs.
 
-### Functional
+### Verdict-gate production wiring
 
-12. **Verdict-gate production wiring** — the verdict-gate decision function is
-    the single source of truth for marker → outcome routing. Production MUST
-    invoke it from `loom loop`'s per-bead exit and `loom gate review`'s
-    phase-end; no site may inline ad-hoc marker classification. The function is
-    unit-tested in isolation and also exercised through its production callers
-    (live-path coverage), per the trust-tier rules in
-    [docs/spec-conventions.md](../docs/spec-conventions.md).
+**FR12 — Verdict-gate production wiring** — the verdict-gate decision function
+is the single source of truth for marker → outcome routing. Production MUST
+invoke it from `loom loop`'s per-bead exit and `loom gate review`'s phase-end;
+no site may inline ad-hoc marker classification. The function is unit-tested in
+isolation and also exercised through its production callers (live-path
+coverage), per the trust-tier rules in
+[docs/spec-conventions.md](../docs/spec-conventions.md).
 
-### Functional
+### Observer-abort routing
 
-17. **Observer-abort verdict-gate routing** — when an `EventSink::react()`
-    returns `SessionCommand::Abort`, the driver cancels the session and
-    classifies the outcome as recovery cause `observer-abort` with detail naming
-    the responsible observer + the reason. This is the verdict-gate landing path
-    for the loom-llm observer behavior owned by [Llm](llm.md) (notably
-    `DoomLoopObserver`'s stage 2). Without this routing, observer kills would
-    mis-classify as `swallowed-marker`.
+1. **Observer-abort verdict-gate routing** — when an `EventSink::react()`
+   returns `SessionCommand::Abort`, the driver cancels the session and
+   classifies the outcome as recovery cause `observer-abort` with detail naming
+   the responsible observer + the reason. This is the verdict-gate landing path
+   for the loom-llm observer behavior owned by [Llm](llm.md) (notably
+   `DoomLoopObserver`'s stage 2). Without this routing, observer kills would
+   mis-classify as `swallowed-marker`.
 
-### Functional
+### Retry context
 
-11. **Typed `PreviousFailure`** — `LoopContext.previous_failure` is
-    `Option<PreviousFailure>` where `PreviousFailure` is a tagged enum
-    (`DriverNotice`, `VerifyFailures`, `ReviewConcern`, `BadWalk(BadWalk)`,
-    `BuildFailure`, `TreeNotClean`, `PostIntegrateFail`, `IntegrationConflict`,
-    `AgentRetry { reason: String }`). The driver populates the right variant
-    from the verdict-gate cause classification. Each variant renders with
-    distinct framing per _Typed `PreviousFailure`_ above. Caps:
-    `PREVIOUS_FAILURE_MAX_LEN = 4000` total; per-block stderr tail ~1500 chars.
-    Optional caller-supplied `review_notes` is outside this typed channel and
-    its caller owns the budget. `AgentRetry.reason` shares the per-block budget
-    cap.
-12. **Attempt counter.** `LoopContext.attempt: u32` is the per-bead in-session
-    retry counter, bounded by `[loop] max_retries` (default 2), resets to 0 on
-    fresh bead dispatch. Fix-up beads start at `attempt = 0`; work-epic-level
-    iteration is opaque to the agent. `loop.md` renders the attempt line when
-    `attempt > 0 && previous_failure.is_some()`, omits it otherwise.
+1. **Typed `PreviousFailure`** — `LoopContext.previous_failure` is
+   `Option<PreviousFailure>` where `PreviousFailure` is a tagged enum
+   (`DriverNotice`, `VerifyFailures`, `ReviewConcern`, `BadWalk(BadWalk)`,
+   `BuildFailure`, `TreeNotClean`, `PostIntegrateFail`, `IntegrationConflict`,
+   `AgentRetry { reason: String }`). The driver populates the right variant from
+   the verdict-gate cause classification. Each variant renders with distinct
+   framing per _Typed `PreviousFailure`_ above. Caps:
+   `PREVIOUS_FAILURE_MAX_LEN = 4000` total; per-block stderr tail ~1500 chars.
+   Optional caller-supplied `review_notes` is outside this typed channel and its
+   caller owns the budget. `AgentRetry.reason` shares the per-block budget cap.
+2. **Attempt counter.** `LoopContext.attempt: u32` is the per-bead in-session
+   retry counter, bounded by `[loop] max_retries` (default 2), resets to 0 on
+   fresh bead dispatch. Fix-up beads start at `attempt = 0`; work-epic-level
+   iteration is opaque to the agent. `loop.md` renders the attempt line when
+   `attempt > 0 && previous_failure.is_some()`, omits it otherwise.
 
-### Functional
+### Self-reports and dependency waiting
 
-18. **Self-report marker taxonomy.** Direct loop/todo self-report markers form a
-    three-way taxonomy carried by `partial/self_report_markers.md`:
-    - `LOOM_RETRY` — this attempt cannot finish but a fresh dispatch is likely
-      to succeed (environmental failure: tools failing mid-session, sandbox/cwd
-      unlinked, transient IO; or agent self-reset: stuck-but-not-blocked,
-      prompt-context exhausted). Consumes one slot in `[loop] max_retries`;
-      exhaustion escalates to `loom:blocked` with cause `retry-exhausted` per
-      [Loop — Verdict Gate](#verdict-gate). The driver populates
-      `PreviousFailure::AgentRetry { reason }` with the prose the agent wrote on
-      the line preceding the marker.
-    - `LOOM_CLARIFY` — in `loop` and `todo`, the agent has framed a decision the
-      human must resolve and can enumerate the candidate paths as a structured
-      `## Options — …` block per
-      [Inbox — Options Format Contract](inbox.md#options-format-contract). The
-      agent persists the block to the bead/work epic before the marker, and the
-      verdict gate routes to `loom:clarify` for human resolution via
-      `loom inbox`.
-    - `LOOM_BLOCKED` — genuine dead end: the agent cannot proceed and has no
-      candidate resolutions to enumerate. The reason must explain why no options
-      can be safely surfaced. Routes to `loom:blocked`; `loom inbox chat` walks
-      the human through candidate enumeration in-session.
+1. **Self-report marker taxonomy.** Direct loop/todo self-report markers form a
+   three-way taxonomy carried by `partial/self_report_markers.md`:
+   - `LOOM_RETRY` — this attempt cannot finish but a fresh dispatch is likely to
+     succeed (environmental failure: tools failing mid-session, sandbox/cwd
+     unlinked, transient IO; or agent self-reset: stuck-but-not-blocked,
+     prompt-context exhausted). Consumes one slot in `[loop] max_retries`;
+     exhaustion escalates to `loom:blocked` with cause `retry-exhausted` per
+     [Loop — Verdict Gate](#verdict-gate). The driver populates
+     `PreviousFailure::AgentRetry { reason }` with the prose the agent wrote on
+     the line preceding the marker.
+   - `LOOM_CLARIFY` — in `loop` and `todo`, the agent has framed a decision the
+     human must resolve and can enumerate the candidate paths as a structured
+     `## Options — …` block per
+     [Inbox — Options Format Contract](inbox.md#options-format-contract). The
+     agent persists the block to the bead/work epic before the marker, and the
+     verdict gate routes to `loom:clarify` for human resolution via
+     `loom inbox`.
+   - `LOOM_BLOCKED` — genuine dead end: the agent cannot proceed and has no
+     candidate resolutions to enumerate. The reason must explain why no options
+     can be safely surfaced. Routes to `loom:blocked`; `loom inbox chat` walks
+     the human through candidate enumeration in-session.
 
-    Review uses `partial/review_self_report_markers.md` instead of the direct
-    partial. The review partial preserves inspection-only review: it forbids bd
-    mutation, treats direct `LOOM_CLARIFY` as the wrong review path, and sends
-    clarify-worthy decisions through `route="clarify"` finding evidence with the
-    canonical Options block. The semantic discriminator remains explicit:
-    "expect retry to succeed? → RETRY. can you enumerate options? → CLARIFY
-    (direct in loop/todo, finding-routed in review). dead end? → BLOCKED."
-    Interactive sessions (`plan`, `inbox`) do not emit worker self-report
-    markers — the human resolves friction in-turn. `inbox` may emit
-    `LOOM_APPLY: {"proposals":[...]}` when it requests the trusted driver to
-    apply accepted tune proposals.
+   Review uses `partial/review_self_report_markers.md` instead of the direct
+   partial. The review partial preserves inspection-only review: it forbids bd
+   mutation, treats direct `LOOM_CLARIFY` as the wrong review path, and sends
+   clarify-worthy decisions through `route="clarify"` finding evidence with the
+   canonical Options block. The semantic discriminator remains explicit: "expect
+   retry to succeed? → RETRY. can you enumerate options? → CLARIFY (direct in
+   loop/todo, finding-routed in review). dead end? → BLOCKED." Interactive
+   sessions (`plan`, `inbox`) do not emit worker self-report markers — the human
+   resolves friction in-turn. `inbox` may emit `LOOM_APPLY: {"proposals":[...]}`
+   when it requests the trusted driver to apply accepted tune proposals.
 
-19. **Dependency waiting in `loop`.** `partial/dependency_wait.md`, pinned only
-    in `loop`, defines bare `LOOM_WAITING` for an open bead blocked by at least
-    one active declared dependency. It directs the worker to add the Beads edge
-    before emitting, forbids closing the current bead, and states that valid
-    waiting preserves the workspace/branch while skipping integration, gate,
-    retry-budget use, and workflow-state mutation. Invalid waiting enters
-    recovery rather than parking.
+2. **Dependency waiting in `loop`.** `partial/dependency_wait.md`, pinned only
+   in `loop`, defines bare `LOOM_WAITING` for an open bead blocked by at least
+   one active declared dependency. It directs the worker to add the Beads edge
+   before emitting, forbids closing the current bead, and states that valid
+   waiting preserves the workspace/branch while skipping integration, gate,
+   retry-budget use, and workflow-state mutation. Invalid waiting enters
+   recovery rather than parking.
 
-### Functional
+### Dispatch and recovery coverage
 
 - Profile/runtime selection from bead labels plus resolved backend (parse,
   fallback to base, flag override, missing runtime failure)
   - Interactive `plan` / `inbox chat` command-construction tests cover the
     backend-specific launch matrix owned by
     [Agent — Interactive Shell-Out](agent.md#interactive-shell-out)
-  - Retry logic (failure count tracking, `loom:clarify` label after max retries)
+  - Retry logic follows the [Verdict Gate](#verdict-gate): semantic recovery
+    exhaustion applies `loom:blocked` with cause `retry-exhausted`, not an
+    automatic clarification. Infrastructure failures retain their separate
+    budget and `loom:infra` routing.
   - Push gate logic (clean completion, fix-up beads, iteration cap)
   - No per-bead `bd dolt push/pull` is invoked: assert `BdClient` exposes no
     `dolt_push`/`dolt_pull` methods and the workflow paths do not spawn
     `bd dolt …` subprocess calls (containers reach the authoritative state via
     the bind-mounted Dolt socket)
   - Parallel dispatch and integration tests execute the
-    [harness-owned bead lifecycle](workspaces.md#bead-dispatch) through public
-    seams; production CLI coverage is used when command routing is the behavior
-    under test
+    [Workspaces-owned bead lifecycle](workspaces.md#bead-dispatch) through
+    public seams; production CLI coverage is used when command routing is the
+    behavior under test
 
-### Functional
+### Status command
 
 - `loom status` prints active work epic, pending `loom:todo` work epic,
   iteration count, and cache health in a stable parseable format

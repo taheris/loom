@@ -175,6 +175,37 @@ workflows use the built-in baseline policy without custom strategy blocks;
 declarations express exceptions or additional requirements, not settings users
 must maintain to keep the gate sound.
 
+Package-level declarations use an optional `[rust]` table whose
+`property_filters` is an array of nextest filter-expression strings, and
+repeatable `[[role_exception]]` tables carrying `subject`, `role`, and `reason`.
+The subject identifies a discovered project target/resource; the role names its
+justified classification and the reason supplies the rationale. For example, the
+following illustrates the contents of a package-level strategy block; this
+ordinary TOML example is not an active declaration:
+
+```toml
+[rust]
+property_filters = ['package(=loom-gate) & test(/^properties::/)']
+
+[[role_exception]]
+subject = "fixture:invalid-rust"
+role = "test-fixture"
+reason = "Intentionally invalid Rust consumed by parser tests."
+```
+
+The example's subject is not a prescribed naming scheme or a substitute for
+actual discovery. The filter combines an exact package match with a test-name
+regex; parsing the expression is separate from resolving it against project
+metadata and discovered tests. These declarations contain no execution commands
+or copied input lists. Their parsing acceptance is owned by
+[Specs](../specs/specs.md#planning-coverage-and-strategy).
+
+Role exceptions name discovered project targets or resources, not spec-authored
+file globs or copied membership lists. The project definition supplies
+membership; the spec supplies the justified classification.
+[Verify's subject-resolution contract](../specs/verify.md#subject-references-for-role-exceptions)
+governs admission and the obligations retained by that classification.
+
 An annotated criterion's optional stage declaration belongs in a `loom-verify`
 block inside that criterion's Markdown bullet, directly after its verifier
 annotation. Markdown containment supplies the association; authors do not repeat
@@ -278,7 +309,11 @@ presence is silently tolerated while the target does not resolve; the moment the
 target _does_ resolve, the marker itself becomes a finding
 (`UnneededPendingMarker`) and the implementing diff must drop the `?`. This
 binds _"target now resolves"_ and _"marker now removed"_ into the same commit,
-so the spec tree never carries stale markers.
+so the spec tree never carries stale markers. Executable readiness checks use
+[Verify's shared admitted planner](../specs/verify.md#pending-modifier), with
+its affectedness, stage, sharing, and execution-budget rules. Honest absence
+remains pending; malformed offered providers do not gain an admission exemption.
+A readiness result is not an ordinary pass for the pending criterion.
 
 When to apply the modifier:
 

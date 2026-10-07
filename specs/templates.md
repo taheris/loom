@@ -5,14 +5,15 @@ delivery without owning workflow transitions.
 
 ## Problem Statement
 
-Provides typed Askama contexts, partials, pinning, rendering, and compaction
-delivery without owning workflow transitions. This package is one contract
-owner, not a new crate or command tree.
+Agents need the correct instructions and acceptance context at dispatch and
+after compaction. Templates composes that context consistently without
+reinterpreting task identity, evidence admission, or workflow transitions.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [specs](specs.md), [plan](plan.md), [todo](todo.md), [loop](loop.md),
+Typed workflow contexts feed compiled Askama templates and shared partials;
+rendering and recovery preserve the supplied context. Related owners:
+[specs](specs.md), [plan](plan.md), [todo](todo.md), [loop](loop.md),
 [inbox](inbox.md), [findings](findings.md), [skills](skills.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
@@ -67,7 +68,7 @@ rubric-walk objective rather than an implement-the-bead objective.
 Each template has a matching `#[derive(Template)]` context struct in the same
 crate. The Askama build verifies every variable referenced in the template body
 has a matching field on its context struct — missing variables are compile
-errors, unused fields trigger the `unused` workspace lint.
+errors.
 
 ### Partials
 
@@ -76,31 +77,31 @@ errors, unused fields trigger the `unused` workspace lint.
 Reusable fragments included via `{% include "partial/<name>.md" %}`. Current and
 target v1 set; pending additions are marked in the pinning matrix:
 
-| Partial                          | Purpose                                                                                                                                                                                                                                                                       |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `context_pinning.md`             | Pin the project-overview file (`pinned_context`)                                                                                                                                                                                                                              |
-| `style_rules.md`                 | Pin the style-rules file (`style_rules`) — see _Style-Rules Partial_ below                                                                                                                                                                                                    |
-| `spec_conventions.md`            | Pin the spec-conventions document — see _Spec-Conventions Partial_ below                                                                                                                                                                                                      |
-| `spec_header.md`                 | Render spec label/work-root context supplied by the phase                                                                                                                                                                                                                     |
-| `companions_context.md`          | List companion paths declared on the spec(s) in scope                                                                                                                                                                                                                         |
-| `scratchpad.md`                  | Pin the per-session scratchpad path                                                                                                                                                                                                                                           |
-| `skill_index.md`                 | Render the precomputed compact index produced under [Skills — Registration and Progressive Disclosure](skills.md#registration-and-progressive-disclosure).                                                                                                                    |
-| `progress_markers.md`            | Document `LOOM_COMPLETE` success and the loop-only `LOOM_NOOP` empty-diff success terminator. **Not pinned in `todo.md`** because todo success is the typed `LOOM_TODO:` payload, not a generic complete/no-op marker.                                                        |
-| `todo_success.md`                | Document the todo-specific success terminator `LOOM_TODO: <json>` and the `loom-protocol::todo::TodoSuccess` shape. Pinned only by `todo.md`.                                                                                                                                 |
-| `self_report_markers.md`         | Document direct loop/todo cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`, including bd-backed persistence for direct `LOOM_CLARIFY` in those phases.                                                                                                  |
-| `workspace_recovery.md`          | Loop-only recovery context for dirty bead workspaces saved to an unapplied git stash before dispatch; instructs the worker to inspect the stash before normal work and mention stash handling in its final summary.                                                           |
-| `review_self_report_markers.md`  | Document review-only cannot-complete terminators while preserving inspection-only review: no bd mutation instructions, and clarify-worthy decisions route through `route="clarify"` findings instead of direct `LOOM_CLARIFY`.                                                |
-| `options_format.md`              | Carry the canonical `## Options — <summary>` / `### Option N — <title>` markdown block consumed by `loom inbox`'s chat-drafter, per [Inbox — Options Format Contract](inbox.md#options-format-contract).                                                                      |
-| `findings_walk.md`               | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed review wire format per [Findings — Findings and Minting](findings.md#findings-and-minting-1). Pinned only by `review.md`; an anti-drift verifier fails any other template that restates the wire format. |
-| `chat_marker_final_turn_only.md` | Restrict interactive-session terminal markers to the **final** assistant turn. `plan` may emit `LOOM_COMPLETE`; `inbox` may emit `LOOM_COMPLETE` or `LOOM_APPLY: {"proposals":[...]}`. Included by `plan` and `inbox`.                                                        |
-| `interview_modes.md`             | Describe the "one by one" / "polish the spec" interview sub-modes                                                                                                                                                                                                             |
-| `chat_interview.md`              | Interactive-session discipline for `plan` and `inbox`: conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and phase-authorized durable destinations for anything that needs to outlive the session — see _Chat Discipline_ below         |
-| `decomposition_discipline.md`    | Pin the audit-before-fan-out and exact-roster rule on `todo`: every changed spec from driver preflight must be represented in `LOOM_TODO`, and every bead must correspond to evidence-confirmed missing work — see _Decomposition Discipline_ below                           |
-| `dependency_wait.md`             | Document the loop-only bare `LOOM_WAITING` terminal: declare an active blocker, leave the current bead open, and let the driver preserve its workspace without integration, gate, retry, or workflow-state mutation.                                                          |
-| `plan_stage_rubric.md`           | Gate the planning interview on completeness / coherence / invariant-clash before any commit. Carries the pending-modifier discipline prominently — see _Planning-Rubric Pending Discipline_ below.                                                                            |
-| `invariant_clash.md`             | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`)                                                                                                                                                                                |
-| `review_rubric.md`               | Finite-diff / push-range review rubric — see [Gate](gate.md)                                                                                                                                                                                                                  |
-| `sibling_spec_editing.md`        | Authorize cross-spec edits during a planning session                                                                                                                                                                                                                          |
+| Partial                          | Purpose                                                                                                                                                                                                                                                                                |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `context_pinning.md`             | Pin the project-overview file (`pinned_context`)                                                                                                                                                                                                                                       |
+| `style_rules.md`                 | Pin the style-rules file (`style_rules`) — see _Style-Rules Partial_ below                                                                                                                                                                                                             |
+| `spec_conventions.md`            | Pin the spec-conventions document — see _Spec-Conventions Partial_ below                                                                                                                                                                                                               |
+| `spec_header.md`                 | Render spec label/work-root context supplied by the phase                                                                                                                                                                                                                              |
+| `companions_context.md`          | List companion paths declared on the spec(s) in scope                                                                                                                                                                                                                                  |
+| `scratchpad.md`                  | Pin the per-session scratchpad path                                                                                                                                                                                                                                                    |
+| `skill_index.md`                 | Render the precomputed compact index produced under [Skills — Registration and Progressive Disclosure](skills.md#registration-and-progressive-disclosure).                                                                                                                             |
+| `progress_markers.md`            | Document `LOOM_COMPLETE` success and the loop-only `LOOM_NOOP` empty-diff success terminator. **Not pinned in `todo.md`** because todo success is the typed `LOOM_TODO:` payload, not a generic complete/no-op marker.                                                                 |
+| `todo_success.md`                | Document the todo-specific success terminator `LOOM_TODO: <json>` and the `loom-protocol::todo::TodoSuccess` shape. Pinned only by `todo.md`.                                                                                                                                          |
+| `self_report_markers.md`         | Document direct loop/todo cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`, including bd-backed persistence for direct `LOOM_CLARIFY` in those phases.                                                                                                           |
+| `workspace_recovery.md`          | Loop-only recovery context for dirty bead workspaces saved to an unapplied git stash before dispatch; instructs the worker to inspect the stash before normal work and mention stash handling in its final summary.                                                                    |
+| `review_self_report_markers.md`  | Document review-only cannot-complete terminators while preserving inspection-only review: no bd mutation instructions, and clarify-worthy decisions route through `route="clarify"` findings instead of direct `LOOM_CLARIFY`.                                                         |
+| `options_format.md`              | Carry the canonical `## Options — <summary>` / `### Option N — <title>` markdown block consumed by `loom inbox`'s chat-drafter, per [Inbox — Options Format Contract](inbox.md#options-format-contract).                                                                               |
+| `findings_walk.md`               | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed review wire format per [Findings — Findings and Minting](findings.md#findings-and-minting-1). Pinned only by `review.md`; an anti-drift verifier fails any other template that restates the wire format.          |
+| `chat_marker_final_turn_only.md` | Restrict interactive-session terminal markers to the **final** assistant turn. `plan` may emit `LOOM_COMPLETE`; `inbox` may emit `LOOM_COMPLETE` or `LOOM_APPLY: {"proposals":[...]}`. Included by `plan` and `inbox`.                                                                 |
+| `interview_modes.md`             | Describe the "one by one" / "polish the spec" interview sub-modes                                                                                                                                                                                                                      |
+| `chat_interview.md`              | Interactive-session discipline for `plan` and `inbox`: conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and phase-authorized durable destinations for anything that needs to outlive the session — see _Chat Discipline_ below                  |
+| `decomposition_discipline.md`    | Pin the audit-before-fan-out and exact-roster rule on `todo`: every changed spec from driver preflight must be represented in `LOOM_TODO`, and every bead must correspond to evidence-confirmed missing work — see [Todo — Decomposition Discipline](todo.md#decomposition-discipline) |
+| `dependency_wait.md`             | Document the loop-only bare `LOOM_WAITING` terminal: declare an active blocker, leave the current bead open, and let the driver preserve its workspace without integration, gate, retry, or workflow-state mutation.                                                                   |
+| `plan_stage_rubric.md`           | Gate the planning interview on completeness / coherence / invariant-clash before any commit. Carries the pending-modifier discipline prominently — see [Plan — Planning-Rubric Pending Discipline](plan.md#planning-rubric-pending-discipline).                                        |
+| `invariant_clash.md`             | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`)                                                                                                                                                                                         |
+| `review_rubric.md`               | Finite-diff / push-range review rubric — see [Gate](gate.md)                                                                                                                                                                                                                           |
+| `sibling_spec_editing.md`        | Authorize cross-spec edits during a planning session                                                                                                                                                                                                                                   |
 
 ### Style-Rules Partial
 
@@ -176,12 +177,16 @@ block to the bead or work epic before the marker. `review` pins
 clarify-worthy decisions are emitted as `route="clarify"` findings with Options
 in `evidence`, or as `LOOM_BLOCKED` when the reviewer cannot articulate options.
 
-**`style_rules.md` is pinned only in `loop` and `review`** — the two phases that
-write or evaluate code. Other phases don't write or evaluate code, so pinning
-the rules there would inflate prompt size without buying enforcement.
+**`style_rules.md` is pinned only in `loop` and `review`** to support
+implementation and quality review. This pinning policy does not prohibit code
+inspection in other phases: [Todo](todo.md#decomposition-discipline) requires an
+implementation/verifier audit before decomposition.
 
-**`spec_conventions.md` is pinned only in `plan`** — the phase that authors spec
-content. Other phases consume specs but don't modify them.
+**`spec_conventions.md` is pinned only in `plan`** to guide specification
+interviews. Pinning is not an edit-permission boundary: Loop also maintains
+acceptance bindings under
+[Verify's pending-marker lifecycle](verify.md#pending-modifier), including
+removing a resolved marker in the implementing diff.
 
 **`decomposition_discipline.md` and `todo_success.md` are pinned only in
 `todo`** — the phase that authorizes bead creation. The driver has already
@@ -206,16 +211,28 @@ rather than unconditionally pinning every package's full `tests.md` and model.
 
 When context selection is uncertain it broadens context rather than omitting
 obligations. Models and supporting detail load on demand. Compaction recovery
-restores the selected contract and explicit acceptance context under Specs'
-existing prompt-repin protocol; agents need not rediscover their obligations.
-[Specs](specs.md#task-acceptance-references) supplies typed, snapshot-resolved
-task acceptance. Worker context construction consumes that resolved form and
-renders each obligation's `(SpecLabel, CriterionId)`, full current criterion
-text, and current verifier binding. It does not independently parse task
-reference strings, resolve links, or omit unresolved members. Compaction
-restores that dispatched acceptance context rather than reinterpreting
-references against a different snapshot. Resolving references does not itself
-establish a verifier pass.
+restores the selected contract and explicit acceptance context under
+[Compaction Recovery](#compaction-recovery), with backend delivery governed by
+[Agent — Compaction Handling](agent.md#compaction-handling). Agents need not
+rediscover their obligations.
+[Loop's dispatch boundary](loop.md#task-acceptance-at-dispatch) supplies typed,
+snapshot-resolved acceptance. For implementation tasks,
+[Specs](specs.md#task-acceptance-references) supplies each obligation's
+`(SpecLabel, CriterionId)`, full current text, and verifier binding. For
+remediation, [Findings](findings.md#remediation-task-acceptance) supplies
+resolved finding goals, attribution, targets, evidence, and processed-batch
+acceptance. Templates render the supplied form, never reinterpret malformed
+criteria as assignments or invent IDs for repair goals. They do not
+independently parse references, resolve links, or omit unresolved members.
+Compaction restores the dispatched goal set and task purpose, not references
+reinterpreted against a different snapshot. Neither resolved form establishes a
+verifier pass.
+
+Decomposition renders both historical observations and the current coverage
+projection supplied under [Specs](specs.md#criterion-status-surface) and
+[Evidence](evidence.md#coverage-projection). It exposes blockers and uncertainty
+rather than upgrading a cached `Current` pass or zero commit distance into
+current coverage. Templates do not perform evidence admission.
 
 ### Template Variables
 
@@ -243,7 +260,7 @@ defined in [Harness](harness.md#parse-dont-validate).
 | `companion_paths`      | `Vec<String>`                  | `plan`, `todo`, `loop`, `review`, `inbox`                                          |
 | `skill_index`          | `SkillIndexMarkdown`           | all agent-bearing templates                                                        |
 | `implementation_notes` | `Vec<SpecImplementationNotes>` | `todo`                                                                             |
-| `criterion_status`     | `Vec<CriterionStatus>`         | `todo` (see _Criterion-Status Surface_ below)                                      |
+| `criterion_status`     | `Vec<CriterionStatus>`         | `todo` (see [Specs — Criterion-Status Surface](specs.md#criterion-status-surface)) |
 | `inbox_items`          | `Vec<InboxItem>`               | `inbox`                                                                            |
 | `molecule_id`          | `Option<MoleculeId>`           | `loop`, `review`                                                                   |
 | `issue_id`             | `Option<BeadId>`               | `loop`                                                                             |
@@ -455,7 +472,8 @@ interactive session the loom binary runs with a human in the loop:
   Claude Code's `MEMORY.md` / auto-memory system is container-local and
   disappears with the container; treat it as working notes for the current
   session only, not as durable storage.
-- The "one by one" sub-mode (see _Interview Modes_) is planning- specific and
+- The "one by one" sub-mode follows
+  [Plan — Interview Modes](plan.md#interview-modes), is planning-specific, and
   lives in a separate partial; the chat-discipline rules above apply to every
   interactive session, including inbox-chat.
 
@@ -482,11 +500,14 @@ are owned by
 owns only the template include relationship and the prompt-side mutation
 boundary.
 
-**The review template makes no bd writes.** The reviewing agent identifies
-findings through the included review-walk partial, while the driver
-(`loom gate mint`) is the sole chokepoint that mints fix-up beads from the typed
-finding records, applying fingerprint dedup and per-spec molecule resolution. A
-review run that mutates bd state from inside the prompt is a protocol violation.
+**The review template authorizes no bd writes.** The reviewing agent reports
+findings through the included review-walk partial. Trusted driver recording and
+materialization follow
+[Findings' inspection/act boundary](findings.md#inspection-vs-act-partition),
+including Loop's molecule-review routing and the explicit `loom gate mint`
+command. Deduplication and lead-spec batching under a work epic belong to
+[Findings](findings.md#deferred-remediation-processing), not the prompt. A
+reviewing agent that mutates bd state violates the protocol.
 
 **Clarify-bound findings embed Options in evidence.** Clarify routing and
 canonical Options-block parsing are defined in the included partial and in
@@ -667,21 +688,25 @@ bundled documents in front of the agent with zero configuration.
 ### Pinning policy
 
 - Planning receives the package contract and can retrieve detailed criteria;
-  decomposition receives relevant changed contracts, criteria, and evidence;
-  workers receive their applicable acceptance obligations explicitly; review
-  receives applicable invariants, criteria, and evidence. Uncertain context
-  selection broadens context rather than omitting obligations.
-  [test?](quint_phase_context_preserves_applicable_obligations)
+  decomposition receives relevant changed contracts and criteria with historical
+  observations distinguished from current coverage and retained blockers, not
+  cached passes upgraded to authority. Workers receive applicable acceptance
+  obligations explicitly; review receives applicable invariants, criteria, and
+  evidence. Uncertain context selection broadens context rather than omitting
+  obligations. [test?](quint_phase_context_preserves_applicable_obligations)
 
 - Compaction recovery restores the dispatched contract and resolved acceptance
-  context, including criterion identities, text, and bindings, without requiring
-  rediscovery or reinterpreting references against a different snapshot.
+  context, including the task purpose, criterion identities/text/bindings or
+  resolved remediation goals and attribution, without requiring rediscovery or
+  reinterpreting references against a different snapshot.
   [test?](quint_context_selection_survives_compaction)
 
-- Worker context construction consumes the resolved acceptance form supplied by
-  Harness and renders each assigned criterion's typed identity, full text, and
-  current binding. It neither reparses reference strings nor treats resolution
-  as a verifier pass. [test?](worker_context_consumes_resolved_acceptance)
+- Worker context construction consumes Loop's resolved acceptance form and
+  renders assigned criteria with identity/text/bindings or remediation goals
+  with finding attribution, targets, evidence, and processed-batch acceptance.
+  It neither reparses references nor invents criterion IDs for broken acceptance
+  or treats resolution as a verifier pass.
+  [test?](worker_context_consumes_resolved_acceptance)
 
 - Context selection avoids unconditional pinning of every package's full
   acceptance document and model; task-relevant obligations are not optional
@@ -958,9 +983,9 @@ bundled documents in front of the agent with zero configuration.
   restating the wire format [check](grep -q 'partial/findings_walk.md' crates/loom-templates/templates/review.md)
 
 <!-- prettier-ignore -->
-- `review.md` does not contain a `bd create` invocation (the driver-side
-  `loom gate mint` is the sole bd-mutation chokepoint; review is
-  inspection-only) [check](bash -c "! grep -nE 'bd create|bd mol bond|bd update --add-label' crates/loom-templates/templates/review.md")
+- `review.md` does not contain a `bd create` invocation (the reviewing agent
+  reports findings without mutating Beads; trusted driver materialization is
+  separate) [check](bash -c "! grep -nE 'bd create|bd mol bond|bd update --add-label' crates/loom-templates/templates/review.md")
 
 <!-- prettier-ignore -->
 - `partial/progress_markers.md` covers the progress markers (`LOOM_COMPLETE`,
@@ -1155,7 +1180,7 @@ bundled documents in front of the agent with zero configuration.
 
 - `todo.md` rendered prompts surface every changed spec's `CriterionStatus` rows
   with criterion text, annotation, and evidence state so the agent can
-  distinguish current pass evidence from stale or missing evidence
+  distinguish recorded results from stale annotations or missing observations
   [test](todo_template_renders_typed_criterion_status_rows)
 
 ### Decomposition discipline
@@ -1176,7 +1201,7 @@ bundled documents in front of the agent with zero configuration.
 <!-- prettier-ignore -->
 - The partial documents `LOOM_CLARIFY` on the `loom:todo` work epic as the
   fallback when coverage cannot be determined, with the `## Options — …` block
-  per [Gate](gate.md)'s Options Format Contract [check](grep -q 'LOOM_CLARIFY' crates/loom-templates/templates/partial/decomposition_discipline.md)
+  per [Inbox — Options Format Contract](inbox.md#options-format-contract) [check](grep -q 'LOOM_CLARIFY' crates/loom-templates/templates/partial/decomposition_discipline.md)
 
 <!-- prettier-ignore -->
 - `todo.md` receives an already-created work epic from the driver before any
@@ -1200,18 +1225,18 @@ bundled documents in front of the agent with zero configuration.
 
 ## Requirements
 
-### Functional
+### Consumer composition
 
-2. **Compiled templates with consumer-composable typed building blocks** —
+1. **Compiled templates with consumer-composable typed building blocks** —
    Askama engine, per-phase templates, partials, and per-phase pinning policy
    live in [Templates](#prompt-composition). The crate that builds them
-   (`loom-templates`) is one of the workspace crates enumerated above.
-   `loom-templates` is **public-contract**: it exposes its typed context structs
-   (`PinnedContext`, `PreviousFailure`, `LoopContext`, etc.) and partial-string
-   constants so external Rust consumers can compose their own templates from the
-   same building blocks Loom's workflow uses. Loom's workflow templates
-   themselves remain compile-time Askama and internal — consumers do not
-   override them.
+   (`loom-templates`) is part of
+   [Harness's crate layout](harness.md#crate-layout). `loom-templates` is
+   **public-contract**: it exposes its typed context structs (`PinnedContext`,
+   `PreviousFailure`, `LoopContext`, etc.) and partial-string constants so
+   external Rust consumers can compose their own templates from the same
+   building blocks Loom's workflow uses. Loom's workflow templates themselves
+   remain compile-time Askama and internal — consumers do not override them.
 
 ### Functional
 
@@ -1256,102 +1281,105 @@ bundled documents in front of the agent with zero configuration.
 10. **Snapshot tests.** Every template × representative-input combination has an
     `insta` snapshot.
 
-### Functional
+### Context and public API
 
-13. **First-instruction reframe.** When
-    `attempt > 0 && previous_failure.is_some()`, `loop.md` prepends "Re-read the
-    previous failure block above and address its specific concern before
-    re-implementing." Single generic form — per-variant detail lives in the
-    previous-failure block itself.
-14. **Public surface for consumers.** `templates` is a public-contract crate.
-    Exposed: `PreviousFailure` (and its sub-types), `WorkspaceRecovery` (and its
-    sub-types), `CriterionStatus`, `EvidenceState`, `CriterionId`,
-    `CriterionAnnotation`, `SkillIndexMarkdown`, `PlanContext`, `TodoContext`,
-    `LoopContext`, `ReviewContext`, `PinnedContext`, and the partial-string
-    constants for each entry in the _Partials_ table. Loom's workflow template
-    bodies themselves are not exposed — consumers compose their own templates
-    from the typed contexts + partial strings, not from Loom's workflow
-    templates. Stability: additive type changes are minor bumps; removing or
-    renaming fields / partial paths is a major bump.
+1. **First-instruction reframe.** When
+   `attempt > 0 && previous_failure.is_some()`, `loop.md` prepends "Re-read the
+   previous failure block above and address its specific concern before
+   re-implementing." Single generic form — per-variant detail lives in the
+   previous-failure block itself.
+2. **Public surface for consumers.** `templates` is a public-contract crate.
+   Exposed: `PreviousFailure` (and its sub-types), `WorkspaceRecovery` (and its
+   sub-types), `CriterionStatus`, `EvidenceState`, `CriterionId`,
+   `CriterionAnnotation`, `SkillIndexMarkdown`, `PlanContext`, `TodoContext`,
+   `LoopContext`, `ReviewContext`, `PinnedContext`, and the partial-string
+   constants for each entry in the _Partials_ table. Loom's workflow template
+   bodies themselves are not exposed — consumers compose their own templates
+   from the typed contexts + partial strings, not from Loom's workflow
+   templates. Stability: additive type changes are minor bumps; removing or
+   renaming fields / partial paths is a major bump.
 
-    **Dependency on `loom-protocol`.** The typed gate wire-format contract
-    (`Finding`, `ConcernToken`, `FindingTarget`, `BadWalk`, `WalkOutput`, etc.)
-    lives in `loom-protocol::gate` — see
-    [Findings — Canonical contract location](findings.md#canonical-contract-location-1).
-    The typed todo success contract (`TodoSuccess`, `TodoSpecSuccess`,
-    `TodoSpecOutcome`, `TodoFingerprint`) lives in `loom-protocol::todo` per
-    [Harness](harness.md). `loom-templates` depends on `loom-protocol` so
-    `PreviousFailure::ReviewConcern { findings: Vec<Finding> }` and
-    `PreviousFailure::BadWalk(BadWalk)` can carry the typed values;
-    `loom-templates` re-exports the gate contract via `pub use` so existing
-    consumers importing from `loom-templates::finding` continue to compile. The
-    intended consumption shape for a consumer writing their own LLM pipeline
-    against loom: depend on `loom-protocol` (parse `loom gate ...` subprocess
-    stdout into typed `WalkOutput`), depend on `loom-templates` (compose their
-    own Askama template body that `{% include %}`s `PARTIAL_*` constants and
-    fills typed contexts), depend on `loom-llm` (run the conversation loop). The
-    three crates compose; loom CLI is itself one such consumer.
+   **Dependency on `loom-protocol`.** The typed gate wire-format contract
+   (`Finding`, `ConcernToken`, `FindingTarget`, `BadWalk`, `WalkOutput`, etc.)
+   lives in `loom-protocol::gate` — see
+   [Findings — Canonical contract location](findings.md#canonical-contract-location-1).
+   The typed todo success contract (`TodoSuccess`, `TodoSpecSuccess`,
+   `TodoSpecOutcome`, `TodoFingerprint`) lives in `loom-protocol::todo` per
+   [Harness](harness.md). `loom-templates` depends on `loom-protocol` so
+   `PreviousFailure::ReviewConcern { findings: Vec<Finding> }` and
+   `PreviousFailure::BadWalk(BadWalk)` can carry the typed values;
+   `loom-templates` re-exports the gate contract via `pub use` so existing
+   consumers importing from `loom-templates::finding` continue to compile. The
+   intended consumption shape for a consumer writing their own LLM pipeline
+   against loom: depend on `loom-protocol` (parse `loom gate ...` subprocess
+   stdout into typed `WalkOutput`), depend on `loom-templates` (compose their
+   own Askama template body that `{% include %}`s `PARTIAL_*` constants and
+   fills typed contexts), depend on `loom-llm` (run the conversation loop). The
+   three crates compose; loom CLI is itself one such consumer.
 
-    **Dogfood is structural.** Loom CLI uses the same Askama mechanism, the same
-    exposed partials, and the same typed contexts a consumer would use — there
-    is no "loom's special path" vs "consumer's path." Loom's CLI binary depends
-    on `loom-templates` exactly like a consumer would. The boundary that keeps
-    consumers from forking loom's workflow bodies is the deliberate non-exposure
-    of those bodies (the "Loom's workflow template bodies themselves are not
-    exposed" rule in the public surface requirement), not a divergent loading
-    mechanism.
+   **Dogfood is structural.** Loom CLI uses the same Askama mechanism, the same
+   exposed partials, and the same typed contexts a consumer would use — there is
+   no "loom's special path" vs "consumer's path." Loom's CLI binary depends on
+   `loom-templates` exactly like a consumer would. The boundary that keeps
+   consumers from forking loom's workflow bodies is the deliberate non-exposure
+   of those bodies (the "Loom's workflow template bodies themselves are not
+   exposed" rule in the public surface requirement), not a divergent loading
+   mechanism.
 
-    `PARTIAL_FINDINGS_WALK` is the canonical agent-facing prose for the gate
-    wire format and is paired with `loom-protocol::gate` on the parser side.
-    Consumers using `loom-protocol::gate::parse_walk_output` to parse subprocess
-    stdout should pair it with `PARTIAL_FINDINGS_WALK` in their own template
-    body so the emitter (their LLM agent) and the parser (their driver) stay
-    coherent across loom releases. The anti-drift coupling between
-    `ConcernToken` and `PARTIAL_FINDINGS_WALK` is maintained inside loom's
-    workspace by the `template_wire_format_restatement` walk; consumers get
-    coherence for free as long as they pin both crates from the same loom
-    release.
+   `PARTIAL_FINDINGS_WALK` is the canonical agent-facing prose for the gate wire
+   format and is paired with `loom-protocol::gate` on the parser side. Consumers
+   using `loom-protocol::gate::parse_walk_output` to parse subprocess stdout
+   should pair it with `PARTIAL_FINDINGS_WALK` in their own template body so the
+   emitter (their LLM agent) and the parser (their driver) stay coherent across
+   loom releases. The anti-drift coupling between `ConcernToken` and
+   `PARTIAL_FINDINGS_WALK` is maintained inside loom's workspace by the
+   `template_wire_format_restatement` walk; consumers get coherence for free as
+   long as they pin both crates from the same loom release.
 
-15. **Chat discipline in interactive sessions.** `partial/chat_interview.md`,
-    pinned in every interactive-session template (`plan`, `inbox`), requires the
-    interactive agent to conduct conversations as back-and-forth prose and
-    forbids Claude Code's structured option-picker tool (`AskUserQuestion` or
-    any equivalent multi-choice widget). Options are listed inline in prose; the
-    user replies in prose. The planning-only `partial/interview_modes.md`
-    defines shorthand modes on top of that chat discipline: `polish` is
-    report-only spec/doc review that does not apply edits unless explicitly
-    asked, and `one by one` is one design question per turn with an explicit
-    wait for the user's answer before moving on. The chat-interview partial also
-    carries the **persistence-destination clause**: session-bridging memory
-    (decisions, context, follow-ups) goes only to the durable surface the phase
-    authorizes: `loom plan` writes spec/index markdown or implementation notes
-    and does not write bd, while `loom inbox` can use bd notes/descriptions for
-    resolutions. Claude Code's `MEMORY.md` system is container-local and
-    disappears with the container. The "one by one" sub-mode is
-    planning-specific and lives in a separate partial; the chat- discipline
-    rules above apply to every interactive session, including inbox-chat.
-16. **Criterion-status surface for decomposition.** `TodoContext` carries
-    `criterion_status: Vec<CriterionStatus>` where each row exposes
-    `spec_label`, typed `criterion_id`, criterion text, typed annotation, and
-    `EvidenceState` (`Current`, `Missing`, `StaleAnnotation`). The driver
-    populates the surface by parsing the changed specs and joining against
-    `.loom/cache.db`'s criterion evidence cache. Missing cache rows become
-    `EvidenceState::Missing`, never no work. The struct does not encode
-    staleness thresholds — the partial body owns the heuristic.
+3. **Chat discipline in interactive sessions.** `partial/chat_interview.md`,
+   pinned in every interactive-session template (`plan`, `inbox`), requires the
+   interactive agent to conduct conversations as back-and-forth prose and
+   forbids Claude Code's structured option-picker tool (`AskUserQuestion` or any
+   equivalent multi-choice widget). Options are listed inline in prose; the user
+   replies in prose. The planning-only `partial/interview_modes.md` defines
+   shorthand modes on top of that chat discipline: `polish` is report-only
+   spec/doc review that does not apply edits unless explicitly asked, and
+   `one by one` is one design question per turn with an explicit wait for the
+   user's answer before moving on. The chat-interview partial also carries the
+   **persistence-destination clause**: session-bridging memory (decisions,
+   context, follow-ups) goes only to the durable surface the phase authorizes:
+   `loom plan` writes spec/index markdown or implementation notes and does not
+   write bd, while `loom inbox` can use bd notes/descriptions for resolutions.
+   Claude Code's `MEMORY.md` system is container-local and disappears with the
+   container. The "one by one" sub-mode is planning-specific and lives in a
+   separate partial; the chat-discipline rules above apply to every interactive
+   session, including inbox-chat.
+4. **Criterion-status surface for decomposition.** `TodoContext` carries
+   `criterion_status: Vec<CriterionStatus>` where each row exposes `spec_label`,
+   typed `criterion_id`, criterion text, typed annotation, and `EvidenceState`
+   (`Current`, `Missing`, `StaleAnnotation`). The driver populates the surface
+   by parsing the changed specs and joining against `.loom/cache.db`'s criterion
+   evidence cache. Missing cache rows become `EvidenceState::Missing`, never no
+   work. The partial may present observation-age hints for inspection, but those
+   hints do not decide current coverage. It renders the supplied
+   [Evidence-owned coverage projection](evidence.md#coverage-projection),
+   including freshness requirements, blockers, and unavailable admission;
+   neither elapsed age nor a historical `Current` pass establishes
+   admissibility.
 
-### Functional
+### Recovery context
 
-21. **Workspace recovery in `loop`.** `partial/workspace_recovery.md`, pinned in
-    `loop` only, renders the driver-created recovery stash context for dirty
-    bead workspaces. It is separate from `PreviousFailure` and retry `attempt`,
-    but may render in the same loop prompt after `PreviousFailure`: it tells the
-    worker which stash commit/message preserves prior dirty work, the pre-stash
-    git status, the target integration tip, and whether branch alignment is
-    clean, rebased, or conflicted. The worker inspects the stash before normal
-    work, handles or deliberately leaves it, mentions that choice in final
-    prose, and uses `LOOM_CLARIFY` when recovery needs a human decision.
-    `LOOM_COMPLETE` remains payload-free; the driver does not parse
-    stash-handling prose or fail solely because the stash remains.
+1. **Workspace recovery in `loop`.** `partial/workspace_recovery.md`, pinned in
+   `loop` only, renders the driver-created recovery stash context for dirty bead
+   workspaces. It is separate from `PreviousFailure` and retry `attempt`, but
+   may render in the same loop prompt after `PreviousFailure`: it tells the
+   worker which stash commit/message preserves prior dirty work, the pre-stash
+   git status, the target integration tip, and whether branch alignment is
+   clean, rebased, or conflicted. The worker inspects the stash before normal
+   work, handles or deliberately leaves it, mentions that choice in final prose,
+   and uses `LOOM_CLARIFY` when recovery needs a human decision. `LOOM_COMPLETE`
+   remains payload-free; the driver does not parse stash-handling prose or fail
+   solely because the stash remains.
 
 ### Non-Functional
 
@@ -1368,9 +1396,9 @@ bundled documents in front of the agent with zero configuration.
   `cargo nextest run -p loom-templates` is the regression gate
 - Template rendering with representative inputs produces output containing
   required partials, agent-output wrapping, and applied truncation (see
-  _Architecture / Test Patterns / Template render contract_)
-- Layout regressions caught by `insta` snapshots (see _Architecture / Snapshot
-  Testing_)
+  [Tests — Template render contract](tests.md#template-render-contract))
+- Layout regressions caught by `insta` snapshots (see
+  [Snapshot Test Contract](#snapshot-test-contract))
 - Partial inclusion works (context pinning, exit signals, spec header,
   companions, implementation notes)
 

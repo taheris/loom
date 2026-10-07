@@ -5,15 +5,15 @@ proposals for human review.
 
 ## Problem Statement
 
-Runs the bounded SkillOpt-style checker pipeline and stages validated artifact
-proposals for human review. This package is one contract owner, not a new crate
-or command tree.
+Prompt and skill improvements need reproducible evaluation without silently
+changing trusted behavior. Tuning bounds candidate search and validation, then
+stages evidence-backed source proposals for human review.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [skills](skills.md), [templates](templates.md), [inbox](inbox.md),
-[workspaces](workspaces.md).
+Checkers evaluate candidates in isolated proposal workspaces; Inbox owns the
+human decision and trusted apply handoff. Related owners: [skills](skills.md),
+[templates](templates.md), [inbox](inbox.md), [workspaces](workspaces.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -573,39 +573,37 @@ driver without making tuning a second resolution authority.
 
 ### Functional
 
-2. **Internal tuning engine.** The SkillOpt-style tuning engine remains internal
+1. **Internal tuning engine.** The SkillOpt-style tuning engine remains internal
    in v1, with registry/case/evidence/scoring/metadata types housed in the
    internal `loom-tune` crate. Public tuning APIs are out of scope until the
    evidence, task, replay, gate, and proposal types stabilize.
 
-### Functional
-
-9. **Manual tuning.** `loom tune` with no subcommand prints help and never
+2. **Manual tuning.** `loom tune` with no subcommand prints help and never
    starts tuning. `loom tune skill` / `phase` / `partial` / `checker` / `all`
    are listing commands. Tuning starts only when `fast`, `run`, or `full`
    follows `skill`, `phase`, `partial`, or `all`. Omitted names tune every
    target on that surface.
-10. **Checker portfolio.** Tuning uses Loom-registered internal checkers in
-    `fast`, `run`, or `full` levels. Repo config may set budgets and disable
-    optional checker ids, but mandatory preflight validators remain enabled; v1
-    has no arbitrary tune-specific checker commands and no public checker
-    registry API.
-11. **Proposal bead and isolation.** Tuning creates one tune bead and one local
-    `.loom/tune/<bead-id>/` envelope per invocation. Proposal commits live in
-    `repo/` on branch `loom/tune/<bead-id>` and never modify the invoking
-    checkout or push automatically.
-12. **Template validation.** Phase and partial template proposals must validate
-    in their proposal worktree before entering `loom inbox` as pending.
-13. **Inbox ownership.** Tuning emits tune-kind proposal records; the command
-    surface and resolution authority are owned exclusively by
-    [Inbox — Inbox Modes](inbox.md#inbox-modes).
-14. **Tune apply handoff.** Tune adoption follows the trusted apply contract in
-    [Inbox — Inbox Modes](inbox.md#inbox-modes); tuning does not define a second
-    apply path.
-15. **Workspace-first evidence.** Tuning evidence defaults to the workspace;
-    external transcript roots require `[tune.evidence].external_roots` and are
-    printed before use. Mined evidence is stably split into `train` and
-    `selection` using `[tune.evidence].selection_fraction`.
+3. **Checker portfolio.** Tuning uses Loom-registered internal checkers in
+   `fast`, `run`, or `full` levels. Repo config may set budgets and disable
+   optional checker ids, but mandatory preflight validators remain enabled; v1
+   has no arbitrary tune-specific checker commands and no public checker
+   registry API.
+4. **Proposal bead and isolation.** Tuning creates one tune bead and one local
+   `.loom/tune/<bead-id>/` envelope per invocation. Proposal commits live in
+   `repo/` on branch `loom/tune/<bead-id>` and never modify the invoking
+   checkout or push automatically.
+5. **Template validation.** Phase and partial template proposals must validate
+   in their proposal worktree before entering `loom inbox` as pending.
+6. **Inbox ownership.** Tuning emits tune-kind proposal records; the command
+   surface and resolution authority are owned exclusively by
+   [Inbox — Inbox Modes](inbox.md#inbox-modes).
+7. **Tune apply handoff.** Tune adoption follows the trusted apply contract in
+   [Inbox — Inbox Modes](inbox.md#inbox-modes); tuning does not define a second
+   apply path.
+8. **Workspace-first evidence.** Tuning evidence defaults to the workspace;
+   external transcript roots require `[tune.evidence].external_roots` and are
+   printed before use. Mined evidence is stably split into `train` and
+   `selection` using `[tune.evidence].selection_fraction`.
 
 ### Non-Functional
 

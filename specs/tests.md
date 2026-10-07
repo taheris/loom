@@ -5,14 +5,15 @@ assembled-system checks.
 
 ## Problem Statement
 
-Defines shared test quality, deterministic fixtures, suite composition, and
-assembled-system checks. This package is one contract owner, not a new crate or
-command tree.
+Fast feedback is useful only when tests exercise the promised behavior and fail
+reproducibly. This spec sets shared test-quality rules, fixture boundaries, and
+suite composition; component owners retain their behavioral acceptance.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [verify](verify.md), [simulation](simulation.md), [agent](agent.md),
+Native, integration, and assembled-system tests cover distinct seams, using
+shared deterministic fixtures and the normal verification path. Related owners:
+[verify](verify.md), [simulation](simulation.md), [agent](agent.md),
 [harness](harness.md), [events](events.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
@@ -45,12 +46,13 @@ rather than part of this spec's contract.
 Annotation syntax (`[check]` / `[test]` / `[system]` / `[judge]`), cardinality
 rules (atomic acceptance, N→1 sharing, cross-spec sharing), and the
 deterministic-vs-stochastic partition are defined in
-[`docs/spec-conventions.md`](../docs/spec-conventions.md). The gate's resolution
-mechanics — per-tier dispatch, batching for `[test]` and `[judge]`, runner
-discovery, the `--files` scope model — live in [Gate](gate.md). This spec does
-not duplicate those definitions.
+[`docs/spec-conventions.md`](../docs/spec-conventions.md).
+[Verify](verify.md#verification-planning) owns verifier resolution, provider
+admission, affected selection, and batched dispatch; [Gate](gate.md#commands)
+owns command and stage composition. This spec does not duplicate those
+definitions.
 
-What loom-tests owns: the **classification policy** for tests in this repo —
+What this spec owns: the **classification policy** for tests in this repo —
 which tier each kind of test belongs to:
 
 - Static analysis of Rust source (presence, absence, structural property across
@@ -67,11 +69,10 @@ which tier each kind of test belongs to:
 
 [Acceptance](#success-criteria).
 
-The gate that verifies annotations themselves resolve is defined in
-[Gate](gate.md) (Integrity gate section). It runs as part of `loom gate check`.
-Loom-tests has the acceptance criterion that the gate is self-checking (its own
-annotation points at its own implementation); [Verify](verify.md#integrity-gate)
-owns the mechanism.
+[Verify — Integrity gate](verify.md#integrity-gate) owns annotation resolution,
+atomicity, and self-hosting acceptance, including the criterion that binds the
+integrity check to its own verifier. The mechanism runs through
+`loom gate check`; this spec does not duplicate its acceptance.
 
 ### Determinism Through Clock Injection
 
@@ -82,21 +83,23 @@ JSONL read-line timeout, log retention sweep, bd / git subprocess timeouts —
 make tests flaky when ordinary logic tests touch real wall time on a loaded CI
 runner. The design routes their timer logic through an injected clock.
 
-**`Clock` trait in `loom-driver`** with `now()`, `sleep(Duration)`,
-`timeout(Duration, Future)` async surface. Two implementations:
+**`Clock` in `loom-driver`** exposes monotonic `now()`, wall-clock `wall_now()`,
+and async `sleep(Duration)` / `timeout(Duration, Future)`. Two implementations:
 
-- `SystemClock` — production. Wraps tokio's real timers.
-- `MockClock` — tests. Deterministic advance under
-  `#[tokio::test(start_paused = true)]`.
+- `SystemClock` — production. Uses the real clocks and tokio timers.
+- `MockClock` — tests. Provides deterministic wall-clock values and monotonic
+  timer advance under `#[tokio::test(start_paused = true)]`.
 
-Components touching time take `&dyn Clock` or `<C: Clock>`. Functions comparing
-against external timestamps (e.g., the log retention sweep comparing against
-filesystem mtime) take `now: Instant` as a parameter. Tests pass synthetic `now`
-values to age files; production passes `clock.now()`.
+Components touching time take `&dyn Clock` or `<C: Clock>` as appropriate to the
+operations they need. Monotonic `Instant` values measure elapsed time and
+deadlines. Comparisons with external wall-clock timestamps, such as filesystem
+mtime in a retention sweep, instead take an injected `SystemTime`; production
+passes `clock.wall_now()`, while tests supply synthetic timestamps.
 
-**Filesystem mtime in tests** is set via the `filetime` crate. Real wall time
-stays zero for tests of time-dependent logic: tests can express "this file is 15
-days old" without sleeping.
+**Filesystem mtime in tests** is set explicitly against the same synthetic
+wall-clock basis used by the comparison. Tests can express "this file is 15 days
+old" without sleeping or depending on host wall-time advancement. The fixture's
+timestamp-setting library is an implementation choice.
 
 **Clock-use audit** is enforced by walks in `loom-walk` over both production and
 test Rust sources:
@@ -133,8 +136,9 @@ verifiers, while tests that execute behavior remain `[test]` verifiers.
 express; sibling component specs bind architectural walks to the contracts they
 own.
 
-Walk output follows the verifier-runner contract in [Gate](gate.md), so a
-failure identifies the source location and applicable rule.
+Walk output follows
+[Verify's runner contract](verify.md#verifier-runner-contract), so a failure
+identifies the source location and applicable rule.
 
 ### Property-Based Testing
 
@@ -229,11 +233,15 @@ named source files plus the criterion text to the LLM via the existing agent
 abstraction and captures a structured verdict per the verifier-runner contract.
 
 **Cost class.** Judges are non-deterministic, paid, and network-dependent. They
-do NOT run under `nix flake check`; they run on demand, on bead completion, or
-in scheduled jobs. A `[judge]` verdict that disagrees with human judgement is a
-prompt to either rewrite the criterion as one of `[check]` / `[test]` /
-`[system]` (if the property is reducible to a deterministic check) or accept the
-disagreement (if the property is genuinely subjective).
+do NOT run under `nix flake check`. Invocation follows
+[Gate's stage policy](gate.md#stages): explicit or scheduled inspections may run
+judges, and the driver's authoritative review runs at molecule completion over
+the actual push range. The default per-bead integration path remains
+deterministic; this test strategy adds no per-bead LLM stage. A `[judge]`
+verdict that disagrees with human judgement is a prompt to either rewrite the
+criterion as one of `[check]` / `[test]` / `[system]` (if the property is
+reducible to a deterministic check) or accept the disagreement (if the property
+is genuinely subjective).
 
 ### Test Patterns
 
@@ -460,19 +468,21 @@ in
 
 `loomTests` is exposed via `tests/default.nix` and lifted to
 `packages.loom-tests` in `nix/flake/tests.nix`; it is not part of the flake
-`checks` set. The fast `nix flake check` surface stays limited to
-non-workspace-compile derivations. The full required suite is the
-`nix run .#test` app in `nix/flake/apps.nix`: it runs the fast flake tier,
-workspace clippy, full workspace nextest, and `loom gate system --tree`.
-Pre-push composes those same required tiers without repetition: the standalone
-fast and both Clippy hooks are followed by `nix run .#test-required`, which runs
-full workspace nextest and `loom gate system --tree`. The standalone
-`nix run .#test` remains complete. Grep-tier `[check]` annotations across specs
-use paths relative to the staged-source root (which mirrors the `loom/`
-workspace flattened to `$out/` plus host files like
-`lib/sandbox/linux/entrypoint.sh` mirrored under their host paths), so the
-explicit tier commands run at tree scope with no `--spec` filter. `loom-smoke`
-is exposed as `nix run .#smoke` on Linux only.
+`checks` set. The first-tier `nix flake check` includes deterministic checks,
+whose admitted definitions may require workspace compilation; it is not a
+compile-free guarantee. Measure its actual costs under
+[Pre-commit](pre-commit.md#fast-feedback-cost) rather than infer them from tier
+names or prebuilt tools. The full required suite is the `nix run .#test` app in
+`nix/flake/apps.nix`: it runs the fast flake tier, workspace clippy, full
+workspace nextest, and `loom gate system --tree`. Pre-push composes those same
+required tiers without repetition: the standalone fast and both Clippy hooks are
+followed by `nix run .#test-required`, which runs full workspace nextest and
+`loom gate system --tree`. The standalone `nix run .#test` remains complete.
+Grep-tier `[check]` annotations across specs use paths relative to the
+staged-source root (which mirrors the `loom/` workspace flattened to `$out/`
+plus host files like `lib/sandbox/linux/entrypoint.sh` mirrored under their host
+paths), so the explicit tier commands run at tree scope with no `--spec` filter.
+`loom-smoke` is exposed as `nix run .#smoke` on Linux only.
 
 ## Success Criteria
 
@@ -625,19 +635,20 @@ is exposed as `nix run .#smoke` on Linux only.
    where white-box access is useful; public, cross-module, and process
    boundaries use Cargo integration tests where that boundary adds signal. Leaf
    crates are not required to create an integration-test file solely for layout
-   symmetry. The lists below describe coverage areas rather than internal file
-   organization.
-
-### Functional
+   symmetry. Component specs own the behavioral coverage rather than a fixed
+   internal test-file layout.
 
 4. **Integration test coverage** — load-bearing tests execute public cross-crate
-   or operating-system process seams. Backend launch and protocol behavior is
-   owned by [Agent](agent.md); cache, Git, todo, parallel dispatch, and locking
-   behavior is owned by [Harness](harness.md); event fan-out and persistence
-   behavior is owned by [Events](events.md). This spec owns the classification
-   and fixture discipline: parser-only shape checks stay in unit tests, while
-   startup handshakes, pending pipes, child reaping, and production CLI routing
-   use integration tests.
+   or operating-system process seams. Owners are [Agent](agent.md) for backend
+   launch/protocol behavior; [Harness](harness.md) for shared typed subprocess
+   and cache facilities; [Specs](specs.md) for discovery and criterion identity;
+   [Evidence](evidence.md) for verification history and coverage projections;
+   [Workspaces](workspaces.md) for Git checkout isolation and locking;
+   [Todo](todo.md) for decomposition; [Loop](loop.md) for scheduling and
+   integration; and [Events](events.md) for event fan-out and persistence. This
+   spec owns classification and fixture discipline: parser-only shape checks
+   stay in unit tests, while startup handshakes, pending pipes, child reaping,
+   and production CLI routing use integration tests.
 
 5. **Container smoke coverage** — one happy-path scenario validates
    host↔container plumbing that the integration tier cannot reach. A temporary
@@ -668,8 +679,8 @@ is exposed as `nix run .#smoke` on Linux only.
    `specs/` carries a `[check]`, `[test]`, `[system]`, or `[judge]` annotation
    that must resolve to an existing verifier. The full rules (syntax,
    cardinality, classification, cross-spec sharing) live in
-   [`docs/spec-conventions.md`](../docs/spec-conventions.md); the integrity gate
-   that enforces them lives in [Gate](gate.md).
+   [`docs/spec-conventions.md`](../docs/spec-conventions.md); their integrity
+   enforcement belongs to [Verify](verify.md#integrity-gate).
 
 8. **Property-based testing** — `proptest` for invariants on four targets: JSONL
    line parser, Pi protocol parser, Claude protocol parser, cache DB rebuild.
@@ -703,18 +714,20 @@ is exposed as `nix run .#smoke` on Linux only.
    process-lifecycle and elapsed-performance exceptions use bounded host time as
    defined in _Architecture / Determinism Through Clock Injection_.
 2. **Fast** — soft targets per gate command, warm cache:
-   - `loom gate status` (cached status, no verifiers): <100 ms (and a hard <500
-     ms ceiling, asserted by a self-test on the cache implementation).
+   - `loom gate status` (cached status, no verifiers): <100 ms.
    - `loom gate check`: <5 s aggregate across all `[check]` walks.
    - `loom gate test`: <30 s aggregate (one batched cargo-nextest invocation;
      nextest's internal parallelism does the heavy lifting).
    - `loom gate system`: <60 s per verifier; container smoke targets <30 s.
    - `loom gate judge`: no fixed target; bounded by LLM API concurrency.
 
-   All except the `loom gate` status ceiling are _soft_ — they guide design
-   (host waits require audited boundaries, subprocess tests need justification,
-   proptest case count bounded) but the gate doesn't fail when a budget is
-   exceeded; humans review timing in PRs.
+   These are advisory latency targets: they guide design and timing review,
+   rather than failing otherwise completed verification solely for taking
+   longer. They are not execution timeouts or permission to report incomplete
+   required work as success; [Simulation](simulation.md#execution-policy) owns
+   campaign completion and resource-limit handling. Evidence owns the separate
+   [bounded status-render regression](evidence.md#status-cache-1), measured on
+   its specified 2,000-row fixtures, not end-to-end status or admission latency.
 
 3. **Isolated** — each test uses its own temp directory and beads database
    prefix. No shared mutable state between tests.
@@ -750,26 +763,31 @@ is exposed as `nix run .#smoke` on Linux only.
    not available on Darwin" message. Tests use `tempfile::tempdir` rather than
    hardcoded `/tmp/...` paths so the source is compatible with Darwin's build
    sandbox. Darwin smoke support is a follow-up.
-8. **Subprocess-spawning tests are exceptional** — each subprocess test
-   (mock-pi, mock-claude, real `git`) costs 50-200ms; ten of them blow the 5s
-   soft target alone. A test that spawns a subprocess includes a short comment
-   or doc string explaining why an in-process equivalent (via `LineParse` +
-   `tokio::io::duplex`) is not feasible. Any direct host-clock read or sleep
-   also appears in the exact audited exception registry with a finite upper
-   deadline, reliable child cleanup, the smallest practical duration, and
-   deterministic companion coverage for timer logic.
+8. **Subprocess-spawning tests are exceptional** — process startup, IPC, and
+   cleanup costs depend on the workload and environment; measure them rather
+   than assume a fixed cost per test. A test that spawns a subprocess includes a
+   short comment or doc string explaining why an in-process equivalent (via
+   `LineParse` + `tokio::io::duplex`) is not feasible. Any direct host-clock
+   read or sleep also appears in the exact audited exception registry with a
+   finite upper deadline, reliable child cleanup, the smallest practical
+   duration, and deterministic companion coverage for timer logic.
 9. **Upstream protocol versioning** (Pi Coding Agent and Claude Code) — Agent
-   versions are pinned by locked flake inputs and package overrides defined here
-   or in those inputs. Bumps are deliberate PRs accompanied by a protocol-bump
-   checklist (re-run parser tests, scan upstream changelog for new event types,
-   add `Unknown` coverage if any new types lack typed variants, update mock
-   scripts if new types reach pipe-level paths). No live wire tests run against
-   real binaries; the Functional #10 exception proves only that the selected
-   package launches. Detection coverage: silent breaks in _exercised_ fields
-   surface as `serde_json` errors in parser tests when the pinned version is
-   bumped. Fields not exercised by any test could still drift silently — parser
-   tests must therefore touch every field of every documented message type for
-   the pinned version, not just every type.
+   versions are pinned by locked flake inputs and package overrides. Bumps are
+   deliberate PRs: review the new upstream protocol documentation/changelog,
+   update inline parser fixtures and expectations for changed fields and message
+   types, cover new types under the Agent-owned unknown-message policy, and
+   update mock scripts when changes reach retained pipe-level scenarios. Re-run
+   parser and relevant conformance tests after those updates. Parser fixtures
+   must cover every documented field of each message type for the supported
+   version, not just one example per type.
+
+   A pin change alone does not update canned inputs or detect upstream drift.
+   These tests verify the exercised shapes and expectations; their relevance to
+   the new upstream version depends on that explicit review and fixture update.
+   They do not establish live compatibility with the real agent binary. No live
+   wire tests run against real binaries; the Functional #10 exception proves
+   only that the selected package launches.
+
 10. **No `#[ignore]` for skipped coverage** — `#[ignore]` cannot hide a flaky,
     optional, or otherwise omitted test; fix the root cause or delete the test.
     The only exceptions are enumerated child-process entry points that a
@@ -784,10 +802,12 @@ is exposed as `nix run .#smoke` on Linux only.
 
 - Fine-grained selection of ordinary unit/integration suites, precise
   function-level Rust impact analysis, or forced crate/library splits for
-  selective properties. Shared compilation is legitimate; Gate admits the
-  dependency boundaries used for selection.
+  selective properties. Shared compilation is legitimate;
+  [Verify](verify.md#verification-planning) admits the dependency boundaries
+  used for selection.
 - Owning model-checking policy or a separate conformance execution route.
-  [Simulation](simulation.md) owns modeling; Gate supplies the existing path.
+  [Simulation](simulation.md) owns modeling; [Gate](gate.md) composes the
+  existing [Verify](verify.md) execution path.
 
 - **Real-binary behavioral tests** — no test invokes real Claude Code or uses
   real Pi for a conversation, prompt, protocol turn, or LLM API request. Mock pi
@@ -795,9 +815,11 @@ is exposed as `nix run .#smoke` on Linux only.
   strings; mocks cover pipe-level paths; smoke runs mock pi inside the
   container). The sole real-agent exception is the offline packaged-Pi
   `--version` health check in Functional #10; it detects image/runtime packaging
-  drift but does not validate conversational or protocol behavior. Locked flake
-  inputs and package overrides defined here or in those inputs, plus parser
-  tests with field-level coverage, catch silent protocol drift on bumps.
+  drift but does not validate conversational or protocol behavior. Locked
+  versions make the intended upstream contract explicit; the protocol-bump
+  review and fixture maintenance in Non-Functional #9 keep exercised shapes
+  aligned with that contract. Passing unchanged canned fixtures is not automatic
+  upstream-drift detection or live protocol compatibility evidence.
 - **macOS container smoke** — the smoke requires `podman` (Linux). Darwin
   container testing is a follow-up.
 - **Mocking `bd`** — the container smoke uses live `bd` (see NFR #6).
@@ -807,8 +829,9 @@ is exposed as `nix run .#smoke` on Linux only.
   time without catching new failure modes. One happy-path smoke is sufficient to
   validate host↔container plumbing.
 - **Captured JSONL fixtures** — `loom-agent/src/{pi,claude}/fixtures/` with
-  replay scripts. Parser tests use inline string literals, which are easier to
-  read in PR diffs and don't bit-rot when pi/claude release new event shapes.
+  replay scripts. Parser tests use focused inline string literals for
+  reviewability, not immunity to protocol drift. Inline cases still require the
+  upstream comparison and maintenance described in Non-Functional #9.
 - **External-template parity fixtures** — any compatibility-fixture set tied to
   a predecessor templating system that is itself scheduled for removal. Such
   fixtures become irrelevant the moment the predecessor is removed; capturing
@@ -833,10 +856,11 @@ is exposed as `nix run .#smoke` on Linux only.
   defaults don't fit, not a per-verifier registry.
 - **`cargo fuzz` under `nix flake check`** — exposed as `nix run .#fuzz-loom`
   for on-demand or nightly runs only. proptest covers invariants in CI.
-- **Hard CI-time NFR for the verify path** — the per-tier budgets
-  (Non-Functional #2) are soft design targets, not CI failure thresholds. They
-  guide decisions (no real sleeps, subprocess tests need justification, proptest
-  case count bounded) but the gate doesn't fail when a budget is exceeded;
-  humans review timing in PRs. Exception: `loom gate` status has a hard <500ms
-  ceiling with a self-test — that one is a regression of the cache
-  implementation, not of the corpus.
+- **Hard CI-time NFR from advisory suite timing** — the per-tier latency targets
+  (Non-Functional #2) guide test design and timing review, not failure of an
+  otherwise completed suite. This does not excuse execution timeouts or
+  incomplete required campaigns, whose rules belong to
+  [Simulation](simulation.md#execution-policy). Evidence owns the separate
+  [bounded status-render regression](evidence.md#status-cache-1): less than
+  500ms for the specified 2,000-row corpus, not arbitrary-size or end-to-end
+  admission latency.

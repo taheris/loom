@@ -5,15 +5,16 @@ reproducibility, adoption, and cost evidence.
 
 ## Problem Statement
 
-Defines production-connected model conformance, bounded campaigns,
-reproducibility, adoption, and cost evidence. This package is one contract
-owner, not a new crate or command tree.
+Selection, caching, and publication interact across component boundaries;
+checking each component alone can miss unsafe sequences. This spec tests the
+composed contracts against a bounded reference model and real production paths.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [gate](gate.md), [verify](verify.md), [evidence](evidence.md),
-[findings](findings.md), [loop](loop.md), [pre-commit](pre-commit.md).
+The model composes component contracts; production adapters expose their actual
+transitions and outcomes for comparison. Related owners: [gate](gate.md),
+[verify](verify.md), [evidence](evidence.md), [findings](findings.md),
+[loop](loop.md), [pre-commit](pre-commit.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -63,6 +64,25 @@ planning, worker feedback, integration, publication, and standing verification.
 The model follows the owning contracts, rather than defining alternative
 selection, evidence, or push rules. It includes Gate's obligation-level stage
 applicability when criteria with different declarations share an execution unit.
+It also models
+[automatic caller context](gate.md#automatic-applicability-context) through
+actual driver/hook entrypoints: publication coverage cannot be reduced by a
+missing marker or a lost required handoff, while a hook rehearsal does not
+acquire publication authority merely by selecting stronger coverage.
+
+Pending readiness is an explicit purpose within Verify's admitted planner, not
+an unscoped integrity execution path or ordinary pending-criterion pass. The
+model includes absent definitions, invalid offered providers, affected
+stage/tier eligibility, shared targets with different purposes, and incomplete
+required readiness. Host publication cannot treat a missing-tool wrapper's exit
+zero as coverage; worker capability feedback retains its separate policy.
+
+Task preparation includes Loop's distinct resolved criterion and remediation
+goals. Valid finding-driven repair can address malformed acceptance without
+fabricated criteria; bad ordinary references cannot switch purpose to bypass
+resolution. Status/decomposition projections distinguish historical results from
+current coverage and retained blockers without executing new checks or
+manufacturing authority.
 
 A simple reference procedure discovers and evaluates every obligation applicable
 to the same snapshot, scope, and stage without result reuse or selection
@@ -73,26 +93,27 @@ validation, batching, and concurrent completion; it does not start with an
 assumed-correct input list.
 
 For stable valid deterministic inputs, per-obligation outcomes agree. Effectful
-execution and review use Gate's explicit admissibility/freshness rules and
-modeled external outcomes rather than assuming identical LLM or host results on
-rerun. The model distinguishes reuse of earlier results from the consumption of
-fresh evidence within one publication attempt. It models Gate's attempt-ending
-boundary on failed/interrupted pushes, process loss without a recorded outcome,
-and new-attempt admission on retry, including remote changes despite an unknown
-push outcome. Hook entry and retries cannot bypass Gate admission through a
-separate stamp or authorization shortcut.
+execution and review use Evidence's admissibility/freshness rules, Gate's
+authorization rules, and modeled external outcomes rather than assuming
+identical LLM or host results on rerun. The model distinguishes reuse of earlier
+results from the consumption of fresh evidence within one publication attempt.
+It models Gate's attempt-ending boundary on failed/interrupted pushes, process
+loss without a recorded outcome, and new-attempt admission on retry, including
+remote changes despite an unknown push outcome. Hook entry and retries cannot
+bypass Gate admission through a separate stamp or authorization shortcut.
 
 Result import is a modeled transition through
-[Gate's Nix-cache admission](evidence.md#nix-cache-result-admission), not an
+[Evidence's Nix-cache admission](evidence.md#nix-cache-result-admission), not an
 execution or fresh observation. Conformance includes both admissible imported
 verification results and rejected artifacts, including imports after recorded
 failures. Cache provenance and environment assumptions remain explicit. The
-model includes changes to Gate's Nix-derived signing trust and re-admission of
-already-imported results; it does not treat a successful substitution as a pass.
+model includes changes to Evidence's Nix-derived signing trust and re-admission
+of already-imported results; it does not treat a successful substitution as a
+pass.
 
 The reference and optimized procedures both consume admitted counterexample
 knowledge under
-[Gate's claim-level rule](evidence.md#confirmed-counterexamples-across-campaigns).
+[Evidence's claim-level rule](evidence.md#confirmed-counterexamples-across-campaigns).
 The model includes confirmation, regression replay, resolution, and attempted
 publication using a routine pass after a deeper campaign has found a violation.
 Different campaign identities cannot hide the known defect; a timeout remains
@@ -100,13 +121,22 @@ incomplete exploration rather than a counterexample. Confirmation and resolution
 are modeled transitions, not unchecked flags supplied by the adapter.
 
 The model separates expiring transcripts, rebuildable indexes, and
-[Gate's retained safety evidence](evidence.md#retained-safety-evidence). It
+[Evidence's retained safety evidence](evidence.md#retained-safety-evidence). It
 includes recording/consolidation, expiry, interruption, and recovery rather than
 assuming history lives forever in logs. Conformance exercises real retention and
 restart: ordinary old transcripts disappear while admission facts and required
 witnesses survive. Missing required safety evidence cannot be interpreted as no
 failures or counterexamples; compact records cannot manufacture a pass or resume
 an attempt.
+
+The model includes
+[shared local-workspace safety history](evidence.md#local-workspace-safety-history):
+operator and integration invocations admit and consume facts through the same
+history, with concurrent recording and validation/use interleavings. Conformance
+exercises actual checkout association and worker isolation, not two independent
+histories or an adapter-supplied trusted workspace identity. Shared facts do not
+transfer clone-local markers or publication attempts; the model does not assume
+a global cross-machine ledger.
 
 External tools and reviewers are abstracted by their inputs, capabilities,
 outcomes, and evidence. External tool/OS primitives, checker semantic honesty,
@@ -142,6 +172,28 @@ executes hermetically. Controlled external processes are fixtures subject to the
 test-infrastructure rules in [Tests](tests.md); internal gate decisions are not
 model-shaped mocks.
 
+#### Portable replay regressions
+
+[Acceptance](#model-and-implementation-conformance).
+
+A fix for a confirmed model or conformance counterexample includes a portable,
+checked-in replay regression through normal code/test changes under the existing
+review policy. The regression preserves the relevant sequence, inputs or fault
+conditions, and expected safety behavior. Repository fixtures and declared
+execution resources make it reproducible without the original machine's paths,
+transcripts, or local safety-history store. Fresh clones discover and cover it
+through the existing verification graph without repeating the original deep
+search; affectedness and evidence reuse retain their ordinary rules.
+
+Counterexample detection and recording retain witnesses under
+[Evidence's safety-history contract](evidence.md#retained-safety-evidence); they
+do not generate or commit regression source automatically. The normal fix
+workflow authors that source, and existing semantic review checks that the
+regression addresses the confirmed defect rather than merely adding a fixture. A
+checked-in replay is a verification input, not a transferred safety-history
+record or a resolution token. Evidence continues to own
+[counterexample resolution](evidence.md#confirmed-counterexamples-across-campaigns).
+
 ### Execution policy
 
 [Acceptance](#success-criteria).
@@ -152,7 +204,7 @@ spec-owned stage applicability. There is no extra conformance hook, gate tier,
 or authorization route. Routine implementation feedback uses bounded, fixed-seed
 simulation and conformance. Symbolic verification runs when its own
 model/import/property/bound/checker inputs change, or consumes admissible
-exact-input evidence under Gate's policy.
+exact-input evidence under Evidence's admission policy.
 
 Tools and solvers are pinned and provisioned ahead of routine verification.
 Discovery and trace processing are batched, without a subprocess per criterion
@@ -235,23 +287,39 @@ review; no keyword classifier or compiler can establish intent.
   [system?](nix run .#test-quint -- input-generation)
 
 <!-- prettier-ignore -->
-- Cache transitions are modeled explicitly, including absent/corrupt entries,
-  definition/input/campaign changes, new obligations, admitted and rejected
-  Nix-cache imports, signing-trust changes affecting already-imported evidence,
-  provenance and execution-context mismatches, claim-specific freshness,
-  explicit diagnostic reruns, failure-driven invalidation, persistent reuse
-  restrictions after contradictory outcomes, environment equivalence,
-  build-versus-result confusion, same-attempt handoff, attempt termination on
-  failed/interrupted pushes, retry after process loss or unknown remote outcome,
-  safety-record persistence/consolidation, transcript expiry, index rebuilding,
-  interrupted recovery, and mutation between validation and use. New-attempt
-  admission preserves eligible unit reuse but cannot revive ended authorization.
-  Confirmed counterexamples block affected publication across routine/deeper
-  campaign identities until resolved through current regression evidence; cached
-  routine passes cannot bypass that obligation. Ordinary log cleanup preserves
-  the retained facts and required replay witnesses, while missing required
-  safety evidence cannot become empty-history success. Every required test
-  executes or has admissible equivalent-execution evidence. [system?](nix run .#test-quint -- cache-model)
+- **Cache identity and admission.** The model covers absent/corrupt entries,
+  definition/input/campaign changes, new obligations, and admitted/rejected Nix
+  imports. It checks current signer trust for already-imported results,
+  provenance/context mismatches, environment equivalence, and build-versus-result
+  distinctions. Every required test executes or has admissible evidence of an
+  equivalent execution. [system?](nix run .#test-quint -- cache-model)
+
+<!-- prettier-ignore -->
+- **Outcome history and projection.** Modeled failures invalidate prior passes;
+  contradictory outcomes retain their reuse restrictions. Status and
+  decomposition cannot promote historical passes after disqualifying same-commit
+  admission changes or hide retained blockers. Reuse-disabled identities are not
+  permanently failed criteria. [system?](nix run .#test-quint -- cache-model)
+
+<!-- prettier-ignore -->
+- **Freshness and attempt lifetime.** The model checks claim-specific freshness,
+  explicit diagnostic reruns, same-attempt handoff, and mutation between
+  validation and use. Failed/interrupted pushes end attempts; retries after
+  process loss or unknown remote outcomes preserve eligible unit reuse without
+  reviving ended authorization. [system?](nix run .#test-quint -- cache-model)
+
+<!-- prettier-ignore -->
+- **Durable shared history.** Modeled persistence/consolidation, transcript
+  expiry, index rebuilding, and interrupted recovery preserve required safety
+  facts and replay witnesses. Operator/integration checkouts share admitted
+  observations, including concurrent updates. Missing required history cannot
+  become empty-history success. [system?](nix run .#test-quint -- cache-model)
+
+<!-- prettier-ignore -->
+- **Cross-campaign counterexamples.** Confirmed violations block affected
+  publication across routine/deeper campaign identities until current regression
+  evidence resolves them. A cached routine pass cannot bypass that obligation.
+  [system?](nix run .#test-quint -- cache-model)
 
 <!-- prettier-ignore -->
 - The model admits a valid path from discovery to publication and exercises
@@ -263,8 +331,13 @@ review; no keyword classifier or compiler can establish intent.
 - Quint-generated traces drive actual shared gate logic and production
   dispatch/workflow seams, comparing selected targets, invocations, state
   projections, evidence, and authorization after each relevant transition.
-  External processes may be controlled fixtures; internal planning, aggregation,
-  and authorization are not replaced by model-shaped mocks. [system?](nix run .#test-quint -- conformance)
+  Automatic stage context comes through actual caller/hook paths, including
+  marker-free publication and rehearsal, not an injected already-valid stage.
+  Pending readiness uses real planner admission and scheduling; actual
+  task-producer/dispatch paths distinguish criterion assignments from finding
+  goals, including repair of malformed acceptance. External processes may be
+  controlled fixtures; internal planning, aggregation, and authorization are
+  not replaced by model-shaped mocks. [system?](nix run .#test-quint -- conformance)
 
 <!-- prettier-ignore -->
 - Conformance failures report the seed, model and input identities, trace, first
@@ -276,20 +349,54 @@ review; no keyword classifier or compiler can establish intent.
   [system?](nix run .#test-quint -- replay)
 
 <!-- prettier-ignore -->
-- Fault-injection checks detect omitted obligations, criterion-local deferral
-  leaking to other obligations sharing a verifier, untracked membership or
-  absence dependencies, weakened cache keys/validation, stale reuse or
-  resurrection of disqualified passes, accidental restoration of reuse after
-  contradictory outcomes, build artifacts mistaken for test results, imported
-  results mislabeled as fresh execution, stale signer-trust decisions,
-  cache-source or signing-trust changes erasing failure history, dropped batch
-  results, skip-as-pass, wrong-scope publication, attempt/outer-shortcut
-  bypasses, routine passes hiding confirmed deeper counterexamples,
-  counterexample loss across restarts or campaign changes, expiry/reindexing
-  erasing safety history, deletion before durable consolidation, compact records
-  mistaken for current passes, missing safety evidence treated as empty history,
-  unchecked confirmation/resolution, and unnecessary unrelated execution at the
-  responsible model, provider, adapter, or production boundary. [system?](nix run .#test-quint -- mutations)
+- Checked-in replay regressions participate in production discovery and routine
+  verification from a fresh clone without the originating workspace's logs or
+  safety history, and without rerunning the original deep search. Replay drives
+  the relevant production behavior under the recorded conditions; counterexample
+  detection and recording do not automatically generate or commit regression
+  source. [system?](nix run .#test-quint -- replay)
+
+- Existing semantic review rejects a fix for a confirmed counterexample that
+  omits a portable checked-in replay regression or substitutes a case that does
+  not address the defect. No separate approval or review path is introduced.
+  [judge?](../tests/judges/quint-model-alignment.md)
+
+<!-- prettier-ignore -->
+- **Selection and readiness mutations.** Fault injection detects omitted
+  obligations, deferral leaking to siblings sharing a verifier, untracked
+  membership/absence dependencies, dropped batch results, skip-as-pass,
+  absent-tool success counted as host coverage, and pending-probe admission or
+  scheduling bypasses/probes-as-passes. It also detects unnecessary unrelated
+  execution at the responsible model/provider/adapter/production boundary.
+  [system?](nix run .#test-quint -- mutations)
+
+<!-- prettier-ignore -->
+- **Evidence-admission mutations.** Fault injection detects weakened cache
+  keys/validation, stale or resurrected passes, restored reuse after conflicting
+  outcomes, builds treated as results, imports treated as fresh executions, stale
+  signer-trust decisions, and cache-source/trust changes erasing failure history.
+  [system?](nix run .#test-quint -- mutations)
+
+<!-- prettier-ignore -->
+- **Publication mutations.** Fault injection detects wrong-scope publication,
+  lost publication context downgraded to feedback, rehearsal coverage mistaken
+  for authority, and attempt/outer-shortcut bypasses at the responsible boundary.
+  [system?](nix run .#test-quint -- mutations)
+
+<!-- prettier-ignore -->
+- **Retained-history mutations.** Fault injection detects routine passes hiding
+  confirmed deeper violations, witness loss across restarts/campaign changes,
+  clone-local history hiding shared failures, lost concurrent updates, worker
+  writes/forged associations, expiry/reindex erasure, and deletion before durable
+  consolidation. It rejects compact records as passes, missing history as empty,
+  and unchecked confirmation/resolution. [system?](nix run .#test-quint -- mutations)
+
+<!-- prettier-ignore -->
+- **Task and projection mutations.** Fault injection detects dropped ordinary
+  references or conversion into remediation, repair goals requiring already-valid
+  broken criteria, cached-status coverage despite current blockers, and reuse
+  restrictions presented as permanent criterion failures.
+  [system?](nix run .#test-quint -- mutations)
 
 - Missing tools, invalid models, empty trace batches, adapter failures,
   incomplete exploration, and timeouts fail visibly; none count as completed
@@ -336,9 +443,10 @@ review; no keyword classifier or compiler can establish intent.
 
 - Shipped routine and separately requested deeper campaigns provide explicit
   finite defaults without requiring per-user seeds, bounds, or timeout settings.
-  The deeper campaign declares larger bounds or trace counts. Exhausting either
-  budget reports incomplete verification, not success; slow execution does not
-  silently reduce coverage or change applicability.
+  The deeper campaign declares larger bounds or trace counts. Completing the
+  declared bounded work may report bounded success; hitting a resource limit
+  before that work completes reports incomplete verification. Slow execution
+  does not silently reduce coverage or change applicability.
   [test?](quint_campaign_budget_exhaustion_is_explicit)
 
 <!-- prettier-ignore -->

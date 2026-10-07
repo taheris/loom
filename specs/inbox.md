@@ -5,15 +5,15 @@ hands approved tune batches to the trusted driver.
 
 ## Problem Statement
 
-Presents human decisions and diagnostics, resolves clarify and blocked work, and
-hands approved tune batches to the trusted driver. This package is one contract
-owner, not a new crate or command tree.
+Agents need a clear way to request human decisions without treating proposed
+options as executable authority. Inbox presents the queue and decision context,
+then separates conversational resolution from trusted tune application.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [findings](findings.md), [tuning](tuning.md), [agent](agent.md),
-[gate](gate.md).
+The human reviews typed queue items in chat; accepted tune proposals cross a
+separate driver apply boundary. Related owners: [findings](findings.md),
+[tuning](tuning.md), [agent](agent.md), [gate](gate.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 

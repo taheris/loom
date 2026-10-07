@@ -5,14 +5,15 @@ admission path.
 
 ## Problem Statement
 
-Composes repository hook policy through Wrix plumbing and the shared Gate
-admission path. This package is one contract owner, not a new crate or command
-tree.
+Commit feedback must remain useful without allowing push-time shortcuts to
+bypass required verification. Hook composition separates feedback from
+publication coverage and delegates trust decisions to Gate.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [gate](gate.md), [verify](verify.md), [evidence](evidence.md),
+Repository hook policy uses Wrix-owned plumbing and Gate's current admission
+path; it does not create independent publication authority. Related owners:
+[gate](gate.md), [verify](verify.md), [evidence](evidence.md),
 [tests](tests.md), [workspaces](workspaces.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
@@ -25,14 +26,28 @@ The pre-commit stage provides fast feedback on the staged files: native
 whitespace/conflict sanitation, formatting drift, explicit-interpreter safety
 for shell self re-exec, and affected deterministic annotation checks. The
 pre-push stage composes the fast Nix tier, Rust linting when Rust files changed,
-exact pushed-range verification, and the full required suite. Nix-dependent
-entries no-op only when Nix is absent, while non-Nix checks continue.
+exact pushed-range verification, and the full required suite. Existing
+feedback-only capability skips remain available, while non-Nix checks continue.
+For host publication, a missing required tool blocks whenever the obligation
+lacks currently admissible coverage. A wrapper's successful absent-tool no-op is
+not execution evidence and cannot satisfy hook coverage, a receipt, or a marker.
+Apply this rule to driver publication, marker-free operator pushes, and host
+pre-push rehearsals; worker feedback never substitutes for host coverage.
 
 Every pre-push entry is independently marker-aware. There is no standalone
 marker gate: the wrapper either proves coverage for that entry or executes it.
 The exact hook ids, argv, file selectors, and ordering live only in
 `.pre-commit-config.yaml`; the configuration walk verifies that they realize
 this policy as one coherent stage graph.
+
+The existing hook entrypoints establish
+[Gate's automatic applicability context](gate.md#automatic-applicability-context):
+ordinary pre-commit uses feedback; pre-push, including marker-free operator
+pushes and explicit `prek` rehearsals, requests publication coverage. The
+wrapper forwards that context with the pushed range through the shared Gate
+path, without a public stage flag. Missing required context cannot silently
+reduce publication checks to feedback. A rehearsal still supplies no driver mint
+authority or review coverage, and worker capability skips remain feedback only.
 
 Native prek sanitation avoids the Python bootstrap path, which is not portable
 to bare NixOS. The shell-reexec check rejects a shell script that re-executes
@@ -73,12 +88,15 @@ not a fast/slow label, controls the shortcut.
 composition relative to the full-suite app is owned by [Tests](tests.md). On
 pre-push it is routed through repo-local `bin/pre-push-checks`, so a
 driver-minted marker may skip it only if the marker's `GateSuccess` proves the
-hook ran and passed. Its derivation chain contains checks that don't require
-compiling the workspace under test: the treefmt-check derivation plus a
-`loom gate check` derivation that runs `[check]`-tier verifiers + the integrity
-gate + the surface-conformance audit. The loom binary itself is precompiled (via
-crane's `cargoArtifacts` chain, reused), so the derivation's wall-clock budget
-is the checks themselves, not the build. Target: <10s warm when it runs.
+hook ran and passed. Its derivation chain includes treefmt and `loom gate check`
+with `[check]`-tier verifiers, integrity, and surface conformance. The tier is
+not guaranteed compile-free: an applicable verifier may compile the workspace,
+and readiness checks follow
+[Verify's admitted planning policy](verify.md#pending-modifier). Reusing the
+Loom binary or build artifacts does not prove that all selected checks avoid
+compilation. Measure this composition under
+[fast-feedback cost](#fast-feedback-cost), including cold and rebuild costs,
+rather than imposing an unprofiled warm threshold or dropping required work.
 
 The full required suite and container smoke composition are owned by
 [Tests — Nix Integration](tests.md#nix-integration). This spec owns only their
@@ -87,20 +105,19 @@ than only in CI because this repository has no separate CI safety net. The
 pre-push test app does not repeat the preceding fast and Clippy hooks; the
 standalone full-suite command remains complete.
 
-The targeted hooks are clippy + `loom gate verify --diff <push-range>`
-
-- the required nextest/system test app. Prek exports the pushed endpoints as
-  `PRE_COMMIT_FROM_REF` / `PRE_COMMIT_TO_REF`; `pre-push-checks` appends that
-  exact range to the gate hook instead of deriving it from the branch upstream.
-  `loom gate verify --diff` uses
-  [Gate's deterministic verify contract](gate.md#deterministic-verify-lanes) for
-  its scope and stage; no `LOOM_VERIFY_TIERS` environment override exists. Each
-  hook runs as an independent prek entry with its own `files:` regex where
-  applicable so file-pattern selectivity composes with marker-aware fallthrough.
-  On the driver-loop integration push the wrapper can short-circuit every
-  covered hook in sub-second time; on operator-manual pushes (no marker present
-  in the operator's clone) the wrapper falls through and the hooks run against
-  the host's warm cache.
+Alongside the Nix check hook, pre-push runs both Clippy configurations,
+`loom gate verify --diff <push-range>`, and the required nextest/system test
+app. Prek exports the pushed endpoints as `PRE_COMMIT_FROM_REF` /
+`PRE_COMMIT_TO_REF`; `pre-push-checks` appends that exact range to the gate hook
+instead of deriving it from the branch upstream. `loom gate verify --diff` uses
+[Gate's deterministic verify contract](gate.md#deterministic-verify-lanes) for
+its scope and stage; no `LOOM_VERIFY_TIERS` environment override exists. Each
+hook runs as an independent prek entry with its own `files:` regex where
+applicable so file-pattern selectivity composes with marker-aware fallthrough.
+On the driver-loop integration push the wrapper can short-circuit every covered
+hook at marker-validation cost; on operator-manual pushes (no marker present in
+the operator's clone) the wrapper falls through and the hooks run against the
+host's warm cache.
 
 ### Agent self-verify in the bead container
 
@@ -145,8 +162,10 @@ The bead container has no `nix`. Hooks whose entry runs `nix` are wrapped as
 `entry: skip-if-missing nix -- <command>` in `.pre-commit-config.yaml` (the
 wrapper is shipped from `wrix.prekHooks` per _Plumbing ownership split_ below);
 inside the bead container the wrapper observes `nix` absent on `PATH` and exits
-0 silently, no-op-ing the hook. Outside the bead container (host devShell,
-pre-push, and full-suite contexts) the same wrapper finds `nix` and execs
+0 silently, no-op-ing the feedback hook. This wrapper behavior is not a trusted
+pass. Host publication must establish required coverage or report the missing
+capability as blocking; it cannot assume a devShell supplied Nix or promote the
+wrapper's no-op to success. When Nix is available, the command executes
 normally. Non-`nix` pre-commit hooks run uniformly across host and
 bead-container contexts.
 
@@ -213,7 +232,10 @@ that runs `nix` is wrapped as `entry: skip-if-missing nix -- <command>`. The
 wrapper exits 0 silently when the named binary isn't on `PATH` and execs the
 command otherwise. Wrix does **not** maintain a hook-id skip list, and does not
 stub `nix` on the container `PATH`; the absence is observable at the hook's
-entry, tagged via the wrapper at the point of use.
+entry, tagged via the wrapper at the point of use. This generic helper does not
+own publication admission: the Loom-governed hook composition must preserve
+[the host coverage boundary](#stage-composition), using Wrix-owned plumbing
+rather than forking a shim or trusting the helper's exit code as proof.
 
 ### Source-of-truth files
 
@@ -249,12 +271,13 @@ requires the driver verdict gate or an external CI that invokes review.
 
 [Acceptance](#success-criteria).
 
-`loom plan` sessions produce commits whose diff is `specs/**.md` only. These
-commits routinely add Success Criteria bullets whose `[check]` / `[test]` /
-`[system]` / `[judge]` annotations name verifiers that will be implemented by a
-follow-on `loom loop` bead, not by the plan commit itself. Naively, every such
-annotation would fail the integrity gate inside `nix flake check` at pre-push
-time, blocking the plan commit from shipping and forcing operators toward
+With explicit commit consent, `loom plan` sessions can produce spec/index
+Markdown commits without verifier implementation changes. These commits
+routinely add Success Criteria bullets whose `[check]` / `[test]` / `[system]` /
+`[judge]` annotations name verifiers that will be implemented by a follow-on
+`loom loop` bead, not by the plan commit itself. Naively, every such annotation
+would fail the integrity gate inside `nix flake check` at pre-push time,
+blocking the plan commit from shipping and forcing operators toward
 `--no-verify` or an external allowlist — neither acceptable.
 
 The mechanism that makes plan-only commits clear the pre-push gate is the
@@ -360,8 +383,19 @@ declared as such.
 <!-- prettier-ignore -->
 - The complete publication path retains required hook, native-test, system, and
   review coverage owned by the component specs; incremental selection and reuse
-  do not silently replace full publication policy with worker policy.
+  do not silently replace full publication policy with worker policy. Actual
+  pre-push entrypoints establish publication applicability even without a marker;
+  hook rehearsal requests the same deterministic coverage without acquiring
+  driver-only review or mint authority. Required context is preserved through
+  the wrapper rather than silently falling back to feedback applicability.
   [system?](nix run .#test-quint -- publication-coverage)
+
+<!-- prettier-ignore -->
+- Actual host driver, marker-free operator, and rehearsal hook paths reject
+  missing required tools when admissible coverage is unavailable. An exit-zero
+  absent-tool wrapper cannot supply hook, receipt, or marker evidence. Existing
+  worker feedback skips remain available without becoming host coverage, and
+  otherwise admissible evidence remains reusable. [system?](nix run .#test-quint -- publication-coverage)
 
 The marker schema and diagnostic CLI outcomes are owned and verified by
 [Gate — Marker](gate.md#marker). This section verifies only pre-push
@@ -452,8 +486,8 @@ consumption.
   marker-aware policy wrapper is not part of this out-of-scope set; it is owned
   via `bin/pre-push-checks` and the Marker integration contract above.
   Loom-owned `core.hooksPath` placement in `.loom/integration` and bead clones
-  is specified in [Harness](harness.md); this spec consumes the canonical path
-  and hook wrappers by name in `.pre-commit-config.yaml`.
+  is specified in [Workspaces](workspaces.md#bead-dispatch); this spec consumes
+  the canonical path and hook wrappers by name in `.pre-commit-config.yaml`.
 
 - **Per-user `pre-commit install`.** Installation flows through
   `wrixLib.mkDevShell` exclusively. The `.pre-commit-config.yaml` shape is

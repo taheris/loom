@@ -5,15 +5,16 @@ work, and executes verifiers without weakening coverage.
 
 ## Problem Statement
 
-Derives independent obligations, admits checked providers, selects affected
-work, and executes verifiers without weakening coverage. This package is one
-contract owner, not a new crate or command tree.
+Selective verification is unsafe when caller-selected targets or incomplete
+input lists decide what must be checked. Verify derives obligations
+independently and admits execution definitions before selecting or sharing work.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [specs](specs.md), [evidence](evidence.md), [gate](gate.md),
-[tests](tests.md), [simulation](simulation.md).
+Current contracts and inventory determine obligations; checked providers supply
+execution inputs and results for Evidence admission. Related owners:
+[specs](specs.md), [evidence](evidence.md), [gate](gate.md), [tests](tests.md),
+[simulation](simulation.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -81,6 +82,24 @@ boundaries constrain the implementation; the
 input construction, optimization, and authorization against an independent
 reference procedure.
 
+#### Subject references for role exceptions
+
+[Acceptance](#planning-coverage-and-strategy).
+
+A spec-owned role exception references a named target or resource discovered
+from actual project definitions. Membership comes from that definition, not
+copied file globs or a second per-file policy registry in the spec. Parsing the
+reference does not resolve it: current-snapshot resolution must identify one
+subject before applying the exception. Unknown or ambiguous references block
+admission with actionable source-context diagnostics.
+
+The resulting role determines applicable obligations; an exception is not an
+instruction to ignore the subject. For example, intentionally invalid Rust
+classified as a test fixture remains subject to its consuming tests rather than
+production-source build obligations. Missing consumer coverage still blocks
+trusted success. Referencing a provider resource does not let its description
+replace independent repository inventory or declare its own coverage complete.
+
 #### Provider authoring and description boundary
 
 [Acceptance](#admitted-inputs-and-selection).
@@ -101,6 +120,13 @@ querying Nix afterward does not magically reconstruct missing provenance.
 Descriptions reference that graph rather than independently asserting a smaller
 input closure. They do not define repository-wide obligations, declare their own
 completeness, or constitute verification results.
+
+Provider candidates form a closed built-in family: tracked Rust analysis,
+hermetic Nix execution, and specifically supported effectful execution. Ordinary
+checks use these constructors, not arbitrary provider-kind strings or a new
+backend per check. The effectful variant is not a catch-all for unsupported
+commands or missing input/environment contracts. Claimed `trusted` or `hermetic`
+flags cannot substitute for admission.
 
 Parsing produces typed candidate descriptions, not admitted units or authority.
 Fallible resolution against the current snapshot, independent inventory, and
@@ -160,6 +186,14 @@ without a separately maintained individual-target list or property-name
 heuristic. Strategy syntax and authority are owned by
 [spec conventions](../docs/spec-conventions.md#verification-strategy).
 
+An applicable property group's explicit filter must match at least one test in
+the current discovered inventory. A zero match is an actionable configuration
+error, not a successfully configured empty group. Resolve membership before
+applying affectedness: a valid group may have no affected members for a
+particular diff. Declared platform applicability remains respected; unavailable
+discovery or capabilities are not an empty inventory and retain their existing
+admission and capability policies.
+
 Property campaigns have individually selectable exact execution/result
 identities with admitted dependencies under [Verify](#verifier-inputs-1).
 Classification cannot silently drop a test or reduce mandatory publication
@@ -191,6 +225,13 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   per-file registry; exceptions and additional roles are explicit spec
   declarations. [test?](quint_builtin_role_policies_derive_baseline_obligations)
 
+- Role exceptions resolve named project targets or resources against the current
+  discovered inventory, without spec-owned file globs or copied membership
+  lists. Unknown or ambiguous references fail actionably; valid classification
+  retains the resulting role's obligations, including consuming-test coverage
+  for fixtures, rather than making the subject unchecked.
+  [test?](quint_role_exceptions_resolve_discovered_subjects)
+
 <!-- prettier-ignore -->
 - Verification strategy and coverage declarations, including property filters
   and justified role exceptions, are owned by `tests.md`. Changes to `loom.toml`
@@ -208,6 +249,12 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   implicit deferral or pass. [system?](nix run .#test-quint -- default-policy)
 
 ### Admitted inputs and selection
+
+- Provider candidate types use closed variants for tracked Rust, hermetic Nix,
+  and specifically supported effects. Unknown kinds and incompatible definitions
+  cannot use an effectful fallback; candidate construction or a trust flag
+  cannot construct an immutable admitted unit without current-context
+  resolution. [test?](provider_candidates_use_closed_variants_before_admission)
 
 - An executable verifier resolves to an exact target, its subject inventory and
   input-discovery contract, its execution requirements, and its result mapping.
@@ -232,7 +279,10 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   responsibility, actual execution dependencies, and source origins. Parsing is
   not admission: inconsistent metadata or an input-only assertion cannot replace
   resolution against the current provider definition and independent inventory.
-  Single-target and batched queries retain complete per-target attribution.
+  Actual queries produce the closed candidate family; unknown kinds and
+  incompatible variants fail without a generic effectful escape. Valid
+  definitions still admit successfully. Single-target and batched queries retain
+  complete per-target attribution.
   [system?](nix run .#test-quint -- provider-descriptions)
 
 <!-- prettier-ignore -->
@@ -353,8 +403,8 @@ Gate; selecting feedback work is not redefining full-publication obligations.
 - **Forward — judge spec-relative resolution.** Path resolution joins the
   relative target against the annotation's spec-file directory, not the repo
   root; absolute paths are honoured as-is. This matches the markdown renderer's
-  relative-link resolution so a clickable `[judge](../tests/judges/x.sh#fn)` in
-  `specs/foo/tests.md` resolves to `tests/judges/x.sh` on disk
+  relative-link resolution so a clickable `[judge](../../tests/judges/x.sh#fn)`
+  in `specs/foo/tests.md` resolves to `tests/judges/x.sh` on disk
   [test](forward_judge_resolves_relative_to_spec_dir)
 
 - **Forward — judge legacy `::fn` selector.** A `[judge](script::fn)` target
@@ -437,6 +487,15 @@ Gate; selecting feedback work is not redefining full-publication obligations.
 - **`unneeded-pending-marker` — auto-generated options.** `mint` emits a
   `## Options — …` block whose Option 1 is "drop the `?`", per _Integrity gate_
   above [test](mint_emits_drop_marker_option_for_unneeded_pending_marker)
+
+<!-- prettier-ignore -->
+- Production readiness probes use the shared admitted planner for scope,
+  requested tier/lane, stage, batching/sharing, and bounded execution. Missing prospective targets
+  remain pending, invalid offered providers fail admission, and executable
+  assertion failures retain pending semantics. Passing probes emit
+  `UnneededPendingMarker`, never ordinary pending-criterion pass evidence;
+  shared non-pending obligations and required host coverage cannot be hidden.
+  [system?](nix run .#test-quint -- pending-readiness)
 
 ### Verifier inputs
 
@@ -681,6 +740,13 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   broad suite rather than disappearing or requiring a duplicate target list.
   [test?](quint_property_filters_partition_discovered_tests)
 
+- An explicit filter for an applicable property group that matches no discovered
+  tests fails with an actionable configuration error before affectedness
+  selection. This does not reject a valid group merely because none of its
+  members is affected by the diff, or misclassify a declared inapplicable group
+  as a broken filter.
+  [test?](quint_property_filters_reject_empty_applicable_groups)
+
 <!-- prettier-ignore -->
 - Ordinary native unit/integration suites may remain broad, while property
   campaigns have individually selectable exact targets and results. Every
@@ -814,50 +880,72 @@ evidence, `UnneededPendingMarker` fires the same way as for plain resolution.
 The two findings both express _"implementation not present yet,"_ so a single
 modifier suppresses both.
 
-**Dispatch-side skip.** Pending-marked annotations are **skipped at verifier
-dispatch** — `loom gate verify` / `check` / `test` / `system` / `judge` / `mint`
-does not execute the verifier for a `[tier?](target)` annotation. Only the
-integrity gate's forward-resolution check runs, which is what fires
-`UnneededPendingMarker` when the target newly resolves. Without dispatch-side
-skip, planning sessions that author `[check?]` for not-yet-existing walks would
-break their own gate verify path on the next CI run — the verifier would
-execute, exit non-zero ("command not found"), and surface as a verify-fail; the
-`?` discipline would be unusable in the very flow it was added to support.
+**Ordinary-dispatch skip.** Pending-marked annotations do not execute as
+ordinary verification obligations in `loom gate verify` / `check` / `test` /
+`system` / `judge` / `mint`, and cannot acquire ordinary pass evidence.
+Integrity's forward-resolution check may instead plan an executable readiness
+probe under the rules below. A readiness success fires `UnneededPendingMarker`;
+honest prospective absence stays pending without an ordinary command-not-found
+failure. This purpose distinction preserves the plan-to-implementation handoff
+without exempting executable readiness from admission or creating a second
+dispatcher.
 
-**Forward-resolution executes the command.** The integrity gate's
-forward-resolution check runs the annotation's command in the same dispatch
-environment as `[check]` / `[test]` / `[system]` would use for the non-pending
-form, and inspects the exit code:
+**Readiness is a planning purpose, not an admission bypass.** Structural
+resolution still checks native test bodies and judge targets without executing
+them. Executable `[check?]` and `[system?]` probes enter the same provider
+admission, affectedness, requested tier/lane and stage selection, sharing,
+budget, and dispatch path as ordinary verification, with an explicit readiness
+purpose. Finite requests select affected, eligible probes; publication and
+full-tree requests retain the readiness coverage required by their lanes. A
+tier-specific command does not gain an unrelated execution lane merely because
+integrity also inspects other tiers' annotation structure. Integrity is not a
+second launcher that runs every expensive pending command regardless of the
+plan.
+
+An honestly absent prospective target or execution definition remains pending;
+it does not require executing an unregistered command to prove absence. Once a
+provider offers an executable definition, malformed metadata, inconsistent
+inputs, or failed discovery are admission errors, not assertion-pending results.
+The modifier cannot suppress those errors. Unavailable capabilities retain their
+existing feedback/host policy and cannot count as completed readiness coverage.
+
+**Forward-resolution evaluates the full admitted command.** A selected
+executable probe uses the same dispatch environment as the non-pending form and
+inspects its outcome:
 
 - Exit 0 → the assertion holds; fire `UnneededPendingMarker` (the `?` is stale
   and must be dropped in the same diff).
-- Exit non-zero → the assertion does not hold; silent pass (still pending).
+- Completed nonzero assertion → no stale-marker finding; still pending. A
+  capability skip, timeout, or interrupted/incomplete execution is not this
+  outcome and cannot count as completed required readiness.
 
-This broader check is what makes the `?` modifier honor the author's intent
-uniformly across binary-pending (the verifier executable doesn't exist yet —
-first-token-on-PATH fails) and assertion-pending (the verifier exists but the
-asserted condition isn't true yet — e.g.
+This preserves binary-pending (the prospective executable or referenced path is
+absent) and assertion-pending (an admitted command runs, but its predicate is
+not yet true). For example,
 `[check?](grep -q 'pub enum BadWalk' crates/loom-templates/src/previous_failure.rs)`
-where `grep` resolves but the symbol doesn't yet appear in the file). Both
-fail-modes produce non-zero exit; both are silent-pass under the modifier. When
-the implementation lands and the assertion newly holds, `UnneededPendingMarker`
-fires uniformly.
+can remain pending while the symbol is absent. Neither form is an observed
+requirement pass. When the admitted predicate newly holds,
+`UnneededPendingMarker` requires removal of the marker.
+
+Readiness results are not ordinary passing evidence for the pending criterion. A
+pass requests removal of the marker; a nonzero assertion outcome records that
+readiness is not established, not that the requirement passed. Shared execution
+retains each obligation's purpose, so a pending declaration cannot hide an
+ordinary sibling's failure or discharge its coverage. Reuse, where eligible,
+uses Evidence's admission rules, not raw cached status. Readiness purpose does
+not discard independently admitted failures or counterexamples.
 
 Two boundary conditions:
 
-- **Command convention is read-only.** Verifier commands are read-only by
-  convention (same convention that applies to non-pending `[check]` / `[test]` /
-  `[system]`). The integrity gate executes pending-marked commands during
-  forward-resolution, so a side-effectful command would side-effect at integrity
-  time. Authors are responsible for keeping verifier commands read-only — this
-  is not a new risk class.
-- **Command-broken vs assertion-pending is indistinguishable.** A command that
-  exits non-zero because the implementation isn't ready and a command that exits
-  non-zero because the command itself is malformed both produce silent pass. The
-  integrity gate cannot distinguish them. The bug surfaces when the implementer
-  drops the `?` and the verifier runs at normal `loom gate verify` — the same
-  command exits non-zero and surfaces as `verify-fail`. Delayed signal during
-  the pending window, not silent forever.
+- **Command convention is read-only.** Readiness obeys the same verifier effects
+  and execution contract as ordinary verification; integrity inspection is not
+  permission for undeclared side effects.
+- **Execution outcome is not registration validity.** After admission, a
+  command's nonzero exit may mean an unfinished assertion or a broken command;
+  that predicate alone cannot distinguish them and remains pending. Known
+  provider/admission errors, unavailable required capabilities, and incomplete
+  execution cannot be laundered into this outcome. On removing `?`, the ordinary
+  verifier's failure remains blocking.
 
 The modifier is **self-cleaning**. It is modelled on Rust's `#[expect(...)]`
 attribute, not `#[allow(...)]`: presence is silently tolerated while the
@@ -874,7 +962,7 @@ Lifecycle binding to plan → todo → loop:
 - `loom plan` writes `[tier?](target)` when authoring a Success Criteria bullet
   whose verifier is not yet implemented. Applying the marker is part of the
   plan-stage Completeness check (see
-  [_Plan-stage checks_](plan.md#plan-stage-checks) below).
+  [Plan — Plan-stage checks](plan.md#plan-stage-checks)).
 - `loom todo` fans out beads from the spec diff as usual; pending-marked
   criteria are minted as ordinary tasks, with the integrity gate's self-cleaning
   behaviour as the only enforcement.
@@ -1396,13 +1484,15 @@ part of `loom gate check`. Four directions:
    - `[judge](path)`: the path resolves to a file on disk.
 
    The pending modifier `?` (see [_Pending modifier_](#pending-modifier) above)
-   flips the per-annotation outcome. For `[check?]` and `[system?]`, pending
-   resolution uses the full dispatcher command, not the first-token / file
-   lookup used by the non-pending forms above: a spawn failure or non-zero exit
-   remains pending, while exit 0 emits an `UnneededPendingMarker`. `[test?]` and
-   `[judge?]` retain their tier-specific target-resolution checks. The finding
-   names the spec, line, and target so the implementer can drop the `?` in the
-   same diff that lands the verifier.
+   flips the per-annotation outcome. For `[check?]` and `[system?]`, executable
+   readiness uses the full admitted command through the shared planner, not
+   merely first-token / file lookup. Honest absence remains pending; a completed
+   nonzero assertion remains pending, while a pass emits
+   `UnneededPendingMarker`. Provider errors and incomplete required work follow
+   the readiness admission rules above. `[test?]` and `[judge?]` retain their
+   tier-specific target-resolution checks. The finding names the spec, line, and
+   target so the implementer can drop the `?` in the same diff that lands the
+   verifier.
 
 2. **Stub-pointing — annotations whose verifier body invokes the `_pending_stub`
    sigil are flagged** (`StubTestFunction`). A stub means the criterion has no
@@ -1424,8 +1514,9 @@ part of `loom gate check`. Four directions:
    Missing/ambiguous contracts and discovery failures block trusted success. A
    declared query that fails or emits malformed metadata produces
    `inputs-protocol-error`. No silent always-run or heuristic fallback is
-   permitted. The pending modifier retains its separate treatment of absent
-   verifiers and suppresses `inputs-protocol-error` during that pending window.
+   permitted. The pending modifier permits absent prospective verifiers or
+   definitions, not malformed offered providers: executable readiness must pass
+   this same admission boundary.
 
 Failure output (one per finding):
 
@@ -1468,11 +1559,12 @@ This preserves the Options-Format-Contract invariant of one block per clarify
 bead while keeping per-kind resolution paths visible to the operator.
 
 **Worker authority on the recovery branch.** Findings are not classified as
-self-fixable in the driver; the worker is the authority on whether one turn can
-resolve every finding in the batch. A worker that cannot resolve the batch emits
-`LOOM_CLARIFY` from its own dispatch, which routes through the standard per-bead
-clarify path — the iteration cap is the backstop for both "worker keeps failing
-on the same finding" and "findings are intrinsically clarify-shaped."
+self-fixable in the driver. The worker follows
+[Findings' remediation acceptance](findings.md#remediation-task-acceptance),
+including permitted partial progress with explicit retained or split findings.
+No-progress cases use the standard per-bead clarify path. Processing a batch is
+not proof that its findings are all resolved; the iteration cap and actual
+publication checks remain the backstop for repeated or clarify-shaped failures.
 
 **Per-kind auto-options templates.** The templates below are the building blocks
 the composition draws from. Two consumption sites:
@@ -1520,20 +1612,20 @@ The integrity gate is itself a `[check]`-tier verifier (its own spec criterion
 annotates back to its implementation), so every `loom gate check` run includes a
 self-test of the gate's resolution logic.
 
-### Functional
+### Verifier-driven status
 
-14. **Verifier-driven status; no checkboxes in spec markdown.** Success Criteria
-    bullets carry their `[check]` / `[test]` / `[system]` / `[judge]` annotation
-    but **no `[ ]` / `[x]` prefix**. Status is a property of running the
-    verifier against the current code-spec pair, not a value stored in the spec.
-    `loom gate verify` enumerates every annotation in scope and reports
-    per-criterion `pass | fail | skipped` from current admitted executions or
-    reusable evidence. A cached status scalar is not admission; past passes do
-    not grant immunity from current obligations and policy. This rules out the
-    failure class where a checkbox is `[x]` while the verifier points to a stub,
-    or where production behaviour diverges from the unit-tested function the
-    verifier exercises. Each request re-evaluates applicability and evidence,
-    executing whenever reuse is not admissible.
+1. **Verifier-driven status; no checkboxes in spec markdown.** Success Criteria
+   bullets carry their `[check]` / `[test]` / `[system]` / `[judge]` annotation
+   but **no `[ ]` / `[x]` prefix**. Status is a property of running the verifier
+   against the current code-spec pair, not a value stored in the spec.
+   `loom gate verify` enumerates every annotation in scope and reports
+   per-criterion `pass | fail | skipped` from current admitted executions or
+   reusable evidence. A cached status scalar is not admission; past passes do
+   not grant immunity from current obligations and policy. This rules out the
+   failure class where a checkbox is `[x]` while the verifier points to a stub,
+   or where production behaviour diverges from the unit-tested function the
+   verifier exercises. Each request re-evaluates applicability and evidence,
+   executing whenever reuse is not admissible.
 
 #### loom-walk
 
@@ -1564,7 +1656,7 @@ self-test of the gate's resolution logic.
   per-tier runners with `match`/`command`/ `target`/`join`/`parse`/`cwd` fields;
   missing file falls back to detected defaults
 
-### Functional
+### Execution responsibilities
 
 - Integrity gate forward direction: every annotation's target is valid for its
   tier (resolves on PATH for `[check]` / `[system]`; resolves to a `#[test]`

@@ -5,13 +5,14 @@ observer contracts.
 
 ## Problem Statement
 
-Defines reusable typed completion, conversation, tool-use, cache-control, and
-observer contracts. This package is one contract owner, not a new crate or
-command tree.
+Consumers need portable LLM calls and tool-use conversations without adopting
+Loom's workflow or backend runtimes. Typed primitives hide provider mechanisms
+while preserving capabilities, usage, errors, and observable loop behavior.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
+Provider clients implement the public completion contract; Conversation composes
+clients, tools, and observers without depending on workflow policy. Related
 owners: [events](events.md), [agent](agent.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).

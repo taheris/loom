@@ -5,19 +5,20 @@ admits whole-scope publication receipts and marker handoffs.
 
 ## Problem Statement
 
-Composes deterministic verification and semantic review for explicit scopes, and
-admits whole-scope publication receipts and marker handoffs. This package is one
-contract owner, not a new crate or command tree.
+Passing individual checks does not establish that the current publishable state
+has complete verification and review. Gate composes those obligations and admits
+publication only with matching, current evidence.
 
 ## Architecture
 
-Inputs, outputs, and trust boundaries are stated in the contracts below. Related
-owners: [verify](verify.md), [evidence](evidence.md), [findings](findings.md),
+Verify plans and executes checks; Evidence admits their results; Gate composes
+whole-scope review and publication authority. Related owners:
+[verify](verify.md), [evidence](evidence.md), [findings](findings.md),
 [loop](loop.md), [pre-commit](pre-commit.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
-### Architecture
+### Components
 
 `loom gate` is one command tree spanning deterministic verification, LLM review,
 finding minting, and marker validation across plan, worker, integration,
@@ -39,6 +40,16 @@ a second verification-result cache hit. On a later attempt, a reuse-disabled
 identity must execute again even if content/range/config fingerprints match.
 Receipts and markers cannot turn same-attempt evidence into authorization for a
 later attempt.
+
+The attempt is represented by a live, host-owned single-push handle with an
+OS-backed lifetime. Verification, review, and the actual push consume that
+handle in the admitted local context; a serialized identifier, surviving marker,
+PID string, timestamp, or cleanup callback alone cannot establish its validity.
+Loss of the owning host process ends the attempt without relying on cleanup.
+Failed or interrupted push also ends it when that process survives. A live
+handle is necessary for this handoff, not sufficient authorization: current
+coverage, evidence admission, and freshness still apply. This introduces neither
+a daemon nor driver-only review for marker-free operator pushes or rehearsals.
 
 A failed or interrupted `git push` ends the publication attempt, including
 process loss without a recorded outcome. A retry starts a new attempt and
@@ -106,6 +117,14 @@ optimization.
   attempt even at unchanged fingerprints, and an unknown push outcome cannot
   establish unchanged remote state. Same-attempt handoff never overrides
   invalidation or freshness. [system?](nix run .#test-quint -- publication-attempt-handoff)
+
+<!-- prettier-ignore -->
+- The production publication handoff requires a live host-owned single-push
+  handle with OS-backed lifetime. Actual owner-process loss and failed or killed
+  push with a surviving owner invalidate the attempt even when old marker files
+  remain. Files, identifiers, or claimed liveness cannot revive it; a valid live
+  handle still requires current Gate admission and preserves existing
+  marker-free push and rehearsal policy. [system?](nix run .#test-quint -- publication-attempt-handoff)
 
 The gate packages use the same annotation taxonomy as consumers. Verify owns
 [the self-hosting integrity checks](verify.md#integrity-gate--four-directions);
@@ -232,10 +251,21 @@ this acceptance document owns Gate composition and authorization.
   same planning and dispatch path, with no `LOOM_VERIFY_TIERS` override or
   separate conformance hook. [system?](nix run .#test-quint -- finite-verify-stages)
 
+<!-- prettier-ignore -->
+- Verification applicability is selected automatically through existing
+  entrypoints: standalone finite verification and ordinary worker/integration
+  feedback use feedback applicability; driver publication and pre-push paths,
+  including manual pushes without a marker and explicit hook rehearsals, request
+  publication coverage. No public stage selector is required or introduced.
+  Missing or invalid required publication context cannot downgrade that coverage
+  to feedback. Full-tree coverage, worker capability limits, and the separation
+  between inspection results and publication authority remain intact.
+  [system?](nix run .#test-quint -- finite-verify-stages)
+
 - `loom gate status --diff <range>` / `--files <paths...>` / `--tree` reads
   criterion evidence from `.loom/cache.db` and prints the report per
-  `Status cache` above; status without an explicit scope prints help and runs no
-  cache lookup [test](loom_gate_status_requires_explicit_scope)
+  [Evidence — Status cache](evidence.md#status-cache-1); status without an
+  explicit scope prints help and runs no cache lookup [test](loom_gate_status_requires_explicit_scope)
 
 - `loom gate status` is `refused_inside_loom() == false`; running under
   `LOOM_INSIDE=1` is allowed because the cache read is local and read-only
@@ -272,6 +302,11 @@ this acceptance document owns Gate composition and authorization.
 
 - Review's secondary concerns are scope appropriateness and `[judge]` rubric
   satisfaction [test](review_renders_review_context_fields)
+
+- Production finite-review context includes current sibling contracts relevant
+  to the change and broadens uncertain selection without presenting an
+  exhaustive standing audit as mandatory for every diff.
+  [test?](finite_review_context_includes_relevant_sibling_contracts)
 
 - Review walks the pinned `{{ style_rules }}` document rule by rule, discovering
   rule families from the document itself (no fixed prefix enumeration in the
@@ -319,11 +354,12 @@ reason for existing; everything below them is mechanism.
    follows the template literally instead of the contract.
 
 4. **A divergence sits in the working tree undetected, regardless of whether any
-   merge is in flight.** Finite-diff review can only see what's in the diff.
-   Cross-file gaps, contracts orphaned across multiple PRs, pre-existing
-   violations that predate current rules — none of these surface at merge time.
-   Conformance is a property of the _current_ code-spec pair, not a historical
-   artefact of past approvals.
+   merge is in flight.** Finite-diff review includes the current contracts and
+   sibling context relevant to the change; it is not an exhaustive standing
+   audit. Cross-file gaps unrelated to that surface, orphaned contracts, and
+   accumulated pre-existing violations also need tree-wide review. Conformance
+   is a property of the _current_ code-spec pair, not a historical artefact of
+   past approvals.
 
 5. **A load-bearing invariant is silently contradicted.** Five invariant
    categories: architectural decisions, data-structure choices, explicit
@@ -387,8 +423,8 @@ detected, not by stage or scope.
   may need fewer or differently-framed options, each phrased in terms concrete
   to the clash.
 
-  Gate raises `loom:clarify` per the _Options Format Contract_ (defined in
-  [Options Format Contract](inbox.md#options-format-contract) below) and waits
+  Gate raises `loom:clarify` per
+  [Inbox — Options Format Contract](inbox.md#options-format-contract) and waits
   for `loom inbox` resolution.
 
 #### Commands
@@ -401,7 +437,7 @@ kind of inspection or act path runs:
 | Command                       | Kind                    | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ----------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **`loom gate`**               | Help                    | Prints `loom gate --help` — the subcommand list with one-line descriptions. No verifiers run, no cache read.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **`loom gate status`**        | Status                  | Reads cached results for an explicit scope and prints a fast status report — no verifiers run. See _Status cache_ for the hard latency target.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **`loom gate status`**        | Status                  | Reports historical results and current coverage eligibility for an explicit scope, without running verifiers. [Evidence](evidence.md#status-cache-1) owns projection and the bounded render target.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **`loom gate audit`**         | All, inspection         | Runs `verify` then `review` for an explicit `--diff` or `--tree` scope. Inspection composition only: no bd writes and no marker mint. The act path is `mint`.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **`loom gate verify`**        | Deterministic           | Runs deterministic gate lanes for an explicit scope. Diff scope includes both the project pre-commit lane and spec annotations; file/tree scope is spec-annotation only.                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **`loom gate check`**         | Deterministic, one tier | Runs only `[check]`-tier spec annotations for an explicit scope or exact `--target`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -532,30 +568,70 @@ sharing and evidence admission follow their ordinary rules. Full-tree and
 mandatory publication coverage are not reduced. Worker capability acceptance
 remains governed by
 [Sandbox-capability results](verify.md#sandbox-capability-results): missing
-capability is not an observed pass or publication evidence. Affectedness uses
-the verifier-input contract; expense alone does not make a selected check
-optional.
+capability is not an observed pass or publication evidence. In particular,
+[absent-tool hook no-ops](pre-commit.md#stage-composition) cannot satisfy host
+publication coverage. Affectedness uses the verifier-input contract; expense
+alone does not make a selected check optional.
 
 The composition: `loom gate audit` ≡ `loom gate verify && loom gate review` for
 the same explicit `--diff` or `--tree` scope. Both are inspection paths; `audit`
 produces no bd writes. The act path is `loom gate mint`, which walks and writes;
 see [_Findings and Minting_](findings.md#findings-and-minting-1).
 
+##### Automatic applicability context
+
+[Acceptance](#commands-surface--explicit-scopes-and-status).
+
+Existing entrypoints establish the verification applicability context; users do
+not select it with a public stage flag:
+
+- Standalone finite `loom gate verify --files` and `--diff` use feedback
+  applicability, as do ordinary pre-commit, worker self-check, and per-bead
+  integration requests. Criterion-local publication deferrals may wait.
+- The driver's publication gate and the pre-push chain establish publication
+  applicability for their actual range. Operator-manual pushes without a marker
+  get the same deterministic publication obligations, not feedback defaults.
+- Explicitly rehearsing the existing pre-push chain with
+  `prek run --hook-stage pre-push --from-ref <base> --to-ref <head>` requests
+  publication coverage without adding a second verification entrypoint.
+- `verify --tree` retains full deterministic annotation coverage regardless of
+  deferrals. Exact-target diagnostics retain their fresh, non-authorizing
+  semantics.
+
+Caller context is parsed and resolved at the existing driver/hook boundary and
+carried through the shared planner. A required publication handoff with missing
+or invalid context cannot silently become a weaker feedback request or satisfy
+publication with feedback-only evidence. Marker absence is normal for manual
+pushes: the hook path establishes its context without requiring a prior marker.
+Nested hooks retain the parent-run recursion guard; no stage override bypasses
+it or changes hook ordering.
+
+Applicability determines required checks, not permission to publish. Rehearsal,
+full-tree inspection, or requesting publication coverage does not mint a marker,
+create review coverage, or turn worker capability skips into host evidence.
+Driver authority still requires the existing receipt and
+[publication-attempt admission](#publication-attempt-handoff); eligible unit
+results remain subject to ordinary evidence rules. Manual pushes retain the
+[existing deterministic hook policy](pre-commit.md#source-of-truth-files), not
+an added requirement for driver-only review. Concrete internal context carriers
+remain implementation design, not a new public stage-selection interface.
+
 #### Stages
 
 [Acceptance](#commands-surface--explicit-scopes-and-status).
 
-Same gate, four review points plus one stabilization act. Scope and
-cost-of-failure differ; the underlying trust surfaces are explicit.
+The same gate serves planning, worker feedback, integration, stabilization,
+publication, and standing audits. Scope and cost of failure differ; each stage's
+trust boundary is explicit.
 
-| Stage                    | Where                                                                                                                                                                                                                         | Scope                                                                | Cost-of-failure                                                                                                                                                                                  | Primary catches                                                                                                                                                                                                                        |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Plan**                 | `loom plan [SPEC_LABEL ...]`                                                                                                                                                                                                  | Anchored specs plus siblings touched during interview                | Lowest — no code yet                                                                                                                                                                             | Missing claims, weak claims, missing verifier surfaces, invariant clashes in proposed spec changes                                                                                                                                     |
-| **Worker self-check**    | In the bead container before `LOOM_COMPLETE`: `loom gate verify --diff <bead-base>..HEAD` plus prompt-level self-review                                                                                                       | The bead branch's committed work against its injected base range     | Low — the agent is still in-session                                                                                                                                                              | Formatting/hook failures, affected stage-required deterministic failures, obvious criteria/style misses the agent can fix before final marker                                                                                          |
-| **Per-bead integration** | In `.loom/integration` after rebase/ff: `loom gate verify --diff <pre-integration-head>..HEAD`                                                                                                                                | The exact commits just integrated into the loom workspace            | Medium — one bead's worth                                                                                                                                                                        | Cross-bead deterministic breakage after integration, project pre-commit failures, affected stage-required deterministic failures. On failure, integration rolls back and the same bead retries with the gate log in `previous_failure` |
-| **Stabilization**        | `loom gate mint -m <molecule-id>` after no original non-deferred work remains ready                                                                                                                                           | The molecule's `loom:deferred` remediation beads                     | Medium — amortized over a molecule, not one tiny finding                                                                                                                                         | Promotes deferred remediation batches so the loop drains them before push; coalesces repeated finding hashes instead of reminting tiny beads                                                                                           |
-| **Push**                 | Fetch/rebase to `origin/<integration-branch>`, resolve the remote tip and `HEAD` to concrete OIDs, run the actual prek pre-push chain for `<remote-oid>..<head-oid>`, then `loom gate review --diff <remote-oid>..<head-oid>` | The actual push range, not merely the molecule's original base range | Highest — **blocks push**. `GateSuccess` is constructible only from matching `VerifiedScope`, `ReviewedScope`, pre-push hook coverage, marker evidence, and clean tree/config/range fingerprints | Conformance gaps in the pushed range, project pre-push failures, integrity-gate findings in affected annotations, review concerns, dispatch errors, origin-advanced races                                                              |
-| **Standing safety net**  | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled)                                                                                                                    | Entire spec tree × entire implementation                             | Catches **verifier-input under-reporting** — any verifier a finite scope would have skipped because its derived input set was too narrow is surfaced here                                        | Cross-file incoherence finite diffs did not surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-reported input sets that are too narrow          |
+| Stage                    | Where                                                                                                                                                                                                                         | Scope                                                                | Cost-of-failure                                                                                                                                                                                                                                             | Primary catches                                                                                                                                                                                                                        |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Plan**                 | `loom plan [SPEC_LABEL ...]`                                                                                                                                                                                                  | Anchored specs plus siblings touched during interview                | Lowest — no code yet                                                                                                                                                                                                                                        | Missing claims, weak claims, missing verifier surfaces, invariant clashes in proposed spec changes                                                                                                                                     |
+| **Worker self-check**    | In the bead container before `LOOM_COMPLETE`: `loom gate verify --diff <bead-base>..HEAD` plus prompt-level self-review                                                                                                       | The bead branch's committed work against its injected base range     | Low — the agent is still in-session                                                                                                                                                                                                                         | Formatting/hook failures, affected stage-required deterministic failures, obvious criteria/style misses the agent can fix before final marker                                                                                          |
+| **Per-bead integration** | In `.loom/integration` after rebase/ff: `loom gate verify --diff <pre-integration-head>..HEAD`                                                                                                                                | The exact commits just integrated into the loom workspace            | Medium — one bead's worth                                                                                                                                                                                                                                   | Cross-bead deterministic breakage after integration, project pre-commit failures, affected stage-required deterministic failures. On failure, integration rolls back and the same bead retries with the gate log in `previous_failure` |
+| **Stabilization**        | `loom gate mint -m <molecule-id>` after no original non-deferred work remains ready                                                                                                                                           | The molecule's `loom:deferred` remediation beads                     | Medium — amortized over a molecule, not one tiny finding                                                                                                                                                                                                    | Promotes deferred remediation batches so the loop drains them before push; coalesces repeated finding hashes instead of reminting tiny beads                                                                                           |
+| **Push**                 | Fetch/rebase to `origin/<integration-branch>`, resolve the remote tip and `HEAD` to concrete OIDs, run the actual prek pre-push chain for `<remote-oid>..<head-oid>`, then `loom gate review --diff <remote-oid>..<head-oid>` | The actual push range, not merely the molecule's original base range | Highest — **blocks push**. `GateSuccess` is constructible only from matching `VerifiedScope`, `ReviewedScope`, pre-push hook coverage, current evidence/attempt admission, and clean tree/config/range fingerprints; the marker is minted from that receipt | Conformance gaps in the pushed range, project pre-push failures, integrity-gate findings in affected annotations, review concerns, dispatch errors, origin-advanced races                                                              |
+| **Standing safety net**  | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled)                                                                                                                    | Entire spec tree × entire implementation                             | Catches **verifier-input under-reporting** — any verifier a finite scope would have skipped because its derived input set was too narrow is surfaced here                                                                                                   | Cross-file incoherence finite diffs did not surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-reported input sets that are too narrow          |
 
 The plan stage has no separate command invocation — the agent runs the rubric
 inline during the planning interview, and `loom plan` is the surface that opens
@@ -590,7 +666,8 @@ not to replace the push gate.
 
 **Review findings.** Authoritative LLM review runs at molecule completion over
 the actual push range. Review findings carry an explicit `route` field in
-addition to the concern token (see _Emit shape_):
+addition to the concern token (see
+[Findings — Emit shape](findings.md#emit-shape)):
 
 | Route      | Meaning                                                                                                                                                                                                                    | Driver action                                                                                                                       |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -646,8 +723,13 @@ than a diff. Additional safety-net-only checks:
   another's prose. Concern token: `cross-spec-clash`. Target is
   `Criterion { spec, anchor }` naming the side the reviewer considers primary;
   `bonds` lists every spec the clash spans, and the other side(s) appear
-  verbatim in `evidence` prose. Gated on `--tree` scope because finite-diff
-  scope cannot see sibling-spec context.
+  verbatim in `evidence` prose. This exhaustive standing walk is gated on
+  `--tree`, not access to sibling context. Finite review receives relevant
+  current sibling contracts through
+  [Templates](templates.md#acceptance-context-and-progressive-disclosure) and
+  applies its existing conformance/invariant-clash rules to the changed surface.
+  Uncertain relevance broadens context; it does not silently hide a constraint
+  or require an unrelated whole-tree audit on every diff.
 
 - **Spec-conventions violation.** A spec violates a rule from
   `docs/spec-conventions.md` that the structural integrity gate cannot detect
@@ -709,8 +791,8 @@ remove one the spec marked removed). Implemented as a `[check]`-tier verifier
 rather than a separate subcommand: the consumer annotates the relevant spec
 criterion with
 `[check](<command that diffs declared surface against the binary>)`. See
-[Harness](harness.md#functional) for the four hard-fail dimensions and audit
-triggers.
+[Harness](harness.md#surface-conformance) for the four hard-fail dimensions and
+audit triggers.
 
 **Boundary with `loom gate review`'s style-rule walk.** Help-text wording is
 **not** a surface-audit dimension. CLI-style requirements (e.g. a short
@@ -804,9 +886,9 @@ The mint authority lives in `loom-gate::marker`. The constructor
 `MarkerProof::from_gate_success` is `pub(crate)`, accepts the sealed
 [`GateSuccess`](#gate-success-receipt), computes the current workspace
 fingerprint, and returns a `MarkerProof`. No code path outside the marker module
-can mint a marker; no code path outside the gate- invocation module can
-construct the `GateSuccess` that mint requires. The bead-container agent cannot
-mint, regardless of what it writes to disk or emits on stdout.
+can mint a marker; no code path outside the gate-invocation module can construct
+the `GateSuccess` that mint requires. The bead-container agent cannot mint,
+regardless of what it writes to disk or emits on stdout.
 
 Architecture-bearing marker fields include:
 
@@ -830,7 +912,7 @@ than reaching fingerprint comparison.
 
 Marker validation is two-layered:
 
-1. **Workspace fingerprint.** The current worktree must be porcelain- clean,
+1. **Workspace fingerprint.** The current worktree must be porcelain-clean,
    HEAD's tree OID must match the marker, the marker schema version must be
    supported, and the `.pre-commit-config.yaml` digest must match.
 2. **Hook coverage.** The pre-push hook currently wrapped by `pre-push-checks`
@@ -940,8 +1022,9 @@ own sandbox.
 
 1. Gate evidence stays bound to the current tree, configuration, and resolved
    scope; stale evidence cannot authorize a push.
-2. Cached status reporting retains its hard latency target independently of
-   corpus size.
+2. Cached status reporting follows Evidence's
+   [bounded render target](evidence.md#status-cache-1), not an arbitrary-corpus
+   latency guarantee or permission to omit current coverage limitations.
 3. Verifier dispatch remains repository-agnostic with explicit input-contract
    admission. Invalid discovery fails loudly; valid cold execution and justified
    broad responsibility remain distinct from configuration failure.
@@ -957,8 +1040,9 @@ own sandbox.
   separate persistent trace/result-cache service. Tracked-input invalidation and
   existing gate evidence/Nix reuse bound the design.
 - Coverage-based selectors trusted to omit required Rust tests, or a promise of
-  precise function-level Rust impact analysis. Native grouping is owned by
-  Tests.
+  precise function-level Rust impact analysis. Property grouping belongs to
+  [Verify](verify.md#selective-property-campaigns); shared suite policy belongs
+  to [Tests](tests.md).
 - Inferring semantic test adequacy from input closure, hermeticity, or Rust
   types. Those boundaries do not prove that a checker enforces the intended
   rule.
