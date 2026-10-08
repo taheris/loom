@@ -77,6 +77,7 @@ in
     }:
     let
       inherit (inputs) nixpkgs;
+      nextestOverlay = import ../nextest-overlay.nix;
 
       linuxSystem =
         if system == "aarch64-darwin" then
@@ -89,6 +90,7 @@ in
       wrixPkgs = import nixpkgs {
         inherit system;
         overlays = [
+          nextestOverlay
           (_final: _prev: {
             beads = inputs.wrix.packages.${system}.beads;
           })
@@ -98,6 +100,7 @@ in
 
       wrixLinuxPkgs = import nixpkgs {
         system = linuxSystem;
+        overlays = [ nextestOverlay ];
         config.allowUnfree = true;
       };
 
@@ -204,6 +207,11 @@ in
     in
     {
       _module.args = {
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ nextestOverlay ];
+          config.allowUnfree = true;
+        };
         inherit
           debugSandbox
           imagePiCodingAgent

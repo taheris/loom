@@ -1,0 +1,299 @@
+diff --git a/nextest-runner/src/test_command.rs b/nextest-runner/src/test_command.rs
+index 2f7364a..3f19403 100644
+--- a/nextest-runner/src/test_command.rs
++++ b/nextest-runner/src/test_command.rs
+@@ -18,9 +18,8 @@ use std::{
+     collections::{BTreeSet, HashMap},
+     ffi::{OsStr, OsString},
+     fs::File,
+-    io::{BufRead, BufReader, PipeReader, PipeWriter},
+-    path::Path,
+-    sync::{LazyLock, PoisonError, RwLock},
++    io::{BufRead, BufReader, PipeReader},
++    sync::{LazyLock, Mutex, PoisonError},
+ };
+ use tracing::warn;
+
+@@ -28,31 +27,11 @@ mod imp;
+ use imp::attach_capture_readers;
+ pub(crate) use imp::{Child, ChildAccumulator, ChildFds};
+
+-/// Platforms without atomic CLOEXEC, per `library/std/src/sys/pipe/unix.rs`.
+-/// Windows std already serializes `CreateProcess`.
+-const SPAWN_INHERITS_PIPES: bool = cfg!(all(
+-    unix,
+-    not(any(
+-        target_os = "android",
+-        target_os = "cygwin",
+-        target_os = "dragonfly",
+-        target_os = "freebsd",
+-        target_os = "hurd",
+-        target_os = "illumos",
+-        target_os = "linux",
+-        target_os = "netbsd",
+-        target_os = "openbsd",
+-        target_os = "redox",
+-    ))
+-));
+-
+-/// Without atomic CLOEXEC, a concurrent spawn can inherit a pipe before CLOEXEC
+-/// is set, and a test that inherits a capture pipe shows up as leaky
+-/// (rust-lang/rust#95584).
+-///
+-/// Pipe creation and fork/exec spawns take the write lock, since fork/exec
+-/// creates its own pipe. `posix_spawn` spawns take the read lock.
+-static PROCESS_SPAWN_LOCK: RwLock<()> = RwLock::new(());
++/// Keep provisional capture writers out of unrelated process snapshots.
++/// CLOEXEC closes inherited writers only at exec, not while a sibling is
++/// waiting to exec. The lease ends after the spawning parent drops its writers;
++/// it does not limit concurrently running tests.
++static PROCESS_SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+ #[derive(Clone, Debug)]
+ pub(crate) struct LocalExecuteContext<'a> {
+@@ -239,58 +218,55 @@ impl TestCommand {
+     }
+ }
+
+-/// Use std's pipes for atomic CLOEXEC on illumos (missing in mio-pipe 0.1.1)
+-/// and anonymous pipes on Windows, which Tokio does not provide.
+-fn create_pipe() -> std::io::Result<(PipeReader, PipeWriter)> {
+-    // This lock protects no data, so a panic leaves no state to repair.
+-    let _guard = SPAWN_INHERITS_PIPES.then(|| {
+-        PROCESS_SPAWN_LOCK
+-            .write()
+-            .unwrap_or_else(PoisonError::into_inner)
+-    });
+-    std::io::pipe()
++fn spawn_process_unlocked(cmd: std::process::Command) -> std::io::Result<tokio::process::Child> {
++    tokio::process::Command::from(cmd).spawn()
+ }
+
+-/// Capture pipes must come from `create_pipe`, not `Stdio::piped()`.
+-///
+-/// Only Apple with an absolute program is known to use `posix_spawn`.
+ fn spawn_process(cmd: std::process::Command) -> std::io::Result<tokio::process::Child> {
+-    let exclusive = SPAWN_INHERITS_PIPES
+-        && (!cfg!(target_vendor = "apple") || !Path::new(cmd.get_program()).is_absolute());
+-    let _write_guard = exclusive.then(|| {
+-        PROCESS_SPAWN_LOCK
+-            .write()
+-            .unwrap_or_else(PoisonError::into_inner)
+-    });
+-    let _read_guard = (SPAWN_INHERITS_PIPES && !exclusive).then(|| {
+-        PROCESS_SPAWN_LOCK
+-            .read()
+-            .unwrap_or_else(PoisonError::into_inner)
+-    });
+-    tokio::process::Command::from(cmd).spawn()
++    let _lease = PROCESS_SPAWN_LOCK
++        .lock()
++        .unwrap_or_else(PoisonError::into_inner);
++    spawn_process_unlocked(cmd)
++}
++
++fn spawn_combined(
++    cmd: std::process::Command,
++) -> std::io::Result<(tokio::process::Child, PipeReader)> {
++    let _lease = PROCESS_SPAWN_LOCK
++        .lock()
++        .unwrap_or_else(PoisonError::into_inner);
++    let mut cmd = cmd;
++    let (rx, tx) = std::io::pipe()?;
++    cmd.stdout(tx.try_clone()?).stderr(tx);
++    let child = spawn_process_unlocked(cmd)?;
++    Ok((child, rx))
+ }
+
+ pub(crate) fn spawn_piped(
+-    mut cmd: std::process::Command,
++    cmd: std::process::Command,
+     capture_stdout: bool,
+     capture_stderr: bool,
+ ) -> std::io::Result<tokio::process::Child> {
++    let _lease = PROCESS_SPAWN_LOCK
++        .lock()
++        .unwrap_or_else(PoisonError::into_inner);
++    let mut cmd = cmd;
+     let stdout_rx = if capture_stdout {
+-        let (rx, tx) = create_pipe()?;
++        let (rx, tx) = std::io::pipe()?;
+         cmd.stdout(tx);
+         Some(rx)
+     } else {
+         None
+     };
+     let stderr_rx = if capture_stderr {
+-        let (rx, tx) = create_pipe()?;
++        let (rx, tx) = std::io::pipe()?;
+         cmd.stderr(tx);
+         Some(rx)
+     } else {
+         None
+     };
+
+-    let mut child = spawn_process(cmd)?;
++    let mut child = spawn_process_unlocked(cmd)?;
+     if let Err(error) = attach_capture_readers(&mut child, stdout_rx, stderr_rx) {
+         // The caller cannot supervise a child it never receives.
+         _ = child.start_kill();
+diff --git a/nextest-runner/src/test_command/imp.rs b/nextest-runner/src/test_command/imp.rs
+index a6ff517..e259be3 100644
+--- a/nextest-runner/src/test_command/imp.rs
++++ b/nextest-runner/src/test_command/imp.rs
+@@ -3,7 +3,7 @@
+
+ use crate::{
+     errors::{ChildFdError, ErrorList},
+-    test_command::{create_pipe, spawn_piped, spawn_process},
++    test_command::{spawn_combined, spawn_piped, spawn_process},
+     test_output::{CaptureStrategy, ChildExecutionOutput, ChildOutput, ChildSplitOutput},
+ };
+ use bytes::BytesMut;
+@@ -71,9 +71,7 @@ pub(super) fn spawn(
+             (child, ChildFds::new_split(Some(stdout), Some(stderr)))
+         }
+         CaptureStrategy::Combined => {
+-            let (rx, tx) = create_pipe()?;
+-            cmd.stdout(tx.try_clone()?).stderr(tx);
+-            let child = spawn_process(cmd)?;
++            let (child, rx) = spawn_combined(cmd)?;
+             let combined = os::pipe_reader_to_file(rx).into();
+             (child, ChildFds::new_combined(combined))
+         }
+@@ -404,6 +402,135 @@ mod tests {
+         }
+     }
+
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn capture_closes_while_unrelated_sibling_is_paused_before_exec() {
++        use std::os::unix::process::CommandExt;
++        use std::time::Instant;
++
++        const CONTROL: &str = "NEXTEST_CAPTURE_HANDOFF_CONTROL";
++        const TEST: &str = "test_command::imp::tests::capture_closes_while_unrelated_sibling_is_paused_before_exec";
++        if std::env::var_os(CONTROL).is_some() {
++            capture_handoff_control();
++            return;
++        }
++
++        let directory = camino_tempfile::tempdir().unwrap();
++        let log_path = directory.path().join("control.log");
++        let log = std::fs::File::create(&log_path).unwrap();
++        let mut child = Command::new(std::env::current_exe().unwrap())
++            .args(["--exact", TEST, "--nocapture"])
++            .env(CONTROL, "1")
++            .stdout(log.try_clone().unwrap())
++            .stderr(log)
++            .process_group(0)
++            .spawn()
++            .unwrap();
++        let deadline = Instant::now() + Duration::from_secs(10);
++        let status = loop {
++            if let Some(status) = child.try_wait().unwrap() {
++                break Some(status);
++            }
++            if Instant::now() >= deadline {
++                unsafe {
++                    libc::kill(-(child.id() as i32), libc::SIGKILL);
++                }
++                child.wait().unwrap();
++                break None;
++            }
++            thread::sleep(Duration::from_millis(1));
++        };
++        if !status.is_some_and(|status| status.success()) {
++            // Reap pre-exec descendants as well if the control exited on a panic.
++            unsafe {
++                libc::kill(-(child.id() as i32), libc::SIGKILL);
++            }
++        }
++        assert!(
++            status.is_some_and(|status| status.success()),
++            "capture handoff control failed or exceeded its startup/cleanup watchdog: {:?}\n{}",
++            status,
++            std::fs::read_to_string(log_path).unwrap(),
++        );
++    }
++
++    #[cfg(target_os = "linux")]
++    fn capture_handoff_control() {
++        use std::io::Read;
++        use std::os::fd::AsRawFd;
++        use std::os::unix::process::CommandExt;
++
++        let runtime = tokio::runtime::Runtime::new().unwrap();
++        let (mut first_ready_rx, first_ready_tx) = std::io::pipe().unwrap();
++        let (first_release_rx, first_release_tx) = std::io::pipe().unwrap();
++        let (mut peer_ready_rx, peer_ready_tx) = std::io::pipe().unwrap();
++        let (peer_release_rx, peer_release_tx) = std::io::pipe().unwrap();
++        let configure = |ready: i32, release: i32| {
++            let mut cmd = Command::new("sh");
++            cmd.args(["-c", "printf capture-marker"]);
++            unsafe {
++                cmd.pre_exec(move || {
++                    let byte = [1u8];
++                    if libc::write(ready, byte.as_ptr().cast(), 1) != 1 {
++                        return Err(io::Error::last_os_error());
++                    }
++                    let mut token = [0u8];
++                    if libc::read(release, token.as_mut_ptr().cast(), 1) != 1 {
++                        return Err(io::Error::last_os_error());
++                    }
++                    Ok(())
++                });
++            }
++            cmd
++        };
++        let first_cmd = configure(first_ready_tx.as_raw_fd(), first_release_rx.as_raw_fd());
++        let peer_cmd = configure(peer_ready_tx.as_raw_fd(), peer_release_rx.as_raw_fd());
++        let closed = thread::scope(|scope| {
++            let first = scope.spawn(|| {
++                let _guard = runtime.enter();
++                spawn(first_cmd, CaptureStrategy::Split, false)
++            });
++            first_ready_rx.read_exact(&mut [0]).unwrap();
++            let peer = scope.spawn(|| {
++                let _guard = runtime.enter();
++                spawn(peer_cmd, CaptureStrategy::Split, false)
++            });
++            // Release even when the lease correctly prevents peer startup.
++            let release = scope.spawn(|| {
++                thread::sleep(Duration::from_millis(100));
++                assert_eq!(
++                    unsafe { libc::write(first_release_tx.as_raw_fd(), [1u8].as_ptr().cast(), 1) },
++                    1
++                );
++            });
++            peer_ready_rx.read_exact(&mut [0]).unwrap();
++            let mut first = first.join().unwrap().unwrap();
++            runtime.block_on(first.child.wait()).unwrap();
++            let mut accumulator = ChildAccumulator::new(first.child_fds);
++            let closed = runtime.block_on(async {
++                tokio::time::timeout(Duration::from_millis(200), async {
++                    while !accumulator.fds.is_done() {
++                        accumulator.fill_buf().await;
++                    }
++                })
++                .await
++                .is_ok()
++            });
++            assert_eq!(
++                unsafe { libc::write(peer_release_tx.as_raw_fd(), [1u8].as_ptr().cast(), 1) },
++                1
++            );
++            let mut peer = peer.join().unwrap().unwrap();
++            runtime.block_on(peer.child.wait()).unwrap();
++            release.join().unwrap();
++            closed
++        });
++        assert!(
++            closed,
++            "unrelated pre-exec sibling retained the exited child's capture writers"
++        );
++    }
++
+     #[derive(Clone, Copy)]
+     enum ChildProgram {
+         Absolute,

@@ -26,6 +26,17 @@ const CONTRACTS: &[FileContract] = &[
             "smokeSandbox = wrixLib.mkSandbox",
             "agentPkg = smokeMockPi;",
             "smokeProfileManifest = wrixLib.mkProfileImages",
+            "nextestOverlay = import ../nextest-overlay.nix;",
+            "overlays = [ nextestOverlay ];",
+        ],
+    },
+    FileContract {
+        path: "nix/nextest-overlay.nix",
+        required: &[
+            "cargo-nextest = prev.cargo-nextest.overrideAttrs",
+            "./patches/nextest-capture-handoff.patch",
+            "doCheck = true;",
+            "test(capture_closes_while_unrelated_sibling_is_paused_before_exec)",
         ],
     },
     FileContract {

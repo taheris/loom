@@ -170,6 +170,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             root.join("nix/flake/checks.nix"),
             root.join("nix/flake/lib.nix"),
             root.join("nix/flake/tests.nix"),
+            root.join("nix/nextest-overlay.nix"),
             root.join("scripts/full-test.sh"),
             root.join("scripts/required-test.sh"),
             root.join("tests/default.nix"),

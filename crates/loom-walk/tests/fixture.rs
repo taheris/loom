@@ -4759,7 +4759,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "nix/flake/lib.nix",
-        "smokeSandbox = wrixLib.mkSandbox { agentPkg = smokeMockPi; };\nsmokeProfileManifest = wrixLib.mkProfileImages { };\n",
+        "smokeSandbox = wrixLib.mkSandbox { agentPkg = smokeMockPi; };\nsmokeProfileManifest = wrixLib.mkProfileImages { };\nnextestOverlay = import ../nextest-overlay.nix;\noverlays = [ nextestOverlay ];\n",
     );
     seed(
         root,
@@ -4777,6 +4777,11 @@ fn seed_test_nix_surface(root: &Path) {
         "test = {\ntest-required = {\nsmoke = {\nfuzz-loom = {\nsmokePrekHooks = wrixLib.prekHooks;\ntext = builtins.readFile ../../scripts/full-test.sh;\ntext = builtins.readFile ../../scripts/required-test.sh;\n",
     );
     seed(root, "nix/flake/checks.nix", "checks = { };\n");
+    seed(
+        root,
+        "nix/nextest-overlay.nix",
+        "cargo-nextest = prev.cargo-nextest.overrideAttrs { patches = [ ./patches/nextest-capture-handoff.patch ]; doCheck = true; checkPhase = test(capture_closes_while_unrelated_sibling_is_paused_before_exec); };\n",
+    );
     seed(
         root,
         "tests/default.nix",
@@ -4820,6 +4825,34 @@ fn test_nix_surface_contract_pass() {
     seed_test_nix_surface(ws.path());
     let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
     assert_pass(&out);
+}
+
+#[test]
+fn test_nix_surface_contract_fail_without_nextest_capture_patch() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    seed(
+        ws.path(),
+        "nix/nextest-overlay.nix",
+        "cargo-nextest = prev.cargo-nextest;\n",
+    );
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "nextest-capture-handoff.patch");
+}
+
+#[test]
+fn test_nix_surface_contract_fail_without_nextest_control() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    let overlay = ws.path().join("nix/nextest-overlay.nix");
+    let body = std::fs::read_to_string(&overlay).unwrap();
+    seed(
+        ws.path(),
+        "nix/nextest-overlay.nix",
+        &body.replace("doCheck = true;", ""),
+    );
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "doCheck = true;");
 }
 
 #[test]
