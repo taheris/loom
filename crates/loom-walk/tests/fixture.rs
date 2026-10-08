@@ -4780,7 +4780,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "nix/nextest-overlay.nix",
-        "cargo-nextest = prev.cargo-nextest.overrideAttrs { patches = [ ./patches/nextest-capture-handoff.patch ]; doCheck = true; checkPhase = test(capture_closes_while_unrelated_sibling_is_paused_before_exec); };\n",
+        "cargo-nextest = prev.cargo-nextest.overrideAttrs { patches = [ ./patches/nextest-capture-handoff.patch ]; doCheck = true; checkPhase = nextest run --locked --cargo-profile release test(capture_closes_while_unrelated_sibling_is_paused_before_exec); };\n",
     );
     seed(
         root,
@@ -4853,6 +4853,21 @@ fn test_nix_surface_contract_fail_without_nextest_control() {
     );
     let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
     assert_fail(&out, "doCheck = true;");
+}
+
+#[test]
+fn test_nix_surface_contract_fail_when_nextest_profile_replaces_cargo_profile() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    let overlay = ws.path().join("nix/nextest-overlay.nix");
+    let body = std::fs::read_to_string(&overlay).unwrap();
+    seed(
+        ws.path(),
+        "nix/nextest-overlay.nix",
+        &body.replace("--cargo-profile release", "--profile release"),
+    );
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "--cargo-profile release");
 }
 
 #[test]

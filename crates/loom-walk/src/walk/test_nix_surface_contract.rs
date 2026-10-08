@@ -36,6 +36,7 @@ const CONTRACTS: &[FileContract] = &[
             "cargo-nextest = prev.cargo-nextest.overrideAttrs",
             "./patches/nextest-capture-handoff.patch",
             "doCheck = true;",
+            "nextest run --locked --cargo-profile release",
             "test(capture_closes_while_unrelated_sibling_is_paused_before_exec)",
         ],
     },
