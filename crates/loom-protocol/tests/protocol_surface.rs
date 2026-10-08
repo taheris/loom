@@ -95,40 +95,12 @@ fn walk_output_fields_private_only_constructor_is_from_stdout() {
     assert_eq!(walk.findings(), []);
     assert_eq!(walk.finding_errors(), []);
 
-    // trybuild writes its generated manifest before taking its own build lock.
-    // Protect that entire shared-directory lifecycle across independent gate processes.
-    let output = std::process::Command::new("cargo")
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--no-deps",
-            "--manifest-path",
-        ])
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
-        .output()
-        .expect("cargo metadata for trybuild target directory");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let _guard =
-        lock_compile_fixture(Path::new(metadata["target_directory"].as_str().unwrap())).unwrap();
+    let _guard = loom_test_support::compile_fixture::lock(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        env!("CARGO_PKG_NAME"),
+    )
+    .unwrap();
     trybuild::TestCases::new().compile_fail("tests/ui/walk_output_literal.rs");
-}
-
-fn lock_compile_fixture(target: &Path) -> std::io::Result<std::fs::File> {
-    let directory = target.join("tests");
-    std::fs::create_dir_all(&directory)?;
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.join(".loom-protocol-trybuild.lock"))?;
-    file.lock()?;
-    Ok(file)
 }
 
 #[test]
@@ -139,7 +111,7 @@ fn compile_fixture_lock_preserves_every_independent_process_update() -> std::io:
         root.path(),
         8,
         |root, worker| {
-            let _guard = lock_compile_fixture(root)?;
+            let _guard = loom_test_support::compile_fixture::lock_target(root, "loom-protocol")?;
             let path = root.join("manifest.json");
             let mut values: Vec<usize> = match std::fs::read(&path) {
                 Ok(bytes) => serde_json::from_slice(&bytes)?,

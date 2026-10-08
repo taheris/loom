@@ -250,13 +250,19 @@ fn crash_releases_work_root_lock() -> Result<()> {
 
     let mgr = LockManager::with_state_home(&workspace, state_home.path())?;
     let started = Instant::now();
-    let _guard = mgr.acquire_work_root(&root)?;
+    let guard = mgr.acquire_work_root(&root)?;
     let waited = started.elapsed();
     if waited > Duration::from_millis(250) {
         return Err(anyhow!(
             "post-crash acquire took {waited:?} — expected immediate"
         ));
     }
+    assert!(matches!(
+        mgr.acquire_work_root_with_timeout(&root, Duration::ZERO),
+        Err(LockError::WorkRootBusy { .. })
+    ));
+    drop(guard);
+    let _released = mgr.acquire_work_root_with_timeout(&root, Duration::ZERO)?;
     Ok(())
 }
 

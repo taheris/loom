@@ -2655,6 +2655,7 @@ dependencies = [
  "blake3",
  "displaydoc",
  "loom-events",
+ "loom-test-support",
  "serde",
  "serde_json",
  "serde_yaml_ng",

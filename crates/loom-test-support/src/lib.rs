@@ -4,6 +4,7 @@
 //! case counts come from one shared configuration rather than literals
 //! scattered across `proptest!` blocks.
 
+pub mod compile_fixture;
 pub mod finding;
 pub mod git_policy;
 pub mod parallel_process;

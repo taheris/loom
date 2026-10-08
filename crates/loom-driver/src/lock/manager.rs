@@ -151,6 +151,10 @@ impl LockManager {
         root: &BeadId,
         timeout: Duration,
     ) -> Result<LockGuard, LockError> {
+        let path = self.work_root_lock_path(root);
+        if let Some(guard) = try_lock_file(open_lock_file(&path)?)? {
+            return Ok(guard);
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()

@@ -451,6 +451,10 @@ fn stale_annotations_join_typed_criterion_ids_against_current_snapshot() {
     };
 
     let report = render_report(&cache, &parsed, &[], 0, 0).unwrap();
+    assert_eq!(
+        report,
+        render_from_rows(&cache.read_all().unwrap(), &parsed, &[], 0, 0),
+    );
 
     assert_eq!(report.annotation_health.stale_annotations.len(), 1);
     let stale = &report.annotation_health.stale_annotations[0];

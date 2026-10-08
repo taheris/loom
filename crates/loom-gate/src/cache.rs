@@ -16,6 +16,8 @@
 //! ceiling against a 2000-row seeded cache so a future schema or
 //! rendering regression is caught at gate time.
 
+mod projection;
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -537,14 +539,7 @@ pub fn render_report(
     now_ms: i64,
     stale_threshold_days: i64,
 ) -> Result<Report, CacheError> {
-    let rows = cache.read_all()?;
-    Ok(render_from_rows(
-        &rows,
-        parsed,
-        integrity,
-        now_ms,
-        stale_threshold_days,
-    ))
+    projection::render(cache, parsed, integrity, now_ms, stale_threshold_days)
 }
 
 /// Pure rendering core — separated so the latency self-test can pump rows
