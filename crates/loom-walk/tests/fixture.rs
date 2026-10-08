@@ -4769,7 +4769,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "nix/workspace.nix",
-        "extraSrcs = { \"flake.nix\" = \"${src}/flake.nix\"; };\n",
+        "extraSrcs = { \"flake.nix\" = \"${src}/flake.nix\"; \"nix\" = \"${src}/nix\"; };\n",
     );
     seed(
         root,
@@ -4825,6 +4825,19 @@ fn test_nix_surface_contract_pass() {
     seed_test_nix_surface(ws.path());
     let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
     assert_pass(&out);
+}
+
+#[test]
+fn test_nix_surface_contract_fail_when_staged_source_omits_nix_support_tree() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    seed(
+        ws.path(),
+        "nix/workspace.nix",
+        "extraSrcs = { \"flake.nix\" = \"${src}/flake.nix\"; \"nix/flake\" = \"${src}/nix/flake\"; \"nix/workspace.nix\" = \"${src}/nix/workspace.nix\"; };\n",
+    );
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "missing active test-surface wiring `\"nix\" =");
 }
 
 #[test]

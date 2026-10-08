@@ -69,8 +69,7 @@ let
     "tests/fixtures" = "${src}/tests/fixtures";
     "specs" = "${src}/specs";
     "docs" = "${src}/docs";
-    "nix/flake" = "${src}/nix/flake";
-    "nix/workspace.nix" = "${src}/nix/workspace.nix";
+    "nix" = "${src}/nix";
     "scripts" = "${src}/scripts";
     "bin/pre-push-checks" = "${src}/bin/pre-push-checks";
     ".pre-commit-config.yaml" = "${src}/.pre-commit-config.yaml";

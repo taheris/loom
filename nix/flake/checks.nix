@@ -58,6 +58,17 @@ _:
             touch "$out"
           '';
 
+      workspace-source-includes-nix-support =
+        pkgs.runCommand "workspace-source-includes-nix-support"
+          {
+            nativeBuildInputs = [ pkgs.diffutils ];
+          }
+          ''
+            set -euo pipefail
+            diff --recursive ${../../nix} "${stagedSrc}/nix"
+            touch "$out"
+          '';
+
       loom-gate-check = craneLib.mkCargoDerivation {
         pname = "loom-gate-check";
         version = "0.0.0";
@@ -620,6 +631,7 @@ _:
           test-sandbox-skips-oci-permission-denied
           test-sandbox-skips-unsupported-runtime
           workspace-source-includes-git-policy-scripts
+          workspace-source-includes-nix-support
           ;
       }
       // optionalAttrs pkgs.stdenv.hostPlatform.isLinux {

@@ -46,7 +46,10 @@ const CONTRACTS: &[FileContract] = &[
     },
     FileContract {
         path: "nix/workspace.nix",
-        required: &["\"flake.nix\" = \"${src}/flake.nix\";"],
+        required: &[
+            "\"flake.nix\" = \"${src}/flake.nix\";",
+            "\"nix\" = \"${src}/nix\";",
+        ],
     },
     FileContract {
         path: "nix/flake/apps.nix",
