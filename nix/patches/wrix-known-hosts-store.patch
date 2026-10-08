@@ -1,0 +1,14 @@
+diff --git a/lib/sandbox/install-known-hosts.sh b/lib/sandbox/install-known-hosts.sh
+--- a/lib/sandbox/install-known-hosts.sh
++++ b/lib/sandbox/install-known-hosts.sh
+@@ -16,2 +16,10 @@
++if [[ -L "$root/etc/ssh" ]]; then
++  ssh_directory=$(mktemp -d "$root/etc/.ssh.XXXXXX")
++  cp -LR "$root/etc/ssh/." "$ssh_directory/"
++  chmod -R u+w "$ssh_directory"
++  rm "$root/etc/ssh"
++  mv "$ssh_directory" "$root/etc/ssh"
++fi
++
+ install -d -m 0755 "$root/etc/wrix/known_hosts_dir"
+ install -m 0644 "$known_hosts_source" "$root/etc/wrix/known_hosts_dir/known_hosts"

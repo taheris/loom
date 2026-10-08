@@ -9,6 +9,7 @@ _:
       loom,
       sandbox,
       profileManifest,
+      patchedWrixSrc,
       smokeSandbox,
       system,
       wrixLinuxPkgs,
@@ -137,6 +138,12 @@ _:
             [[ "$(${sandboxProfileEnv}/bin/nix --extra-experimental-features nix-command eval --offline --raw --expr '"worker-nix-ok"')" == worker-nix-ok ]]
             touch "$out"
           '';
+
+      known-hosts-preserves-store = pkgs.runCommand "known-hosts-preserves-store" { } ''
+        set -euo pipefail
+        bash ${../../tests/sandbox/known-hosts-store.sh} ${patchedWrixSrc}/lib/sandbox/install-known-hosts.sh
+        touch "$out"
+      '';
 
       image-runtime-binaries-launch = wrixLinuxPkgs.runCommand "image-runtime-binaries-launch" { } ''
         set -euo pipefail
@@ -621,6 +628,7 @@ _:
           loom-wrix-does-not-default-launcher-override
           wrix-requires-explicit-profile-config
           profile-manifest-keeps-runtime-path-context
+          known-hosts-preserves-store
           smoke-beads-fixture
           smoke-preflight-skips-runtime-build
           test-app-ignores-host-git-signing

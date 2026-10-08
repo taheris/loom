@@ -118,6 +118,7 @@ in
         patches = [
           ../patches/wrix-claude-permission-prompt.patch
           ../patches/wrix-git-helper-bash.patch
+          ../patches/wrix-known-hosts-store.patch
         ];
       };
       wrixLib = import "${patchedWrixSrc}/lib" {
