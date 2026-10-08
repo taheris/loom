@@ -32,7 +32,7 @@ pub use backend::{
     LOOM_INSIDE_ENV, ModelSelection, MountSpec, OutputLimits, SessionOutcome, SpawnConfig,
     ThinkingLevel, set_loom_inside,
 };
-pub use error::ProtocolError;
+pub use error::{ProtocolError, RejectedLine};
 pub use jsonl::{JsonlReader, MAX_LINE_BYTES};
 pub use kind::{AgentKind, AgentRuntime, ParseAgentRuntimeError};
 pub use parse::{LineParse, ParsedLine};

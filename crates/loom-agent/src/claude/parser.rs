@@ -664,7 +664,7 @@ mod tests {
             .parse_line(r#"{"type":"assistant","message":{"role":"#)
             .err()
             .expect("malformed JSON should fail");
-        assert!(matches!(err, ProtocolError::InvalidJson(_)));
+        assert!(matches!(err, ProtocolError::InvalidJson { .. }));
     }
 
     /// Truncated tag-only string — the spec example: `{"type":"message_del`.
@@ -677,7 +677,7 @@ mod tests {
             .parse_line(r#"{"type":"message_del"#)
             .err()
             .expect("truncated JSON should fail");
-        assert!(matches!(err, ProtocolError::InvalidJson(_)));
+        assert!(matches!(err, ProtocolError::InvalidJson { .. }));
     }
 
     /// Valid JSON object lacking the discriminator (`{"foo":42}`) fails the
@@ -691,7 +691,7 @@ mod tests {
             .parse_line(r#"{"foo":42}"#)
             .err()
             .expect("wrong-shape JSON should fail");
-        assert!(matches!(err, ProtocolError::InvalidJson(_)));
+        assert!(matches!(err, ProtocolError::InvalidJson { .. }));
     }
 
     /// `#[serde(other)]` catches unknown event types. Acceptance criterion

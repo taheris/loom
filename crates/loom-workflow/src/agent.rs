@@ -898,13 +898,21 @@ fn emit_infra_failure_event(
 fn protocol_error_diagnostic(error: &ProtocolError, config: &SpawnConfig) -> String {
     const MAX_BYTES: usize = 4096;
     const TRUNCATED: &str = " [truncated]";
-    let chain = std::iter::successors(Some(error as &dyn std::error::Error), |cause| {
+    let mut chain = std::iter::successors(Some(error as &dyn std::error::Error), |cause| {
         cause.source()
     })
     .map(ToString::to_string)
     .collect::<Vec<_>>()
     .join(": ");
-    let mut detail = redact_agent_input(&chain, config).text;
+    if let Some(line) = error.protocol_line() {
+        chain.push_str("; protocol line: ");
+        chain.push_str(line);
+    }
+    let mut detail = redact_agent_input(&chain, config)
+        .text
+        .chars()
+        .flat_map(char::escape_debug)
+        .collect::<String>();
     if detail.len() > MAX_BYTES {
         detail.truncate(detail.floor_char_boundary(MAX_BYTES - TRUNCATED.len()));
         detail.push_str(TRUNCATED);
@@ -935,7 +943,7 @@ fn infra_failure_summary(phase: InfraPhase, cause: InfraCause, error: &str) -> S
 
 fn protocol_infra_cause(err: &ProtocolError) -> InfraCause {
     match err {
-        ProtocolError::InvalidJson(_) | ProtocolError::LineTooLong { .. } => {
+        ProtocolError::InvalidJson { .. } | ProtocolError::LineTooLong { .. } => {
             InfraCause::MalformedFraming
         }
         ProtocolError::UnknownMessageType(_) => InfraCause::UnknownMessageType,
@@ -2324,6 +2332,26 @@ printf '%s\n' \
         assert!(detail.ends_with(" [truncated]"), "{detail}");
     }
 
+    #[test]
+    fn rejected_line_is_redacted_before_preview_truncation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut cfg = sample_spawn_config(dir.path());
+        let secret = "private-fixture-value".repeat(500);
+        cfg.launcher_env
+            .push(("WRIX_SIGNING_KEY".into(), secret.clone()));
+        let line = format!("WARN {secret} {}", "界".repeat(5000));
+        let source = serde_json::from_str::<serde_json::Value>(&line).expect_err("not JSON");
+        let error = ProtocolError::invalid_protocol_line(&line, source);
+        let detail = protocol_error_diagnostic(&error, &cfg);
+        assert!(
+            detail.contains("protocol line: WARN [REDACTED:secret:WRIX_SIGNING_KEY]"),
+            "{detail}"
+        );
+        assert!(!detail.contains("private-fixture-value"), "{detail}");
+        assert!(detail.len() <= 4096, "{}", detail.len());
+        assert!(detail.ends_with(" [truncated]"), "{detail}");
+    }
+
     #[tokio::test]
     async fn startup_parse_error_retains_redacted_cause_in_durable_log() {
         struct MalformedBackend;
@@ -2331,7 +2359,7 @@ printf '%s\n' \
             async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
                 let source = serde_json::from_str::<bool>(r#""sk-startup-secret""#)
                     .expect_err("string is not a boolean");
-                Err(ProtocolError::InvalidJson(source))
+                Err(source.into())
             }
         }
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2354,6 +2382,55 @@ printf '%s\n' \
         );
         let events = read_jsonl(&path);
         let infra = infra_event(&events);
+        assert_eq!(infra["payload"]["error"], error);
+        assert_eq!(infra["payload"]["spawn_error"], error);
+        assert!(
+            !std::fs::read_to_string(path)
+                .expect("log")
+                .contains("sk-startup-secret")
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_rejected_line_is_escaped_and_redacted_in_durable_log() {
+        struct WarningBackend;
+        impl AgentBackend for WarningBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                let line = "\u{1b}[33m WARN focus target omitted the window identifier token=sk-startup-secret\r";
+                let source = serde_json::from_str::<serde_json::Value>(line)
+                    .expect_err("launcher warning is not JSON");
+                Err(ProtocolError::invalid_protocol_line(line, source))
+            }
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (sink, path) = open_test_sink(dir.path());
+        let mut cfg = sample_spawn_config(dir.path());
+        cfg.env
+            .push(("OPENAI_API_KEY".into(), "sk-startup-secret".into()));
+        let result =
+            run_agent_classified::<WarningBackend>(&cfg, Some(sink), None, None, Some(builder()))
+                .await;
+        let SessionResult::PreflightFailed { error } = result else {
+            panic!("expected preflight failure");
+        };
+        assert!(
+            error.contains("expected value at line 1 column 1"),
+            "{error}"
+        );
+        assert!(
+            error.contains("focus target omitted the window identifier"),
+            "{error}"
+        );
+        assert!(
+            error.contains("[REDACTED:api_key:OPENAI_API_KEY]"),
+            "{error}"
+        );
+        assert!(error.contains(r"\u{1b}[33m"), "{error}");
+        assert!(error.contains(r"\r"), "{error}");
+        assert!(!error.chars().any(char::is_control), "{error:?}");
+        let events = read_jsonl(&path);
+        let infra = infra_event(&events);
+        assert_eq!(infra["payload"]["cause"], "malformed_framing");
         assert_eq!(infra["payload"]["error"], error);
         assert_eq!(infra["payload"]["spawn_error"], error);
         assert!(

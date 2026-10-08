@@ -70,7 +70,10 @@ proptest! {
         prop_assert!(parsed.response.is_none(), "pi parser emitted a response for non-JSON line");
 
         let cl_res = claude_parser().parse_line(&input);
-        prop_assert!(matches!(cl_res, Err(ProtocolError::InvalidJson(_))));
+        prop_assert!(
+            matches!(cl_res, Err(ProtocolError::InvalidJson { .. })),
+            "malformed Claude JSON must be rejected",
+        );
     }
 }
 

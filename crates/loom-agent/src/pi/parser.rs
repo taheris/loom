@@ -1242,7 +1242,7 @@ mod tests {
     fn missing_event_discriminator_returns_invalid_json() {
         assert!(matches!(
             parse_err(r#"{"foo":42}"#),
-            ProtocolError::InvalidJson(_),
+            ProtocolError::InvalidJson { .. },
         ));
     }
 
@@ -1254,7 +1254,7 @@ mod tests {
             r#"{"type":"extension_ui_request","id":"u1","method":42}"#,
         ] {
             assert!(
-                matches!(parse_err(line), ProtocolError::InvalidJson(_)),
+                matches!(parse_err(line), ProtocolError::InvalidJson { .. }),
                 "expected typed deserialization failure for {line}",
             );
         }

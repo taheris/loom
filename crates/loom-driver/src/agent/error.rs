@@ -1,5 +1,4 @@
-use std::io;
-use std::time::Duration;
+use std::{fmt, io, time::Duration};
 
 use displaydoc::Display;
 use thiserror::Error;
@@ -12,7 +11,11 @@ use thiserror::Error;
 #[derive(Debug, Display, Error)]
 pub enum ProtocolError {
     /// invalid JSON on protocol line
-    InvalidJson(#[from] serde_json::Error),
+    InvalidJson {
+        #[source]
+        source: serde_json::Error,
+        line: Option<RejectedLine>,
+    },
 
     /// unknown message type: {0}
     UnknownMessageType(String),
@@ -42,9 +45,37 @@ pub enum ProtocolError {
     LockPoisoned,
 }
 
+/// Untrusted protocol input, omitted from diagnostic formatting until redacted.
+pub struct RejectedLine(String);
+
+impl fmt::Debug for RejectedLine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl From<serde_json::Error> for ProtocolError {
+    fn from(source: serde_json::Error) -> Self {
+        Self::InvalidJson { source, line: None }
+    }
+}
+
 impl ProtocolError {
-    pub const fn invalid_protocol_line(_line: &str, source: serde_json::Error) -> Self {
-        Self::InvalidJson(source)
+    pub fn invalid_protocol_line(line: &str, source: serde_json::Error) -> Self {
+        Self::InvalidJson {
+            source,
+            line: Some(RejectedLine(line.to_owned())),
+        }
+    }
+
+    /// Untrusted input for diagnostics; redact secrets before escaping or truncating.
+    pub fn protocol_line(&self) -> Option<&str> {
+        match self {
+            Self::InvalidJson {
+                line: Some(line), ..
+            } => Some(&line.0),
+            _ => None,
+        }
     }
 }
 
@@ -56,9 +87,26 @@ mod tests {
         serde_json::from_str::<serde_json::Value>("{").expect_err("invalid JSON fixture")
     }
 
+    #[test]
+    fn rejected_line_is_retained_without_exposing_it_in_error_formatting() {
+        let line = "\u{1b}[33m WARN token=private-fixture-value";
+        let source = serde_json::from_str::<serde_json::Value>(line).expect_err("not JSON");
+        let error = ProtocolError::invalid_protocol_line(line, source);
+        assert_eq!(error.protocol_line(), Some(line));
+        assert!(!format!("{error:?}").contains("private-fixture-value"));
+        assert!(!error.to_string().contains("private-fixture-value"));
+        assert_eq!(
+            std::error::Error::source(&error)
+                .expect("JSON cause")
+                .to_string(),
+            "expected value at line 1 column 1",
+        );
+        assert!(ProtocolError::from(json_error()).protocol_line().is_none());
+    }
+
     fn variant_name(err: &ProtocolError) -> &'static str {
         match err {
-            ProtocolError::InvalidJson(_) => "InvalidJson",
+            ProtocolError::InvalidJson { .. } => "InvalidJson",
             ProtocolError::UnknownMessageType(_) => "UnknownMessageType",
             ProtocolError::Io(_) => "Io",
             ProtocolError::ProcessExit(_) => "ProcessExit",
@@ -73,7 +121,7 @@ mod tests {
     #[test]
     fn protocol_error_variant_set_matches_agent_spec() {
         let variants = vec![
-            ProtocolError::InvalidJson(json_error()),
+            ProtocolError::from(json_error()),
             ProtocolError::UnknownMessageType("mystery".to_string()),
             ProtocolError::Io(io::Error::other("io")),
             ProtocolError::ProcessExit(7),

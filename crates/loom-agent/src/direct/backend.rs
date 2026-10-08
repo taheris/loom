@@ -697,7 +697,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
     #[test]
     fn parser_rejects_unknown_type_as_invalid_json() {
         match DirectParser.parse_line(r#"{"type":"not_a_real_event"}"#) {
-            Err(ProtocolError::InvalidJson(_)) => {}
+            Err(ProtocolError::InvalidJson { .. }) => {}
             Err(other) => panic!("expected InvalidJson, got {other:?}"),
             Ok(_) => panic!("unknown variant must fail"),
         }

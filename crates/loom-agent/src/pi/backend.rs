@@ -885,7 +885,11 @@ mod tests {
 
     #[tokio::test]
     async fn startup_rejects_non_json_before_valid_reply() {
-        assert_startup_rejects_line("launcher status", serde_json::error::Category::Syntax).await;
+        assert_startup_rejects_line(
+            "\u{1b}[33m WARN focus target omitted the window identifier",
+            serde_json::error::Category::Syntax,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -902,7 +906,10 @@ mod tests {
         let result =
             spawn_with_handshake(cmd, None, None, TEST_HANDSHAKE_BUDGET, &SystemClock::new()).await;
         match result {
-            Err(ProtocolError::InvalidJson(source)) => assert_eq!(source.classify(), category),
+            Err(ref error @ ProtocolError::InvalidJson { ref source, .. }) => {
+                assert_eq!(error.protocol_line(), Some(line));
+                assert_eq!(source.classify(), category);
+            }
             Err(other) => panic!("expected InvalidJson, got {other:?}"),
             Ok(_) => panic!("startup silently discarded invalid protocol input"),
         }

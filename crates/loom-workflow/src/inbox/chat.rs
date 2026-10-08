@@ -1016,7 +1016,7 @@ mod tests {
     fn pi_session_transcript_rejects_malformed_jsonl_record() {
         let err = pi_session_transcript_from_str("{not json}\n").expect_err("malformed record");
         assert!(
-            matches!(err, ChatError::Protocol(ProtocolError::InvalidJson(_))),
+            matches!(err, ChatError::Protocol(ProtocolError::InvalidJson { .. })),
             "malformed transcript record must surface the parse error: {err}"
         );
     }
