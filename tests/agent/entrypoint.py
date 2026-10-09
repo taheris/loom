@@ -66,7 +66,7 @@ class Fixture:
         if mutation is not None:
             old, new = mutation
             if entrypoint.count(old) != 1:
-                raise AssertionError(f"Mutation must match once: {old!r}")
+                raise ValueError(f"Mutation must match once: {old!r}")
             entrypoint = entrypoint.replace(old, new)
         self.entrypoint = root / "entrypoint.sh"
         self.entrypoint.write_text(self.relocate(entrypoint))
@@ -190,6 +190,10 @@ class Entrypoint(unittest.TestCase):
 
     def test_shared_setup(self):
         self.check_shared_setup()
+
+    def test_mutation_requires_a_unique_source_target(self):
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
+            Fixture(Path(directory), "pi", ("not an entrypoint command", ":"))
 
     def test_pi_verifier_rejects_wrong_mode(self):
         with self.assertRaises(AssertionError):
