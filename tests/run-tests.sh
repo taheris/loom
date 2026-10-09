@@ -138,7 +138,7 @@ cat >docs/README.md <<'DOCS'
 
 | Spec | Code | Epic | Purpose |
 |------|------|------|---------|
-| [smoke.md](../specs/smoke.md) | — | — | Container smoke fixture |
+| [smoke](../specs/smoke.md) | — | — | Container smoke fixture |
 DOCS
 cat >.pre-commit-config.yaml <<'YAML'
 repos:

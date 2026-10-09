@@ -2082,7 +2082,7 @@ fn run_system_with_progress(
                         let _ = write!(stderr, "\x1b[2K\r");
                     }
                     let _ = writeln!(stderr, "loom gate [{tier}] FAIL: {}", ann.target);
-                    for line in outcome.verdict.evidence.lines().take(5) {
+                    for line in outcome.verdict.evidence.lines() {
                         let _ = writeln!(stderr, "  {line}");
                     }
                     persist_outcome(

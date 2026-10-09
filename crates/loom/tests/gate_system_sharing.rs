@@ -144,6 +144,25 @@ fn system_cli_sharing_preserves_per_criterion_reports_failures_skips_and_cache_r
 }
 
 #[test]
+fn system_cli_failure_reports_diagnostics_after_build_preamble() {
+    let dir = fixture(false);
+    fs::write(
+        dir.path().join("verifier.sh"),
+        "set -euo pipefail\nfor i in {1..15}; do printf 'building derivation %s\\n' \"$i\" >&2; done\nprintf 'invalid spec label: smoke.md\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+
+    let output = run(dir.path(), false, "fail", &["--tree"]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("building derivation 1\n"), "{stderr}");
+    assert!(
+        stderr.contains("invalid spec label: smoke.md\n"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn system_cli_shared_dispatch_errors_report_every_owner_without_passing_cache_entries() {
     for matched in [false, true] {
         let dir = fixture(matched);
