@@ -1614,11 +1614,18 @@ fn inbox_explains_problem_options_and_recommendation_before_decision() -> Result
     )])
     .render()?;
     for required in [
-        "Before asking the user to decide, explain the problem clearly",
-        "present the options and their practical trade-offs",
-        "recommend an option with your rationale",
-        "existing options rather than re-generating the menu",
+        "proactively explain the problem",
+        "without waiting to be asked",
+        "**Problem:** Explain in plain language",
+        "the specific decision needed",
+        "**Options:** Explain what each path would actually change",
+        "practical benefits, costs, risks",
+        "compare the existing options using their numbers and titles",
+        "Do not just repeat the option headings",
+        "**Recommendation:** Recommend an option with your rationale",
+        "preferable to the alternatives and its main downside",
         "insufficient for a recommendation",
+        "identify the next investigation needed",
         "only after confirmation",
     ] {
         assert!(
@@ -1626,6 +1633,50 @@ fn inbox_explains_problem_options_and_recommendation_before_decision() -> Result
             "missing decision guidance `{required}`: {out}"
         );
     }
+    let problem = out.find("**Problem:**").expect("problem guidance");
+    let options = out.find("**Options:**").expect("options guidance");
+    let recommendation = out
+        .find("**Recommendation:**")
+        .expect("recommendation guidance");
+    let decision = out
+        .find("Then ask for the user's decision")
+        .expect("decision guidance");
+    assert!(problem < options && options < recommendation && recommendation < decision);
+    Ok(())
+}
+
+#[test]
+fn inbox_chat_starts_single_item_investigation_without_asking() -> Result<()> {
+    for kind in [
+        ItemKind::Clarify,
+        ItemKind::Blocked,
+        ItemKind::Infra,
+        ItemKind::Tune,
+    ] {
+        let out = inbox_ctx(vec![inbox_item(
+            "lm-single.1",
+            "harness",
+            "Investigate",
+            kind,
+        )])
+        .render()?;
+        assert!(out.contains("There is only one item. Start investigating it immediately"));
+        assert!(out.contains("do not ask\n   which item to start with or whether to investigate"));
+        assert!(!out.contains("Ask which item to start with"));
+        assert!(out.contains("persist only after confirmation"));
+    }
+    Ok(())
+}
+
+#[test]
+fn inbox_chat_asks_where_to_start_with_multiple_items() -> Result<()> {
+    let out = inbox_ctx(vec![
+        inbox_item("lm-clar.1", "harness", "First decision", ItemKind::Clarify),
+        inbox_item("lm-clar.2", "harness", "Second decision", ItemKind::Clarify),
+    ])
+    .render()?;
+    assert!(out.contains("Ask which item to start with, then investigate the selected item"));
+    assert!(!out.contains("There is only one item"));
     Ok(())
 }
 
@@ -1710,6 +1761,9 @@ fn inbox_renders_with_no_items() -> Result<()> {
     let out = inbox_ctx(vec![]).render()?;
     assert!(out.contains("# Inbox Resolution — Interactive Session"));
     assert!(!out.contains("### lm-"));
+    assert!(out.contains("There are no visible items. Tell the user the queue is empty"));
+    assert!(!out.contains("Ask which item to start with"));
+    assert!(!out.contains("There is only one item"));
     Ok(())
 }
 

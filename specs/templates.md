@@ -477,12 +477,18 @@ interactive session the loom binary runs with a human in the loop:
   lives in a separate partial; the chat-discipline rules above apply to every
   interactive session, including inbox-chat.
 
-Inbox's session flow supplies a decision brief before asking the human to
-choose: explain the problem clearly and why a decision is needed, compare the
-options and practical trade-offs, and recommend an option with rationale.
-Clarify items retain their existing Options block rather than regenerating a
-menu. When evidence is insufficient, the agent explains the missing information
-instead of guessing; persistence still waits for human confirmation.
+Inbox begins investigating a single visible item immediately, without asking
+which item to start with or seeking permission to investigate. With multiple
+visible items, it asks which item to start with before investigating that item.
+
+Before asking the human to choose, Inbox proactively supplies a self-contained
+decision brief: explain the problem in plain language and the decision needed,
+compare what the options change and their practical benefits, costs, and risks,
+and recommend an option with rationale and its main downside. Clarify items
+retain their existing option numbers and titles rather than regenerating a menu
+or merely repeating headings. When evidence is insufficient, the agent explains
+the missing information and next investigation instead of guessing; persistence
+still waits for human confirmation.
 
 Worker phases (`loop`, `todo`, `review`) are single-shot and do not interview
 the user, so the partial is not pinned there.
@@ -812,10 +818,21 @@ bundled documents in front of the agent with zero configuration.
   (picker prohibition + persistence destinations) sourced from the pinned
   partial [test](inbox_template_renders_chat_interview_discipline)
 
-- Inbox explains the problem, compares options and trade-offs, and recommends
-  with rationale before asking for a decision; uncertainty and human
+- Inbox proactively explains the problem and decision in plain language,
+  compares option changes and practical trade-offs while retaining clarify
+  option numbers/titles, and recommends with rationale and its main downside
+  before asking for a decision; missing evidence, next investigation, and human
   confirmation remain explicit
   [test](inbox_explains_problem_options_and_recommendation_before_decision)
+
+- With one visible inbox item, chat investigates immediately without asking
+  where to start or seeking permission to investigate; writes still require
+  human confirmation
+  [test](inbox_chat_starts_single_item_investigation_without_asking)
+
+- With multiple visible inbox items, chat asks which item to start with before
+  investigating the selected item
+  [test](inbox_chat_asks_where_to_start_with_multiple_items)
 
 ### Agent-output markers
 
