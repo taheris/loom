@@ -275,14 +275,14 @@ rather than silently detached.
   edits. Changes to normalized requirement wording leave old references
   unresolved until explicitly rebound; no text-similarity fallback substitutes a
   different requirement.
-  [test?](task_acceptance_references_require_rebinding_after_requirement_edits)
+  [test](task_acceptance_references_require_rebinding_after_requirement_edits)
 
 - Parsing task references and resolving them against a package snapshot are
   distinct fallible typed transitions. Only complete immutable resolved
   obligations, carrying identity, current text, and current binding, can enter
   downstream dispatch context; raw values, booleans, and partial-result
   placeholders cannot stand in for them.
-  [test?](task_acceptance_resolution_produces_typed_obligations)
+  [test](task_acceptance_resolution_produces_typed_obligations)
 
 ### Workflow commands
 
@@ -368,7 +368,7 @@ rather than silently detached.
 - Cross-label extraction yields natural new criterion identities and rejects old
   task references until explicitly rebound; within-label package moves preserve
   identity and bindings.
-  [test?](cross_label_claim_relocation_requires_explicit_rebinding)
+  [test](cross_label_claim_relocation_requires_explicit_rebinding)
 
 ### Package size
 

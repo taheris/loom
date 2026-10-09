@@ -2671,7 +2671,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "askama",
- "blake3",
  "displaydoc",
  "insta",
  "loom-events",

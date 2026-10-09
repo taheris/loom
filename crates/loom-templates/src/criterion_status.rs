@@ -7,12 +7,12 @@
 //! [`EvidenceState::Missing`] values.
 
 use std::fmt;
-use std::str::FromStr;
 
-use displaydoc::Display;
 use loom_events::identifier::SpecLabel;
+pub use loom_protocol::criterion::{
+    AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, ParseCriterionIdError,
+};
 use loom_protocol::todo::GitSha;
-use thiserror::Error;
 
 /// Per-criterion evidence record threaded into todo contexts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,127 +40,6 @@ impl fmt::Display for CriterionStatus {
             self.evidence.last_timestamp_label(),
             self.evidence.cached_annotation_label()
         )
-    }
-}
-
-/// Stable identifier for a success criterion within one spec.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CriterionId(String);
-
-impl CriterionId {
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the criterion status cannot be parsed or validated.
-    pub fn new(value: impl Into<String>) -> Result<Self, ParseCriterionIdError> {
-        let value = value.into();
-        if !is_criterion_id(&value) {
-            return Err(ParseCriterionIdError { value });
-        }
-        Ok(Self(value))
-    }
-
-    pub fn for_spec_text(spec_label: &SpecLabel, criterion_text: &str) -> Self {
-        let canonical = format!(
-            "{}\0{}",
-            spec_label.as_str(),
-            normalize_criterion_whitespace(criterion_text),
-        );
-        let digest = blake3::hash(canonical.as_bytes()).to_hex().to_string();
-        Self(format!("criterion-{}", &digest[..16]))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl FromStr for CriterionId {
-    type Err = ParseCriterionIdError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s)
-    }
-}
-
-impl fmt::Display for CriterionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// invalid criterion id `{value}`: expected `criterion-` followed by 16 lowercase hex characters
-#[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
-pub struct ParseCriterionIdError {
-    pub value: String,
-}
-
-fn is_criterion_id(value: &str) -> bool {
-    let Some(hex) = value.strip_prefix("criterion-") else {
-        return false;
-    };
-    hex.len() == 16
-        && hex
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn normalize_criterion_whitespace(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Parsed verifier annotation attached to a criterion.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CriterionAnnotation {
-    pub tier: AnnotationTier,
-    pub target: AnnotationTarget,
-    pub pending: bool,
-}
-
-impl fmt::Display for CriterionAnnotation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let pending = if self.pending { "?" } else { "" };
-        write!(f, "[{}{pending}]({})", self.tier.as_str(), self.target)
-    }
-}
-
-/// Annotation tier closed set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnnotationTier {
-    Check,
-    Test,
-    System,
-    Judge,
-}
-
-impl AnnotationTier {
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Check => "check",
-            Self::Test => "test",
-            Self::System => "system",
-            Self::Judge => "judge",
-        }
-    }
-}
-
-/// Opaque annotation target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnnotationTarget(String);
-
-impl AnnotationTarget {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for AnnotationTarget {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 

@@ -7,6 +7,7 @@
 //! in a sqlite-backed status cache, and self-checks the annotation set via
 //! the integrity gate.
 
+pub mod acceptance;
 pub mod annotation;
 pub mod cache;
 pub mod dispatch;

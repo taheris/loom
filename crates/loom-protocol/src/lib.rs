@@ -26,6 +26,8 @@
 //! Compile-time type safety + the leaf-crate dependency shape gives
 //! consumers the same guarantees loom's own internal pipeline has.
 
+pub mod acceptance;
+pub mod criterion;
 pub mod gate;
 pub mod inbox;
 pub mod oid;

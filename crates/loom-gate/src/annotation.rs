@@ -337,13 +337,7 @@ pub fn criterion_id_for(
     label: &loom_driver::identifier::SpecLabel,
     criterion_text: &str,
 ) -> String {
-    let canonical = format!(
-        "{}\0{}",
-        label.as_str(),
-        normalize_whitespace(criterion_text)
-    );
-    let digest = blake3::hash(canonical.as_bytes()).to_hex().to_string();
-    format!("criterion-{}", &digest[..16])
+    loom_protocol::criterion::CriterionId::for_spec_text(label, criterion_text).to_string()
 }
 
 fn strip_bullet_marker(line: &str) -> &str {
