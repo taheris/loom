@@ -66,6 +66,7 @@ let
     "tests/default.nix" = "${src}/tests/default.nix";
     "tests/run-tests.sh" = "${src}/tests/run-tests.sh";
     "tests/judges" = "${src}/tests/judges";
+    "tests/agent" = "${src}/tests/agent";
     "tests/fixtures" = "${src}/tests/fixtures";
     "specs" = "${src}/specs";
     "docs" = "${src}/docs";

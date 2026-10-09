@@ -122,10 +122,15 @@ judge_tool_context_shape() {
     "crates/loom-agent/src/direct/mod.rs" \
     "crates/loom-agent/src/direct/tool/mod.rs" \
     "crates/loom-agent/src/direct/tool/read.rs" \
+    "crates/loom-agent/src/direct/tool/write.rs" \
+    "crates/loom-agent/src/direct/tool/edit.rs" \
+    "crates/loom-agent/src/direct/tool/bash.rs" \
+    "crates/loom-agent/src/direct/tool/grep.rs" \
+    "crates/loom-agent/src/direct/tool/glob.rs" \
     "crates/loom-direct-runner/src/session.rs" \
     "crates/loom-llm/src/tool.rs"
   judge_criterion \
-    "ToolContext is the single per-session handle threaded into Direct tools without changing loom-llm::Tool. The judge should verify: (1) loom-llm/src/tool.rs is unchanged in shape — no session/context parameter was added to Tool::invoke or any other trait method; (2) loom-direct-runner exposes six_tools(ctx: ToolContext) and build_conversation constructs one ToolContext from SpawnConfig scratch_dir/output_limits, then passes cheap clones into Read, Write, Edit, Bash, Grep, and Glob; (3) ToolContext v1 carries only the offload sink capability (offload directory plus max_inline_bytes/cap_or_offload behavior), not an LlmClient, ModelId, or delegation implementation today; (4) ToolContext is cheap-clone and internally shaped as an additive capability holder, so adding a future delegate capability such as LlmClient + ModelId would add fields inside the context rather than changing six_tools's signature or the Tool trait. Fail if any Direct tool is still zero-sized, if per-session state is global/static, if the Tool trait was modified, or if delegation is implemented in this bead."
+    "ToolContext is the single cheap-clone per-session capability handle threaded into all six Direct tools. Verify: (1) loom-llm::Tool retains name, description, input_schema, and invoke(args) returning InvokeFuture; callers need no session/context parameter; (2) six_tools(ctx: ToolContext) passes that context or its cheap clones to Read, Write, Edit, Bash, Grep, and Glob, and each tool holds and uses its context; (3) the production runner constructs one context from SpawnConfig scratch_dir/output_limits and shares it with the tool registry and offload event reporting rather than using global session state; (4) the handle owns an additive capability holder, so a future LlmClient + ModelId capability can be added inside it without changing six_tools's signature or the Tool trait. The existing offload sink, offload records, and workspace path mapping are valid capabilities; a process-wide temporary-file uniqueness counter is not global session state. No delegate tool or delegation implementation is required or permitted by this criterion. Fail for deep-copying session capabilities on clone, a zero-sized/context-free Direct tool, global per-session state, a required Tool/six_tools API change to add a capability, or implemented delegation. Name the offending file and contract failure."
 }
 
 skills_template_boundary_review() {

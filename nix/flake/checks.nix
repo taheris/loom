@@ -85,6 +85,8 @@ _:
           pkgs.git
           pkgs.cacert
           pkgs.cargo-nextest
+          pkgs.jq
+          pkgs.python3
           bin
         ];
         buildPhaseCargoCommand = "loom --version";
@@ -92,6 +94,7 @@ _:
         preCheck = ''
           export HOME=$(mktemp -d)
           export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+          export LOOM_AGENT_WRIX_SOURCE=${patchedWrixSrc}
         '';
         # `--tree` (every verifier, no file filter) is the explicit scope
         # for a git-less build sandbox: the source artifact has no `.git`,
@@ -144,6 +147,22 @@ _:
         bash ${../../tests/sandbox/known-hosts-store.sh} ${patchedWrixSrc}/lib/sandbox/install-known-hosts.sh
         touch "$out"
       '';
+
+      agent-entrypoint-contract =
+        pkgs.runCommand "agent-entrypoint-contract"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.jq
+              pkgs.python3
+            ];
+          }
+          ''
+            set -euo pipefail
+            python3 ${../../tests/agent/entrypoint.py} ${patchedWrixSrc}
+            touch "$out"
+          '';
 
       image-runtime-binaries-launch = wrixLinuxPkgs.runCommand "image-runtime-binaries-launch" { } ''
         set -euo pipefail
@@ -623,6 +642,7 @@ _:
 
       checks = {
         inherit
+          agent-entrypoint-contract
           loom-gate-check
           loom-wrapper-preserves-spaced-output-path
           loom-wrix-does-not-default-launcher-override

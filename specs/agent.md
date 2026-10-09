@@ -1438,19 +1438,19 @@ letting the entrypoint run the wrong runtime.
   [test](child_stdin_is_a_pipe_not_a_tty)
 
 <!-- prettier-ignore -->
-- Entrypoint starts pi in RPC mode when `WRIX_AGENT=pi` [check](bash -c "grep -q 'pi --mode rpc' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
+- Entrypoint starts pi in RPC mode when `WRIX_AGENT=pi` [check](bash tests/agent/entrypoint.sh test_pi_rpc)
 
 <!-- prettier-ignore -->
 - Entrypoint starts claude normally when `WRIX_AGENT=claude`, retaining
   non-interactive bypass mode and enabling the stdio permission prompt tool
-  [check](bash -c 'entrypoint="$(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh"; grep -q -- "dangerously-skip-permissions" "$entrypoint" && grep -q -- "permission-prompt-tool stdio" "$entrypoint"')
+  [check](bash tests/agent/entrypoint.sh test_claude_stdio)
 
 <!-- prettier-ignore -->
-- Entrypoint starts the Direct runner when `WRIX_AGENT=direct` [check](bash -c "grep -q 'loom-direct-runner' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
+- Entrypoint starts the Direct runner when `WRIX_AGENT=direct` [check](bash tests/agent/entrypoint.sh test_direct_stdio)
 
 <!-- prettier-ignore -->
 - Entrypoint preserves git SSH, beads, network filtering for all runtime
-  branches [check](bash -c "grep -q '/git-ssh-setup.sh' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
+  branches [check](bash tests/agent/entrypoint.sh test_shared_setup)
 
 ### Agent runtime layer
 
