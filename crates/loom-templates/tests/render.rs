@@ -279,7 +279,7 @@ fn loop_render_preserves_instruction_list_structure_on_fresh_and_retry_dispatch(
 fn shared_options_partial_preserves_call_site_list_nesting() -> Result<()> {
     let out = todo_context(vec![], vec![]).render()?;
     let self_report = out
-        .split_once("## Self-Report Markers\n")
+        .split_once("## Decision Records and Self-Reports\n")
         .unwrap()
         .1
         .split_once("## Todo Success Marker\n")
@@ -288,13 +288,19 @@ fn shared_options_partial_preserves_call_site_list_nesting() -> Result<()> {
     let items = markdown_list_items(self_report, 1);
     let markers: Vec<_> = items
         .iter()
+        .filter(|item| item.starts_with("LOOM_"))
         .map(|item| item.split_once(" — ").unwrap().0)
         .collect();
-    assert_eq!(markers, ["LOOM_RETRY", "LOOM_CLARIFY", "LOOM_BLOCKED"]);
-    assert!(items[1].contains("After persisting, the gate applies"));
-    let nested = markdown_list_items(self_report, 2);
-    assert_eq!(nested.len(), 4);
-    assert!(nested[0].starts_with("The ## Options header carries a one-line summary"));
+    assert_eq!(
+        markers,
+        [
+            "LOOM_RETRY: {\"reason\":\"<nonblank reason>\"}",
+            "LOOM_BLOCKED: {\"reason\":\"<nonblank no-safe-options rationale>\"}",
+        ]
+    );
+    assert_eq!(items.len(), 6);
+    assert!(items[0].starts_with("The ## Options header carries a one-line summary"));
+    assert_eq!(markdown_list_items(self_report, 2), [] as [String; 0]);
     Ok(())
 }
 
@@ -1930,7 +1936,7 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
         "## Quality Gates",
         "## Land the Plane",
         "## Progress Markers",
-        "## Self-Report Markers",
+        "## Decision Records and Self-Reports",
     ] {
         assert!(
             out.contains(shared),
@@ -1939,7 +1945,7 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
     }
     assert!(
         out.contains("Semantic dead end with no safe options to enumerate?")
-            && out.contains("why options cannot be safely enumerated"),
+            && out.contains("why safe options cannot be framed"),
         "loop prompt must reserve LOOM_BLOCKED for no-options semantic dead ends: {out}",
     );
     assert!(

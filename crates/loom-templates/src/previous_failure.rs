@@ -213,10 +213,10 @@ fn render_agent_retry(reason: &str) -> String {
     format!(
         "Previous attempt requested retry — reason: {reason}\n\n\
          If the same problem persists after this attempt, escalate to LOOM_BLOCKED \
-         only for a semantic dead end whose prior-line reason explains why no \
-         candidate options can be safely enumerated, or use LOOM_CLARIFY with a \
-         structured Options block when candidate resolutions can be framed, \
-         rather than emitting LOOM_RETRY again.",
+         only for a semantic dead end whose reason explains why no candidate \
+         options can be safely enumerated. Otherwise persist dedicated decisions \
+         with structured Options briefs, report nonterminal LOOM_CLARIFY records, \
+         and choose the source outcome independently instead of retrying again.",
     )
 }
 
@@ -790,9 +790,9 @@ mod tests {
             "LOOM_BLOCKED no-options rationale missing: {rendered}",
         );
         assert!(
-            rendered.contains("LOOM_CLARIFY")
-                && rendered.contains("candidate resolutions can be framed"),
-            "escalation to LOOM_CLARIFY missing: {rendered}",
+            rendered.contains("nonterminal LOOM_CLARIFY records")
+                && rendered.contains("source outcome independently"),
+            "independent decision reporting missing: {rendered}",
         );
     }
 

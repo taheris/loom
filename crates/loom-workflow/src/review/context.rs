@@ -185,7 +185,14 @@ fn push_unique(
     if !seen.insert(display.clone()) {
         return Ok(());
     }
-    let body = fs::read_to_string(&abs).map_err(|source| SpecError::Io { path: abs, source })?;
+    let body = match fs::read_to_string(&abs) {
+        Ok(body) => body,
+        Err(source) if annotation.pending && source.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!(spec = %annotation.source_spec.display(), target = %annotation.target, "pending review source is absent; no source body or execution evidence supplied");
+            return Ok(());
+        }
+        Err(source) => return Err(SpecError::Io { path: abs, source }),
+    };
     out.push(ReviewSource {
         path: display,
         body,
@@ -316,6 +323,49 @@ mod tests {
     }
 
     #[test]
+    fn review_rubrics_collect_actual_delivered_guidance_inputs() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let mut resolver = loom_gate::InputResolver::new(workspace.clone());
+        for target in [
+            "../tests/judges/coverage-reductions.md#judge_coverage_reductions",
+            "../tests/judges/agent-output-routing.md#judge_agent_output_routing",
+            "../tests/judges/loom.sh#judge_live_path_coverage",
+            "../tests/judges/loom.sh#judge_mock_discipline",
+        ] {
+            let annotation = Annotation {
+                tier: Tier::Judge,
+                target: target.to_owned(),
+                source_spec: workspace.join("specs/gate.md"),
+                line: 1,
+                criterion_line: 1,
+                pending: false,
+            };
+            assert_eq!(
+                resolver.probe_input_query(&annotation),
+                loom_gate::InputQueryProbe::Honoured,
+                "{target}",
+            );
+            let inputs = resolver.resolve(&annotation);
+            assert!(
+                inputs
+                    .paths
+                    .contains(&"crates/loom-templates/templates/review.md".into())
+            );
+            assert!(
+                inputs
+                    .paths
+                    .contains(&"crates/loom-workflow/src/review/production.rs".into())
+            );
+            for input in inputs.paths {
+                assert!(workspace.join(&input).is_file(), "{}", input.display());
+            }
+        }
+    }
+
+    #[test]
     fn load_review_sources_reads_test_and_judge_files_from_disk() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ws = dir.path();
@@ -374,6 +424,19 @@ mod tests {
             matches!(err, SpecError::Io { .. }),
             "expected SpecError::Io, got {err:?}",
         );
+    }
+
+    #[test]
+    fn pending_missing_sibling_source_does_not_abort_context_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("specs/billing.md"),
+            "## Success Criteria\n- Refund coverage [judge?](../tests/judges/refunds.md)\n",
+        );
+        let (tests, judges) = load_review_sources(dir.path(), &dir.path().join("specs/billing.md"))
+            .expect("declared pending absence is not a source-load error");
+        assert_eq!(tests, [] as [ReviewSource; 0]);
+        assert_eq!(judges, [] as [ReviewSource; 0]);
     }
 
     #[test]
@@ -571,21 +634,14 @@ mod tests {
     fn rendered_template_renders_em_dash_when_no_review_sources() {
         let ctx = build_review_context(inputs());
         let body = ctx.render().expect("render");
-        assert!(
-            body.contains("## Deterministic-Verifier Sources"),
-            "test section heading present: {body}",
-        );
-        assert!(
-            body.contains("## `[judge]` Rubrics"),
-            "judge section heading present: {body}",
-        );
-        assert!(
-            body.contains("sources below.\n\n—"),
-            "test em-dash placeholder when empty: {body}",
-        );
-        assert!(
-            body.contains("read the per-criterion rubric.\n\n—"),
-            "judge em-dash placeholder when empty: {body}",
-        );
+        let (tests, judges) = body
+            .split_once("## Deterministic-Verifier Sources")
+            .expect("source section")
+            .1
+            .split_once("## `[judge]` Rubrics")
+            .expect("judge section");
+        let judges = judges.split_once("## Instructions").unwrap().0;
+        assert!(tests.trim_end().ends_with('—'), "{tests}");
+        assert!(judges.trim_end().ends_with('—'), "{judges}");
     }
 }

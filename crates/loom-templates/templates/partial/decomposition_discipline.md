@@ -27,11 +27,24 @@ A successful decomposition session emits `LOOM_TODO: <json>` with a required fin
 
 Omitted specs, duplicate specs, pending outcomes, and generic `LOOM_COMPLETE` / `LOOM_NOOP` markers are not success states for todo.
 
-### Clarify or block on the work epic
+### Decisions and decomposition outcome
 
-When coverage cannot be determined by inspection — the spec is ambiguous, verifier targets conflict, cursor/index state is inconsistent, or your judgement of the status cache's trustworthiness is contestable — emit `LOOM_CLARIFY`. Persist both the question and the canonical `## Options — …` block to the **driver-created work epic** notes per the _Options Format Contract_ in `specs/gate.md` before emitting the marker. The verdict gate applies `loom:clarify` to the work epic; the human resolves via `loom inbox`, and a subsequent `loom todo` invocation reuses the pending work epic.
+When coverage cannot be determined by inspection and viable choices cannot be
+adjudicated from the spec, code or research, persist one dedicated child decision
+bead per question under the **driver-created work epic**, each with a canonical
+Options brief. Report all known decisions through nonterminal
+`LOOM_CLARIFY: {"decisions":["<id>","<id>"]}` records. Do not put multiple briefs
+on the work epic or label it `loom:clarify`.
 
-When you have no candidate resolutions to enumerate, emit `LOOM_BLOCKED` with a non-empty prior-line reason explaining why options cannot be safely surfaced; the work epic remains the session-stable carrier for the blocked decomposition batch. If candidate options can be framed, use `LOOM_CLARIFY` instead so those options reach bead state.
+If decisions prevent completing decomposition, declare actual prerequisite edges
+from the work epic and use `LOOM_WAITING`, leaving it open. Decisions affecting
+only implementation tasks block those tasks; a complete valid roster can still
+finalize through `LOOM_TODO`. Reporting decisions is not a terminal outcome.
+
+Only a semantic dead end with no safe candidate resolutions uses
+`LOOM_BLOCKED: {"reason":"<why safe options cannot be framed>"}`. The work epic
+remains non-active and cursors do not advance. If candidate options can be
+framed, use dedicated decision records and reconcile decomposition independently.
 
 ### Enumerate-everything fan-outs are structurally invalid
 

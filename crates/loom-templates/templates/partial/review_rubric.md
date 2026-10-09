@@ -3,8 +3,9 @@
 The verdict-gate review's primary concern is **verifier honesty**: a
 deterministic-tier annotation (`[check]`, `[test]`, or `[system]`) is
 honest iff it satisfies all four sub-checks below. Walk each sub-check
-against every deterministic annotation the diff adds or modifies; at
-`--tree` scope, re-walk every existing deterministic annotation against
+against deterministic annotations affected by the changed live path, including
+unchanged sibling criteria; additions or edits to annotations are not the only
+way coverage can be lost. At `--tree` scope, re-walk every existing deterministic annotation against
 current spec/code to catch drift. Failure on any sub-check is a hard
 fail with the matching concern token.
 
@@ -89,6 +90,37 @@ test flags `mock-discipline`.
 - Mocking the database in an integration test where the test's stated
   scope includes schema or migration behaviour.
 
+## Coverage Reductions
+
+Compare coverage before and after the reviewed change against current contracts,
+including relevant unchanged sibling owners. Trace the subjects and obligations
+that disappeared, not just the tests that remain green:
+
+- Inspect removed tests, verifier inputs, discovery membership, role exemptions,
+  skips, narrowed checker responsibilities, and policy defaults. Which subjects
+  or obligations no longer receive checks? Passing remaining checks does not
+  justify checking less.
+- An obligation may move to another owner, but require a demonstrated replacement:
+  inspect its verifier and evidence that it exercises the same required behavior
+  on the affected subjects. A replacement claim, owner name, or renamed test is
+  not proof. Otherwise require an authorized spec change justifying the loss.
+- Accept dependency-precision changes that retain the same subjects, obligations,
+  and meaningful coverage. Removing README.md from a code-only verifier's inputs
+  can be precision; removing it from a checker for README/spec-index agreement
+  loses an obligation. Judge actual responsibility, not filename or keyword counts.
+- An unchanged billing contract can require invoice rounding even when a diff
+  removes only a shared arithmetic test or excludes billing from discovery.
+  Trace that sibling obligation before declaring the reduction safe.
+
+Use ordinary findings: `verifier-too-narrow` or `spec-coherence-fail` with a
+`Criterion` target naming the affected owner's existing anchor, or the applicable
+verifier-honesty token with an `Annotation` target. Include all affected owners
+in `bonds` and explain the lost coverage or unproven replacement in `evidence`.
+An unresolved invariant decision uses `route="clarify"` with canonical Options
+evidence; otherwise use the existing blocking/deferred routes for the dispatch
+scope. Finish a walk with findings using `LOOM_CONCERN`. Do not introduce a new
+concern token, separate gate, or mandatory human signoff for optimizations.
+
 ## Invariant-Clash Anchors
 
 When scanning each touched spec section for load-bearing invariants the
@@ -145,10 +177,11 @@ truth_ rule in `docs/spec-conventions.md`:
   rewritten as a cross-reference.
 - If two specs disagree on a fact, the contradiction is a flag.
 
-At `--bead` or `--diff` scope this walk is out of scope; only the
-touched spec section + bonded sibling specs are in view, and any
-cross-spec discrepancy noticed there falls under the per-section
-invariant-clash walk above.
+At `--bead` or `--diff` scope an exhaustive standing cross-spec walk is
+out of scope. Current sibling contracts relevant to changed subjects,
+obligations, shared seams or replacements remain in view even when unchanged
+or not bead-bonded. Broaden uncertain relevance; a discrepancy noticed there
+falls under the conformance or invariant-clash walk above.
 
 For each clash, emit a finding line with `token = "cross-spec-clash"`,
 a `Criterion` target naming the primary spec/anchor, every involved spec
@@ -185,8 +218,8 @@ phrasing conflicts with a spec claim, treat it as drift and flag; false
 positives surface as `bd` discussion, misses ship broken templates.
 
 At `--bead` or `--diff` scope this walk is out of scope; per-diff
-template edits are reviewed against the spec sections the diff itself
-touches, under the conformance-trace and invariant-clash walks above.
+template edits are reviewed against current relevant contracts, including
+unchanged siblings, under the conformance and invariant-clash walks above.
 
 For each drift, emit a finding line with `token = "template-spec-drift"`,
 the offending template path in `target`, and the spec section it

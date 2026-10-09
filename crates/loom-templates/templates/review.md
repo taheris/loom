@@ -26,6 +26,10 @@ findings and mints the fix-up beads itself (per `loom gate mint` in
 
 Read: {{ spec_path }}
 
+Read the current contract and acceptance files listed in the pinned context
+directly, not as companion manifests. Unchanged siblings can own obligations
+affected by the change; the context label is not a scope filter.
+
 ## Beads Summary
 
 {% match beads_summary %}{% when Some with (summary) %}{{ summary }}{% when None %}—{% endmatch %}
@@ -40,8 +44,10 @@ Read: {{ spec_path }}
 These file-shaped `[test]` verifier sources are context, not execution
 evidence. Only completed deterministic gate evidence establishes which
 verifiers ran. `[check]` / `[system]` command strings have no source body
-to inline here. Judge live-path coverage and mock discipline from the
-sources below.
+to inline here. Declared pending sources that do not yet exist are not inlined;
+read their criteria in the supplied acceptance files. Missing bodies are absence
+of coverage evidence, not passing execution. Judge live-path coverage and mock
+discipline from the sources below.
 
 {% if test_sources.is_empty() %}—
 {% else %}{% for source in test_sources %}
@@ -58,8 +64,12 @@ sources below.
 ## `[judge]` Rubrics
 
 These `[judge]` annotations name LLM-judgement criteria the deliverable
-must satisfy. Each rubric file's body follows; locate the function
-referenced by the annotation to read the per-criterion rubric.
+must satisfy on the selected surface. Each rubric file's body follows; locate
+the function referenced by the annotation to read the per-criterion rubric.
+During finite review, inventory breadth does not require judging unrelated
+standing contracts: trace the criteria relevant to the changed surface and
+broaden when uncertain. Exact-target and standalone judge selection follow
+the driver-pinned selectors.
 
 {% if judge_rubrics.is_empty() %}—
 {% else %}{% for source in judge_rubrics %}
@@ -75,8 +85,8 @@ referenced by the annotation to read the per-criterion rubric.
 
 ## Instructions
 
-1. **Read the spec** at `{{ spec_path }}` thoroughly
-2. **Explore the codebase** — read implementation code, test files, `AGENTS.md`, and related specs as needed
+1. **Read the spec** at `{{ spec_path }}` thoroughly and the current sibling contracts relevant to the reviewed surface, including their acceptance criteria
+2. **Explore the codebase** — read implementation code, test files, `AGENTS.md`, and related specs as needed. Broaden sibling reads when relevance is uncertain; a finite diff does not require an exhaustive standing tree audit.
 3. **Respect the dispatch scope** shown in the pinned context or command line:
    - For `--diff <range>` reviews, run `git diff <range>` and `git log <range> --oneline` against the exact range the driver supplied. {% match base_commit %}{% when Some with (commit) %}For the current molecule context, the usual range is `{{ commit }}..HEAD` unless the driver pinned a different `--diff` range.{% when None %}Use the driver-pinned range rather than inventing one.{% endmatch %}
    - For `--tree` reviews, do **not** use a base-to-HEAD diff or log as the review scope. The scope is every file in the workspace; use `git status --short`, `git ls-files`, and targeted reads/tests as needed.

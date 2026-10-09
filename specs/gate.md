@@ -305,7 +305,7 @@ this acceptance document owns Gate composition and authorization.
   reports dedicated decision references independently of its terminal outcome;
   inspection-only review reports clarify-route findings with Options evidence,
   never direct decision-bead mutation.
-  [judge?](../tests/judges/agent-output-routing.md)
+  [judge](../tests/judges/agent-output-routing.md)
 
 - Review's primary concern is live-path coverage: relevant `[check]` / `[test]`
   / `[system]` verifiers on the reviewed range must exercise the live path (same
@@ -322,7 +322,7 @@ this acceptance document owns Gate composition and authorization.
 - Production finite-review context includes current sibling contracts relevant
   to the change and broadens uncertain selection without presenting an
   exhaustive standing audit as mandatory for every diff.
-  [test?](finite_review_context_includes_relevant_sibling_contracts)
+  [test](finite_review_context_includes_relevant_sibling_contracts)
 
 - Review walks the pinned `{{ style_rules }}` document rule by rule, discovering
   rule families from the document itself (no fixed prefix enumeration in the
@@ -337,7 +337,7 @@ this acceptance document owns Gate composition and authorization.
 - Existing semantic review flags unjustified loss of obligations or subjects,
   accepts demonstrated replacement coverage and coverage-preserving dependency
   precision, and routes findings through the ordinary review path.
-  [judge?](../tests/judges/coverage-reductions.md)
+  [judge](../tests/judges/coverage-reductions.md)
 
 ## Requirements
 

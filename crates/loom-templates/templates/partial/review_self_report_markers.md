@@ -17,7 +17,8 @@ one, place exactly one marker on the final non-empty line.
   `## Options — …` block, then finish the walk with `LOOM_CONCERN`. If
   the review cannot proceed and no options can be safely articulated, use
   `LOOM_BLOCKED` instead.
-- `LOOM_BLOCKED` — The review cannot proceed and you have no candidate
+- `LOOM_BLOCKED` — A genuine semantic dead end: retry is not expected to
+  help, the review cannot proceed, and you have no safe candidate
   resolutions to enumerate. Write a non-empty dead-end reason on the line
   immediately before the marker explaining why options cannot be safely
   surfaced. Do not create, update, label, or close beads from the review

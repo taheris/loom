@@ -46,7 +46,7 @@ use loom_templates::review::{ReviewContext, ReviewLane};
 use tokio::process::Command;
 use tracing::{info, warn};
 
-use super::context::{beads_summary, default_profile_for_spec, load_review_sources_for_lane};
+use super::context::{beads_summary, default_profile_for_spec};
 use super::error::ReviewError;
 use super::finding::{DispatchScope, FindingValidator, TerminalSurface, WalkOutput};
 use super::phase_verdict::{
@@ -570,7 +570,6 @@ where
                 None => None,
             }
         };
-        let spec_path = format!("specs/{}.md", self.label.as_str());
         let materials = if let Some(scope) = &self.inspection_scope {
             super::inspection::load(
                 &self.workspace,
@@ -579,20 +578,18 @@ where
                 self.context_bead.as_ref(),
             )?
         } else {
-            let (test_sources, judge_rubrics) = load_review_sources_for_lane(
-                &self.workspace,
-                &self.workspace.join(&spec_path),
-                self.lane,
-            )?;
-            super::inspection::Materials {
-                test_sources,
-                judge_rubrics,
-                companion_paths: vec![],
-                pinned_context: review_dispatch_scope_pin(
-                    self.dispatch_scope,
-                    self.push_range.as_deref(),
-                ),
-            }
+            let mut materials = super::inspection::load_current(&self.workspace, self.lane)?;
+            materials.pinned_context.insert_str(
+                0,
+                &review_dispatch_scope_pin(self.dispatch_scope, self.push_range.as_deref()),
+            );
+            materials
+        };
+        let canonical = format!("specs/{}/spec.md", self.label);
+        let spec_path = if materials.contract_paths.contains(&canonical) {
+            canonical
+        } else {
+            format!("specs/{}.md", self.label)
         };
         let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratchpad_path =
@@ -617,7 +614,7 @@ where
             default_profile: default_profile_for_spec(&self.label),
             label: self.label.clone(),
             spec_path,
-            companion_paths: materials.companion_paths,
+            companion_paths: vec![],
             beads_summary: beads_summary(&beads),
             base_commit,
             molecule_id,
@@ -3066,6 +3063,193 @@ mod tests {
             !tree_prompt.contains("`git diff abc123..def456 --name-only`"),
             "tree prompt must not reuse the diff range as its input set: {tree_prompt}",
         );
+    }
+
+    #[test]
+    fn coverage_reduction_findings_resolve_unchanged_sibling_obligations() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_empty_spec(dir.path(), "discovery");
+        std::fs::write(
+            dir.path().join("specs/billing.md"),
+            "# Billing\n## Success Criteria\n- Invoice rounding and signed refunds [test](billing_rounding)\n",
+        )
+        .unwrap();
+        let validator = WorkspaceFindingValidator::new(dir.path());
+        let billing = SpecLabel::new("billing").unwrap();
+        let raw = loom_protocol::gate::RawFinding {
+            token: ConcernToken::VerifierTooNarrow,
+            route: crate::review::FindingRoute::Blocking,
+            bonds: vec![SpecLabel::new("discovery").unwrap(), billing.clone()],
+            target: FindingTarget::Criterion {
+                spec: billing,
+                anchor: "success-criteria".to_owned(),
+            },
+            evidence: "Discovery now excludes billing; invoices and signed refunds lost coverage despite green shipping checks.".to_owned(),
+        };
+        let stdout = format!(
+            "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"Billing lost coverage\"}}\n",
+            serde_json::to_string(&raw).unwrap(),
+        );
+        let walk = WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &validator);
+        assert!(
+            walk.finding_errors().is_empty(),
+            "{:?}",
+            walk.finding_errors()
+        );
+        let PhaseVerdict::Recovery {
+            cause: RecoveryCause::ReviewConcern { findings, .. },
+        } = phase_verdict_from_walk(&walk)
+        else {
+            panic!("ordinary coverage finding must reach review recovery");
+        };
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].clone().into_raw(), raw);
+    }
+
+    #[tokio::test]
+    async fn finite_review_context_includes_relevant_sibling_contracts() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        std::fs::create_dir_all(workspace.join("docs")).unwrap();
+        std::fs::create_dir_all(workspace.join("tests")).unwrap();
+        for owner in ["discovery", "billing", "ledger"] {
+            std::fs::create_dir_all(workspace.join("specs").join(owner)).unwrap();
+            std::fs::write(
+                workspace.join("specs").join(owner).join("spec.md"),
+                format!("# {owner}\nCurrent production obligations.\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                workspace.join("specs").join(owner).join("tests.md"),
+                format!("## Success Criteria\n- {owner} behavior [test](../../tests/{owner}.sh#test_live)\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                workspace.join("tests").join(format!("{owner}.sh")),
+                format!("set -euo pipefail\ntest_live() {{ {owner}-cli --production; }}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            workspace.join("docs/README.md"),
+            "## Specs\n- [discovery](../specs/discovery/spec.md)\n- [billing](../specs/billing/spec.md)\n- [ledger](../specs/ledger/spec.md)\n",
+        )
+        .unwrap();
+        let ctrl = ProductionReviewController::new(
+            no_beads_bd(),
+            SpecLabel::new("discovery").unwrap(),
+            PathBuf::from("/usr/bin/loom"),
+            workspace.to_path_buf(),
+            empty_state(workspace),
+            stub_manifest(workspace),
+            ProfileName::base(),
+            noop_spawn,
+        )
+        .with_push_range(Some("before..after".to_owned()));
+        let prompt = ctrl.build_review_prompt().await.unwrap().prompt;
+        for owner in ["discovery", "billing", "ledger"] {
+            for document in ["spec.md", "tests.md"] {
+                assert!(prompt.contains(&format!("specs/{owner}/{document}")));
+            }
+            assert!(prompt.contains(&format!("{owner}-cli --production")));
+        }
+        assert!(!prompt.contains("Read: specs/discovery.md"));
+        assert!(prompt.contains("Current dispatch scope: `--diff before..after`"));
+    }
+
+    async fn delivered_reduction_context(
+        workspace: &Path,
+        owner: &str,
+        contract: &str,
+        verifier: &str,
+    ) -> String {
+        seed_empty_spec(workspace, "discovery");
+        std::fs::create_dir_all(workspace.join("tests")).unwrap();
+        std::fs::write(
+            workspace.join("specs").join(format!("{owner}.md")),
+            format!("# {owner}\n{contract}\n## Success Criteria\n- Coverage [test](../tests/{owner}.sh#test_live)\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("tests").join(format!("{owner}.sh")),
+            verifier,
+        )
+        .unwrap();
+        let captured = Arc::new(Mutex::new(None));
+        let capture = Arc::clone(&captured);
+        let mut ctrl = ProductionReviewController::new(
+            no_beads_bd(),
+            SpecLabel::new("discovery").unwrap(),
+            PathBuf::from("/usr/bin/loom"),
+            workspace.to_path_buf(),
+            empty_state(workspace),
+            stub_manifest(workspace),
+            ProfileName::base(),
+            move |cfg: SpawnConfig| {
+                *capture.lock().unwrap() = Some(cfg.initial_prompt);
+                async move {
+                    Ok((
+                        SessionOutcome {
+                            exit_code: 0,
+                            cost_usd: None,
+                        },
+                        Some(ExitSignal::Complete),
+                        "LOOM_COMPLETE\n".to_owned(),
+                    ))
+                }
+            },
+        )
+        .with_push_range(Some("before..after".to_owned()));
+        assert_eq!(
+            ctrl.run_review().await.unwrap().outcome,
+            ReviewOutcome::Complete
+        );
+        captured.lock().unwrap().take().unwrap()
+    }
+
+    #[tokio::test]
+    async fn finite_review_delivers_unchanged_billing_obligations_after_discovery_exclusion() {
+        let dir = tempfile::tempdir().unwrap();
+        let verifier = "set -euo pipefail\ntest_live() { billing-cli invoice 1.005; billing-cli refund 1.005; }\n";
+        let prompt = delivered_reduction_context(
+            dir.path(),
+            "billing",
+            "Invoices round ties to even; refunds preserve signed cents.",
+            verifier,
+        )
+        .await;
+        assert!(prompt.contains("- specs/billing.md"));
+        assert!(prompt.contains(verifier));
+    }
+
+    #[tokio::test]
+    async fn finite_review_delivers_replacement_owner_verifier_without_owner_filtering() {
+        let dir = tempfile::tempdir().unwrap();
+        let verifier = "set -euo pipefail\ntest_live() { ledger-cli invoice 1.005; ledger-cli refund 1.005; }\n";
+        let prompt = delivered_reduction_context(
+            dir.path(),
+            "ledger",
+            "Ledger owns replacement coverage for invoices and signed refunds.",
+            verifier,
+        )
+        .await;
+        assert!(prompt.contains("- specs/ledger.md"));
+        assert!(prompt.contains(verifier));
+    }
+
+    #[tokio::test]
+    async fn finite_review_delivers_readme_obligation_despite_removed_dependency_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let verifier = "set -euo pipefail\ntest_live() { index-check --specs specs; }\n";
+        let prompt = delivered_reduction_context(
+            dir.path(),
+            "index",
+            "README.md commands must agree with the current spec index.",
+            verifier,
+        )
+        .await;
+        assert!(prompt.contains("- specs/index.md"));
+        assert!(prompt.contains(verifier));
     }
 
     #[tokio::test]

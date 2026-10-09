@@ -4,7 +4,8 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use loom_driver::identifier::BeadId;
-use loom_gate::annotation::{Tier, parse};
+use loom_driver::spec::package;
+use loom_gate::annotation::{ParseError, Tier, parse_packages};
 use loom_gate::scope::Resolved;
 use loom_templates::review::{ReviewLane, ReviewSource};
 
@@ -14,7 +15,7 @@ use super::error::ReviewError;
 pub(super) struct Materials {
     pub test_sources: Vec<ReviewSource>,
     pub judge_rubrics: Vec<ReviewSource>,
-    pub companion_paths: Vec<String>,
+    pub contract_paths: Vec<String>,
     pub pinned_context: String,
 }
 
@@ -24,33 +25,58 @@ pub(super) fn load(
     lane: ReviewLane,
     bead: Option<&BeadId>,
 ) -> Result<Materials, ReviewError> {
-    let parsed = parse(&workspace.join("specs"))?;
+    load_inventory(workspace, Some(scope), lane, bead)
+}
+
+pub(super) fn load_current(workspace: &Path, lane: ReviewLane) -> Result<Materials, ReviewError> {
+    load_inventory(workspace, None, lane, None)
+}
+
+fn load_inventory(
+    workspace: &Path,
+    scope: Option<&Resolved>,
+    lane: ReviewLane,
+    bead: Option<&BeadId>,
+) -> Result<Materials, ReviewError> {
+    let packages = package::discover_workspace(workspace).map_err(ParseError::Package)?;
+    let parsed = parse_packages(&packages)?;
     let mut annotations = parsed.annotations;
-    if let Some(target) = scope.target() {
+    let target = scope.and_then(Resolved::target);
+    if let Some(target) = target {
         annotations
             .retain(|annotation| annotation.tier == Tier::Judge && annotation.target == target);
         if annotations.is_empty() {
             return Err(ReviewError::UnknownJudgeTarget(target.to_owned()));
         }
     }
-    let spec_paths: BTreeSet<_> = annotations
+    let spec_paths: BTreeSet<_> = packages
         .iter()
-        .map(|annotation| &annotation.source_spec)
-        .chain(
-            parsed
-                .criteria
-                .iter()
-                .filter(|_| scope.target().is_none())
-                .map(|criterion| &criterion.source_spec),
-        )
+        .filter(|package| {
+            target.is_none()
+                || annotations
+                    .iter()
+                    .any(|annotation| annotation.source_spec == package.acceptance())
+        })
+        .flat_map(|package| [package.contract(), package.acceptance()])
         .collect();
-    let companion_paths = spec_paths
+    let contract_paths: Vec<_> = spec_paths
         .into_iter()
         .map(|path| display_path(workspace, path))
         .collect();
     let (test_sources, judge_rubrics) =
         load_review_sources_for_annotations(workspace, &annotations, lane)?;
-    let mut pinned_context = scope_pin(workspace, scope);
+    let mut pinned_context = scope.map_or_else(String::new, |scope| scope_pin(workspace, scope));
+    if target.is_none() {
+        pinned_context.push_str("\nCurrent contract inventory is supplied conservatively, including unchanged siblings: verifier input declarations may themselves be under review and cannot prove semantic irrelevance. For finite review, use contracts relevant to the changed subjects, obligations, shared seams and claimed replacements; broaden reads when relevance is uncertain. Inventory breadth is context, not a mandatory exhaustive standing tree audit.\n");
+    }
+    pinned_context.push_str(
+        "\nCurrent contract context (read these contract and acceptance files directly):\n",
+    );
+    for path in &contract_paths {
+        pinned_context.push_str("- ");
+        pinned_context.push_str(path);
+        pinned_context.push('\n');
+    }
     if lane.includes_judge() {
         pinned_context.push_str("\nSelected judge annotations (exact targets; evaluate only these selectors, not sibling functions in the same source file):\n");
         let selected: BTreeSet<_> = annotations
@@ -78,7 +104,7 @@ pub(super) fn load(
     Ok(Materials {
         test_sources,
         judge_rubrics,
-        companion_paths,
+        contract_paths,
         pinned_context,
     })
 }

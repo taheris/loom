@@ -68,19 +68,26 @@ test_newtypes_for_identifiers() {
 judge_live_path_coverage() {
   judge_files \
     "crates/loom-templates/templates/review.md" \
-    "crates/loom-workflow/src/review/runner.rs" \
-    "crates/loom-workflow/src/review/phase_verdict.rs"
+    "crates/loom-templates/templates/partial/review_rubric.md" \
+    "crates/loom-templates/templates/partial/findings_walk.md" \
+    "crates/loom-workflow/src/review/production.rs" \
+    "crates/loom-workflow/src/review/inspection.rs" \
+    "crates/loom-workflow/src/review/phase_verdict.rs" \
+    "crates/loom-protocol/src/gate.rs"
   judge_criterion \
-    "The review prompt (review.md) and review-gate code (review/runner.rs, review/phase_verdict.rs) treat live-path coverage as the reviewer's primary concern: at least one [verify] annotation on the bead must exercise the live path — same binary, same argv shape, same env as production. The reviewer is instructed to flag a bead whose entire [verify] set is mock-only (no live invocation), and that flag resolves to RecoveryCause::ReviewConcern with the concern named as one of the verifier-honesty tokens (verifier-bypass, fabricated-result, weak-assertion, coincidental-pass) in the flag detail (so the gate's recovery path is observable). Inspect review.md: the prompt must state this expectation explicitly and tell the reviewer what to do when an all-mock set is observed; inspect runner.rs / phase_verdict.rs: the live-path concern must be representable as one of the named flag concerns the gate emits (the ReviewConcern enum in phase_verdict.rs), not buried in free-form text."
+    "Follow the actual production prompt assembly and include graph. Relevant [check], [test] and [system] coverage, including unchanged sibling criteria affected by the changed path, must exercise the live production boundary: same binary, argv shape and relevant environment. An entirely mock-only set or a build/existence check substituted for behavioral execution raises a verifier-bypass finding with the declared Annotation target, affected owners in bonds and concrete evidence, followed by LOOM_CONCERN. Inspect real finding resolution and ReviewConcern routing, not an obsolete [verify] tier or a legacy summary-token enum. Mocks of external providers are permitted when the live subsystem under test still executes; source bodies are context, not proof of execution. Fail if delivery omits the rubric or if an all-mock relevant set can be treated as coverage merely because its tests pass."
 }
 
 judge_mock_discipline() {
   judge_files \
     "crates/loom-templates/templates/review.md" \
-    "crates/loom-workflow/src/review/runner.rs" \
-    "crates/loom-workflow/src/review/phase_verdict.rs"
+    "crates/loom-templates/templates/partial/review_rubric.md" \
+    "crates/loom-templates/templates/partial/findings_walk.md" \
+    "crates/loom-workflow/src/review/production.rs" \
+    "crates/loom-workflow/src/review/phase_verdict.rs" \
+    "crates/loom-protocol/src/gate.rs"
   judge_criterion \
-    "The review prompt (review.md) instructs the reviewer to flag mocks that stand in for the very thing under test — for example, mocking the agent backend in an agent-integration test, or stubbing the database in a test whose stated purpose is to exercise schema migrations. The rubric the reviewer applies is: identify what the test claims to validate (from its name, location, or [verify] criterion text), then check whether the test mocks that exact subsystem. When the answer is 'yes', the reviewer raises a flag, the gate resolves to RecoveryCause::ReviewConcern, and the flag detail names 'mock' as the triggering concern (mirrors how the verifier-honesty tokens are named). Mocks of unrelated dependencies are NOT in scope; only mocks of the system-under-test are flagged."
+    "Follow production delivery and identify the claimed subject from the criterion and test behavior, then determine whether the mock replaces that subject itself. Mocking an agent backend in an agent-integration test or the database whose migration is being tested is dishonest; emit mock-discipline with a TestPath target and concrete evidence through ordinary LOOM_FINDING / LOOM_CONCERN routing. Mocking an external LLM API while executing the real retry or agent transport logic is allowed. Fail if the rubric treats every mock as a violation, accepts system-under-test substitution, is not delivered, or requires a nonexistent 'mock' summary token instead of the typed finding."
 }
 
 judge_plan_merges_notes() {
@@ -199,5 +206,5 @@ judge_blocked_no_options_rationale() {
     "crates/loom-protocol/src/gate.rs" \
     "crates/loom-workflow/src/review/phase_verdict.rs"
   judge_criterion \
-    "Worker and review guidance must reserve LOOM_BLOCKED for semantic no-options dead ends, not generic user input or ordinary decisions. Pass iff: (1) loop/todo self-report guidance says LOOM_BLOCKED is only for a semantic dead end where retry is not expected and candidate options cannot be safely enumerated; (2) it requires a non-empty prior-line reason explaining why options cannot be safely enumerated; (3) loop/todo guidance directs agents to LOOM_CLARIFY with a persisted Options block whenever candidate options can be framed; (4) review guidance forbids direct LOOM_CLARIFY, routes frameable decisions through route=\"clarify\" finding evidence with an Options block, and uses LOOM_BLOCKED only when no options can be safely articulated; (5) decomposition discipline and loop.md no longer contain generic phrasing like 'Need user input? -> LOOM_BLOCKED' without the no-options discriminator; (6) PreviousFailure::AgentRetry retry guidance carries the same discriminator instead of generic 'blocked (no candidate resolutions)' wording; and (7) protocol/verdict code rejects or recovers a LOOM_BLOCKED marker with an empty reason so it cannot route to loom:blocked. Fail if any prompt can be read as sending a worker/reviewer to LOOM_BLOCKED merely because human input is needed, if it omits the no-options rationale requirement, or if empty-reason LOOM_BLOCKED still reaches the blocked verdict."
+    "Worker and review guidance must reserve LOOM_BLOCKED for semantic no-options dead ends, not generic user input or ordinary decisions. Pass iff: (1) loop/todo self-report guidance says LOOM_BLOCKED is only for a semantic dead end where retry is not expected and candidate options cannot be safely enumerated; (2) it requires a nonblank reason explaining why options cannot be safely enumerated, using the phase's reason encoding; (3) loop/todo guidance persists dedicated decisions with Options briefs, reports nonterminal LOOM_CLARIFY decision references and chooses completion or Waiting independently based on actual prerequisites whenever unresolved candidate options can be framed; (4) review guidance forbids direct LOOM_CLARIFY, routes frameable decisions through route=\"clarify\" finding evidence with an Options block, and uses LOOM_BLOCKED only when no options can be safely articulated; (5) decomposition discipline and loop.md no longer contain generic phrasing like 'Need user input? -> LOOM_BLOCKED' without the no-options discriminator; (6) PreviousFailure::AgentRetry retry guidance carries the same discriminator instead of generic 'blocked (no candidate resolutions)' wording; and (7) protocol/verdict code rejects or recovers a LOOM_BLOCKED marker with an empty reason so it cannot route to loom:blocked. Fail if any prompt can be read as sending a worker/reviewer to LOOM_BLOCKED merely because human input is needed, if it omits the no-options rationale requirement, or if empty-reason LOOM_BLOCKED still reaches the blocked verdict."
 }

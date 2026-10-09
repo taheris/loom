@@ -7,9 +7,8 @@ use crate::SkillIndexMarkdown;
 
 /// One file body included in the review prompt.
 ///
-/// This is either a `[test]` script the gate just ran, or a `[judge]` rubric the LLM must score
-/// against. `path` is the workspace-relative source location used as the
-/// rendered section title.
+/// A `[test]` source or `[judge]` rubric, not evidence of verifier execution.
+/// `path` is the workspace-relative source location used as the section title.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewSource {
     pub path: String,

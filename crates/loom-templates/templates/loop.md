@@ -73,8 +73,8 @@ Review notes:
    - Lint checks pass
    - Changes committed
 6. **Blocked vs Waiting**: Distinguish dependency waits, clarify decisions, and true dead ends:
-   - Need user input and can frame candidate options? → persist the Options block, then `LOOM_CLARIFY`
-   - Semantic dead end with no safe options to enumerate? → write that no-options rationale on a prior line, then `LOOM_BLOCKED`
+   - Unresolved human decisions with viable options? → persist dedicated decision beads with Options briefs, report nonterminal `LOOM_CLARIFY: {"decisions":["<id>"]}` records, then independently finish or wait on actual prerequisites
+   - Semantic dead end with no safe options to enumerate? → `LOOM_BLOCKED: {"reason":"<why safe options cannot be framed>"}`
    - Need other beads done? → Add the blocking dependency with `bd dep add`, leave this bead open, then output `LOOM_WAITING`
 7. **Already Implemented**: If the task's work is already done in the codebase,
    verify correctness, run `bd close {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}<issue-id>{% endmatch %}`,
@@ -125,7 +125,7 @@ Before outputting LOOM_COMPLETE:
 - Bead closed (`bd close {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}<issue-id>{% endmatch %}`)
 - Preflight self-check: run `loom gate verify --diff {{ bead_base }}..HEAD` using the exact bead base injected for this dispatch. If the branch upstream is that injected base, `loom gate verify --diff @{u}..HEAD` is acceptable. Resolve any findings in-session before emitting `LOOM_COMPLETE` — do not defer findings to a follow-up bead.
 - Rerun the self-check after any later commit, formatter or hook tree change, or other change that could invalidate the prior run.
-- Prompt-level self-review: before the final marker, re-read the issue criteria, inspect the committed diff, verify style/spec fit, and either fix issues or emit `LOOM_RETRY`, `LOOM_CLARIFY`, or `LOOM_BLOCKED` with the required self-report framing.
+- Prompt-level self-review: before the final marker, re-read the issue criteria, inspect the committed diff, verify style/spec fit, and either fix issues, report dedicated decisions with the appropriate source outcome, or emit `LOOM_RETRY` / `LOOM_BLOCKED` with the required self-report framing.
 
 Post-step hooks verify compliance automatically.
 

@@ -31,7 +31,9 @@ Then intentionally choose one recovery path: apply the stash, cherry-pick releva
 - `{{ file }}`
 
 {% endfor %}
-Use `LOOM_CLARIFY` with a persisted Options block if the conflict requires a human decision.
+If the conflict requires an unresolved human decision, persist a dedicated
+decision bead with an Options brief, report its nonterminal `LOOM_CLARIFY`
+reference, and use `LOOM_WAITING` only if it is an actual source prerequisite.
 
 {% endif %}In your final prose before the terminal marker, include one short line naming how you handled the recovery stash (applied, partly cherry-picked, left for follow-up, dropped as irrelevant, or needs clarification) and why. That prose is accountability for reviewers; the driver does not parse it and does not reject `LOOM_COMPLETE` solely because the stash still exists.
 {% when None %}{% endmatch %}
