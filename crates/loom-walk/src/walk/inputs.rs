@@ -183,6 +183,12 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             root.join("crates/loom-workflow/src/review/production.rs"),
         ],
         "pre_push_config_marker_wrapper_contract" => vec![root.join(".pre-commit-config.yaml")],
+        "spec_package_size" => vec![
+            root.join("docs/README.md"),
+            root.join("specs/**"),
+            root.join("crates/loom-driver/src/spec/**"),
+            root.join("crates/loom-walk/src/walk/spec_package_size.rs"),
+        ],
 
         // Manifest-only scans.
         "loom_agent_deps" => vec![manifest(root, "loom-agent")],

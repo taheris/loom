@@ -88,6 +88,16 @@ pub fn collect_deps(
             }
             Tier::Test | Tier::Judge => {
                 if let Some(file) = target_file_path(&ann.target) {
+                    let file = if ann.tier == Tier::Judge && file.is_relative() {
+                        let source = if ann.source_spec.is_absolute() {
+                            ann.source_spec.clone()
+                        } else {
+                            workspace.join(&ann.source_spec)
+                        };
+                        source.parent().unwrap_or(workspace).join(file)
+                    } else {
+                        file
+                    };
                     files.insert(file);
                 }
             }
@@ -267,9 +277,10 @@ mod tests {
         fs::create_dir_all(&tests)?;
         fs::write(tests.join("a.sh"), "curl x\n")?;
         fs::write(tests.join("b.sh"), "jq .\n")?;
+        fs::create_dir(dir.path().join("specs"))?;
         let anns = vec![
             ann(Tier::Test, "tests/a.sh#test_a"),
-            ann(Tier::Judge, "tests/b.sh#test_b"),
+            ann(Tier::Judge, "../tests/b.sh#test_b"),
         ];
         let pkgs = collect_deps(dir.path(), &anns)?;
         assert!(pkgs.contains("curl"));

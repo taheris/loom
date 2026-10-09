@@ -2237,8 +2237,7 @@ fn criterion_id_for_annotation(
 }
 
 fn spec_label_from_path(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|s| s.to_str())
+    loom_driver::spec::package::document_label(path)
         .map_or_else(|| path.to_string_lossy().into_owned(), str::to_owned)
 }
 
@@ -5210,10 +5209,7 @@ fn resolve_review_label(workspace: &Path, scope: &GateScope) -> anyhow::Result<S
             .iter()
             .find(|annotation| annotation.tier == Tier::Judge && annotation.target == target)
             .ok_or_else(|| anyhow::anyhow!("no judge annotation matches target `{target}`"))?;
-        let label = annotation
-            .source_spec
-            .file_stem()
-            .and_then(|stem| stem.to_str())
+        let label = loom_driver::spec::package::document_label(&annotation.source_spec)
             .ok_or_else(|| anyhow::anyhow!("judge target has no spec label"))?;
         return Ok(label.parse()?);
     }
@@ -5236,21 +5232,10 @@ fn resolve_tree_mint_labels(
     }
 
     let specs_dir = workspace.join("specs");
-    let mut labels: Vec<SpecLabel> = Vec::new();
-    for entry in std::fs::read_dir(&specs_dir)
-        .with_context(|| format!("read specs directory `{}`", specs_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("md") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        labels.push(stem.parse()?);
-    }
-    labels.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let labels: Vec<SpecLabel> = loom_driver::spec::package::discover_workspace(workspace)?
+        .into_iter()
+        .map(|package| package.label().clone())
+        .collect();
     if labels.is_empty() {
         return Err(anyhow::anyhow!(
             "loom gate mint --tree found no specs under `{}`",

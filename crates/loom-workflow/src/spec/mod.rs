@@ -18,26 +18,26 @@ pub use deps::{collect_deps, scan_file_body, target_file_path};
 pub use error::SpecError;
 
 use loom_driver::identifier::SpecLabel;
-use loom_gate::annotation::{Annotation, parse_content};
+use loom_driver::spec::package;
+use loom_gate::annotation::{Annotation, parse_packages};
 
-/// Convenience: locate the spec file for `label` under `<workspace>/specs/`
-/// and parse its annotations via [`loom_gate::annotation::parse_content`].
+/// Query the named owner's sole acceptance document through canonical discovery.
 ///
 /// # Errors
 ///
 /// Returns an error when workflow setup, execution, or state validation fails.
 pub fn list_for_label(workspace: &Path, label: &SpecLabel) -> Result<Vec<Annotation>, SpecError> {
-    let spec_path = workspace
-        .join("specs")
-        .join(format!("{}.md", label.as_str()));
-    let body = std::fs::read_to_string(&spec_path).map_err(|source| SpecError::Io {
-        path: spec_path.clone(),
-        source,
-    })?;
-    Ok(parse_content(&spec_path, &body).annotations)
+    let packages = package::discover_workspace(workspace)?;
+    let package = packages
+        .into_iter()
+        .find(|package| package.label() == label)
+        .ok_or_else(|| SpecError::UnknownLabel {
+            label: label.clone(),
+        })?;
+    Ok(parse_packages(&[package])?.annotations)
 }
 
-/// Convenience: parse `<workspace>/specs/<label>.md` and return the unique
+/// Query the owner's acceptance document and return the unique
 /// nixpkgs names referenced by its `[check]`/`[test]`/`[system]`/`[judge]`
 /// annotations.
 ///
@@ -82,6 +82,36 @@ mod tests {
     }
 
     #[test]
+    fn package_queries_read_acceptance_and_package_relative_judge_inputs() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let package = dir.path().join("specs/alpha");
+        fs::create_dir_all(&package)?;
+        fs::create_dir(dir.path().join("docs"))?;
+        fs::write(
+            dir.path().join("docs/README.md"),
+            "- [alpha](../specs/alpha/spec.md)\n",
+        )?;
+        fs::write(
+            package.join("spec.md"),
+            "# Contract\n[Acceptance](tests.md#success-criteria)\n",
+        )?;
+        fs::write(
+            package.join("tests.md"),
+            "## Success Criteria\n- API [judge](rubric.sh#judge_api)\n",
+        )?;
+        fs::write(package.join("rubric.sh"), "set -euo pipefail\njq .\n")?;
+        let label = SpecLabel::new("alpha")?;
+        let annotations = list_for_label(dir.path(), &label)?;
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(annotations[0].source_spec, package.join("tests.md"));
+        assert_eq!(
+            deps_for_label(dir.path(), &label)?,
+            std::collections::BTreeSet::from(["jq".into()])
+        );
+        Ok(())
+    }
+
+    #[test]
     fn deps_for_label_walks_file_targets_and_command_strings() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let specs = dir.path().join("specs");
@@ -94,7 +124,7 @@ mod tests {
             specs.join("alpha.md"),
             "## Success Criteria\n\n\
              - a [test](tests/a.sh#test_a)\n\
-             - b [judge](tests/b.sh#test_b)\n\
+             - b [judge](../tests/b.sh#test_b)\n\
              - c [check](rg pattern files)\n",
         )?;
         let pkgs = deps_for_label(dir.path(), &SpecLabel::new("alpha").unwrap())?;

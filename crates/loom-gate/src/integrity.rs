@@ -145,10 +145,10 @@ impl IntegrityFinding {
     /// / `unneeded-pending-marker` / `inputs-protocol-error`); the target
     /// is always
     /// [`FindingTarget::Annotation`]; `bonds` carries the lead spec label
-    /// derived from the finding's spec-file stem; `evidence` is the
+    /// attributed to the finding's document owner; `evidence` is the
     /// finding's own [`std::fmt::Display`]. Non-terminal variants
     /// ([`Self::is_push_gate_terminal`] false) and findings whose spec
-    /// path has no file stem return `None`.
+    /// path has no owner name return `None`.
     #[must_use]
     pub fn to_raw_finding(&self) -> Option<loom_protocol::gate::RawFinding> {
         let (token, spec, target) = match self {
@@ -168,7 +168,7 @@ impl IntegrityFinding {
                 return None;
             }
         };
-        let label = spec.file_stem().and_then(|s| s.to_str())?;
+        let label = loom_driver::spec::package::document_label(spec)?;
         let spec_label = label.parse().ok()?;
         Some(loom_protocol::gate::RawFinding {
             token,
@@ -1964,6 +1964,39 @@ mod tests {
             findings.is_empty(),
             "judge target with #fn selector should resolve to leading path: {findings:?}"
         );
+    }
+
+    #[test]
+    fn package_judge_resolves_relative_to_actual_acceptance_document() {
+        let dir = tempdir().unwrap();
+        let package = dir.path().join("specs/alpha");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir(dir.path().join("docs")).unwrap();
+        fs::write(
+            dir.path().join("docs/README.md"),
+            "- [alpha](../specs/alpha/spec.md)\n",
+        )
+        .unwrap();
+        fs::write(package.join("spec.md"), "# Contract\n").unwrap();
+        fs::write(
+            package.join("tests.md"),
+            "## Success Criteria\n- API [judge](rubric.sh#judge_api)\n",
+        )
+        .unwrap();
+        fs::write(package.join("rubric.sh"), "set -euo pipefail\njudge_api() { judge_files \"src/api.rs\"; judge_criterion \"API\"; }\n").unwrap();
+        let parsed = crate::annotation::parse(&dir.path().join("specs")).unwrap();
+        let annotation = &parsed.annotations[0];
+        assert!(resolves_judge_path(
+            &annotation.target,
+            &annotation.source_spec,
+            dir.path()
+        ));
+        fs::remove_file(package.join("rubric.sh")).unwrap();
+        assert!(!resolves_judge_path(
+            &annotation.target,
+            &annotation.source_spec,
+            dir.path()
+        ));
     }
 
     #[test]

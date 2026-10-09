@@ -213,7 +213,7 @@ rather than silently detached.
   in the owning package's `tests.md`; missing destinations or heading fragments
   fail integrity validation. Resolution needs no custom mapping registry and
   does not treat a heading link as a verifier binding or criterion identity.
-  [test?](package_contract_links_resolve_to_acceptance_sections)
+  [test](package_contract_links_resolve_to_acceptance_sections)
 
 - Optional `loom-verify` fences in `tests.md` are parsed as typed TOML strategy
   declarations, distinct from ordinary code examples. A criterion-stage block
@@ -239,11 +239,11 @@ rather than silently detached.
 - Parser discovers criteria in each canonical package's `tests.md` in lexical
   package order, without treating supporting Markdown or model files as
   additional acceptance documents.
-  [test?](parse_walks_canonical_package_acceptance_documents)
+  [test](parse_walks_canonical_package_acceptance_documents)
 
 - Parser aggregates criteria across packages into a single `ParsedSpecs`,
   retaining package identity and each annotation's actual source document.
-  [test?](parse_aggregates_criteria_across_packages)
+  [test](parse_aggregates_criteria_across_packages)
 
 - Parser returns a typed read-directory error when the specs directory is
   missing rather than producing an empty result
@@ -254,7 +254,7 @@ rather than silently detached.
 - Spec discovery accepts the canonical `specs/<label>/{spec.md,tests.md}`
   package, preserves labels, rejects ambiguous or incomplete packages, and does
   not retain a parallel flat-file discovery mode.
-  [test?](quint_package_discovery_is_canonical)
+  [test](quint_package_discovery_is_canonical)
 
 <!-- prettier-ignore -->
 - Physical package cutover follows tested package-aware discovery, annotation
@@ -375,7 +375,7 @@ rather than silently detached.
 <!-- prettier-ignore -->
 - Every indexed package's combined `spec.md` and `tests.md` is at most 2,000
   lines; splitting the two documents does not create independent budgets.
-  [check?](cargo run -p loom-walk -- spec_package_size)
+  [check](cargo run -p loom-walk -- spec_package_size)
 
 ## Requirements
 

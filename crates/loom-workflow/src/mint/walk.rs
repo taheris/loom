@@ -251,8 +251,7 @@ pub fn verifier_failure_to_raw_finding(
 }
 
 fn spec_label_from_path(path: &std::path::Path) -> Result<SpecLabel, WalkError> {
-    path.file_stem()
-        .and_then(|s| s.to_str())
+    loom_driver::spec::package::document_label(path)
         .and_then(|s| s.parse::<SpecLabel>().ok())
         .ok_or_else(|| WalkError::SpecLabel {
             path: path.to_path_buf(),

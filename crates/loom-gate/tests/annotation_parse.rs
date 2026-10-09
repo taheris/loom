@@ -8,6 +8,7 @@
 //! atomic-acceptance line grouping) is covered by the per-file unit
 //! tests inside `src/annotation.rs`.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -16,6 +17,159 @@ use tempfile::tempdir;
 
 fn write(dir: &Path, name: &str, content: &str) {
     fs::write(dir.join(name), content).unwrap();
+}
+
+fn write_package(workspace: &Path, label: &str, acceptance: &str) {
+    let package = workspace.join("specs").join(label);
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("spec.md"),
+        "# Contract\n[Acceptance](tests.md#success-criteria)\n",
+    )
+    .unwrap();
+    fs::write(package.join("tests.md"), acceptance).unwrap();
+    fs::write(
+        package.join("support.md"),
+        "## Success Criteria\n- Not acceptance [test](ignored)\n",
+    )
+    .unwrap();
+    fs::write(package.join("model.qnt"), "not markdown acceptance").unwrap();
+}
+
+fn write_index(workspace: &Path, labels: &[&str]) {
+    fs::create_dir_all(workspace.join("docs")).unwrap();
+    let mut rows = String::new();
+    for label in labels {
+        writeln!(rows, "| [{label}](../specs/{label}/spec.md) | owner |").unwrap();
+    }
+    fs::write(
+        workspace.join("docs/README.md"),
+        format!("## Specs\n\n| Spec | Purpose |\n| --- | --- |\n{rows}"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn parse_walks_canonical_package_acceptance_documents() {
+    let dir = tempdir().unwrap();
+    write_package(
+        dir.path(),
+        "bravo",
+        "## Success Criteria\n- B [test](crate::b::ok)\n",
+    );
+    write_package(
+        dir.path(),
+        "alpha",
+        "## Success Criteria\n- A [check](cargo run -p w -- a)\n",
+    );
+    write_index(dir.path(), &["bravo", "alpha"]);
+    let out = parse(&dir.path().join("specs")).unwrap();
+    assert_eq!(
+        out.annotations
+            .iter()
+            .map(|annotation| annotation.target.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cargo run -p w -- a", "crate::b::ok"]
+    );
+    assert_eq!(out.criteria.len(), 2);
+    assert_eq!(
+        out.annotations[0].source_spec,
+        dir.path().join("specs/alpha/tests.md")
+    );
+    assert_eq!(
+        out.annotations[1].source_spec,
+        dir.path().join("specs/bravo/tests.md")
+    );
+}
+
+#[test]
+fn parse_aggregates_criteria_across_packages() {
+    let dir = tempdir().unwrap();
+    write_package(
+        dir.path(),
+        "alpha",
+        "## Success Criteria\n- First [test](crate::a::ok)\n- Unbound\n",
+    );
+    write_package(
+        dir.path(),
+        "beta",
+        "## Success Criteria\n- Second [judge](../../rubrics/api.sh#judge_api)\n",
+    );
+    write_index(dir.path(), &["alpha", "beta"]);
+    let out = loom_gate::annotation::parse_workspace(dir.path()).unwrap();
+    assert_eq!(out.criteria.len(), 3);
+    assert_eq!(out.annotations.len(), 2);
+    let row = loom_gate::cache::row_for(
+        &out.annotations[1],
+        loom_gate::cache::Verdict::Pass,
+        "verified",
+        1,
+        "commit",
+    );
+    assert_eq!(row.spec_label, "beta");
+    assert_eq!(
+        out.criteria[2].source_spec,
+        dir.path().join("specs/beta/tests.md")
+    );
+    let finding = loom_gate::integrity::IntegrityFinding::UnresolvedAnnotation {
+        spec: out.annotations[1].source_spec.clone(),
+        line: out.annotations[1].line,
+        tier: Tier::Judge,
+        target: out.annotations[1].target.clone(),
+    };
+    assert_eq!(finding.to_raw_finding().unwrap().bonds[0].as_str(), "beta");
+}
+
+#[test]
+fn package_relocation_preserves_criterion_hashing_and_target_bytes() {
+    let dir = tempdir().unwrap();
+    let label = loom_driver::identifier::SpecLabel::new("alpha").unwrap();
+    let content = "## Success Criteria\n- Exact requirement [check](bash -c 'printf \"(first)\\n\";\n  printf \"second\"') qualifier\n";
+    let flat = loom_gate::annotation::parse_content(Path::new("specs/alpha.md"), content);
+    write_package(dir.path(), "alpha", content);
+    write_index(dir.path(), &["alpha"]);
+    let packaged = parse(&dir.path().join("specs")).unwrap();
+    assert_eq!(packaged.annotations[0].target, flat.annotations[0].target);
+    assert_eq!(packaged.criteria[0].text, "Exact requirement qualifier");
+    assert_eq!(
+        loom_gate::annotation::criterion_id_for(&label, &packaged.criteria[0].text),
+        loom_gate::annotation::criterion_id_for(&label, &flat.criteria[0].text)
+    );
+}
+
+#[test]
+fn live_package_parser_rejects_unindexed_inventory() {
+    let dir = tempdir().unwrap();
+    write_package(
+        dir.path(),
+        "alpha",
+        "## Success Criteria\n- A [test](real)\n",
+    );
+    write_index(dir.path(), &["beta"]);
+    assert!(matches!(
+        parse(&dir.path().join("specs")),
+        Err(loom_gate::annotation::ParseError::Package(_))
+    ));
+}
+
+#[test]
+fn live_package_parser_rejects_broken_contract_mappings() {
+    let dir = tempdir().unwrap();
+    write_package(
+        dir.path(),
+        "alpha",
+        "## Success Criteria\n- A [test](real)\n",
+    );
+    write_index(dir.path(), &["alpha"]);
+    fs::write(
+        dir.path().join("specs/alpha/spec.md"),
+        "[Acceptance](tests.md#absent)",
+    )
+    .unwrap();
+    assert!(matches!(
+        parse(&dir.path().join("specs")),
+        Err(loom_gate::annotation::ParseError::Link(_))
+    ));
 }
 
 #[test]

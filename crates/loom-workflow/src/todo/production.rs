@@ -1,6 +1,6 @@
 //! Production [`TodoController`] used by the `loom todo` binary.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -1234,88 +1234,40 @@ const fn todo_outcome_route(
 }
 
 fn parse_spec_index(workspace: &Path) -> Result<Vec<IndexedSpec>, TodoError> {
-    let content = std::fs::read_to_string(workspace.join("docs/README.md"))?;
-    let indexed = parse_spec_index_content(&content)?;
-    cross_check_spec_tree(workspace, &indexed)?;
-    Ok(indexed)
-}
-
-fn cross_check_spec_tree(workspace: &Path, indexed: &[IndexedSpec]) -> Result<(), TodoError> {
-    let indexed_paths = indexed
-        .iter()
-        .map(|row| row.spec_path.as_str())
-        .collect::<HashSet<_>>();
-    for row in indexed {
-        if !workspace.join(&row.spec_path).is_file() {
-            return Err(TodoError::SpecIndex {
-                detail: format!(
-                    "indexed spec `{}` points to missing file `{}`",
-                    row.label, row.spec_path
-                ),
-            });
+    let packages = loom_driver::spec::package::discover_indexed(workspace).map_err(|error| {
+        TodoError::SpecIndex {
+            detail: format!("{error:#}"),
         }
-    }
-    let specs_dir = workspace.join("specs");
-    for entry in std::fs::read_dir(&specs_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("md") {
-            continue;
-        }
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let spec_path = format!("specs/{file_name}");
-        if !indexed_paths.contains(spec_path.as_str()) {
-            return Err(TodoError::SpecIndex {
-                detail: format!(
-                    "spec file `{spec_path}` is not listed in `docs/README.md`; add a spec index row so `loom todo` can discover it"
-                ),
-            });
-        }
-    }
-    Ok(())
+    })?;
+    packages
+        .into_iter()
+        .map(|package| {
+            let spec_path = package
+                .contract()
+                .strip_prefix(workspace)
+                .map_err(|error| TodoError::SpecIndex {
+                    detail: error.to_string(),
+                })?;
+            Ok(IndexedSpec {
+                label: package.label().clone(),
+                spec_path: spec_path.to_string_lossy().into_owned(),
+            })
+        })
+        .collect()
 }
 
 fn parse_spec_index_content(content: &str) -> Result<Vec<IndexedSpec>, TodoError> {
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    for line in content.lines() {
-        let Some(start) = line.find("](../specs/") else {
-            continue;
-        };
-        let path_start = start + "](../".len();
-        let Some(rest) = line.get(path_start..) else {
-            continue;
-        };
-        let Some(end) = rest.find(')') else {
-            continue;
-        };
-        let spec_path = &rest[..end];
-        let Some(label) = spec_path
-            .strip_prefix("specs/")
-            .and_then(|path| path.strip_suffix(".md"))
-        else {
-            continue;
-        };
-        if !seen.insert(label.to_string()) {
-            return Err(TodoError::SpecIndex {
-                detail: format!("duplicate index row for spec `{label}`"),
-            });
-        }
-        out.push(IndexedSpec {
-            label: label.parse().map_err(|_| TodoError::SpecIndex {
-                detail: format!("invalid spec label `{label}`"),
-            })?,
-            spec_path: spec_path.to_string(),
-        });
-    }
-    if out.is_empty() {
-        return Err(TodoError::SpecIndex {
-            detail: "no specs indexed in docs/README.md".to_string(),
-        });
-    }
-    Ok(out)
+    let entries =
+        loom_driver::spec::package::parse_index(content).map_err(|error| TodoError::SpecIndex {
+            detail: format!("{error:#}"),
+        })?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| IndexedSpec {
+            label: entry.label,
+            spec_path: entry.contract.to_string_lossy().into_owned(),
+        })
+        .collect())
 }
 
 fn metadata_string(bead: &loom_driver::bd::Bead, key: &str) -> Option<String> {

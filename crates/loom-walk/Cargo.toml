@@ -12,6 +12,7 @@ publish.workspace = true
 # `specs/gate.md`.
 [dependencies]
 displaydoc = { workspace = true }
+loom-driver = { workspace = true }
 proc-macro2 = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde = { workspace = true }

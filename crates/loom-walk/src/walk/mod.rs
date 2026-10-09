@@ -67,6 +67,7 @@ mod result_hasher_single_call_site;
 mod session_trait_does_not_expose_typestate;
 mod shared_proptest_config;
 mod single_event_channel;
+mod spec_package_size;
 mod surface_conformance;
 mod template_pinning_matrix;
 mod template_wire_format_restatement;
@@ -343,6 +344,10 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "single_event_channel",
         run: single_event_channel::run,
+    },
+    Walk {
+        name: "spec_package_size",
+        run: spec_package_size::run,
     },
     Walk {
         name: "surface_conformance",

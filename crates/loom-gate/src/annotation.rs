@@ -1,6 +1,6 @@
 //! `[tier](target)` annotation parser.
 //!
-//! Walks the consumer's `specs/*.md` tree and extracts every
+//! Discovers each owner's sole acceptance document and extracts every
 //! `[check](...)` / `[test](...)` / `[system](...)` / `[judge](...)` token
 //! into a typed [`Annotation`] record. Tier vocabulary is owned by
 //! `docs/spec-conventions.md`; dispatch is owned by `specs/gate.md`.
@@ -121,11 +121,13 @@ pub struct ParsedSpecs {
     pub criteria: Vec<Criterion>,
 }
 
-/// Failures the parser surfaces to its caller. Filesystem errors are
-/// the only failure mode — markdown parsing itself is infallible and
-/// the parser intentionally does not validate annotation targets.
+/// Discovery, navigation, and document-read failures; executable targets are not validated.
 #[derive(Debug, Display, Error)]
 pub enum ParseError {
+    /// failed to discover complete spec packages
+    Package(#[from] loom_driver::spec::package::Error),
+    /// invalid contract-to-acceptance navigation
+    Link(#[from] loom_driver::spec::link::Error),
     /// failed to read specs directory `{path}`: {source}
     ReadDir {
         path: PathBuf,
@@ -140,8 +142,7 @@ pub enum ParseError {
     },
 }
 
-/// Walk `specs_dir`, parse every top-level `*.md` file in lexicographic
-/// order, and return the union of their annotation / criterion records.
+/// Discover owners in lexical order and aggregate their sole acceptance documents.
 ///
 /// Lex order keeps the output deterministic across hosts so downstream
 /// consumers (cache writes, integrity findings) don't shuffle on each
@@ -151,31 +152,47 @@ pub enum ParseError {
 ///
 /// Returns an error when gate input, execution, or validation fails.
 pub fn parse(specs_dir: &Path) -> Result<ParsedSpecs, ParseError> {
-    let entries = fs::read_dir(specs_dir).map_err(|e| ParseError::ReadDir {
-        path: specs_dir.to_path_buf(),
-        source: e,
-    })?;
-
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| ParseError::ReadDir {
-            path: specs_dir.to_path_buf(),
-            source: e,
-        })?;
-        let p = entry.path();
-        if p.is_file() && p.extension().is_some_and(|e| e == "md") {
-            paths.push(p);
+    let discovery = if specs_dir.file_name().is_some_and(|name| name == "specs") {
+        loom_driver::spec::package::discover_workspace(
+            specs_dir.parent().unwrap_or_else(|| Path::new(".")),
+        )
+    } else {
+        loom_driver::spec::package::discover(specs_dir)
+    };
+    let packages = discovery.map_err(|error| match error {
+        loom_driver::spec::package::Error::ReadDir { path, source } => {
+            ParseError::ReadDir { path, source }
         }
-    }
-    paths.sort();
+        error => ParseError::Package(error),
+    })?;
+    parse_packages(&packages)
+}
 
+/// Parse a cross-checked workspace inventory, including navigation integrity.
+///
+/// # Errors
+/// Rejects incomplete or unindexed owners, index disagreements, and broken mappings.
+pub fn parse_workspace(workspace: &Path) -> Result<ParsedSpecs, ParseError> {
+    let packages = loom_driver::spec::package::discover_indexed(workspace)?;
+    parse_packages(&packages)
+}
+
+/// Aggregate already discovered owners without treating supporting files as acceptance.
+///
+/// # Errors
+/// Returns contextual document-read or contract-navigation errors.
+pub fn parse_packages(
+    packages: &[loom_driver::spec::package::Package],
+) -> Result<ParsedSpecs, ParseError> {
     let mut out = ParsedSpecs::default();
-    for path in paths {
-        let content = fs::read_to_string(&path).map_err(|e| ParseError::ReadFile {
-            path: path.clone(),
-            source: e,
+    for package in packages {
+        loom_driver::spec::link::check(package)?;
+        let path = package.acceptance();
+        let content = fs::read_to_string(path).map_err(|source| ParseError::ReadFile {
+            path: path.to_path_buf(),
+            source,
         })?;
-        let parsed = parse_content(&path, &content);
+        let parsed = parse_content(path, &content);
         out.annotations.extend(parsed.annotations);
         out.criteria.extend(parsed.criteria);
     }

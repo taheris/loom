@@ -2717,6 +2717,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "displaydoc",
+ "loom-driver",
  "proc-macro2",
  "pulldown-cmark",
  "serde",

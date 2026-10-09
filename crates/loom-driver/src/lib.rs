@@ -16,6 +16,7 @@ pub mod markdown;
 pub mod process;
 pub mod profile_manifest;
 pub mod scratch;
+pub mod spec;
 pub mod state;
 pub mod testing;
 pub mod wrix;

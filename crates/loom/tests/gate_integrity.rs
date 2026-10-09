@@ -64,7 +64,7 @@ fn run_loom_gate(workspace: &Path, subcommand: &str) -> std::process::Output {
 fn gate_check_fails_on_integrity_finding_for_unresolved_annotation() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
-    write_spec_with_unresolvable_annotation(workspace, "integrity_check");
+    write_spec_with_unresolvable_annotation(workspace, "integrity-check");
 
     let output = run_loom_gate(workspace, "check");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -94,7 +94,7 @@ fn gate_check_fails_on_integrity_finding_for_unresolved_annotation() {
 fn gate_verify_fails_on_integrity_finding_for_unresolved_annotation() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
-    write_spec_with_unresolvable_annotation(workspace, "integrity_verify");
+    write_spec_with_unresolvable_annotation(workspace, "integrity-verify");
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let output = Command::new(loom_bin)
@@ -144,13 +144,13 @@ fn gate_verify_files_fires_unneeded_pending_marker_for_plain_test_leaf_when_spec
     let specs_dir = workspace.join("specs");
     std::fs::create_dir_all(&specs_dir).unwrap();
     // The pending target lives in `pending.md`, which is NOT in the
-    // staged set. `check_anchor.md` carries the Check annotation that
+    // staged set. `check-anchor.md` carries the Check annotation that
     // keeps `dispatch_tier`'s selected set non-empty (so the integrity
     // gate is reached at all); production diffs that hit this bug
     // similarly carry unrelated Check-tier annotations against staged
     // sources.
     std::fs::write(
-        specs_dir.join("check_anchor.md"),
+        specs_dir.join("check-anchor.md"),
         "## Success Criteria\n\n- anchor [check](true)\n",
     )
     .unwrap();
@@ -177,7 +177,7 @@ fn gate_verify_files_fires_unneeded_pending_marker_for_plain_test_leaf_when_spec
     let output = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
-        .args(["gate", "verify", "--files", "specs/check_anchor.md"])
+        .args(["gate", "verify", "--files", "specs/check-anchor.md"])
         .env("LOOM_VERIFY_TIERS", "check")
         .env_remove("LOOM_INSIDE")
         .env("PATH", pinned_path())
@@ -216,7 +216,7 @@ fn gate_verify_tree_ignores_loom_verify_tiers_env() {
     let specs_dir = workspace.join("specs");
     std::fs::create_dir_all(&specs_dir).unwrap();
     std::fs::write(
-        specs_dir.join("env_ignored.md"),
+        specs_dir.join("env-ignored.md"),
         "## Success Criteria\n\n- system still runs [system](false)\n",
     )
     .unwrap();
@@ -252,7 +252,7 @@ fn gate_check_is_silent_when_every_annotation_resolves() {
     // Single annotation pointing at `true`, which always resolves on a
     // coreutils PATH. No second criterion → no atomic-acceptance flag.
     std::fs::write(
-        specs_dir.join("integrity_clean.md"),
+        specs_dir.join("integrity-clean.md"),
         "## Success Criteria\n\n- a criterion [check](true)\n",
     )
     .unwrap();

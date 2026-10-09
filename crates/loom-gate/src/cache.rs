@@ -764,12 +764,9 @@ const fn tier_ord(tier: Tier) -> usize {
     }
 }
 
-/// Derive a spec label from a `specs/<label>.md` path. Falls back to the
-/// path's string form when the file stem is empty so the report still
-/// renders deterministically even for unusual inputs.
+/// Attribute observations to the document's owner, not the acceptance file's stem.
 fn spec_label_from_path(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|s| s.to_str())
+    loom_driver::spec::package::document_label(path)
         .map_or_else(|| path.to_string_lossy().into_owned(), str::to_owned)
 }
 
