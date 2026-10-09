@@ -182,7 +182,7 @@ fn push_unique(
     let display = abs
         .strip_prefix(workspace)
         .map_or_else(|_| abs.display().to_string(), |p| p.display().to_string());
-    if !seen.insert(display.clone()) {
+    if seen.contains(&display) {
         return Ok(());
     }
     let body = match fs::read_to_string(&abs) {
@@ -193,6 +193,7 @@ fn push_unique(
         }
         Err(source) => return Err(SpecError::Io { path: abs, source }),
     };
+    seen.insert(display.clone());
     out.push(ReviewSource {
         path: display,
         body,
@@ -437,6 +438,18 @@ mod tests {
             .expect("declared pending absence is not a source-load error");
         assert_eq!(tests, [] as [ReviewSource; 0]);
         assert_eq!(judges, [] as [ReviewSource; 0]);
+    }
+
+    #[test]
+    fn pending_reference_does_not_hide_required_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("specs/billing.md"),
+            "## Success Criteria\n- Future refunds [judge?](../tests/judges/refunds.md#future)\n- Required invoices [judge](../tests/judges/refunds.md#invoice)\n",
+        );
+        let error = load_review_sources(dir.path(), &dir.path().join("specs/billing.md"))
+            .expect_err("a pending sibling cannot exempt a required source");
+        assert!(matches!(error, SpecError::Io { .. }));
     }
 
     #[test]
