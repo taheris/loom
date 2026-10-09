@@ -14,7 +14,7 @@ roster, guides evidence-led decomposition, and finalizes explicit task bindings.
 Deterministic preflight supplies the roster and coverage; the agent proposes
 work, and the driver resolves and persists the accepted handoff. Related owners:
 [specs](specs.md), [plan](plan.md), [loop](loop.md), [harness](harness.md),
-[templates](templates.md).
+[templates](templates.md), [protocol](protocol.md), [inbox](inbox.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -117,8 +117,10 @@ Beads drafts survive it. Finalization still requires the complete fixed roster.
 
 [Acceptance](#success-criteria).
 
-`partial/todo_success.md` instructs the agent that a successful todo session
-ends with exactly one final line:
+`partial/todo_success.md` presents the Todo-owned success payload as Protocol's
+`Message::Todo(TodoSuccess)` terminal. It follows the common logical-message
+framing, including valid pretty-printed JSON; the compact schema illustration
+is:
 
 ```text
 LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","title":"<final work epic title>","specs":[...]}
@@ -129,8 +131,10 @@ in [Todo — Spec and Work Epic Lifecycle](#spec-and-work-epic-lifecycle). The
 template tells the agent to include a required non-empty final work-epic title
 plus exactly the changed specs the driver injected, using `Decomposed { beads }`
 for non-empty work and `NoWork { reason }` for an audited no-implementation
-outcome. `Blocked`, `pending`, or omitted specs are not success states; the
-agent emits `LOOM_CLARIFY` or `LOOM_BLOCKED` instead.
+outcome. `Blocked`, `pending`, or omitted specs are not success rows. The agent
+reports dedicated decisions through nonterminal `Clarify` records and ends with
+`Waiting` only when decomposition itself has real unresolved prerequisites;
+`Retry` and `Blocked` retain their distinct terminal meanings.
 
 For decomposed tasks, the prompt asks the agent to propose task-to-criterion
 assignments using the injected criterion identities and the shared typed todo
@@ -173,9 +177,9 @@ Before authoring any non-audit bead, the agent must:
    label/bond each bead to the spec(s) it implements. Beads outside the work
    epic cannot satisfy `LOOM_TODO` validation.
 
-A successful `loom todo` session has exactly one success outcome: emit
-`LOOM_TODO: <json>` on the final line. The JSON must carry a non-empty final
-work-epic title and report every changed spec exactly once, with
+A successful `loom todo` session has exactly one success outcome: the shared
+Protocol decoder admits a final `Todo` terminal. The JSON must carry a non-empty
+final work-epic title and report every changed spec exactly once, with
 `Decomposed { beads }` for specs that produced non-empty work and
 `NoWork { reason }` for specs audited as requiring no implementation change (for
 example typo-only spec wording). Audit beads count as `Decomposed` work when
@@ -185,25 +189,33 @@ concrete audit/implementation boundary. The agent may not omit changed specs,
 report a pending state as success, or use `LOOM_COMPLETE` / `LOOM_NOOP` as todo
 success.
 
-Decision-needed or dead-end outcomes use worker self-report markers:
+Decision discovery and decomposition outcome are separate:
 
-- **Clarify on the work epic.** When coverage cannot be determined by inspection
-  — spec ambiguity, conflicting verifier targets, cursor/index inconsistency
-  needing human choice, or contestable cache trust — the agent emits
-  `LOOM_CLARIFY` with the question and `## Options — …` block persisted to the
-  **`loom:todo` work epic's** notes/description per the
-  [Options Format Contract](inbox.md#options-format-contract). The verdict gate
-  applies `loom:clarify` to that work epic; the human resolves via `loom inbox`,
-  and a subsequent `loom todo` invocation reuses the matching pending work epic.
-- **Blocked on the work epic.** When the agent has no candidate resolutions to
-  enumerate, it emits `LOOM_BLOCKED` with a reason explaining why options cannot
-  be safely surfaced; the work epic remains non-active and spec cursors do not
-  advance.
+- The agent persists one dedicated child decision bead per currently discovered
+  unresolved choice under the injected work epic, with an Inbox Options brief,
+  and reports the full known set through nonterminal `Clarify` records.
+  [Loop's batch admission](loop.md#decision-batches-and-attributed-waits) stages
+  candidates outside dispatch/queues, validates the complete reference graph,
+  and records each brief's admitted or blocked-repair disposition. It does not
+  label the work epic itself `loom:clarify` or duplicate the briefs onto it.
+- Decisions needed to complete decomposition block the work epic through actual
+  dependency edges, followed by an admitted `Waiting` terminal. Decisions needed
+  only for particular implementation work block those tasks, not the entire
+  decomposition batch. A complete valid roster can finalize with `Todo` even
+  while such implementation decisions remain unresolved.
+- A genuine semantic dead end ends with `Blocked` and a typed reason explaining
+  why safe options cannot be framed. The work epic remains non-active and
+  cursors do not advance; a bare `Clarify` record is never a replacement
+  terminal.
 
-Per-bead `loom:clarify` is not appropriate in todo because the child beads under
-negotiation may not exist yet, or may be exactly the set whose validity is
-disputed. The work epic is the session-stable carrier for "this decomposition
-batch is paused pending clarification".
+Driver-recognized dedicated decision children, including malformed-brief repair
+items, are not implementation tasks and do not satisfy `Decomposed.beads`,
+task-binding proposals, or criterion coverage. Recognition requires contextual
+reference/graph admission, not an agent label or Options-looking text.
+Unreported/unaccounted candidate children prevent finalization rather than
+silently becoming work or disappearing from the roster. The implementation
+handoff still accounts for every changed spec; recognized decisions retain their
+own durable queue dispositions.
 
 **Work-epic-first always.** The driver creates or reuses the `loom:todo` work
 epic before rendering `todo.md`, so clarify/block paths always have a valid
@@ -223,6 +235,28 @@ re-introduce enumerate-everything beads.
 specific file paths or crate names. Downstream consumers of loom whose workspace
 layouts differ from this one inherit the same discipline against their own
 layouts.
+
+### Decision wait and resumption
+
+[Acceptance](#decision-scheduling).
+
+Todo admits the shared unit `Waiting` terminal only for a non-closed pending
+work epic with active declared prerequisites that genuinely prevent completing
+the fixed decomposition. [Loop](loop.md#decision-batches-and-attributed-waits)
+owns attributed blocked status and release; no source Options copy or
+human-queue label is required. Waiting is not partial `Todo` success: the work
+epic remains `loom:todo`, inactive, with cursors and implementation notes
+unchanged. Existing drafts, checkpoints, decision IDs, edges, and batch identity
+survive.
+
+A later preflight rechecks attributed waits before dispatch. While real
+prerequisites remain, it reports the same pending wait without spawning another
+agent to rediscover those decisions. After release it reuses the matching
+head/fingerprint work epic and existing children, revalidates current evidence
+and bindings, and completes the full roster under the ordinary finalizer.
+Unrelated holds and head/fingerprint mismatches retain their existing fail-loud
+behavior; dependency closure does not authorize stale finalization or automatic
+cursor advancement.
 
 ## Success Criteria
 
@@ -283,12 +317,29 @@ layouts.
 
 ### Verdict gate
 
-- `LOOM_CLARIFY` from a `loom todo` session targets the **`loom:todo` work
-  epic** (rationale per
-  [Todo — Decomposition Discipline](#decomposition-discipline)); the agent's
-  `## Options — …` block is persisted to the work epic's notes per
-  [Inbox's Options contract](inbox.md#options-format-contract) before the label
-  is applied [test](todo_clarify_marks_work_epic)
+- Todo decision reporting admits dedicated decision children under the pending
+  work epic without copying briefs or applying `loom:clarify` to that epic; the
+  final outcome independently reflects whether decomposition can finish.
+  [test?](todo_decision_records_are_independent_of_decomposition_terminal)
+
+### Decision scheduling
+
+- Todo waiting preserves the pending inactive work epic, fixed batch identity,
+  drafts, decision state, notes, and cursors without partial finalization or
+  retry-budget consumption.
+  [test?](todo_waiting_preserves_pending_batch_without_finalization)
+
+- Pending preflight skips rediscovery dispatch while actual prerequisites remain
+  and resumes the matching released batch without duplicate children or lost
+  human decisions; current mismatches and independent holds still block.
+  [test?](todo_preflight_resumes_attributed_waits_without_rediscovery)
+
+- Todo finalization excludes contextually recognized decision children,
+  including malformed-brief repair items, from implementation-roster and binding
+  validation; labels/prose cannot hide unaccounted candidates or ordinary
+  drafts. Exact changed-spec coverage remains required. Decisions blocking only
+  implementation do not prevent an otherwise valid final handoff.
+  [test?](todo_finalization_distinguishes_decisions_from_implementation_roster)
 
 ### Cache database
 
@@ -319,15 +370,16 @@ layouts.
   and changed spec labels on it, and does not add `loom:active` until validation
   succeeds [test](todo_creates_pending_work_epic_before_agent_prompt)
 
-- A pre-existing open `loom:todo` work epic with matching head and
-  `TodoFingerprint` is reused; multiple matches or non-matching pending work
-  epics block with an Options-format diagnostic
-  [test](todo_reuses_matching_pending_work_epic_else_blocks)
+- A matching pending `loom:todo` work epic is reused across attributed waiting
+  and release; multiple matches or non-matching head/fingerprint still block
+  with corrective context rather than creating another batch.
+  [test?](todo_reuses_matching_pending_work_epic_across_dependency_wait)
 
-- `loom-protocol::todo::parse_todo_success` accepts exactly `LOOM_TODO: <json>`
-  final lines and returns typed `TodoSuccess`; malformed JSON, missing fields,
-  empty `title`, empty `Decomposed.beads`, empty `NoWork.reason`, or wrong
-  prefix fail parse [test](todo_success_marker_parses_to_typed_protocol)
+- The shared decoder returns `Message::Todo(TodoSuccess)` with the domain's
+  required title, nonempty decomposed tasks, and nonblank no-work reasons;
+  malformed payloads fail before contextual finalization. Domain entry points
+  delegate framing to Protocol, not a final-line-only parser.
+  [test?](todo_success_payload_uses_shared_logical_message_decoder)
 
 - `loom todo` validates `TodoSuccess.head`, `TodoFingerprint`, work epic id,
   final title, exact changed-spec coverage, bead existence, and bead parentage
@@ -449,10 +501,10 @@ layouts.
    `EvidenceState::Missing`. Evidence's current coverage projection accompanies
    those rows, exposing inadmissibility and retained blockers without treating a
    cached pass as authority. The todo agent's only success terminal is
-   `LOOM_TODO: <json>`, parsed by `loom-protocol::todo` and validated for a
-   final work-epic title plus the preflight roster. `LOOM_CLARIFY` from a todo
-   session targets the `loom:todo` work epic because the child beads under
-   negotiation may not yet exist.
+   Protocol's `Todo(TodoSuccess)`, validated for a final title and the complete
+   preflight roster. Dedicated decisions and genuinely paused decomposition
+   follow [decision waiting](#decision-wait-and-resumption); they do not change
+   the success roster or trusted binding-persistence boundary.
 
 2. **Decomposition discipline in `todo`.**
    `partial/decomposition_discipline.md`, pinned in `todo` only, requires the
@@ -460,8 +512,9 @@ layouts.
    exactly, confirm missing work by consulting `criterion_status` and
    representative implementations before authoring non-audit beads, create beads
    only under the injected `loom:todo` work epic, and use `LOOM_TODO: <json>` as
-   the only success marker. `LOOM_CLARIFY` targets the work epic with a
-   `## Options — …` block when coverage cannot be determined.
+   the only success marker. Decision reporting, actual prerequisite edges, and
+   Todo waiting follow [Decomposition Discipline](#decomposition-discipline),
+   rather than using the work epic as a multi-question Options carrier.
 
 ### Lifecycle coverage
 

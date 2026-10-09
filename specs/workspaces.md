@@ -32,8 +32,9 @@ checkout:
 
 Each bead clone has a self-contained Git directory and branch `loom/<id>`, so
 its `/workspace` container mount remains usable without exposing the integration
-clone. A clone persists across retries and loop invocations until its bead is
-closed. Startup and post-close cleanup remove closed-bead clones owned by the
+clone. A clone persists across retries and loop invocations until trusted
+[cleanup admission](#cleanup-admission), not merely Beads closure. Startup and
+post-attempt cleanup use the same admission boundary for clones owned by the
 selected molecule.
 
 Before dispatch, Loom applies the selected repository Git policy, then saves
@@ -53,6 +54,30 @@ A bead container mounts its clone at `/workspace` and the authoritative Beads
 Dolt socket at `/workspace/.wrix/dolt.sock`. A configured shared sccache
 directory is an additional mount. `SpawnConfig` owns these per-launch mounts;
 [Agent — SpawnConfig](agent.md#spawnconfig) owns their wire shape.
+
+### Cleanup admission
+
+[Acceptance](#bead-dispatch-1).
+
+Removing a selected work-root's closed source clone requires either trusted
+acceptance of its current work or explicit human-authorized disposal of that
+workspace. Accepted `Complete` includes successful integration verification;
+accepted `Noop` includes Loop's intentional no-work reconciliation. A marker,
+agent-written metadata, or `status=closed` alone is not cleanup authority.
+
+Provisional, rejected, or unreconciled closure leaves the clone, branch, dirty
+work and recovery stashes intact. Independent human holds prevent automatic
+cleanup; cancellation or decision closure alone does not authorize discarding
+work. Recheck current ownership, holds and disposition before removal. Explicit
+disposal is a separate authorized action, not a workaround that completes work,
+closes decisions, or rewrites their relationships.
+
+Startup reconstructs eligibility from trusted current state/evidence, not an
+in-memory result or disposable cache assertion. Missing, stale, conflicting or
+ambiguous authority preserves the clone with a visible diagnostic and unchanged
+human state. Restart/GC neither reopens a held source nor turns rejected
+completion into acceptance. Eligible cleanup leaves independently queued
+decision beads and their history intact.
 
 ### Gate safety-history isolation
 
@@ -263,12 +288,16 @@ for worker feedback.
   drifted on redispatch, the driver repairs it before spawning the container
   [test](bead_workspace_configures_and_repairs_hooks_path)
 
-- Bead workspaces persist across attempts, recovery iterations, and `loom loop`
-  invocations until the bead's first attempt after `bd close`
-  [test](bead_workspace_survives_retry_until_close)
+- Bead workspaces persist across attempts, recovery and loop invocations until
+  trusted cleanup admission; provisional, rejected or unreconciled closure
+  retains the clone, branch, dirty work and recovery stashes.
+  [test?](bead_workspace_survives_until_trusted_cleanup_admission)
 
-- A bead workspace is reaped on the first `loom loop` iteration that observes
-  the bead in `closed` status [test](bead_workspace_reaped_on_bd_close)
+- Post-attempt cleanup requires a closed source with trusted accepted completion
+  or explicit authorized workspace disposal. Current ownership/holds are
+  rechecked; markers, agent-written metadata, cancellation or decision closure
+  alone cannot authorize removal or alter decision relationships.
+  [test?](post_attempt_cleanup_requires_trusted_completion_or_explicit_disposal)
 
 - Pre-dispatch dirty bead workspaces are preserved before destructive cleanup:
   tracked modifications, staged changes, and untracked files outside the ignore
@@ -317,10 +346,26 @@ for worker feedback.
   pre-reconciliation local base
   [test](bead_clone_branches_off_published_head_not_stale_base)
 
-- `loom loop` startup drops every bead workspace under `.loom/beads/` whose bead
-  is `closed` and parented by the selected work epic/molecule, under the
-  work-root advisory lock
-  [test](loop_startup_gc_drops_closed_bead_workspaces_for_current_molecule)
+- Under the work-root advisory lock, startup GC removes only closed source
+  clones owned by the selected molecule with reconstructed trusted cleanup
+  admission, using the same eligibility boundary as post-attempt cleanup.
+  [test?](startup_gc_requires_restart_safe_cleanup_admission)
+
+- Missing, stale, conflicting or ambiguous cleanup authority preserves the clone
+  with a diagnostic, not a cache-derived acceptance or human-state rewrite.
+  Independent holds survive; live provenance-only decision children remain
+  queued and closed decisions retain history independently of eligible source
+  cleanup.
+  [test?](workspace_cleanup_admission_preserves_unaccepted_held_and_ambiguous_work)
+
+<!-- prettier-ignore -->
+- Actual Loop restart and startup GC preserve closed-but-unaccepted or held
+  sources with their branch, dirty files and recovery stashes. Trusted accepted
+  completion or explicit authorized disposal permits only eligible source
+  cleanup; live decisions remain visible and unrelated clones/human state remain
+  intact. Evidence exercises actual temporary Git clones, isolated pinned Beads
+  and production entrypoints, not a fabricated cleanup-eligible flag.
+  [system?](nix run .#test-decision-waits)
 
 - `loom loop` startup leaves closed bead workspaces from other molecules alone
   [test](loop_startup_gc_skips_closed_bead_workspaces_from_other_molecules)
@@ -356,14 +401,22 @@ for worker feedback.
   conflict files and the new integration tip SHA
   [test](rebase_conflict_routes_to_integration_conflict)
 
-- `integration-conflict` recovery dispatches the agent at most once; a second
-  rebase-conflict on the retry escalates to `loom:clarify` with the same cause
-  [test](integration_conflict_one_retry_then_clarify)
+- `integration-conflict` recovery dispatches the agent at most once before human
+  escalation. A second conflict creates or reuses a dedicated decision child of
+  the source, with the same cause, conflict paths and integration base. The
+  source depends on that decision and enters
+  [Loop's attributed wait](loop.md#decision-batches-and-attributed-waits), not
+  the human queue itself; its clone remains intact and no further automatic
+  conflict retry runs while the decision is unresolved.
+  [test?](integration_conflict_one_retry_then_admits_dedicated_decision_wait)
 
-- Driver-applied `integration-conflict` clarify beads carry a synthesized
-  `## Options — …` block satisfying the Options Format Contract with two
-  `### Option N — …` subsections (resolve-in-bead-clone and abandon-the-bead)
-  [test](driver_applied_integration_conflict_clarify_carries_synthesized_options)
+- The driver-authored integration decision has one canonical Options brief with
+  resolve-in-bead-clone and abandon-the-bead paths. Inbox records the authorized
+  outcome; decision closure alone neither completes nor abandons the source.
+  Existing failed-integration recovery owns any restoration of provisional
+  worker-closed state before parking; this is not permission to reopen unrelated
+  closed or human-held work.
+  [test?](integration_conflict_decision_preserves_options_source_and_recovery_ownership)
 
 - `loom init` writes `[rerere] enabled = true` and
   `[rerere]     autoupdate = true` into the loom workspace's local `.git/config`
@@ -400,11 +453,20 @@ for worker feedback.
   fetching and re-rebasing onto `origin/<integration-branch>`
   [test](clean_review_reruns_loop_when_origin_push_races)
 
-- On rebase abort, audit-fail rollback, signature-verification failure, agent
-  failure, retry, tree-not-clean recovery, block, or clarify, the bead workspace
-  persists (the default per-bead-close behavior) and the bead is routed to
-  `Blocked` or `Clarify` per the verdict gate
-  [test](workspace_persists_on_all_failure_paths)
+- Rebase abort, audit-fail rollback, signature-verification failure, agent
+  failure, retry, tree-not-clean recovery, semantic block, or attributed waiting
+  preserves the bead workspace. Loop owns the corresponding recovery/wait
+  outcome; decision reporting alone neither makes the source a clarify item nor
+  changes its independent completion outcome.
+  [test?](workspace_preservation_follows_recovery_wait_and_independent_decision_outcomes)
+
+- Actual isolated pinned-Beads operations permit independent worker-owned source
+  closure while its provenance-only decision children remain live and visible.
+  Any needed closure workaround preserves those children, relationships and
+  human state; it cannot bypass genuine own prerequisites/holds or use blanket
+  force, reparenting or child closure. Post-agent reconciliation still rejects
+  false completion even if a Beads operation bypassed a mechanical guard.
+  [test?](independent_source_closure_preserves_decisions_and_real_prerequisites)
 
 - Bead containers receive the host `wrix-beads` dolt socket as a single-file
   bind mount at `/workspace/.wrix/dolt.sock` via `SpawnConfig.mounts`, replacing

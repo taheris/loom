@@ -14,7 +14,8 @@ shared facilities while leaving phase behavior to its owning contracts.
 Shared crates parse external configuration and identifiers, isolate subprocess
 access, and expose reconstructable state to workflow consumers. Related owners:
 [workspaces](workspaces.md), [specs](specs.md), [loop](loop.md),
-[todo](todo.md), [events](events.md), [templates](templates.md).
+[todo](todo.md), [events](events.md), [templates](templates.md),
+[protocol](protocol.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -221,13 +222,11 @@ is required.
 
 ### `loom-protocol` crate
 
-- The `loom-protocol` crate exists as a leaf workspace member with the `gate`
-  module carrying every type listed above. The crate's dependencies are limited
-  to `serde`, `serde_json`, `thiserror` / `displaydoc`, `blake3` (finding-hash
-  crate — algorithm is implementer's choice per _Finding id, finding hash,
-  suppression, and dedup_, but the dep set is closed), and `loom-events` (for
-  `SpecLabel`); no transitive dependency on `loom-templates`, `loom-workflow`,
-  or `loom-gate` [test](loom_protocol_crate_has_minimal_leaf_dependency_set)
+- `loom-protocol` is a leaf workspace member whose dependency floor is limited
+  to `serde`, `serde_json`, `thiserror` / `displaydoc`, `blake3`, and
+  `loom-events`; no transitive dependency on `loom-templates`, `loom-workflow`,
+  or `loom-gate` is permitted.
+  [test](loom_protocol_crate_has_minimal_leaf_dependency_set)
 
 - The crate's MAJOR version is the wire-format protocol version. A breaking wire
   change (renamed token, retyped target shape, removed enum variant) requires a
@@ -557,12 +556,14 @@ is required.
 
 [Acceptance](#loom-protocol-crate).
 
-**Crate scope.** `loom-protocol` is single-purpose: cross-crate wire protocols
-Loom emits or consumes. Its `gate` and `todo` protocols are owned by
+**Crate scope.** `loom-protocol` carries cross-crate wire contracts Loom emits
+or consumes. [Protocol](protocol.md) owns the canonical agent-output enum,
+shared decoding, and phase admission.
 [Findings](findings.md#canonical-contract-location-1) and
-[Todo](todo.md#todo-success-marker). Future protocols may use sibling modules
-without importing runtime orchestration. Domain specs own their wire shapes and
-anti-drift contracts; Harness owns this shared dependency and versioning policy.
+[Todo](todo.md#todo-success-marker) own their domain payloads and contextual
+resolution. Other wire contracts may use sibling modules without importing
+runtime orchestration. Harness owns the shared dependency and versioning policy,
+not a competing marker vocabulary or decoder.
 
 **Dependency direction.** Leaf crate. Depends on `serde` + `serde_json` (JSON
 wire), `thiserror` / `displaydoc` (error types), `blake3` (the finding-hash
@@ -776,11 +777,11 @@ success-criteria walk did not catch.
   sessions to observe tmux / browser logs and create beads for detected issues.
   Independent of the workflow phase set; deferred to a follow-up spec if and
   when the use case re-emerges.
-- **Preserve-on-GC for dirty closed bead workspaces** — routine closed-bead
-  workspace cleanup stays simple. Loom preserves dirty work before worker
-  dispatch via recovery stashes, but it does not add a special move-aside branch
-  for the unusual case where a bead is already closed/reapable while its
-  workspace still contains useful uncommitted work.
+- **Move-aside recovery during routine reapable-clone GC** — routine removal
+  after [Workspaces' cleanup admission](workspaces.md#cleanup-admission) adds no
+  separate stash/archive/move-aside path. Reapability belongs to that owner;
+  this exclusion is not permission to discard every Beads-closed clone or
+  override preservation of unreconciled, rejected or human-held work.
 - **Session persistence across container restarts** — each container starts a
   fresh agent session.
 - **Wall-clock infra cooldown/backoff** — v1 infra resilience uses round-robin

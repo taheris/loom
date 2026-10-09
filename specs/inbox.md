@@ -13,7 +13,8 @@ then separates conversational resolution from trusted tune application.
 
 The human reviews typed queue items in chat; accepted tune proposals cross a
 separate driver apply boundary. Related owners: [findings](findings.md),
-[tuning](tuning.md), [agent](agent.md), [gate](gate.md).
+[tuning](tuning.md), [agent](agent.md), [gate](gate.md), [loop](loop.md),
+[protocol](protocol.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -47,15 +48,71 @@ interactive backend.
 Filters apply before stable kind/FIFO ordering. View renders durable options,
 diagnostics, and repair paths.
 
-Inbox chat has human-authorized Beads write access to queued items and may
-repair tune artifacts only in the proposal checkout. The driver does not
-reconcile those interactive Beads changes afterward. `LOOM_COMPLETE` ends chat
-without host apply; `LOOM_APPLY` requests one validated all-or-nothing tune
-proposal batch through integration, gate, and push. A failed batch publishes
-nothing and leaves every proposal in `apply_failed` for explicit later review.
+Inbox chat has human-authorized Beads write access to queued items and explicit
+linked-work hold/cancellation actions within their validated decision context.
+This preserves source actions formerly authorized on source-hosted briefs,
+without granting unrelated-work authority. It may repair tune artifacts only in
+the proposal checkout. Human decision content and resolution remain
+authoritative. The driver reconciles only explicitly attributed scheduling state
+under [orchestration ownership](#orchestration-ownership), not a generic worker
+verdict. Protocol's `Complete` ends chat without tune application; `Apply`
+requests one validated all-or-nothing tune proposal batch through integration,
+gate, and push. A failed batch publishes nothing and leaves every proposal in
+`apply_failed` for explicit later review.
 
 There is no host-side pick, reply, resolve, dismiss, or apply mutation surface.
 Options are discussion context for chat rather than executable menu entries.
+
+### Orchestration ownership
+
+Acceptance: [decision resolution](#decision-resolution) and
+[human-state preservation](#workflow-commands).
+
+The human/chat agent owns decision content, authorized outcome recording,
+decision closure, and independent holds. The driver owns only the scheduling
+waits it explicitly admitted and attributed under
+[Loop](loop.md#decision-batches-and-attributed-waits). It may deterministically
+release those waits after chat by re-reading actual decision/dependency state,
+without interpreting prose or using `Complete` as an instruction to unblock.
+
+This separation forbids generic canonical unblocking, status reversion, and
+label re-application that would undo human changes. A human adoption of an
+independent hold cancels/replaces the driver wait attribution; the driver does
+not infer ownership from `status=blocked` alone. Existing semantic, infra,
+deferred, and closed state remain untouched. Interrupted chat can leave valid
+human writes durable; scheduling rechecks do not retry chat or fabricate a
+missing human answer. List/view remain read-only.
+
+### Decision beads and resolution
+
+[Acceptance](#decision-resolution).
+
+Each admitted dedicated decision bead carries one canonical Options brief and
+enters the ordinary `loom:clarify` queue. Direct worker and driver-origin
+decisions follow
+[Loop's batch admission](loop.md#decision-batches-and-attributed-waits);
+review-origin decisions follow Findings' existing scoped materialization. Staged
+candidates are not queue items; malformed briefs appear as blocked repair items
+on the defective decision, not on its discovering source. Discovery parentage
+does not imply an execution prerequisite, and implementation beads waiting on
+decisions do not become duplicate human-queue items.
+
+All admitted currently discovered decisions are available in one chat queue,
+subject to the user's explicit filters. The human may resolve them
+conversationally one at a time, stop after a subset, or leave items unresolved.
+No worker rerun is needed merely to expose the next already-discovered question.
+The canonical Options summary supplies the question/list summary; it is not
+scraped from adjacent agent stdout or copied into protocol payloads.
+
+The authorized resolution records the human outcome and closes its dedicated
+decision bead. Unanswered decisions remain queued. Decision closure alone means
+intent was resolved, not affected implementation finished or the source
+abandoned; required implementation remains separately bound work. A distinct
+explicit human instruction may authorize a linked source hold or cancellation
+within the validated decision context, preserving the existing abandon-the-bead
+option. Such an action is not automatic decision resolution or positive
+implementation coverage. Partial answers release only work whose actual
+prerequisites are satisfied, through Loop's attributed wait resumption.
 
 ## Success Criteria
 
@@ -94,16 +151,18 @@ Options are discussion context for chat rather than executable menu entries.
   container using the `inbox.md` template; list/view stay host-side
   [test](loom_inbox_chat_launches_container)
 
-- The chat session has full bd-write authority on bead-backed items in its queue
-  and may repair tune proposal artifacts only under `.loom/tune/<id>/repo/`; it
-  never pushes and never leaves `.loom/integration` dirty
-  [test](inbox_chat_bd_authority_and_tune_repair_scope)
+- Chat has full bd-write authority on queued bead-backed items and separately
+  human-authorized linked-work holds/cancellations in the validated decision
+  context, not unrelated work. Tune artifact repair stays under
+  `.loom/tune/<id>/repo/`; chat never pushes or leaves `.loom/integration`
+  dirty.
+  [test?](inbox_chat_authority_preserves_explicit_linked_work_resolution_scope)
 
-- The driver does **not** reconcile bd state after an interactive session — no
-  canonical unblock, no status reversion, no label re-application. Whatever
-  bd/proposal state the chat agent (with human authorization) established at
-  session end IS the state, except for the explicit `LOOM_APPLY` handoff
-  [test](inbox_chat_driver_does_not_reconcile_bd_state_after_session)
+- Inbox preserves human-owned outcomes and holds after chat, without generic
+  canonical unblocking, status reversion, or label restoration. Deterministic
+  scheduling release requires matching driver wait attribution rather than an
+  interactive completion marker.
+  [test?](inbox_driver_preserves_human_state_with_attributed_wait_release)
 
 - `LOOM_COMPLETE` from inbox exits cleanly with no driver-side apply;
   `LOOM_APPLY: {"proposals":[...]}` validates accepted tune proposal ids and
@@ -130,6 +189,32 @@ Options are discussion context for chat rather than executable menu entries.
   without filters, the session sees every outstanding human decision item
   regardless of active work epic and normally works them one at a time
   [test](loom_inbox_chat_scope_filters_queue)
+
+### Decision resolution
+
+- Each decision has one unambiguous active Options brief across notes and
+  description, with a nonblank summary and at least one numbered, titled Option
+  subsection. The canonical summary supplies the human question/list summary;
+  missing, malformed, or ambiguous briefs cannot be admitted as valid direct
+  clarification context.
+  [test?](canonical_options_brief_is_unique_and_supplies_decision_summary)
+
+- One Inbox session exposes the complete admitted decision batch under the
+  selected queue filters, supports conversational partial resolution, and leaves
+  unanswered decisions available without another worker discovery run.
+  [test?](inbox_session_exposes_all_admitted_decisions_and_retains_unanswered_items)
+
+- Authorized dedicated-decision resolution records the outcome and closes the
+  decision, not automatically affected implementation or its discovering source.
+  Any explicit linked-work hold/cancellation requires separate human authority
+  and is not implementation coverage; existing-bead promotion removes its active
+  Options block with the label in the authorized resolution update.
+  [test?](inbox_resolution_distinguishes_decision_closure_from_implementation)
+
+- Inbox chat exit rechecks only driver-attributed waits against current
+  prerequisites, including after partial resolution or interrupted chat, while
+  list/view stay read-only and chat is never automatically retried.
+  [test?](inbox_chat_exit_rechecks_only_attributed_dependency_waits)
 
 ### Integration tests
 
@@ -162,12 +247,11 @@ Options are discussion context for chat rather than executable menu entries.
 
 [Acceptance](#success-criteria).
 
-Whenever the gate (or, in practice, the reviewing agent acting on behalf of the
-gate) raises `loom:clarify` — for an invariant clash, for a verifier-honesty
-concern with multiple resolution paths, or for any review-time decision the user
-must pick from — the bead body presents the candidate paths as a structured
-markdown block that `loom inbox view` can render and `loom inbox chat` can use
-as structured resolution context:
+A bead admitted as `loom:clarify` presents one decision and its candidate paths
+in a canonical Markdown block readable by `loom inbox view` and chat. Reviewers
+supply evidence to trusted Findings materialization; direct workers author
+dedicated decision beads before batch admission. The block is structured
+resolution context, not an executable picker:
 
 ```markdown
 ## Options — <one-line summary of the decision>
@@ -200,54 +284,45 @@ A clarify bead can present fewer or differently-framed options when the decision
 warrants — the format is `### Option <integer> — <title>` for any integer ≥ 1.
 The summary line is always required.
 
-**Three application paths, one shape requirement.** Three distinct paths apply
-`loom:clarify` to a bead. All three require a well-formed `## Options —
-<summary>` heading with at least one `### Option <N> — <title>` subsection
-somewhere readable by `loom inbox` (bead notes ∪ description). Each path has its
-own writer and validator, but the *shape* of the options block and the *failure
-mode* on absence are uniform:
+**Application paths.** Each path uses one unambiguous `## Options — <summary>`
+heading with at least one `### Option <N> — <title>` subsection across bead
+notes and description. The writer and admission authority differ:
 
-| Path                                                                                                                                                                                                                                    | Writer of the options block                                                                                                | Where the block lives                                                                        | Validator                                                                                                                 | Failure mode                                                                                             |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| **Mint-from-finding** (worker phase emits `LOOM_FINDING` with a clarify-route token)                                                                                                                                                    | Rubric agent — embeds the block inside `evidence`                                                                          | Mint extracts from `evidence` into the minted bead's description                             | `loom gate mint` (per _Deferred remediation processing_ step 4)                                                           | Fall back to `loom:blocked` cause `clarify-without-options`                                              |
-| **Direct-emit `LOOM_CLARIFY`** (`loop` / `todo` worker emits the marker; target is the bead under dispatch for `loop`, or the `loom:todo` work epic for `todo` per [Todo — Decomposition Discipline](todo.md#decomposition-discipline)) | The worker agent itself, via `bd update --notes` / `bd update --description` against the target before emitting the marker | The target bead/work epic's notes or description                                             | Verdict gate (per [Loop — Verdict Gate](loop.md#verdict-gate) marker definitions)                                         | Fall back to `loom:blocked` cause `clarify-without-options`                                              |
-| **Existing-bead promotion** (chat agent in `loom inbox chat` upgrades a `loom:blocked` bead)                                                                                                                                            | The chat agent, with human authorization                                                                                   | The bead's notes (added via `bd update --notes` before `bd update --add-label=loom:clarify`) | None — the chat agent has bd-write authority and the human authorizes each turn (per [Inbox — Inbox Modes](#inbox-modes)) | n/a (no automatic validation; if the chat agent skips the options write, the human catches it next turn) |
+| Path                         | Brief writer/location                                                                                             | Admission and failure                                                                                                                                                      |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Finding materialization      | Reviewer embeds the brief in finding evidence; trusted Findings act paths persist it on a dedicated decision bead | Findings validates before human-queue materialization; absent/malformed brief falls back to `loom:blocked`, cause `clarify-without-options`                                |
+| Direct worker decision batch | Loop/Todo worker persists one brief on each dedicated decision bead and reports its ID                            | Loop/Todo resolves the complete reported set and context before queue admission; absent/malformed brief retains `clarify-without-options`, invalid references fail visibly |
+| Driver-origin escalation     | Existing conflict/integrity producer writes the full brief on each dedicated decision bead                        | Same contextual dedicated-decision admission and per-item fallback; the original source/epic receives no duplicate brief or human-queue label                              |
+| Existing-bead promotion      | Human-authorized chat agent adds the brief to an existing semantic blocked item                                   | Human-authoritative authorized update; no post-chat driver reinterpretation of the decision                                                                                |
 
-The structural enforcement at the chokepoint is what makes "stranded clarify
-bead the chat-drafter cannot resolve" unrepresentable for the two worker-phase
-paths — the agent either provides a well-formed options block (clarify applied)
-or emits `LOOM_BLOCKED` directly with a reason explaining why options cannot be
-enumerated (no clarify ever applied). The existing-bead promotion path is not
-subject to the chokepoint because chat is human-authoritative.
+Worker/driver/Findings admission prevents an absent brief from being treated as
+a valid clarification. An agent unable to frame safe options reports a semantic
+blocked reason instead. Existing-bead promotion remains human-authoritative;
+this does not authorize the driver to infer executable actions from its prose.
 
 **The gate does not scrape free-form stdout for `## Options` / `### Option N`
 blocks.** Only the structured locations above carry the canonical contract —
-`evidence` for mint-from-finding, bead notes/description for loop/todo
-direct-emit and existing-bead paths. Review clarifications use the
+`evidence` for mint-from-finding, bead notes/description for worker/driver
+dedicated decisions and existing-bead paths. Review clarifications use the
 mint-from-finding path; review prompts do not direct agents to mutate bd state.
 
 ##### Resolution lifecycle
 
 [Acceptance](#success-criteria).
 
-The `## Options — <summary>` block lives on the target bead (in notes or
-description, per the path table above) only from emit to resolution. When
-`loom:clarify` is cleared by an inbox chat session's
-`bd update --remove-label=loom:clarify`, the originating options block is
-removed from wherever it lives (notes or description) in the same authorized
-resolution update that records the human decision.
+On a surviving promoted bead, clearing `loom:clarify` removes its active Options
+block from notes/description in the same authorized resolution update that
+records the human decision. Dedicated decision closure instead retires the whole
+item from the active queue; its brief may remain as historical context.
 
-A single bead can receive multiple clarifications across its lifetime — notably
-a `loom:todo` work epic, which hosts decomposition-phase clarifies emitted by
-successive `loom todo` invocations while the same pending fingerprint is being
-repaired. Without removal, options blocks accumulate and `loom inbox` lists
-become ambiguous about which block belongs to the currently active label.
+A surviving promoted bead can receive successive clarifications, but only one
+active brief at a time. Removing the resolved block prevents later questions
+from being confused with previous ones.
 
-For clarifies hosted on a **dedicated clarify bead** (created via the
-mint-from-finding path above and closed during inbox chat), the removal is moot
-— the whole bead is closed and the notes/description pass out of scope with it.
-The lifecycle contract is load-bearing for the **existing-bead promotion** path
-where the bead survives the resolution.
+Dedicated decision beads, whether worker-, driver-, or finding-origin, close
+with the recorded resolution; their brief then passes out of the active queue
+and may remain as historical context. Several simultaneous decisions use
+separate beads, not accumulated active blocks on a Todo work epic.
 
 ## Out of Scope
 

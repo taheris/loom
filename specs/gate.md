@@ -14,7 +14,7 @@ publication only with matching, current evidence.
 Verify plans and executes checks; Evidence admits their results; Gate composes
 whole-scope review and publication authority. Related owners:
 [verify](verify.md), [evidence](evidence.md), [findings](findings.md),
-[loop](loop.md), [pre-commit](pre-commit.md).
+[loop](loop.md), [pre-commit](pre-commit.md), [protocol](protocol.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -147,6 +147,14 @@ this acceptance document owns Gate composition and authorization.
   fingerprints
   [test](gate_success_constructor_requires_typed_scope_and_coverage_evidence)
 
+- Publication receipt admission consumes Loop's current molecule-clean
+  reconciliation, rejecting known unaccepted workflow closure after restart.
+  Beads progress, cleanup eligibility/disposal, and historical labels cannot
+  substitute for that reconciliation or the receipt's required evidence;
+  ordinary historical closed work does not acquire a retrospective receipt
+  requirement.
+  [test?](gate_receipt_requires_current_workflow_completion_admission)
+
 - `loom gate review --diff <range>` consumes the latest matching `VerifiedScope`
   for the same resolved content/scope when producing push-eligible evidence; no
   production gate path passes or accepts `--verify-exit`
@@ -204,6 +212,12 @@ this acceptance document owns Gate composition and authorization.
 - Concerns, malformed finding/marker pairs, blocked reviews, and missing markers
   cannot produce completed push-gate review evidence
   [test](rejected_review_walks_never_produce_completed_push_evidence)
+
+- Production review stdout handoffs use shared message decoding and contextual
+  finding resolution before scope-evidence admission; valid pretty-printed
+  payloads work, malformed or wrong-phase messages cannot grant review
+  authority, and live rendering/prompt/tool text cannot become result records.
+  [test?](review_handoff_uses_shared_messages_before_scope_evidence_admission)
 
 - Bare `loom gate` (no subcommand) prints `loom gate --help` — identical output
   to `loom gate --help`. No verifier runs, no cache read, no bd writes
@@ -286,10 +300,12 @@ this acceptance document owns Gate composition and authorization.
 
 ### Verdict gate
 
-- Worker/review guidance reserves `LOOM_BLOCKED` for semantic dead ends whose
-  reason explains why candidate options cannot be enumerated; `LOOM_CLARIFY` is
-  required when options can be framed
-  [judge](../tests/judges/loom.sh#judge_blocked_no_options_rationale)
+- Worker/review guidance reserves semantic blocking for dead ends whose reason
+  explains why safe options cannot be framed. Decision-worthy Loop/Todo work
+  reports dedicated decision references independently of its terminal outcome;
+  inspection-only review reports clarify-route findings with Options evidence,
+  never direct decision-bead mutation.
+  [judge?](../tests/judges/agent-output-routing.md)
 
 - Review's primary concern is live-path coverage: relevant `[check]` / `[test]`
   / `[system]` verifiers on the reviewed range must exercise the live path (same
@@ -682,14 +698,14 @@ coarse: for example, `spec-coherence-fail` is blocking when it invalidates the
 pushed work's own criterion, but deferred when it identifies adjacent drift
 outside the pushed surface.
 
-The terminal `LOOM_CONCERN` marker is emitted at end-of-walk if any findings
-were emitted (per [Loop — Verdict Gate](loop.md#verdict-gate)); it carries no
-per-finding payload of its own. The terminal marker's payload is a JSON object
-with a single `summary` field; routing is per-finding via each streamed
-finding's `route`, never via the terminal marker. A clarify-route finding whose
-evidence lacks a well-formed options block falls back to `loom:blocked` with
-cause `clarify-without-options` rather than a stranded clarify. Push is held
-until clarify beads in the molecule are resolved via `loom inbox`.
+[Findings' explicit stream/terminal pairing](findings.md#emit-shape) governs
+review completion, with [Protocol](protocol.md#phase-admission) owning shared
+message framing and phase admission. The concern summary is not per-finding
+routing authority; each resolved finding's `route` controls the workflow effect.
+A clarify-route finding whose evidence lacks a well-formed options block falls
+back to `loom:blocked` with cause `clarify-without-options` rather than a
+stranded clarify. Push is held until clarify beads in the molecule are resolved
+via `loom inbox`.
 
 ##### Standing-safety-net checks
 
@@ -856,8 +872,10 @@ matching `GateRun` end events. `GateSuccess::new` is the sole construction path.
 It returns `GateFail` unless the scopes describe the same content, range, tree,
 and relevant configuration; every covered hook has passed for that range; the
 coverage fingerprints match both scopes; the gate logs exist and end
-successfully; and the molecule is clean. The structural seal prevents callers
-from bypassing these checks with a struct literal.
+successfully; and the molecule is clean under
+[Loop's current completion admission](loop.md#completion-admission), not Beads
+progress or workspace-disposal permission alone. The structural seal prevents
+callers from bypassing these checks with a struct literal.
 
 Receipt construction and consumption also require current
 [evidence admission](evidence.md#cache-and-evidence-reuse) and

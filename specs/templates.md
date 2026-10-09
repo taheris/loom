@@ -14,7 +14,8 @@ reinterpreting task identity, evidence admission, or workflow transitions.
 Typed workflow contexts feed compiled Askama templates and shared partials;
 rendering and recovery preserve the supplied context. Related owners:
 [specs](specs.md), [plan](plan.md), [todo](todo.md), [loop](loop.md),
-[inbox](inbox.md), [findings](findings.md), [skills](skills.md).
+[inbox](inbox.md), [findings](findings.md), [skills](skills.md),
+[protocol](protocol.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -88,16 +89,16 @@ target v1 set; pending additions are marked in the pinning matrix:
 | `skill_index.md`                 | Render the precomputed compact index produced under [Skills — Registration and Progressive Disclosure](skills.md#registration-and-progressive-disclosure).                                                                                                                             |
 | `progress_markers.md`            | Document `LOOM_COMPLETE` success and the loop-only `LOOM_NOOP` empty-diff success terminator. **Not pinned in `todo.md`** because todo success is the typed `LOOM_TODO:` payload, not a generic complete/no-op marker.                                                                 |
 | `todo_success.md`                | Document the todo-specific success terminator `LOOM_TODO: <json>` and the `loom-protocol::todo::TodoSuccess` shape. Pinned only by `todo.md`.                                                                                                                                          |
-| `self_report_markers.md`         | Document direct loop/todo cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`, including bd-backed persistence for direct `LOOM_CLARIFY` in those phases.                                                                                                           |
+| `self_report_markers.md`         | Present Loop/Todo retry/blocked outcomes with typed reasons and nonterminal decision-batch reporting backed by dedicated Beads briefs; defer message encoding and phase admission to Protocol.                                                                                         |
 | `workspace_recovery.md`          | Loop-only recovery context for dirty bead workspaces saved to an unapplied git stash before dispatch; instructs the worker to inspect the stash before normal work and mention stash handling in its final summary.                                                                    |
 | `review_self_report_markers.md`  | Document review-only cannot-complete terminators while preserving inspection-only review: no bd mutation instructions, and clarify-worthy decisions route through `route="clarify"` findings instead of direct `LOOM_CLARIFY`.                                                         |
-| `options_format.md`              | Carry the canonical `## Options — <summary>` / `### Option N — <title>` markdown block consumed by `loom inbox`'s chat-drafter, per [Inbox — Options Format Contract](inbox.md#options-format-contract).                                                                               |
-| `findings_walk.md`               | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed review wire format per [Findings — Findings and Minting](findings.md#findings-and-minting-1). Pinned only by `review.md`; an anti-drift verifier fails any other template that restates the wire format.          |
+| `options_format.md`              | Carry the canonical `## Options — <summary>` / `### Option N — <title>` markdown block consumed by Inbox chat, per [Inbox — Options Format Contract](inbox.md#options-format-contract).                                                                                                |
+| `findings_walk.md`               | Canonical review presentation of finding payloads and explicit stream/concern pairing. Protocol owns message encoding; rendered conformance checks parsing/resolution, while the restatement audit prevents copied template prose.                                                     |
 | `chat_marker_final_turn_only.md` | Restrict interactive-session terminal markers to the **final** assistant turn. `plan` may emit `LOOM_COMPLETE`; `inbox` may emit `LOOM_COMPLETE` or `LOOM_APPLY: {"proposals":[...]}`. Included by `plan` and `inbox`.                                                                 |
 | `interview_modes.md`             | Describe the "one by one" / "polish the spec" interview sub-modes                                                                                                                                                                                                                      |
 | `chat_interview.md`              | Interactive-session discipline for `plan` and `inbox`: conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and phase-authorized durable destinations for anything that needs to outlive the session — see _Chat Discipline_ below                  |
 | `decomposition_discipline.md`    | Pin the audit-before-fan-out and exact-roster rule on `todo`: every changed spec from driver preflight must be represented in `LOOM_TODO`, and every bead must correspond to evidence-confirmed missing work — see [Todo — Decomposition Discipline](todo.md#decomposition-discipline) |
-| `dependency_wait.md`             | Document the loop-only bare `LOOM_WAITING` terminal: declare an active blocker, leave the current bead open, and let the driver preserve its workspace without integration, gate, retry, or workflow-state mutation.                                                                   |
+| `dependency_wait.md`             | Present Loop/Todo prerequisite waiting: declare actual blockers, do not close waiting work, and explain driver-attributed visible parking, preservation, and selective resumption.                                                                                                     |
 | `plan_stage_rubric.md`           | Gate the planning interview on completeness / coherence / invariant-clash before any commit. Carries the pending-modifier discipline prominently — see [Plan — Planning-Rubric Pending Discipline](plan.md#planning-rubric-pending-discipline).                                        |
 | `invariant_clash.md`             | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`)                                                                                                                                                                                         |
 | `review_rubric.md`               | Finite-diff / push-range review rubric — see [Gate](gate.md)                                                                                                                                                                                                                           |
@@ -160,7 +161,7 @@ silent-pass during the pending window per
 | `interview_modes.md`             |   ✓    |        |        |          |         |
 | `chat_interview.md`              |   ✓    |        |        |          |    ✓    |
 | `decomposition_discipline.md`    |        |   ✓    |        |          |         |
-| `dependency_wait.md`             |        |        |   ✓    |          |         |
+| `dependency_wait.md`             |        |   ?    |   ✓    |          |         |
 | `plan_stage_rubric.md`           |   ✓    |        |        |          |         |
 | `invariant_clash.md`             |   ✓    |        |        |          |         |
 | `review_rubric.md`               |        |        |        |    ✓     |         |
@@ -171,9 +172,9 @@ landed yet. The walker permits those cells while absent and reports them as
 stale once the include graph catches up.
 
 **Self-report guidance is phase-specific.** `self_report_markers.md` is pinned
-only in `loop` and `todo`, where direct `LOOM_CLARIFY` persists the options
-block to the bead or work epic before the marker. `review` pins
-`review_self_report_markers.md` instead: review remains inspection-only, so
+only in `loop` and `todo`, where the agent persists dedicated decision briefs
+before reporting their references independently of its final outcome. `review`
+pins `review_self_report_markers.md` instead: review remains inspection-only, so
 clarify-worthy decisions are emitted as `route="clarify"` findings with Options
 in `evidence`, or as `LOOM_BLOCKED` when the reviewer cannot articulate options.
 
@@ -193,6 +194,42 @@ removing a resolved marker in the implementing diff.
 computed the changed-spec set; the prompt's job is to decompose that exact set,
 report `Decomposed` or `NoWork` for every changed spec, and emit `LOOM_TODO:` as
 the success marker.
+
+### Agent-output conformance
+
+[Acceptance](#agent-output-conformance-1).
+
+[Protocol](protocol.md) supplies the canonical message vocabulary, role,
+unit/data arity, phase projection, and strict framing. [Findings](findings.md)
+supplies typed prompt-visible token, target, and scope metadata. These are
+executable contract facts, not a second string registry maintained by Templates.
+Small syntax/table/example fragments may be derived from that metadata; workflow
+explanations remain narrative partials. Public composition continues to expose
+the shared typed contexts and partials.
+
+Every phase teaches only its admitted emit variants. Guidance distinguishes
+nonterminal decision reporting from prerequisite waiting and completion, and
+strict JSON from ordinary commentary. No partial teaches malformed-JSON repair,
+terminal direct clarification, preceding-line reason/question scraping, or
+required duplicate evidence narration. Review remains inspection-only.
+
+Conformance tests render the real phase prompts with valid representative
+context, explicitly extract their designated executable examples, and feed the
+example bodies to the same production decoder and phase-admission path. Finding
+examples also resolve against actual fixture files/specs/anchors and the real
+workspace validator. The extraction convention is test-only: production never
+promotes fenced prompt examples into agent messages. Pretty-printed payloads,
+escaped multiline Options/evidence, and marker-looking payload text are
+included.
+
+Coverage checks enumerate each phase's permitted message variants and the
+prompt-visible finding subset, including token/target alignment and scope
+restrictions. Independent literal wire fixtures and negative/boundary cases
+remain alongside generated examples and round trips, so matching mistakes in a
+generator and parser cannot define correctness. Deliberate spelling, arity,
+role, target, scope, and example drift must fail conformance. The template
+restatement audit and text snapshots are complementary checks, not proof of
+parser agreement or semantic review adequacy.
 
 ### Acceptance Context and Progressive Disclosure
 
@@ -348,8 +385,10 @@ the stable stash commit (`git stash show --stat <commit>` and
 `git stash show -p <commit>`), then intentionally apply/cherry-pick, leave, or
 drop the stash. When `alignment` is `Conflict`, the partial frames that as
 agent-owned merge-conflict recovery: inspect the conflict files, resolve and
-continue/abort/retry the rebase as appropriate, or emit `LOOM_CLARIFY` with
-options if the conflict needs a human decision.
+continue/abort/retry the rebase as appropriate, or persist dedicated decision
+briefs and report their references through nonterminal `Clarify` records if the
+conflict needs human decisions. The separate terminal reflects whether the
+source is genuinely waiting, blocked without safe options, or able to finish.
 
 The worker's normal prose summary before `LOOM_COMPLETE` should include one line
 naming how the recovery stash was handled (applied, left for follow-up, not
@@ -393,16 +432,15 @@ work.
   `"You streamed {finding_count} LOOM_FINDING record(s) but terminated with LOOM_COMPLETE. Use LOOM_CONCERN: {\"summary\": \"...\"} when findings are emitted."`,
   followed by `"\n\nFindings streamed:\n{per-finding digest}"` so the agent's
   next iteration sees the diagnosis it just emitted.
-- `BadWalk(MalformedFinding { errors, terminal })` →
-  `"One or more LOOM_FINDING records failed strict validation. Re-emit each finding as a valid `LOOM_FINDING:
-  {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}` record; compact one-line JSON is preferred, while raw line breaks are allowed only inside JSON strings and are normalized before validation.\n{per-record: 'Record starting at line N: <reason> — raw: <record text>'}\n\nYour terminal was: {terminal-rendered}"`.
-  The terminal rendering uses the typed `TerminalSurface` variant: `Complete` →
-  `"LOOM_COMPLETE"`, `Waiting` → `"LOOM_WAITING"`, `Concern { summary }` →
-  `"LOOM_CONCERN: {summary}"`, `Malformed { payload }` →
-  `"LOOM_CONCERN: <malformed: {payload}>"`, `Missing` →
-  `"(no terminal on the final non-empty line)"`. Surfacing both pieces lets the
-  agent fix malformed records (typically: add the missing `route` field or drop
-  the surrounding markdown fence) without losing the well-formed context.
+- `BadWalk(MalformedFinding { errors, terminal, parsed_findings })` → a
+  strict-JSON correction followed by each raw/typed record error, the
+  independently established or malformed/missing terminal, and a digest of the
+  valid findings retained from the mixed stream. Guidance asks for column-one,
+  unfenced messages and correctly escaped strings, not raw-newline repair.
+  Terminal rendering derives from Protocol's canonical typed message; diagnostic
+  malformed/missing surfaces preserve their literal context rather than another
+  marker vocabulary. Shared framing/phase failures likewise show retained
+  context categories within the existing budget.
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
 - `TreeNotClean` →
   `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."`
@@ -411,8 +449,11 @@ work.
   `"After rebasing onto the integration branch, the post-integration verify failed.\n\nGate log: {gate_log_path}\n\n{N blocks: target + exit + stderr}\n\nReconcile the cross-bead interaction — your bead's verify passed at its own workspace; the failure is in the integrated tree."`
 - `IntegrationConflict { files, new_base_sha }` →
   `"Your bead branch could not be rebased onto the integration branch — files conflict: <files>. The new integration tip is <new_base_sha>. Rebase your bead workspace onto the new tip, resolve, and re-commit."`
-- `AgentRetry { reason }` →
-  `"Previous attempt requested retry — reason: {reason}\n\nIf the same problem persists after this attempt, escalate to LOOM_BLOCKED (explain why no candidate options can be enumerated) or LOOM_CLARIFY (with a structured Options block) rather than emitting LOOM_RETRY again."`
+- `AgentRetry { reason }` → the decoded prior reason plus bounded recovery
+  guidance: frame newly discovered decisions on dedicated beads and report their
+  references, then wait only on genuine prerequisites; use a typed blocked
+  reason when no safe options can be framed. Decision reporting is not another
+  terminal.
 - `review_notes` (when set, after the primary block) → heading `"Review notes:"`
   then content
 
@@ -515,11 +556,11 @@ command. Deduplication and lead-spec batching under a work epic belong to
 [Findings](findings.md#deferred-remediation-processing), not the prompt. A
 reviewing agent that mutates bd state violates the protocol.
 
-**Clarify-bound findings embed Options in evidence.** Clarify routing and
-canonical Options-block parsing are defined in the included partial and in
-[Findings — Findings and Minting](findings.md#findings-and-minting-1). The
-review template must not restate that wire format; it carries the partial so
-prompt text and gate routing cannot drift.
+**Clarify-bound findings embed Options in evidence.**
+[Inbox](inbox.md#options-format-contract) owns the brief format;
+[Findings](findings.md#emit-shape) owns contextual routing/materialization. The
+review template includes their canonical presentation rather than copying it;
+[rendered conformance](#agent-output-conformance) checks actual agreement.
 
 ### Public Surface for Consumers
 
@@ -793,9 +834,9 @@ bundled documents in front of the agent with zero configuration.
   use `LOOM_APPLY: {"proposals":[...]}` as its final marker when driver apply is
   requested [test](every_multi_turn_template_includes_chat_marker_partial)
 
-- One-shot worker templates (`todo`, `loop`, `review`) deliberately omit
-  `chat_marker_final_turn_only.md` because every response in those phases is the
-  session's final output [test](worker_templates_omit_chat_final_turn_clause)
+- Worker templates (`todo`, `loop`, `review`) omit the interactive-only
+  final-turn partial; nonterminal records may stream before the session's one
+  terminal outcome. [test](worker_templates_omit_chat_final_turn_clause)
 
 <!-- prettier-ignore -->
 - `partial/chat_interview.md` exists and is included by every
@@ -969,8 +1010,8 @@ bundled documents in front of the agent with zero configuration.
   [test?](todo_prompt_proposes_bindings_for_driver_persistence)
 
 <!-- prettier-ignore -->
-- `partial/todo_success.md` is the single source of truth for the
-  `LOOM_TODO: <json>` success marker and names the
+- `partial/todo_success.md` is the canonical presentation of Todo's success
+  payload under Protocol's message contract and names the
   `loom-protocol::todo::TodoSuccess` type [check](grep -q 'LOOM_TODO:' crates/loom-templates/templates/partial/todo_success.md)
 
 <!-- prettier-ignore -->
@@ -987,13 +1028,11 @@ bundled documents in front of the agent with zero configuration.
 
 ### Review emit shape
 
-- `partial/findings_walk.md` is the single source of truth for the
-  `LOOM_FINDING: <json>` streaming wire format and the terminal
-  `LOOM_CONCERN: {"summary": "..."}` JSON shape. The partial documents the
-  `{"token","route","bonds","target","evidence"}` finding payload with tagged
-  `target` variants, the JSON CONCERN terminator, and the streaming + terminator
-  pairing rule
-  [test](review_prompt_is_inspection_only_and_documents_loom_finding_wire_format)
+- Rendered review guidance uses the canonical message/domain metadata, requires
+  strict JSON with escaped evidence, preserves explicit finding/concern pairing,
+  and does not authorize reviewer Beads mutation or duplicate evidence
+  narration.
+  [test?](review_prompt_uses_strict_shared_messages_and_domain_pairing)
 
 <!-- prettier-ignore -->
 - `review.md` includes `findings_walk.md` via `{% include %}` rather than
@@ -1016,10 +1055,10 @@ bundled documents in front of the agent with zero configuration.
   non-empty diff) and keeps `LOOM_NOOP` loop-only
   [test](progress_markers_render_phase_specific_diff_rules)
 
-- `partial/dependency_wait.md` is included only by `loop.md`, renders the
-  loop-only bare `LOOM_WAITING` marker, and requires an open bead with an active
-  declared blocking dependency
-  [test](loop_template_renders_dependency_wait_marker)
+- Loop and Todo waiting guidance requires actual prerequisites, non-closure of
+  waiting work, preservation, and driver-attributed visible parking/resumption;
+  it distinguishes a decision record from the session's waiting terminal.
+  [test?](loop_and_todo_render_attributed_waits_and_nonterminal_decisions)
 
 <!-- prettier-ignore -->
 - `partial/self_report_markers.md` covers direct loop/todo self-report markers
@@ -1071,11 +1110,10 @@ bundled documents in front of the agent with zero configuration.
 
 ### Typed `PreviousFailure`
 
-- The `Display for PreviousFailure` rendering of `AgentRetry` surfaces the
-  agent's prior `reason` and instructs the retry attempt to escalate to
-  `LOOM_BLOCKED` (with no-options rationale) or `LOOM_CLARIFY` if the same
-  problem persists after retry
-  [test](agent_retry_display_renders_reason_and_escalation_guidance)
+- Recovery rendering surfaces the decoded retry reason and distinguishes
+  reporting dedicated decisions, genuinely waiting, and terminal semantic
+  blocking, without teaching a bare reason or terminal clarification.
+  [test?](agent_retry_display_teaches_shared_decision_and_terminal_roles)
 
 - `FindingParseError` is defined in `loom-protocol::gate` and re-exported from
   `loom-templates::finding` / `loom-workflow::review::finding` as the per-record
@@ -1092,11 +1130,11 @@ bundled documents in front of the agent with zero configuration.
   so the agent's next iteration sees the diagnosis it just emitted
   [test](bad_walk_findings_without_concern_display_renders_findings_digest)
 
-- The `Display for PreviousFailure` rendering of `BadWalk(MalformedFinding)`
-  enumerates per-record errors AND surfaces the well-formed `terminal` via its
-  rendered form so the agent fixes the fence/format without losing the
-  surrounding context
-  [test](bad_walk_malformed_finding_display_surfaces_terminal_and_per_line_errors)
+- Mixed malformed-finding recovery rendering exposes record errors, retained
+  valid findings, and decoded/malformed/missing terminal context within the
+  existing budget. Presentation truncation does not discard the underlying typed
+  diagnosis or replace it with an empty finding list.
+  [test?](mixed_bad_walk_display_surfaces_findings_errors_and_terminal)
 
 - `VerifierFailure` carries `target: String`, `exit_code: i32`,
   `stderr_tail: String` (capped per-block at ~1500 chars)
@@ -1164,9 +1202,10 @@ bundled documents in front of the agent with zero configuration.
   hook-generated file change
   [test](run_template_requires_self_check_rerun_after_post_check_changes)
 
-- `loop.md` requires prompt-level self-review before the final marker: re-read
-  criteria, inspect the final diff, check style/spec fit, and fix issues or emit
-  `LOOM_RETRY` / `LOOM_CLARIFY` / `LOOM_BLOCKED`
+- `loop.md` requires prompt-level self-review before the final outcome: re-read
+  criteria, inspect the final diff, check style/spec fit, and fix issues or use
+  the appropriate Protocol message and Loop outcome instead of false completion.
+  Decision reporting is independent of terminality.
   [judge](../tests/judges/loom.sh#judge_loop_self_review_before_complete)
 
 ### Public surface
@@ -1220,14 +1259,37 @@ bundled documents in front of the agent with zero configuration.
   missing work by inspection before authoring any non-audit bead
   [test](todo_template_renders_pre_decomposition_audit_clause)
 
-<!-- prettier-ignore -->
-- The partial documents `LOOM_CLARIFY` on the `loom:todo` work epic as the
-  fallback when coverage cannot be determined, with the `## Options — …` block
-  per [Inbox — Options Format Contract](inbox.md#options-format-contract) [check](grep -q 'LOOM_CLARIFY' crates/loom-templates/templates/partial/decomposition_discipline.md)
+- Rendered Todo guidance puts separate decision briefs on dedicated children,
+  reports the full discovered set, and waits on the work epic only when
+  decomposition itself has actual prerequisites; decision children cannot
+  satisfy implementation assignments or the success roster.
+  [test?](todo_prompt_separates_decisions_waiting_and_implementation_handoff)
 
 <!-- prettier-ignore -->
 - `todo.md` receives an already-created work epic from the driver before any
   path that can emit `LOOM_CLARIFY` [check](cargo run -p loom-walk -- todo_template_uses_driver_created_work_epic)
+
+### Agent-output conformance
+
+- Executable examples extracted from actual rendered phase prompts decode and
+  admit through the common production protocol, covering every phase-permitted
+  emit variant without teaching another phase's executable output shapes.
+  [test?](rendered_phase_message_examples_decode_under_shared_contract)
+
+- Rendered finding examples cover the complete typed prompt-visible token,
+  target, and scope subset and resolve through the real workspace validator
+  against fixture specs, files, and anchors; wrong combinations fail.
+  [test?](rendered_finding_examples_resolve_prompt_visible_token_target_scope_subset)
+
+- Conformance retains independent literal positive/negative fixtures and
+  boundary cases; deliberate spelling, arity, role, target, scope, and rendered
+  example drift fails even when generated values still round-trip together.
+  [test?](prompt_parser_conformance_keeps_independent_negative_wire_fixtures)
+
+- Closed protocol facts and prompt-visible domain metadata come from the
+  canonical typed contracts, not an independent production token/phase registry.
+  Rendering and exhaustive coverage tests expose missing or inconsistent
+  projections. [test?](protocol_metadata_controls_prompt_variant_coverage)
 
 ### Unit tests
 
@@ -1321,9 +1383,12 @@ bundled documents in front of the agent with zero configuration.
    templates. Stability: additive type changes are minor bumps; removing or
    renaming fields / partial paths is a major bump.
 
-   **Dependency on `loom-protocol`.** The typed gate wire-format contract
-   (`Finding`, `ConcernToken`, `FindingTarget`, `BadWalk`, `WalkOutput`, etc.)
-   lives in `loom-protocol::gate` — see
+   **Dependency on `loom-protocol`.** The common output enum, decoder, and phase
+   projections live in `loom-protocol::output` under [Protocol](protocol.md).
+   Templates consumes those typed facts, without importing runtime
+   orchestration. The typed gate wire-format contract (`Finding`,
+   `ConcernToken`, `FindingTarget`, `BadWalk`, `WalkOutput`, etc.) lives in
+   `loom-protocol::gate` — see
    [Findings — Canonical contract location](findings.md#canonical-contract-location-1).
    The typed todo success contract (`TodoSuccess`, `TodoSpecSuccess`,
    `TodoSpecOutcome`, `TodoFingerprint`) lives in `loom-protocol::todo` per
@@ -1348,15 +1413,14 @@ bundled documents in front of the agent with zero configuration.
    exposed" rule in the public surface requirement), not a divergent loading
    mechanism.
 
-   `PARTIAL_FINDINGS_WALK` is the canonical agent-facing prose for the gate wire
-   format and is paired with `loom-protocol::gate` on the parser side. Consumers
-   using `loom-protocol::gate::parse_walk_output` to parse subprocess stdout
-   should pair it with `PARTIAL_FINDINGS_WALK` in their own template body so the
-   emitter (their LLM agent) and the parser (their driver) stay coherent across
-   loom releases. The anti-drift coupling between `ConcernToken` and
-   `PARTIAL_FINDINGS_WALK` is maintained inside loom's workspace by the
-   `template_wire_format_restatement` walk; consumers get coherence for free as
-   long as they pin both crates from the same loom release.
+   `PARTIAL_FINDINGS_WALK` is the canonical review presentation of Protocol's
+   message encoding and Findings' payload/pairing contract. Consumers compose it
+   with the public finding adapter over the shared decoder. The
+   `template_wire_format_restatement` walk prevents copied wire prose; it does
+   not prove prompt/parser agreement. That evidence comes from
+   [rendered conformance](#agent-output-conformance), including contextual
+   resolution and independent negative fixtures. Pinning matching releases
+   avoids release skew but does not validate a consumer's custom composition.
 
 3. **Chat discipline in interactive sessions.** `partial/chat_interview.md`,
    pinned in every interactive-session template (`plan`, `inbox`), requires the

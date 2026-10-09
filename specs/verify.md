@@ -488,6 +488,13 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   `## Options — …` block whose Option 1 is "drop the `?`", per _Integrity gate_
   above [test](mint_emits_drop_marker_option_for_unneeded_pending_marker)
 
+- At integrity cap exhaustion, production escalation admits one dedicated
+  decision per affected finding with full kind-specific alternatives, including
+  `inputs-protocol-error`, and preserved cause/source context. Partial answers
+  enable only separately bound affected work, without an epic-wide dependency,
+  automatic finding completion, renewed automatic iteration budget, or push.
+  [test?](integrity_cap_decisions_preserve_full_options_and_partial_resolution)
+
 <!-- prettier-ignore -->
 - Production readiness probes use the shared admitted planner for scope,
   requested tier/lane, stage, batching/sharing, and bounded execution. Missing prospective targets
@@ -1588,24 +1595,23 @@ emitted for it. The push is refused for this iteration, the iteration counter is
 incremented, `loom gate mint -m/--molecule` promotes the batch, and the outer
 loop re-enters so the worker can address it.
 
-**Cap-exhausted fallback.** The recovery branch is bounded by the molecule's
-iteration cap. When the counter exhausts, the verdict gate falls back to the
-terminal escalation: `loom:clarify` on the molecule's epic with **one composed
-`## Options — …` block** per the _Options Format Contract_. The composition rule
-is mechanical:
+**Cap-exhausted fallback.** The iteration cap still ends automatic remediation.
+The driver creates or reuses one dedicated decision per affected finding
+identity under the work epic and admits the complete known set through
+[Loop's decision lifecycle](loop.md#decision-batches-and-attributed-waits). Each
+decision has one full canonical Options brief from its kind's template, scoped
+to the finding's target, source and retained diagnostics. Independent findings
+are not collapsed into one kind-wide choice or a primary-option-only composite.
+Repeated findings reuse the same decision; answered items retain history rather
+than reopening.
 
-- For each integrity finding kind present in the molecule's findings (in the
-  order they appear below — `UnresolvedAnnotation`, `StubTestFunction`,
-  `UnneededPendingMarker`), emit one `### Option N` entry drawn from the
-  **primary (Option 1) of that kind's per-kind auto-options template** below,
-  scoped to the affected findings (e.g. _"Option 1 — Drop the `?` markers at
-  specs/templates/tests.md at the reported annotation locations"_).
-- Close the block with one final `### Option N` for _"Mixed resolution via
-  `loom inbox chat`"_ — the escape hatch when the operator needs different
-  resolutions across findings or wants options beyond each kind's primary.
-
-This preserves the Options-Format-Contract invariant of one block per clarify
-bead while keeping per-kind resolution paths visible to the operator.
+The work epic receives neither a duplicate brief nor a blanket dependency on all
+decisions. Actual prerequisites attach to affected implementation work, with
+attributed waits only where needed. Existing unresolved molecule/finding state
+continues to refuse publication. Answering some decisions can enable separately
+bound follow-up work while others remain queued; answers alone do not resolve
+findings, finish implementation, reset the cap, or authorize a push. Follow-ups
+retain Findings' producer/resolution boundary and actual publication checks.
 
 **Worker authority on the recovery branch.** Findings are not classified as
 self-fixable in the driver. The worker follows
@@ -1621,8 +1627,9 @@ the composition draws from. Two consumption sites:
 - **Recovery branch (cap not exhausted).** The worker's remediation batch
   description embeds the kind-appropriate template alongside each finding as a
   suggested mechanical resolution.
-- **Cap-exhausted fallback.** The gate composes one primary option per present
-  kind from these templates per the rule above.
+- **Cap-exhausted fallback.** The driver persists the full kind-appropriate
+  template on each dedicated decision, retaining all applicable alternatives
+  rather than selecting primary options for a composite brief.
 
 **Auto-generated options for `UnresolvedAnnotation`.** The gate has enough
 information (target string, tier, spec location) to draft options for the human:
@@ -1656,6 +1663,18 @@ implementation has caught up to the claim:
 - _Option 2_ — If the resolution is incidental (the target name collides with an
   unrelated symbol now visible in the workspace), retarget the annotation to the
   actual intended verifier and keep `?` until _that_ one resolves.
+
+**Auto-generated options for `inputs-protocol-error`.** Retain the reported
+provider/observation source, invocation and bounded diagnostic:
+
+- _Option 1_ — Investigate and repair the query or checked definition so it
+  produces the required valid description/observation, then rerun the existing
+  gate command.
+- _Option 2_ — Correct a demonstrated source/configuration mismatch while
+  preserving the required obligations and input coverage, then retry admission.
+
+These options never suggest weakening scope, suppressing the query error with
+`?`, or accepting malformed offered metadata as a cold execution.
 
 The integrity gate is itself a `[check]`-tier verifier (its own spec criterion
 annotates back to its implementation), so every `loom gate check` run includes a

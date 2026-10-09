@@ -14,7 +14,8 @@ isolated work through the shared verification and publication boundaries.
 The driver resolves acceptance before dispatch, reconciles the worker outcome,
 and performs integration/publication effects only through Gate admission.
 Related owners: [workspaces](workspaces.md), [specs](specs.md), [todo](todo.md),
-[gate](gate.md), [findings](findings.md), [templates](templates.md).
+[gate](gate.md), [findings](findings.md), [templates](templates.md),
+[protocol](protocol.md), [inbox](inbox.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -54,39 +55,65 @@ goals are instructions, not passing evidence.
 
 [Acceptance](#verdict-gate-1).
 
-Worker terminal output is untrusted until reconciled with mechanical state.
-Interactive `plan` and `inbox chat` sessions are human-authoritative and bypass
-worker reconciliation; they accept only their phase-valid completion or apply
-handoff. Review sessions use the finding/terminator protocol in [Gate](gate.md).
+Worker output is untrusted until the shared [Protocol](protocol.md) decoder,
+phase admission, and mechanical reconciliation succeed. Nonterminal decision
+reporting is admitted separately from the source's terminal outcome. Interactive
+Plan/Inbox do not undergo worker completion reconciliation;
+[Inbox](inbox.md#orchestration-ownership) preserves human decisions while
+allowing reconciliation of explicitly attributed driver-owned waits. Review
+retains [Findings' pairing contract](findings.md#emit-shape).
 
-For a loop worker, the final marker, bead closure, branch diff, and tree state
-produce the following result:
+For a loop worker, the decoded terminal, bead closure, branch diff, and tree
+state produce the following result. After transport completion, apply rows in
+order; the first matching row determines the outcome. Protocol/phase and
+reference/graph/inventory errors precede terminal-state reconciliation and new
+queue/wait effects under
+[batch admission](#decision-batches-and-attributed-waits).
 
-| Marker and state                                                            | Result                                                                            |
-| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `LOOM_BLOCKED` with no safe options                                         | semantic block                                                                    |
-| `LOOM_CLARIFY` with a persisted Options block                               | human clarification                                                               |
-| `LOOM_RETRY` with a preceding reason                                        | bounded worker recovery                                                           |
-| no valid final marker                                                       | `swallowed-marker` recovery                                                       |
-| `LOOM_WAITING`, bead open, at least one active declared blocking dependency | typed dependency wait; preserve the bead workspace/branch and continue ready work |
-| `LOOM_WAITING` with a closed bead or no active declared blocker             | `invalid-waiting` recovery                                                        |
-| `LOOM_COMPLETE` while the bead is open                                      | `incomplete-signaling` recovery                                                   |
-| `LOOM_COMPLETE` with an empty diff                                          | `zero-progress` recovery                                                          |
-| successful marker with a dirty tree                                         | `tree-not-clean` recovery                                                         |
-| `LOOM_COMPLETE`, closed bead, non-empty diff, clean tree                    | integrate and verify                                                              |
-| `LOOM_NOOP`, closed bead, empty diff, clean tree                            | intentional no-work success                                                       |
+| Terminal and state                                                                                                | Result                                                                                     |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| invalid protocol/phase session, decision reference graph, or candidate inventory                                  | visible protocol/recovery diagnostic; no new queue/wait effects, completion or integration |
+| `Blocked` with its checked nonblank reason                                                                        | semantic block                                                                             |
+| `Retry` with its typed reason                                                                                     | bounded worker recovery                                                                    |
+| `Waiting`, non-closed source, active declared prerequisite, no independent hold                                   | attributed dependency wait; preserve the workspace/branch and continue ready work          |
+| `Waiting` with a closed source, no active prerequisite, or incompatible hold                                      | `invalid-waiting` recovery                                                                 |
+| `Complete` or `Noop` with an independent hold or authorized cancellation                                          | refuse stale completion; preserve human state without integration or no-work acceptance    |
+| `Complete` or `Noop` with an active prerequisite for its own acceptance                                           | reject completion before integration                                                       |
+| `Complete` or `Noop` while the bead is not closed                                                                 | `incomplete-signaling` recovery                                                            |
+| `Complete` with an empty diff                                                                                     | `zero-progress` recovery                                                                   |
+| `Complete` or `Noop` with a dirty tree                                                                            | `tree-not-clean` recovery                                                                  |
+| `Noop` with a non-empty diff                                                                                      | reject the false no-work claim through bounded worker recovery                             |
+| `Complete`, own prerequisites resolved, no independent hold/cancellation, closed bead, non-empty diff, clean tree | integrate and verify                                                                       |
+| `Noop`, own prerequisites resolved, no independent hold/cancellation, closed bead, empty diff, clean tree         | intentional no-work success                                                                |
 
-`LOOM_CLARIFY` is valid only after the worker persists a well-formed
-[Options Format Contract](inbox.md#options-format-contract) block on the target.
-A missing or malformed block becomes `loom:blocked` with cause
-`clarify-without-options`. `LOOM_RETRY` consumes the in-session retry budget;
-`LOOM_BLOCKED` and valid clarification go directly to inbox. `LOOM_WAITING` is a
-loop-only bare terminal whose durable payload is the Beads dependency graph: the
-current bead remains open and at least one direct `blocks` dependency must
-remain non-closed. A valid wait consumes no retry budget, performs no
-integration or per-bead gate, mutates no workflow label/status, and leaves the
-workspace for the blocker-aware ready queue to resurface after dependencies
-close.
+`Clarify` is a decision-batch record, not a terminal or evidence that the source
+must pause. Its admission follows
+[decision batches](#decision-batches-and-attributed-waits). `Retry.reason`
+consumes the existing in-session retry budget; `Blocked.reason` routes the
+source to semantic inbox resolution. Missing terminals retain `swallowed-marker`
+recovery; malformed output carries its typed protocol context. A valid `Waiting`
+records driver-owned attribution and visibly parks the source as
+`status=blocked`, without `loom:blocked`, `loom:clarify`, or `loom:infra`. It
+consumes no retry budget and performs no integration or per-bead gate.
+Resumption follows current prerequisites, not a fresh worker run to rediscover
+the same decision.
+
+The `Blocked` predicate is mechanical: a checked nonblank reason determines
+routing without an LLM call. Whether that reason adequately explains why no safe
+options can be framed remains a guidance and
+[semantic-review obligation](gate.md#verdict-gate), not a decoder or
+verdict-table predicate.
+
+Before accepting `Complete`/`Noop`, re-read the source's current prerequisites
+and independent holds or authorized cancellation. A human change made during the
+worker session vetoes stale positive completion, including after agent-side
+closure. Preserve that human state and report the conflict; do not reopen,
+replace labels, or automatically redispatch held/cancelled work as protocol
+repair. Closed status alone identifies neither cancellation nor permission to
+override a recorded hold. This check precedes integration or intentional no-work
+acceptance and does not create another retry budget. Rejected or provisional
+closure is not workspace-disposal authority; startup and post-attempt removal
+follow [Workspaces' cleanup admission](workspaces.md#cleanup-admission).
 
 Per-bead integration verifies worker signatures, rebases, verifies rewritten
 signatures, fast-forwards, and runs
@@ -106,14 +133,18 @@ under Gate's admission rules. The driver applies Gate's attempt-ending boundary
 to failed or interrupted pushes, including recovery after process loss; a retry
 resolves current remote state and enters a new admitted attempt rather than
 resuming the old handoff. Successful Git and Beads publication is followed by
-inside-out closure of ancestor epics whose direct children are closed.
+inside-out closure of currently eligible ancestor epics under
+[completion admission](#completion-admission).
 
 Infrastructure failures remain distinct from semantic worker outcomes. Static
 configuration/dispatch faults pause the bead as `loom:infra` without transport
-retry. Spawn, handshake, transport, framing, or premature-stream failures use a
-separate per-loop infra attempt budget and round-robin behind other ready work.
-Exhaustion pauses the bead as `loom:infra`; a later loop invocation gets a fresh
-budget. `first_event_seen` distinguishes pre-stream from interrupted sessions.
+retry. Spawn, handshake, backend transport/RPC-frame decoding, or
+premature-stream failures use a separate per-loop infra attempt budget and
+round-robin behind other ready work. Exhaustion pauses the bead as `loom:infra`;
+a later loop invocation gets a fresh budget. `first_event_seen` distinguishes
+pre-stream from interrupted sessions. Malformed agent-output messages in an
+otherwise completed session instead use protocol diagnostics and the worker
+recovery budget; they are not transport framing failures.
 
 Every driver-detected recovery carries a typed `PreviousFailure`, bounded
 attempt count, and durable evidence such as dirty paths, verifier failures,
@@ -122,21 +153,10 @@ preserves the cause in Beads. Remediation work is bonded to its originating
 molecule before becoming dispatchable so molecule progress and push refusal see
 all unresolved blocked, clarify, deferred, and infra state.
 
-Marker ownership is phase-specific:
-
-- `LOOM_COMPLETE` is generic success for loop, clean review, plan, and inbox;
-- `LOOM_NOOP` is loop-only empty-diff success;
-- `LOOM_WAITING` is loop-only typed dependency waiting, valid only against an
-  open bead with an active declared blocker;
-- `LOOM_TODO: <json>` is todo-only typed success;
-- `LOOM_APPLY: {"proposals":[...]}` is inbox's trusted apply handoff;
-- `LOOM_RETRY`, `LOOM_BLOCKED`, and direct `LOOM_CLARIFY` are worker
-  self-reports subject to their phase restrictions; and
-- `LOOM_CONCERN: {"summary":"..."}` terminates a review that streamed one or
-  more `LOOM_FINDING:` records.
-
-Exactly one phase-valid marker appears on the final non-empty line. Exit status
-alone does not authorize state transitions.
+[Protocol — Phase admission](protocol.md#phase-admission) owns the shared
+variant/phase matrix and logical terminal framing. Loop owns the contextual
+state checks above, not another marker parser. Exit status alone does not
+authorize state transitions.
 
 ### Loop Outcome Types
 
@@ -145,7 +165,13 @@ alone does not authorize state transitions.
 `LoopOutcome` and `GateOutcome` are architecture-bearing types: a successful
 loop invocation cannot omit the push-gate result. `LoopOutcome` has no default,
 is `must_use`, records processed, waiting, clarified, and blocked counts, and
-carries a non-optional `GateOutcome`.
+carries a non-optional `GateOutcome`. Processed, waiting, and blocked counts
+summarize admitted worker outcomes. Clarified counts distinct unresolved
+decision beads admitted during this invocation, including driver-origin
+decisions, not sources or `Clarify` records. Repeated IDs count once;
+already-closed historical references do not count. A completed source reporting
+five admitted decisions can therefore contribute one processed and five
+clarified.
 
 `GateOutcome` has three shapes: `Success(GateSuccess)`, `Fail(GateFail)`, and
 `NoGate { beads_processed, reason }`. `GateSuccess` is sealed and constructed
@@ -210,7 +236,8 @@ pub enum PreviousFailure {
     /// Driver-side rebase of the bead branch onto the integration tip
     /// hit textual conflicts. The next dispatch gets the conflict files
     /// plus the new base SHA for one agent retry; a second conflict
-    /// escalates to `loom:clarify` with driver-authored Options.
+    /// creates or reuses a dedicated driver-authored decision bead;
+    /// the source enters an attributed wait, not the human queue.
     IntegrationConflict {
         files: Vec<PathBuf>,
         new_base_sha: GitOid,
@@ -221,8 +248,8 @@ pub enum PreviousFailure {
     /// likely to succeed (environmental failure: tools failing
     /// mid-session, sandbox/cwd unlinked, transient IO; or agent
     /// self-reset: stuck-but-not-blocked, prompt-context exhausted,
-    /// approach abandoned). `reason` is the prose the agent wrote on
-    /// the line before the marker, captured verbatim. Distinct from
+    /// approach abandoned). `reason` is the decoded JSON reason,
+    /// not adjacent prose. Distinct from
     /// `DriverNotice::ObserverAbort` and from `BuildFailure` because
     /// the agent itself acknowledged the failure rather than the
     /// driver inferring it. Consumes one slot in
@@ -283,18 +310,157 @@ prompt-level feedback discipline; the driver-side trust boundary remains the
 [post-integration workflow](#worker-and-per-bead-integration-checks) and
 [Gate's push receipt](gate.md#gate-success-receipt).
 
-### Dependency-Wait Terminal
+### Decision batches and attributed waits
+
+Acceptance: [scheduling](#decision-scheduling),
+[batch/outcome admission](#verdict-gate-1), and
+[producer acceptance](#task-acceptance).
+
+Workers discover and persist all currently known unresolved decisions before
+reporting them through Protocol's `Clarify` records. Each decision is a separate
+bead with one [Inbox Options brief](inbox.md#options-format-contract), directly
+parented under its discovering task or Todo work epic. Beads-allocated IDs and
+explicit relationships are authoritative; dotted ID spelling is not. Workers own
+decision content, bead creation, and proposed dependency edges.
+
+**Staging.** Create each new candidate with `status=blocked` and no
+`loom:clarify`, `loom:blocked`, or `loom:infra` queue label. Persist untrusted
+producer/source and work-root provenance with its brief and proposed edges.
+Candidates cannot become implementation work merely because admission has not
+finished: Loop excludes them from worker dispatch and Todo refuses to finalize
+unaccounted candidate children. Interrupted producers preserve candidates for
+validated reuse or repair, not automatic queue admission or guessed bindings.
+Candidate provenance is a proposal, never trusted acceptance or wait authority.
+
+**Admission.** Aggregate the complete reported set and resolve every ID's
+purpose, parent/work-root context, and actual affected-work graph before new
+queue or scheduling effects.
+
+Compare that set and durable prior admission/repair dispositions with the
+current persisted candidate inventory attributable to this producer and
+work-root before new queue/wait effects or terminal-state reconciliation. Every
+owned candidate must be accounted for: an omitted staged candidate rejects
+`Complete`/`Noop` before integration even when it affects only other work or the
+source was agent-closed. The same check prevents `Waiting` from parking work
+behind an unreported, invisible decision. Preserve candidates and report exact
+missing IDs for bounded protocol repair, without guessing queue admission or
+silently treating them as ordinary implementation tasks. Ambiguous ownership
+fails visibly. Valid prior dispositions and historical closed decisions remain
+accounted for without requiring redundant emissions. This checks persisted
+discoveries, not whether the agent discovered every possible ambiguity.
+
+New candidates must belong to the reporting producer; already admitted decisions
+may be reused only in a compatible recorded work-root/dependency context.
+Missing IDs, wrong purpose/provenance, ambiguous references, and invalid graphs
+fail the handoff with complete diagnostics; valid siblings are retained as
+context, not silently admitted from that failed set. Preserve existing human
+state and producer-written candidates/edges on failure.
+
+After reference/graph admission, validate each unresolved decision's unique
+active brief. Valid briefs enter `loom:clarify`; missing, malformed, or
+ambiguous briefs instead put that decision in `loom:blocked` with
+`clarify-without-options`, while valid siblings still enter the clarification
+queue. The fallback targets the defective decision, never a duplicate brief or
+semantic block on its discovering source. Record each disposition and validated
+provenance durably so interruption/replay cannot duplicate or erase queue items.
+The source's terminal is reconciled independently against its actual
+obligations; a brief downgrade alone does not force that source to wait.
+
+Already-closed references to previously admitted decisions retain their recorded
+outcomes and historical context. They create no active queue item, are not
+reopened, and need no new active brief. This is checked idempotent replay, not
+silent removal of invalid references. Admission never scrapes adjacent stdout
+for a question.
+
+**Driver-origin decisions.** Existing conflict and integrity producers use the
+same dedicated-bead admission and scheduling lifecycle without fabricating an
+agent `Clarify` record. Workspaces retains driver-authored integration-conflict
+briefs and the single automatic agent retry before escalation. Verify retains
+bounded integrity remediation, then supplies one full brief per affected finding
+at cap exhaustion. Driver provenance and cause evidence remain explicit; moving
+the brief does not move writer authority or grant additional retries.
+
+Only work whose acceptance genuinely requires a decision depends on it:
+`bd dep add <affected-work> <decision>`. Parentage is provenance, not a
+prerequisite. A decision may block several work beads; a work bead may need
+several decisions. Do not indiscriminately block the entire source/work epic or
+create one implementation task per question.
+
+Independently actionable work is split into schedulable beads under the existing
+work epic, with dependencies on only its actual prerequisites. Split work enters
+the existing driver-owned acceptance producer/resolution/persistence boundary
+before dispatch: ordinary work has explicit criterion assignments, remediation
+retains finding-goal attribution. Prose and labels do not manufacture bindings.
+Use sibling work when nesting beneath a waiting source would inherit blockers;
+actual Beads readiness, not a model-only graph, must demonstrate independence.
+
+The source remains a final acceptance/join task only when split work is required
+for its own goal; it then depends on that work and closes through ordinary
+worker completion after the work finishes. Otherwise it may complete while
+reported decisions block other work. Resolving a decision records human intent,
+not implementation completion and not automatic source closure.
+
+**Attributed scheduling state.** The driver parks eligible affected work waiting
+on admitted decision prerequisites, and a source admitted with `Waiting`, as
+`status=blocked`. It records typed durable wait attribution in Beads metadata,
+including the work identity, phase/work-root context, and admitted prerequisite
+references. Preserve unrelated metadata. The original work does not acquire a
+duplicate Options brief or human-queue label merely because it waits. The driver
+must not take ownership of an independently blocked/deferred/closed item or
+another running dispatch based only on a newly reported decision.
+
+**Resumption.** On Inbox chat exit, Loop/Todo startup, and scheduler refresh,
+the driver re-reads attributed work and its current dependency graph. It returns
+only matching driver-waiting work to `open` when all current prerequisites have
+resolved and no independent human, semantic, infra, or deferred hold remains.
+Other active blockers, cancelled/replaced attribution, malformed/missing
+prerequisites, or incompatible status changes prevent reopening. Human adoption
+of an independent hold cancels or replaces the wait attribution; a blocked
+status alone cannot distinguish ownership. The driver never reopens closed work,
+closes tasks on answered decisions, erases human resolutions, or restores labels
+from a generic interactive-session verdict.
+
+Wait admission/release is durable and idempotent. Interrupted or repeated
+processing reuses the same decisions, edges, drafts, and attributed wait without
+consuming retry budget or overwriting independent changes. Recheck current state
+before writes; a conflict or ambiguous ownership fails visibly rather than
+forcing a transition. A process restart needs no ephemeral cache fact to decide
+that work is eligible. Waiting Loop workspaces and committed/uncommitted work
+are preserved under [Workspaces](workspaces.md); waiting Todo drafts, fixed
+batch state, notes, and cursors follow
+[Todo](todo.md#decision-wait-and-resumption).
+
+`partial/dependency_wait.md` is shared by Loop and Todo. It teaches durable
+prerequisite declaration, non-closure while genuinely waiting, visible
+attributed parking, and resumption without repeated discovery runs. The unit
+terminal's spelling and framing belong to Protocol.
+
+### Completion admission
 
 [Acceptance](#verdict-gate-1).
 
-`partial/dependency_wait.md` is included only by `loop.md`. It instructs the
-worker to declare `bd dep add <current> <blocker>`, keep the current bead open,
-and emit bare `LOOM_WAITING` on the final non-empty line. The marker has no JSON
-payload because Beads is authoritative. It also states the mechanical outcome: a
-valid wait preserves the worktree/branch, skips integration and per-bead gates,
-consumes no retry budget, adds no blocked/clarify/infra state, and lets
-blocker-aware `bd ready` resurface the bead. A closed bead or absent active
-blocker is invalid and enters recovery.
+Molecule-clean admission rechecks current known workflow dispositions, including
+after restart. A provisional, rejected or unreconciled worker closure is not
+completed work merely because Beads progress counts it as closed. It remains
+unresolved until valid recovery/completion admission or a separately authorized
+work disposition resolves the execution requirement. Such a disposition is not
+implementation coverage and cannot waive current Gate obligations.
+
+This rule concerns known workflow work, not a retrospective receipt requirement
+for every ordinary historical closed bead. Cleanup and publication remain
+separate: an ineligible-GC clone alone does not prove unresolved molecule work,
+and permission to dispose of a workspace does not prove completion or authorize
+publication. Missing disposable cache state cannot erase known unfinished work.
+
+Post-push ancestor closure requires fresh per-candidate admission, including
+ancestors outside the selected molecule. Re-read the epic, its direct children
+and their known workflow dispositions, and the epic's current independent holds
+or cancellation before closing. Closed children and an earlier clean push do not
+override human intent or unresolved workflow completion. Skip held, cancelled or
+ambiguously owned candidates with diagnostics, preserving their state; retain
+inside-out closure for eligible ancestors without automatically restoring
+status, labels or work. This grants no new decision-closing or inspection
+mutation permission.
 
 ## Success Criteria
 
@@ -348,6 +514,12 @@ blocker is invalid and enters recovery.
   chokepoint after the batch drains, constructs `GateOutcome` from typed gate
   evidence, and returns. There is no parallel-specific summary type
   [test](parallel_codepath_returns_loop_outcome_with_gate_field)
+
+- Outcome counts distinguish admitted worker outcomes from distinct admitted
+  unresolved decisions. Repeated references count once and closed historical
+  refs do not count; a completed source reporting five decisions yields one
+  processed and five clarified rather than an exclusive clarified-source result.
+  [test?](loop_outcome_counts_decisions_independently_of_worker_terminals)
 
 - `loom loop` reads profile from bead label and spawns correct container
   [test](resolve_profile_reads_label)
@@ -443,10 +615,10 @@ blocker is invalid and enters recovery.
 - On a **clean** push gate the `MarkerProof` is minted to `.loom/marker.json`
   **immediately before** `git push`, inside the gate's critical section, after
   deterministic pre-push and review have both covered the actual push range. A
-  **refused** push (blocked/clarify/deferred/infra bead, pre-push failure,
-  verify-fail, review-concern, integrity finding, or missing marker coverage)
-  mints nothing. A missing or invalid marker falls the pre-push consumer through
-  to running hooks rather than failing the push by itself
+  **refused** push (unresolved blocked/clarify/deferred/infra bead, pre-push
+  failure, verify-fail, review-concern, integrity finding, or missing marker
+  coverage) mints nothing. A missing or invalid marker falls the pre-push
+  consumer through to running hooks rather than failing the push by itself
   [test](clean_push_mints_marker_after_covered_verify_and_review)
 
 - Push gate refuses when `loom gate review`'s `--diff`-scoped invocation emits
@@ -463,11 +635,12 @@ blocker is invalid and enters recovery.
   Findings coalesce by lead spec / concern family, the push is refused, the
   counter is incremented, `loom gate mint -m` promotes deferred remediation, and
   the outer loop re-enters so the worker can address the batch. On cap
-  exhaustion, the gate falls back to the terminal escalation: `loom:clarify` on
-  the molecule's epic with one composed auto-generated `## Options     — …`
-  block (kind-grouped resolutions per
-  [Verify — Integrity gate](verify.md#integrity-gate))
-  [test](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
+  exhaustion, the gate admits the complete dedicated-decision set under the work
+  epic, preserving full per-finding alternatives and partial resolution per
+  [Verify — Integrity gate](verify.md#integrity-gate). The epic gets no copied
+  Options brief or blanket decision dependency; publication remains refused
+  while required findings or human decisions remain unresolved.
+  [test?](push_gate_recovers_integrity_findings_then_admits_decision_batch_at_cap)
 
 - Push gate refuses on any verify-tier dispatch error (exit code 2 = unknown
   verifier, command not found); dispatch errors count as fails, not skips
@@ -498,8 +671,11 @@ blocker is invalid and enters recovery.
 
 - After every per-bead `loom loop` worker phase, the verdict-gate decision table
   classifies the terminal marker plus mechanical signals (bd-closed, diff, tree
-  cleanliness) without an LLM call
-  [test](recovery_cause_labels_match_spec_strings)
+  cleanliness, current prerequisites and holds/cancellation) without an LLM call.
+  `Blocked` routes on its checked nonblank reason, not a semantic options
+  judgment. First-match precedence handles overlapping failures, and a non-empty
+  diff cannot pass as `Noop`.
+  [test?](loop_verdict_table_is_total_and_precedence_is_stable)
 
 <!-- prettier-ignore -->
 - `phase_verdict::decide()` is invoked from `loom loop`'s per-bead exit AND from
@@ -508,36 +684,59 @@ blocker is invalid and enters recovery.
 
 - `loom loop` never invokes `bd close` on a bead it dispatched; closure is the
   agent's responsibility and the `bd-closed` column is observed post-hoc.
-  Verified by stubbing an agent that emits `LOOM_BLOCKED` / `LOOM_CLARIFY`
-  without calling `bd close` and asserting the bead remains open after the run
-  finishes.
-  [test](loom_loop_never_invokes_bd_close_on_dispatched_bead_across_all_markers)
+  Dependency release and decision reporting do not close the source on the
+  agent's behalf; verify closure ownership across all admitted terminal outcomes.
+  [test?](loop_preserves_worker_closure_ownership_with_decision_records)
 
 - `LOOM_BLOCKED` agent marker with a non-empty reason transitions the bead to
   `[blocked]` and skips the recovery loop
   [test](blocked_marker_routes_to_blocked_with_reason)
 
-- `LOOM_CLARIFY` agent marker → bead transitions to `[clarify]`, recovery loop
-  is skipped [test](clarify_marker_routes_to_clarify_with_question)
+- Nonterminal decision reporting admits dedicated decision beads, not a clarify
+  status on the emitting task. Completion of that task remains possible when
+  its own acceptance has no unresolved prerequisite or independent hold/cancellation.
+  [test?](clarify_record_and_completion_have_independent_source_outcomes)
 
-- Direct-emit `LOOM_CLARIFY` (`loop` / `todo` only): the gate validates the
-  target bead/work epic's notes ∪ description for a well-formed
-  `## Options — <summary>` heading with at least one `### Option <N> — <title>`
-  subsection before applying `loom:clarify`. Same shape mint validates on a
-  clarify-route finding's evidence. Forgetful- agent case (marker emitted,
-  options block absent or malformed) falls back to `loom:blocked` with cause
-  `clarify-without-options` — no stranded clarify bead reaches `loom inbox`
-  [test](direct_emit_clarify_without_options_block_falls_back_to_blocked)
+- Every direct decision reference resolves against the current task/work-root
+  and graph before effects; a unique canonical Options brief is required for the
+  clarification queue. Missing or malformed briefs retain the per-decision
+  `clarify-without-options` fallback; invalid references cannot
+  silently disappear or authorize source completion.
+  [test?](decision_batch_admission_resolves_every_reference_and_brief)
 
-- Clarify downgrades emit `DriverKind::ClarifyDowngraded`, write a bd note
-  breadcrumb with cause `clarify-without-options`, and pair the resulting bd
-  label/status mutation with `DriverKind::BdStateTransition`
-  [test](clarify_downgrade_emits_driver_events_and_bd_breadcrumb)
+- New decision candidates remain blocked and outside human queues and worker
+  dispatch until contextual admission; interrupted or unreported candidates
+  survive for repair/reuse without fabricated acceptance bindings.
+  [test?](decision_candidates_stay_staged_until_contextual_admission)
 
-- `LOOM_RETRY` agent marker → recovery with cause `agent-retry`,
-  `previous_failure` populated with `AgentRetry { reason }` from the prose
-  preceding the marker; one `[loop] max_retries` slot consumed
-  [test](agent_retry_consumes_max_retries_slot_and_threads_reason)
+- Decision handoffs account for every persisted candidate attributable to the
+  producer/work-root through reported IDs or valid prior dispositions before new
+  queue/wait effects. An omitted staged candidate rejects `Complete`/`Noop`
+  before integration, including after agent-side closure, and cannot hide behind
+  `Waiting`; unrelated producers are not swept in, ambiguous ownership fails
+  visibly, and prior/closed decisions need no redundant report.
+  [test?](loop_handoff_rejects_unaccounted_owned_decision_candidates)
+
+- Reference/graph errors reject the full new handoff before queue/wait effects,
+  retaining valid siblings and existing human state. Brief-only failures downgrade
+  the defective decision while valid siblings enter the clarification queue,
+  without coupling source completion to unrelated decisions.
+  [test?](decision_batch_failure_dispositions_preserve_context_and_independent_outcomes)
+
+- Previously admitted closed decision references replay without queue creation,
+  reopening, new brief requirements, or loss of the recorded human outcome.
+  [test?](closed_decision_reference_replay_preserves_resolution_and_queue_identity)
+
+- Brief downgrades emit `DriverKind::ClarifyDowngraded`, write the
+  `clarify-without-options` breadcrumb on the defective decision, and pair its
+  label/status mutation with `DriverKind::BdStateTransition`; they do not mutate
+  the source into a duplicate human-queue item.
+  [test?](decision_brief_downgrade_emits_events_on_defective_decision_only)
+
+- The decoded `Retry.reason` produces `agent-retry` recovery and
+  `PreviousFailure::AgentRetry { reason }`, consuming one existing retry slot;
+  unrelated preceding prose cannot supply or replace the reason.
+  [test?](agent_retry_json_reason_consumes_budget_without_prose_scraping)
 
 - `LOOM_RETRY` recovery exhaustion → `loom:blocked` with cause `retry-exhausted`
   (the same exhaustion path as other driver-detected recoveries)
@@ -546,11 +745,11 @@ blocker is invalid and enters recovery.
 - No marker emitted → recovery with cause `swallowed-marker`
   [test](missing_marker_routes_to_swallowed_marker_recovery)
 
-- `LOOM_WAITING` is accepted only when the production loop observes the current
-  bead still open with at least one active declared blocking dependency;
-  acceptance leaves the bead open, preserves its workspace/branch, applies no
-  workflow status/label, and runs no integration or per-bead gate
-  [test](waiting_marker_preserves_open_bead_without_labels_or_integration)
+- Admitted dependency waiting visibly parks non-closed work with typed durable
+  attribution and an active prerequisite, preserving its workspace/branch
+  without integration, per-bead gate, retry consumption, or semantic/clarify/infra
+  queue labels.
+  [test?](attributed_dependency_waits_park_without_integration_or_retry)
 
 - `LOOM_WAITING` without an active declared blocker is invalid, routes through
   visible recovery as `invalid-waiting`, and never silently parks the bead
@@ -558,27 +757,40 @@ blocker is invalid and enters recovery.
 
 - Parallel loop handling preserves the same waiting semantics: the waiting
   slot's workspace remains, its branch is not merged, and sibling ready work
-  continues [test](parallel_waiting_outcome_preserves_workspace_without_merge)
+  continues [test?](parallel_attributed_wait_preserves_workspace_and_ready_siblings)
 
-- `LOOM_COMPLETE` + bead not bd-closed → recovery with cause
-  `incomplete-signaling`
+- Completion cannot bypass an active prerequisite for the source's own
+  acceptance even if the agent closed the bead; reported decisions affecting
+  only other work do not prevent independent source completion.
+  [test?](completion_rejects_active_source_prerequisites_without_coupling_other_decisions)
+
+- Current independent holds or authorized cancellation veto `Complete`/`Noop`
+  before integration or intentional no-work acceptance, including human changes
+  during the worker session and after agent-side closure. Preserve human state,
+  show the conflict, and do not automatically reopen or redispatch the source.
+  [test?](completion_rechecks_human_holds_and_cancellation_before_acceptance)
+
+- `LOOM_COMPLETE` + resolved own prerequisites + no independent hold/cancellation + bead not bd-closed → recovery
+  with cause `incomplete-signaling`
   [test](complete_without_bd_closed_routes_to_incomplete_signaling)
 
-- `LOOM_COMPLETE` + closed + empty diff → recovery with cause `zero-progress`
+- `LOOM_COMPLETE` + resolved own prerequisites + no independent hold/cancellation + closed + empty diff → recovery
+  with cause `zero-progress`
   [test](complete_with_empty_diff_routes_to_zero_progress)
 
-- `LOOM_NOOP` + closed + empty diff → accepted as intentional no-work output
+- `LOOM_NOOP` + resolved own prerequisites + no independent hold/cancellation + closed + clean tree + empty diff →
+  accepted as intentional no-work output
   rather than zero-progress; no post-integration verify runs for an empty bead
   diff [test](run_bead_noop_empty_branch_is_done_not_zero_progress)
 
-- `LOOM_COMPLETE` + closed + non-empty diff + dirty working tree
+- `LOOM_COMPLETE` + resolved own prerequisites + no independent hold/cancellation + closed + non-empty diff + dirty working tree
   (`git status --porcelain` non-empty) → recovery with cause `tree-not-clean`;
   post-integration verify is NOT run (recovery precedes it so verifiers don't
   execute against a half-staged tree); `previous_failure` lists the dirty paths
   capped at 30
   [test](complete_with_dirty_tree_routes_to_tree_not_clean_before_verify)
 
-- `LOOM_NOOP` + closed + dirty working tree → recovery with cause
+- `LOOM_NOOP` + resolved own prerequisites + no independent hold/cancellation + closed + dirty working tree → recovery with cause
   `tree-not-clean` (NOOP claims "no work needed" but the tree disagrees;
   surfacing the discrepancy is more useful than letting the bead close on a
   false negative) [test](noop_with_dirty_tree_routes_to_tree_not_clean)
@@ -638,14 +850,19 @@ blocker is invalid and enters recovery.
   `unbonded-origin` to surface the upstream inconsistency
   [test](refused_outcome_applies_unbonded_origin_blocked_to_origin)
 
-- The push gate walks `bd mol progress <id>` and refuses to push when any bead
-  in the molecule — including bonded remediation beads — carries `loom:blocked`,
-  `loom:clarify`, `loom:deferred`, or `loom:infra`; an orphan remediation bead
-  would slip past this check, so the bond invariant is what makes the gate sound
+- The push gate walks `bd mol progress <id>` and refuses to push when any
+  non-closed bead in the molecule — including bonded remediation and decision
+  beads — carries `loom:blocked`, `loom:clarify`, `loom:deferred`, or
+  `loom:infra`. Closed historical labels alone do not block publication; actual
+  unresolved work, prerequisites and required gate evidence still do. An orphan
+  remediation bead would slip past this check, so the bond invariant remains
+  necessary
   [test](remediation_beads_under_cap_auto_iterate)
 
-- Recovery iter ≥ max_iterations → applies `loom:blocked` with cause in
-  `bd update --notes`
+- Non-integrity recovery at the molecule iteration cap applies `loom:blocked`
+  with its cause in `bd update --notes`. Integrity cap exhaustion instead follows
+  [Verify's dedicated-decision escalation](verify.md#integrity-gate); this rule
+  does not replace that path or merge transport/in-session retry budgets.
   [test](at_or_above_max_applies_blocked_with_retry_exhausted_cause)
 
 - Iteration count is **work-epic-level** state (cached in
@@ -660,6 +877,11 @@ blocker is invalid and enters recovery.
   retryable `infra-interrupted`; an explicit worker `LOOM_BLOCKED` remains
   semantic `loom:blocked`
   [test](agent_stream_failure_classifier_distinguishes_preflight_interrupted_and_blocked)
+
+- Agent-output framing/JSON/phase errors after an otherwise completed session
+  use worker protocol recovery, not the transport/infra budget. Backend
+  RPC-frame errors and premature streams retain their infra classification.
+  [test?](completed_session_output_errors_use_worker_not_transport_recovery)
 
 - Retryable infra failures use a per-bead, per-`loom loop` budget from
   `[loop.infra] max_attempts` (default 3), move failed beads to the tail of an
@@ -701,9 +923,15 @@ blocker is invalid and enters recovery.
   labelled `loom:infra`, clearing stale infra state when redispatching
   [test](fresh_loop_retries_loom_infra_beads_with_fresh_budget)
 
-- The push gate refuses to push while any bead in the molecule carries
+- The push gate refuses to push while any non-closed bead in the molecule carries
   `loom:blocked`, `loom:clarify`, or `loom:infra`
   [test](clarify_or_infra_present_stops_without_pushing)
+
+- Closed decisions may retain queue labels and briefs as history without alone
+  preventing a clean publication or post-push epic closure. Live decisions,
+  unresolved prerequisites, holds and current gate failures still refuse
+  publication; clearing a historical label is not required or safety evidence.
+  [test?](publication_ignores_closed_queue_history_without_ignoring_live_blockers)
 
 - Observer-driven abort (`EventSink::react()` returning `SessionCommand::Abort`)
   classifies as recovery cause `observer-abort` with detail naming the
@@ -712,15 +940,29 @@ blocker is invalid and enters recovery.
   cancel)
   [test](observer_abort_routes_to_observer_abort_distinct_from_swallowed_marker)
 
-- After the push-gate `Clean` branch's `git push` + `wrix beads push` both
-  succeed, the driver walks the molecule's spec-bead parents and closes every
-  ancestor epic whose direct children are all `status == "closed"` via
-  `bd close --reason="all     children complete; auto-closed by review gate"`.
-  Each close emits one `DriverKind::EpicAutoClosed` driver event carrying the
-  epic id. [test](epic_auto_closes_when_all_children_closed_and_review_passes)
+- After initial Git and Beads publication succeed, the driver closes only
+  freshly admitted ancestor epics with closed direct children and no unresolved
+  known workflow completion, independent hold or cancellation. Each admitted
+  close emits one `DriverKind::EpicAutoClosed` with the epic id; ambiguous
+  admission preserves state with diagnostics.
+  [test?](epic_auto_close_requires_current_ancestor_admission)
 
-- Standalone review publishes Beads through the current `wrix beads push` CLI,
-  never the removed `beads-push` helper or `bd dolt push`
+- Ancestor auto-close preserves independent human holds/cancellation, including
+  late changes and ancestors outside the selected molecule. Closed children or
+  an earlier clean push cannot overwrite their status, labels or disposition.
+  [test?](epic_auto_close_preserves_independent_holds_and_cancellation)
+
+- Molecule-clean admission rejects known provisional, rejected or unreconciled
+  workflow closures after restart until valid completion/recovery or an
+  authorized work disposition. Historical closed work needs no retrospective
+  receipt; GC ineligibility or workspace disposal alone is not publication
+  authority or a publication blocker.
+  [test?](molecule_clean_rejects_known_unaccepted_workflow_closures)
+
+- The trusted publication controller constructs its Beads synchronization
+  command as `wrix beads push`, never the removed `beads-push` helper or
+  `bd dolt push`. Standalone gate review remains inspection-only under
+  [Gate's command contract](gate.md#commands).
   [test](beads_push_argv_invokes_wrix_beads_push_not_bd_dolt_push)
 
 - Loop-owned molecule handoff publishes Beads through the current
@@ -732,18 +974,57 @@ blocker is invalid and enters recovery.
   [test](epic_does_not_auto_close_when_any_child_non_closed)
 
 - Epic auto-close does not fire on any non-Clean push-gate verdict
-  (`LOOM_CONCERN`, any bead carrying `loom:blocked` or `loom:clarify`); only the
+  (`LOOM_CONCERN`, any non-closed bead carrying `loom:blocked` or `loom:clarify`); only the
   `Clean` arm reaches the walk.
   [test](epic_does_not_auto_close_on_non_clean_review_verdict)
 
-- Nested epics close inside-out in a single review-phase pass: closing an inner
-  epic re-enqueues its parent so a fully- resolved grandparent retires in the
-  same `Clean` walk. [test](nested_epics_close_inside_out_in_one_pass)
+- Eligible nested epics close inside-out in one publication-controller pass:
+  closing an inner epic re-enqueues its parent for fresh admission, so an
+  eligible grandparent retires in the same `Clean` walk.
+  [test](nested_epics_close_inside_out_in_one_pass)
 
-- Epic auto-close runs strictly **after** `git push` + `beads-     push`
-  succeed; a push failure returns early through the `Clean` arm and skips the
-  walk, so no closed-locally / open- on-remote split arises.
-  [test](auto_close_skipped_when_git_push_fails)
+- Epic auto-close runs only after the initial `git push` and `wrix beads push`
+  both succeed; either initial publication failure skips the close walk. Later
+  close writes are not covered by that earlier Beads synchronization.
+  [test?](epic_auto_close_runs_only_after_initial_git_and_beads_publication)
+
+### Decision scheduling
+
+- Driver wait release reopens only matching attributed work after all current
+  prerequisites resolve; independent holds, cancelled attribution, malformed
+  state, other blockers, and closed work are preserved.
+  [test?](decision_wait_resumption_preserves_human_holds_and_closed_work)
+
+- Repeated or interrupted admission/resumption reuses durable decision and wait
+  state without duplicate queue items, lost drafts, overwritten unrelated
+  metadata, or retry-budget consumption; ambiguous ownership fails visibly.
+  [test?](decision_wait_admission_and_resumption_are_restart_safe)
+
+<!-- prettier-ignore -->
+- Actual Beads dependency/ready selection and production Loop/Todo/Inbox paths
+  demonstrate partial decision resolution: three of five answers unlock only
+  their affected bound work, remaining decisions block only genuine
+  prerequisites, and an independent reporting source can complete. Split-goal
+  join tasks wait for implementation, not merely answers; sibling work avoids
+  inherited ancestor blockers, and nested decision items stay visible in Inbox
+  after their discovering source closes. Staged/mixed/closed-reference replay and
+  driver conflict/integrity escalation preserve queue identity, retry caps and
+  independent follow-up readiness through actual Beads behavior. Omitted owned
+  candidates prevent positive completion; independent source closure preserves
+  live decision children and never bypasses genuine own prerequisites or holds.
+  Actual pinned Beads closure guards are exercised, not inferred from help or
+  defeated with blanket force/reparenting/child closure. Late human holds or
+  cancellation veto stale positive completion without state reversion; closed
+  historical queue labels do not conceal live blockers or obstruct an otherwise
+  clean publication. Actual restart also exercises
+  [Workspaces' cleanup admission](workspaces.md#cleanup-admission), preserving
+  unaccepted/held closed sources rather than treating closure as safe disposal.
+  Known unaccepted workflow closure cannot become molecule-clean publication
+  authority on restart, while ordinary historical closures remain usable.
+  Ancestor closure rechecks current human holds/cancellation, including outside
+  the molecule and after publication, without treating GC ineligibility alone as
+  unfinished work or disposal permission as passing Gate evidence.
+  [system?](nix run .#test-decision-waits)
 
 ### Auxiliary commands
 
@@ -774,11 +1055,10 @@ blocker is invalid and enters recovery.
   `AgentRetry { reason: String }` — not a free string
   [test](previous_failure_public_variant_contract_is_constructible)
 
-- `PreviousFailure::AgentRetry { reason }` variant exists and carries the
-  verbatim prose the agent wrote on the line preceding the `LOOM_RETRY` marker;
-  populated by the driver when a worker phase exits with `LOOM_RETRY` per
-  [Loop — Verdict Gate](#verdict-gate)
-  [test](agent_retry_display_renders_reason_and_escalation_guidance)
+- `PreviousFailure::AgentRetry { reason }` carries the decoded JSON reason and
+  renders it with cause-appropriate bounded recovery guidance rather than
+  reconstructing a reason from adjacent stdout.
+  [test?](agent_retry_json_reason_reaches_previous_failure_rendering)
 
 <!-- prettier-ignore -->
 - `TreeNotClean` variant carries `dirty_paths: Vec<String>` capped at 30 entries
@@ -821,10 +1101,11 @@ blocker is invalid and enters recovery.
   typed `Finding`s, merges them into the molecule's deferred remediation set,
   promotes them with `loom gate mint -m/--molecule`, refuses the push,
   increments the counter, and re-enters the loop. On cap exhaustion, the gate
-  falls back to terminal `loom:clarify` on the molecule's epic with one composed
-  auto-generated `## Options — …` block (kind-grouped resolutions per _Integrity
-  gate_ above)
-  [test](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
+  admits dedicated decision children with full per-finding Options briefs and
+  scoped dependencies under [Verify's cap escalation](verify.md#integrity-gate).
+  It does not copy Options onto the work epic or prevent independent follow-up
+  work by installing blanket epic blockers.
+  [test?](push_gate_recovers_integrity_findings_then_admits_decision_batch_at_cap)
 
 - A walk that terminates with `LOOM_RETRY` (review itself could not run for
   environmental reasons) routes to recovery cause `agent-retry` per
@@ -1008,15 +1289,15 @@ class are structurally unreachable.
    [Verdict Gate](#verdict-gate) for the execution layer (decision table,
    recovery mechanics, markers, labels) and [Gate](gate.md) for the review
    rubric. Driver-detected gate failures and `LOOM_RETRY` self- reports enter a
-   bounded recovery loop; `LOOM_BLOCKED` and direct loop/todo `LOOM_CLARIFY`
-   self-reports escalate directly to the human via `loom inbox`. The verdict
-   gate applies to **worker sessions only** (`loop`, `todo`, `review`);
-   interactive sessions (`plan`, `inbox`) are agent-and-human authoritative —
-   the driver does not mutate bd state as a consequence of an interactive
-   session. See [Verdict Gate § Interactive vs worker sessions](#verdict-gate)
-   for the full no-reconciliation contract.
+   bounded recovery loop; semantic `Blocked` goes to Inbox, while admitted
+   `Clarify` records surface decision beads independently of terminal outcome.
+   Worker completion reconciliation applies to Loop/Todo/Review, not interactive
+   Plan/Inbox. Human resolution remains authoritative; deterministic resumption
+   reconciles only the driver's explicitly attributed scheduling waits under
+   [Inbox's ownership contract](inbox.md#orchestration-ownership).
 4. **Push gate — consume the gate-owned receipt.** Loop owns the
-   molecule-completion orchestration: require resolved molecule state,
+   molecule-completion orchestration: require resolved molecule state under
+   [completion admission](#completion-admission), not Beads progress alone;
    synchronize the integration branch with origin, resolve the actual push
    range, execute deterministic pre-push verification followed by review, and
    route integrity findings through molecule remediation. It then supplies the
@@ -1036,20 +1317,22 @@ class are structurally unreachable.
    **Epic auto-close on Clean push.** After the `Clean` branch of the push gate
    completes (verify pass + review `LOOM_COMPLETE` + integrity clean + every
    bead in scope `[done]`) **and both `git push` and `wrix beads push`
-   succeed**, the driver walks up from the molecule's spec beads to find every
-   ancestor epic whose direct children are all `status == "closed"` and closes
-   them via
+   succeed**, the driver walks up from the molecule's spec beads and applies
+   [fresh ancestor admission](#completion-admission) before each close. Only
+   eligible epics with closed direct children are closed via
    `bd close <epic-id> --reason="all children complete; auto-closed by review gate"`.
-   The walk is **inside-out in one pass**: each newly-closed epic is enqueued so
-   its own parent is re-evaluated, so an epic-of-epics collapses to a single
-   closed root without needing a second review cycle. Each close emits one
+   The walk is **inside-out in one pass**: each newly closed epic re-enqueues
+   its parent for a fresh check. Eligible ancestors can retire in that pass;
+   independent holds/cancellation and unresolved or ambiguous completion remain
+   untouched, even outside the selected molecule. Each close emits one
    `DriverKind::EpicAutoClosed` driver event carrying the epic id in its payload
    — visible in the JSONL log alongside the push- gate trace. The walk is
-   **strictly post-push**: a `git push` or `wrix beads push` failure returns
-   early through the `Clean` arm and skips the walk, so a closed-locally /
-   open-on-remote split cannot arise. The walk does **not** fire on any
-   non-Clean verdict (`LOOM_CONCERN`, `LOOM_BLOCKED`, `LOOM_CLARIFY`,
-   `verify-fail`, `integrity-finding`, or any bead carrying `loom:blocked` /
+   **strictly post-push**: an initial `git push` or `wrix beads push` failure
+   returns early through the `Clean` arm and skips the walk. Subsequent epic
+   close writes are new Beads mutations; the preceding synchronization does not
+   establish their remote publication. The walk does **not** fire on any
+   non-Clean verdict (`LOOM_CONCERN`, `LOOM_BLOCKED`, `verify-fail`,
+   `integrity-finding`, or any non-closed bead carrying `loom:blocked` /
    `loom:clarify`) — those paths leave the gate before the `Clean` arm runs.
 
 ### Verdict-gate production wiring
@@ -1092,46 +1375,24 @@ coverage), per the trust-tier rules in
 
 ### Self-reports and dependency waiting
 
-1. **Self-report marker taxonomy.** Direct loop/todo self-report markers form a
-   three-way taxonomy carried by `partial/self_report_markers.md`:
-   - `LOOM_RETRY` — this attempt cannot finish but a fresh dispatch is likely to
-     succeed (environmental failure: tools failing mid-session, sandbox/cwd
-     unlinked, transient IO; or agent self-reset: stuck-but-not-blocked,
-     prompt-context exhausted). Consumes one slot in `[loop] max_retries`;
-     exhaustion escalates to `loom:blocked` with cause `retry-exhausted` per
-     [Loop — Verdict Gate](#verdict-gate). The driver populates
-     `PreviousFailure::AgentRetry { reason }` with the prose the agent wrote on
-     the line preceding the marker.
-   - `LOOM_CLARIFY` — in `loop` and `todo`, the agent has framed a decision the
-     human must resolve and can enumerate the candidate paths as a structured
-     `## Options — …` block per
-     [Inbox — Options Format Contract](inbox.md#options-format-contract). The
-     agent persists the block to the bead/work epic before the marker, and the
-     verdict gate routes to `loom:clarify` for human resolution via
-     `loom inbox`.
-   - `LOOM_BLOCKED` — genuine dead end: the agent cannot proceed and has no
-     candidate resolutions to enumerate. The reason must explain why no options
-     can be safely surfaced. Routes to `loom:blocked`; `loom inbox chat` walks
-     the human through candidate enumeration in-session.
+[Acceptance](#verdict-gate-1).
 
-   Review uses `partial/review_self_report_markers.md` instead of the direct
-   partial. The review partial preserves inspection-only review: it forbids bd
-   mutation, treats direct `LOOM_CLARIFY` as the wrong review path, and sends
-   clarify-worthy decisions through `route="clarify"` finding evidence with the
-   canonical Options block. The semantic discriminator remains explicit: "expect
-   retry to succeed? → RETRY. can you enumerate options? → CLARIFY (direct in
-   loop/todo, finding-routed in review). dead end? → BLOCKED." Interactive
-   sessions (`plan`, `inbox`) do not emit worker self-report markers — the human
-   resolves friction in-turn. `inbox` may emit `LOOM_APPLY: {"proposals":[...]}`
-   when it requests the trusted driver to apply accepted tune proposals.
+The shared [message and phase contracts](protocol.md#message-contract) define
+encodings; this owner defines worker effects. `Retry` means a fresh dispatch is
+likely to succeed and consumes the existing retry budget. `Blocked` means a
+semantic dead end and its reason explains why safe candidate options cannot be
+framed. `Clarify` reports durable decision references; `Waiting` ends an attempt
+whose own work genuinely has unresolved prerequisites. A worker can report
+decisions and still finish independent work.
 
-2. **Dependency waiting in `loop`.** `partial/dependency_wait.md`, pinned only
-   in `loop`, defines bare `LOOM_WAITING` for an open bead blocked by at least
-   one active declared dependency. It directs the worker to add the Beads edge
-   before emitting, forbids closing the current bead, and states that valid
-   waiting preserves the workspace/branch while skipping integration, gate,
-   retry-budget use, and workflow-state mutation. Invalid waiting enters
-   recovery rather than parking.
+Direct Loop/Todo guidance comes from `partial/self_report_markers.md` and
+`partial/dependency_wait.md`. Review uses its inspection-only self-report
+partial and sends decision-worthy concerns through clarify-route finding
+evidence. Interactive sessions resolve friction conversationally rather than
+emitting worker self-reports.
+[Decision scheduling](#decision-batches-and-attributed-waits) and
+[Inbox](inbox.md#decision-beads-and-resolution) own persistence and release, not
+a new generic reconciliation rule.
 
 ### Dispatch and recovery coverage
 
@@ -1165,3 +1426,6 @@ coverage), per the trust-tier rules in
 
 - Verification policy and publication authority belong to Gate and its
   providers. This workflow does not invent a second authorization or retry path.
+- An additional Beads publication/retry cycle solely for post-push epic closure
+  writes. Initial publication ordering does not claim those later writes are
+  already synchronized remotely.

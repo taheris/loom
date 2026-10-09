@@ -14,7 +14,7 @@ remediation, retaining the evidence needed to repair the defect.
 Raw records resolve into immutable findings; inspection reports them, while
 act-mode consumers materialize scoped remediation. Related owners:
 [gate](gate.md), [verify](verify.md), [specs](specs.md), [inbox](inbox.md),
-[loop](loop.md), [harness](harness.md).
+[loop](loop.md), [harness](harness.md), [protocol](protocol.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -22,72 +22,35 @@ Acceptance: [criteria and verifier bindings](#success-criteria).
 
 [Acceptance](#wire-format-strict-validation-and-max-context-preservation).
 
-```rust
-pub enum BadWalk {
-    /// `LOOM_CONCERN:` payload did not parse as
-    /// `{"summary": "<non-empty>"}` — invalid JSON, missing
-    /// `summary` field, or empty `summary`. The literal post-marker
-    /// text is preserved for the recovery prompt, AND any
-    /// well-formed `LOOM_FINDING:` records that streamed ahead of
-    /// the bad terminator are preserved in `parsed_findings` so the
-    /// agent's diagnosis is not lost when only the terminal was
-    /// malformed.
-    Concern { payload: String, parsed_findings: Vec<Finding> },
+`BadWalk` preserves review diagnosis rather than replacing a failed walk with an
+empty finding list. Its domain failures include:
 
-    /// Terminator claimed concern but zero `LOOM_FINDING:` records
-    /// streamed during the walk. The parsed summary is preserved
-    /// so the recovery prompt can quote it back.
-    ConcernWithoutFindings { summary: String },
+- `Concern { payload, parsed_findings }`: malformed concern payload plus every
+  successfully resolved finding.
+- `ConcernWithoutFindings { summary }`: a concern terminal without findings.
+- `FindingsWithoutConcern { finding_count, findings }`: findings paired with a
+  clean terminal, retaining both count and records.
+- `MalformedFinding { errors, terminal, parsed_findings }`: every malformed
+  record's typed error, the independently established terminal surface, and
+  every successfully resolved finding from the mixed stream.
 
-    /// One or more `LOOM_FINDING:` records streamed but the
-    /// terminator was `LOOM_COMPLETE`. The count AND the parsed
-    /// findings are preserved so the next iteration's prompt can
-    /// name them, and so `loom gate mint` can consume the same
-    /// records on the next walk rather than re-deriving them.
-    FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> },
+The context fields are required, not optional defaults. Failure construction
+cannot omit them; production conversion from the sealed walk retains their
+actual contents. Field presence alone does not prove that a caller copied the
+right records, so the behavioral matrix also checks complete transfer through
+classification and bounded recovery rendering.
 
-    /// One or more `LOOM_FINDING:` records failed parse (most
-    /// common: trailing backticks from markdown fencing on an
-    /// otherwise-valid JSON payload). `errors` is one
-    /// `FindingParseError` per malformed record. `terminal` is the
-    /// well-formed terminator (or its typed
-    /// `Missing`/`Malformed` placeholder) so the agent's next
-    /// iteration sees BOTH the per-record malformation detail AND
-    /// the surrounding well-formed context that was preserved.
-    MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface },
-}
+`TerminalSurface` is a diagnostic projection of Protocol's canonical decoded
+terminal, or its malformed/missing surface. It owns no second marker vocabulary
+or scanner. `FindingParseError` retains the record's starting line, literal raw
+text, and typed decoding/resolution reason. Shared framing/phase errors likewise
+retain the common decoder's context rather than being collapsed to empty output.
 
-/// Typed projection of the agent's terminal marker, mirroring
-/// `ExitSignal` but with explicit malformed/missing variants so
-/// `BadWalk::MalformedFinding` can carry the terminal state
-/// regardless of whether the terminal itself parsed.
-pub enum TerminalSurface {
-    Complete,
-    Noop,
-    Waiting,
-    Concern { summary: String },
-    Retry { reason: String },
-    Blocked { reason: String },
-    Clarify { question: String },
-    Malformed { payload: String },
-    Missing,
-}
-```
-
-`FindingParseError` is re-exported from `loom-workflow::review::finding` (per
-[Findings — Findings and Minting](#findings-and-minting-1)) — the typed
-wire-format error the parser produces. Carrying a `Vec<FindingParseError>` in
-`BadWalk::MalformedFinding` means each per-record malformation rides through
-with its starting `line_number`, the literal `raw` record text, and the typed
-reason (`Json`, `UnknownToken`, `TokenVariantMismatch`, `UnknownBondSpec`,
-`UnresolvedTarget`, `TargetSpecNotInBonds`).
-
-**Maximum-context preservation invariant.** Every `BadWalk` variant carries the
-maximum well-formed context by struct shape; construction without the parseable
-pieces is a compile error. The "lost the agent's diagnosis when one piece of the
-walk was malformed" failure mode is structurally unrepresentable. See
-[Findings — Streaming + terminator pairing rule](#findings-and-minting-1) for
-the cross-product of (stream-shape × terminal-shape) cells the variants cover.
+**Maximum-context preservation invariant.** Malformation never discards valid
+resolved findings, raw error context, or an independently established terminal.
+This includes mixed valid/invalid streams and simultaneous record/terminal
+failure. See [the pairing contract](#emit-shape) and
+[its matrix acceptance](#verification-surface-matrix--property).
 
 The per-finding concern token (the enum that names which rubric check fired —
 `verifier-bypass`, `spec-coherence-fail`, etc.) lives on each `Finding`'s
@@ -204,18 +167,16 @@ legacy alias registry.
   `{"token": ..., "route": "blocking|deferred|clarify", "bonds": [...], "target": {"kind": ..., ...}, "evidence": ...}`
   [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
 
-- Long evidence may include raw line breaks inside JSON strings; the driver
-  normalizes them before typed validation and preserves the resulting evidence
-  line breaks
-  [test](raw_multiline_evidence_is_normalized_before_strict_validation)
+- Finding evidence preserves escaped multiline content through strict JSON
+  decoding and contextual resolution; unescaped string newlines are rejected
+  without repairing the emitted bytes.
+  [test?](strict_finding_json_preserves_escaped_evidence_and_rejects_raw_newlines)
 
-- The review walk terminates with exactly one of `LOOM_COMPLETE`,
-  `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, or `LOOM_BLOCKED`;
-  `LOOM_BLOCKED` includes a reason explaining why no options can be safely
-  surfaced, review clarifications are `route="clarify"` findings with Options in
-  `evidence`, and a walk that emits `LOOM_FINDING:` records without a terminal
-  marker fails the mint invocation with non-zero exit
-  [test](mint_walk_without_terminal_marker_fails_run)
+- Review consumes Protocol's review-admitted messages; retry/blocked terminals
+  carry typed reasons and direct decision records are invalid. Decision-worthy
+  review concerns use clarify-route finding evidence, and missing completion
+  cannot authorize minting or completed review evidence.
+  [test?](review_message_admission_preserves_inspection_and_requires_terminal)
 
 - `LOOM_CONCERN:` payload parses as JSON `{"summary": "<non-empty string>"}` via
   the same `serde_json` pipeline that consumes `LOOM_FINDING:` records; the
@@ -265,11 +226,10 @@ legacy alias registry.
   resolution checks its agreement with the token and current context
   [test](mint_parses_loom_finding_json_into_typed_record_with_tagged_target)
 
-- A malformed `LOOM_FINDING:` record — invalid JSON after raw string line-break
-  normalization, unknown token, unknown spec, target variant mismatching token,
-  or unresolved target content — fails the mint invocation with a typed parse
-  error naming the offending record's start line; no silent skip
-  [test](mint_malformed_loom_finding_fails_run_with_typed_error)
+- A recognized finding record with malformed strict JSON, an unknown token or
+  spec, token/target mismatch, or unresolved target fails with a typed error
+  naming its starting line; no malformed record is silently skipped.
+  [test?](shared_finding_decode_and_resolution_fail_with_record_context)
 
 - The driver computes a versioned lower-kebab finding id from each validated
   typed finding; evidence text, options prose, line numbers, batch size, sibling
@@ -369,9 +329,16 @@ legacy alias registry.
 - Any clarify-route finding whose `evidence` lacks a well-formed `## Options —
   <summary>` heading with at least one `### Option <N> — <title>` subsection
   falls back to a remediation bead carrying `loom:blocked` with cause
-  `clarify-without-options` — never a stranded clarify bead the chat-drafter
+  `clarify-without-options` — never a stranded clarify bead Inbox chat
   cannot resolve
   [test](mint_clarify_bound_finding_without_options_falls_back_to_blocked)
+
+- Trusted finding materialization requires Inbox's unique active brief before
+  human-queue admission, checking evidence and the resulting notes/description.
+  Missing, malformed or duplicate active blocks use the per-decision
+  `clarify-without-options` fallback. Inspection retains the finding and brief
+  diagnostics without Beads mutation or loss of finding context.
+  [test?](finding_clarification_materialization_requires_unique_active_brief)
 
 - Tree-minted `loom:clarify` beads and their `loom:blocked` malformed-options
   fallbacks have `status=blocked` while awaiting `loom inbox`, so Beads visibly
@@ -386,9 +353,10 @@ legacy alias registry.
 - A remediation batch carrying multiple findings exposes worker discretion to
   fix all and close, fix a subset and split the remainder into sibling
   remediation beads under the work epic via `bd create --parent=<work-epic-id>`
-  for deferred work, or emit `LOOM_CLARIFY` for no-progress cases; the bead's
-  acceptance criterion is "agent processed the batch", not "every finding
-  individually resolved"
+  for deferred work; the bead's acceptance criterion is "agent processed the
+  batch", not "every finding individually resolved". Human-decision reporting
+  and genuine source waits follow
+  [Loop's decision contract](loop.md#decision-batches-and-attributed-waits)
   [judge](../tests/judges/loom.sh#judge_remediation_batch_acceptance) Per-bead
   integration execution mechanics are owned by
   [Loop — Verdict Gate](loop.md#verdict-gate);
@@ -454,17 +422,15 @@ legacy alias registry.
 
 ### Wire-format strict validation and max-context preservation
 
-- A `LOOM_FINDING:` record whose JSON payload fails parse after raw string
-  line-break normalization — invalid JSON (most common: trailing backticks from
-  markdown fencing), unknown `token`, target/token variant mismatch, unresolved
-  spec label or anchor — surfaces as
-  `RecoveryCause::BadWalk(BadWalk::MalformedFinding { errors, terminal })` with
-  the well-formed terminal preserved alongside the per-record parse errors
-  [test](backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved)
+- Mixed finding failures retain every successfully resolved finding alongside
+  each raw/typed record error and the independently established terminal,
+  including when that terminal is itself malformed or missing.
+  [test?](malformed_finding_recovery_retains_valid_findings_errors_and_terminal)
 
-- The `LOOM_FINDING:` substring match is case-sensitive and colon-suffixed;
-  bare-prose mentions without the colon do not match
-  [test](loom_finding_substring_match_requires_uppercase_and_colon_suffix)
+- Fenced, decorated, inline, or payload-contained finding examples cannot
+  substitute for live review records; review pairing uses only messages
+  recognized by the shared decoder.
+  [test?](review_pairing_does_not_promote_examples_or_payload_marker_text)
 
 - `BadWalk::Concern` carries `{ payload, parsed_findings: Vec<Finding> }`;
   well-formed findings streamed ahead of a malformed terminal are preserved in
@@ -476,27 +442,25 @@ legacy alias registry.
   so the next iteration's prompt and `loom gate mint` can both consume them
   [test](bad_walk_findings_without_concern_carries_parsed_findings_vec)
 
-- The `BadWalk::MalformedFinding { errors, terminal }` variant carries every
-  per-record parse error AND the well-formed terminal surface (or a typed
-  `Missing`/`Malformed` variant when the terminal itself failed). Construction
-  without both pieces is a compile error
-  [test](bad_walk_malformed_finding_variant_carries_errors_and_terminal_by_struct_shape)
+- `BadWalk::MalformedFinding` requires errors, terminal context, and
+  `parsed_findings`; the mixed-stream diagnosis cannot be omitted by
+  constructing the failure without its context fields.
+  [test?](malformed_finding_failure_requires_parsed_context_fields)
 
 ### Verification surface (matrix + property)
 
 - The review-phase classifier signature consumes a typed `WalkOutput` (with
-  field-private struct + `pub WalkOutput::from_stdout` constructor that runs
-  `parse_walk_output` internally), not raw `&str`. Any production caller passing
-  a `&str` is a compile error, and any caller constructing `WalkOutput` with
-  bogus fields cannot compile because the fields are private at the
-  `loom-protocol` crate boundary
+  field-private struct and public construction through the decode/resolve
+  boundary), not raw `&str`. Any production caller passing a `&str` is a compile
+  error, and any caller constructing `WalkOutput` with bogus fields cannot
+  compile because the fields are private at the `loom-protocol` crate boundary
   [test](classify_review_phase_signature_requires_typed_walk_output)
 
-- The (stream-shape × terminal-shape) failure matrix is exhaustive: every cell
-  in the 4 × 7 cross-product (S0..S3 stream shapes × seven terminal shapes,
-  including wrong-phase `LOOM_WAITING`) has a parameterised test asserting the
-  typed outcome variant and the maximum-context invariant
-  [test](walk_output_failure_matrix_routes_every_cell_with_typed_outcome_and_preserves_max_context)
+- The review failure matrix crosses empty, valid, mixed, and wholly malformed
+  finding streams with admitted, wrong-phase, malformed, absent, duplicate, and
+  misplaced terminal surfaces. Every cell checks the typed outcome and all
+  parseable context through actual classification and recovery rendering.
+  [test?](review_failure_matrix_preserves_all_shared_decoder_context)
 
 - Every constructible `Finding` (each `ConcernToken` × canonical `FindingTarget`
   combination) round-trips byte-equal through `serde_json::to_string` → embed in
@@ -529,15 +493,10 @@ legacy alias registry.
   without changes. The original definitions are removed from `loom-templates`
   [test](loom_templates_re_exports_finding_contract_from_loom_protocol)
 
-- The loop-only bare `LOOM_WAITING` marker parses as `ExitSignal::Waiting`; it
-  carries no payload because workflow validation resolves its blocker evidence
-  from Beads [test](waiting_marker_parses_as_typed_exit_signal)
-
-- `loom-workflow::review::finding` (the `WalkOutput` typed product +
-  `parse_walk_output` parser) and `loom-workflow::todo::exit::ExitSignal` /
-  `parse_exit_signal` move to `loom-protocol::gate`. Existing `loom-workflow`
-  imports either remap or re-export
-  [test](loom_workflow_re_exports_walk_output_and_exit_signal_from_loom_protocol)
+- Review entry points and re-exports compose the canonical output decoder with
+  domain finding resolution; a separate gate/workflow terminal enum or scanner
+  cannot bypass the common message contract.
+  [test?](review_domain_entry_points_delegate_to_shared_output_decoder)
 
 - The `WalkOutput` struct's fields are private; `WalkOutput::from_stdout` is
   `pub` (consumers need to call it) but is the only construction path. The
@@ -549,8 +508,8 @@ legacy alias registry.
 <!-- prettier-ignore -->
 - The `finding_no_duplicate_definitions` walker continues to enforce one
   canonical definition of `Finding`, `ConcernToken`, `FindingTarget`,
-  `WalkOutput`, `BadWalk`, and `ExitSignal` across the workspace; the canonical
-  home after extraction is `loom-protocol::gate` [check](cargo run -p loom-walk
+  `WalkOutput` and `BadWalk` across the workspace; their canonical domain home
+  is `loom-protocol::gate` [check](cargo run -p loom-walk
   -- finding_no_duplicate_definitions)
 
 ### Production walker wiring
@@ -641,28 +600,15 @@ errors or blocking on structural bd state — is owned by
 
 ### Typed `PreviousFailure`
 
-- `BadWalk` enum carries
-  `Concern { payload: String, parsed_findings: Vec<Finding> }`,
-  `ConcernWithoutFindings { summary: String }`,
-  `FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> }`, and
-  `MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }`;
-  the wrapped pattern preserves parsed context just as
-  `RecoveryCause::ReviewConcern { summary, findings }` does
-  [test](bad_walk_variants_preserve_max_context_invariant_by_struct_shape)
+- Every domain `BadWalk` shape requires the context fields defined by the
+  finding-failure contract; actual conversion preserves valid records rather
+  than supplying an empty default after mixed failure.
+  [test?](bad_walk_failure_shapes_require_all_parseable_context)
 
-- Maximum-context preservation invariant: `BadWalk::Concern` carries
-  `parsed_findings` (any well-formed findings streamed ahead of the malformed
-  terminator); `BadWalk::FindingsWithoutConcern` carries `findings` (the parsed
-  Vec<Finding> the agent emitted); and `BadWalk::MalformedFinding` carries the
-  well-formed `terminal` alongside the per-record errors. Construction of any
-  variant without its max-context fields is a compile error
-  [test](bad_walk_variants_preserve_max_context_invariant_by_struct_shape)
-
-- `TerminalSurface` enum mirrors `ExitSignal`, including loop-only `Waiting`,
-  with explicit `Malformed { payload: String }` and `Missing` variants so
-  `BadWalk::MalformedFinding`'s `terminal` field can carry the terminal state
-  regardless of whether the terminal itself parsed
-  [test](terminal_surface_carries_malformed_and_missing_variants)
+- Review terminal diagnostics project the canonical decoded message or retain
+  malformed/missing raw context without duplicating the terminal vocabulary or
+  decoding path.
+  [test?](review_terminal_diagnostics_project_canonical_output_messages)
 
 ### Canonical contract location
 
@@ -710,76 +656,54 @@ inspection from trusted driver effects.
 
 [Acceptance](#canonical-contract-location).
 
-The Rust contract for the gate's wire format is owned by `loom-protocol::gate` —
-a leaf crate carrying the `Finding` record struct + `ConcernToken` closed enum +
-`FindingTarget` internally-tagged-on-`kind` enum + `TargetKind` +
-`FindingValidator` trait + `FindingParseError` + `BadWalk` + `TerminalSurface` +
-`WalkOutput` + `WalkOutputError` + `ExitSignal` + the `parse_walk_output` /
-`WalkOutput::from_stdout` / `parse_exit_signal` parsers + the
-`LOOM_FINDING_PREFIX` constant.
+`loom-protocol::gate` owns the public domain finding contract: `RawFinding`,
+immutable `Finding`, `ConcernToken`, tagged `FindingTarget`, `TargetKind`,
+`FindingValidator`, contextual errors, `BadWalk`, diagnostic terminal context,
+and sealed `WalkOutput`. Public domain entry points such as `parse_walk_output`
+and `WalkOutput::from_stdout` compose
+[Protocol's canonical output contract](protocol.md#architecture) with finding
+resolution. They do not define another terminal enum, marker registry, raw
+scanner, or tolerant JSON dialect.
 
-**`pub` / `pub(crate)` boundary.** The public surface is the typed contract a
-consumer needs to construct, match on, or read from a parsed walk: `Finding`,
-`ConcernToken`, `FindingTarget`, `TargetKind`, `FindingValidator`,
-`FindingParseError`, `BadWalk`, `TerminalSurface`, `WalkOutput`,
-`WalkOutputError`, `ExitSignal`, `LOOM_FINDING_PREFIX`, `parse_walk_output`,
-`WalkOutput::from_stdout`, `parse_exit_signal`, and `Finding::id` /
-`Finding::hash`. The following stay `pub(crate)` so the implementation can
-reshape without a major bump: checks internal to `RawFinding::resolve`,
-per-variant `canonical_form` identity helpers, raw-payload parsing helpers
-(single-line parser — consumers go through `parse_walk_output` for the full
-pipeline), and internal helpers like `terminal_surface_from_stdout`. Widening
-later is cheap; narrowing is a breaking change.
+Consumers may inspect typed records, resolve raw candidates, and read parsed
+walks. Internal resolution and identity helpers stay private; diagnostic
+projections do not acquire authority to construct resolved findings. Public
+re-exports retain one definition rather than another independently maintained
+contract.
 
-**The seal is field-private, not constructor-private.** The silent-loss failure
-class — production caller constructs `WalkOutput` with bogus fields and the
-typed terminal/finding pipeline is bypassed — is structurally unrepresentable
-because `WalkOutput`'s fields are private at the `loom-protocol` crate boundary.
-`WalkOutput::from_stdout` is `pub` so consumers can call it, and it's the only
-construction path. `Finding` also has private fields and borrowed read-only
-accessors. Untrusted input constructs `RawFinding`; resolution produces the
-immutable `Finding` consumed by review and mint. Editing its raw projection
-requires resolution again; public mutable fields cannot bypass that boundary.
-The [resolved finding boundary](#resolved-finding-boundary) governs
-construction. Crate dependencies and wire versioning follow
+**The seal is field-private, not constructor-private.** `WalkOutput`'s private
+fields prevent external struct-literal construction and field mutation;
+`WalkOutput::from_stdout` is the public construction path. This enforces entry
+through decoding/resolution, not correct input selection or downstream copying.
+Actual context preservation follows the
+[structural boundary and behavioral evidence](#structural-enforcement).
+`Finding` also has private fields and borrowed read-only accessors. Untrusted
+input constructs `RawFinding`; resolution produces the immutable `Finding`
+consumed by review and mint. Editing its raw projection requires resolution
+again; public mutable fields cannot bypass that boundary. The
+[resolved finding boundary](#resolved-finding-boundary) governs construction.
+Crate dependencies and wire versioning follow
 [Harness](harness.md#canonical-contract-location).
 
 **Cross-repo consumers.** External consumers (e.g. wrix) depend on
-`loom-protocol` directly. The expected consumption shape is: spawn
-`loom gate review` / `loom gate mint` as a subprocess, capture stdout, call
-`loom-protocol::gate::parse_walk_output(&stdout, &validator)`. The typed
-`WalkOutput` is the consumer's entry point into the parsed walk. Compile-time
-type safety + the leaf-crate dependency shape gives consumers the same
-guarantees loom's own internal pipeline has.
+`loom-protocol` directly. They capture a gate result handoff and invoke the
+public domain adapter with the declared scope and workspace validator. Shared
+message decoding precedes contextual finding resolution; driver-authored status
+records are a separate output surface, not agent findings. Consumers use the
+same sealed walk and resolved finding boundary as Loom's own pipeline.
 
-The contract types previously defined at `loom-templates::finding` relocate to
-`loom-protocol::gate` in a single atomic migration diff. The
-`finding_no_duplicate_definitions` walker continues to enforce the
-single-definition property across the workspace.
+The finding-definition walk enforces one domain definition. Agent-facing review
+presentation lives in `partial/findings_walk.md`; its restatement audit prevents
+duplicate template prose, not disagreement with Rust parsing. Actual
+prompt/parser agreement is checked through
+[Templates' rendered conformance](templates.md#agent-output-conformance). Cargo
+release alignment alone does not establish that agreement.
 
-The wire format's sole textual definition for _agent-facing prose_ lives at
-`crates/loom-templates/templates/partial/findings_walk.md`; the anti-drift
-`[check]`-tier verifier (defined in _Emit shape → Single source of truth_ below)
-refuses any template that restates the `LOOM_FINDING:` / `LOOM_CONCERN:`
-colon-suffixed forms outside that partial. The partial documents the wire format
-for LLM agents; `loom-protocol` documents it for Rust consumers. They are pinned
-to the same loom release via Cargo + the workspace's git ref; the existing
-anti-drift walker covers both surfaces.
-
-**`ConcernToken` is not `ReviewConcern`.** Two enums look similar and live in
-different crates with different purposes. `ConcernToken` (in
-`loom-protocol::gate`) is the **wire-level identifier** on each streamed
-`LOOM_FINDING:` record — the closed set of tokens (`spec-coherence-fail`,
-`orphan-integration`, `verifier-bypass`, …) the rubric emits and
-`loom gate mint` routes on. `ReviewConcern` (in
-`loom-workflow::review::phase_verdict`) is a separate 12-variant enum that
-previously named the terminal `LOOM_CONCERN` token; under the retired
-terminal-token contract (per the review rubric's _Streaming + terminator pairing
-rule_), the terminal carries only `{"summary": "..."}` and per-finding routing
-is decided on each `LOOM_FINDING:` record's `ConcernToken`, not on the terminal.
-`ReviewConcern` survives as a **display vocabulary** for `bd update --notes` and
-verdict-log human-readable cause labels (derived from `findings[0].token` or a
-"multiple" label when heterogeneous); it has no routing role.
+**Routing versus display.** `ConcernToken` is each finding's closed wire
+identifier and participates in finding routing. `ReviewConcern` is only a
+human-readable cause vocabulary for notes and verdict logs; it is neither a
+message discriminator nor routing authority. Protocol's `Concern` terminal
+carries a summary, while each finding retains its own token and route.
 
 ##### Inspection vs. act partition
 
@@ -817,25 +741,14 @@ content-addressed JSON file to `.loom/marker.json`, never bd state. "Audit makes
 no bd writes" remains true through that path; the marker is filesystem state,
 not bd state.
 
-##### Wire-format mixed-shape principle
+##### Shared output contract
 
-[Acceptance](#review-finding-wire-contract).
+[Acceptance](#loom-protocol-crate).
 
-The wire format the rubric walk emits is shaped by one principle that governs
-every marker the driver consumes: **JSON-payload for markers the driver routes
-on, bare for markers whose context comes from adjacent prose or durable workflow
-state.** `LOOM_FINDING:` and `LOOM_CONCERN:` carry JSON because the driver
-routes per-finding tokens and the terminal summary needs structured framing.
-`LOOM_COMPLETE` / `LOOM_NOOP` / `LOOM_WAITING` / `LOOM_RETRY` / `LOOM_BLOCKED` /
-`LOOM_CLARIFY` are bare. `LOOM_WAITING` reads its durable state from the Beads
-dependency graph; the other bare markers read context (reason / question) from
-the prior non-empty line; LLM agents narrate the reason in prose and emit the
-marker as a yes/no terminator without having to compose a JSON object in the
-same turn. Mixing in either direction — JSON payload for a bare marker, bare
-payload for a routed marker — is a wire-format violation and is rejected by the
-typed parser (`loom-workflow::todo::exit::parse_exit_signal` for terminals;
-`loom-workflow::review::finding::parse_walk_output` for the streaming finding
-lines).
+[Protocol](protocol.md#message-contract) owns message role, unit/data arity,
+framing, and phase admission. This owner defines finding payloads, contextual
+resolution, pairing, identity, and remediation. Review diagnostic types are
+projections of that common contract, not another independently parsed language.
 
 ##### Scope-dependent walk
 
@@ -890,6 +803,7 @@ remediation for compatibility.
 | `mock-discipline`                                                                | Rubric                                                                                                                                                                                                                      | `TestPath { path }`                                                                                   | deferred                                                                                                                         |
 | `verifier-too-narrow`                                                            | Rubric                                                                                                                                                                                                                      | `Criterion { spec, anchor }`                                                                          | deferred                                                                                                                         |
 | `concurrency-untested`                                                           | Rubric                                                                                                                                                                                                                      | `LockSite { file, line }`                                                                             | deferred                                                                                                                         |
+| `scope-creep` / `scope-shortfall`                                                | Rubric (finite-diff scope only)                                                                                                                                                                                             | `Criterion { spec, anchor }`                                                                          | deferred                                                                                                                         |
 | `judge-flag`                                                                     | Rubric (`[judge]` criterion)                                                                                                                                                                                                | `Criterion { spec, anchor }`                                                                          | deferred                                                                                                                         |
 | `invariant-clash`                                                                | Rubric (invariant-clash scan)                                                                                                                                                                                               | `Invariant { spec, section, tag }`                                                                    | **clarify** (evidence MUST embed `## Options — …`; mint falls back to blocked otherwise — see _Deferred remediation processing_) |
 | `template-spec-drift`                                                            | Rubric (tree-scope only)                                                                                                                                                                                                    | `Template { path }`                                                                                   | deferred                                                                                                                         |
@@ -915,9 +829,11 @@ entry; no per-token carve-out in the mint pipeline.
 tree-scope walk does not emit them, and mint never receives them from a
 tree-scope source.
 
-The target variant is architecture-bearing — its shape is what makes "every
-finding carries a target appropriate to its token" structurally unrepresentable
-as a mismatch. See
+Target variants encode their required payload shapes. Token/target alignment is
+established by `RawFinding::resolve` before constructing an immutable `Finding`;
+private fields prevent later mutation from bypassing that check. The target enum
+alone does not prove the relationship. See the
+[resolved finding boundary](#resolved-finding-boundary) and
 [`spec-conventions.md` _In scope #4_](../docs/spec-conventions.md).
 
 ##### Emit shape
@@ -952,10 +868,13 @@ LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<
   variant.
 - **`evidence`** — the rubric's reasoning, stored verbatim on the remediation
   bead's description or verdict/recovery context. For `route="clarify"`,
-  evidence MUST embed the canonical `## Options — …` block per the _Options
-  Format Contract_. Gate routing validates this at parse time and falls back to
-  `loom:blocked` with cause `clarify-without-options` when the options block is
-  absent — see _Deferred remediation processing_ below.
+  evidence MUST embed one canonical brief under
+  [Inbox's Options contract](inbox.md#options-format-contract). Trusted
+  materialization checks brief validity/uniqueness before human-queue admission;
+  absent, malformed or ambiguous briefs use the `clarify-without-options`
+  blocked fallback on that decision. Shared decoding and finding resolution
+  retain the record; inspection reports the diagnosis without Beads writes. See
+  _Deferred remediation processing_ below.
 
 `bonds` is _bonding_ metadata; `target` is _identity_ metadata. The two are kept
 separate so the driver can shift bonding (e.g., as molecules open/close over
@@ -974,38 +893,18 @@ time) without invalidating the finding's id and hash.
 {"kind":"Template","path":"crates/loom-templates/templates/review.md"}
 ```
 
-Emit compact one-line JSON where possible, as the finding is identified (not
-batched at end-of-walk). Long evidence and `route="clarify"` Options blocks are
-allowed to span lines inside JSON string values: before `serde_json`
-deserialization, the driver normalizes raw line breaks that appear inside a JSON
-string to `\n` escapes, then applies the same typed validation. Newlines outside
-strings are accepted only as ordinary JSON whitespace within the same object.
-JSON was chosen over pipe-delimited specifically because LLM emit is more
-reliable on JSON than on bespoke formats — the target's tagged-union shape
-encodes naturally, escaping is well-known, and field-order independence avoids
-one class of malformed emit.
+Emit each finding as it is identified, using the common
+[Protocol framing](protocol.md#framing). Escaped evidence and Options content
+round-trip as ordinary strings; no duplicate prose emission is required.
 
-**Strict parse-time validation.** The `LOOM_FINDING:` prefix is matched by
-substring search in the agent's stdout, so backtick-wrapped, markdown-fenced, or
-prose-prefixed records are still detected. The match is case-sensitive on the
-literal string `LOOM_FINDING:` (with the trailing colon); bare-prose mentions
-without the colon (e.g. _"the `LOOM_FINDING` marker"_) do not match by design.
-
-A record that matches the substring but fails the strict validation that follows
-— malformed JSON after raw string line-break normalization (most common:
-trailing backticks from markdown fencing), unknown `token`, any element of
-`bonds` that doesn't resolve to a workspace spec label, `target` variant
-mismatching `token`'s expected variant, or unresolved target content (criterion
-anchor not in spec, file path absent on disk) — surfaces as
-`BadWalk::MalformedFinding { errors, terminal }` per the pairing-rule table
-below, with the well-formed terminal preserved alongside the per-record errors.
-**No silent skip.** The substring-then-strict-validate shape catches
-accidentally-fenced finding emit while loudly typing the malformation, which is
-what makes the wire format observable rather than fragile.
-
-The walk is assumed to be retry-friendly: a re-run typically gets the shape
-right; a persistently-malformed emit is signal that the prompt or rubric needs
-adjusting.
+**Contextual resolution.** After shared decoding, each `RawFinding` resolves its
+token, scope, bonds, target variant, and actual referenced content. Unknown
+specs, token/target mismatches, or unresolved targets become typed record errors
+rather than skipped findings. Mixed failure retains valid findings as well as
+errors and terminal context under the pairing contract below. An example or
+fenced record that is not a live message cannot satisfy finding enumeration.
+Existing bounded recovery handles malformed output; parser agreement alone does
+not establish that a finding's diagnosis is semantically correct.
 
 Deterministic verifiers do **not** emit `LOOM_FINDING:` records — they continue
 to follow the existing _Verifier-runner contract_ (JSON verdict on stdout, exit
@@ -1033,60 +932,37 @@ worker capability policy can accept them without claiming coverage. The
 `LOOM_FINDING:` wire format is the LLM rubric's emit shape; the typed Finding
 record is the in-driver representation both sources converge on.
 
-The walk terminates with exactly one terminator on the final non-empty line (per
-[Loop — Verdict Gate](loop.md#verdict-gate)): `LOOM_COMPLETE`, `LOOM_CONCERN`,
-`LOOM_RETRY`, or `LOOM_BLOCKED`. `LOOM_RETRY` indicates the walk could not
-complete for environmental reasons (logs corrupt, workspace inaccessible,
-transient IO) and a fresh dispatch should retry the walk — preferred over
-`LOOM_BLOCKED` for the "I couldn't review" failure mode unless the reviewer also
-has no candidate resolution to enumerate. `LOOM_BLOCKED` means the walk could
-not complete, the reviewer has no candidate resolution to surface, and the
-reason explains why options cannot be safely enumerated. Direct `LOOM_CLARIFY`
-is not a review terminator: a reviewer that can enumerate options emits a
-`route="clarify"` finding with the Options block in `evidence` and terminates
-with `LOOM_CONCERN`. `LOOM_COMPLETE` and `LOOM_CONCERN` are the verdict-carrying
-terminators and are governed by the pairing rule below.
+Review uses [Protocol's admitted terminal variants](protocol.md#phase-admission)
+and [Loop's bounded recovery effects](loop.md#verdict-gate). Decision-worthy
+review concerns use a clarify-route finding with Inbox's Options brief in
+`evidence`; review does not emit direct `Clarify` records or mutate Beads.
 
-**`LOOM_CONCERN` payload — JSON shape and parse discipline.** The payload is a
-JSON object with a single required field, `summary`, whose value is a non-empty
-string: `LOOM_CONCERN: {"summary": "<one-sentence summary>"}`. The driver parses
-the payload with the same `serde_json` pipeline that consumes `LOOM_FINDING:`
-records. Parse failures — invalid JSON, missing `summary`, empty `summary` —
-surface as the typed `BadWalk::Concern { payload, parsed_findings }` recovery
-cause (defined in [Loop](loop.md#verdict-gate)) so the recovery prompt can carry
-the literal text that failed and the agent can fix the shape on the next
-iteration. The summary is for the verdict log only; the actionable detail lives
-in the streamed `LOOM_FINDING:` records, and per-finding routing is decided by
-`loom gate mint` on each finding's token, not on the terminal marker. The
-terminal token-and-reason form (`<token> -- <reason>`) is retired; the terminal
-token only ever duplicated the strongest finding's token at the cost of
-structural complexity.
+`Concern.summary` supplies the verdict-log summary, not per-finding routing.
+Malformed concern payloads retain their literal text and valid findings in
+`BadWalk::Concern`. The common decoder, not a review-specific JSON pipeline,
+defines the accepted payload syntax.
 
 **Streaming + terminator pairing rule.** The walk is a streaming process:
 `LOOM_FINDING:` records are emitted as concerns are identified; the terminator
-is the final line. The driver first cross-checks the raw stream against the
-terminator for wire-shape honesty; suppression is applied only after the shape
-is well-formed. If the terminator and raw stream disagree, the run fails with a
-typed `BadWalk` recovery cause:
+is the final logical message. The driver first cross-checks the raw stream
+against the terminator for wire-shape honesty; suppression is applied only after
+the shape is well-formed. If the terminator and raw stream disagree, the run
+fails with a typed `BadWalk` recovery cause:
 
-| Finding stream         | Terminator                                                      | Verdict                                                                                                                                                                                                                                                                                                                                                                           |
-| ---------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0                      | `LOOM_COMPLETE`                                                 | clean — phase done                                                                                                                                                                                                                                                                                                                                                                |
-| ≥1 well-formed         | `LOOM_CONCERN: {"summary":"..."}`                               | Apply rubric suppressions to the parsed findings. If ≥1 unsuppressed finding remains: recovery — `RecoveryCause::ReviewConcern { summary, findings: Vec<Finding> }` threaded into `previous_failure` (mint consumes separately). If every parsed finding is suppressed: clean — status output records the suppressed findings and the phase completes.                            |
-| 0                      | `LOOM_CONCERN: {"summary":"..."}`                               | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration                                                                                                                                                                                                                                                                                               |
-| ≥1 well-formed         | `LOOM_COMPLETE`                                                 | `BadWalk::FindingsWithoutConcern { finding_count, findings: Vec<Finding> }` — findings streamed but terminator claims clean; the parsed findings ride through so the next iteration's prompt can name them                                                                                                                                                                        |
-| ≥1 record failed parse | any                                                             | `BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }` — per-record errors are preserved alongside the typed terminal surface (well-formed terminal kept as-is; when the terminator also fails parse, the terminal is carried via `TerminalSurface::Malformed { payload }` so both failure pieces ride through the `MalformedFinding` variant) |
-| any well-formed (only) | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings: Vec<Finding> }` — payload parse failure carries the literal malformed text AND any well-formed findings that streamed ahead of the bad terminator                                                                                                                                                                                   |
-| any                    | missing or duplicate marker                                     | `SwallowedMarker` (existing)                                                                                                                                                                                                                                                                                                                                                      |
+| Finding stream         | Terminator                                                      | Verdict                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0                      | `LOOM_COMPLETE`                                                 | clean — phase done                                                                                                                                                                                                                                                                                                                                     |
+| ≥1 well-formed         | `LOOM_CONCERN: {"summary":"..."}`                               | Apply rubric suppressions to the parsed findings. If ≥1 unsuppressed finding remains: recovery — `RecoveryCause::ReviewConcern { summary, findings: Vec<Finding> }` threaded into `previous_failure` (mint consumes separately). If every parsed finding is suppressed: clean — status output records the suppressed findings and the phase completes. |
+| 0                      | `LOOM_CONCERN: {"summary":"..."}`                               | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration                                                                                                                                                                                                                                                                    |
+| ≥1 well-formed         | `LOOM_COMPLETE`                                                 | `BadWalk::FindingsWithoutConcern { finding_count, findings: Vec<Finding> }` — findings streamed but terminator claims clean; the parsed findings ride through so the next iteration's prompt can name them                                                                                                                                             |
+| ≥1 record failed parse | any                                                             | `BadWalk::MalformedFinding { errors, terminal, parsed_findings }` retains every record error, all valid resolved findings, and the independently established or malformed/missing terminal surface                                                                                                                                                     |
+| any well-formed (only) | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings: Vec<Finding> }` — payload parse failure carries the literal malformed text AND any well-formed findings that streamed ahead of the bad terminator                                                                                                                                                        |
+| any                    | missing, duplicate, misplaced, or wrong-phase terminal          | Shared protocol/phase error; bounded recovery retains decoded context and raw diagnostics rather than replacing the stream with an empty finding list                                                                                                                                                                                                  |
 
-**Maximum-context preservation invariant.** Every `BadWalk` variant carries the
-maximum well-formed context by struct shape. Failure mode "lost the agent's
-diagnosis when one piece of the walk was malformed" is structurally
-unrepresentable — the type cannot be constructed without the parseable pieces
-(well-formed findings preserved alongside a malformed terminal; well-formed
-terminal preserved alongside malformed findings). This is what `templates.md`'s
-`PreviousFailure::BadWalk(BadWalk)` rendering relies on to produce a useful
-recovery prompt regardless of which piece failed parsing.
+[Finding failure context](#finding-failure-context) owns the required context
+fields and complete production transfer. Templates renders that retained
+diagnosis within its prompt budget; bounded presentation does not erase the
+underlying typed findings or durable raw evidence.
 
 **Agent's mental model.** Review the diff. Every time you identify a concern,
 immediately emit a `LOOM_FINDING:` record with the structured JSON detail and
@@ -1096,15 +972,11 @@ continue reviewing. When the walk is complete, end your response with
 `LOOM_FINDING:` records. The terminator must match the stream: `LOOM_COMPLETE`
 means zero findings, `LOOM_CONCERN` means ≥1 finding.
 
-**Single source of truth.** The wire-format definitions for both `LOOM_FINDING:`
-and `LOOM_CONCERN:` live exactly once, in
-`crates/loom-templates/templates/partial/findings_walk.md`. Other templates that
-need to talk about these markers `{% include %}` that partial; they never
-restate the format. The bare-marker partials (`partial/progress_markers.md` for
-`LOOM_COMPLETE` / `LOOM_NOOP`, `partial/self_report_markers.md` for loop/todo
-`LOOM_RETRY` / `LOOM_BLOCKED` / `LOOM_CLARIFY`, and
-`partial/review_self_report_markers.md` for review cannot-complete self-reports)
-describe bare-marker semantics without redefining the review-walk markers.
+**Presentation and contract authority.** Protocol owns the Rust message
+contract; `partial/findings_walk.md` is the canonical review presentation. Other
+templates include it rather than copying its finding/concern emit prose.
+[Templates](templates.md#agent-output-conformance) checks actual rendered
+examples against shared decoding and contextual finding resolution.
 
 A `[check]`-tier verifier enforces this mechanically: it scans every file under
 `crates/loom-templates/templates/` for the literal substrings `LOOM_CONCERN:`
@@ -1115,28 +987,27 @@ any file other than `partial/findings_walk.md`. Templates that violate this fail
 
 ##### Structural enforcement
 
-[Acceptance](#production-walker-wiring).
+[Acceptance](#verification-surface-matrix--property).
 
-The review-phase classifier signature (`classify_review_phase` in
-`loom-workflow::review::production`) consumes a typed `WalkOutput` product
-(`{ terminal: TerminalSurface, findings: Vec<Finding>, finding_errors: Vec<FindingParseError> }`),
-not raw `&str`. `WalkOutput::from_stdout` is the only construction path: it
-takes the agent's combined stdout and a `FindingValidator`, runs the parse
-pipeline once, and returns the typed product. The classifier cannot be called
-with raw `&str`; that becomes a compile error. The silent-loss failure class — a
-production caller constructs `GateInputs` without invoking the walk parser,
-leaving the typed finding stream at default empty so every well-formed
-`LOOM_CONCERN` with streamed findings collapses to
-`BadWalk::ConcernWithoutFindings` — becomes structurally unrepresentable.
+The review-phase classifier consumes a typed, field-private `WalkOutput`, not
+raw `&str`. Its required context includes Protocol's original text, spans,
+independently decoded messages and shared decoding/admission errors; resolved
+findings and finding-resolution errors; and the `TerminalSurface` diagnostic
+projection. These categories may live in one sealed context product rather than
+separate parallel fields, but none may disappear during adaptation.
 
-The seal is **field-private**: `WalkOutput`'s fields are private at the crate
-boundary, and `WalkOutput::from_stdout` is `pub` (consumers depending on
-`loom-protocol` need to call it). Field privacy is what makes the silent-loss
-class unrepresentable — struct-literal construction with bogus fields cannot
-compile, so any `WalkOutput` reaching the classifier ran the typed parse
-pipeline. This mirrors the [sealed-`MarkerProof` pattern](gate.md#marker):
-validated construction through a single entry point is the type-shape contract
-for trust handoff.
+`WalkOutput::from_stdout` is the public construction path: it delegates framing
+and decoding once to Protocol, resolves independent raw finding candidates, and
+retains context even when the session fails. External struct literals, field
+mutation, and passing raw text to the classifier fail at compile time.
+
+This seal constrains construction and mutation, not the contents supplied to the
+constructor or every downstream transfer. The
+[behavioral matrix](#verification-surface) must exercise production capture,
+adaptation, classification, and recovery rendering. In particular, valid
+findings must reach `GateInputs` and malformed-record failure context rather
+than being replaced with default empty vectors. Field presence, privacy, and a
+hand-built context fixture alone do not prove that transfer.
 
 ##### Resolved finding boundary
 
@@ -1150,10 +1021,10 @@ Its fields are private, its accessors are read-only, and it implements
 resolution again. Direct struct literals, deserialization into `Finding`, and
 field mutation are compile errors.
 
-This intentionally changes the Rust construction API, not the JSON wire shape or
-identity/hash algorithm: consumers deserialize `RawFinding`, then resolve it
-with their workspace context. The streaming parser does this internally and
-preserves its terminal/error/partial-findings matrix.
+Finding payload fields and canonical identity are independent of the common
+output framing. Consumers deserialize `RawFinding`, then resolve it with their
+workspace context; the domain adapter composes that resolution with shared
+decoding and preserves the terminal/error/partial-findings matrix.
 
 Deterministic annotation failures resolve against the declared annotation, not
 successful command execution: an `unresolved-annotation` finding still names a
@@ -1173,22 +1044,18 @@ of the (stream-shape × terminal-shape) failure surface:
 
 - **Stream-shape axis (4 cells):** zero `LOOM_FINDING:` records; N well-formed
   findings; N well-formed + M malformed (mixed); all- malformed.
-- **Terminal-shape axis (7 cells):** `LOOM_COMPLETE`; `LOOM_NOOP`; wrong-phase
-  `LOOM_WAITING`; `LOOM_CONCERN:` with valid JSON; `LOOM_CONCERN:` with the
-  legacy `<token> -- <reason>` shape; `LOOM_CONCERN:` with malformed JSON
-  (missing field, empty `summary`, invalid JSON); no terminal on the final
-  non-empty line.
+- **Terminal-shape axis:** every review-admitted terminal; every other phase's
+  terminal as a wrong-phase case; malformed concern/retry/blocked payloads;
+  missing, duplicate, earlier, and trailing-text terminal cases.
 
-28 cells. Each cell asserts (a) the typed outcome variant, (b) the
-maximum-context preservation invariant (every parseable piece of the input
-appears in the outcome), (c) the `Display for PreviousFailure` rendering is
-non-empty and references both pieces when both are present.
-
-No historical-log paste-ins; the matrix covers the general class. The one
-existing one-shot replay test
-(`legacy_token_reason_payload_routes_to_bad_walk_concern` from lm-448x.4) stays
-as one regression test for the legacy `<token> -- <reason>` form's `BadWalk`
-routing but is not the load-bearing class coverage.
+Each cell checks the typed outcome, every valid finding and raw error retained
+through actual classification, and bounded recovery presentation of all context
+categories present. Mixed streams include valid records both before and after a
+malformed record when their boundaries are independently established. Strict
+framing cases also cover fenced examples, marker-looking payload strings,
+pretty-printed objects, and unterminated payloads. Independent literal negative
+fixtures complement round trips; no historical-log paste-in stands in for
+coverage of the class.
 
 **Round-trip property invariant.** For every constructible `Finding` (every
 `ConcernToken` × `FindingTarget` canonical combination),
@@ -1433,11 +1300,16 @@ is treated as ready remediation.
    gate-originated remediation work. bd's `deferred` status keeps the bead out
    of `bd ready` by default.
 
-7. **Validate clarify coupling.** For each `route="clarify"` finding, scan
-   `evidence` for the canonical `## Options — <summary>` heading followed by at
-   least one `### Option <N> — <title>` subsection. If absent or malformed,
-   route that finding as a single-finding blocked bead with cause
-   `clarify-without-options` instead of applying `loom:clarify`.
+7. **Admit the decision brief at materialization.** For each remaining
+   `route="clarify"` finding, trusted act paths validate evidence and the
+   resulting active brief across notes/description under
+   [Inbox's unique-brief contract](inbox.md#options-format-contract). Presence
+   of one well-formed block cannot hide another active block. Missing, malformed
+   or ambiguous briefs route that finding as a single-finding blocked decision
+   with cause `clarify-without-options`, instead of applying `loom:clarify`.
+   Inspection can diagnose brief defects but neither materializes this fallback
+   nor discards an otherwise resolved finding. Existing closed/human-resolved
+   history remains governed by scoped dedup, not new active-brief admission.
 
 8. **Promote stabilization work.** `loom gate mint -m/--molecule <id>` updates
    each deferred bead's description with the latest merged evidence, removes
@@ -1469,8 +1341,11 @@ parseable per-finding details.
 **Worker discretion on a promoted remediation batch.** The agent dispatched
 against a promoted batch reads the description's enumerated findings and decides
 whether to fix every finding in one diff, fix a coherent subset and leave the
-remaining finding labels on the same molecule's deferred bead, or emit
-`LOOM_CLARIFY` if no progress is possible. A stabilization bead that produces
+remaining finding labels on the same molecule's deferred bead, or report framed
+human decisions through Protocol's nonterminal `Clarify` records. The separate
+terminal reflects the source's actual outcome under
+[Loop](loop.md#decision-batches-and-attributed-waits): reporting decisions does
+not itself force a source wait or closure. A stabilization bead that produces
 new deferred findings merges them back into the same molecule's deferred set
 rather than spawning tiny child beads.
 
@@ -1545,9 +1420,11 @@ actions. Gate invocations also write JSONL evidence logs under
   `loom:clarify` with the `## Options — …` block from the finding's `evidence`
   rendered into the bead's description per the Options Format Contract. The
   per-finding shape is load-bearing because `loom inbox` cannot consume a bead
-  carrying multiple options blocks. Clarify-route findings whose evidence lacks
-  a well-formed options block fall back to `loom:blocked` with cause
-  `clarify-without-options` rather than minting a stranded clarify bead.
+  carrying multiple active options blocks. Trusted materialization applies
+  Inbox's unique-brief rule; missing, malformed or ambiguous briefs fall back to
+  `loom:blocked` with cause `clarify-without-options` on that decision rather
+  than minting a stranded clarify bead. Inspection preserves the finding and
+  diagnostic without materializing either queue state.
 
 Past gate runs are persisted for observability, but _past passes don't grant
 immunity from re-evaluation_. Conformance is a property of the current code-spec
@@ -1556,20 +1433,17 @@ pair, tree, config, and push range, not a historical fact.
 ### Functional
 
 1. **Options-block requirement on clarify-bound findings.**
-   `partial/findings_walk.md` requires every clarify-bound finding (any token
-   whose mint would label the resulting bead `loom:clarify`, not only
-   `invariant-clash`) to embed the canonical `## Options — <summary>` block
-   (with at least one `### Option <N> — <title>` subsection) inside its
-   `evidence` payload. The driver-side `loom gate mint` validates the evidence
-   at parse time; clarify-bound findings whose evidence lacks a well-formed
-   options block fall back to `loom:blocked` with cause
-   `clarify-without-options` per
-   [Inbox — Options Format Contract](inbox.md#options-format-contract). No
-   wire-format extension to the `LOOM_FINDING:` JSON payload — the contract
-   lives in the `evidence` field's content, with the enforcement at the mint
-   chokepoint. The agent should emit `LOOM_BLOCKED` directly when it cannot
-   articulate options, with a reason explaining why no options can be safely
-   surfaced, rather than emitting a clarify-bound finding without them.
+   `partial/findings_walk.md` requires every clarify-bound finding, not only
+   `invariant-clash`, to embed one canonical brief inside its `evidence` payload
+   under [Inbox — Options Format Contract](inbox.md#options-format-contract).
+   Trusted Findings materialization validates evidence and the resulting unique
+   active brief before human-queue admission. Missing, malformed or ambiguous
+   briefs use the single-decision `loom:blocked` fallback with cause
+   `clarify-without-options`; inspection diagnoses them without Beads writes or
+   loss of resolved finding context. The brief remains evidence content, not a
+   separate wire payload or decoding authority. The reviewer should emit a typed
+   `Blocked` terminal when it cannot safely articulate options, rather than emit
+   a clarify-bound finding without them.
 
 ## Out of Scope
 
