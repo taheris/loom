@@ -8,13 +8,12 @@
 //!
 //! # Filesystem mtime in tests
 //!
-//! Functions that compare against external filesystem timestamps (e.g. the
-//! log retention sweep against file mtime) take `now: Instant` as a
-//! parameter rather than calling [`Clock::now`] internally. Tests set file
-//! mtimes via the [`filetime`] crate to express "this file is N days old"
-//! without sleeping or aging real wall time.
-//!
-//! [`filetime`]: https://crates.io/crates/filetime
+//! Use monotonic [`Instant`] values from [`Clock::now`] for elapsed time and
+//! deadlines. Filesystem mtimes are wall-clock [`SystemTime`] values:
+//! [`crate::logging::sweep_retention_at`] takes `now: SystemTime`, supplied by
+//! [`Clock::wall_now`] in production. Tests set mtimes explicitly (for example,
+//! with [`std::fs::FileTimes`]) on the same synthetic wall-clock basis as `now`,
+//! without sleeping or depending on host wall-time advancement.
 
 mod mock;
 mod system;
