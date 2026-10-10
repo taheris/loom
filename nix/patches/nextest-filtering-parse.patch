@@ -1,0 +1,11 @@
+--- a/src/parsing.rs
++++ b/src/parsing.rs
+@@ -136,6 +136,6 @@
+         let span = new_span(input, &mut errors);
+         match parse(span).unwrap() {
+-            ExprResult::Valid(expr) => Ok(expr),
+-            ExprResult::Error => Err(errors),
++            ExprResult::Valid(expr) if errors.is_empty() => Ok(expr),
++            ExprResult::Valid(_) | ExprResult::Error => Err(errors),
+         }
+     }

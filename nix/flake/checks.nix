@@ -75,6 +75,18 @@ _:
             touch "$out"
           '';
 
+      nextest-filtering-syntax = craneLib.mkCargoDerivation {
+        pname = "nextest-filtering-syntax";
+        version = "0.0.0";
+        src = stagedSrc;
+        inherit cargoArtifacts;
+        doCheck = true;
+        doInstallCargoArtifacts = false;
+        buildPhaseCargoCommand = "cargo test --locked -p loom-gate --test nextest_filtering --no-run";
+        checkPhaseCargoCommand = "cargo test --locked -p loom-gate --test nextest_filtering";
+        installPhaseCommand = "touch $out";
+      };
+
       loom-gate-check = craneLib.mkCargoDerivation {
         pname = "loom-gate-check";
         version = "0.0.0";
@@ -672,6 +684,7 @@ _:
         inherit
           agent-entrypoint-contract
           loom-gate-check
+          nextest-filtering-syntax
           loom-wrapper-preserves-spaced-output-path
           loom-wrix-does-not-default-launcher-override
           wrix-requires-explicit-profile-config

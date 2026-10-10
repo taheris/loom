@@ -26,7 +26,9 @@ let
   fenixPkgs = fenix.packages.${pkgs.stdenv.hostPlatform.system};
   resolvedToolchain =
     if toolchain != null then toolchain else fenixPkgs.combine [ fenixPkgs.stable.defaultToolchain ];
-  craneLib = (crane.mkLib pkgs).overrideToolchain (_: resolvedToolchain);
+  craneLib = ((crane.mkLib pkgs).overrideToolchain (_: resolvedToolchain)).overrideScope (
+    import ./nextest-filtering-overlay.nix
+  );
 
   # Keep template assets, built-in skills, embedded shell scripts, and snapshots
   # alongside the Cargo workspace — crane's default filter would exclude them.
