@@ -15,6 +15,18 @@ remain explicitly unimplemented, not successful empty runs. Extend the same
 `scripts/test-quint.sh` dispatcher for subsequent scenarios, including
 `workspace-safety-history`; do not add another app or hook.
 
+The workspace scenario uses production worker preparation, the common private
+spawn-config writer, and the real Wrix/Pi container launch. Its stub agent
+attempts append, overwrite, deletion, and replacement of five unmounted host
+surfaces, forges clone-local identity/reports, and runs deterministic Gate
+feedback twice, including without the nested-Loom environment guard. Operator
+and integration resolution must still return the same protected bytes and the
+integration marker must remain clone-local. Fixture journal/witness/checkpoint
+bytes test isolation only: they do not pretend to be Evidence-admitted safety
+facts. Evidence's journal/replay acceptance extends this same scenario. An
+unavailable container runtime exits 77, and empty or incomplete output cannot
+produce a workspace-isolation receipt.
+
 ## Campaigns and budgets
 
 `tests/fixtures/quint/campaign.json` is the versioned input. Ordinary callers

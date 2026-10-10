@@ -142,6 +142,10 @@ fn run_locked(
     let integration_workspace =
         materialize_integration_workspace(workspace, &config_path, &resolve_hooks)?;
 
+    if integration_workspace.is_some() {
+        loom_driver::workspace::Association::establish(workspace)?;
+    }
+
     Ok(InitReport {
         config_path,
         cache_db_path,
@@ -237,7 +241,12 @@ mod tests {
     }
 
     fn run_with_hooks(workspace: &Path, hooks: &Path) -> Result<InitReport, InitError> {
-        run_with_hooks_resolver(workspace, InitOpts::default(), &[], |_workspace| {
+        run_with_hooks_resolver(workspace, InitOpts::default(), &[], |workspace| {
+            loom_driver::workspace::Association::establish_with_state_home(
+                workspace,
+                &loom_driver::git::bare_origin_path(workspace).join("loom-state"),
+            )
+            .map_err(std::io::Error::other)?;
             Ok(hooks.to_path_buf())
         })
     }

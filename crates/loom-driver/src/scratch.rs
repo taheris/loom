@@ -19,7 +19,7 @@
 //! carry-over for the next session. [`ScratchSession::close`] is the
 //! explicit teardown and is idempotent w.r.t. the [`Drop`] cleanup.
 
-mod directory;
+pub(crate) mod directory;
 pub mod runtime;
 
 use std::io::{self, Write};

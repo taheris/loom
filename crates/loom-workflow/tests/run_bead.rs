@@ -114,6 +114,9 @@ fn setup() -> (
 fn pair_manifest(dir: &Path) -> Arc<ProfileImageManifest> {
     let rust_profile = dir.join("rust-pi-profile.json");
     let python_profile = dir.join("python-claude-profile.json");
+    for profile in [&rust_profile, &python_profile] {
+        std::fs::write(profile, r#"{"profile":{"mounts":[]}}"#).unwrap();
+    }
     let body = format!(
         r#"{{
           "rust": {{ "pi": {{ "ref": "localhost/wrix-rust-pi:one", "source": "/nix/store/rust-pi-source", "source_kind": "nix-descriptor", "profile_config": {rust_profile:?} }} }},

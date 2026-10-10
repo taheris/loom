@@ -249,7 +249,7 @@ for worker feedback.
   file edits, reports, or claimed workspace identities cannot mutate that
   history; ordinary deterministic worker feedback still works without exposing
   the integration checkout or transferring marker authority.
-  [system?](nix run .#test-quint -- workspace-safety-history)
+  [system](nix run .#test-quint -- workspace-safety-history)
 
 ### Bead dispatch
 

@@ -37,6 +37,9 @@ pub enum LoopError {
     /// git step failed during `loom loop`
     Git(#[from] GitError),
 
+    /// worker isolation or host safety-history association failed
+    Workspace(#[from] loom_driver::workspace::Error),
+
     /// io operation failed during `loom loop`
     Io(#[from] std::io::Error),
 

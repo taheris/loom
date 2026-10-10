@@ -19,6 +19,7 @@ pub mod scratch;
 pub mod spec;
 pub mod state;
 pub mod testing;
+pub mod workspace;
 pub mod wrix;
 
 /// Re-export of the identifier newtypes that now live in `loom-events`.

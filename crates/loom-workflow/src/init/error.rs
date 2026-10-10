@@ -40,6 +40,9 @@ pub enum InitError {
     /// git operation failed while materializing the loom workspace
     Git(#[from] GitError),
 
+    /// host safety-history association failed during initialization
+    Workspace(#[from] loom_driver::workspace::Error),
+
     /// failed to load `<workspace>/loom.toml` while resolving the integration branch
     Config(#[from] LoomConfigError),
 

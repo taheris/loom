@@ -1,6 +1,11 @@
 _: {
   perSystem =
-    { pkgs, loom, ... }:
+    {
+      pkgs,
+      loom,
+      profileManifest,
+      ...
+    }:
     let
       tools =
         assert pkgs.quint.version == "0.32.0";
@@ -37,6 +42,18 @@ _: {
           )
         '';
       };
+      workspaceHarness = loom.craneLib.buildPackage {
+        pname = "loom-workspace-acceptance";
+        version = "1";
+        src = loom.stagedSrc;
+        inherit (loom) cargoArtifacts;
+        cargoExtraArgs = "--locked --package loom --example workspace-safety-history";
+        doCheck = false;
+        installPhaseCommand = ''
+          mkdir -p "$out/bin"
+          cp target/release/examples/workspace-safety-history "$out/bin/loom-workspace-safety"
+        '';
+      };
       app = pkgs.writeShellApplication {
         name = "test-quint";
         runtimeInputs = [
@@ -44,9 +61,12 @@ _: {
           pkgs.coreutils
           pkgs.jq
           pkgs.git
-        ];
+        ]
+        ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.podman ];
         text = ''
           export LOOM_TODO_ACCEPTANCE_BIN=${todoAcceptance}/bin/todo-acceptance-persistence
+          export LOOM_WORKSPACE_SAFETY_BIN=${workspaceHarness}/bin/loom-workspace-safety
+          export LOOM_PROFILES_MANIFEST=${profileManifest}
           export LOOM_QUINT_BIN=${harness}/bin/loom-quint
           export LOOM_QUINT_SOURCE=${loom.stagedSrc}
           export LOOM_QUINT_PACKAGE=${tools}

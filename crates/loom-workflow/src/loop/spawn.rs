@@ -44,8 +44,8 @@ pub fn dolt_socket_mount(loom_workspace: &Path) -> Option<MountSpec> {
 ///
 /// Returns `Some(MountSpec)` when [`LoomTopConfig::sccache_dir`] is set;
 /// `None` otherwise (the feature is disabled and every cargo invocation
-/// pays the full cold-build cost). The host cache directory is created
-/// before dispatch so the bind source exists and is writable. `read_only =
+/// pays the full cold-build cost). The cache is created before launch; worker
+/// preparation admits its source before invoking this helper. `read_only =
 /// false` because sccache clients write through the cache. See
 /// `specs/harness.md` § Bead dispatch —
 /// `sccache_mount_present_when_configured` /

@@ -16,10 +16,10 @@ const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
 
 /// A no-follow directory handle whose ancestors cannot be replaced by other users.
 #[derive(Debug)]
-pub(super) struct Directory(OwnedFd);
+pub struct Directory(OwnedFd);
 
 impl Directory {
-    pub(super) fn open(path: &Path) -> io::Result<Self> {
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
         if path.as_os_str().is_empty() || path.components().any(|c| c == Component::ParentDir) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -36,7 +36,55 @@ impl Directory {
         Ok(dir)
     }
 
-    pub(super) fn child(&self, name: &Path) -> io::Result<Self> {
+    pub(crate) fn ensure(path: &Path) -> io::Result<Self> {
+        let path = std::path::absolute(path)?;
+        if path.components().any(|c| c == Component::ParentDir) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid directory path",
+            ));
+        }
+        let mut dir = Self(open("/", DIRECTORY_FLAGS, Mode::empty())?);
+        for component in path.components() {
+            if let Component::Normal(name) = component {
+                dir = dir.ensure_child(Path::new(name))?;
+            }
+        }
+        Ok(dir)
+    }
+
+    pub(crate) fn stat(&self) -> io::Result<Stat> {
+        Ok(fstat(&self.0)?)
+    }
+
+    pub(crate) fn sync(&self) -> io::Result<()> {
+        rustix::fs::fsync(&self.0)?;
+        Ok(())
+    }
+
+    pub(crate) fn read_private_file(&self, name: &Path) -> io::Result<File> {
+        let fd = openat(
+            &self.0,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let stat = fstat(&fd)?;
+        if stat.st_uid != geteuid().as_raw()
+            || stat.st_mode & 0o7777 != 0o600
+            || rustix::fs::FileType::from_raw_mode(stat.st_mode)
+                != rustix::fs::FileType::RegularFile
+            || stat.st_nlink != 1
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "authority file must be private and singly linked",
+            ));
+        }
+        Ok(File::from(fd))
+    }
+
+    pub(crate) fn child(&self, name: &Path) -> io::Result<Self> {
         let child = Self(openat(&self.0, name, DIRECTORY_FLAGS, Mode::empty())?);
         let stat = fstat(&child.0)?;
         let trusted_owner = stat.st_uid == geteuid().as_raw() || stat.st_uid == 0;
@@ -50,25 +98,25 @@ impl Directory {
         Ok(child)
     }
 
-    pub(super) fn create_child(&self, name: &Path) -> io::Result<Self> {
+    pub(crate) fn create_child(&self, name: &Path) -> io::Result<Self> {
         mkdirat(&self.0, name, Mode::RWXU)?;
         self.child(name)
     }
 
-    pub(super) fn ensure_child(&self, name: &Path) -> io::Result<Self> {
+    pub(crate) fn ensure_child(&self, name: &Path) -> io::Result<Self> {
         match mkdirat(&self.0, name, Mode::RWXU) {
             Ok(()) | Err(Errno::EXIST) => self.child(name),
             Err(error) => Err(error.into()),
         }
     }
 
-    pub(super) fn make_private(&self) -> io::Result<()> {
+    pub(crate) fn make_private(&self) -> io::Result<()> {
         self.require_owner()?;
         fchmod(&self.0, Mode::RWXU)?;
         Ok(())
     }
 
-    pub(super) fn require_private(&self) -> io::Result<()> {
+    pub(crate) fn require_private(&self) -> io::Result<()> {
         let stat = self.require_owner()?;
         if stat.st_mode & 0o7777 != 0o700 {
             return Err(io::Error::new(
@@ -90,7 +138,7 @@ impl Directory {
         Ok(stat)
     }
 
-    pub(super) fn create_file(&self, name: &Path, mode: Mode) -> io::Result<File> {
+    pub(crate) fn create_file(&self, name: &Path, mode: Mode) -> io::Result<File> {
         let fd = openat(
             &self.0,
             name,
@@ -100,14 +148,14 @@ impl Directory {
         Ok(File::from(fd))
     }
 
-    pub(super) fn remove_file(&self, name: &Path) -> io::Result<()> {
+    pub(crate) fn remove_file(&self, name: &Path) -> io::Result<()> {
         match unlinkat(&self.0, name, AtFlags::empty()) {
             Ok(()) | Err(Errno::NOENT) => Ok(()),
             Err(error) => Err(error.into()),
         }
     }
 
-    pub(super) fn remove_child(&self, name: &Path, child: &Self) -> io::Result<()> {
+    pub(crate) fn remove_child(&self, name: &Path, child: &Self) -> io::Result<()> {
         let current = match statat(&self.0, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => stat,
             Err(Errno::NOENT) => return Ok(()),

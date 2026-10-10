@@ -28,7 +28,7 @@ pub fn write(path: &Path, images: impl AsRef<str>, launcher: &Path) -> io::Resul
                 let config = path.with_file_name(format!("{profile}-{runtime}-profile.json"));
                 std::fs::write(
                     &config,
-                    json!({"image": image, "agent": {"kind": runtime}}).to_string(),
+                    json!({"profile": {"name": profile, "mounts": []}, "image": image, "agent": {"kind": runtime}}).to_string(),
                 )?;
                 image.insert("profile_config".into(), json!(config));
             }

@@ -2183,6 +2183,8 @@ pub fn init_test_repo_with_integration_branch(
     run_test_git(&loom_workspace, &["config", "commit.gpgsign", "false"])?;
     let hooks = ensure_test_prek_hooks(path)?;
     super::hooks::write_hooks_config(&loom_workspace, &hooks)?;
+    crate::workspace::Association::establish_with_state_home(path, &origin_path.join("loom-state"))
+        .map_err(std::io::Error::other)?;
     GitClient::open_with_integration_branch(path, branch.to_string())
 }
 

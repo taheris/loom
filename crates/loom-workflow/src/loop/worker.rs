@@ -126,6 +126,7 @@ pub async fn prepare(request: Request<'_>) -> Result<Preparation, LoopError> {
         workspace_recovery,
         attempt,
     } = request;
+    let association = loom_driver::workspace::Association::resolve(loom_workspace)?;
     let key = resolve_scratch_key(Phase::Loop, std::slice::from_ref(label), Some(&bead.id));
     let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key);
     let scratch_dir = scratchpad_path.parent().ok_or_else(|| LoopError::Bug {
@@ -168,6 +169,13 @@ pub async fn prepare(request: Request<'_>) -> Result<Preparation, LoopError> {
         &format!("loom loop @ {}", bead.id),
     )?;
     let mut mounts: Vec<_> = dolt_socket_mount(loom_workspace).into_iter().collect();
+    if let Some(cache) = &loom.sccache_dir {
+        association.admit_mount(&loom_driver::agent::MountSpec {
+            host_path: cache.clone(),
+            container_path: loom.sccache_container_path.clone(),
+            read_only: false,
+        })?;
+    }
     mounts.extend(sccache_mount(loom)?);
     let mut spawn = match build_spawn_config_from_manifest(
         manifest,
@@ -186,6 +194,7 @@ pub async fn prepare(request: Request<'_>) -> Result<Preparation, LoopError> {
         Ok(spawn) => spawn,
         Err(error) => return profile_rejection(error, manifest).map(Preparation::Rejected),
     };
+    association.validate_worker(workspace, &spawn.mounts, spawn.profile_config.as_deref())?;
     let skill_session = skill_plan.materialize(scratch.path(), workspace)?;
     spawn.skills = Some(skill_session.registered);
     spawn.event_metadata = Some(AgentStartMetadata {
@@ -265,12 +274,17 @@ mod tests {
     #[tokio::test]
     async fn shared_worker_preparation_threads_context_and_owns_scratch_for_every_backend() {
         let dir = tempfile::tempdir().unwrap();
-        loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();
+        let git = loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();
+        let bead_id = loom_driver::identifier::BeadId::new("lm-worker").unwrap();
+        let label = SpecLabel::new("harness").unwrap();
+        let workspace = git.create_worktree(&label, &bead_id).await.unwrap().path;
+        let profile_config = dir.path().join("profile.json");
+        std::fs::write(&profile_config, r#"{"profile":{"mounts":[]}}"#).unwrap();
         let mut entries = serde_json::Map::new();
         for runtime in [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct] {
             entries.insert(runtime.to_string(), serde_json::json!({
                 "ref": format!("image-{runtime}"), "source": "/fixture/image", "source_kind": "nix-descriptor",
-                "launcher": "/fixture/wrix", "profile_config": "/fixture/profile.json"
+                "launcher": "/fixture/wrix", "profile_config": profile_config
             }));
         }
         let manifest_path = dir.path().join("images.json");
@@ -284,11 +298,10 @@ mod tests {
             "id": "lm-worker", "title": "worker title", "description": "worker body", "status": "open"
         })).unwrap();
         let profile = ProfileName::base();
-        let label = SpecLabel::new("harness").unwrap();
         for runtime in [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct] {
             let prepared = prepare(Request {
                 bead: &bead,
-                workspace: dir.path(),
+                workspace: &workspace,
                 loom_workspace: dir.path(),
                 manifest: &manifest,
                 cli_profile: None,

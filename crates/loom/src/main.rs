@@ -3430,6 +3430,8 @@ fn prepare_loop_root(
         })?;
     }
 
+    loom_driver::workspace::Association::establish(workspace)?;
+
     let Some(gc_molecule) = gc_molecule_for_root(root)? else {
         return Ok(());
     };
