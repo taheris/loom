@@ -334,41 +334,17 @@ impl GitClient {
         .await?
     }
 
-    /// Create a per-bead workspace at `.loom/beads/<bead_id>/`
-    /// containing a `git clone --local` of the loom workspace at
-    /// `.loom/integration/`, with a fresh branch `loom/<bead_id>`
-    /// checked out. Bead ids are globally unique, so the path is flat
-    /// — no spec-label partition. The `label` argument is accepted for
-    /// source-compat with existing callers and ignored by the path /
-    /// branch construction.
-    ///
-    /// Cloning from the loom workspace (not the operator's workdir)
-    /// leaves the bead clone's `origin` pointing at the loom workspace
-    /// path. Under the A3 push-reliability model the worker never pushes
-    /// to it; the remote is preserved only so host-side ahead/behind
-    /// tracking works when the operator `cd`s into the bead clone (e.g.
-    /// the starship prompt). The driver pulls the bead branch via
-    /// [`Self::fetch_bead_branch`] against the same filesystem path.
-    ///
-    /// Path A from `specs/harness.md § Bead dispatch`: the per-bead
-    /// workspace is a self-contained clone — its `.git/` is a regular
-    /// directory inside the bind-mounted path, so workers running in the
-    /// wrix container can resolve the gitdir and commit. Linked
-    /// worktrees were rejected here because a worktree's `.git` file
-    /// points at a host-absolute path outside the container's
-    /// `/workspace` bind-mount.
-    ///
-    /// Idempotent at the directory level: if the destination already
-    /// exists, the call returns a [`CreatedWorktree`] pointing at it
-    /// without re-cloning. This shape is load-bearing for the
-    /// per-bead-close lifecycle — a bead workspace persists across
-    /// attempts and `loom loop` invocations until the bead is closed, so
-    /// a second dispatch attempt must observe the existing tree rather
-    /// than tripping `git clone --local: destination path already exists`.
+    /// Create a self-contained bead clone at `.loom/beads/<bead_id>/`
+    /// with private Git objects and branch `loom/<bead_id>`. Its `origin`
+    /// remains the integration checkout for host-side tracking and fetches.
+    /// Existing independent clones are reused without discarding work.
+    /// The label is accepted for source compatibility, not path construction.
     ///
     /// # Errors
     ///
-    /// Returns an error when repository inspection, Git execution, or output decoding fails.
+    /// Rejects shared or indirect Git storage before modifying a reused clone,
+    /// preserving its work for migration to an independent clone. Also returns
+    /// repository inspection, Git execution, and output decoding failures.
     pub async fn create_worktree(
         &self,
         _label: &SpecLabel,
@@ -378,6 +354,7 @@ impl GitClient {
         let rel = PathBuf::from(WORKTREE_BASE).join(bead_id.as_str());
         let path = self.workdir.join(&rel);
         if path.exists() {
+            ensure_private_bead_storage(&path).await?;
             self.apply_repo_git_policy(&path).await?;
             ensure_wrix_mount_dir(&path)?;
             self.repair_bead_hooks_path(&path).await?;
@@ -396,6 +373,7 @@ impl GitClient {
             [
                 OsString::from("clone"),
                 OsString::from("--local"),
+                OsString::from("--no-hardlinks"),
                 OsString::from("--quiet"),
                 src_arg,
                 dst_arg,
@@ -403,6 +381,8 @@ impl GitClient {
             None,
         )
         .await?;
+
+        ensure_private_bead_storage(&path).await?;
 
         // Inherit user.email / user.name from the source's effective git
         // config (local + global) into the clone's local config so commits
@@ -2712,6 +2692,51 @@ fn cli_error(output: &std::process::Output) -> GitError {
         status: output.status.code().unwrap_or(-1),
         stderr: combined,
     }
+}
+
+/// Reject storage aliases without modifying the clone or its preserved work.
+async fn ensure_private_bead_storage(workspace: &Path) -> Result<(), GitError> {
+    let workspace = workspace.to_path_buf();
+    spawn_blocking(move || {
+        use std::os::unix::fs::MetadataExt;
+
+        let git_dir = workspace.join(".git");
+        let objects = git_dir.join("objects");
+        for directory in [&workspace, &git_dir, &objects] {
+            if !std::fs::symlink_metadata(directory)?.is_dir() {
+                return Err(GitError::IndirectGitStorage {
+                    path: directory.clone(),
+                });
+            }
+        }
+        for path in [
+            git_dir.join("commondir"),
+            objects.join("info/alternates"),
+            objects.join("info/http-alternates"),
+        ] {
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => return Err(GitError::IndirectGitStorage { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let mut directories = vec![objects];
+        while let Some(directory) = directories.pop() {
+            for entry in std::fs::read_dir(directory)? {
+                let path = entry?.path();
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if metadata.is_dir() {
+                    directories.push(path);
+                } else if !metadata.is_file() {
+                    return Err(GitError::IndirectGitStorage { path });
+                } else if metadata.nlink() != 1 {
+                    return Err(GitError::SharedGitObject { path });
+                }
+            }
+        }
+        Ok(())
+    })
+    .await?
 }
 
 /// Create `<clone>/.wrix/` mode 0o777 so the container's dolt-socket

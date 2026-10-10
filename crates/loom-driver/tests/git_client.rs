@@ -972,6 +972,297 @@ async fn bead_dispatch_creates_clone_under_loom_beads() -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ObjectStorage {
+    Loose,
+    Packed,
+}
+
+fn object_files(repo: &Path) -> Result<Vec<PathBuf>> {
+    let root = repo.join(".git/objects");
+    let mut directories = vec![root.clone()];
+    let mut files = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                directories.push(entry.path());
+            } else {
+                files.push(entry.path().strip_prefix(&root)?.to_path_buf());
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn integration_objects(repo: &Path, storage: ObjectStorage) -> Result<Vec<PathBuf>> {
+    if matches!(storage, ObjectStorage::Packed) {
+        git(repo, &["repack", "-ad"])?;
+    }
+    let files = object_files(repo)?;
+    assert!(!files.is_empty());
+    match storage {
+        ObjectStorage::Loose => assert!(files.iter().all(|path| !path.starts_with("pack"))),
+        ObjectStorage::Packed => {
+            assert!(files.iter().any(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "pack")
+            }));
+            assert!(
+                files
+                    .iter()
+                    .any(|path| path.extension().is_some_and(|extension| extension == "idx"))
+            );
+        }
+    }
+    Ok(files)
+}
+
+async fn assert_worker_object_mutations_are_isolated(storage: ObjectStorage) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let repo = init_repo()?;
+    let integration = loom_path(repo.path());
+    let files = integration_objects(&integration, storage)?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("agent")?;
+    let bead = BeadId::new("lm-private.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+    let reused = client.create_worktree(&label, &bead).await?;
+    assert_eq!(reused.path, created.path);
+
+    for relative in files {
+        let source = integration.join(".git/objects").join(&relative);
+        let worker = created.path.join(".git/objects").join(&relative);
+        let source_metadata = std::fs::metadata(&source)?;
+        let worker_metadata = std::fs::metadata(&worker)?;
+        let bytes = std::fs::read(&source)?;
+        assert_ne!(
+            (source_metadata.dev(), source_metadata.ino()),
+            (worker_metadata.dev(), worker_metadata.ino()),
+        );
+        assert_eq!(worker_metadata.nlink(), 1);
+
+        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::write(&worker, b"worker corruption")?;
+        assert_eq!(std::fs::read(&worker)?, b"worker corruption");
+        assert_eq!(std::fs::read(&source)?, bytes);
+        assert_eq!(std::fs::metadata(&source)?.mode(), source_metadata.mode());
+    }
+    git(&integration, &["fsck", "--full"])?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn bead_loose_objects_are_private() -> Result<()> {
+    assert_worker_object_mutations_are_isolated(ObjectStorage::Loose).await
+}
+
+#[tokio::test]
+async fn bead_packed_objects_are_private() -> Result<()> {
+    assert_worker_object_mutations_are_isolated(ObjectStorage::Packed).await
+}
+
+async fn assert_legacy_alias_rejection_preserves_work(storage: ObjectStorage) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let repo = init_repo()?;
+    let integration = loom_path(repo.path());
+    let files = integration_objects(&integration, storage)?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("agent")?;
+    let bead = BeadId::new("lm-legacy.1")?;
+    let worker = repo.path().join(".loom/beads").join(bead.as_str());
+    std::fs::create_dir_all(worker.parent().context("bead parent")?)?;
+    git(
+        &integration,
+        &[
+            "clone",
+            "--local",
+            "--quiet",
+            integration.to_str().context("source path")?,
+            worker.to_str().context("worker path")?,
+        ],
+    )?;
+    for relative in files {
+        let source = std::fs::metadata(integration.join(".git/objects").join(&relative))?;
+        let destination = std::fs::metadata(worker.join(".git/objects").join(&relative))?;
+        assert_eq!(
+            (source.dev(), source.ino()),
+            (destination.dev(), destination.ino())
+        );
+        assert!(destination.nlink() > 1);
+    }
+    git(&worker, &["checkout", "-q", "-b", "loom/lm-legacy.1"])?;
+    git(&worker, &["config", "user.name", "Fixture"])?;
+    git(
+        &worker,
+        &["config", "user.email", "fixture@example.invalid"],
+    )?;
+    git(&worker, &["config", "commit.gpgsign", "false"])?;
+    agent_commit(
+        &worker,
+        "committed.txt",
+        "preserved commit\n",
+        "Preserve work",
+    )?;
+    std::fs::write(worker.join("README.md"), "preserved stash\n")?;
+    git(
+        &worker,
+        &["stash", "push", "-q", "-m", "preserved recovery"],
+    )?;
+    std::fs::write(worker.join("README.md"), "dirty tracked\n")?;
+    std::fs::write(worker.join("staged.txt"), "staged\n")?;
+    git(&worker, &["add", "staged.txt"])?;
+    std::fs::write(worker.join("untracked.txt"), "untracked\n")?;
+
+    let refs = git_capture(&worker, &["show-ref"])?;
+    let status = git_capture(&worker, &["status", "--porcelain"])?;
+    let index = std::fs::read(worker.join(".git/index"))?;
+    let config = std::fs::read(worker.join(".git/config"))?;
+    for _ in 0..2 {
+        let error = client
+            .create_worktree(&label, &bead)
+            .await
+            .err()
+            .context("legacy clone must be rejected")?;
+        assert!(
+            matches!(error, GitError::SharedGitObject { path } if path.starts_with(worker.join(".git/objects")))
+        );
+        assert_eq!(std::fs::read(worker.join(".git/config"))?, config);
+        assert_eq!(std::fs::read(worker.join(".git/index"))?, index);
+        assert_eq!(git_capture(&worker, &["show-ref"])?, refs);
+        assert_eq!(git_capture(&worker, &["status", "--porcelain"])?, status);
+        assert_eq!(
+            std::fs::read_to_string(worker.join("committed.txt"))?,
+            "preserved commit\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worker.join("README.md"))?,
+            "dirty tracked\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worker.join("staged.txt"))?,
+            "staged\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worker.join("untracked.txt"))?,
+            "untracked\n"
+        );
+        assert_eq!(
+            git_capture(&worker, &["show", "stash@{0}:README.md"])?,
+            "preserved stash"
+        );
+    }
+    git(&integration, &["fsck", "--full"])?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn redispatch_rejects_legacy_loose_object_aliases_without_losing_work() -> Result<()> {
+    assert_legacy_alias_rejection_preserves_work(ObjectStorage::Loose).await
+}
+
+#[tokio::test]
+async fn redispatch_rejects_legacy_packed_object_aliases_without_losing_work() -> Result<()> {
+    assert_legacy_alias_rejection_preserves_work(ObjectStorage::Packed).await
+}
+
+#[derive(Clone, Copy)]
+enum Indirection {
+    GitDirectory,
+    ObjectDirectory,
+    ObjectFile,
+    Alternates,
+    CommonDirectory,
+}
+
+async fn assert_indirect_storage_is_rejected(indirection: Indirection) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("agent")?;
+    let bead = BeadId::new("lm-indirect.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+    let integration = loom_path(repo.path());
+    let path = match indirection {
+        Indirection::GitDirectory => created.path.join(".git"),
+        Indirection::ObjectDirectory => created.path.join(".git/objects"),
+        Indirection::ObjectFile => created
+            .path
+            .join(".git/objects")
+            .join(&object_files(&created.path)?[0]),
+        Indirection::Alternates => created.path.join(".git/objects/info/alternates"),
+        Indirection::CommonDirectory => created.path.join(".git/commondir"),
+    };
+    match indirection {
+        Indirection::GitDirectory | Indirection::ObjectDirectory => {
+            std::fs::rename(&path, path.with_extension("preserved"))?;
+            let target = match indirection {
+                Indirection::GitDirectory => integration.join(".git"),
+                _ => integration.join(".git/objects"),
+            };
+            symlink(target, &path)?;
+        }
+        Indirection::ObjectFile => {
+            std::fs::remove_file(&path)?;
+            let relative = path.strip_prefix(created.path.join(".git/objects"))?;
+            symlink(integration.join(".git/objects").join(relative), &path)?;
+        }
+        Indirection::Alternates => std::fs::write(
+            &path,
+            integration
+                .join(".git/objects")
+                .to_str()
+                .context("object path")?,
+        )?,
+        Indirection::CommonDirectory => std::fs::write(
+            &path,
+            integration.join(".git").to_str().context("git path")?,
+        )?,
+    }
+    std::fs::write(created.path.join("preserved.txt"), "preserved\n")?;
+    let error = client
+        .create_worktree(&label, &bead)
+        .await
+        .err()
+        .context("indirect clone must be rejected")?;
+    assert!(matches!(error, GitError::IndirectGitStorage { path: rejected } if rejected == path));
+    assert_eq!(
+        std::fs::read_to_string(created.path.join("preserved.txt"))?,
+        "preserved\n"
+    );
+    git(&integration, &["fsck", "--full"])?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn redispatch_rejects_symlink_git_directory() -> Result<()> {
+    assert_indirect_storage_is_rejected(Indirection::GitDirectory).await
+}
+
+#[tokio::test]
+async fn redispatch_rejects_symlink_object_directory() -> Result<()> {
+    assert_indirect_storage_is_rejected(Indirection::ObjectDirectory).await
+}
+
+#[tokio::test]
+async fn redispatch_rejects_symlink_object_file() -> Result<()> {
+    assert_indirect_storage_is_rejected(Indirection::ObjectFile).await
+}
+
+#[tokio::test]
+async fn redispatch_rejects_alternate_object_store() -> Result<()> {
+    assert_indirect_storage_is_rejected(Indirection::Alternates).await
+}
+
+#[tokio::test]
+async fn redispatch_rejects_common_git_directory() -> Result<()> {
+    assert_indirect_storage_is_rejected(Indirection::CommonDirectory).await
+}
+
 #[tokio::test]
 async fn pre_dispatch_dirty_workspace_creates_recovery_stash() -> Result<()> {
     let repo = init_repo()?;

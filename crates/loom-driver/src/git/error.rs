@@ -45,6 +45,12 @@ pub enum GitError {
     /// io failure
     Io(#[from] io::Error),
 
+    /// bead Git object has inode aliases at {path}; workspace preserved, migrate to an independent clone before redispatch
+    SharedGitObject { path: PathBuf },
+
+    /// bead Git storage is indirect or not a regular file/directory at {path}; workspace preserved, migrate to an independent clone before redispatch
+    IndirectGitStorage { path: PathBuf },
+
     /// invalid utf-8 in git CLI output
     Utf8(#[from] std::string::FromUtf8Error),
 
