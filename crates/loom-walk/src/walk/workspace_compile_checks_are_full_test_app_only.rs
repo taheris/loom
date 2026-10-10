@@ -127,8 +127,10 @@ pub fn run(_input: &WalkInput) -> Verdict {
 fn check_flake_checks_omit_compile_surfaces(body: &str, violations: &mut Vec<String>) {
     for (idx, raw) in body.lines().enumerate() {
         let code = code_before_comment(raw);
-        for token in code_tokens(code) {
-            if FORBIDDEN_CHECK_TOKENS.contains(&token) {
+        for (offset, token) in code_token_spans(code) {
+            if FORBIDDEN_CHECK_TOKENS.contains(&token)
+                && !is_tool_probe(token, &code[offset + token.len()..])
+            {
                 violations.push(format!(
                     "{CHECKS_REL}:{} flake checks must not expose workspace compile surface `{token}`; run it via `nix run .#test`",
                     idx + 1,
@@ -253,11 +255,43 @@ fn first_assignment_line(body: &str, attr: &str) -> Option<usize> {
     })
 }
 
+fn is_tool_probe(token: &str, tail: &str) -> bool {
+    if !matches!(token, "clippy" | "nextest") {
+        return false;
+    }
+    let tail = tail.trim_start_matches(['\'', '"']);
+    if !tail.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let argument = tail.trim_start().trim_start_matches(['\'', '"']);
+    ["--version", "-V", "--help", "-h"].iter().any(|probe| {
+        argument.strip_prefix(probe).is_some_and(|rest| {
+            rest.is_empty()
+                || rest.starts_with(|character: char| {
+                    character.is_whitespace()
+                        || matches!(character, '\'' | '"' | ')' | ';' | '|' | '&' | '<' | '>')
+                })
+        })
+    })
+}
+
 fn code_tokens(code: &str) -> impl Iterator<Item = &str> {
-    code.split(|character: char| {
+    code_token_spans(code).map(|(_offset, token)| token)
+}
+
+fn code_token_spans(code: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut offset = 0;
+    code.split_inclusive(|character: char| {
         !(character.is_ascii_alphanumeric() || character == '_' || character == '-')
     })
-    .filter(|token| !token.is_empty())
+    .filter_map(move |part| {
+        let start = offset;
+        offset += part.len();
+        let token = part.trim_end_matches(|character: char| {
+            !(character.is_ascii_alphanumeric() || character == '_' || character == '-')
+        });
+        (!token.is_empty()).then_some((start, token))
+    })
 }
 
 fn code_before_comment(raw: &str) -> &str {

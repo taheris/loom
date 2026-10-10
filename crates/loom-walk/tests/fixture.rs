@@ -4556,6 +4556,127 @@ fn workspace_compile_checks_are_full_test_app_only_pass() {
     assert_pass(&out);
 }
 
+fn workspace_compile_check_command(command: &str) -> Output {
+    let ws = make_workspace();
+    seed_workspace_compile_checks_fixture(ws.path());
+    seed(
+        ws.path(),
+        "nix/flake/checks.nix",
+        &format!(
+            r#"_:
+{{
+  perSystem = {{ pkgs, loom, ... }}: {{
+    checks.tool-health = pkgs.runCommand "tool-health" {{ }} ''
+      set -euo pipefail
+      {command}
+      touch "$out"
+    '';
+  }};
+}}
+"#,
+        ),
+    );
+    invoke(
+        &["workspace_compile_checks_are_full_test_app_only"],
+        Some(ws.path()),
+        None,
+    )
+}
+
+#[test]
+fn workspace_compile_checks_are_full_test_app_only_allow_tool_version_probes() {
+    for command in [
+        "cargo clippy --version",
+        "cargo clippy -V",
+        "cargo nextest --version",
+        "cargo nextest -V",
+        "cargo-clippy --version",
+        "clippy-driver --version",
+        "cargo-nextest --version",
+        r#"actual=$(cargo clippy --version); [[ "$actual" == "$(cargo clippy --version)" ]]"#,
+        r#""${loom.toolchain}/bin/cargo" clippy "--version""#,
+        "cargo clippy --version >/dev/null; cargo nextest --version",
+    ] {
+        assert_pass(&workspace_compile_check_command(command));
+    }
+}
+
+#[test]
+fn workspace_compile_checks_are_full_test_app_only_allow_tool_help_probes() {
+    for command in [
+        "cargo clippy --help",
+        "cargo clippy -h",
+        "cargo nextest --help",
+        "cargo nextest -h",
+    ] {
+        assert_pass(&workspace_compile_check_command(command));
+    }
+}
+
+#[test]
+fn workspace_compile_checks_are_full_test_app_only_reject_cargo_compilation() {
+    for command in [
+        "cargo clippy",
+        "cargo clippy --workspace -- -D warnings",
+        "cargo clippy --workspace --all-targets -- -D warnings",
+        "cargo nextest run --workspace",
+        "cargo nextest list --workspace",
+        "cargo clippy -- --version",
+        "cargo nextest run -- --version",
+        "cargo clippy --version-other",
+        "cargo clippy --version=false",
+        "cargo clippy --workspace # --version",
+    ] {
+        assert_fail(
+            &workspace_compile_check_command(command),
+            "nix/flake/checks.nix:6 flake checks must not expose workspace compile surface",
+        );
+    }
+}
+
+#[test]
+fn workspace_compile_checks_are_full_test_app_only_reject_compilation_beside_probes() {
+    for command in [
+        "cargo clippy --version; cargo clippy --workspace",
+        "cargo clippy --workspace; cargo clippy --version",
+        "cargo clippy --version && cargo nextest run --workspace",
+        "cargo nextest --version; cargo nextest run --workspace",
+        "cargo nextest run --workspace; cargo nextest --version",
+        "cargo nextest run --workspace | grep --version",
+    ] {
+        assert_fail(
+            &workspace_compile_check_command(command),
+            "workspace compile surface",
+        );
+    }
+}
+
+#[test]
+fn workspace_compile_checks_are_full_test_app_only_reject_exports_beside_probes() {
+    let ws = make_workspace();
+    seed_workspace_compile_checks_fixture(ws.path());
+    seed(
+        ws.path(),
+        "nix/flake/checks.nix",
+        r#"_: {
+  perSystem = { pkgs, loom, ... }: {
+    checks = {
+      tool-health = pkgs.runCommand "tool-health" { } "cargo clippy --version";
+      renamed-check = loom.nextest;
+    };
+  };
+}
+"#,
+    );
+    let out = invoke(
+        &["workspace_compile_checks_are_full_test_app_only"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "nix/flake/checks.nix:5");
+    assert_fail(&out, "workspace compile surface `nextest`");
+}
+
 #[test]
 fn workspace_compile_checks_are_full_test_app_only_fail_when_flake_check_exposes_clippy() {
     let ws = make_workspace();
