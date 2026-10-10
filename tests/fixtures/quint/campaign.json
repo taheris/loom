@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "quint": "0.32.0",
+  "connect": "0.1.2",
+  "evaluator": "0.6.0",
+  "apalache": "0.56.1",
+  "property": "safety",
+  "routine": { "seeds": [42, 20250308], "traces": 8, "steps": 20, "seconds": 30 },
+  "deeper": { "seeds": [42, 20250308, 314159, 271828], "traces": 32, "steps": 80, "seconds": 120 },
+  "replay": { "seeds": [42], "traces": 1, "steps": 1, "seconds": 30 }
+}

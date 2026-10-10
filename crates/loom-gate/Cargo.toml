@@ -29,10 +29,13 @@ tracing = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
+anyhow = { workspace = true }
+itf = { workspace = true }
+quint-connect = { workspace = true }
 loom-test-support = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

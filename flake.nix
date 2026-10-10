@@ -38,6 +38,7 @@
         ./nix/flake/formatter.nix
         ./nix/flake/tests.nix
         ./nix/flake/apps.nix
+        ./nix/flake/quint.nix
       ];
 
       systems = [

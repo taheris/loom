@@ -401,7 +401,7 @@ review; no keyword classifier or compiler can establish intent.
 - Missing tools, invalid models, empty trace batches, adapter failures,
   incomplete exploration, and timeouts fail visibly; none count as completed
   model verification or implementation conformance.
-  [test?](quint_incomplete_verification_is_not_success)
+  [test](quint_incomplete_verification_is_not_success)
 
 - Semantic review checks correspondence between prose, model assumptions,
   properties, and implementation projections; an unchanged model's passing
@@ -432,7 +432,7 @@ review; no keyword classifier or compiler can establish intent.
 <!-- prettier-ignore -->
 - Model tools and solvers are pinned and provisioned ahead of routine runs;
   trace generation and verification-graph discovery are batched rather than
-  spawning or downloading tools per criterion or trace. [system?](nix run .#test-quint -- provisioning-and-batching)
+  spawning or downloading tools per criterion or trace. [system](nix run .#test-quint -- provisioning-and-batching)
 
 <!-- prettier-ignore -->
 - Cost evidence from actual verification/hook entrypoints covers unrelated,
@@ -447,7 +447,7 @@ review; no keyword classifier or compiler can establish intent.
   declared bounded work may report bounded success; hitting a resource limit
   before that work completes reports incomplete verification. Slow execution
   does not silently reduce coverage or change applicability.
-  [test?](quint_campaign_budget_exhaustion_is_explicit)
+  [test](quint_campaign_budget_exhaustion_is_explicit)
 
 <!-- prettier-ignore -->
 - The pilot integrates actual Loom and Wrix consumers with their production

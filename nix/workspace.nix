@@ -35,6 +35,7 @@ let
     (craneLib.filterCargoSources path type)
     || (hasInfix "/loom-templates/templates/" path)
     || (hasInfix "/loom-skill/builtin/" path)
+    || (hasInfix "/tests/fixtures/quint/" path)
     || (hasSuffix ".sh" path)
     || (hasSuffix ".snap" path);
 
@@ -59,6 +60,8 @@ let
   # `[check]`-tier verifiers read from the workspace root.
   extraSrcs = {
     "flake.nix" = "${src}/flake.nix";
+    "flake.lock" = "${src}/flake.lock";
+    "tests/quint" = "${src}/tests/quint";
     "tests/mock-pi" = "${src}/tests/mock-pi";
     "tests/mock-claude" = "${src}/tests/mock-claude";
     "tests/inbox-bridge" = "${src}/tests/inbox-bridge";

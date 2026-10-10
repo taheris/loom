@@ -51,11 +51,13 @@ gix = { version = "0.84", default-features = false, features = [
     "sha1",
 ] }
 insta = "1"
+itf = "=0.4.0"
 nix = { version = "0.31", default-features = false, features = ["signal", "term"] }
 owo-colors = { version = "4", features = ["supports-colors"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 proptest = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
+quint-connect = "=0.1.2"
 regex = "1"
 roxmltree = "0.21"
 reqwest = { version = "0.13", default-features = false, features = [
