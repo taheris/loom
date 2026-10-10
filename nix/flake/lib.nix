@@ -196,6 +196,10 @@ in
 
       profileManifest = loomLib.mkProfileManifest {
         inherit pkgs wrixLib;
+        profiles = {
+          inherit (wrixLib.profiles) base python;
+          rust = rustProfile;
+        };
         loomBin = imageLoom.bin;
         agentPkg = imagePiCodingAgent;
       };

@@ -111,7 +111,7 @@ in
       name = "profile-images.json";
       text = builtins.toJSON manifest;
       passthru = {
-        inherit manifest;
+        inherit manifest sandboxes;
         profiles = attrNames profiles;
         runtimes = attrNames runtimes;
       };

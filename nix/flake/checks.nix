@@ -31,7 +31,12 @@ _:
         craneLib
         stagedSrc
         ;
-      inherit (pkgs.lib) assertMsg makeBinPath optionalAttrs;
+      inherit (pkgs.lib)
+        assertMsg
+        concatMapStringsSep
+        makeBinPath
+        optionalAttrs
+        ;
       loomLib = import ../lib.nix;
       testsDeriv = import ../../tests/default.nix {
         inherit pkgs smokeSandbox;
@@ -139,6 +144,29 @@ _:
             export NIX_CONFIG='experimental-features ='
             mkdir -p "$HOME" "$NIX_CONF_DIR"
             [[ "$(${sandboxProfileEnv}/bin/nix --extra-experimental-features nix-command eval --offline --raw --expr '"worker-nix-ok"')" == worker-nix-ok ]]
+            touch "$out"
+          '';
+
+      rustSandboxes = [ sandbox ] ++ attrValues profileManifest.passthru.sandboxes.rust;
+      sandbox-rust-toolchain-matches-pin =
+        wrixLinuxPkgs.runCommand "sandbox-rust-toolchain-matches-pin" { }
+          ''
+            set -euo pipefail
+            ${concatMapStringsSep "\n" (rustSandbox: ''
+              (
+                export PATH="${rustSandbox.image.profileEnv}/bin:$PATH"
+                export RUSTC="${rustSandbox.profile.env.RUSTC}"
+                for tool in rustc cargo rustdoc cargo-clippy clippy-driver rustfmt; do
+                  expected=$("${loom.toolchain}/bin/$tool" --version)
+                  actual=$("$tool" --version)
+                  if [[ "$actual" != "$expected" ]]; then
+                    printf '%s: expected %s, got %s\n' "$tool" "$expected" "$actual" >&2
+                    exit 1
+                  fi
+                done
+                [[ "$("$RUSTC" --version)" == "$(rustc --version)" ]]
+              )
+            '') rustSandboxes}
             touch "$out"
           '';
 
@@ -669,6 +697,7 @@ _:
           sandbox-profile-env-has-loom
           sandbox-profile-env-has-wrix
           sandbox-profile-env-evaluates-nix
+          sandbox-rust-toolchain-matches-pin
           ;
       };
     in
