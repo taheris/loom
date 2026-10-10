@@ -267,7 +267,7 @@ rather than silently detached.
 - Changes to package contracts, criteria, models, imports, or tracked supporting
   verification inputs participate in changed-spec decomposition; a model-only
   edit cannot disappear because no Markdown file changed.
-  [test?](quint_package_change_tracking_includes_model_inputs)
+  [test](quint_package_change_tracking_includes_model_inputs)
 
 ### Task acceptance
 

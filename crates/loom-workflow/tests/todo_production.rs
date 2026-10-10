@@ -1258,6 +1258,381 @@ async fn todo_failed_finalization_restores_uninitialized_cursor_state() -> Resul
     Ok(())
 }
 
+fn init_package_workspace(workspace: &Path) -> Result<String> {
+    init_workspace(workspace)?;
+    for label in ["alpha", "beta", "gamma"] {
+        std::fs::remove_file(workspace.join(format!("specs/{label}.md")))?;
+    }
+    std::fs::write(
+        workspace.join("docs/README.md"),
+        "- [alpha](../specs/alpha/spec.md)\n- [beta](../specs/beta/spec.md)\n",
+    )?;
+    for label in ["alpha", "beta"] {
+        let package = workspace.join(format!("specs/{label}"));
+        std::fs::create_dir_all(package.join("support"))?;
+        std::fs::write(package.join("spec.md"), format!("# {label} contract\n"))?;
+        std::fs::write(
+            package.join("tests.md"),
+            "## Success Criteria\n\n- First package requirement [test?](first_test)\n- Second package requirement [check?](bash -c \"printf 'λ'\"\n  )\n",
+        )?;
+        std::fs::write(
+            package.join("model.qnt"),
+            "module Model {\n  import Imported.* from \"./support/imported\"\n}\n",
+        )?;
+        std::fs::write(
+            package.join("support/imported.qnt"),
+            "module Imported { val limit = 1 }\n",
+        )?;
+        std::fs::write(
+            package.join("support/details.md"),
+            "## Success Criteria\n- Hidden supporting example [test](hidden_test)\n",
+        )?;
+    }
+    run_git(workspace, &["add", "--all"])?;
+    run_git(workspace, &["commit", "-qm", "seed canonical packages"])?;
+    git_output(workspace, &["rev-parse", "HEAD"])
+}
+
+#[tokio::test]
+async fn quint_package_change_tracking_includes_model_inputs() -> Result<()> {
+    for input in [
+        "spec.md",
+        "tests.md",
+        "model.qnt",
+        "support/imported.qnt",
+        "support/details.md",
+        "support/new.json",
+    ] {
+        let dir = tempfile::tempdir()?;
+        let base = init_package_workspace(dir.path())?;
+        let path = dir.path().join("specs/alpha").join(input);
+        let mut content = if path.exists() {
+            std::fs::read_to_string(&path)?
+        } else {
+            String::new()
+        };
+        content.push_str("\nChanged package input.\n");
+        std::fs::write(&path, content)?;
+        run_git(dir.path(), &["add", "--all"])?;
+        run_git(dir.path(), &["commit", "-qm", "change one package input"])?;
+        let runner = StatefulRunner::new(&base, None);
+        let mut ctrl = controller(dir.path(), runner)?;
+        let session = ctrl.build_session().await?;
+        let prompt = &session.config.initial_prompt;
+        assert!(prompt.contains("### alpha"), "{input}: {prompt}");
+        assert!(!prompt.contains("### beta"), "{input}: {prompt}");
+        assert!(prompt.contains("Acceptance file: `specs/alpha/tests.md`"));
+        let evidence = session.config.scratch_dir.join("evidence");
+        let index = std::fs::read_to_string(evidence.join("index.md"))?;
+        assert!(index.contains("2 criteria."), "{input}: {index}");
+        assert!(index.contains("Acceptance: `specs/alpha/tests.md`"));
+        assert!(index.contains("Tracked input scope: `specs/alpha`"));
+        let criteria = read_dossier_section(&evidence.join("alpha/criteria"))?;
+        assert!(criteria.contains("First package requirement"));
+        assert!(criteria.contains("Second package requirement"));
+        assert!(criteria.contains("bash -c \"printf 'λ'\"\n  "));
+        assert!(!criteria.contains("Hidden supporting example"));
+        assert!(!criteria.contains("hidden_test"));
+        let diff = read_dossier_section(&evidence.join("alpha/diff"))?;
+        assert!(diff.contains(input), "{input}: {diff}");
+        assert!(diff.contains("+Changed package input."));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_package_index_disagreement_blocks_before_beads_mutation() -> Result<()> {
+    for index in [
+        "- [alpha](../specs/alpha/spec.md)\n",
+        "- [alpha](../specs/alpha/spec.md)\n- [alpha](../specs/alpha/spec.md)\n",
+        "- [alpha](../specs/beta/spec.md)\n- [beta](../specs/beta/spec.md)\n",
+        "- [alpha](../specs/alpha/spec.md)\n- [beta](../specs/beta/spec.md)\n- [ghost](../specs/ghost/spec.md)\n",
+    ] {
+        let dir = tempfile::tempdir()?;
+        let base = init_package_workspace(dir.path())?;
+        std::fs::write(dir.path().join("docs/README.md"), index)?;
+        let runner = StatefulRunner::new(&base, None);
+        let mut ctrl = controller(dir.path(), runner.clone())?;
+        assert!(matches!(
+            ctrl.build_session().await,
+            Err(TodoError::SpecIndex { .. })
+        ));
+        assert!(
+            runner
+                .state
+                .lock()
+                .map_err(|_| anyhow!("lock"))?
+                .calls
+                .is_empty()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_package_initialization_retries_without_inventing_a_cursor() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let base = init_package_workspace(dir.path())?;
+    let runner = StatefulRunner::new(&base, None);
+    runner
+        .state
+        .lock()
+        .map_err(|_| anyhow!("lock"))?
+        .beads
+        .remove("lm-alpha");
+    let mut first = controller(dir.path(), runner.clone())?;
+    let session = first.build_session().await?;
+    let prompt = session.config.initial_prompt.clone();
+    assert_eq!(
+        runner.bead("lm-alpha")?.metadata["loom.todo_state"],
+        "uninitialized"
+    );
+    assert!(
+        !runner
+            .bead("lm-alpha")?
+            .metadata
+            .contains_key("loom.todo_cursor")
+    );
+    assert!(
+        std::fs::read_to_string(session.config.scratch_dir.join("evidence/index.md"))?
+            .contains("2 criteria.")
+    );
+    drop(session);
+    let mut retry = controller(dir.path(), runner.clone())?;
+    let session = retry.build_session().await?;
+    assert_eq!(session.config.initial_prompt, prompt);
+    assert_eq!(
+        runner
+            .state
+            .lock()
+            .map_err(|_| anyhow!("lock"))?
+            .calls
+            .iter()
+            .filter(|argv| argv[0] == "create")
+            .count(),
+        2
+    );
+    let success = todo_success(&prompt, &["alpha"])?;
+    retry
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            Some(&success),
+        )
+        .await?;
+    assert_eq!(runner.bead("lm-alpha")?.metadata["loom.todo_cursor"], base);
+    assert!(
+        !runner
+            .bead("lm-alpha")?
+            .metadata
+            .contains_key("loom.todo_state")
+    );
+    drop(session);
+    assert!(matches!(
+        retry.build_session().await,
+        Err(TodoError::NoChangedSpecs)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_package_input_deletion_is_changed_and_disclosed() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let base = init_package_workspace(dir.path())?;
+    std::fs::remove_file(dir.path().join("specs/alpha/support/details.md"))?;
+    run_git(dir.path(), &["add", "--all"])?;
+    run_git(dir.path(), &["commit", "-qm", "remove supporting input"])?;
+    let mut ctrl = controller(dir.path(), StatefulRunner::new(&base, None))?;
+    let session = ctrl.build_session().await?;
+    assert!(session.config.initial_prompt.contains("### alpha"));
+    let diff = read_dossier_section(&session.config.scratch_dir.join("evidence/alpha/diff"))?;
+    assert!(diff.contains("deleted file mode"));
+    assert!(diff.contains("-- Hidden supporting example"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_package_retry_reuses_batch_notes_drafts_and_checkpoint() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let base = init_package_workspace(dir.path())?;
+    std::fs::write(
+        dir.path().join("specs/alpha/model.qnt"),
+        "module Model { val changed = true }\n",
+    )?;
+    run_git(dir.path(), &["add", "--all"])?;
+    run_git(dir.path(), &["commit", "-qm", "change model only"])?;
+    let runner = StatefulRunner::new(&base, None);
+    let cache = CacheDb::open(dir.path().join(".loom/cache.db"))?;
+    cache.notes_add(
+        &SpecLabel::new("alpha")?,
+        "implementation",
+        "Keep this note",
+        1,
+    )?;
+    let mut ctrl = controller(dir.path(), runner.clone())?;
+    let session = ctrl.build_session().await?;
+    let prompt = session.config.initial_prompt.clone();
+    let index = std::fs::read_to_string(session.config.scratch_dir.join("evidence/index.md"))?;
+    let checkpoint = "Human decision: preserve the existing API. Draft lm-draft needs audit.";
+    {
+        let mut state = runner.state.lock().map_err(|_| anyhow!("lock"))?;
+        state.beads.get_mut("lm-work").unwrap().description = Some(checkpoint.into());
+        let mut draft = state.beads["lm-work"].clone();
+        draft.id = "lm-draft".into();
+        draft.issue_type = "task".into();
+        draft.parent = Some("lm-work".into());
+        state.beads.insert(draft.id.clone(), draft);
+    }
+    drop(session);
+    drop(ctrl);
+    let mut retry = controller(dir.path(), runner.clone())?;
+    let session = retry.build_session().await?;
+    assert_eq!(session.config.initial_prompt, prompt);
+    assert_eq!(
+        std::fs::read_to_string(session.config.scratch_dir.join("evidence/index.md"))?,
+        index
+    );
+    assert_eq!(
+        runner.bead("lm-work")?.description.as_deref(),
+        Some(checkpoint)
+    );
+    assert_eq!(runner.bead("lm-draft")?.parent.as_deref(), Some("lm-work"));
+    assert_eq!(runner.bead("lm-alpha")?.metadata["loom.todo_cursor"], base);
+    assert_eq!(cache.notes_list(None, Some("implementation"))?.len(), 1);
+    assert_eq!(
+        runner
+            .state
+            .lock()
+            .map_err(|_| anyhow!("lock"))?
+            .calls
+            .iter()
+            .filter(|argv| argv[0] == "create")
+            .count(),
+        1
+    );
+    let success = todo_success(&prompt, &["alpha"])?;
+    retry
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            Some(&success),
+        )
+        .await?;
+    drop(session);
+    assert!(cache.notes_list(None, Some("implementation"))?.is_empty());
+    assert!(matches!(
+        retry.build_session().await,
+        Err(TodoError::NoChangedSpecs)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_package_malformed_acceptance_blocks_before_dispatch() -> Result<()> {
+    for criterion in [
+        "- Missing binding",
+        "- Malformed binding [test](",
+        "- Multiple bindings [test](one) [test](two)",
+        "- Repeated [test](one)\n- Repeated [test](two)",
+    ] {
+        let dir = tempfile::tempdir()?;
+        let base = init_package_workspace(dir.path())?;
+        std::fs::write(
+            dir.path().join("specs/alpha/tests.md"),
+            format!("## Success Criteria\n{criterion}\n"),
+        )?;
+        run_git(dir.path(), &["add", "--all"])?;
+        run_git(dir.path(), &["commit", "-qm", "damage acceptance"])?;
+        let runner = StatefulRunner::new(&base, None);
+        let mut ctrl = controller(dir.path(), runner.clone())?;
+        assert!(
+            matches!(ctrl.build_session().await, Err(TodoError::Criteria(_))),
+            "{criterion}"
+        );
+        assert_eq!(runner.bead("lm-alpha")?.metadata["loom.todo_cursor"], base);
+        assert!(runner.bead("lm-work")?.labels.contains(&"loom:todo".into()));
+        assert!(!dir.path().join(".loom/scratch/lm-work").exists());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_package_model_change_dispatches_and_repins_complete_evidence() -> Result<()> {
+    use loom_driver::clock::{Clock, SystemClock};
+
+    let dir = tempfile::tempdir()?;
+    let base = init_package_workspace(dir.path())?;
+    std::fs::write(
+        dir.path().join("specs/alpha/model.qnt"),
+        "module Model { val changed = true }\n",
+    )?;
+    run_git(dir.path(), &["add", "--all"])?;
+    run_git(dir.path(), &["commit", "-qm", "change model only"])?;
+    let runner = StatefulRunner::new(&base, None);
+    let mut ctrl = controller(dir.path(), runner.clone())?;
+    let shim = dir.path().join("wrix-fixture");
+    let receipt = dir.path().join("delivered-evidence");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/agent/pi-todo-package-compaction.sh");
+    let delivered = receipt.clone();
+    let summary = SystemClock::new()
+        .timeout(Duration::from_secs(30), run_todo_workflow(&mut ctrl, |mut config| async move {
+            let success = todo_success(&config.initial_prompt, &["alpha"]).unwrap();
+            let terminal_event = serde_json::json!({
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "text_delta",
+                    "text": format!("LOOM_TODO: {}", serde_json::to_string(&success).unwrap()),
+                },
+            });
+            loom_test_support::write_executable_bash_script(&shim, &format!(
+                "set -euo pipefail\ncp -R '{}' '{}'\necho '[wrix] Starting container (fixture)...' >&2\nexec '{}' '{}' '{}' '{}'\n",
+                config.scratch_dir.join("evidence").display(), delivered.display(),
+                loom_test_support::bash_path().display(), fixture.display(), delivered.display(), terminal_event,
+            )).unwrap();
+            std::fs::write(config.scratch_dir.join("scratch.md"), "Package audit checkpoint").unwrap();
+            config.wrix_launcher = Some(shim);
+            let mut capture = String::new();
+            let outcome = loom_workflow::run_agent::<loom_agent::pi::PiBackend>(&config, None, Some(&mut capture)).await?;
+            let prompt: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(delivered.join("prompt.json")).unwrap()).unwrap();
+            let steer: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(delivered.join("steer.json")).unwrap()).unwrap();
+            assert_eq!(prompt["type"], "prompt");
+            assert_eq!(prompt["message"], config.initial_prompt);
+            assert_eq!(steer["type"], "steer");
+            let repin = steer["message"].as_str().unwrap();
+            assert!(repin.contains(&config.initial_prompt));
+            assert!(repin.contains("Package audit checkpoint"));
+            assert!(repin.contains("### alpha"));
+            assert!(!repin.contains("### beta"));
+            assert!(repin.contains("Acceptance file: `specs/alpha/tests.md`"));
+            assert!(repin.contains("/workspace/.loom/scratch/lm-work/evidence/index.md"));
+            Ok((outcome, None, Some(parse_todo_success(&capture).unwrap())))
+        }))
+        .await??;
+    assert_eq!(summary.spec_outcomes.len(), 1);
+    assert_eq!(summary.spec_outcomes[0].label.as_str(), "alpha");
+    assert!(std::fs::read_to_string(receipt.join("index.md"))?.contains("2 criteria."));
+    let criteria = read_dossier_section(&receipt.join("alpha/criteria"))?;
+    assert!(criteria.contains("First package requirement"));
+    assert!(criteria.contains("Second package requirement"));
+    assert!(!criteria.contains("Hidden supporting example"));
+    assert_eq!(
+        runner.bead("lm-alpha")?.metadata["loom.todo_cursor"],
+        git_output(dir.path(), &["rev-parse", "HEAD"])?
+    );
+    assert!(matches!(
+        ctrl.build_session().await,
+        Err(TodoError::NoChangedSpecs)
+    ));
+    Ok(())
+}
+
 fn read_dossier_section(root: &Path) -> Result<String> {
     let mut paths = std::fs::read_dir(root)?
         .map(|entry| entry.map(|entry| entry.path()))
@@ -1366,7 +1741,7 @@ async fn todo_large_batch_pages_all_evidence_and_resumes_fixed_roster() -> Resul
             Path::new(&format!("specs/{label}.md")),
             &git,
         )
-        .await;
+        .await?;
         assert_eq!(rows.len(), 55);
         let mut expected = String::new();
         for row in &rows {

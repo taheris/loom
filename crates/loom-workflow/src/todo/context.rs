@@ -1,3 +1,4 @@
+use loom_driver::git::GitOid;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_protocol::todo::{GitSha, TodoFingerprint};
 use loom_templates::SkillIndexMarkdown;
@@ -26,7 +27,9 @@ pub struct TemplateBaseFields {
 pub struct FingerprintSpecInput {
     pub label: SpecLabel,
     pub spec_path: String,
-    pub spec_blob_sha: String,
+    pub acceptance_path: String,
+    pub input_scope: String,
+    pub inputs_oid: GitOid,
     pub spec_epic_id: BeadId,
     pub todo_cursor: Option<String>,
     pub initialized: bool,
@@ -57,11 +60,15 @@ pub fn build_template_context(
 pub fn changed_spec_context(
     label: SpecLabel,
     spec_path: impl Into<String>,
+    acceptance_path: impl Into<String>,
+    input_scope: impl Into<String>,
     diff: Option<String>,
 ) -> TodoChangedSpec {
     TodoChangedSpec {
         label,
         spec_path: spec_path.into(),
+        acceptance_path: acceptance_path.into(),
+        input_scope: input_scope.into(),
         diff,
     }
 }
@@ -101,7 +108,9 @@ pub fn todo_fingerprint(
     struct CanonicalSpec<'a> {
         label: &'a str,
         spec_path: &'a str,
-        spec_blob_sha: &'a str,
+        acceptance_path: &'a str,
+        input_scope: &'a str,
+        inputs_oid: &'a str,
         spec_epic_id: &'a str,
         todo_cursor: Option<&'a str>,
         initialized: bool,
@@ -117,7 +126,9 @@ pub fn todo_fingerprint(
             .map(|spec| CanonicalSpec {
                 label: spec.label.as_str(),
                 spec_path: &spec.spec_path,
-                spec_blob_sha: &spec.spec_blob_sha,
+                acceptance_path: &spec.acceptance_path,
+                input_scope: &spec.input_scope,
+                inputs_oid: spec.inputs_oid.as_str(),
                 spec_epic_id: spec.spec_epic_id.as_str(),
                 todo_cursor: spec.todo_cursor.as_deref(),
                 initialized: spec.initialized,
@@ -154,12 +165,16 @@ mod tests {
         let changed_specs = vec![changed_spec_context(
             SpecLabel::new("alpha").unwrap(),
             "specs/alpha.md",
+            "specs/alpha.md",
+            "specs/alpha.md",
             None,
         )];
         let fingerprint_input = vec![FingerprintSpecInput {
             label: SpecLabel::new("alpha").unwrap(),
             spec_path: "specs/alpha.md".to_string(),
-            spec_blob_sha: SHA.to_string(),
+            acceptance_path: "specs/alpha.md".to_string(),
+            input_scope: "specs/alpha.md".to_string(),
+            inputs_oid: GitOid::new(SHA).unwrap(),
             spec_epic_id: work_epic.clone(),
             todo_cursor: None,
             initialized: true,
@@ -236,7 +251,9 @@ mod tests {
         let alpha = FingerprintSpecInput {
             label: SpecLabel::new("alpha").unwrap(),
             spec_path: "specs/alpha.md".to_string(),
-            spec_blob_sha: SHA.to_string(),
+            acceptance_path: "specs/alpha.md".to_string(),
+            input_scope: "specs/alpha.md".to_string(),
+            inputs_oid: GitOid::new(SHA).unwrap(),
             spec_epic_id: BeadId::new("lm-alpha").expect("valid bead id"),
             todo_cursor: None,
             initialized: true,
@@ -244,7 +261,9 @@ mod tests {
         let beta = FingerprintSpecInput {
             label: SpecLabel::new("beta").unwrap(),
             spec_path: "specs/beta.md".to_string(),
-            spec_blob_sha: SHA.to_string(),
+            acceptance_path: "specs/beta.md".to_string(),
+            input_scope: "specs/beta.md".to_string(),
+            inputs_oid: GitOid::new(SHA).unwrap(),
             spec_epic_id: BeadId::new("lm-beta").expect("valid bead id"),
             todo_cursor: Some(SHA.to_string()),
             initialized: false,
@@ -255,12 +274,32 @@ mod tests {
     }
 
     #[test]
+    fn fingerprint_includes_package_input_identity_at_fixed_head() {
+        let head = GitSha::new(SHA).unwrap();
+        let mut spec = FingerprintSpecInput {
+            label: SpecLabel::new("alpha").unwrap(),
+            spec_path: "specs/alpha/spec.md".into(),
+            acceptance_path: "specs/alpha/tests.md".into(),
+            input_scope: "specs/alpha".into(),
+            inputs_oid: GitOid::new(SHA).unwrap(),
+            spec_epic_id: BeadId::new("lm-alpha").unwrap(),
+            todo_cursor: Some(SHA.into()),
+            initialized: false,
+        };
+        let original = todo_fingerprint(&head, SHA, &[spec.clone()]);
+        spec.inputs_oid = GitOid::new("1123456789abcdef0123456789abcdef01234567").unwrap();
+        assert_ne!(todo_fingerprint(&head, SHA, &[spec]), original);
+    }
+
+    #[test]
     fn changed_spec_context_sets_path_and_diff() {
         let changed = changed_spec_context(
             SpecLabel::new("alpha").unwrap(),
             PathBuf::from("specs/alpha.md")
                 .to_string_lossy()
                 .into_owned(),
+            "specs/alpha.md",
+            "specs/alpha.md",
             Some("alpha diff line\n".into()),
         );
         assert_eq!(changed.spec_path, "specs/alpha.md");

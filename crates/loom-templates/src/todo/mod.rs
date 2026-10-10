@@ -54,6 +54,8 @@ impl TodoContext {
 pub struct TodoChangedSpec {
     pub label: SpecLabel,
     pub spec_path: String,
+    pub acceptance_path: String,
+    pub input_scope: String,
     pub diff: Option<String>,
 }
 
@@ -89,6 +91,8 @@ mod tests {
             changed_specs: vec![TodoChangedSpec {
                 label: SpecLabel::new("harness").unwrap(),
                 spec_path: "specs/harness.md".to_string(),
+                acceptance_path: "specs/harness.md".to_string(),
+                input_scope: "specs/harness.md".to_string(),
                 diff: None,
             }],
             work_epic: BeadId::new("lm-work").expect("valid bead id"),

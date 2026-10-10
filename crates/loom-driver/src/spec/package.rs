@@ -31,6 +31,15 @@ impl Package {
         &self.acceptance
     }
 
+    /// Git path scope covering every tracked package input, including nested support files.
+    pub fn input_scope(&self) -> &Path {
+        if self.contract == self.acceptance {
+            &self.contract
+        } else {
+            self.contract.parent().unwrap_or(&self.contract)
+        }
+    }
+
     /// Combined ownership budget; bootstrap documents count only once.
     ///
     /// # Errors

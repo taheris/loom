@@ -305,6 +305,8 @@ fn todo_context_is_publicly_constructible_from_crate_root() {
         changed_specs: vec![TodoChangedSpec {
             label: loom_events::identifier::SpecLabel::new("demo").unwrap(),
             spec_path: "specs/demo.md".to_string(),
+            acceptance_path: "specs/demo.md".to_string(),
+            input_scope: "specs/demo.md".to_string(),
             diff: None,
         }],
         work_epic: BeadId::new("lm-work").expect("valid bead id"),

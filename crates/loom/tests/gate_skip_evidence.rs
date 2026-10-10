@@ -122,6 +122,7 @@ async fn criterion_results(workspace: &Path) -> BTreeMap<String, CriterionResult
         &git,
     )
     .await
+    .unwrap()
     .into_iter()
     .map(|row| {
         let EvidenceState::Current { result, .. } = row.evidence else {

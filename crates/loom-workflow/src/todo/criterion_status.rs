@@ -11,6 +11,7 @@ use loom_driver::git::GitClient;
 use loom_driver::identifier::SpecLabel;
 use loom_gate::annotation::{Annotation, Tier, parse_content};
 use loom_gate::cache::{CacheRow, StatusCache, Verdict};
+use loom_protocol::acceptance::{CriterionInput, PackageInput, Snapshot};
 use loom_protocol::todo::GitSha;
 use loom_templates::criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
@@ -18,18 +19,24 @@ use loom_templates::criterion_status::{
 };
 use tracing::warn;
 
-/// Build the `criterion_status` vec for one spec's todo render.
+use super::TodoError;
+
+/// Build every criterion row from the owner's sole acceptance document.
+///
+/// # Errors
+/// Rejects unreadable acceptance or broken bindings; absent cache evidence remains missing.
 pub async fn build_criterion_status(
     workspace: &Path,
     cache_path: &Path,
     spec_label: &SpecLabel,
     spec_path: &Path,
     git: &GitClient,
-) -> Vec<CriterionStatus> {
+) -> Result<Vec<CriterionStatus>, TodoError> {
     let spec_abs = workspace.join(spec_path);
-    let Ok(content) = std::fs::read_to_string(&spec_abs) else {
-        return Vec::new();
-    };
+    let content = std::fs::read_to_string(&spec_abs).map_err(|source| TodoError::ReadSpec {
+        path: spec_abs,
+        source,
+    })?;
     let parsed = parse_content(spec_path, &content);
 
     let mut annotations_by_line: BTreeMap<u32, Vec<&Annotation>> = BTreeMap::new();
@@ -40,11 +47,30 @@ pub async fn build_criterion_status(
             .push(ann);
     }
 
+    let snapshot = Snapshot::new([PackageInput {
+        spec_label: spec_label.clone(),
+        criteria: parsed
+            .criteria
+            .iter()
+            .map(|criterion| CriterionInput {
+                criterion_text: criterion.text.clone(),
+                annotations: annotations_by_line
+                    .get(&criterion.line)
+                    .into_iter()
+                    .flatten()
+                    .map(|annotation| annotation_from_parsed(annotation))
+                    .collect(),
+                source: spec_path.to_path_buf(),
+                line: criterion.line,
+            })
+            .collect(),
+    }])?;
+
     let cache_rows = match StatusCache::open(cache_path) {
         Ok(cache) => cache.read_for_spec(spec_label.as_str()).unwrap_or_else(|e| {
             warn!(
                 spec_label = %spec_label,
-                error = %e,
+                error = ?e,
                 "loom todo: failed to read criterion evidence cache; rendering missing evidence",
             );
             Vec::new()
@@ -52,7 +78,7 @@ pub async fn build_criterion_status(
         Err(e) => {
             warn!(
                 spec_label = %spec_label,
-                error = %e,
+                error = ?e,
                 "loom todo: failed to open criterion evidence cache; rendering missing evidence",
             );
             Vec::new()
@@ -63,18 +89,13 @@ pub async fn build_criterion_status(
         .map(|row| (row.criterion_anchor.clone(), row))
         .collect();
 
-    let mut out: Vec<CriterionStatus> = Vec::new();
-    for crit in &parsed.criteria {
-        let Some(anns) = annotations_by_line.get(&crit.line) else {
-            continue;
-        };
-        if anns.len() != 1 {
-            continue;
-        }
-        let ann = anns[0];
-        let criterion_text = crit.text.clone();
-        let criterion_id = criterion_id_for(spec_label, &criterion_text);
-        let annotation = annotation_from_parsed(ann);
+    let mut obligations = snapshot.obligations().collect::<Vec<_>>();
+    obligations.sort_by_key(|obligation| obligation.line());
+    let mut out = Vec::with_capacity(obligations.len());
+    for obligation in obligations {
+        let criterion_text = obligation.criterion_text().to_owned();
+        let criterion_id = obligation.reference().criterion_id().clone();
+        let annotation = obligation.annotation().clone();
         let evidence = match cache_by_id.get(criterion_id.as_str()).copied() {
             Some(row) => evidence_from_row(row, &annotation, git).await,
             None => EvidenceState::Missing,
@@ -87,7 +108,7 @@ pub async fn build_criterion_status(
             evidence,
         });
     }
-    out
+    Ok(out)
 }
 
 pub fn criterion_id_for(spec_label: &SpecLabel, criterion_text: &str) -> CriterionId {

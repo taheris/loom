@@ -116,10 +116,14 @@ async fn todo_criterion_identity_survives_markdown_formatting() {
         .unwrap();
     drop(cache);
 
-    let initial = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let initial = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
     let formatted = "## Success Criteria\n\n<!-- prettier-ignore -->\n- A\n  criterion\n  [check](cargo test)\n\n## Requirements\n\nUnrelated prose.\n";
     write_spec(workspace, "alpha", formatted);
-    let current = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let current = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
     assert_eq!(current.len(), 1);
     assert_eq!(current[0].criterion_text, "A criterion");
     assert_eq!(current[0].criterion_id, expected_id);
@@ -148,7 +152,9 @@ async fn todo_does_not_reuse_evidence_for_contaminated_criterion_ids() {
         .unwrap();
     drop(cache);
 
-    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].criterion_text, "A criterion");
     assert_ne!(rows[0].criterion_id, old_id);
@@ -170,7 +176,9 @@ async fn empty_cache_yields_missing_evidence_for_every_criterion() {
     let git = GitClient::open(workspace).unwrap();
     let cache_path = workspace.join(".loom/cache.db");
 
-    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
     assert_eq!(rows.len(), 2);
     assert!(
         rows.iter()
@@ -217,7 +225,9 @@ async fn cache_hit_with_stale_commit_renders_non_zero_commits_since() {
     drop(cache);
 
     let git = GitClient::open(workspace).unwrap();
-    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
     assert_eq!(rows.len(), 1);
     assert_eq!(
         rows[0].evidence,
@@ -260,7 +270,9 @@ async fn todo_populates_criterion_status_from_cache_db() {
     drop(cache);
 
     let git = GitClient::open(workspace).unwrap();
-    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
     assert_eq!(rows.len(), 2);
     assert!(matches!(rows[0].evidence, EvidenceState::Current { .. }));
     assert!(matches!(rows[1].evidence, EvidenceState::Missing));
@@ -291,7 +303,9 @@ async fn stale_annotation_detected_when_cached_binding_differs() {
     drop(cache);
 
     let git = GitClient::open(workspace).unwrap();
-    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
     assert_eq!(rows.len(), 1);
     let EvidenceState::StaleAnnotation {
         cached_annotation, ..
@@ -337,7 +351,8 @@ async fn legacy_gate_cache_file_is_not_a_live_input() {
         &spec_rel,
         &git,
     )
-    .await;
+    .await
+    .expect("valid acceptance fixture");
     assert_eq!(rows.len(), 1);
     assert!(matches!(rows[0].evidence, EvidenceState::Missing));
 }
@@ -371,7 +386,9 @@ async fn criterion_status_commits_since_computed_from_git_rev_list() {
     drop(cache);
 
     let git = GitClient::open(workspace).unwrap();
-    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].evidence.commits_since_label(), "3");
 }
@@ -389,7 +406,9 @@ async fn criterion_status_commits_since_is_missing_when_no_cache_row() {
     let spec_rel = write_spec(workspace, "alpha", body);
     let git = GitClient::open(workspace).unwrap();
     let cache_path = workspace.join(".loom/cache.db");
-    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
     assert_eq!(rows.len(), 1);
     assert!(matches!(rows[0].evidence, EvidenceState::Missing));
 }
@@ -420,7 +439,9 @@ async fn todo_missing_criterion_cache_rows_are_missing_evidence() {
     drop(cache);
 
     let git = GitClient::open(workspace).unwrap();
-    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect("valid acceptance fixture");
 
     assert_eq!(
         rows.len(),
@@ -435,13 +456,19 @@ async fn todo_missing_criterion_cache_rows_are_missing_evidence() {
 }
 
 #[tokio::test]
-async fn missing_spec_file_returns_empty_vec() {
+async fn missing_acceptance_file_returns_read_error() {
     let dir = init_git_repo();
     let workspace = dir.path();
     let label = SpecLabel::new("ghost").unwrap();
     let spec_rel = PathBuf::from("specs/ghost.md");
     let git = GitClient::open(workspace).unwrap();
     let cache_path = workspace.join(".loom/cache.db");
-    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
-    assert_eq!(rows, [] as [loom_templates::CriterionStatus; 0]);
+    let error = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .expect_err("missing acceptance must not become an empty inventory");
+    assert!(matches!(
+        error,
+        loom_workflow::todo::TodoError::ReadSpec { path, .. }
+            if path == workspace.join(spec_rel)
+    ));
 }

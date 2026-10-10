@@ -214,6 +214,13 @@ impl Snapshot {
         })
     }
 
+    /// All structurally admitted obligations; iteration order is unspecified.
+    pub fn obligations(&self) -> impl Iterator<Item = &Obligation> {
+        self.packages
+            .values()
+            .flat_map(|criteria| criteria.values())
+    }
+
     /// Resolve every candidate using only this snapshot's text and verifier metadata.
     ///
     /// # Errors

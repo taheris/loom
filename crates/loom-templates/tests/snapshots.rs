@@ -92,6 +92,8 @@ fn todo_ctx() -> Result<TodoContext> {
         changed_specs: vec![TodoChangedSpec {
             label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".to_string(),
+            acceptance_path: "specs/harness.md".to_string(),
+            input_scope: "specs/harness.md".to_string(),
             diff: Some("=== specs/harness.md ===\n+ new requirement".to_string()),
         }],
         work_epic: BeadId::new("lm-work").unwrap(),

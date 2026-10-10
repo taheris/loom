@@ -40,6 +40,9 @@ pub enum TodoError {
     /// {diagnostic}
     PendingTodoEpicConflict { ids: String, diagnostic: String },
 
+    /// invalid todo acceptance criteria
+    Criteria(#[from] loom_protocol::acceptance::SnapshotError),
+
     /// formatting todo evidence failed
     EvidenceFormat(#[from] std::fmt::Error),
 

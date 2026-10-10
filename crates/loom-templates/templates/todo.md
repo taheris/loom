@@ -27,6 +27,10 @@ Decompose exactly the specs listed here. Every label in this roster must appear 
 
 - Spec file: `{{ spec.spec_path }}`
 
+{% if spec.acceptance_path != spec.spec_path %}
+- Acceptance file: `{{ spec.acceptance_path }}`
+- Tracked package inputs: `{{ spec.input_scope }}` (models/supporting files load on demand)
+{% endif -%}
 {% if self.dossier_manifest().is_none() %}{% match spec.diff %}{% when Some with (diff) %}
 Diff:
 

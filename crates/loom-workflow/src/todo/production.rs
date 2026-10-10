@@ -72,6 +72,8 @@ struct Preflight {
 struct ChangedSpec {
     label: SpecLabel,
     spec_path: String,
+    acceptance_path: String,
+    input_scope: String,
     spec_epic: BeadId,
     cursor: Cursor,
 }
@@ -80,6 +82,8 @@ struct ChangedSpec {
 struct IndexedSpec {
     label: SpecLabel,
     spec_path: String,
+    acceptance_path: String,
+    input_scope: String,
 }
 
 struct PendingWorkEpic {
@@ -303,11 +307,13 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let docs_blob = self.git.head_blob_sha(Path::new("docs/README.md")).await?;
         let mut fingerprint_specs = Vec::with_capacity(changed.len());
         for spec in &changed {
-            let blob = self.git.head_blob_sha(Path::new(&spec.spec_path)).await?;
+            let inputs_oid = self.git.head_blob_sha(Path::new(&spec.input_scope)).await?;
             fingerprint_specs.push(FingerprintSpecInput {
                 label: spec.label.clone(),
                 spec_path: spec.spec_path.clone(),
-                spec_blob_sha: blob.to_string(),
+                acceptance_path: spec.acceptance_path.clone(),
+                input_scope: spec.input_scope.clone(),
+                inputs_oid,
                 spec_epic_id: spec.spec_epic.clone(),
                 todo_cursor: spec.cursor.as_str().map(str::to_owned),
                 initialized: spec.cursor.is_uninitialized(),
@@ -359,6 +365,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         Ok(ChangedSpec {
             label: spec.label.clone(),
             spec_path: spec.spec_path.clone(),
+            acceptance_path: spec.acceptance_path.clone(),
+            input_scope: spec.input_scope.clone(),
             spec_epic,
             cursor,
         })
@@ -448,8 +456,11 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let Some(cursor) = cursor else {
             return Ok(true);
         };
-        let spec_path = Path::new(&spec.spec_path);
-        if self.git.path_changed_since(cursor, spec_path).await? {
+        if self
+            .git
+            .path_changed_since(cursor, Path::new(&spec.input_scope))
+            .await?
+        {
             return Ok(true);
         }
         let old_index = self
@@ -461,8 +472,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let old_path = old_rows
             .iter()
             .find(|row| row.label == spec.label)
-            .map(|row| row.spec_path.as_str());
-        Ok(old_path != Some(spec.spec_path.as_str()))
+            .map(|row| row.contract.as_path());
+        Ok(old_path != Some(Path::new(&spec.spec_path)))
     }
 
     async fn ensure_work_epic(
@@ -586,7 +597,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             let diff = match spec.cursor.as_str() {
                 Some(cursor) => Some(
                     self.git
-                        .diff_spec(cursor, Path::new(&spec.spec_path))
+                        .diff_spec(cursor, Path::new(&spec.input_scope))
                         .await?,
                 ),
                 None => None,
@@ -594,6 +605,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             changed_specs.push(changed_spec_context(
                 spec.label.clone(),
                 spec.spec_path.clone(),
+                spec.acceptance_path.clone(),
+                spec.input_scope.clone(),
                 diff,
             ));
             let cache_path = self.workspace.join(".loom/cache.db");
@@ -602,10 +615,10 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                     &self.workspace,
                     &cache_path,
                     &spec.label,
-                    Path::new(&spec.spec_path),
+                    Path::new(&spec.acceptance_path),
                     self.git.as_ref(),
                 )
-                .await,
+                .await?,
             );
         }
         companion_paths.sort();
@@ -1215,32 +1228,29 @@ fn parse_spec_index(workspace: &Path) -> Result<Vec<IndexedSpec>, TodoError> {
     packages
         .into_iter()
         .map(|package| {
-            let spec_path = package
-                .contract()
-                .strip_prefix(workspace)
-                .map_err(|error| TodoError::SpecIndex {
-                    detail: error.to_string(),
-                })?;
+            let relative = |path: &Path| {
+                path.strip_prefix(workspace)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|error| TodoError::SpecIndex {
+                        detail: error.to_string(),
+                    })
+            };
             Ok(IndexedSpec {
                 label: package.label().clone(),
-                spec_path: spec_path.to_string_lossy().into_owned(),
+                spec_path: relative(package.contract())?,
+                acceptance_path: relative(package.acceptance())?,
+                input_scope: relative(package.input_scope())?,
             })
         })
         .collect()
 }
 
-fn parse_spec_index_content(content: &str) -> Result<Vec<IndexedSpec>, TodoError> {
-    let entries =
-        loom_driver::spec::package::parse_index(content).map_err(|error| TodoError::SpecIndex {
-            detail: format!("{error:#}"),
-        })?;
-    Ok(entries
-        .into_iter()
-        .map(|entry| IndexedSpec {
-            label: entry.label,
-            spec_path: entry.contract.to_string_lossy().into_owned(),
-        })
-        .collect())
+fn parse_spec_index_content(
+    content: &str,
+) -> Result<Vec<loom_driver::spec::package::IndexEntry>, TodoError> {
+    loom_driver::spec::package::parse_index(content).map_err(|error| TodoError::SpecIndex {
+        detail: format!("{error:#}"),
+    })
 }
 
 fn metadata_string(bead: &loom_driver::bd::Bead, key: &str) -> Option<String> {
@@ -1324,7 +1334,7 @@ mod tests {
         )
         .expect("index parses");
         assert_eq!(rows[0].label, SpecLabel::new("harness").unwrap());
-        assert_eq!(rows[1].spec_path, "specs/templates.md");
+        assert_eq!(rows[1].contract, Path::new("specs/templates.md"));
     }
 
     #[test]

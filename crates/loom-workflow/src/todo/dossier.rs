@@ -28,8 +28,8 @@ impl Dossier {
         for spec in &context.changed_specs {
             write!(
                 dossier.manifest,
-                "## {}\n\nSource: `{}`\n\n",
-                spec.label, spec.spec_path
+                "## {}\n\nContract: `{}`\nAcceptance: `{}`\nTracked input scope: `{}` (models and supporting files load on demand).\n\n",
+                spec.label, spec.spec_path, spec.acceptance_path, spec.input_scope
             )?;
             let rows = context
                 .criterion_status
