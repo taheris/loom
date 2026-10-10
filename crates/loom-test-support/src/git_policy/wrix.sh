@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 set -euo pipefail
 
-[[ "$#" -eq 5 && "$1" == init && "$2" == --offline && "$3" == --no-hooks && "$4" == --key ]]
-[[ "$5" == "$(basename "${WRIX_DEPLOY_KEY:?}")" ]]
+[[ "$#" -eq 6 && "$1" == init && "$2" == --offline && "$3" == --no-hooks && "$4" == --sign && "$5" == --key ]]
+[[ "$6" == "$(basename "${WRIX_DEPLOY_KEY:?}")" ]]
 [[ -f "$WRIX_DEPLOY_KEY" && -f "${WRIX_SIGNING_KEY:?}" ]]
 
 mkdir -p .git/wrix
@@ -15,5 +15,5 @@ git config --local core.sshCommand .git/wrix/git-ssh
 git config --local gpg.format ssh
 git config --local gpg.ssh.program wrix-git-sign
 git config --local gpg.ssh.allowedSignersFile wrix/allowed_signers
-git config --local user.signingkey "wrix/signing-key/$5-signing"
+git config --local user.signingkey "wrix/signing-key/$6-signing"
 git config --local commit.gpgsign true

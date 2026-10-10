@@ -21,7 +21,7 @@ git init -q -b main
 git remote add origin "$fixture/origin.git"
 git config user.name "Smoke Host Gate"
 git config user.email smoke@example.com
-"$wrix_bin" init --offline --no-hooks --key smoke
+"$wrix_bin" init --offline --no-hooks --sign --key smoke
 
 mkdir -p bin specs .loom
 cp "$pre_push_checks" bin/pre-push-checks

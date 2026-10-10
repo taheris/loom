@@ -169,7 +169,8 @@ let
     env -i \
       PATH="${makeBinPath (smokeGitInputs ++ [ pkgs.coreutils ])}" \
       TMPDIR="$TMPDIR" \
-      ${pkgs.bash}/bin/bash ${../smoke/git-policy-test.sh} ${smokeSandbox.launcher}/bin/wrix
+      ${pkgs.bash}/bin/bash ${../smoke/git-policy-test.sh} \
+        ${smokeSandbox.launcher}/bin/wrix ${../smoke/seed-git-policy.sh}
     touch "$out"
   '';
 
@@ -205,6 +206,7 @@ let
       export LOOM_TEST_IMAGE_SOURCE_KIND=${smokeEntry.source_kind}
       export LOOM_TEST_PROFILE_CONFIG=${smokeEntry.profile_config}
       export LOOM_TEST_PRE_PUSH_CHECKS=${../../bin/pre-push-checks}
+      export LOOM_TEST_GIT_POLICY=${../smoke/seed-git-policy.sh}
       export LOOM_TEST_SEED_BEADS=${../smoke/seed-beads.sh}
       export LOOM_TEST_LOOP=${../smoke/loop.sh}
       export LOOM_TEST_WAIT_DOLT=${../smoke/wait-dolt.sh}

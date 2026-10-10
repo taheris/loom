@@ -139,7 +139,14 @@ impl RepoGitPolicy {
         let mut command = StdCommand::new(&self.wrix_bin);
         super::environment::scrub_std_command(&mut command);
         let output = command
-            .args(["init", "--offline", "--no-hooks", "--key", key_name])
+            .args([
+                "init",
+                "--offline",
+                "--no-hooks",
+                "--sign",
+                "--key",
+                key_name,
+            ])
             .env(WRIX_DEPLOY_KEY_ENV, deploy_key)
             .env(WRIX_SIGNING_KEY_ENV, signing_key)
             .current_dir(workspace)

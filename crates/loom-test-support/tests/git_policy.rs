@@ -26,7 +26,14 @@ fn repository(fixture: &Fixture) -> Result<TempDir> {
     successful_git(repo.path(), &["init", "-q", "-b", "main"])?;
     let output = Command::new(fixture.wrix())
         .current_dir(repo.path())
-        .args(["init", "--offline", "--no-hooks", "--key", "repo-key"])
+        .args([
+            "init",
+            "--offline",
+            "--no-hooks",
+            "--sign",
+            "--key",
+            "repo-key",
+        ])
         .output()?;
     ensure!(output.status.success(), "fixture init: {output:?}");
     Ok(repo)

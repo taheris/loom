@@ -22,6 +22,7 @@ set -euo pipefail
 #   LOOM_TEST_IMAGE_SOURCE_KIND — wrix image source kind (default: nix-descriptor)
 #   LOOM_TEST_PROFILE_CONFIG — immutable wrix ProfileConfig for the mock image
 #   LOOM_TEST_PRE_PUSH_CHECKS — canonical repository pre-push wrapper
+#   LOOM_TEST_GIT_POLICY     — script granting smoke repository Git credentials
 #   LOOM_TEST_SEED_BEADS     — script seeding spec metadata and ready smoke work
 #   LOOM_TEST_LOOP           — script running the bead and checking its result
 #   LOOM_TEST_WAIT_DOLT      — bounded startup readiness and failure diagnostics
@@ -124,6 +125,7 @@ cd "$WORKSPACE"
 git config user.email smoke@example.com
 git config user.name "Loom Smoke"
 git branch -M main
+bash "${LOOM_TEST_GIT_POLICY:?missing smoke Git policy helper}"
 
 mkdir -p bin docs specs .loom
 cp "$LOOM_TEST_PRE_PUSH_CHECKS" bin/pre-push-checks
@@ -157,7 +159,7 @@ cat >.gitignore <<'IGNORE'
 .wrix/
 *.gate.lock*
 IGNORE
-git add .gitignore .pre-commit-config.yaml bin/pre-push-checks docs/README.md specs/smoke.md
+git add .gitignore .pre-commit-config.yaml wrix.toml bin/pre-push-checks docs/README.md specs/smoke.md
 git commit -q -m "Initialize smoke workspace"
 git remote add origin "$ORIGIN"
 git push -q -u origin main
