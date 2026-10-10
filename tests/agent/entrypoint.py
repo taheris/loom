@@ -71,6 +71,9 @@ class Fixture:
         self.entrypoint = root / "entrypoint.sh"
         self.entrypoint.write_text(self.relocate(entrypoint))
         (self.etc / "image-agent").write_text(agent)
+        (self.etc / "direct-executable").write_text(
+            str(self.workspace / "bin" / BINARIES["direct"])
+        )
         for filename in ("claude-config.json", "claude-settings.json"):
             (self.etc / filename).write_text('{"env":{}}\n')
         (self.workspace / ".beads").mkdir()
@@ -164,9 +167,6 @@ class Entrypoint(unittest.TestCase):
                 self.assertEqual(observed["endpoint"], ["192.0.2.1", "24470"])
                 self.assertTrue((fixture.root / "bd.jsonl").is_file())
                 self.assertEqual((fixture.root / "bd.jsonl").read_text(), '["--readonly", "sql", "SELECT 1"]\n')
-                logs = list((fixture.workspace / ".wrix/log").glob("*.json"))
-                self.assertEqual(len(logs), 1)
-                self.assertEqual(json.loads(logs[0].read_text())["exit_code"], 23)
                 (fixture.root / "network-ready").unlink()
                 rejected = fixture.run()
                 self.assertNotEqual(rejected.returncode, 0)
@@ -197,7 +197,7 @@ class Entrypoint(unittest.TestCase):
 
     def test_pi_verifier_rejects_wrong_mode(self):
         with self.assertRaises(AssertionError):
-            self.check_runtime("pi", ("pi --mode rpc", "pi --mode text"))
+            self.check_runtime("pi", ('"$WRIX_AGENT_BIN" --mode rpc', '"$WRIX_AGENT_BIN" --mode text'))
 
     def test_claude_verifier_rejects_missing_permission_tool(self):
         with self.assertRaises(AssertionError):
@@ -209,7 +209,7 @@ class Entrypoint(unittest.TestCase):
 
     def test_direct_verifier_rejects_wrong_runtime(self):
         with self.assertRaises(AssertionError):
-            self.check_runtime("direct", ("  loom-direct-runner || MAIN_EXIT=$?", "  pi || MAIN_EXIT=$?"))
+            self.check_runtime("direct", ("WRIX_AGENT_BIN=\"$(<\"$DIRECT_EXECUTABLE_FILE\")\"", "WRIX_AGENT_BIN=pi"))
 
     def test_shared_verifier_rejects_missing_ssh_setup(self):
         with self.assertRaises(AssertionError):

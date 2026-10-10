@@ -802,7 +802,7 @@ mod properties {
 }
 
 #[test]
-fn cargo_metadata_coordinates_major_wire_version_and_dependents() {
+fn cargo_metadata_coordinates_workspace_version_and_dependents() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -824,16 +824,16 @@ fn cargo_metadata_coordinates_major_wire_version_and_dependents() {
         .iter()
         .find(|package| package["name"] == "loom-protocol")
         .unwrap();
-    assert_eq!(protocol["version"], "2.0.0");
+    assert_eq!(protocol["version"], "0.1.0");
     for package in packages {
-        assert_eq!(package["version"], "2.0.0");
+        assert_eq!(package["version"], "0.1.0");
         for dependency in package["dependencies"]
             .as_array()
             .unwrap()
             .iter()
             .filter(|dependency| dependency["name"] == "loom-protocol")
         {
-            assert_eq!(dependency["req"], "^2.0.0", "{}", package["name"]);
+            assert_eq!(dependency["req"], "^0.1.0", "{}", package["name"]);
         }
     }
 }

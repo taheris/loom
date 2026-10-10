@@ -1,8 +1,6 @@
-diff --git a/crates/wrix-cli/src/init.rs b/crates/wrix-cli/src/init.rs
-index 254d592..d14525f 100644
 --- a/crates/wrix-cli/src/init.rs
 +++ b/crates/wrix-cli/src/init.rs
-@@ -26,7 +26,7 @@ const TRANSPORT_TRAMPOLINE: &str = concat!(
+@@ -30,7 +30,7 @@
      "case \"$common_dir\" in /*) ;; *) ",
      "root=$(git rev-parse --show-toplevel) || exit 255; ",
      "common_dir=\"$root/$common_dir\" ;; esac; ",
@@ -11,7 +9,7 @@ index 254d592..d14525f 100644
  );
  const PREK_HOOKS_ENV: &str = "WRIX_PREK_HOOKS";
  const PREK_HOOK_NAMES: [&str; 5] = [
-@@ -1985,7 +1985,8 @@ fn resolved_deploy_key(key_name: &KeyName) -> Result<PathBuf, Error> {
+@@ -1959,7 +1959,8 @@
  }
 
  fn probe_helper_config(root: &Path, helper_path: &Path) -> Result<String, Error> {
@@ -21,20 +19,19 @@ index 254d592..d14525f 100644
          .arg("-G")
          .arg("github.com")
          .current_dir(root)
-@@ -2408,14 +2409,36 @@ enum Error {
+@@ -2345,11 +2346,35 @@
 
  #[cfg(test)]
  mod test {
--    use std::path::Path;
-+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
-
++    use std::{fs, os::unix::fs::PermissionsExt};
++
      use super::{
-         DeployPolicy, FilePolicy, ForcePolicy, HookPolicy, KeyName, OnlineFailure, RemoteKeyId,
-         RemoteName, SigningPolicy, VerificationPolicy, classify_online_failure, parse_file_policy,
--        parse_flags, parse_github_remote,
-+        parse_flags, parse_github_remote, probe_helper_config,
+         DeployPolicy, ForcePolicy, HookPolicy, KeyName, OnlineFailure, RemoteKeyId, RemoteName,
+         SigningPolicy, VerificationPolicy, classify_online_failure, parse_flags,
+-        parse_github_remote,
++        parse_github_remote, probe_helper_config,
      };
-
++
 +    /// A real process is required to exercise missing shebang interpreter handling.
 +    #[test]
 +    fn helper_probe_does_not_require_the_shebang_interpreter() {
@@ -56,7 +53,6 @@ index 254d592..d14525f 100644
 +        let config = probe_helper_config(fixture.path(), &helper).unwrap();
 +        assert_eq!(config, "-G\ngithub.com\n");
 +    }
-+
+
      #[test]
      fn flags_parse_documented_init_options() {
-         let args = vec![

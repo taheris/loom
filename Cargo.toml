@@ -21,7 +21,7 @@ members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.95"
-version = "2.0.0"
+version = "0.1.0"
 license = "MIT"
 publish = false
 
@@ -96,7 +96,7 @@ loom-render = { path = "crates/loom-render" }
 loom-agent = { path = "crates/loom-agent" }
 loom-direct-runner = { path = "crates/loom-direct-runner" }
 loom-gate = { path = "crates/loom-gate" }
-loom-protocol = { path = "crates/loom-protocol", version = "2.0.0" }
+loom-protocol = { path = "crates/loom-protocol", version = "0.1.0" }
 loom-workflow = { path = "crates/loom-workflow" }
 loom-templates = { path = "crates/loom-templates" }
 loom-test-support = { path = "crates/loom-test-support" }
