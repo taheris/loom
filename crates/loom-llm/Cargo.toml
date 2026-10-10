@@ -32,8 +32,10 @@ tracing = { workspace = true }
 url = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true }
 tokio-test = { workspace = true }
+tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }
 
 [features]

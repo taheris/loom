@@ -7,6 +7,9 @@
 //! signature mentions `genai::Client` — the wrapper insulates consumers
 //! from the underlying crate's API churn.
 
+#[cfg(test)]
+mod logging;
+
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -1031,7 +1034,11 @@ mod tests {
         }
     }
 
-    fn openai_responses_payload(input: u32, output: u32, text: &str) -> serde_json::Value {
+    pub(super) fn openai_responses_payload(
+        input: u32,
+        output: u32,
+        text: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             "id": "resp-test",
             "status": "completed",

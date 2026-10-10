@@ -2610,10 +2610,12 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-test",
  "tracing",
+ "tracing-subscriber",
  "url",
  "wiremock",
 ]

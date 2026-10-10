@@ -2158,6 +2158,46 @@ printf '}}\n'"#;
     }
 
     #[test]
+    fn multimodal_logging_judge_resolves_real_rubric_and_behavioral_inputs() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("crate is under workspace/crates");
+        let script = workspace.join("tests/judges/loom.sh");
+        let output = judge_collect_command(
+            workspace,
+            &script,
+            Some("judge_llm_multimodal_logging_redaction"),
+        )
+        .output()
+        .expect("real rubric collect mode runs");
+        assert!(output.status.success(), "{output:?}");
+        let paths = parse_inputs_json(&String::from_utf8(output.stdout).unwrap())
+            .expect("rubric declares behavioral inputs");
+        for required in [
+            "crates/loom-llm/src/request.rs",
+            "crates/loom-llm/src/api_key.rs",
+            "crates/loom-llm/src/client/mod.rs",
+            "crates/loom-llm/src/client/multi_provider.rs",
+            "crates/loom-llm/src/client/multi_provider/logging.rs",
+            "crates/loom-llm/src/client/openai_compat.rs",
+            "Cargo.lock",
+        ] {
+            assert!(
+                paths.contains(&PathBuf::from(required)),
+                "missing {required}"
+            );
+        }
+        for path in paths {
+            assert!(
+                workspace.join(&path).is_file(),
+                "missing {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn batch_print_inputs_maps_each_target_to_its_globs() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("rubric.sh");
