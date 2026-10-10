@@ -71,6 +71,20 @@ fn run_gate_command_with_agent_and_setup<F>(
 where
     F: FnOnce(&Path),
 {
+    run_gate_command_with_finding_and_setup(workspace, args, labels, agent_mode, None, setup)
+}
+
+fn run_gate_command_with_finding_and_setup<F>(
+    workspace: &Path,
+    args: &[&str],
+    labels: &[&str],
+    agent_mode: &str,
+    finding: Option<&Finding>,
+    setup: F,
+) -> (std::process::Output, String, PathBuf)
+where
+    F: FnOnce(&Path),
+{
     write_specs(workspace, labels);
     let bin_dir = install_bd_shim(workspace);
     let state_dir = workspace.join("bd-state");
@@ -80,7 +94,16 @@ where
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let mock_agent = env!("CARGO_BIN_EXE_mock-loom-agent");
 
-    let output = Command::new(loom_bin)
+    let mut command = Command::new(loom_bin);
+    if let Some(finding) = finding {
+        command.env(
+            "LOOM_TEST_FINDING_LINE",
+            format!("LOOM_FINDING: {}", serde_json::to_string(finding).unwrap()),
+        );
+    } else {
+        command.env_remove("LOOM_TEST_FINDING_LINE");
+    }
+    let output = command
         .arg("--workspace")
         .arg(workspace)
         .arg("--host-key")
@@ -215,6 +238,80 @@ fn audit_tree_scope_makes_no_bd_writes() {
         stdout.contains("LOOM_FINDING_STATUS:"),
         "audit should still report finding status JSON. stdout:\n{stdout}",
     );
+}
+
+#[test]
+fn finding_clarification_materialization_requires_unique_active_brief() {
+    let brief = "## Options — choose\n\n### Option 1 — preserve\nCost: churn.\n";
+    for (evidence, error) in [
+        (brief.to_owned(), None),
+        (
+            "missing options".to_owned(),
+            Some(loom_workflow::inbox::BriefError::Missing),
+        ),
+        (
+            format!("{brief}\n{brief}"),
+            Some(loom_workflow::inbox::BriefError::Ambiguous),
+        ),
+        (
+            format!("{brief}\n## Options\n"),
+            Some(loom_workflow::inbox::BriefError::Ambiguous),
+        ),
+        (
+            format!("{brief}\n### Option invalid\nCost: debt."),
+            Some(loom_workflow::inbox::BriefError::Heading),
+        ),
+        (
+            format!("```markdown\n{brief}\n```"),
+            Some(loom_workflow::inbox::BriefError::Missing),
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut raw = expected_finding().into_raw();
+        raw.route = loom_workflow::review::FindingRoute::Clarify;
+        raw.evidence = evidence.clone();
+        let finding = loom_test_support::finding::resolve(raw).unwrap();
+        let (output, log, _) = run_gate_command_with_finding_and_setup(
+            dir.path(),
+            &["gate", "audit", "--tree"],
+            &[SPEC_LABEL],
+            FINDING_AGENT_MODE,
+            Some(&finding),
+            |_| {},
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{stdout}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let status = status_payload(&stdout);
+        assert_eq!(status["id"], finding.id());
+        assert_eq!(status["hash"], finding.hash());
+        assert_eq!(status["action"], "reported");
+        assert_eq!(
+            status["options_diagnostic"],
+            error.map_or(serde_json::Value::Null, |error| serde_json::Value::String(
+                error.repair_message()
+            ))
+        );
+        let record = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("LOOM_FINDING:"))
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_str(record).unwrap();
+        assert_eq!(
+            record["evidence"], evidence,
+            "inspection preserves raw finding context"
+        );
+        assert!(
+            !log.lines().any(|line| matches!(
+                line.split_whitespace().next(),
+                Some("create" | "update" | "close" | "dep" | "mol")
+            )),
+            "read-only inspection: {log}"
+        );
+    }
 }
 
 #[test]

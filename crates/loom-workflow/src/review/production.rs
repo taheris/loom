@@ -979,11 +979,12 @@ where
             }),
         );
         for finding in walk.findings() {
-            let action = if suppresses_rubric_finding(&self.suppressions, finding) {
-                "suppressed"
+            let (status, action) = if suppresses_rubric_finding(&self.suppressions, finding) {
+                (crate::mint::FindingStatusAction::Suppressed, "suppressed")
             } else {
-                "review-concern"
+                (crate::mint::FindingStatusAction::Reported, "review-concern")
             };
+            let routing = crate::mint::FindingRoutingRecord::new(finding, status);
             self.emit_driver_event(
                 DriverKind::MarkerRouted,
                 &format!("finding {} routed to {action}", finding.hash()),
@@ -994,6 +995,10 @@ where
                     "finding_token": finding.token(),
                     "requested_route": finding.route().as_wire(),
                     "route": action,
+                    "options_parse_result": routing.options_parse_result,
+                    "options_diagnostic": routing.options_diagnostic,
+                    "evidence_hash": routing.evidence_hash,
+                    "evidence_excerpt": routing.evidence_excerpt,
                 }),
             );
         }

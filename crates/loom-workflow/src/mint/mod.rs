@@ -29,13 +29,13 @@ use loom_driver::config::SuppressionConfig;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_events::{DriverEventPayload, DriverKind};
 use loom_gate::IntegrityFinding;
-use loom_protocol::gate::options::has_well_formed_block;
 use serde::Serialize;
 
 use crate::gate_clarify::{
-    CLARIFY_WITHOUT_OPTIONS_CAUSE, OptionsParseResult, evidence_excerpt as route_evidence_excerpt,
-    evidence_hash,
+    CLARIFY_WITHOUT_OPTIONS_CAUSE, OptionsParseResult, apply_finding_clarify_report,
+    evidence_excerpt as route_evidence_excerpt, evidence_hash,
 };
+use crate::inbox::{BriefError, parse_options};
 use crate::resolve::{
     ResolveError, ensure_spec_metadata_epic, resolve_open_epic, resolve_or_mint_open_epic,
 };
@@ -64,7 +64,7 @@ fn classify_routing(finding: &Finding) -> FindingRouting {
     if finding.route() != FindingRoute::Clarify {
         return FindingRouting::Fixup;
     }
-    if has_well_formed_block(finding.evidence()) {
+    if parse_options(finding.evidence()).is_ok() {
         FindingRouting::Clarify
     } else {
         FindingRouting::BlockedClarifyWithoutOptions
@@ -147,6 +147,7 @@ pub enum BatchOutcome {
         lead_spec: SpecLabel,
         findings_count: usize,
         status: MaterializedStatus,
+        options_diagnostic: Option<BriefError>,
     },
     /// Tree planning selected an actionable batch, but materialization is
     /// deferred until a tree work epic exists.
@@ -290,19 +291,22 @@ pub struct FindingRoutingRecord {
     pub requested_route: FindingRoute,
     pub action: FindingStatusAction,
     pub options_parse_result: Option<OptionsParseResult>,
+    pub options_diagnostic: Option<String>,
     pub evidence_hash: String,
     pub evidence_excerpt: String,
 }
 
 impl FindingRoutingRecord {
-    fn new(finding: &Finding, action: FindingStatusAction) -> Self {
-        let options_parse_result = (finding.route() == FindingRoute::Clarify).then(|| {
-            if has_well_formed_block(finding.evidence()) {
-                OptionsParseResult::WellFormed
-            } else {
-                OptionsParseResult::MissingOrMalformed
-            }
+    pub(crate) fn new(finding: &Finding, action: FindingStatusAction) -> Self {
+        let resolution =
+            (finding.route() == FindingRoute::Clarify).then(|| parse_options(finding.evidence()));
+        let options_parse_result = resolution.as_ref().map(|result| match result {
+            Ok(_) => OptionsParseResult::WellFormed,
+            Err(_) => OptionsParseResult::MissingOrMalformed,
         });
+        let options_diagnostic = resolution
+            .and_then(Result::err)
+            .map(BriefError::repair_message);
         Self {
             id: finding.id(),
             hash: finding.hash(),
@@ -310,6 +314,7 @@ impl FindingRoutingRecord {
             requested_route: finding.route(),
             action,
             options_parse_result,
+            options_diagnostic,
             evidence_hash: evidence_hash(finding.evidence()),
             evidence_excerpt: route_evidence_excerpt(finding.evidence()),
         }
@@ -331,6 +336,8 @@ pub struct FindingStatusRecord {
     pub token: ConcernToken,
     pub target: FindingTarget,
     pub action: FindingStatusAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options_diagnostic: Option<String>,
 }
 
 impl FindingStatusRecord {
@@ -343,6 +350,7 @@ impl FindingStatusRecord {
             token: finding.token(),
             target: finding.target().clone(),
             action,
+            options_diagnostic: FindingRoutingRecord::new(finding, action).options_diagnostic,
         }
     }
 
@@ -438,6 +446,7 @@ impl MintSummary {
                         "finding_hash": routing.hash,
                         "finding_token": routing.token,
                         "options_parse_result": routing.options_parse_result,
+                        "options_diagnostic": routing.options_diagnostic,
                         "evidence_hash": routing.evidence_hash,
                         "evidence_excerpt": routing.evidence_excerpt,
                         "cause": CLARIFY_WITHOUT_OPTIONS_CAUSE,
@@ -959,6 +968,13 @@ async fn route_molecule_findings_inner<R: CommandRunner>(
             create_molecule_batch(bd, &group.findings, &group.lead_spec, &parent, state).await
         };
         let succeeded = matches!(outcome, BatchOutcome::Minted { .. });
+        let clarified = matches!(
+            outcome,
+            BatchOutcome::Minted {
+                options_diagnostic: None,
+                ..
+            }
+        );
         record_batch_status(&mut summary, &group.findings, &outcome);
         if succeeded {
             let count = group.findings.len();
@@ -972,10 +988,10 @@ async fn route_molecule_findings_inner<R: CommandRunner>(
                 MoleculeBatchState::Deferred => {
                     summary.deferred_findings_merged += count;
                 }
-                MoleculeBatchState::Clarify => {
+                MoleculeBatchState::Clarify if clarified => {
                     summary.clarify_findings_raised += count;
                 }
-                MoleculeBatchState::BlockedClarifyWithoutOptions => {}
+                MoleculeBatchState::Clarify | MoleculeBatchState::BlockedClarifyWithoutOptions => {}
             }
         }
         summary.record(outcome);
@@ -1075,6 +1091,7 @@ async fn merge_or_create_deferred_batch<R: CommandRunner>(
                     lead_spec: lead_spec.clone(),
                     findings_count: findings.len(),
                     status: MaterializedStatus::Deferred,
+                    options_diagnostic: None,
                 },
                 Err(err) => BatchOutcome::Errored {
                     fingerprint,
@@ -1155,21 +1172,22 @@ async fn create_molecule_batch<R: CommandRunner>(
             MaterializedStatus::Blocked
         }
     };
-    if let Err(err) = apply_materialized_status(bd, &bead_id, status).await {
-        return BatchOutcome::Errored {
+    match admit_created_batch(bd, &bead_id, findings, status).await {
+        Ok(options_diagnostic) => BatchOutcome::Minted {
+            fingerprint,
+            bead_id,
+            lead_spec: lead_spec.clone(),
+            findings_count: findings.len(),
+            status,
+            options_diagnostic,
+        },
+        Err(err) => BatchOutcome::Errored {
             fingerprint,
             message: format!(
-                "created routed bead `{bead_id}` but failed to set status `{}`: {err}",
-                status.as_wire(),
+                "created routed bead `{bead_id}` but admission failed: {}",
+                mint_error_message(&MintError::from(err)),
             ),
-        };
-    }
-    BatchOutcome::Minted {
-        fingerprint,
-        bead_id,
-        lead_spec: lead_spec.clone(),
-        findings_count: findings.len(),
-        status,
+        },
     }
 }
 
@@ -1183,13 +1201,8 @@ fn molecule_batch_labels(findings: &[Finding], state: MoleculeBatchState) -> Vec
     specs.sort();
     specs.dedup();
     labels.extend(specs);
-    match state {
-        MoleculeBatchState::Ready => {}
-        MoleculeBatchState::Deferred => labels.push(DEFERRED_LABEL.to_string()),
-        MoleculeBatchState::Clarify => labels.push("loom:clarify".to_string()),
-        MoleculeBatchState::BlockedClarifyWithoutOptions => {
-            labels.push("loom:blocked".to_string());
-        }
+    if state == MoleculeBatchState::Deferred {
+        labels.push(DEFERRED_LABEL.to_string());
     }
     labels
 }
@@ -1199,9 +1212,12 @@ fn molecule_batch_description(findings: &[Finding], state: MoleculeBatchState) -
     if state == MoleculeBatchState::BlockedClarifyWithoutOptions {
         let _ = write!(description, "Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n");
     }
-    if state == MoleculeBatchState::Clarify {
+    if matches!(
+        state,
+        MoleculeBatchState::Clarify | MoleculeBatchState::BlockedClarifyWithoutOptions
+    ) {
         description.push_str(findings[0].evidence().trim_end());
-        description.push_str("\n\n---\n\n");
+        description.push_str("\n\n## Finding context\n\n");
     }
     append_findings_section(&mut description, findings);
     description
@@ -2030,6 +2046,19 @@ fn record_batch_status(summary: &mut MintSummary, findings: &[Finding], outcome:
     };
     for finding in findings {
         summary.record_status(finding, action);
+        if let BatchOutcome::Minted {
+            options_diagnostic: Some(error),
+            ..
+        } = outcome
+        {
+            if let Some(record) = summary.routing.last_mut() {
+                record.options_parse_result = Some(OptionsParseResult::MissingOrMalformed);
+                record.options_diagnostic = Some(error.repair_message());
+            }
+            if let Some(record) = summary.statuses.last_mut() {
+                record.options_diagnostic = Some(error.repair_message());
+            }
+        }
     }
 }
 
@@ -2239,7 +2268,7 @@ async fn create_batch_under_parent<R: CommandRunner>(
 ) -> BatchOutcome {
     let fingerprint = batch_fingerprint(findings);
     let label = mint_label(&fingerprint);
-    let mut labels = batch_labels(findings, &label, routing);
+    let mut labels = batch_labels(findings, &label);
     labels.push(format!("profile:{}", default_profile_for_spec(lead_spec)));
     let title = batch_title(findings, lead_spec);
     let description = batch_description(findings, &fingerprint, routing);
@@ -2272,21 +2301,40 @@ async fn create_batch_under_parent<R: CommandRunner>(
             MaterializedStatus::Blocked
         }
     };
-    if let Err(err) = apply_materialized_status(bd, &bead_id, status).await {
-        return BatchOutcome::Errored {
+    match admit_created_batch(bd, &bead_id, findings, status).await {
+        Ok(options_diagnostic) => BatchOutcome::Minted {
+            fingerprint,
+            bead_id,
+            lead_spec: lead_spec.clone(),
+            findings_count: findings.len(),
+            status,
+            options_diagnostic,
+        },
+        Err(err) => BatchOutcome::Errored {
             fingerprint,
             message: format!(
-                "created routed bead `{bead_id}` but failed to set status `{}`: {err}",
-                status.as_wire(),
+                "created routed bead `{bead_id}` but admission failed: {}",
+                mint_error_message(&MintError::from(err)),
             ),
-        };
+        },
     }
-    BatchOutcome::Minted {
-        fingerprint,
-        bead_id,
-        lead_spec: lead_spec.clone(),
-        findings_count: findings.len(),
-        status,
+}
+
+async fn admit_created_batch<R: CommandRunner>(
+    bd: &BdClient<R>,
+    bead: &BeadId,
+    findings: &[Finding],
+    status: MaterializedStatus,
+) -> Result<Option<BriefError>, loom_driver::bd::BdError> {
+    if let [finding] = findings
+        && finding.route() == FindingRoute::Clarify
+    {
+        Ok(apply_finding_clarify_report(bd, bead, finding.evidence())
+            .await?
+            .options_diagnostic)
+    } else {
+        apply_materialized_status(bd, bead, status).await?;
+        Ok(None)
     }
 }
 
@@ -2373,7 +2421,7 @@ impl<'a, R: CommandRunner> LeadResolver<'a, R> {
 }
 
 /// Compose the bd-label list for the minted batch.
-fn batch_labels(findings: &[Finding], mint_label: &str, routing: FindingRouting) -> Vec<String> {
+fn batch_labels(findings: &[Finding], mint_label: &str) -> Vec<String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut ordered: Vec<&SpecLabel> = Vec::new();
     for finding in findings {
@@ -2390,13 +2438,6 @@ fn batch_labels(findings: &[Finding], mint_label: &str, routing: FindingRouting)
     labels.extend(finding_labels);
     for spec in ordered {
         labels.push(format!("spec:{spec}"));
-    }
-    match routing {
-        FindingRouting::Fixup => {}
-        FindingRouting::Clarify => labels.push("loom:clarify".to_string()),
-        FindingRouting::BlockedClarifyWithoutOptions => {
-            labels.push("loom:blocked".to_string());
-        }
     }
     labels
 }
@@ -2470,9 +2511,12 @@ fn batch_description(findings: &[Finding], fingerprint: &str, routing: FindingRo
     if matches!(routing, FindingRouting::BlockedClarifyWithoutOptions) {
         let _ = write!(out, "Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n");
     }
-    if matches!(routing, FindingRouting::Clarify) {
+    if matches!(
+        routing,
+        FindingRouting::Clarify | FindingRouting::BlockedClarifyWithoutOptions
+    ) {
         out.push_str(findings[0].evidence().trim_end());
-        out.push_str("\n\n---\n\n");
+        out.push_str("\n\n## Finding context\n\n");
     }
     append_findings_section(&mut out, findings);
     out.push_str("\n---\n\n");
@@ -2693,6 +2737,8 @@ mod tests {
         bonds: Vec<(MoleculeId, BeadId)>,
         next_child: u32,
         duplicate_on_children_query: Option<Finding>,
+        notes_after_create: Option<String>,
+        calls: Vec<Vec<String>>,
     }
 
     #[derive(Clone)]
@@ -2720,6 +2766,8 @@ mod tests {
                     bonds: Vec::new(),
                     next_child: 1,
                     duplicate_on_children_query: None,
+                    notes_after_create: None,
+                    calls: Vec::new(),
                 })),
             }
         }
@@ -2747,6 +2795,7 @@ mod tests {
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
             let mut state = self.state.lock().expect("state lock");
+            state.calls.push(argv.clone());
             let result = match argv.first().map(String::as_str) {
                 Some("show") => {
                     let id = argv.get(1).map(String::as_str).unwrap_or_default();
@@ -2804,6 +2853,12 @@ mod tests {
                         metadata: BTreeMap::new(),
                         notes: stateful_flag(&argv, "--notes").map(str::to_string),
                     };
+                    let mut bead = bead;
+                    if bead.issue_type == loom_driver::bd::IssueType::Task
+                        && let Some(notes) = &state.notes_after_create
+                    {
+                        bead.notes = Some(notes.clone());
+                    }
                     state.beads.push(bead);
                     Ok(ok_stdout(&format!("{id}\n")))
                 }
@@ -3115,6 +3170,26 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn stateful_bd_runner_exposes_post_create_notes_on_readback() {
+        let runner = StatefulBdRunner::molecule();
+        runner.state.lock().unwrap().notes_after_create = Some("concurrent notes".to_owned());
+        let bd = BdClient::with_runner(runner);
+        let id = bd
+            .create(CreateOpts {
+                title: "decision".to_owned(),
+                description: "producer description".to_owned(),
+                notes: Some("producer notes".to_owned()),
+                issue_type: Some(loom_driver::bd::IssueType::Task),
+                ..CreateOpts::default()
+            })
+            .await
+            .unwrap();
+        let snapshot = bd.show(&id).await.unwrap();
+        assert_eq!(snapshot.description, "producer description");
+        assert_eq!(snapshot.notes.as_deref(), Some("concurrent notes"));
+    }
+
     const PROFILE_CASES: &[(&[&str], &str)] = &[
         (&["agent"], "profile:rust"),
         (&["events"], "profile:rust"),
@@ -3285,6 +3360,282 @@ mod tests {
             .filter(|label| label.starts_with("profile:"))
             .collect::<Vec<_>>();
         assert_eq!(profiles, ["profile:python"]);
+    }
+
+    const DECISION_BRIEF: &str = "## Options — choose routing\n\n### Option 1 — preserve\nCost: churn.\n\n### Option 2 — revise\nCost: debt.\n";
+
+    #[derive(Clone, Copy)]
+    enum FindingWriter {
+        Legacy,
+        Tree,
+        Loop,
+    }
+
+    impl FindingWriter {
+        async fn materialize(
+            self,
+            bd: &BdClient<StatefulBdRunner>,
+            findings: &[Finding],
+        ) -> MintSummary {
+            match self {
+                Self::Legacy => mint_findings(bd, findings, "head-sha").await,
+                Self::Tree => {
+                    mint_tree_findings_with_options(
+                        bd,
+                        findings,
+                        "head-sha",
+                        &MintOptions::default(),
+                    )
+                    .await
+                }
+                Self::Loop => {
+                    route_molecule_findings(
+                        bd,
+                        &MoleculeId::new("lm-mol").unwrap(),
+                        findings,
+                        &MintOptions::default(),
+                    )
+                    .await
+                }
+            }
+        }
+    }
+
+    fn decision_fixture(notes: Option<&str>) -> (BdClient<StatefulBdRunner>, StatefulBdRunner) {
+        let runner = StatefulBdRunner::molecule();
+        {
+            let mut state = runner.state.lock().expect("state lock");
+            state.notes_after_create = notes.map(str::to_owned);
+            state
+                .beads
+                .push(serde_json::from_str(&spec_epic_row("lm-spec", "agent", "closed")).unwrap());
+        }
+        (BdClient::with_runner(runner.clone()), runner)
+    }
+
+    fn decision_finding(tag: &str, evidence: &str) -> Finding {
+        invariant_clash_finding(
+            vec![spec("agent")],
+            spec("agent"),
+            "Architecture",
+            tag,
+            evidence,
+        )
+    }
+
+    fn assert_decision(
+        summary: &MintSummary,
+        state: &StatefulBdRunner,
+        finding: &Finding,
+        diagnostic: Option<BriefError>,
+    ) {
+        assert_eq!(summary.errors, 0, "{summary:?}");
+        let child = state
+            .beads()
+            .into_iter()
+            .find(|bead| {
+                bead.labels
+                    .iter()
+                    .any(|label| label.as_str() == finding_label(finding))
+            })
+            .unwrap();
+        assert_eq!(child.status, loom_driver::bd::Status::Blocked);
+        assert_eq!(
+            child.labels.iter().any(Label::is_clarify),
+            diagnostic.is_none(),
+            "{child:?}"
+        );
+        assert_eq!(
+            child.labels.iter().any(Label::is_blocked),
+            diagnostic.is_some(),
+            "{child:?}"
+        );
+        assert!(child.description.contains(finding.evidence().trim_end()));
+        assert!(child.description.contains(&finding.id()));
+        assert!(child.description.contains(&finding.hash()));
+        let routing = summary
+            .routing
+            .iter()
+            .find(|record| record.hash == finding.hash())
+            .unwrap();
+        assert_eq!(routing.evidence_hash, evidence_hash(finding.evidence()));
+        assert_eq!(
+            routing.options_diagnostic,
+            diagnostic.map(BriefError::repair_message)
+        );
+        assert_eq!(routing.clarify_downgraded(), diagnostic.is_some());
+        if let Some(error) = diagnostic {
+            assert!(
+                child
+                    .notes
+                    .as_deref()
+                    .unwrap()
+                    .contains(&error.repair_message())
+            );
+        } else {
+            assert_eq!(
+                crate::inbox::parse_options_in(child.notes.as_deref(), &child.description),
+                parse_options(finding.evidence())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn finding_clarification_materialization_requires_unique_active_brief() {
+        let cases = [
+            (DECISION_BRIEF.to_owned(), None),
+            (
+                format!(
+                    "intro\n\n```markdown\n{DECISION_BRIEF}\n```\n\n{DECISION_BRIEF}\n## Evidence\nsource details"
+                ),
+                None,
+            ),
+            (
+                "raw evidence without options".repeat(40),
+                Some(BriefError::Missing),
+            ),
+            (
+                format!("```markdown\n{DECISION_BRIEF}\n```"),
+                Some(BriefError::Missing),
+            ),
+            (
+                format!("{DECISION_BRIEF}\n{DECISION_BRIEF}"),
+                Some(BriefError::Ambiguous),
+            ),
+            (
+                format!("{DECISION_BRIEF}\n## Options\n"),
+                Some(BriefError::Ambiguous),
+            ),
+            (
+                "## Options — summary\n### Option 1 — valid\nbody\n### Option broken\nbody"
+                    .to_owned(),
+                Some(BriefError::Heading),
+            ),
+            (
+                "## Options — summary\n### Option 1 — valid\n".to_owned(),
+                Some(BriefError::Context),
+            ),
+            (
+                "## Options — summary\n### Option 2 — valid\nbody".to_owned(),
+                Some(BriefError::Sequence),
+            ),
+            (
+                "## Options summary\n### Option 1 — valid\nbody".to_owned(),
+                Some(BriefError::Summary),
+            ),
+        ];
+        for writer in [
+            FindingWriter::Legacy,
+            FindingWriter::Tree,
+            FindingWriter::Loop,
+        ] {
+            let (bd, state) = decision_fixture(None);
+            let findings = cases
+                .iter()
+                .enumerate()
+                .map(|(index, (evidence, _))| {
+                    decision_finding(&format!("decision-{index}"), evidence)
+                })
+                .collect::<Vec<_>>();
+            let summary = writer.materialize(&bd, &findings).await;
+            assert_eq!(summary.minted, findings.len(), "{summary:?}");
+            for (finding, (_, error)) in findings.iter().zip(&cases) {
+                assert_decision(&summary, &state, finding, *error);
+            }
+            let first = state.beads();
+            let rerun = writer.materialize(&bd, &findings).await;
+            assert_eq!(rerun.minted, 0);
+            assert_eq!(rerun.skipped, findings.len());
+            assert_eq!(
+                state.beads(),
+                first,
+                "live decisions dedup without changing their briefs"
+            );
+            let calls = &state.state.lock().unwrap().calls;
+            for call in calls.iter().filter(|call| call[0] == "create") {
+                let labels = labels_arg(call);
+                assert!(
+                    !labels.contains(&"loom:clarify"),
+                    "admission must follow persistence"
+                );
+            }
+        }
+        assert_persisted_cross_field_ambiguity().await;
+    }
+
+    async fn assert_persisted_cross_field_ambiguity() {
+        for writer in [
+            FindingWriter::Legacy,
+            FindingWriter::Tree,
+            FindingWriter::Loop,
+        ] {
+            for notes in [DECISION_BRIEF, "## Options\n"] {
+                let (bd, state) = decision_fixture(Some(notes));
+                let finding = decision_finding("decision", DECISION_BRIEF);
+                let summary = writer
+                    .materialize(&bd, std::slice::from_ref(&finding))
+                    .await;
+                assert_eq!(summary.minted, 1);
+                assert_eq!(summary.clarify_findings_raised, 0);
+                assert_decision(&summary, &state, &finding, Some(BriefError::Ambiguous));
+                let child = state
+                    .beads()
+                    .into_iter()
+                    .find(|bead| bead.issue_type == loom_driver::bd::IssueType::Task)
+                    .unwrap();
+                assert!(child.notes.as_deref().unwrap().starts_with(notes));
+                assert!(
+                    summary
+                        .routing_events()
+                        .iter()
+                        .any(|event| event.driver_kind == DriverKind::ClarifyDowngraded
+                            && event.payload["options_diagnostic"]
+                                == BriefError::Ambiguous.repair_message())
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_finding_decision_briefs_remain_historical_without_reopening() {
+        let (bd, state) = decision_fixture(None);
+        let finding = decision_finding("decision", DECISION_BRIEF);
+        let summary = FindingWriter::Loop
+            .materialize(&bd, std::slice::from_ref(&finding))
+            .await;
+        let BatchOutcome::Minted { bead_id, .. } = &summary.batches[0] else {
+            panic!("minted decision");
+        };
+        bd.update(
+            bead_id,
+            UpdateOpts {
+                status: Some(loom_driver::bd::Status::Closed),
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        let history = bd.show(bead_id).await.unwrap();
+        let summary = route_molecule_findings(
+            &bd,
+            &MoleculeId::new("lm-mol").unwrap(),
+            &[finding],
+            &MintOptions {
+                suppress_closed_same_molecule: true,
+                ..MintOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(summary.minted, 0);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(bd.show(bead_id).await.unwrap(), history);
+        let new = decision_finding("new-decision", DECISION_BRIEF);
+        let summary = FindingWriter::Loop
+            .materialize(&bd, std::slice::from_ref(&new))
+            .await;
+        assert_eq!(summary.minted, 1);
+        assert_decision(&summary, &state, &new, None);
+        assert_eq!(bd.show(bead_id).await.unwrap(), history);
     }
 
     #[tokio::test]
@@ -4313,11 +4664,29 @@ reason = "false positive"
             )),
             ok_stdout("lm-tree\n"),
             ok_stdout("lm-tree.1\n"),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row_status_description(
+                    "lm-tree.1",
+                    &blocked.hash(),
+                    "open",
+                    blocked.evidence()
+                )
+            )),
             ok_stdout(""),
             ok_stdout(""),
             ok_stdout(""),
             ok_stdout("lm-tree.2\n"),
             ok_stdout("lm-tree.3\n"),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row_status_description(
+                    "lm-tree.3",
+                    &clarify.hash(),
+                    "open",
+                    clarify.evidence()
+                )
+            )),
             ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
@@ -4468,22 +4837,26 @@ reason = "false positive"
             fixup_labels.contains(&"spec:harness"),
             "multi-spec finding contributes union spec labels: {fixup_labels:?}",
         );
-        assert!(
-            task_creates.iter().any(
-                |call| labels_arg(call).contains(&run.clarify_label.as_str())
-                    && labels_arg(call).contains(&"loom:clarify")
-            ),
-            "clarify child carries loom:clarify: {task_creates:?}",
-        );
-        assert!(
-            task_creates.iter().any(|call| {
-                let labels = labels_arg(call);
-                labels.contains(&run.blocked_label.as_str())
-                    && labels.contains(&"loom:blocked")
-                    && !labels.contains(&"loom:clarify")
-            }),
-            "blocked-clarify child carries loom:blocked only: {task_creates:?}",
-        );
+        for label in [&run.clarify_label, &run.blocked_label] {
+            assert!(
+                task_creates
+                    .iter()
+                    .any(|call| labels_arg(call).contains(&label.as_str()))
+            );
+        }
+        for (id, label) in [("lm-tree.3", "loom:clarify"), ("lm-tree.1", "loom:blocked")] {
+            assert!(
+                run.calls.iter().any(|call| {
+                    call[0] == "update"
+                        && call[1] == id
+                        && call
+                            .windows(2)
+                            .any(|pair| pair[0] == "--add-label" && pair[1] == label)
+                }),
+                "queue label is applied after persisted-brief resolution: {:?}",
+                run.calls
+            );
+        }
     }
 
     #[tokio::test]
@@ -4697,11 +5070,7 @@ reason = "false positive"
         let batch = &plan.batches()[0];
         assert_eq!(batch.lead_spec.as_str(), "harness");
         assert_eq!(batch.findings.len(), 2);
-        let labels = batch_labels(
-            &batch.findings,
-            &mint_label(&batch.fingerprint),
-            FindingRouting::Fixup,
-        );
+        let labels = batch_labels(&batch.findings, &mint_label(&batch.fingerprint));
         for (id, hash, label) in [
             (f1.id(), f1.hash(), finding_label(&f1)),
             (f2.id(), f2.hash(), finding_label(&f2)),
@@ -4758,6 +5127,15 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-harn", "harness")),
             ok_stdout("lm-clarify.1\n"),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row_status_description(
+                    "lm-clarify.1",
+                    &finding.hash(),
+                    "open",
+                    options_block
+                )
+            )),
             ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
@@ -4776,17 +5154,14 @@ reason = "false positive"
             "labels missing finding hash label {finding_hash_label}: {labels:?}",
         );
         assert!(
-            labels.contains(&"loom:clarify"),
-            "invariant-clash must carry loom:clarify: {labels:?}",
+            !labels.contains(&"loom:clarify"),
+            "not queued before admission"
         );
         assert!(
-            calls.iter().any(|call| call
-                == &[
-                    "update".to_string(),
-                    "lm-clarify.1".to_string(),
-                    "--status".to_string(),
-                    "blocked".to_string(),
-                ]),
+            calls.iter().any(|call| call[0] == "update"
+                && call[1] == "lm-clarify.1"
+                && flag_arg(call, "--status") == "blocked"
+                && flag_arg(call, "--add-label") == "loom:clarify"),
             "clarify child must be parked pending inbox: {calls:?}",
         );
 
@@ -4817,6 +5192,15 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-harn", "harness")),
             ok_stdout("lm-blocked.1\n"),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row_status_description(
+                    "lm-blocked.1",
+                    &finding.hash(),
+                    "open",
+                    malformed_evidence
+                )
+            )),
             ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
@@ -4859,10 +5243,9 @@ reason = "false positive"
             labels.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
             "labels missing batch receipt: {labels}",
         );
-        assert!(
-            labels.contains("loom:blocked"),
-            "malformed evidence must downgrade to loom:blocked: {labels}",
-        );
+        assert!(calls.iter().any(|call| call[0] == "update"
+            && call[1] == "lm-blocked.1"
+            && flag_arg(call, "--add-label") == "loom:blocked"));
         assert!(
             !labels.contains("loom:clarify"),
             "loom:clarify MUST NOT be applied when options block is missing: {labels}",
@@ -4883,13 +5266,10 @@ reason = "false positive"
             "mint downgrade must leave a compact Beads note breadcrumb",
         );
         assert!(
-            calls.iter().any(|call| call
-                == &[
-                    "update".to_string(),
-                    "lm-blocked.1".to_string(),
-                    "--status".to_string(),
-                    "blocked".to_string(),
-                ]),
+            calls.iter().any(|call| call[0] == "update"
+                && call[1] == "lm-blocked.1"
+                && flag_arg(call, "--status") == "blocked"
+                && flag_arg(call, "--notes").contains("missing active Options brief")),
             "blocked fallback must be parked pending inbox: {calls:?}",
         );
     }

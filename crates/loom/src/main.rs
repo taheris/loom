@@ -3995,6 +3995,7 @@ fn mint_batch_payload(outcome: &BatchOutcome) -> serde_json::Value {
             lead_spec,
             findings_count,
             status,
+            options_diagnostic,
         } => serde_json::json!({
             "stage": "mint",
             "action": outcome.kind(),
@@ -4003,6 +4004,7 @@ fn mint_batch_payload(outcome: &BatchOutcome) -> serde_json::Value {
             "lead_spec": lead_spec,
             "findings_count": findings_count,
             "status": status.as_wire(),
+            "options_diagnostic": options_diagnostic.map(loom_workflow::inbox::BriefError::repair_message),
         }),
         BatchOutcome::Planned {
             fingerprint,

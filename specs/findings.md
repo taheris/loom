@@ -338,7 +338,7 @@ legacy alias registry.
   Missing, malformed or duplicate active blocks use the per-decision
   `clarify-without-options` fallback. Inspection retains the finding and brief
   diagnostics without Beads mutation or loss of finding context.
-  [test?](finding_clarification_materialization_requires_unique_active_brief)
+  [test](finding_clarification_materialization_requires_unique_active_brief)
 
 - Tree-minted `loom:clarify` beads and their `loom:blocked` malformed-options
   fallbacks have `status=blocked` while awaiting `loom inbox`, so Beads visibly

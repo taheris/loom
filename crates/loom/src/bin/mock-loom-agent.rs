@@ -36,7 +36,8 @@
 //!   label is read from `$LOOM_TEST_CONCERN_SPEC` (default: `pushconcern`)
 //!   so a test driving a different spec can override.
 //! - `finding-concern` — emit one `LOOM_FINDING:` JSON line followed by
-//!   `LOOM_CONCERN: {"summary": "…"}` without mutating bd state.
+//!   `LOOM_CONCERN: {"summary": "…"}` without mutating bd state. An optional
+//!   `LOOM_TEST_FINDING_LINE` supplies the finding record for admission tests.
 //! - `finding-complete` — emit a finding followed by `LOOM_COMPLETE`, an invalid walk.
 //! - `concern-then-complete` — emit `LOOM_CONCERN: {"summary": "…"}` then
 //!   `LOOM_COMPLETE` on a later line. The final-line parser must pick
@@ -142,7 +143,12 @@ fn main() -> ExitCode {
             emit_message_delta(&mut stdout, CONCERN_LINE);
         }
         MODE_FINDING_CONCERN | MODE_FINDING_COMPLETE => {
-            emit_message_delta(&mut stdout, &format!("{FINDING_LINE}\n"));
+            let finding = match env::var("LOOM_TEST_FINDING_LINE") {
+                Ok(finding) => finding,
+                Err(env::VarError::NotPresent) => FINDING_LINE.to_owned(),
+                Err(error) => panic!("invalid fixture finding: {error}"),
+            };
+            emit_message_delta(&mut stdout, &format!("{finding}\n"));
             emit_message_delta(
                 &mut stdout,
                 if mode == MODE_FINDING_COMPLETE {

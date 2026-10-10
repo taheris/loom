@@ -4,12 +4,12 @@
 
 use std::path::PathBuf;
 
-use loom_driver::bd::{BdClient, BdError, CommandRunner, UpdateOpts};
+use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, UpdateOpts};
 use loom_driver::identifier::BeadId;
 use loom_events::{DriverEventPayload, DriverKind};
 use serde::Serialize;
 
-use crate::inbox::parse_options_in;
+use crate::inbox::{Brief, BriefError, parse_options, parse_options_in};
 
 /// Cause string written into the target bead's notes when the gate
 /// downgrades a direct-emit `LOOM_CLARIFY` because the bead's notes ∪
@@ -71,6 +71,7 @@ pub enum ClarifyApplyOutcome {
 pub struct ClarifyApplyReport {
     pub outcome: ClarifyApplyOutcome,
     pub options_parse_result: OptionsParseResult,
+    pub options_diagnostic: Option<BriefError>,
     pub evidence_hash: String,
     pub evidence_excerpt: String,
 }
@@ -99,6 +100,7 @@ impl ClarifyApplyReport {
                     "source_route": context.source_route.as_wire(),
                     "identity": context.identity,
                     "options_parse_result": self.options_parse_result,
+                    "options_diagnostic": self.options_diagnostic.map(BriefError::repair_message),
                     "evidence_hash": self.evidence_hash,
                     "evidence_excerpt": self.evidence_excerpt,
                     "cause": CLARIFY_WITHOUT_OPTIONS_CAUSE,
@@ -178,17 +180,47 @@ pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
     bd: &BdClient<R>,
     bead: &BeadId,
 ) -> Result<ClarifyApplyReport, BdError> {
+    apply_report(bd, bead, None).await
+}
+
+/// Finding admission checks both producer evidence and persisted decision fields.
+pub(crate) async fn apply_finding_clarify_report<R: CommandRunner>(
+    bd: &BdClient<R>,
+    bead: &BeadId,
+    evidence: &str,
+) -> Result<ClarifyApplyReport, BdError> {
+    apply_report(bd, bead, Some(evidence)).await
+}
+
+async fn apply_report<R: CommandRunner>(
+    bd: &BdClient<R>,
+    bead: &BeadId,
+    evidence: Option<&str>,
+) -> Result<ClarifyApplyReport, BdError> {
     let snapshot = bd.show(bead).await?;
     let mut union = snapshot.notes.clone().unwrap_or_default();
     if !union.is_empty() {
         union.push('\n');
     }
     union.push_str(&snapshot.description);
+    let resolution = match evidence {
+        Some(evidence) => parse_options(evidence)
+            .and_then(|_| parse_options_in(snapshot.notes.as_deref(), &snapshot.description)),
+        None => parse_options_in(snapshot.notes.as_deref(), &snapshot.description),
+    };
+    apply_resolved_brief(bd, snapshot, resolution, evidence.unwrap_or(&union)).await
+}
 
-    match parse_options_in(snapshot.notes.as_deref(), &snapshot.description) {
+async fn apply_resolved_brief<R: CommandRunner>(
+    bd: &BdClient<R>,
+    snapshot: Bead,
+    resolution: Result<Brief, BriefError>,
+    evidence: &str,
+) -> Result<ClarifyApplyReport, BdError> {
+    match resolution {
         Ok(_) => {
             bd.update(
-                bead,
+                &snapshot.id,
                 UpdateOpts {
                     status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:clarify".to_string()],
@@ -200,8 +232,9 @@ pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
             Ok(ClarifyApplyReport {
                 outcome: ClarifyApplyOutcome::Clarify,
                 options_parse_result: OptionsParseResult::WellFormed,
-                evidence_hash: evidence_hash(&union),
-                evidence_excerpt: evidence_excerpt(&union),
+                options_diagnostic: None,
+                evidence_hash: evidence_hash(evidence),
+                evidence_excerpt: evidence_excerpt(evidence),
             })
         }
         Err(error) => {
@@ -217,7 +250,7 @@ pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
                 _ => repair,
             };
             bd.update(
-                bead,
+                &snapshot.id,
                 UpdateOpts {
                     status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:blocked".to_string()],
@@ -230,8 +263,9 @@ pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
             Ok(ClarifyApplyReport {
                 outcome: ClarifyApplyOutcome::BlockedClarifyWithoutOptions,
                 options_parse_result: OptionsParseResult::MissingOrMalformed,
-                evidence_hash: evidence_hash(&union),
-                evidence_excerpt: evidence_excerpt(&union),
+                options_diagnostic: Some(error),
+                evidence_hash: evidence_hash(evidence),
+                evidence_excerpt: evidence_excerpt(evidence),
             })
         }
     }
