@@ -437,11 +437,14 @@ fn tune_replay_launches_independent_fixtures_and_preserves_events() {
             .lines()
             .map(|line| serde_json::from_str::<loom_events::AgentEvent>(line).unwrap())
             .collect::<Vec<_>>();
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, loom_events::AgentEvent::AgentStart { .. }))
-        );
+        let owners = events
+            .iter()
+            .filter_map(|event| match event {
+                loom_events::AgentEvent::AgentStart { spec_label, .. } => Some(spec_label.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owners, ["tuning"]);
         assert!(
             events
                 .iter()
@@ -732,7 +735,7 @@ fn skill_tune_evidence_roots_and_gate() {
         "{\"type\":\"review\",\"result\":\"external correction\"}\n",
     );
     write_file(
-        &tmp.path().join(".loom/logs/skills/review.jsonl"),
+        &tmp.path().join(".loom/logs/tune/review.jsonl"),
         "{\"type\":\"review\",\"result\":\"workspace finding\"}\n",
     );
     write_file(
@@ -743,8 +746,8 @@ fn skill_tune_evidence_roots_and_gate() {
         ),
     );
     write_file(
-        &tmp.path().join("specs/skills.md"),
-        "# Skills fixture\n\n## Success Criteria\n\n- Evidence roots and gate behavior are checked.\n  [test](skill_tune_evidence_roots_and_gate)\n",
+        &tmp.path().join("specs/tuning.md"),
+        "# Tuning fixture\n\n## Success Criteria\n\n- Evidence roots and gate behavior are checked.\n  [test](skill_tune_evidence_roots_and_gate)\n",
     );
     write_file(
         &tmp.path().join("docs/tuning.md"),
@@ -918,6 +921,15 @@ fn template_tune_candidate_validation() {
     )
     .expect("manifest json");
     assert_eq!(manifest["state"], "pending", "manifest={manifest}");
+    let labels = std::fs::read_to_string(state_dir.join("lm-tune.3/labels")).expect("labels");
+    assert!(
+        labels.lines().any(|label| label == "spec:templates"),
+        "{labels}"
+    );
+    assert!(
+        !labels.lines().any(|label| label == "spec:skills"),
+        "{labels}"
+    );
     let validation = manifest["validation"].as_array().expect("validation rows");
     for check in [
         "askama-compile",
@@ -1066,7 +1078,14 @@ fn loom_tune_subcommands_create_isolated_proposals() {
 
     let labels = std::fs::read_to_string(state_dir.join("lm-tune.1/labels")).expect("labels");
     assert!(labels.contains("loom:tune"), "{labels}");
-    assert!(labels.contains("spec:skills"), "{labels}");
+    assert!(
+        labels.lines().any(|label| label == "spec:skills"),
+        "{labels}"
+    );
+    assert!(
+        !labels.lines().any(|label| label == "spec:templates"),
+        "{labels}"
+    );
     let body = std::fs::read_to_string(state_dir.join("lm-tune.1/description")).expect("body");
     assert!(body.contains("State: `pending`"), "{body}");
     assert!(body.contains("Proposal repo:"), "{body}");

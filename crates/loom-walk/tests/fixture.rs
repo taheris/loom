@@ -1718,7 +1718,7 @@ fn phase_verdict_decide_called_from_production_fail_run_missing_call() {
 // tune_surface_conformance
 // ---------------------------------------------------------------------------
 
-const TUNE_SPEC: &str = "# Harness\n\n### Tune Modes\n\ncontract\n";
+const TUNE_SPEC: &str = "# Artifact tuning\n\n### Tune Modes\n\ncontract\n";
 
 const TUNE_MAIN: &str = concat!(
     "enum Command {\n",

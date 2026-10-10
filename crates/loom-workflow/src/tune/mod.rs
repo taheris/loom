@@ -1843,7 +1843,7 @@ async fn run_replay_agent(
     spawn.event_metadata = Some(loom_events::AgentStartMetadata {
         title: format!("Tune replay {} ({side})", selected.case_id),
         profile: selection.profile.clone(),
-        spec_label: loom_driver::identifier::SpecLabel::new("skills").map_err(|source| {
+        spec_label: loom_driver::identifier::SpecLabel::new("tuning").map_err(|source| {
             TuneError::CandidatePreflight {
                 detail: source.to_string(),
             }

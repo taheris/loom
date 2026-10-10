@@ -72,7 +72,7 @@ No automatic background tuning, scheduled tuning, automatic adoption, or
 
 `docs/tuning.md` is Loom's repo-wide tuning document. In the Loom repository it
 also documents the tuning system itself; the normative owner remains this spec
-(`spec:skills`). Consumer repositories may commit their own `docs/tuning.md` as
+(`spec:tuning`). Consumer repositories may commit their own `docs/tuning.md` as
 repo-wide tuning guidance.
 
 Package-form skills may also include an optional git-tracked `tuning.md` next to
@@ -568,8 +568,8 @@ driver without making tuning a second resolution authority.
   creation/isolation contracts are owned by
   [Tuning — Tune Command Surface](#tune-command-surface) and
   [Tuning — Tune Proposal Worktrees and Beads](#tune-proposal-worktrees-and-beads);
-  this harness spec owns its workflow placement and integration with
-  `loom inbox`.
+  this tuning spec owns its workflow placement, while [Inbox](inbox.md) owns
+  human review and the trusted apply handoff.
 
 ### Functional
 

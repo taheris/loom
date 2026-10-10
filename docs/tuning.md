@@ -8,9 +8,11 @@ This document has two roles:
    loaded by `loom tune`.
 
 The normative owner is [Tuning](../specs/tuning.md) / `spec:tuning`.
-[Skills](../specs/skills.md) owns the registry; [Inbox](../specs/inbox.md) owns
-human review and the trusted apply handoff. Changes to checker ids, checker
-domains, case syntax, or tuning acceptance rules are planned through that spec.
+[Skills](../specs/skills.md) owns skill artifacts and the registry;
+[Templates](../specs/templates.md) owns compiled prompt composition;
+[Inbox](../specs/inbox.md) owns human review and the trusted apply handoff.
+Changes to checker ids, checker domains, case syntax, or tuning acceptance rules
+are planned through Tuning.
 
 ## SkillOpt Adaptation
 
