@@ -254,10 +254,13 @@ fn both_backends_emit_equivalent_text_delta_for_same_payload() {
         r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","text":"hello"}}"#;
     let claude_line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}"#;
 
-    let pi_events = parse_pi(pi_line).events;
+    let mut pi_events = parse_pi(pi_line).events;
+    pi_events.extend(
+        parse_pi(r#"{"type":"message_update","assistantMessageEvent":{"type":"text_end"}}"#).events,
+    );
     let claude_events = parse_claude(claude_line).events;
     assert_eq!(pi_events, claude_events, "TextDelta normalization drift");
-    assert_eq!(pi_events.len(), 1);
+    assert_eq!(pi_events.len(), 2);
     assert!(matches!(
         pi_events[0],
         ParsedAgentEvent::TextDelta { ref text } if text == "hello"

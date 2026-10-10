@@ -1,127 +1,48 @@
-//! Terminal-marker parser for `loom inbox chat`.
+//! Inbox projection of the canonical agent-output contract.
 
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 use displaydoc::Display;
 use loom_events::identifier::BeadId;
-use serde::Deserialize;
 use thiserror::Error;
 
-const COMPLETE: &str = "LOOM_COMPLETE";
-const APPLY: &str = "LOOM_APPLY";
-const NOOP: &str = "LOOM_NOOP";
-const BLOCKED: &str = "LOOM_BLOCKED";
-const CLARIFY: &str = "LOOM_CLARIFY";
-const RETRY: &str = "LOOM_RETRY";
-const CONCERN: &str = "LOOM_CONCERN";
+use crate::output::{self, Context, Failure, Message, Phase};
 
-const MARKERS: [&str; 7] = [COMPLETE, APPLY, NOOP, BLOCKED, CLARIFY, RETRY, CONCERN];
+pub use crate::output::Message as TerminalMarker;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminalMarker {
-    Complete,
-    Apply { proposals: Vec<BeadId> },
-}
-
-#[expect(
-    clippy::doc_markdown,
-    reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
-)]
 #[derive(Debug, Display, Error)]
 pub enum TerminalMarkerError {
-    /// inbox chat ended without LOOM_COMPLETE or LOOM_APPLY on the final non-empty line
-    Missing,
-    /// wrong-phase-marker: inbox chat emitted more than one terminal marker
-    Paired,
-    /// wrong-phase-marker: `{marker}` emitted from inbox chat
-    WrongPhase { marker: &'static str },
-    /// wrong-phase-marker: malformed LOOM_APPLY payload: {detail}
-    MalformedApply { detail: String },
+    /// inbox output violates the agent-output contract
+    Contract(#[from] Failure),
+    /// inbox apply repeats proposal `{id}`
+    DuplicateProposal { id: BeadId, context: Context },
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApplyPayload {
-    proposals: Vec<BeadId>,
+impl TerminalMarkerError {
+    /// An ordinary interactive turn may continue without a terminal.
+    pub fn is_conversation(&self) -> bool {
+        matches!(self, Self::Contract(failure) if failure.is_conversation())
+    }
 }
 
-/// Parse exactly one final inbox terminal and its constrained proposal IDs.
+/// Decode and admit an inbox session; proposal application remains driver-owned.
 ///
 /// # Errors
-/// Returns an error for missing, paired, wrong-phase, or malformed markers.
-pub fn parse(output: &str) -> Result<TerminalMarker, TerminalMarkerError> {
-    let lines: Vec<&str> = output.lines().collect();
-    let final_idx = lines
-        .iter()
-        .rposition(|line| !line.trim().is_empty())
-        .ok_or(TerminalMarkerError::Missing)?;
-    let final_line = lines[final_idx].trim();
-
-    if prior_marker_lines(&lines[..final_idx]) > 0 || markers_on(final_line) > 1 {
-        return Err(TerminalMarkerError::Paired);
-    }
-
-    if final_line == COMPLETE {
-        return Ok(TerminalMarker::Complete);
-    }
-    if let Some(rest) = final_line.strip_prefix(APPLY) {
-        return parse_apply(rest);
-    }
-    for marker in [NOOP, BLOCKED, CLARIFY, RETRY, CONCERN] {
-        if final_line.starts_with(marker) {
-            return Err(TerminalMarkerError::WrongPhase { marker });
+/// Retains shared diagnostics and context, or the context of a repeated proposal.
+pub fn parse(output: &str) -> Result<Message, TerminalMarkerError> {
+    let session = output::decode(output, Phase::Inbox)?;
+    if let Message::Apply(payload) = &session.terminal().message {
+        let mut seen = HashSet::new();
+        for id in payload.proposals.as_slice() {
+            if !seen.insert(id) {
+                return Err(TerminalMarkerError::DuplicateProposal {
+                    id: id.clone(),
+                    context: session.into_context(),
+                });
+            }
         }
     }
-    Err(TerminalMarkerError::Missing)
-}
-
-fn parse_apply(rest: &str) -> Result<TerminalMarker, TerminalMarkerError> {
-    let payload = rest
-        .strip_prefix(':')
-        .ok_or_else(|| TerminalMarkerError::MalformedApply {
-            detail: "missing `:` after LOOM_APPLY".to_string(),
-        })?
-        .trim();
-    let parsed: ApplyPayload =
-        serde_json::from_str(payload).map_err(|source| TerminalMarkerError::MalformedApply {
-            detail: source.to_string(),
-        })?;
-    if parsed.proposals.is_empty() {
-        return Err(TerminalMarkerError::MalformedApply {
-            detail: "proposals array is empty".to_string(),
-        });
-    }
-    reject_duplicate_ids(&parsed.proposals)?;
-    Ok(TerminalMarker::Apply {
-        proposals: parsed.proposals,
-    })
-}
-
-fn reject_duplicate_ids(proposals: &[BeadId]) -> Result<(), TerminalMarkerError> {
-    let mut seen = BTreeSet::new();
-    for proposal in proposals {
-        if !seen.insert(proposal.as_str()) {
-            return Err(TerminalMarkerError::MalformedApply {
-                detail: format!("duplicate proposal id `{proposal}`"),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn prior_marker_lines(lines: &[&str]) -> usize {
-    lines
-        .iter()
-        .map(|line| line.trim())
-        .filter(|line| MARKERS.iter().any(|marker| line.starts_with(marker)))
-        .count()
-}
-
-fn markers_on(line: &str) -> usize {
-    MARKERS
-        .iter()
-        .filter(|marker| line.contains(*marker))
-        .count()
+    Ok(session.terminal().message.clone())
 }
 
 #[cfg(test)]
@@ -129,61 +50,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn complete_marker_parses_only_as_final_line() {
+    fn inbox_adapter_admits_multiline_apply() {
+        let marker = parse("LOOM_APPLY: {\n  \"proposals\": [\"lm-proposal.1\"]\n}").unwrap();
+        let Message::Apply(payload) = marker else {
+            panic!("expected apply");
+        };
+        assert_eq!(payload.proposals[0].as_str(), "lm-proposal.1");
+    }
+
+    #[test]
+    fn inbox_adapter_preserves_malformed_context() {
+        let raw = "LOOM_APPLY: {}\nLOOM_COMPLETE";
+        let TerminalMarkerError::Contract(failure) = parse(raw).unwrap_err() else {
+            panic!("expected contract failure");
+        };
+        assert_eq!(failure.context().raw(), raw);
+        assert!(failure.to_string().contains("missing field `proposals`"));
         assert_eq!(
-            parse("done\nLOOM_COMPLETE\n").unwrap(),
-            TerminalMarker::Complete
+            failure.context().terminal().unwrap().message,
+            Message::Complete
         );
-        assert!(matches!(
-            parse("LOOM_COMPLETE\nmore\n"),
-            Err(TerminalMarkerError::Paired)
-        ));
+        assert!(!failure.is_conversation());
     }
 
     #[test]
-    fn apply_marker_parses_typed_proposal_ids() {
-        let parsed =
-            parse("ok\nLOOM_APPLY: {\"proposals\":[\"lm-abc123\",\"lm-abc123.4\"]}\n").unwrap();
-        match parsed {
-            TerminalMarker::Apply { proposals } => {
-                assert_eq!(proposals[0].as_str(), "lm-abc123");
-                assert_eq!(proposals[1].as_str(), "lm-abc123.4");
-            }
-            TerminalMarker::Complete => panic!("expected apply marker"),
+    fn inbox_adapter_only_allows_markerless_conversation_to_continue() {
+        assert!(
+            parse("How should we proceed?")
+                .unwrap_err()
+                .is_conversation()
+        );
+        for raw in [
+            "LOOM_COMPLETE\nmore",
+            "LOOM_COMPLETE\nLOOM_COMPLETE",
+            "LOOM_WAITING",
+            "LOOM_APPLY: {\"proposals\":[\"bad bead\"]}",
+            "LOOM_BOGUS\nLOOM_COMPLETE",
+        ] {
+            assert!(!parse(raw).unwrap_err().is_conversation(), "{raw}");
         }
     }
 
     #[test]
-    fn malformed_apply_is_rejected() {
+    fn inbox_adapter_rejects_duplicate_proposals() {
         assert!(matches!(
-            parse("LOOM_APPLY: {\"proposal\":[]}"),
-            Err(TerminalMarkerError::MalformedApply { .. })
-        ));
-        assert!(matches!(
-            parse("LOOM_APPLY: {\"proposals\":[\"not a bead\"]}"),
-            Err(TerminalMarkerError::MalformedApply { .. })
-        ));
-    }
-
-    #[test]
-    fn wrong_phase_inbox_markers_are_rejected() {
-        for marker in [NOOP, BLOCKED, CLARIFY, RETRY, CONCERN] {
-            assert!(matches!(
-                parse(marker),
-                Err(TerminalMarkerError::WrongPhase { .. })
-            ));
-        }
-    }
-
-    #[test]
-    fn paired_markers_are_rejected() {
-        assert!(matches!(
-            parse("LOOM_COMPLETE\nLOOM_APPLY: {\"proposals\":[\"lm-abc123\"]}"),
-            Err(TerminalMarkerError::Paired)
-        ));
-        assert!(matches!(
-            parse("LOOM_COMPLETE LOOM_APPLY: {\"proposals\":[\"lm-abc123\"]}"),
-            Err(TerminalMarkerError::Paired)
+            parse("LOOM_APPLY: {\"proposals\":[\"lm-proposal.1\",\"lm-proposal.1\"]}"),
+            Err(TerminalMarkerError::DuplicateProposal { .. })
         ));
     }
 }

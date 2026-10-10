@@ -1,8 +1,7 @@
 //! Typed wire-format contract for `loom todo` success markers.
 //!
-//! [`parse_todo_success`] accepts the final `LOOM_TODO: <json>` line
-//! and returns a [`TodoSuccess`] whose identifiers and success payloads
-//! have been parsed into constrained domain types.
+//! [`parse_todo_success`] delegates framing and phase admission to the
+//! canonical decoder before projecting a typed success proposal.
 
 use std::fmt;
 use std::ops::Deref;
@@ -233,11 +232,14 @@ impl<'de> Deserialize<'de> for TodoSpecOutcome {
 ///
 /// Returns [`ParseTodoSuccessError`] when the prefix, JSON payload, or
 /// typed success fields violate the todo wire contract.
-pub fn parse_todo_success(final_line: &str) -> Result<TodoSuccess, ParseTodoSuccessError> {
-    let payload = todo_payload(final_line)?;
-    let raw: RawTodoSuccess = serde_json::from_str(payload)
-        .map_err(|source| ParseTodoSuccessError::InvalidJson { source })?;
-    raw.try_into()
+pub fn parse_todo_success(output: &str) -> Result<TodoSuccess, ParseTodoSuccessError> {
+    let session = crate::output::decode(output, crate::output::Phase::Todo)?;
+    if let crate::output::Message::Todo(success) = &session.terminal().message {
+        return Ok(success.clone());
+    }
+    Err(ParseTodoSuccessError::WrongTerminal {
+        context: session.into_context(),
+    })
 }
 
 /// Alias for [`parse_todo_success`].
@@ -248,16 +250,6 @@ pub fn parse_todo_success(final_line: &str) -> Result<TodoSuccess, ParseTodoSucc
 /// [`parse_todo_success`].
 pub fn parse_success_marker(final_line: &str) -> Result<TodoSuccess, ParseTodoSuccessError> {
     parse_todo_success(final_line)
-}
-
-fn todo_payload(final_line: &str) -> Result<&str, ParseTodoSuccessError> {
-    if let Some(payload) = final_line.strip_prefix(TODO_SUCCESS_PREFIX) {
-        return Ok(payload);
-    }
-    if final_line.starts_with("LOOM_TODO") {
-        return Err(ParseTodoSuccessError::MalformedPrefix);
-    }
-    Err(ParseTodoSuccessError::MissingPrefix)
 }
 
 impl TryFrom<RawTodoSuccess> for TodoSuccess {
@@ -362,15 +354,10 @@ fn parse_bead_id(value: String) -> Result<BeadId, ParseTodoSuccessError> {
 
 #[derive(Debug, Display, Error)]
 pub enum ParseTodoSuccessError {
-    /// missing `LOOM_TODO:` marker prefix
-    MissingPrefix,
-    /// malformed `LOOM_TODO:` marker prefix; expected `LOOM_TODO: <json>`
-    MalformedPrefix,
-    /// invalid `LOOM_TODO` JSON payload
-    InvalidJson {
-        #[source]
-        source: serde_json::Error,
-    },
+    /// todo output violates the agent-output contract
+    Contract(#[from] crate::output::Failure),
+    /// todo session did not propose a success payload
+    WrongTerminal { context: crate::output::Context },
     /// invalid todo head SHA
     InvalidGitSha {
         value: String,
@@ -493,142 +480,115 @@ mod tests {
         assert!(!serialized.contains(r#""outcome":{"#));
     }
 
-    #[test]
-    fn missing_prefix_returns_missing_prefix_error() {
-        let err = parse_todo_success("LOOM_COMPLETE").unwrap_err();
-
-        assert!(matches!(err, ParseTodoSuccessError::MissingPrefix));
+    fn assert_contract_error(output: &str, expected: &str) {
+        let ParseTodoSuccessError::Contract(failure) = parse_todo_success(output).unwrap_err()
+        else {
+            panic!("expected shared contract failure");
+        };
+        assert_eq!(failure.context().raw(), output);
+        assert!(
+            failure.diagnostics().iter().any(|diagnostic| {
+                if let crate::output::Error::Json { source } = &diagnostic.error {
+                    source.to_string().contains(expected)
+                } else {
+                    diagnostic.error.to_string().contains(expected)
+                }
+            }),
+            "{failure:?}"
+        );
     }
 
     #[test]
-    fn malformed_prefix_returns_malformed_prefix_error() {
-        let err = parse_todo_success(&format!(
+    fn todo_adapter_rejects_wrong_phase_completion() {
+        assert_contract_error("LOOM_COMPLETE", "not admitted in phase Todo");
+    }
+
+    #[test]
+    fn todo_adapter_accepts_canonical_colon_without_space() {
+        let output = format!(
             "LOOM_TODO:{}",
             success_json(r#""outcome":"no-work","reason":"audit""#)
-        ))
-        .unwrap_err();
-
-        assert!(matches!(err, ParseTodoSuccessError::MalformedPrefix));
+        );
+        assert!(parse_todo_success(&output).is_ok());
     }
 
     #[test]
-    fn invalid_json_returns_invalid_json_error() {
-        let err = parse_todo_success("LOOM_TODO: not-json").unwrap_err();
-
-        assert!(matches!(err, ParseTodoSuccessError::InvalidJson { .. }));
+    fn todo_adapter_preserves_invalid_json_diagnostics() {
+        assert_contract_error(
+            "LOOM_TODO: not-json",
+            "requires a colon followed by one JSON object",
+        );
     }
 
     #[test]
-    fn missing_required_field_returns_invalid_json_error() {
+    fn todo_adapter_preserves_missing_field_diagnostics() {
         let payload = format!(
             r#"{{"head":"{SHA}","fingerprint":"{FINGERPRINT}","specs":[{{"label":"templates","outcome":"no-work","reason":"audit"}}]}}"#
         );
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(matches!(err, ParseTodoSuccessError::InvalidJson { .. }));
+        assert_contract_error(&marker(&payload), "missing field");
     }
 
     #[test]
-    fn invalid_sha_returns_invalid_git_sha_error() {
-        let payload =
-            success_json(r#""outcome":"no-work","reason":"audit""#).replace(SHA, "not-a-sha");
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(
-            matches!(err, ParseTodoSuccessError::InvalidGitSha { value, .. } if value == "not-a-sha")
-        );
+    fn todo_adapter_rejects_invalid_identifiers() {
+        let valid = success_json(r#""outcome":"decomposed","beads":["lm-task.1"]"#);
+        for (original, invalid, expected) in [
+            (SHA, "not-a-sha", "invalid todo head SHA"),
+            (FINGERPRINT, "not-a-fingerprint", "invalid todo fingerprint"),
+            ("lm-work.1", "not a bead", "invalid bead id"),
+            ("lm-task.1", "bad bead", "invalid bead id"),
+            ("templates", "bad label", "invalid spec label"),
+        ] {
+            assert_contract_error(&marker(&valid.replace(original, invalid)), expected);
+        }
     }
 
     #[test]
-    fn invalid_fingerprint_returns_invalid_fingerprint_error() {
-        let payload = success_json(r#""outcome":"no-work","reason":"audit""#)
-            .replace(FINGERPRINT, "not-a-fingerprint");
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(
-            matches!(err, ParseTodoSuccessError::InvalidFingerprint { value, .. } if value == "not-a-fingerprint")
-        );
-    }
-
-    #[test]
-    fn invalid_work_epic_returns_invalid_bead_id_error() {
-        let payload = success_json(r#""outcome":"no-work","reason":"audit""#)
-            .replace("lm-work.1", "not a bead");
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(
-            matches!(err, ParseTodoSuccessError::InvalidBeadId { value, .. } if value == "not a bead")
-        );
-    }
-
-    #[test]
-    fn invalid_decomposed_bead_returns_invalid_bead_id_error() {
-        let payload = success_json(r#""outcome":"decomposed","beads":["bad bead"]"#);
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(
-            matches!(err, ParseTodoSuccessError::InvalidBeadId { value, .. } if value == "bad bead")
-        );
-    }
-
-    #[test]
-    fn invalid_spec_label_returns_invalid_spec_label_error() {
-        let payload = success_json(r#""outcome":"no-work","reason":"audit""#)
-            .replace("templates", "bad label");
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(
-            matches!(err, ParseTodoSuccessError::InvalidSpecLabel { value } if value == "bad label")
-        );
-    }
-
-    #[test]
-    fn empty_specs_returns_empty_specs_error() {
+    fn todo_adapter_rejects_empty_success_fields() {
+        let valid = success_json(r#""outcome":"decomposed","beads":["lm-task.1"]"#);
+        for (original, invalid, expected) in [
+            ("Pin template prompts", "   ", "non-empty work epic title"),
+            ("[\"lm-task.1\"]", "[]", "at least one bead"),
+        ] {
+            assert_contract_error(&marker(&valid.replace(original, invalid)), expected);
+        }
         let payload = format!(
             r#"{{"head":"{SHA}","fingerprint":"{FINGERPRINT}","work_epic":"lm-work.1","title":"Pin template prompts","specs":[]}}"#
         );
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(matches!(err, ParseTodoSuccessError::EmptySpecs));
+        assert_contract_error(&marker(&payload), "at least one spec");
     }
 
     #[test]
-    fn empty_title_returns_empty_title_error() {
-        let payload = success_json(r#""outcome":"no-work","reason":"audit""#)
-            .replace("Pin template prompts", "   ");
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(matches!(err, ParseTodoSuccessError::EmptyTitle));
+    fn todo_adapter_rejects_blank_no_work_reasons() {
+        for reason in ["", "   "] {
+            let payload = success_json(&format!(r#""outcome":"no-work","reason":"{reason}""#));
+            assert_contract_error(&marker(&payload), "non-empty reason");
+        }
     }
 
     #[test]
-    fn empty_decomposed_beads_returns_empty_bead_list_error() {
-        let payload = success_json(r#""outcome":"decomposed","beads":[]"#);
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(
-            matches!(err, ParseTodoSuccessError::EmptyBeadList { label } if label.as_str() == "templates")
+    fn todo_adapter_admits_multiline_success_after_decision_records() {
+        let payload: serde_json::Value =
+            serde_json::from_str(&success_json(r#""outcome":"no-work","reason":"audit""#)).unwrap();
+        let output = format!(
+            "LOOM_CLARIFY: {{\"decisions\":[\"lm-decision.1\"]}}\nLOOM_TODO: {}",
+            serde_json::to_string_pretty(&payload).unwrap()
+        );
+        assert_eq!(
+            parse_todo_success(&output).unwrap().work_epic.as_str(),
+            "lm-work.1"
         );
     }
 
     #[test]
-    fn empty_no_work_reason_returns_empty_no_work_reason_error() {
-        let payload = success_json(r#""outcome":"no-work","reason":"""#);
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(
-            matches!(err, ParseTodoSuccessError::EmptyNoWorkReason { label } if label.as_str() == "templates")
-        );
-    }
-
-    #[test]
-    fn blank_no_work_reason_returns_empty_no_work_reason_error() {
-        let payload = success_json(r#""outcome":"no-work","reason":"   ""#);
-        let err = parse_todo_success(&marker(&payload)).unwrap_err();
-
-        assert!(
-            matches!(err, ParseTodoSuccessError::EmptyNoWorkReason { label } if label.as_str() == "templates")
-        );
+    fn todo_adapter_retains_valid_decisions_when_success_is_malformed() {
+        let output = "LOOM_CLARIFY: {\"decisions\":[\"lm-decision.1\"]}\nLOOM_TODO: {}";
+        let ParseTodoSuccessError::Contract(failure) = parse_todo_success(output).unwrap_err()
+        else {
+            panic!("expected contract failure");
+        };
+        assert_eq!(failure.context().decisions().len(), 1);
+        assert_eq!(failure.diagnostics()[0].span.line, 2);
+        assert_eq!(failure.context().raw(), output);
     }
 
     #[test]

@@ -378,6 +378,31 @@ mod contract {
     }
 
     #[test]
+    fn review_checker_rejects_invalid_output_even_with_an_empty_finding_oracle() {
+        let expected = Expected::ReviewFindingRecall(ReviewExpected {
+            findings: vec![],
+            max_extra_findings: Some(0),
+        });
+        assert_eq!(
+            hard(&Evidence::text("LOOM_COMPLETE"), &expected),
+            1.0_f64.to_bits()
+        );
+        for output in [
+            "No defects",
+            "LOOM_COMPLETE\nLOOM_COMPLETE",
+            "LOOM_COMPLETE\nmore prose",
+            "LOOM_NOOP",
+            "LOOM_BOGUS\nLOOM_COMPLETE",
+        ] {
+            assert_eq!(
+                hard(&Evidence::text(output), &expected),
+                0.0_f64.to_bits(),
+                "{output}"
+            );
+        }
+    }
+
+    #[test]
     fn mined_nonempty_text_is_explicitly_not_evaluated() {
         use crate::{checker::Level, config::TuneConfig, evidence, plan};
         let target = "skill:loom-context-before-edit".parse::<Target>().unwrap();

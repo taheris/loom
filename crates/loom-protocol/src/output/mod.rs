@@ -253,7 +253,7 @@ impl Session {
 }
 
 #[derive(Debug, Display, Error)]
-/// agent output violates the message contract
+/// agent output violates the message contract: {diagnostics:?}
 pub struct Failure {
     context: Context,
     diagnostics: Vec<Diagnostic>,
@@ -266,6 +266,11 @@ impl Failure {
 
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// True only for an otherwise valid markerless interactive turn.
+    pub fn is_conversation(&self) -> bool {
+        self.diagnostics.len() == 1 && matches!(self.diagnostics[0].error, Error::MissingTerminal)
     }
 
     pub fn into_context(self) -> Context {

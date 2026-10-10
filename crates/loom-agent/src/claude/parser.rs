@@ -18,17 +18,15 @@ use super::messages::{AssistantBlock, ClaudeMessage, UserBlock};
 
 /// Claude Code stream-json line parser.
 ///
-/// Stateless dispatch layer between
-/// [`AgentSession`](loom_driver::agent::AgentSession) and
-/// [`messages::ClaudeMessage`](super::messages::ClaudeMessage). Auto-approves
-/// every tool-permission `control_request` whose tool name is **not** in
-/// `denied_tools`; denied tools receive `approved: false`.
+/// Normalizes assistant text exactly once and auto-approves tool permissions
+/// except those named in the configured deny-list.
 pub struct ClaudeParser {
     denied_tools: HashSet<String>,
     /// Per-session `Task` subagent stack. Same shape as the pi
     /// parser's. `&self` `LineParse` trait requires interior mutability;
     /// one parser per session means contention is nil.
     task_stack: std::sync::Mutex<Vec<loom_events::identifier::ToolCallId>>,
+    last_assistant_text: std::sync::Mutex<Option<String>>,
 }
 
 impl ClaudeParser {
@@ -39,7 +37,38 @@ impl ClaudeParser {
         Self {
             denied_tools: denied_tools.into_iter().collect(),
             task_stack: std::sync::Mutex::new(Vec::new()),
+            last_assistant_text: std::sync::Mutex::new(None),
         }
+    }
+
+    fn capture_assistant_text(&self, text: String) -> Result<(), ProtocolError> {
+        *self
+            .last_assistant_text
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)? = Some(text);
+        Ok(())
+    }
+
+    fn final_text_events(
+        &self,
+        text: Option<String>,
+    ) -> Result<Vec<ParsedAgentEvent>, ProtocolError> {
+        let Some(text) = text.filter(|text| !text.is_empty()) else {
+            return Ok(Vec::new());
+        };
+        let duplicate = self
+            .last_assistant_text
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?
+            .as_ref()
+            == Some(&text);
+        if duplicate {
+            return Ok(Vec::new());
+        }
+        Ok(vec![
+            ParsedAgentEvent::TextDelta { text },
+            ParsedAgentEvent::TextEnd,
+        ])
     }
 
     fn current_parent(&self) -> Result<Option<loom_events::identifier::ToolCallId>, ProtocolError> {
@@ -114,10 +143,12 @@ impl LineParse for ClaudeParser {
                 })
             }
             ClaudeMessage::Assistant { message } => {
-                let mut events = Vec::with_capacity(message.content.len());
+                let mut events = Vec::with_capacity(message.content.len() + 1);
+                let mut assistant_text = String::new();
                 for block in message.content {
                     match block {
                         AssistantBlock::Text { text } => {
+                            assistant_text.push_str(&text);
                             events.push(ParsedAgentEvent::TextDelta { text });
                         }
                         AssistantBlock::ToolUse { id, name, input } => {
@@ -143,6 +174,10 @@ impl LineParse for ClaudeParser {
                         }
                     }
                 }
+                if !assistant_text.is_empty() {
+                    events.push(ParsedAgentEvent::TextEnd);
+                }
+                self.capture_assistant_text(assistant_text)?;
                 Ok(ParsedLine {
                     events,
                     response: None,
@@ -189,13 +224,15 @@ impl LineParse for ClaudeParser {
                 ..
             } => {
                 let events = match subtype.as_str() {
-                    "success" => vec![
-                        ParsedAgentEvent::TurnEnd,
-                        ParsedAgentEvent::SessionComplete {
+                    "success" => {
+                        let mut events = self.final_text_events(result)?;
+                        events.push(ParsedAgentEvent::TurnEnd);
+                        events.push(ParsedAgentEvent::SessionComplete {
                             exit_code: 0,
                             cost_usd: total_cost_usd,
-                        },
-                    ],
+                        });
+                        events
+                    }
                     "error" => vec![
                         ParsedAgentEvent::Error {
                             message: result.unwrap_or_default(),
@@ -292,6 +329,70 @@ mod tests {
     // -- test_claude_stream_json_parsing -----------------------------------
 
     #[test]
+    fn result_success_surfaces_final_only_assistant_text() {
+        let parsed = parse(
+            &empty(),
+            r#"{"type":"result","subtype":"success","result":"LOOM_COMPLETE"}"#,
+        );
+        assert_eq!(
+            parsed.events,
+            vec![
+                ParsedAgentEvent::TextDelta {
+                    text: "LOOM_COMPLETE".into()
+                },
+                ParsedAgentEvent::TextEnd,
+                ParsedAgentEvent::TurnEnd,
+                ParsedAgentEvent::SessionComplete {
+                    exit_code: 0,
+                    cost_usd: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn result_success_does_not_repeat_final_assistant_text() {
+        let parser = empty();
+        parse(
+            &parser,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"LOOM_COMPLETE"}]}}"#,
+        );
+        let parsed = parse(
+            &parser,
+            r#"{"type":"result","subtype":"success","result":"LOOM_COMPLETE"}"#,
+        );
+        assert_eq!(
+            parsed.events,
+            vec![
+                ParsedAgentEvent::TurnEnd,
+                ParsedAgentEvent::SessionComplete {
+                    exit_code: 0,
+                    cost_usd: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn result_success_preserves_a_distinct_final_message() {
+        let parser = empty();
+        parse(
+            &parser,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Inspecting the workspace"}]}}"#,
+        );
+        let parsed = parse(
+            &parser,
+            r#"{"type":"result","subtype":"success","result":"LOOM_COMPLETE"}"#,
+        );
+        assert_eq!(
+            parsed.events[0],
+            ParsedAgentEvent::TextDelta {
+                text: "LOOM_COMPLETE".into()
+            }
+        );
+    }
+
+    #[test]
     fn parses_system_init() {
         let line = r#"{"type":"system","subtype":"init","session_id":"sess-abc"}"#;
         let p = parse(&empty(), line);
@@ -303,7 +404,8 @@ mod tests {
     fn parses_assistant_text_and_tool_use() {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"},{"type":"tool_use","id":"toolu_01","name":"Read","input":{"path":"/tmp/x"}}]}}"#;
         let p = parse(&empty(), line);
-        assert_eq!(p.events.len(), 2);
+        assert_eq!(p.events.len(), 3);
+        assert!(matches!(p.events[2], ParsedAgentEvent::TextEnd));
         match &p.events[0] {
             ParsedAgentEvent::TextDelta { text } => assert_eq!(text, "hi"),
             other => panic!("expected TextDelta, got {other:?}"),
@@ -614,7 +716,8 @@ mod tests {
     fn assistant_block_text_and_tool_use_field_mapping() {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"abc"},{"type":"tool_use","id":"tu-1","name":"Bash","input":{"cmd":"ls"}}]}}"#;
         let p = parse(&empty(), line);
-        assert_eq!(p.events.len(), 2);
+        assert_eq!(p.events.len(), 3);
+        assert!(matches!(p.events[2], ParsedAgentEvent::TextEnd));
         match &p.events[0] {
             ParsedAgentEvent::TextDelta { text } => assert_eq!(text, "abc"),
             other => panic!("expected TextDelta, got {other:?}"),

@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use displaydoc::Display;
 use loom_events::AgentEvent;
-use loom_protocol::gate::{DispatchScope, FindingValidator, parse_exit_signal, parse_walk_output};
-use loom_protocol::inbox::{self, TerminalMarker};
+use loom_protocol::gate::{DispatchScope, FindingValidator, parse_walk_output};
+use loom_protocol::inbox;
+use loom_protocol::output::{self, Message, Phase};
 use thiserror::Error;
 
 use crate::case::{Case, Expected, LoadedCases};
@@ -249,10 +250,7 @@ fn score(
             let Ok(marker) = inbox::parse(&evidence.output) else {
                 return binary_score(false);
             };
-            let marker_name = match marker {
-                TerminalMarker::Complete => "LOOM_COMPLETE",
-                TerminalMarker::Apply { .. } => "LOOM_APPLY",
-            };
+            let marker_name = marker.marker();
             if !expected
                 .allowed_terminal_markers
                 .iter()
@@ -279,13 +277,14 @@ fn score(
                 return binary_score(false);
             };
             let correct_marker = match marker {
-                TerminalMarker::Complete => {
+                Message::Complete => {
                     !expected.must_emit_apply && expected.apply_proposals.is_empty()
                 }
-                TerminalMarker::Apply { proposals } => {
-                    proposals.iter().collect::<HashSet<_>>()
+                Message::Apply(payload) => {
+                    payload.proposals.iter().collect::<HashSet<_>>()
                         == expected.apply_proposals.iter().collect::<HashSet<_>>()
                 }
+                _ => false,
             };
             if !correct_marker || !safe_commands(evidence, &[], expected.must_not_push)? {
                 return binary_score(false);
@@ -389,22 +388,11 @@ fn matches_path(patterns: &[glob::Pattern], path: &str) -> bool {
 }
 
 fn complete(output: &str) -> bool {
-    matches!(inbox::parse(output), Ok(TerminalMarker::Complete))
+    matches!(output::decode(output, Phase::Loop), Ok(session) if session.terminal().message == Message::Complete)
 }
 
 fn score_todo(output: &str, expected: &crate::case::TodoExpected) -> Result<Scores, Error> {
-    let lines = output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    let Some((terminal, before)) = lines.split_last() else {
-        return binary_score(false);
-    };
-    if before.iter().any(|line| line.starts_with("LOOM_")) {
-        return binary_score(false);
-    }
-    let Ok(todo) = loom_protocol::todo::parse_todo_success(terminal) else {
+    let Ok(todo) = loom_protocol::todo::parse_todo_success(output) else {
         return binary_score(false);
     };
     let specs = todo
@@ -439,7 +427,7 @@ fn score_review(
     expected: &crate::case::ReviewExpected,
     validator: &dyn FindingValidator,
 ) -> Result<Scores, Error> {
-    if parse_exit_signal(output).is_none() {
+    if output::decode(output, Phase::Review).is_err() {
         return binary_score(false);
     }
     let Ok(findings) = parse_walk_output(output, DispatchScope::Tree, validator) else {

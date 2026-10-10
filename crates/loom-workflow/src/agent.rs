@@ -244,10 +244,8 @@ pub async fn run_agent_classified<B: AgentBackend>(
             first_event_seen = true;
         }
         log_agent_event(&event, config);
-        if let AgentEvent::TextDelta { text, .. } = &event
-            && let Some(buf) = text_capture.as_deref_mut()
-        {
-            buf.push_str(text);
+        if let Some(buf) = text_capture.as_deref_mut() {
+            capture_text(&event, buf);
         }
         if let Some(s) = sink.as_mut()
             && let Err(e) = s.emit(&event)
@@ -428,6 +426,22 @@ pub async fn run_agent_classified<B: AgentBackend>(
                 cost_usd,
             });
         }
+    }
+}
+
+/// Collect normalized assistant text only, with logical message boundaries.
+pub(crate) fn capture_text(event: &AgentEvent, output: &mut String) {
+    if event.envelope().source != Source::Agent {
+        return;
+    }
+    match event {
+        AgentEvent::TextDelta { text, .. } => output.push_str(text),
+        AgentEvent::TextEnd { .. } | AgentEvent::TurnEnd { .. } | AgentEvent::AgentEnd { .. }
+            if !output.is_empty() && !output.ends_with('\n') =>
+        {
+            output.push('\n');
+        }
+        _ => {}
     }
 }
 
@@ -1155,6 +1169,190 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    struct ControlledPi;
+    struct ControlledClaude;
+    struct ControlledDirect;
+
+    impl AgentBackend for ControlledPi {
+        async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+            external_output_session(
+                config,
+                Box::new(loom_agent::pi::parser::PiParser::new()),
+                false,
+            )
+        }
+    }
+
+    impl AgentBackend for ControlledClaude {
+        async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+            external_output_session(
+                config,
+                Box::new(loom_agent::claude::parser::ClaudeParser::new(Vec::new())),
+                false,
+            )
+        }
+    }
+
+    impl AgentBackend for ControlledDirect {
+        async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+            external_output_session(
+                config,
+                Box::new(loom_agent::direct::backend::DirectParser),
+                true,
+            )
+        }
+    }
+
+    fn external_output_session(
+        config: &SpawnConfig,
+        parser: Box<dyn LineParse + Send>,
+        completion_handshake: bool,
+    ) -> Result<AgentSession<Idle>, ProtocolError> {
+        let (last, before) = config
+            .agent_args
+            .split_last()
+            .ok_or(ProtocolError::UnexpectedEof)?;
+        let mut script = String::from("set -euo pipefail\nIFS= read -r _\nprintf '%s\\n'");
+        for line in before {
+            append_shell_argument(&mut script, line);
+        }
+        if completion_handshake {
+            script.push_str("\nIFS= read -r complete\n[[ \"$complete\" == *'\"type\":\"complete\"'* ]]\nprintf '%s\\n'");
+        }
+        append_shell_argument(&mut script, last);
+        spawn_script_with_parser(&script, parser)
+    }
+
+    fn append_shell_argument(script: &mut String, line: &str) {
+        script.push_str(" '");
+        script.push_str(&line.replace('\'', "'\\''"));
+        script.push('\'');
+    }
+
+    async fn capture_external<B: AgentBackend>(wire: Vec<serde_json::Value>) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = sample_spawn_config(dir.path());
+        config.initial_prompt =
+            "LOOM_COMPLETE\nLOOM_APPLY: {\"proposals\":[\"lm-prompt.1\"]}".into();
+        config.agent_args = wire.into_iter().map(|value| value.to_string()).collect();
+        let mut output = String::new();
+        let outcome = run_agent::<B>(&config, None, Some(&mut output))
+            .await
+            .unwrap_or_else(|error| panic!("{}: {error:#}", std::any::type_name::<B>()));
+        assert_eq!(outcome.exit_code, 0);
+        output
+    }
+
+    fn pi_output(record: &str, terminal: &str) -> Vec<serde_json::Value> {
+        use serde_json::json;
+
+        vec![
+            json!({"type":"message_start","message":{"role":"user"}}),
+            json!({"type":"message_end","message":{"role":"user","content":"LOOM_COMPLETE"}}),
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":&record[..12]}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":&record[12..]}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"text_end"}}),
+            json!({"type":"message_end","message":{"role":"assistant","content":record}}),
+            json!({"type":"tool_execution_start","toolCallId":"tc-1","toolName":"Bash","args":{"command":"echo LOOM_NOOP"}}),
+            json!({"type":"tool_execution_end","toolCallId":"tc-1","toolName":"Bash","result":"LOOM_COMPLETE","isError":false}),
+            json!({"type":"turn_end","message":{"role":"assistant","content":record},"toolResults":[]}),
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+            json!({"type":"message_end","message":{"role":"assistant","content":terminal}}),
+            json!({"type":"turn_end","message":{"role":"assistant","content":terminal},"toolResults":[]}),
+            json!({"type":"agent_end","messages":[]}),
+        ]
+    }
+
+    fn claude_output(record: &str, terminal: &str) -> Vec<serde_json::Value> {
+        use serde_json::json;
+
+        vec![
+            json!({"type":"system","subtype":"init","session_id":"LOOM_COMPLETE"}),
+            json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":"LOOM_COMPLETE"}]}}),
+            json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":&record[..12]},{"type":"text","text":&record[12..]}]}}),
+            json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tc-1","name":"Bash","input":{"command":"echo LOOM_NOOP"}}]}}),
+            json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tc-1","content":"LOOM_COMPLETE","is_error":false}]}}),
+            json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":terminal}]}}),
+            json!({"type":"result","subtype":"success","result":terminal}),
+        ]
+    }
+
+    fn direct_output(record: &str, terminal: &str) -> Vec<serde_json::Value> {
+        use serde_json::json;
+
+        vec![
+            json!({"type":"text_delta","text":&record[..12]}),
+            json!({"type":"text_delta","text":&record[12..]}),
+            json!({"type":"text_end"}),
+            json!({"type":"tool_call","id":"tc-1","tool":"Bash","params":{"command":"echo LOOM_NOOP"}}),
+            json!({"type":"tool_result","id":"tc-1","output":"LOOM_COMPLETE","is_error":false}),
+            json!({"type":"driver_event","driver_kind":"offload","summary":"LOOM_COMPLETE","payload":{}}),
+            json!({"type":"text_delta","text":terminal}),
+            json!({"type":"text_end"}),
+            json!({"type":"turn_end"}),
+            json!({"type":"session_complete","exit_code":0}),
+        ]
+    }
+
+    #[tokio::test]
+    async fn live_capture_preserves_records_without_counting_final_text_twice() {
+        let record = "LOOM_CLARIFY: {\n\"decisions\": [\"lm-decision.1\"]\n}";
+        let terminal = "LOOM_RETRY: {\n\"reason\": \"controlled output\"\n}";
+        let captures = [
+            capture_external::<ControlledPi>(pi_output(record, terminal)).await,
+            capture_external::<ControlledClaude>(claude_output(record, terminal)).await,
+            capture_external::<ControlledDirect>(direct_output(record, terminal)).await,
+        ];
+        for output in captures {
+            assert_eq!(output, format!("{record}\n{terminal}\n"));
+            let session =
+                loom_protocol::output::decode(&output, loom_protocol::output::Phase::Loop).unwrap();
+            assert_eq!(session.context().messages().len(), 2);
+            assert_eq!(session.context().decisions().len(), 1);
+            assert!(matches!(
+                session.terminal().message,
+                loom_protocol::output::Message::Retry(_)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn live_capture_retains_decisions_on_malformed_or_wrong_phase_output() {
+        let record = "LOOM_CLARIFY: {\"decisions\": [\"lm-decision.1\"]}";
+        for terminal in [
+            "LOOM_RETRY",
+            "LOOM_RETRY: {\"reason\":\"raw\nnewline\"}",
+            "LOOM_APPLY: {\"proposals\":[\"lm-proposal.1\"]}",
+        ] {
+            let captures = [
+                capture_external::<ControlledPi>(pi_output(record, terminal)).await,
+                capture_external::<ControlledClaude>(claude_output(record, terminal)).await,
+                capture_external::<ControlledDirect>(direct_output(record, terminal)).await,
+            ];
+            for output in captures {
+                let failure =
+                    loom_protocol::output::decode(&output, loom_protocol::output::Phase::Loop)
+                        .unwrap_err();
+                assert_eq!(failure.context().raw(), output);
+                assert_eq!(failure.context().decisions().len(), 1);
+                assert_eq!(failure.diagnostics()[0].span.line, 2);
+            }
+        }
+    }
+
+    #[test]
+    fn capture_rejects_driver_sourced_text_deltas() {
+        let mut envelope = builder();
+        let event = AgentEvent::TextDelta {
+            envelope: envelope.build_with_source(Source::Driver),
+            text: "LOOM_COMPLETE".into(),
+        };
+        let mut output = String::new();
+        capture_text(&event, &mut output);
+        assert_eq!(output, "");
     }
 
     #[test]

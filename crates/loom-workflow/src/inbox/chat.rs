@@ -282,11 +282,12 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
 
     let marker = parse_terminal_marker(&stdout)?;
     ensure_integration_clean_after_chat(workspace)?;
-    let applied_proposals = match marker {
-        TerminalMarker::Complete => 0,
-        TerminalMarker::Apply { proposals } => {
-            apply_proposals(workspace, proposals)?.proposals.len()
-        }
+    let applied_proposals = if let TerminalMarker::Apply(payload) = marker {
+        apply_proposals(workspace, payload.proposals.into_vec())?
+            .proposals
+            .len()
+    } else {
+        0
     };
 
     let beads_after = runtime
@@ -387,7 +388,7 @@ async fn run_pi_bridge(config: SpawnConfig, launcher: &Path) -> Result<String, C
                     ensure_bridge_output_newline(&mut output)?;
                     return Ok(output);
                 }
-                Err(TerminalMarkerError::Missing) => {
+                Err(err) if err.is_conversation() => {
                     if !read_pi_bridge_follow_up(
                         &mut session,
                         &config,
@@ -410,7 +411,7 @@ async fn run_pi_bridge(config: SpawnConfig, launcher: &Path) -> Result<String, C
                         ensure_bridge_output_newline(&mut output)?;
                         return Ok(output);
                     }
-                    Err(TerminalMarkerError::Missing) => return Ok(output),
+                    Err(err) if err.is_conversation() => return Ok(output),
                     Err(err) => return Err(ChatError::Terminal(err)),
                 }
             }
@@ -472,6 +473,7 @@ fn emit_pi_bridge_agent_input(
 }
 
 fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(), std::io::Error> {
+    crate::agent::capture_text(event, output);
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
     match event {
@@ -495,7 +497,6 @@ fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(),
             stdout.flush()?;
         }
         AgentEvent::TextDelta { text, .. } => {
-            output.push_str(text);
             write!(stdout, "{text}")?;
             stdout.flush()?;
         }

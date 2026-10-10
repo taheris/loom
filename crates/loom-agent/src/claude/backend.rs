@@ -464,6 +464,11 @@ mod tests {
             other => panic!("expected first MessageDelta, got {other:?}"),
         }
 
+        assert!(matches!(
+            session.next_event().await.expect("text boundary"),
+            Some(ParsedAgentEvent::TextEnd)
+        ));
+
         session
             .steer("STEERED_TEXT")
             .await
