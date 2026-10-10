@@ -21,6 +21,9 @@ pub enum ReviewError {
     /// agent backend protocol failure during `loom review`
     Protocol(#[from] ProtocolError),
 
+    /// integrity cap decision admission failed
+    IntegrityDecision(#[from] crate::mint::integrity::Error),
+
     /// bd CLI failure during `loom review`
     Bd(#[from] BdError),
 

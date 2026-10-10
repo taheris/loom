@@ -493,7 +493,7 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   `inputs-protocol-error`, and preserved cause/source context. Partial answers
   enable only separately bound affected work, without an epic-wide dependency,
   automatic finding completion, renewed automatic iteration budget, or push.
-  [test?](integrity_cap_decisions_preserve_full_options_and_partial_resolution)
+  [test](integrity_cap_decisions_preserve_full_options_and_partial_resolution)
 
 <!-- prettier-ignore -->
 - Production readiness probes use the shared admitted planner for scope,

@@ -132,13 +132,8 @@ pub trait ReviewController: Send {
         async { Ok(vec![]) }
     }
 
-    /// Apply `loom:clarify` to the molecule's epic with the
-    /// auto-generated `## Options — …` block per `specs/gate.md`
-    /// § Integrity gate when the push-gate verdict refuses with cause
-    /// `integrity-finding`. Production wires this to find the active
-    /// molecule's epic and call `bd update --notes <options> --add-label
-    /// loom:clarify`. The default impl is a no-op so test fakes that
-    /// don't exercise the integrity-clarify path keep working.
+    /// Admit one dedicated decision per terminal finding at cap exhaustion,
+    /// retaining full options and closed history without changing the epic.
     fn apply_integrity_clarify(
         &mut self,
         _findings: &[IntegrityFinding],
@@ -482,10 +477,7 @@ async fn decide_verdict<C: ReviewController>(
     }
 
     if !integrity_findings.is_empty() {
-        // Integrity findings are recoverable up to the molecule's
-        // iteration cap (specs/gate.md § Integrity gate): below the cap
-        // they mint a fix-up batch and re-enter the loop; at the cap they
-        // fall back to the terminal clarify escalation on the epic.
+        // The cap ends automatic remediation; dedicated decisions do not renew it.
         let current = controller.iteration_count().await?;
         if cap.is_exhausted(current) {
             return Ok(ReviewVerdict::PushBlocked {
@@ -1546,6 +1538,7 @@ mod tests {
         fn variant_set_excludes_concern_without_bead_deltas(err: &ReviewError) {
             match err {
                 ReviewError::Protocol(_)
+                | ReviewError::IntegrityDecision(_)
                 | ReviewError::Bd(_)
                 | ReviewError::InvalidMoleculeId(_)
                 | ReviewError::Render(_)

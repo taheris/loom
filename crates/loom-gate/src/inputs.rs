@@ -357,7 +357,9 @@ impl InputResolver {
                 InputQueryProbe::Honoured
             }
             Ok(InputQueryDocument::Single(_)) => InputQueryProbe::Honoured,
-            Err(detail) => InputQueryProbe::Errored { detail },
+            Err(detail) => InputQueryProbe::Errored {
+                detail: format!("judge source `{}`: {detail}", script.display()),
+            },
         };
         self.input_query_probes.insert(cache_key, probe.clone());
         probe
@@ -424,7 +426,9 @@ impl InputResolver {
             // A flat response cannot safely be assigned to distinct targets.
             // Preserve the per-target fallback, without suppressing errors.
             Ok(InputQueryDocument::Single(_)) => return InputQueryProbe::Honoured,
-            Err(detail) => InputQueryProbe::Errored { detail },
+            Err(detail) => InputQueryProbe::Errored {
+                detail: format!("runner `{}` in `{}`: {detail}", runner.name, cwd.display()),
+            },
         };
         for target in targets {
             let key = runner_cache_key(runner, tier, target);
@@ -973,10 +977,14 @@ fn query_inputs(mut cmd: Command, command: &str) -> Result<InputQueryDocument, S
             source,
         };
         tracing::warn!(err = ?err, "opted-in input-query spawn failed");
-        "input-query failed to spawn".to_owned()
+        bounded_query_diagnostic(&format!("input-query `{command}` failed to spawn: {err}"))
     })?;
     if !output.status.success() {
-        return Err("input-query exited non-zero".to_owned());
+        return Err(bounded_query_diagnostic(&format!(
+            "input-query `{command}` exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        )));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     if let Some(batch) = parse_inputs_batch_json(&stdout) {
@@ -984,8 +992,36 @@ fn query_inputs(mut cmd: Command, command: &str) -> Result<InputQueryDocument, S
     } else if let Some(paths) = parse_inputs_json(&stdout) {
         Ok(InputQueryDocument::Single(paths))
     } else {
-        Err("input-query emitted a malformed inputs document".to_owned())
+        Err(bounded_query_diagnostic(&format!(
+            "input-query `{command}` emitted a malformed inputs document; stderr: {}",
+            String::from_utf8_lossy(&output.stderr),
+        )))
     }
+}
+
+fn bounded_query_diagnostic(text: &str) -> String {
+    redact_query_diagnostic(text, std::env::vars_os())
+}
+
+fn redact_query_diagnostic(
+    text: &str,
+    environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> String {
+    let mut redacted = text.to_owned();
+    for (name, value) in environment {
+        let (Some(name), Some(value)) = (name.to_str(), value.to_str()) else {
+            continue;
+        };
+        let name = name.to_ascii_uppercase();
+        if !value.is_empty()
+            && ["TOKEN", "KEY", "PASSWORD", "SECRET"]
+                .iter()
+                .any(|marker| name.contains(marker))
+        {
+            redacted = redacted.replace(value, "[REDACTED]");
+        }
+    }
+    redacted.chars().take(1024).collect()
 }
 
 /// The `#fn` / `::fn` selector trailing a script-path target, or `None`
@@ -1100,6 +1136,16 @@ for target in "$@"; do
     first=0
 done
 printf '}}\n'"#;
+
+    #[test]
+    fn query_diagnostics_redact_credentials_before_bounding_unicode_output() {
+        let text = format!("fixture-secret: {}", "診断".repeat(1024));
+        let diagnostic =
+            redact_query_diagnostic(&text, [("API_KEY".into(), "fixture-secret".into())]);
+        assert!(diagnostic.starts_with("[REDACTED]: "));
+        assert!(!diagnostic.contains("fixture-secret"));
+        assert_eq!(diagnostic.chars().count(), 1024);
+    }
 
     fn counting_runner(dir: &Path, body: &str, tier: Tier) -> RunnerSpec {
         let responder = dir.join(format!("inputs-{tier}.sh"));

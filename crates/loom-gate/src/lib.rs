@@ -39,7 +39,7 @@ pub use inputs::{InputQueryProbe, InputResolver, InputsError, VerifierInputs, fi
 pub use integrity::{
     CommandResolver, DispatchPendingExecutor, FsCommandResolver, IntegrityError, IntegrityFinding,
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
-    TestPathResolver, check_inputs_protocol, compose_clarify_options, is_missing_binary_target,
+    TestPathResolver, check_inputs_protocol, is_missing_binary_target,
 };
 pub use marker::{
     MARKER_PATH, MarkerError, MarkerProof, MarkerValidationRequest, MintError, verify_marker,

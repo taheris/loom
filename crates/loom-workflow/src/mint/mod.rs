@@ -13,6 +13,7 @@
 //! mint pipeline performs no other writes outside the dedup + mint flow.
 
 mod error;
+pub mod integrity;
 pub mod walk;
 
 pub use error::MintError;
@@ -2548,6 +2549,19 @@ fn append_findings_section(out: &mut String, findings: &[Finding]) {
             hash = finding.hash(),
             evidence = evidence_excerpt(finding.evidence()),
         );
+        if finding.route() != FindingRoute::Clarify
+            && matches!(
+                finding.token(),
+                ConcernToken::UnresolvedAnnotation
+                    | ConcernToken::StubPointing
+                    | ConcernToken::UnneededPendingMarker
+                    | ConcernToken::InputsProtocolError
+            )
+        {
+            out.push('\n');
+            out.push_str(finding.evidence());
+            out.push('\n');
+        }
     }
 }
 

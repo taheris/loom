@@ -129,6 +129,10 @@ impl<R: CommandRunner> BdClient<R> {
             args.push("--priority".into());
             args.push(p.to_string().into());
         }
+        if let Some(status) = opts.status {
+            args.push("--status".into());
+            args.push(status.as_str().into());
+        }
         if let Some(parent) = opts.parent {
             args.push("--parent".into());
             args.push(parent.as_str().to_owned().into());
@@ -378,6 +382,7 @@ fn decode<T: for<'de> Deserialize<'de>>(stdout: &[u8], args: &str) -> Result<T, 
 /// today are modelled; extend as new call sites need them.
 #[derive(Debug, Clone, Default)]
 pub struct CreateOpts {
+    pub status: Option<Status>,
     pub title: String,
     pub description: String,
     pub issue_type: Option<IssueType>,
@@ -793,6 +798,7 @@ mod tests {
         let client = BdClient::with_runner(runner);
         let id = client
             .create(CreateOpts {
+                status: Some(Status::Blocked),
                 title: "do thing".into(),
                 description: "why".into(),
                 issue_type: Some(crate::bd::IssueType::Task),
@@ -808,6 +814,7 @@ mod tests {
         assert!(argv.starts_with(&["create".to_string(), "--silent".into()]));
         assert!(argv.contains(&"--title".to_string()));
         assert!(argv.contains(&"do thing".to_string()));
+        assert!(argv.windows(2).any(|args| args == ["--status", "blocked"]));
         assert!(argv.contains(&"--type".to_string()));
         assert!(argv.contains(&"task".to_string()));
         assert!(argv.contains(&"--parent".to_string()));

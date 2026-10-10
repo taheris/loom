@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use loom_gate::{IntegrityFinding, Tier, compose_clarify_options};
+use loom_gate::{IntegrityFinding, Tier};
 
 #[test]
 fn mint_emits_drop_marker_option_for_unneeded_pending_marker() {
@@ -12,11 +12,8 @@ fn mint_emits_drop_marker_option_for_unneeded_pending_marker() {
         tier: Tier::Check,
         target: "true".into(),
     };
-    let out = compose_clarify_options(&[finding]);
-    assert!(
-        out.starts_with("## Options — "),
-        "block must start with the options summary heading: {out}",
-    );
+    let out = finding.clarify_options().expect("terminal finding brief");
+    assert!(out.contains("## Options — "), "options summary: {out}");
     assert!(
         out.contains("specs/gate.md:803"),
         "spec:line missing: {out}"

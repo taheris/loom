@@ -639,6 +639,7 @@ async fn create_proposal(
             parent: None,
             metadata: None,
             notes: None,
+            ..CreateOpts::default()
         })
         .await?;
     let result = async {
