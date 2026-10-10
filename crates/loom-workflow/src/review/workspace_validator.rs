@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use loom_driver::{config::LoomConfig, identifier::SpecLabel};
+use loom_driver::{config::LoomConfig, identifier::SpecLabel, spec::package};
 use loom_gate::{
     CommandResolver, FsCommandResolver, RustWorkspaceTestResolver, TestPathResolver, Tier,
     annotation,
@@ -13,6 +13,7 @@ use super::finding::FindingValidator;
 
 pub struct WorkspaceFindingValidator {
     workspace: PathBuf,
+    packages: Vec<package::Package>,
     annotations: Vec<annotation::Annotation>,
     runner_specs: Vec<RunnerSpec>,
     command_resolver: FsCommandResolver,
@@ -23,12 +24,14 @@ impl WorkspaceFindingValidator {
     #[must_use]
     pub fn new(workspace: &Path) -> Self {
         let workspace = workspace.to_path_buf();
-        let annotations = load_annotations(&workspace);
+        let packages = load_packages(&workspace);
+        let annotations = load_annotations(&workspace, &packages);
         let runner_specs = load_runner_specs(&workspace);
         let test_resolver = load_test_resolver(&workspace);
         let command_resolver = FsCommandResolver::new(&workspace);
         Self {
             workspace,
+            packages,
             annotations,
             runner_specs,
             command_resolver,
@@ -36,8 +39,10 @@ impl WorkspaceFindingValidator {
         }
     }
 
-    fn spec_path(&self, label: &SpecLabel) -> PathBuf {
-        self.workspace.join("specs").join(format!("{label}.md"))
+    fn package(&self, label: &SpecLabel) -> Option<&package::Package> {
+        self.packages
+            .iter()
+            .find(|package| package.label() == label)
     }
 
     fn selector_path(target: &str) -> &str {
@@ -102,12 +107,10 @@ impl WorkspaceFindingValidator {
         path_exists_from(&base, target)
     }
 
-    fn criterion_anchor_matches(spec: &SpecLabel, anchor: &str, body: &str) -> bool {
+    fn criterion_anchor_matches(spec: &SpecLabel, anchor: &str, source: &Path, body: &str) -> bool {
         let normalized_anchor = markdown_slug(anchor);
-        body.lines()
-            .filter_map(markdown_heading_anchor)
-            .any(|candidate| anchor_matches(&candidate, anchor, &normalized_anchor))
-            || criterion_aliases(spec, body)
+        heading_anchor_matches(body, anchor)
+            || criterion_aliases(spec, source, body)
                 .iter()
                 .any(|candidate| anchor_matches(candidate, anchor, &normalized_anchor))
     }
@@ -115,14 +118,20 @@ impl WorkspaceFindingValidator {
 
 impl FindingValidator for WorkspaceFindingValidator {
     fn spec_label_is_known(&self, label: &SpecLabel) -> bool {
-        self.spec_path(label).is_file()
+        self.package(label).is_some()
     }
 
     fn criterion_anchor_resolves(&self, spec: &SpecLabel, anchor: &str) -> bool {
-        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
+        let Some(package) = self.package(spec) else {
             return false;
         };
-        Self::criterion_anchor_matches(spec, anchor, &body)
+        let Some(body) = read_document(package.acceptance()) else {
+            return false;
+        };
+        Self::criterion_anchor_matches(spec, anchor, package.acceptance(), &body)
+            || (package.contract() != package.acceptance()
+                && read_document(package.contract())
+                    .is_some_and(|body| heading_anchor_matches(&body, anchor)))
     }
 
     fn annotation_resolves(&self, target_string: &str) -> bool {
@@ -147,7 +156,10 @@ impl FindingValidator for WorkspaceFindingValidator {
     }
 
     fn invariant_resolves(&self, spec: &SpecLabel, section: &str, tag: &str) -> bool {
-        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
+        let Some(package) = self.package(spec) else {
+            return false;
+        };
+        let Some(body) = read_document(package.contract()) else {
             return false;
         };
         let section_anchor = markdown_slug(section);
@@ -160,13 +172,35 @@ impl FindingValidator for WorkspaceFindingValidator {
     }
 }
 
-fn load_annotations(workspace: &Path) -> Vec<annotation::Annotation> {
-    let specs_dir = workspace.join("specs");
-    match annotation::parse(&specs_dir) {
+fn load_packages(workspace: &Path) -> Vec<package::Package> {
+    match package::discover_workspace(workspace) {
+        Ok(packages) => packages,
+        Err(err) => {
+            warn!(workspace = %workspace.display(), error = ?err, "failed to discover spec packages for finding validation");
+            Vec::new()
+        }
+    }
+}
+
+fn load_annotations(
+    workspace: &Path,
+    packages: &[package::Package],
+) -> Vec<annotation::Annotation> {
+    match annotation::parse_packages(packages) {
         Ok(parsed) => parsed.annotations,
         Err(err) => {
-            warn!(path = %specs_dir.display(), error = ?err, "failed to parse spec annotations for finding validation");
+            warn!(workspace = %workspace.display(), error = ?err, "failed to parse spec annotations for finding validation");
             Vec::new()
+        }
+    }
+}
+
+fn read_document(path: &Path) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(body) => Some(body),
+        Err(err) => {
+            warn!(path = %path.display(), error = ?err, "failed to read spec document for finding validation");
+            None
         }
     }
 }
@@ -212,8 +246,8 @@ fn path_exists_from(base: &Path, target: &str) -> bool {
     }
 }
 
-fn criterion_aliases(spec: &SpecLabel, body: &str) -> Vec<String> {
-    let parsed = annotation::parse_content(&PathBuf::from(format!("specs/{spec}.md")), body);
+fn criterion_aliases(spec: &SpecLabel, source: &Path, body: &str) -> Vec<String> {
+    let parsed = annotation::parse_content(source, body);
     let mut aliases = Vec::new();
     for criterion in &parsed.criteria {
         aliases.push(annotation::criterion_id_for(spec, &criterion.text));
@@ -250,6 +284,13 @@ fn target_tail(target: &str) -> Option<&str> {
 
 fn anchor_matches(candidate: &str, anchor: &str, normalized_anchor: &str) -> bool {
     candidate == anchor || markdown_slug(candidate) == normalized_anchor
+}
+
+fn heading_anchor_matches(body: &str, anchor: &str) -> bool {
+    let normalized_anchor = markdown_slug(anchor);
+    body.lines()
+        .filter_map(markdown_heading_anchor)
+        .any(|candidate| anchor_matches(&candidate, anchor, &normalized_anchor))
 }
 
 fn markdown_heading_anchor(line: &str) -> Option<String> {
@@ -297,6 +338,8 @@ mod tests {
     use loom_gate::{DispatchOptions, TierCwds, run_check, run_system};
 
     use super::*;
+
+    mod package;
 
     #[test]
     fn criterion_aliases_include_attached_verifier_function_names() {

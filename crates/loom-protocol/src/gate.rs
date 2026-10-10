@@ -720,12 +720,12 @@ pub const LOOM_FINDING_PREFIX: &str = "LOOM_FINDING:";
 
 /// Resolver for finding validation that requires workspace state.
 pub trait FindingValidator {
-    /// Layer 3 — every element of `bonds` MUST be a known workspace
-    /// spec label (the basename of a file under `specs/` minus `.md`).
+    /// Layer 3 — every element of `bonds` MUST be a known workspace spec label
+    /// in the current owner inventory.
     fn spec_label_is_known(&self, label: &SpecLabel) -> bool;
 
-    /// Layer 5 — `Criterion { spec, anchor }` resolves when the spec
-    /// file contains the named anchor.
+    /// Layer 5 — `Criterion { spec, anchor }` resolves when the owner's current
+    /// contract or acceptance document contains the named anchor.
     fn criterion_anchor_resolves(&self, spec: &SpecLabel, anchor: &str) -> bool;
 
     /// Layer 5 — `Annotation { target_string }` resolves when the
@@ -744,8 +744,8 @@ pub trait FindingValidator {
     /// disk (relative to repo root).
     fn file_exists(&self, path: &str) -> bool;
 
-    /// Layer 5 — `Invariant { spec, section, tag }` resolves when the
-    /// spec file declares an invariant matching `(section, tag)`.
+    /// Layer 5 — `Invariant { spec, section, tag }` resolves when the owner's
+    /// current contract declares an invariant matching `(section, tag)`.
     fn invariant_resolves(&self, spec: &SpecLabel, section: &str, tag: &str) -> bool;
 }
 
