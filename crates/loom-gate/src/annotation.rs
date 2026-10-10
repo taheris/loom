@@ -412,6 +412,21 @@ const fn find_balanced_close(bytes: &[u8], lparen: usize) -> Option<usize> {
     None
 }
 
+fn html_comment_ranges(content: &str, range: Range<usize>) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut cursor = range.start;
+    while let Some(start) = content[cursor..range.end].find("<!--") {
+        let start = cursor + start;
+        let body_start = start + "<!--".len();
+        let end = content[body_start..range.end]
+            .find("-->")
+            .map_or(range.end, |end| body_start + end + "-->".len());
+        ranges.push(start..end);
+        cursor = end;
+    }
+    ranges
+}
+
 /// Structural metadata derived from one pulldown-cmark pass.
 struct StructuralPass {
     code_ranges: Vec<Range<usize>>,
@@ -462,13 +477,10 @@ impl StructuralPass {
                 Event::Start(Tag::CodeBlock(_)) | Event::Code(_) => {
                     code_ranges.push(range);
                 }
-                Event::Start(Tag::HtmlBlock)
+                Event::Start(Tag::HtmlBlock) | Event::InlineHtml(_)
                     if content[range.clone()].trim_start().starts_with("<!--") =>
                 {
-                    comment_ranges.push(range);
-                }
-                Event::InlineHtml(ref text) if text.trim_start().starts_with("<!--") => {
-                    comment_ranges.push(range);
+                    comment_ranges.extend(html_comment_ranges(content, range));
                 }
                 Event::Start(Tag::Paragraph) => paragraph_ranges.push(range),
                 Event::Start(Tag::Item) => {

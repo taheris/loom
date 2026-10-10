@@ -189,6 +189,35 @@ fn within_label_package_move_preserves_task_identity_and_binding() {
 }
 
 #[test]
+fn block_comment_continuations_preserve_task_references() {
+    let root = tempfile::tempdir().unwrap();
+    package(
+        root.path(),
+        "alpha",
+        "- Exact requirement [system?](bash -c 'printf \"(bytes)\\n\"')",
+    );
+    indexed(root.path(), &["alpha"], true);
+    let references = assigned("alpha", "Exact requirement");
+    let before = load(root.path()).unwrap().resolve(&references).unwrap();
+
+    package(
+        root.path(),
+        "alpha",
+        "- Exact\n  <!-- format --> requirement\n  [system?](bash -c 'printf \"(bytes)\\n\"')",
+    );
+    let after = load(root.path()).unwrap().resolve(&references).unwrap();
+    assert_eq!(after.obligations()[0].criterion_text(), "Exact requirement");
+    assert_eq!(
+        before.obligations()[0].reference(),
+        after.obligations()[0].reference()
+    );
+    assert_eq!(
+        before.obligations()[0].annotation(),
+        after.obligations()[0].annotation()
+    );
+}
+
+#[test]
 fn verifier_only_edits_use_current_binding_without_changing_identity() {
     let root = tempfile::tempdir().unwrap();
     package(

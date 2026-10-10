@@ -25,14 +25,20 @@ fn criterion_text_stops_at_markdown_item_boundaries() {
 fn formatting_comments_do_not_change_criterion_identity() {
     let plain =
         "## Success Criteria\n\n- First claim [test](first)\n\n- Second claim [test](second)\n";
-    let formatted = "## Success Criteria\n\n<!-- prettier-ignore -->\n- First <!-- a presentation comment --> claim [test](first)\n\n<!-- prettier-ignore -->\n- Second claim [test](second)\n\n<!-- trailing comment -->\n";
+    let formatted = [
+        "## Success Criteria\n\n<!-- prettier-ignore -->\n- First <!-- a presentation comment --> claim [test](first)\n\n<!-- prettier-ignore -->\n- Second claim [test](second)\n\n<!-- trailing comment -->\n",
+        "## Success Criteria\n\n- First\n  <!-- format --> claim\n  [test](first)\n\n- Second\n  <!-- format --> claim [test](second)\n",
+        "## Success Criteria\n\n- First\n  <!-- multiline\n  presentation comment --> claim\n  [test](first)\n\n- Second\n  <!-- format --> <!-- another comment --> claim [test](second)\n",
+    ];
     let label = SpecLabel::new("example").expect("valid label");
     let before = texts(plain);
-    let after = texts(formatted);
     assert_eq!(before, ["First claim", "Second claim"]);
-    assert_eq!(after, before);
-    for (a, b) in before.iter().zip(&after) {
-        assert_eq!(criterion_id_for(&label, a), criterion_id_for(&label, b));
+    for body in formatted {
+        let after = texts(body);
+        assert_eq!(after, before);
+        for (a, b) in before.iter().zip(&after) {
+            assert_eq!(criterion_id_for(&label, a), criterion_id_for(&label, b));
+        }
     }
 }
 
@@ -87,6 +93,33 @@ fn commented_out_annotations_are_not_bindings() {
     assert_eq!(parsed.annotations.len(), 1);
     assert_eq!(parsed.annotations[0].target, "real");
     assert_eq!(texts(body), ["Real claim"]);
+}
+
+#[test]
+fn bindings_after_block_comments_remain_attached_to_the_criterion() {
+    let body = "## Success Criteria\n\n- Exact\n  <!-- [test](hidden)\n  --> requirement <!-- [judge](also_hidden) --> qualifier [system?](bash -c 'printf \"(bytes)\\n\"')\n";
+    let parsed = parse_content(Path::new("specs/example.md"), body);
+    assert_eq!(parsed.annotations.len(), 1);
+    let annotation = &parsed.annotations[0];
+    assert_eq!(annotation.tier, loom_gate::annotation::Tier::System);
+    assert_eq!(annotation.target, "bash -c 'printf \"(bytes)\\n\"'");
+    assert!(annotation.pending);
+    assert_eq!(annotation.line, 5);
+    assert_eq!(annotation.criterion_line, 3);
+    assert_eq!(texts(body), ["Exact requirement qualifier"]);
+    assert_eq!(
+        criterion_text_for_line(body, 3),
+        "Exact requirement qualifier"
+    );
+}
+
+#[test]
+fn unterminated_block_comments_hide_bindings_to_the_end_of_the_block() {
+    let body =
+        "## Success Criteria\n\n- Exact requirement\n  <!-- unterminated\n  [test](hidden)\n";
+    let parsed = parse_content(Path::new("specs/example.md"), body);
+    assert_eq!(parsed.annotations.len(), 0);
+    assert_eq!(texts(body), ["Exact requirement"]);
 }
 
 #[test]
