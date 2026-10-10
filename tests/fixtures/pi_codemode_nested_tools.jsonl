@@ -1,0 +1,10 @@
+{"type":"tool_execution_start","toolCallId":"call_script|fc_script","toolName":"codemode","args":{"code":"await Promise.all([tools.read({path: 'docs/README.md'}), tools.bash({command: 'pwd'})]);"}}
+{"type":"tool_execution_start","toolCallId":"call_script|fc_script/1","toolName":"read","args":{"path":"docs/README.md"},"parentToolCallId":"call_script|fc_script"}
+{"type":"tool_execution_start","toolCallId":"call_script|fc_script/2","toolName":"bash","args":{"command":"pwd"},"parentToolCallId":"call_script|fc_script"}
+{"type":"tool_execution_update","toolCallId":"call_script|fc_script/2","toolName":"bash","args":{"command":"pwd"},"partialResult":{"content":[{"type":"text","text":"/workspace"}]},"parentToolCallId":"call_script|fc_script"}
+{"type":"tool_execution_end","toolCallId":"call_script|fc_script/2","toolName":"bash","result":{"content":[{"type":"text","text":"/workspace\n"}]},"isError":false,"durationMs":3,"parentToolCallId":"call_script|fc_script"}
+{"type":"tool_execution_end","toolCallId":"call_script|fc_script/1","toolName":"read","result":{"content":[{"type":"text","text":"# Loom Docs\n"}]},"isError":false,"durationMs":5,"parentToolCallId":"call_script|fc_script"}
+{"type":"tool_execution_end","toolCallId":"call_script|fc_script","toolName":"codemode","result":{"content":[{"type":"text","text":"Script completed"}]},"isError":false,"durationMs":7}
+{"type":"tool_execution_start","toolCallId":"call_sibling","toolName":"bash","args":{"command":"git status --short"}}
+{"type":"tool_execution_end","toolCallId":"call_sibling","toolName":"bash","result":{"content":[{"type":"text","text":"clean"}]},"isError":false,"durationMs":2}
+{"type":"agent_end","messages":[]}

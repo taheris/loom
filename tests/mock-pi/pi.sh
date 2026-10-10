@@ -246,6 +246,15 @@ run_tune_review() {
     emit_agent_end
 }
 
+run_codemode_nested_tools() {
+    handle_probe 0
+    local prompt_line line
+    IFS= read -r prompt_line
+    while IFS= read -r line; do
+        emit "$line"
+    done < "$(dirname "${BASH_SOURCE[0]}")/../fixtures/pi_codemode_nested_tools.jsonl"
+}
+
 run_echo_prompt() {
     handle_probe 0
     local prompt_line message
@@ -358,6 +367,9 @@ case "$MODE" in
         ;;
     echo-prompt)
         run_echo_prompt
+        ;;
+    codemode-nested-tools)
+        run_codemode_nested_tools
         ;;
     steering)
         run_steering

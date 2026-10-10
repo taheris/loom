@@ -32,19 +32,19 @@ impl fmt::Display for ToolCallId {
 impl FromStr for ToolCallId {
     type Err = ParseToolCallIdError;
 
-    /// Parse a tool-call id: non-empty ASCII alphanumerics plus `_`, `-`,
-    /// and `|`. `|` is accepted for current Pi/OpenAI composite tool-call ids
-    /// (`call_...|fc_...`). Whitespace, dots, slashes, and shell punctuation
-    /// remain rejected to catch garbled subprocess output at the boundary.
+    /// Parse a non-empty ASCII alphanumeric id with `_`, `-`, and `|`,
+    /// optionally followed by slash-separated numeric child ids.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
+        let root = s.split_once('/').map_or(s, |(root, _)| root);
+        if root.is_empty()
+            || !root
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'|'))
+            || s.split('/')
+                .skip(1)
+                .any(|child| child.is_empty() || !child.bytes().all(|b| b.is_ascii_digit()))
+        {
             return Err(ParseToolCallIdError(s.to_owned()));
-        }
-        for &b in s.as_bytes() {
-            let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'|';
-            if !ok {
-                return Err(ParseToolCallIdError(s.to_owned()));
-            }
         }
         Ok(Self(s.to_owned()))
     }
@@ -58,7 +58,7 @@ impl<'de> Deserialize<'de> for ToolCallId {
 }
 
 #[derive(Debug, displaydoc::Display, Error, PartialEq, Eq)]
-/// invalid tool call id `{0}`: expected ASCII alphanumerics with `_`/`-`/`|`
+/// invalid tool call id `{0}`: expected ASCII alphanumerics with `_`/`-`/`|` and optional `/number` child segments
 pub struct ParseToolCallIdError(pub String);
 
 #[cfg(test)]
@@ -107,6 +107,21 @@ mod tests {
     }
 
     #[test]
+    fn nested_tool_ids_round_trip_without_losing_numeric_segments() {
+        for input in [
+            "call_script/1",
+            "call_script|fc_script/2",
+            "call_script|fc_script/12/3",
+        ] {
+            let id = ToolCallId::new(input).expect("Pi nested tool id");
+            assert_eq!(id.as_str(), input);
+            let encoded = serde_json::to_string(&id).expect("serialize");
+            let decoded: ToolCallId = serde_json::from_str(&encoded).expect("deserialize");
+            assert_eq!(decoded, id);
+        }
+    }
+
+    #[test]
     fn parse_rejects_malformed_inputs() {
         let cases = [
             "",
@@ -114,6 +129,14 @@ mod tests {
             "tool\tcall",
             "tool.call",
             "tool/call",
+            "/1",
+            "tool/",
+            "tool//1",
+            "tool/1/",
+            "tool/1/call",
+            "tool/-1",
+            "tool/1.5",
+            "tool/１",
             "tool\"call",
             "tool;call",
         ];

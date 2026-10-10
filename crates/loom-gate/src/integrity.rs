@@ -417,6 +417,7 @@ pub struct DispatchPendingExecutor<'a> {
     options: DispatchOptions,
     repo_root: PathBuf,
     tier_cwds: TierCwds,
+    readiness_tiers: Vec<Tier>,
 }
 
 impl<'a> DispatchPendingExecutor<'a> {
@@ -433,12 +434,23 @@ impl<'a> DispatchPendingExecutor<'a> {
             options,
             repo_root: repo_root.into(),
             tier_cwds,
+            readiness_tiers: vec![Tier::Check, Tier::System],
         }
+    }
+
+    /// Limit executable readiness probes to the requested verification lanes.
+    #[must_use]
+    pub fn with_readiness_tiers(mut self, tiers: &[Tier]) -> Self {
+        self.readiness_tiers = tiers.to_vec();
+        self
     }
 }
 
 impl PendingCommandExecutor for DispatchPendingExecutor<'_> {
     fn executes_zero(&self, annotation: &Annotation) -> bool {
+        if !self.readiness_tiers.contains(&annotation.tier) {
+            return false;
+        }
         let mut ann = annotation.clone();
         ann.pending = false;
         let results = run_with_runners(

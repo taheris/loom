@@ -1533,9 +1533,10 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
         return Ok(());
     }
     let mut combined = run_project_hook_lane(workspace, args)?;
-    for tier in verify_tiers_for_args(workspace, args)? {
+    let tiers = verify_tiers_for_args(workspace, args)?;
+    for &tier in &tiers {
         eprintln!("--- loom gate verify [{tier}] ---");
-        match dispatch_tier(workspace, args, tier) {
+        match dispatch_tier_with_readiness_tiers(workspace, args, tier, &tiers) {
             Ok(0) => {}
             Ok(code) => combined = combine_verifier_codes(combined, code),
             Err(err) => {
@@ -1733,11 +1734,20 @@ fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Result<i32> {
+    dispatch_tier_with_readiness_tiers(workspace, args, tier, &[tier])
+}
+
 #[expect(
     clippy::print_stderr,
     reason = "gate dispatch diagnostics are part of the CLI stderr contract"
 )]
-fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Result<i32> {
+fn dispatch_tier_with_readiness_tiers(
+    workspace: &Path,
+    args: &GateScope,
+    tier: Tier,
+    readiness_tiers: &[Tier],
+) -> anyhow::Result<i32> {
     let specs_dir = workspace.join("specs");
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
     let mut candidates = filter_annotations(&parsed.annotations, tier);
@@ -1765,7 +1775,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Resu
     if tier == Tier::Check && args.target().is_none() {
         combined = combine_verifier_codes(
             combined,
-            run_integrity_gate(workspace, args, &mut input_resolver)?,
+            run_integrity_gate(workspace, args, &mut input_resolver, readiness_tiers)?,
         );
     }
     if selected.is_empty() {
@@ -1884,6 +1894,7 @@ fn run_integrity_gate(
     workspace: &Path,
     args: &GateScope,
     input_resolver: &mut InputResolver,
+    readiness_tiers: &[Tier],
 ) -> anyhow::Result<i32> {
     use std::io::Write;
 
@@ -1919,7 +1930,8 @@ fn run_integrity_gate(
         files: args.files().unwrap_or_default().to_vec(),
         spec: None,
     };
-    let pending_executor = DispatchPendingExecutor::new(&specs, options, workspace, tier_cwds);
+    let pending_executor = DispatchPendingExecutor::new(&specs, options, workspace, tier_cwds)
+        .with_readiness_tiers(readiness_tiers);
     let findings = loom_gate::integrity::check_with_input_resolver(
         &annotations,
         &specs,
@@ -5989,7 +6001,8 @@ mod tests {
         let args = changed_scope(tmp.path());
         let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
         let mut inputs = build_input_resolver(tmp.path(), &specs);
-        let code = run_integrity_gate(tmp.path(), &args, &mut inputs).expect("integrity gate runs");
+        let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
+            .expect("integrity gate runs");
         assert_eq!(code, 1);
     }
 
@@ -6081,7 +6094,8 @@ mod tests {
         );
         let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
         let mut inputs = build_input_resolver(tmp.path(), &specs);
-        let code = run_integrity_gate(tmp.path(), &args, &mut inputs).expect("integrity gate runs");
+        let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
+            .expect("integrity gate runs");
         assert_eq!(
             code, 1,
             "the resolved pending marker must still fire even when --files excludes its spec",
@@ -6157,7 +6171,8 @@ mod tests {
         );
         let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
         let mut inputs = build_input_resolver(tmp.path(), &specs);
-        let code = run_integrity_gate(tmp.path(), &args, &mut inputs).expect("integrity gate runs");
+        let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
+            .expect("integrity gate runs");
         assert_eq!(code, 0);
     }
 

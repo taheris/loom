@@ -368,11 +368,9 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
             tool_call_id,
             tool_name,
             args,
+            parent_tool_call_id,
         } => {
-            // Snapshot the current parent BEFORE pushing — a `Task`
-            // tool_call is a child of whatever Task (if any) was open at
-            // the time of its emission, not its own child.
-            let parent = parser.current_parent()?;
+            let parent = parent_tool_call_id.or(parser.current_parent()?);
             let event = ParsedAgentEvent::ToolCall {
                 id: tool_call_id.clone(),
                 tool: tool_name.clone(),
@@ -644,6 +642,48 @@ mod tests {
                 );
             }
             other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_tool_parent_takes_precedence_over_task_stack() {
+        let parser = PiParser::new();
+        parser
+            .parse_line(r#"{"type":"tool_execution_start","toolCallId":"tc-task","toolName":"Task","args":{}}"#)
+            .expect("Task starts");
+        parser
+            .parse_line(r#"{"type":"tool_execution_start","toolCallId":"tc-script","toolName":"codemode","args":{},"parentToolCallId":"tc-task"}"#)
+            .expect("codemode starts");
+        let parsed = parser
+            .parse_line(r#"{"type":"tool_execution_start","toolCallId":"tc-read","toolName":"read","args":{},"parentToolCallId":"tc-script"}"#)
+            .expect("nested read starts");
+        assert!(matches!(
+            &parsed.events[..],
+            [ParsedAgentEvent::ToolCall { parent_tool_call_id: Some(parent), .. }]
+                if parent.as_str() == "tc-script"
+        ));
+        assert!(parsed.response.is_none());
+    }
+
+    #[test]
+    fn tool_execution_start_rejects_malformed_explicit_parent_id() {
+        for parent in [
+            "bad parent",
+            "call_script/",
+            "call_script//1",
+            "call_script/child",
+        ] {
+            let line = serde_json::json!({
+                "type": "tool_execution_start",
+                "toolCallId": "tc-read",
+                "toolName": "read",
+                "args": {},
+                "parentToolCallId": parent,
+            })
+            .to_string();
+            let error = parse_err(&line);
+            assert!(matches!(error, ProtocolError::InvalidJson { .. }));
+            assert_eq!(error.protocol_line(), Some(line.as_str()));
         }
     }
 

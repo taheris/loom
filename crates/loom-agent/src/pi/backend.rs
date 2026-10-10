@@ -884,6 +884,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codemode_nested_tool_lifecycle_reaches_session_complete() {
+        let session = spawn_with_handshake(
+            mock_command("codemode-nested-tools"),
+            None,
+            None,
+            TEST_HANDSHAKE_BUDGET,
+            &SystemClock::new(),
+        )
+        .await
+        .expect("spawn");
+        let mut session = session
+            .prompt("read docs and print cwd")
+            .await
+            .expect("prompt");
+        let events = SystemClock::new()
+            .timeout(TEST_HANDSHAKE_BUDGET, async {
+                let mut events = Vec::new();
+                loop {
+                    let event = session
+                        .next_event()
+                        .await
+                        .expect("valid codemode RPC event")
+                        .expect("completion before EOF");
+                    let complete = matches!(event, ParsedAgentEvent::SessionComplete { .. });
+                    events.push(event);
+                    if complete {
+                        return events;
+                    }
+                }
+            })
+            .await
+            .expect("codemode completes without stalling");
+        let id = |value: &str| loom_events::identifier::ToolCallId::new(value).expect("fixture id");
+        assert_eq!(
+            events,
+            vec![
+                ParsedAgentEvent::ToolCall {
+                    id: id("call_script|fc_script"),
+                    tool: "codemode".into(),
+                    params: serde_json::json!({
+                        "code": "await Promise.all([tools.read({path: 'docs/README.md'}), tools.bash({command: 'pwd'})]);"
+                    }),
+                    parent_tool_call_id: None,
+                },
+                ParsedAgentEvent::ToolCall {
+                    id: id("call_script|fc_script/1"),
+                    tool: "read".into(),
+                    params: serde_json::json!({"path": "docs/README.md"}),
+                    parent_tool_call_id: Some(id("call_script|fc_script")),
+                },
+                ParsedAgentEvent::ToolCall {
+                    id: id("call_script|fc_script/2"),
+                    tool: "bash".into(),
+                    params: serde_json::json!({"command": "pwd"}),
+                    parent_tool_call_id: Some(id("call_script|fc_script")),
+                },
+                ParsedAgentEvent::ToolProgress {
+                    id: id("call_script|fc_script/2"),
+                    text: "/workspace".into(),
+                },
+                ParsedAgentEvent::ToolResult {
+                    id: id("call_script|fc_script/2"),
+                    output: "/workspace\n".into(),
+                    is_error: false,
+                },
+                ParsedAgentEvent::ToolResult {
+                    id: id("call_script|fc_script/1"),
+                    output: "# Loom Docs\n".into(),
+                    is_error: false,
+                },
+                ParsedAgentEvent::ToolResult {
+                    id: id("call_script|fc_script"),
+                    output: "Script completed".into(),
+                    is_error: false,
+                },
+                ParsedAgentEvent::ToolCall {
+                    id: id("call_sibling"),
+                    tool: "bash".into(),
+                    params: serde_json::json!({"command": "git status --short"}),
+                    parent_tool_call_id: None,
+                },
+                ParsedAgentEvent::ToolResult {
+                    id: id("call_sibling"),
+                    output: "clean".into(),
+                    is_error: false,
+                },
+                ParsedAgentEvent::SessionComplete {
+                    exit_code: 0,
+                    cost_usd: None,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn startup_rejects_non_json_before_valid_reply() {
         assert_startup_rejects_line(
             "\u{1b}[33m WARN focus target omitted the window identifier",

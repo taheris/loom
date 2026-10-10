@@ -82,6 +82,8 @@ pub enum PiEvent {
         tool_name: String,
         #[serde(default)]
         args: serde_json::Value,
+        #[serde(default, rename = "parentToolCallId")]
+        parent_tool_call_id: Option<ToolCallId>,
     },
 
     /// Pi finished executing a tool call.
@@ -378,10 +380,12 @@ mod tests {
                 tool_call_id,
                 tool_name,
                 args,
+                parent_tool_call_id,
             } => {
                 assert_eq!(tool_call_id.as_str(), "tc-9");
                 assert_eq!(tool_name, "Read");
                 assert_eq!(args["path"], "/x");
+                assert!(parent_tool_call_id.is_none());
             }
             other => panic!("expected ToolExecutionStart, got {other:?}"),
         }
