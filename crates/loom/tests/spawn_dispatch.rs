@@ -37,6 +37,19 @@ fn git_command() -> Command {
     command
 }
 
+/// Gives host-key fixtures an unsigned Git policy without ambient launcher credentials.
+fn configure_host_key_fixture(command: &mut Command, home: &Path) {
+    loom_test_support::scrub_git_local_env(command);
+    loom_test_support::configure_hermetic_git(command);
+    command
+        .env("HOME", home)
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env_remove("WRIX_DEPLOY_KEY")
+        .env_remove("WRIX_SIGNING_KEY")
+        .env_remove("GIT_SSH")
+        .env_remove("GIT_SSH_COMMAND");
+}
+
 /// Bounds startup separately from execution when an owned launcher receipt is supplied.
 fn bounded_output(
     command: &mut Command,
@@ -1460,6 +1473,62 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
 }
 
 #[test]
+fn host_key_fixture_isolates_git_and_launcher_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+    let home = workspace.join("home");
+    std::fs::create_dir(&home).unwrap();
+    let config = home.join(".gitconfig");
+    let hostile_config = "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = missing-fixture-gpg\n";
+    std::fs::write(&config, hostile_config).unwrap();
+    let integration = workspace.join(".loom/integration");
+    let policy = loom_driver::git::RepoGitPolicy::resolve(
+        &integration,
+        PathBuf::from("unused-wrix"),
+        loom_driver::git::KeyMode::Host,
+    )
+    .unwrap();
+    policy.apply(&integration).unwrap();
+
+    let mut command = Command::new(find_bash());
+    command
+        .current_dir(&integration)
+        .args([
+            "-c",
+            r#"set -euo pipefail
+[[ "$HOME" == "$1" ]]
+[[ "${WRIX_DEPLOY_KEY+x}" != x && "${WRIX_SIGNING_KEY+x}" != x ]]
+[[ "${GIT_SSH+x}" != x && "${GIT_SSH_COMMAND+x}" != x ]]
+[[ "$(git config --get commit.gpgsign)" == false ]]
+git commit --allow-empty -q -m 'fixture commit'
+git cat-file commit HEAD
+"#,
+            "host-key-fixture",
+        ])
+        .arg(&home)
+        .env("HOME", workspace.join("unused-home"))
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env("GIT_CONFIG_SYSTEM", &config)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+        .env("GIT_CONFIG_VALUE_0", "true")
+        .env("GIT_CONFIG_PARAMETERS", "'commit.gpgsign=true'")
+        .env("GIT_DIR", workspace.join("missing-git-dir"))
+        .env("WRIX_DEPLOY_KEY", workspace.join("missing-deploy-key"))
+        .env("WRIX_SIGNING_KEY", workspace.join("missing-signing-key"))
+        .env("GIT_SSH", "missing-fixture-ssh")
+        .env("GIT_SSH_COMMAND", "missing-fixture-ssh");
+    configure_host_key_fixture(&mut command, &home);
+    let output = bounded_output(&mut command, Duration::from_secs(10), None);
+    assert!(output.status.success(), "fixture failed: {output:?}");
+    let commit = String::from_utf8(output.stdout).unwrap();
+    assert!(commit.ends_with("\n\nfixture commit\n"), "{commit}");
+    assert!(!commit.lines().any(|line| line.starts_with("gpgsig ")));
+    assert_eq!(std::fs::read_to_string(config).unwrap(), hostile_config);
+}
+
+#[test]
 fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
@@ -1496,7 +1565,9 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
     std::fs::create_dir_all(&child_home).unwrap();
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
-    let output = Command::new(loom_bin)
+    let mut command = Command::new(loom_bin);
+    configure_host_key_fixture(&mut command, &child_home);
+    let output = command
         .arg("--workspace")
         .arg(workspace)
         .arg("--agent")
@@ -1511,9 +1582,7 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
         .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
-        .env("HOME", &child_home)
         .env_remove("LOOM_INSIDE")
-        .env_remove("WRIX_SIGNING_KEY")
         .output()
         .expect("spawn loom");
 
