@@ -1125,6 +1125,8 @@ fn summarize_event(event: &AgentEvent) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod review_output;
+
     use super::*;
     use loom_driver::agent::{JsonlReader, LineParse, ParsedLine, RePinContent};
     use loom_driver::logging::LogSink;

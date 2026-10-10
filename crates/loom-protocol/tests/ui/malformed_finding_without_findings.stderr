@@ -1,0 +1,5 @@
+error[E0063]: missing field `parsed_findings` in initializer of `loom_protocol::gate::BadWalk`
+  --> tests/ui/malformed_finding_without_findings.rs:12:13
+   |
+12 |     let _ = BadWalk::MalformedFinding {
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^ missing `parsed_findings`

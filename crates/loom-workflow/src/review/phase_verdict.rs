@@ -10,6 +10,7 @@
 //! plumbing that produces them and the recovery-loop dispatch on the other
 //! side.
 
+use loom_protocol::gate::WalkOutput;
 use loom_templates::finding::Finding;
 use loom_templates::previous_failure::BadWalk;
 
@@ -208,23 +209,36 @@ pub struct GateInputs {
     /// [`RecoveryCause::VerifyFail`] when this is non-empty and threads the
     /// list through so downstream surfaces can format `previous_failure`.
     pub verify_failures: Vec<VerifyFailure>,
-    /// Typed `LOOM_FINDING:` records the review walk streamed before
-    /// the terminator. Drives the *Streaming + terminator pairing rule*
-    /// in `specs/gate.md`: `LOOM_COMPLETE` with `≥1` findings routes to
-    /// [`BadWalk::FindingsWithoutConcern`] carrying these findings;
-    /// `LOOM_CONCERN` with `0` findings routes to
-    /// [`BadWalk::ConcernWithoutFindings`]; `LOOM_CONCERN` with `≥1`
-    /// well-formed findings threads them into
-    /// [`RecoveryCause::ReviewConcern`]. Non-review phases
-    /// (`loom loop`) have no findings stream and pass an empty vec.
-    pub streamed_findings: Vec<Finding>,
+    /// Complete sealed Review decode/resolution context; absent for non-review phases.
+    pub review_walk: Option<WalkOutput>,
 }
 
 /// Apply the spec's decision table to the parsed marker plus mechanical
 /// signals.
 ///
 /// `None` means no admitted terminal proposal is available.
-pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
+pub fn decide(marker: Option<&ExitSignal>, mut inputs: GateInputs) -> PhaseVerdict {
+    if let Some(walk) = inputs.review_walk.take() {
+        if let Some(badwalk) = walk.bad_walk() {
+            return PhaseVerdict::Recovery {
+                cause: RecoveryCause::BadWalk(badwalk),
+            };
+        }
+        if let Some(ExitSignal::Concern(payload)) =
+            walk.context().terminal().map(|located| &located.message)
+        {
+            return PhaseVerdict::Recovery {
+                cause: RecoveryCause::ReviewConcern {
+                    summary: payload.summary.to_string(),
+                    findings: walk.findings().to_vec(),
+                },
+            };
+        }
+        return decide(
+            walk.context().terminal().map(|located| &located.message),
+            inputs,
+        );
+    }
     match marker {
         None => PhaseVerdict::Recovery {
             cause: RecoveryCause::SwallowedMarker,
@@ -232,18 +246,7 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
         Some(ExitSignal::Blocked(payload)) => PhaseVerdict::Blocked {
             reason: payload.reason.to_string(),
         },
-        Some(ExitSignal::Complete) => {
-            if !inputs.streamed_findings.is_empty() {
-                let findings = inputs.streamed_findings;
-                return PhaseVerdict::Recovery {
-                    cause: RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern {
-                        finding_count: findings.len(),
-                        findings,
-                    }),
-                };
-            }
-            decide_progress_marker(false, inputs)
-        }
+        Some(ExitSignal::Complete) => decide_progress_marker(false, inputs),
         Some(ExitSignal::Noop) => decide_progress_marker(true, inputs),
         Some(ExitSignal::Waiting) => PhaseVerdict::Waiting,
         Some(ExitSignal::Retry(payload)) => PhaseVerdict::Recovery {
@@ -251,7 +254,6 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
                 reason: payload.reason.to_string(),
             },
         },
-        Some(ExitSignal::Concern(payload)) => decide_concern(payload.summary.as_str(), inputs),
         Some(message) => PhaseVerdict::Recovery {
             cause: RecoveryCause::WrongPhaseMarker {
                 marker_name: message.marker(),
@@ -320,23 +322,6 @@ fn reject_marker_for_phase(marker: Option<&ExitSignal>, phase: PhaseKind) -> Opt
             phase_kind: phase.label(),
         },
     })
-}
-
-/// Pair admitted concerns with resolved findings; summaries never identify tokens.
-fn decide_concern(summary: &str, inputs: GateInputs) -> PhaseVerdict {
-    if inputs.streamed_findings.is_empty() {
-        return PhaseVerdict::Recovery {
-            cause: RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings {
-                summary: summary.to_string(),
-            }),
-        };
-    }
-    PhaseVerdict::Recovery {
-        cause: RecoveryCause::ReviewConcern {
-            summary: summary.to_string(),
-            findings: inputs.streamed_findings,
-        },
-    }
 }
 
 /// Branch shared by `LOOM_COMPLETE` and `LOOM_NOOP`: both require the bead
@@ -450,13 +435,33 @@ mod tests {
         .expect("valid fixture finding")
     }
 
-    // --- Marker-only rows (bd/diff/review irrelevant). ---
+    fn review_walk(marker: &ExitSignal, findings: &[Finding]) -> WalkOutput {
+        use std::fmt::Write as _;
+        let mut output = String::new();
+        for finding in findings {
+            writeln!(
+                output,
+                "LOOM_FINDING: {}",
+                serde_json::to_string(finding).unwrap()
+            )
+            .unwrap();
+        }
+        output.push_str(&marker.to_wire().unwrap());
+        WalkOutput::from_stdout(
+            &output,
+            loom_protocol::gate::DispatchScope::Tree,
+            &loom_test_support::finding::FixtureSymbols,
+        )
+    }
 
     #[test]
     fn concern_marker_with_streamed_findings_routes_to_review_concern_recovery() {
         let m = ExitSignal::Concern(summary("verifier-bypass -- one finding"));
         let g = GateInputs {
-            streamed_findings: vec![streamed_finding(ConcernToken::VerifierBypass)],
+            review_walk: Some(review_walk(
+                &m,
+                &[streamed_finding(ConcernToken::VerifierBypass)],
+            )),
             ..inputs(true, false, true)
         };
         match decide(Some(&m), g) {
@@ -482,7 +487,10 @@ mod tests {
     fn decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed() {
         let m = ExitSignal::Concern(summary("fictional-concern not in 12-variant enum"));
         let g = GateInputs {
-            streamed_findings: vec![streamed_finding(ConcernToken::WeakAssertion)],
+            review_walk: Some(review_walk(
+                &m,
+                &[streamed_finding(ConcernToken::WeakAssertion)],
+            )),
             ..inputs(true, false, true)
         };
         match decide(Some(&m), g) {
@@ -503,12 +511,12 @@ mod tests {
     fn concern_without_streamed_findings_routes_to_badwalk_concern_without_findings() {
         let m = ExitSignal::Concern(summary("scope drift around the mint pipeline"));
         let g = GateInputs {
-            streamed_findings: Vec::new(),
+            review_walk: Some(review_walk(&m, &[])),
             ..GateInputs::default()
         };
         match decide(Some(&m), g) {
             PhaseVerdict::Recovery {
-                cause: RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings { summary }),
+                cause: RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings { summary, .. }),
             } => {
                 assert_eq!(summary, "scope drift around the mint pipeline");
             }
@@ -526,7 +534,7 @@ mod tests {
         let g = GateInputs {
             bd_closed: true,
             diff_empty: false,
-            streamed_findings: streamed.clone(),
+            review_walk: Some(review_walk(&ExitSignal::Complete, &streamed)),
             ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Complete), g) {
@@ -535,6 +543,7 @@ mod tests {
                     RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern {
                         finding_count,
                         findings,
+                        ..
                     }),
             } => {
                 assert_eq!(finding_count, 3);
@@ -673,7 +682,10 @@ mod tests {
         let result = decide(
             Some(&ExitSignal::Complete),
             GateInputs {
-                streamed_findings: vec![streamed_finding(ConcernToken::VerifierBypass)],
+                review_walk: Some(review_walk(
+                    &ExitSignal::Complete,
+                    &[streamed_finding(ConcernToken::VerifierBypass)],
+                )),
                 ..inputs(true, false, true)
             },
         );
@@ -683,6 +695,7 @@ mod tests {
                     RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern {
                         finding_count,
                         findings,
+                        ..
                     }),
             } => {
                 assert_eq!(finding_count, 1);
@@ -1180,7 +1193,7 @@ mod tests {
         let PhaseVerdict::Recovery { cause } = decide_for_phase(
             Some(&marker),
             GateInputs {
-                streamed_findings: findings,
+                review_walk: Some(review_walk(&marker, &findings)),
                 ..GateInputs::default()
             },
             PhaseKind::Review,

@@ -170,13 +170,13 @@ legacy alias registry.
 - Finding evidence preserves escaped multiline content through strict JSON
   decoding and contextual resolution; unescaped string newlines are rejected
   without repairing the emitted bytes.
-  [test?](strict_finding_json_preserves_escaped_evidence_and_rejects_raw_newlines)
+  [test](strict_finding_json_preserves_escaped_evidence_and_rejects_raw_newlines)
 
 - Review consumes Protocol's review-admitted messages; retry/blocked terminals
   carry typed reasons and direct decision records are invalid. Decision-worthy
   review concerns use clarify-route finding evidence, and missing completion
   cannot authorize minting or completed review evidence.
-  [test?](review_message_admission_preserves_inspection_and_requires_terminal)
+  [test](review_message_admission_preserves_inspection_and_requires_terminal)
 
 - `LOOM_CONCERN:` payload parses as JSON `{"summary": "<non-empty string>"}` via
   the same `serde_json` pipeline that consumes `LOOM_FINDING:` records; the
@@ -229,7 +229,7 @@ legacy alias registry.
 - A recognized finding record with malformed strict JSON, an unknown token or
   spec, token/target mismatch, or unresolved target fails with a typed error
   naming its starting line; no malformed record is silently skipped.
-  [test?](shared_finding_decode_and_resolution_fail_with_record_context)
+  [test](shared_finding_decode_and_resolution_fail_with_record_context)
 
 - The driver computes a versioned lower-kebab finding id from each validated
   typed finding; evidence text, options prose, line numbers, batch size, sibling
@@ -425,12 +425,12 @@ legacy alias registry.
 - Mixed finding failures retain every successfully resolved finding alongside
   each raw/typed record error and the independently established terminal,
   including when that terminal is itself malformed or missing.
-  [test?](malformed_finding_recovery_retains_valid_findings_errors_and_terminal)
+  [test](malformed_finding_recovery_retains_valid_findings_errors_and_terminal)
 
 - Fenced, decorated, inline, or payload-contained finding examples cannot
   substitute for live review records; review pairing uses only messages
   recognized by the shared decoder.
-  [test?](review_pairing_does_not_promote_examples_or_payload_marker_text)
+  [test](review_pairing_does_not_promote_examples_or_payload_marker_text)
 
 - `BadWalk::Concern` carries `{ payload, parsed_findings: Vec<Finding> }`;
   well-formed findings streamed ahead of a malformed terminal are preserved in
@@ -445,7 +445,7 @@ legacy alias registry.
 - `BadWalk::MalformedFinding` requires errors, terminal context, and
   `parsed_findings`; the mixed-stream diagnosis cannot be omitted by
   constructing the failure without its context fields.
-  [test?](malformed_finding_failure_requires_parsed_context_fields)
+  [test](malformed_finding_failure_requires_parsed_context_fields)
 
 ### Verification surface (matrix + property)
 
@@ -460,7 +460,7 @@ legacy alias registry.
   finding streams with admitted, wrong-phase, malformed, absent, duplicate, and
   misplaced terminal surfaces. Every cell checks the typed outcome and all
   parseable context through actual classification and recovery rendering.
-  [test?](review_failure_matrix_preserves_all_shared_decoder_context)
+  [test](review_failure_matrix_preserves_all_shared_decoder_context)
 
 - Every constructible `Finding` (each `ConcernToken` × canonical `FindingTarget`
   combination) round-trips byte-equal through `serde_json::to_string` → embed in
@@ -496,7 +496,7 @@ legacy alias registry.
 - Review entry points and re-exports compose the canonical output decoder with
   domain finding resolution; a separate gate/workflow terminal enum or scanner
   cannot bypass the common message contract.
-  [test?](review_domain_entry_points_delegate_to_shared_output_decoder)
+  [test](review_domain_entry_points_delegate_to_shared_output_decoder)
 
 - The `WalkOutput` struct's fields are private; `WalkOutput::from_stdout` is
   `pub` (consumers need to call it) but is the only construction path. The

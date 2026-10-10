@@ -1334,8 +1334,8 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         .filter(|finding| !suppresses_rubric_finding(&config.suppress, finding))
         .cloned()
         .collect::<Vec<_>>();
-    let suppressed_review_concern = walk.decoded().is_ok()
-        && walk.finding_errors().is_empty()
+    let bad_walk = walk.bad_walk();
+    let suppressed_review_concern = bad_walk.is_none()
         && matches!(walk.terminal(), TerminalSurface::Concern { .. })
         && !walk.findings().is_empty()
         && unsuppressed_findings.is_empty();
@@ -1350,12 +1350,9 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
             }
         }
     };
-    let review_concern = match walk.terminal() {
-        TerminalSurface::Concern { summary }
-            if walk.decoded().is_ok()
-                && walk.finding_errors().is_empty()
-                && !unsuppressed_findings.is_empty() =>
-        {
+    let review_concern = match (bad_walk, walk.terminal()) {
+        (Some(bad_walk), _) => Some(PreviousFailure::BadWalk(bad_walk)),
+        (None, TerminalSurface::Concern { summary }) if !unsuppressed_findings.is_empty() => {
             Some(PreviousFailure::ReviewConcern {
                 summary: summary.clone(),
                 findings: unsuppressed_findings.clone(),
@@ -1363,7 +1360,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         }
         _ => None,
     };
-    let mint_summary = if review_concern.is_some() {
+    let mint_summary = if matches!(review_concern, Some(PreviousFailure::ReviewConcern { .. })) {
         let options = crate::mint::MintOptions {
             suppressions: config.suppress.clone(),
             suppress_closed_same_molecule: true,
@@ -4030,6 +4027,91 @@ mod tests {
         let reviewed = handoff.reviewed.as_ref().expect("reviewed scope");
         assert_eq!(verified.tree_oid(), reviewed.tree_oid());
         loom_gate::verify_marker(&gate_workspace).expect("fixture marker for its own tree");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn malformed_review_handoff_preserves_diagnosis_without_minting() {
+        for terminal in [
+            "LOOM_CONCERN: {\"summary\":\"mixed\"}",
+            "LOOM_CONCERN: {\"summary\":\"\"}",
+            "",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = write_manifest(dir.path());
+            let workspace = dir.path().to_path_buf();
+            seed_spec(&workspace, "alpha");
+            let record = r#"LOOM_FINDING: {"token":"mock-discipline","route":"deferred","bonds":["alpha"],"target":{"kind":"TestPath","path":"tests/check.rs"},"evidence":"valid sibling"}"#;
+            let bad_record = record.replace("tests/check.rs", "tests/missing.rs");
+            let text = format!("{record}\n{bad_record}\n{record}\n{terminal}\n");
+            let stub = workspace.join("loom-stub.sh");
+            loom_test_support::write_executable_bash_script(
+                &stub,
+                &format!("set -euo pipefail\nprintf '%s' '{text}'\n"),
+            )
+            .unwrap();
+            let bd = BdClient::with_runner(molecule_lookup_script(
+                dir.path(),
+                "alpha",
+                "lm-mol1",
+                "deadbeef",
+            ));
+            let git = git_workspace(&workspace);
+            let gate_workspace = git.loom_workspace();
+            std::fs::create_dir_all(gate_workspace.join("specs")).unwrap();
+            std::fs::write(gate_workspace.join("specs/alpha.md"), "# Alpha\n").unwrap();
+            std::fs::create_dir_all(gate_workspace.join("tests")).unwrap();
+            std::fs::write(
+                gate_workspace.join("tests/check.rs"),
+                "#[test] fn check() {}\n",
+            )
+            .unwrap();
+            let walk = WalkOutput::from_stdout(
+                &text,
+                DispatchScope::PerBead,
+                &WorkspaceFindingValidator::new(&gate_workspace),
+            );
+            assert_eq!(walk.findings().len(), 2);
+            std::fs::write(
+                gate_workspace.join("loom.toml"),
+                format!(
+                    "[[suppress]]\nid = {:?}\nreason = \"fixture\"\n",
+                    walk.findings()[0].id()
+                ),
+            )
+            .unwrap();
+            let mut controller = ProductionAgentLoopController::new(
+                bd,
+                SpecLabel::new("alpha").unwrap(),
+                stub,
+                workspace,
+                git,
+                manifest,
+                None,
+                ProfileName::new("base").unwrap(),
+                |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                    (
+                        SessionResult::Complete(SessionOutcome {
+                            exit_code: 0,
+                            cost_usd: None,
+                        }),
+                        Some(ExitSignal::Complete),
+                    )
+                },
+            );
+            let handoff = controller.exec_review().await.unwrap();
+            assert!(!handoff.suppressed_review_concern);
+            assert!(handoff.reviewed.is_none());
+            let Some(PreviousFailure::BadWalk(bad_walk)) =
+                controller.stashed_review_concern.as_ref()
+            else {
+                panic!("malformed review lost diagnosis: {handoff:?}");
+            };
+            assert_eq!(bad_walk.context().raw(), text);
+            assert_eq!(bad_walk.parsed_findings(), walk.findings());
+            assert_eq!(bad_walk.finding_errors(), walk.finding_errors());
+            assert_eq!(&bad_walk.terminal(), walk.terminal());
+            assert_eq!(bad_walk, &walk.bad_walk().unwrap());
+        }
     }
 
     /// `specs/gate.md` § Rubric suppression registry: molecule handoff

@@ -331,6 +331,7 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
             diagnostics,
             parsed_findings,
             finding_errors,
+            ..
         } => {
             let mut out = format!(
                 "Agent output failed canonical admission: {diagnostics:?}\nFinding resolution errors: {finding_errors:?}\n\nOriginal output:\n{}",
@@ -344,6 +345,7 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
         BadWalk::Concern {
             payload,
             parsed_findings,
+            ..
         } => {
             let mut out = format!(
                 "Your LOOM_CONCERN payload did not parse as {{\"summary\": \"<non-empty>\"}}. \
@@ -361,13 +363,14 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
             }
             out
         }
-        BadWalk::ConcernWithoutFindings { summary } => format!(
+        BadWalk::ConcernWithoutFindings { summary, .. } => format!(
             "You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING: records streamed. \
              Either emit findings before the terminator or use LOOM_COMPLETE.",
         ),
         BadWalk::FindingsWithoutConcern {
             finding_count,
             findings,
+            ..
         } => {
             let mut out = format!(
                 "You streamed {finding_count} LOOM_FINDING record(s) but terminated with \
@@ -381,7 +384,9 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
             }
             out
         }
-        BadWalk::MalformedFinding { errors, terminal } => {
+        BadWalk::MalformedFinding {
+            errors, terminal, ..
+        } => {
             let mut out = String::from(
                 "One or more LOOM_FINDING: records failed strict validation. \
                  Re-emit each finding as JSON: \
@@ -667,6 +672,15 @@ mod tests {
         let bad_walk_concern = PreviousFailure::BadWalk(BadWalk::Concern {
             payload: "{not json".into(),
             parsed_findings: vec![],
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         })
         .to_string();
         assert!(
@@ -676,6 +690,15 @@ mod tests {
 
         let bad_walk_no_findings = PreviousFailure::BadWalk(BadWalk::ConcernWithoutFindings {
             summary: "claimed two".into(),
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         })
         .to_string();
         assert!(
@@ -686,6 +709,15 @@ mod tests {
         let bad_walk_no_concern = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
             finding_count: 3,
             findings: vec![],
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         })
         .to_string();
         assert!(
@@ -879,6 +911,15 @@ mod tests {
                 sample_finding(ConcernToken::VerifierBypass, "stubs the backend"),
                 sample_finding(ConcernToken::JudgeFlag, "judge dissented"),
             ],
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         });
         let rendered = pf.to_string();
         assert!(
@@ -913,6 +954,15 @@ mod tests {
         let pf = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
             finding_count: findings.len(),
             findings,
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         });
         let rendered = pf.to_string();
         assert!(
@@ -958,6 +1008,16 @@ mod tests {
             terminal: TerminalSurface::Concern {
                 summary: "two findings".into(),
             },
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
+            parsed_findings: Vec::new(),
         });
         let rendered = pf.to_string();
         assert!(
@@ -992,6 +1052,15 @@ mod tests {
         let pf = PreviousFailure::BadWalk(BadWalk::Concern {
             payload: "{\"summery\": \"typo\"}".into(),
             parsed_findings: vec![],
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         });
         let rendered = pf.to_string();
         assert!(
@@ -1015,6 +1084,15 @@ mod tests {
         let pf = PreviousFailure::BadWalk(BadWalk::Concern {
             payload: "{not json".into(),
             parsed_findings: findings,
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         });
         let rendered = pf.to_string();
         assert!(
@@ -1046,6 +1124,15 @@ mod tests {
         let pf = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
             finding_count: findings.len(),
             findings,
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         });
         let rendered = pf.to_string();
         assert!(
@@ -1079,6 +1166,16 @@ mod tests {
         let pf = PreviousFailure::BadWalk(BadWalk::MalformedFinding {
             errors: errors.clone(),
             terminal: terminal.clone(),
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
+            parsed_findings: Vec::new(),
         });
         let rendered = pf.to_string();
         assert!(
@@ -1098,6 +1195,7 @@ mod tests {
             PreviousFailure::BadWalk(BadWalk::MalformedFinding {
                 errors: e,
                 terminal: t,
+                ..
             }) => {
                 assert_eq!(e, errors);
                 assert_eq!(t, terminal);
@@ -1121,7 +1219,19 @@ mod tests {
         let terminal = TerminalSurface::Malformed {
             payload: "{\"summery\": \"typo\"}".into(),
         };
-        let pf = PreviousFailure::BadWalk(BadWalk::MalformedFinding { errors, terminal });
+        let pf = PreviousFailure::BadWalk(BadWalk::MalformedFinding {
+            errors,
+            terminal,
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
+            parsed_findings: Vec::new(),
+        });
         let rendered = pf.to_string();
         assert!(
             rendered.contains("LOOM_CONCERN: <malformed: {\"summery\": \"typo\"}>"),
@@ -1137,6 +1247,15 @@ mod tests {
     fn bad_walk_concern_without_findings_renders_with_summary() {
         let pf = PreviousFailure::BadWalk(BadWalk::ConcernWithoutFindings {
             summary: "drift across the rubric".into(),
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         });
         let rendered = pf.to_string();
         assert!(
@@ -1154,6 +1273,15 @@ mod tests {
         let pf = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
             finding_count: 5,
             findings: vec![],
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         });
         let rendered = pf.to_string();
         assert!(

@@ -208,7 +208,6 @@ mod tests {
     use crate::review::verify_fail::VerifyFailure;
     use loom_events::identifier::SpecLabel;
     use loom_templates::finding::{ConcernToken, Finding, FindingRoute, FindingTarget};
-    use loom_templates::run::BadWalk;
 
     fn finding_with_token(token: ConcernToken) -> Finding {
         loom_test_support::finding::resolve(loom_protocol::gate::RawFinding {
@@ -372,9 +371,13 @@ mod tests {
 
     #[test]
     fn cause_to_previous_failure_maps_bad_walk_passes_variant_through() {
-        let badwalk = BadWalk::ConcernWithoutFindings {
-            summary: "rubric concern with no enumerated findings".into(),
-        };
+        let badwalk = loom_protocol::gate::WalkOutput::from_stdout(
+            "LOOM_CONCERN: {\"summary\":\"rubric concern with no enumerated findings\"}",
+            loom_protocol::gate::DispatchScope::Tree,
+            &loom_test_support::finding::FixtureSymbols,
+        )
+        .bad_walk()
+        .unwrap();
         let cause = RecoveryCause::BadWalk(badwalk.clone());
         match cause_to_previous_failure(&cause) {
             PreviousFailure::BadWalk(carried) => {

@@ -1,0 +1,5 @@
+error[E0063]: missing field `context` in initializer of `loom_protocol::gate::BadWalk`
+ --> tests/ui/malformed_finding_without_context.rs:4:13
+  |
+4 |     let _ = BadWalk::MalformedFinding {
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^ missing `context`

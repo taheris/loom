@@ -823,7 +823,7 @@ mutation permission.
   concern triggered (live-path / mock / scope / judge / style-rule)
   [test](concern_marker_with_streamed_findings_routes_to_review_concern_recovery)
 
-- Review-phase verdict classification populates `GateInputs.streamed_findings`
+- Review-phase verdict classification populates `GateInputs.review_walk`
   from the parsed walk output. A well-formed `LOOM_CONCERN` with one or more
   streamed `LOOM_FINDING:` records routes to
   `RecoveryCause::ReviewConcern { summary, findings }`; worker phases, which

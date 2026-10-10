@@ -814,6 +814,22 @@ pub enum FindingParseError {
     },
 }
 
+impl FindingParseError {
+    pub const fn line_number(&self) -> usize {
+        match self {
+            Self::EmptyBonds { line_number, .. }
+            | Self::Json { line_number, .. }
+            | Self::UnknownBondSpec { line_number, .. }
+            | Self::TokenVariantMismatch { line_number, .. }
+            | Self::TargetSpecNotInBonds { line_number, .. }
+            | Self::UnresolvedTarget { line_number, .. }
+            | Self::InvalidStyleRuleSubject { line_number, .. }
+            | Self::TokenScopeMismatch { line_number, .. }
+            | Self::RouteScopeMismatch { line_number, .. } => *line_number,
+        }
+    }
+}
+
 impl Finding {
     /// Resolve typed finding input against its dispatch context, retaining its source location.
     fn resolve<V: FindingValidator + ?Sized>(
@@ -1042,14 +1058,25 @@ fn target_unresolved_detail(target: &FindingTarget) -> String {
 /// use loom_protocol::gate::BadWalk;
 /// let _ = BadWalk::MalformedFinding { errors: Vec::new() };
 /// ```
+///
+/// Even with errors, terminal, and canonical context, omitting resolved findings fails:
+///
+/// ```compile_fail
+/// use loom_protocol::{gate::{BadWalk, TerminalSurface}, output::{decode, Phase}};
+/// let context = Box::new(decode("LOOM_COMPLETE", Phase::Review).unwrap().into_context());
+/// let _ = BadWalk::MalformedFinding {
+///     errors: Vec::new(), terminal: TerminalSurface::Complete, context,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BadWalk {
     /// Canonical framing or phase admission failed; diagnostic context is not authority.
     Protocol {
         context: Box<crate::output::Context>,
-        diagnostics: Vec<(crate::output::Span, String)>,
+        diagnostics: Vec<crate::output::Diagnostic>,
         parsed_findings: Vec<Finding>,
         finding_errors: Vec<FindingParseError>,
+        terminal: TerminalSurface,
     },
     /// `LOOM_CONCERN:` payload did not parse as
     /// `{"summary": "<non-empty>"}` — invalid JSON, missing
@@ -1060,12 +1087,16 @@ pub enum BadWalk {
     Concern {
         payload: String,
         parsed_findings: Vec<Finding>,
+        context: Box<crate::output::Context>,
     },
 
     /// Terminator claimed concern but zero `LOOM_FINDING:` records
     /// streamed during the walk. The parsed summary is preserved
     /// so the recovery prompt can quote it back.
-    ConcernWithoutFindings { summary: String },
+    ConcernWithoutFindings {
+        summary: String,
+        context: Box<crate::output::Context>,
+    },
 
     /// One or more `LOOM_FINDING:` records streamed but the
     /// terminator was `LOOM_COMPLETE`. The parsed findings ride
@@ -1074,6 +1105,7 @@ pub enum BadWalk {
     FindingsWithoutConcern {
         finding_count: usize,
         findings: Vec<Finding>,
+        context: Box<crate::output::Context>,
     },
 
     /// One or more `LOOM_FINDING:` records failed strict validation.
@@ -1084,7 +1116,61 @@ pub enum BadWalk {
     MalformedFinding {
         errors: Vec<FindingParseError>,
         terminal: TerminalSurface,
+        parsed_findings: Vec<Finding>,
+        context: Box<crate::output::Context>,
     },
+}
+
+impl BadWalk {
+    pub fn context(&self) -> &crate::output::Context {
+        match self {
+            Self::Protocol { context, .. }
+            | Self::Concern { context, .. }
+            | Self::ConcernWithoutFindings { context, .. }
+            | Self::FindingsWithoutConcern { context, .. }
+            | Self::MalformedFinding { context, .. } => context,
+        }
+    }
+
+    pub fn parsed_findings(&self) -> &[Finding] {
+        match self {
+            Self::Protocol {
+                parsed_findings, ..
+            }
+            | Self::Concern {
+                parsed_findings, ..
+            }
+            | Self::MalformedFinding {
+                parsed_findings, ..
+            } => parsed_findings,
+            Self::FindingsWithoutConcern { findings, .. } => findings,
+            Self::ConcernWithoutFindings { .. } => &[],
+        }
+    }
+
+    pub fn finding_errors(&self) -> &[FindingParseError] {
+        match self {
+            Self::Protocol { finding_errors, .. } => finding_errors,
+            Self::MalformedFinding { errors, .. } => errors,
+            _ => &[],
+        }
+    }
+
+    pub fn diagnostics(&self) -> &[crate::output::Diagnostic] {
+        match self {
+            Self::Protocol { diagnostics, .. } => diagnostics,
+            _ => &[],
+        }
+    }
+
+    pub fn terminal(&self) -> TerminalSurface {
+        match self {
+            Self::Protocol { terminal, .. } | Self::MalformedFinding { terminal, .. } => {
+                terminal.clone()
+            }
+            _ => terminal_surface_from_context(self.context()),
+        }
+    }
 }
 
 /// Compatibility diagnostic projection; only canonical decoding can admit a walk.
@@ -1183,7 +1269,7 @@ pub enum WalkOutputError {
 }
 
 /// Canonical review admission and resolved diagnostic findings; fields cannot be forged.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalkOutput {
     decoded: std::sync::Arc<Result<crate::output::Session, crate::output::Failure>>,
     /// Independently decoded terminal context, not successful admission.
@@ -1227,7 +1313,16 @@ impl WalkOutput {
         if let Err(failure) = &decoded {
             for diagnostic in failure.diagnostics() {
                 let raw = &output[diagnostic.span.bytes.clone()];
-                if raw.starts_with(LOOM_FINDING_PREFIX) {
+                if raw.starts_with(LOOM_FINDING_PREFIX)
+                    && matches!(
+                        diagnostic.error,
+                        crate::output::Error::Json { .. }
+                            | crate::output::Error::ExpectedObject
+                            | crate::output::Error::MarkerSuffix
+                            | crate::output::Error::ObjectSuffix
+                            | crate::output::Error::UnterminatedObject
+                    )
+                {
                     finding_errors.push(FindingParseError::Json {
                         line_number: diagnostic.span.line,
                         raw: raw.to_owned(),
@@ -1236,6 +1331,7 @@ impl WalkOutput {
                 }
             }
         }
+        finding_errors.sort_by_key(FindingParseError::line_number);
         let terminal = terminal_surface_from_context(context);
         Self {
             decoded: std::sync::Arc::new(decoded),
@@ -1256,14 +1352,50 @@ impl WalkOutput {
             Ok(_) => None,
             Err(failure) => Some(BadWalk::Protocol {
                 context: Box::new(failure.context().clone()),
-                diagnostics: failure
-                    .diagnostics()
-                    .iter()
-                    .map(|diagnostic| (diagnostic.span.clone(), format!("{:?}", diagnostic.error)))
-                    .collect(),
+                diagnostics: failure.diagnostics().to_vec(),
                 parsed_findings: self.findings.clone(),
                 finding_errors: self.finding_errors.clone(),
+                terminal: self.terminal.clone(),
             }),
+        }
+    }
+
+    /// Complete canonical context, including independently decoded wrong-phase messages.
+    pub fn context(&self) -> &crate::output::Context {
+        match self.decoded() {
+            Ok(session) => session.context(),
+            Err(failure) => failure.context(),
+        }
+    }
+
+    /// All syntax, resolution, and stream/terminal pairing failures precede suppression.
+    pub fn bad_walk(&self) -> Option<BadWalk> {
+        if let Some(failure) = self.protocol_bad_walk() {
+            return Some(failure);
+        }
+        let context = Box::new(self.context().clone());
+        if !self.finding_errors.is_empty() {
+            return Some(BadWalk::MalformedFinding {
+                errors: self.finding_errors.clone(),
+                terminal: self.terminal.clone(),
+                parsed_findings: self.findings.clone(),
+                context,
+            });
+        }
+        match &self.terminal {
+            TerminalSurface::Concern { summary } if self.findings.is_empty() => {
+                Some(BadWalk::ConcernWithoutFindings {
+                    summary: summary.clone(),
+                    context,
+                })
+            }
+            TerminalSurface::Concern { .. } => None,
+            _ if !self.findings.is_empty() => Some(BadWalk::FindingsWithoutConcern {
+                finding_count: self.findings.len(),
+                findings: self.findings.clone(),
+                context,
+            }),
+            _ => None,
         }
     }
 
@@ -1318,34 +1450,20 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
     validator: &V,
 ) -> Result<Vec<Finding>, WalkOutputError> {
     let walk = WalkOutput::from_stdout(output, scope, validator);
-    if let Some(bad_walk) = walk.protocol_bad_walk() {
+    if let Some(bad_walk) = walk.bad_walk() {
         return Err(WalkOutputError::BadWalk { bad_walk });
-    }
-    if !walk.finding_errors().is_empty() {
-        return Err(WalkOutputError::BadWalk {
-            bad_walk: BadWalk::MalformedFinding {
-                errors: walk.finding_errors().to_vec(),
-                terminal: walk.terminal().clone(),
-            },
-        });
     }
 
     match walk.terminal() {
         TerminalSurface::Clarify { question } => Err(WalkOutputError::WrongReviewPath {
             question: question.clone(),
         }),
-        TerminalSurface::Concern { summary } if walk.findings().is_empty() => {
-            Err(WalkOutputError::BadWalk {
-                bad_walk: BadWalk::ConcernWithoutFindings {
-                    summary: summary.clone(),
-                },
-            })
-        }
         TerminalSurface::Concern { .. } => Ok(walk.findings().to_vec()),
         TerminalSurface::Malformed { payload } => Err(WalkOutputError::BadWalk {
             bad_walk: BadWalk::Concern {
                 payload: payload.clone(),
                 parsed_findings: walk.findings().to_vec(),
+                context: Box::new(walk.context().clone()),
             },
         }),
         TerminalSurface::Noop => Err(WalkOutputError::InvalidTerminal {
@@ -1354,24 +1472,6 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
         TerminalSurface::Waiting if walk.findings().is_empty() => {
             Err(WalkOutputError::InvalidTerminal {
                 marker: ExitSignal::Waiting.marker(),
-            })
-        }
-        TerminalSurface::Complete if !walk.findings().is_empty() => Err(WalkOutputError::BadWalk {
-            bad_walk: BadWalk::FindingsWithoutConcern {
-                finding_count: walk.findings().len(),
-                findings: walk.findings().to_vec(),
-            },
-        }),
-        TerminalSurface::Waiting
-        | TerminalSurface::Blocked { .. }
-        | TerminalSurface::Retry { .. }
-            if !walk.findings().is_empty() =>
-        {
-            Err(WalkOutputError::BadWalk {
-                bad_walk: BadWalk::FindingsWithoutConcern {
-                    finding_count: walk.findings().len(),
-                    findings: walk.findings().to_vec(),
-                },
             })
         }
         TerminalSurface::Missing if !walk.findings().is_empty() => {
@@ -1397,6 +1497,7 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate as loom_protocol;
 
     fn spec(s: &str) -> SpecLabel {
         s.parse().expect("valid spec label")
@@ -1770,11 +1871,21 @@ mod tests {
         let concern = BadWalk::Concern {
             payload: payload.clone(),
             parsed_findings: parsed_findings.clone(),
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         };
         match &concern {
             BadWalk::Concern {
                 payload: p,
                 parsed_findings: f,
+                ..
             } => {
                 assert_eq!(p, &payload);
                 assert_eq!(f, &parsed_findings);
@@ -1784,9 +1895,18 @@ mod tests {
 
         let concern_without_findings = BadWalk::ConcernWithoutFindings {
             summary: "terminal concern with no stream".to_owned(),
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         };
         match &concern_without_findings {
-            BadWalk::ConcernWithoutFindings { summary } => {
+            BadWalk::ConcernWithoutFindings { summary, .. } => {
                 assert_eq!(summary, "terminal concern with no stream");
             }
             other => panic!("expected BadWalk::ConcernWithoutFindings, got {other:?}"),
@@ -1796,11 +1916,21 @@ mod tests {
         let no_concern = BadWalk::FindingsWithoutConcern {
             finding_count: findings.len(),
             findings: findings.clone(),
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         };
         match &no_concern {
             BadWalk::FindingsWithoutConcern {
                 finding_count,
                 findings: f,
+                ..
             } => {
                 assert_eq!(*finding_count, findings.len());
                 assert_eq!(f, &findings);
@@ -1813,11 +1943,22 @@ mod tests {
         let malformed = BadWalk::MalformedFinding {
             errors: errors.clone(),
             terminal: terminal.clone(),
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
+            parsed_findings: Vec::new(),
         };
         match &malformed {
             BadWalk::MalformedFinding {
                 errors: e,
                 terminal: t,
+                ..
             } => {
                 assert_eq!(e, &errors);
                 assert_eq!(t, &terminal);
@@ -2084,24 +2225,6 @@ mod tests {
     }
 
     #[test]
-    fn loom_finding_substring_match_requires_uppercase_and_colon_suffix() {
-        let no_colon = "the LOOM_FINDING marker is mentioned in prose";
-        let lowercase = format!("loom_finding: {}", "{\"token\":\"x\"}");
-        let output = format!("{no_colon}\n{lowercase}\nLOOM_COMPLETE\n");
-        let walk = WalkOutput::from_stdout(&output, DispatchScope::Tree, &AlwaysValid);
-        assert!(
-            walk.findings().is_empty(),
-            "no findings parsed from bare-prose or lowercase mention: {:?}",
-            walk.findings(),
-        );
-        assert!(
-            walk.finding_errors().is_empty(),
-            "no errors either — those lines did not match the prefix",
-        );
-        assert_eq!(walk.terminal(), &TerminalSurface::Complete);
-    }
-
-    #[test]
     fn mint_walk_emits_loom_finding_json_lines_streamed_per_finding() {
         let line_a = finding_line(
             "spec-coherence-fail",
@@ -2285,6 +2408,7 @@ mod tests {
                     BadWalk::FindingsWithoutConcern {
                         finding_count,
                         findings,
+                        ..
                     },
             }) => {
                 assert_eq!(finding_count, 1);

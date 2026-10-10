@@ -204,6 +204,15 @@ fn previous_failure_public_variant_contract_is_constructible() {
         },
         PreviousFailure::BadWalk(BadWalk::ConcernWithoutFindings {
             summary: "missing streamed finding".into(),
+
+            context: Box::new(
+                loom_protocol::output::decode(
+                    "LOOM_COMPLETE",
+                    loom_protocol::output::Phase::Review,
+                )
+                .unwrap()
+                .into_context(),
+            ),
         }),
         PreviousFailure::BuildFailure {
             stage: "cargo".into(),
@@ -277,6 +286,12 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
     let bad = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
         finding_count: 2,
         findings: vec![],
+
+        context: Box::new(
+            loom_protocol::output::decode("LOOM_COMPLETE", loom_protocol::output::Phase::Review)
+                .unwrap()
+                .into_context(),
+        ),
     });
     assert!(bad.to_string().contains("LOOM_FINDING"));
 }

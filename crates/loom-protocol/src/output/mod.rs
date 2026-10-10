@@ -131,7 +131,7 @@ macro_rules! messages {
         $payload.filter(|json| json.starts_with('{')).ok_or(Error::ExpectedObject).and_then(|json| {
             serde_json::from_str::<$ty>(json)
                 .map(Self::$variant)
-                .map_err(|source| Error::Json { source })
+                .map_err(|source| Error::Json { source: source.into() })
         })
     };
     (@decode $variant:ident, $payload:ident) => {
@@ -260,7 +260,7 @@ impl Session {
     }
 }
 
-#[derive(Debug, Display, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
 /// agent output violates the message contract: {diagnostics:?}
 pub struct Failure {
     context: Context,
@@ -286,13 +286,13 @@ impl Failure {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub span: Span,
     pub error: Error,
 }
 
-#[derive(Debug, Display, Error)]
+#[derive(Debug, Clone, Display, Error)]
 pub enum Error {
     /// unknown agent-output marker `{marker}`
     UnknownMarker { marker: String },
@@ -309,7 +309,7 @@ pub enum Error {
     /// agent-output payload is not valid typed JSON
     Json {
         #[source]
-        source: serde_json::Error,
+        source: std::sync::Arc<serde_json::Error>,
     },
     /// message `{marker}` is not admitted in phase {phase:?}
     WrongPhase { marker: &'static str, phase: Phase },
@@ -322,6 +322,35 @@ pub enum Error {
     /// terminal is followed by non-whitespace text
     TrailingText,
 }
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Json { source: left }, Self::Json { source: right }) => {
+                left.classify() == right.classify()
+                    && left.line() == right.line()
+                    && left.column() == right.column()
+                    && left.to_string() == right.to_string()
+            }
+            (Self::UnknownMarker { marker: left }, Self::UnknownMarker { marker: right }) => {
+                left == right
+            }
+            (
+                Self::WrongPhase {
+                    marker: left,
+                    phase: left_phase,
+                },
+                Self::WrongPhase {
+                    marker: right,
+                    phase: right_phase,
+                },
+            ) => left == right && left_phase == right_phase,
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+}
+
+impl Eq for Error {}
 
 /// Decode only agent-origin text; callers must not mix in tool, prompt, or driver text.
 ///

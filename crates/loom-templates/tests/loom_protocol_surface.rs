@@ -80,6 +80,12 @@ fn loom_templates_re_exports_finding_contract_from_loom_protocol() {
 
     let proto_badwalk = loom_protocol::gate::BadWalk::ConcernWithoutFindings {
         summary: "round-trip".into(),
+
+        context: Box::new(
+            loom_protocol::output::decode("LOOM_COMPLETE", loom_protocol::output::Phase::Review)
+                .unwrap()
+                .into_context(),
+        ),
     };
     let _: loom_templates::BadWalk = identity(proto_badwalk);
 

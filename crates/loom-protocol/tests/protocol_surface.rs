@@ -104,6 +104,18 @@ fn walk_output_fields_private_only_constructor_is_from_stdout() {
 }
 
 #[test]
+fn malformed_finding_failure_requires_parsed_context_fields() {
+    let _guard = loom_test_support::compile_fixture::lock(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        env!("CARGO_PKG_NAME"),
+    )
+    .unwrap();
+    let cases = trybuild::TestCases::new();
+    cases.compile_fail("tests/ui/malformed_finding_without_findings.rs");
+    cases.compile_fail("tests/ui/malformed_finding_without_context.rs");
+}
+
+#[test]
 fn compile_fixture_lock_preserves_every_independent_process_update() -> std::io::Result<()> {
     let root = tempfile::tempdir()?;
     if !loom_test_support::parallel_process::run(

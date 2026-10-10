@@ -35,11 +35,11 @@ pub use loom_templates::review::ReviewLane;
 pub use phase_verdict::{
     GateInputs, PhaseKind, PhaseVerdict, RecoveryCause, ReviewConcern, decide, decide_for_phase,
 };
-#[cfg(test)]
-pub(crate) use production::phase_verdict_from_walk;
 pub use production::{
     AcceptAllFindingValidator, ProductionReviewController, classify_review_phase_with_suppressions,
 };
+#[cfg(test)]
+pub(crate) use production::{classify_review_phase, phase_verdict_from_walk};
 pub use recovery::{
     RETRY_EXHAUSTED_CAUSE, RecoveryResolution, cause_to_previous_failure,
     concern_label_from_findings, resolve_recovery,
