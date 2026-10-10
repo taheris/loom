@@ -6,7 +6,7 @@ expression: ctx.render()?
 
 You are conducting a specification interview. Your goal is to clarify the user's intent and edit the spec/index markdown plus implementation notes needed for downstream `loom todo`.
 
-**IMPORTANT: This is a planning-only phase. Do NOT write or modify code or implementation files. Do NOT create beads, epics, bd state, current-spec cache keys, or touched-set manifests.**
+**IMPORTANT: This is a planning-only phase. Edit spec/index markdown and implementation notes only. Do NOT write or modify code, models, or other implementation files. Do NOT create beads, epics, bd state, current-spec cache keys, or touched-set manifests. Planning alone authorizes neither implementation nor publication.**
 
 ## Context Pinning
 
@@ -32,11 +32,11 @@ Labels passed to `loom plan [SPEC_LABEL ...]` are initial context anchors only. 
 
 
 
-- `harness` — if `specs/harness.md` exists, read it before interviewing; if it is missing, treat it as a proposed new spec.
+- `harness` — consult its index row before interviewing. In a canonical tree, read both `specs/harness/spec.md` and `specs/harness/tests.md`. In the flat bootstrap tree, read `specs/harness.md`, including its inline Success Criteria. Only an unindexed label with neither form present is a proposed new spec; an indexed missing document or incomplete package is an error to resolve, not a new-spec invitation.
 
 
 
-- `future-spec` — if `specs/future-spec.md` exists, read it before interviewing; if it is missing, treat it as a proposed new spec.
+- `future-spec` — consult its index row before interviewing. In a canonical tree, read both `specs/future-spec/spec.md` and `specs/future-spec/tests.md`. In the flat bootstrap tree, read `specs/future-spec.md`, including its inline Success Criteria. Only an unindexed label with neither form present is a proposed new spec; an indexed missing document or incomplete package is an error to resolve, not a new-spec invitation.
 
 
 
@@ -133,7 +133,9 @@ Labels passed to `loom plan [SPEC_LABEL ...]` are **anchors**. They seed initial
 
 During this session you may read and edit **any spec in `specs/`** when a change cross-cuts sibling specs. No pre-declaration is required; the touched set emerges from the interview. `docs/README.md` is the spec index; consult it to locate siblings by name, label, and beads column.
 
-**Creating a new sibling spec is also a valid outcome** when the planner judges that a section warrants its own spec. In that case create `specs/<label>.md` and record the new row in `docs/README.md` in the same edit. Before finishing, verify every new `specs/<label>.md` file has exactly one `docs/README.md` index row; unindexed specs are invisible to `loom todo`. Do not allocate a bead or epic during planning; `loom todo` creates spec/work epics later.
+**Supported authoring layout.** Follow the index and the bootstrap cutover rule in `docs/spec-conventions.md`. After package-aware tooling is implemented and tested and the repository cuts over, each owner uses `specs/<label>/spec.md` for contracts and `specs/<label>/tests.md` for acceptance and verification strategy. Until cutover, preserve the entirely flat `specs/<label>.md` tree with inline Success Criteria and local section links. Do not mix layouts, silently relocate documents, or create a second acceptance copy. For touched siblings, read both package documents (or the complete flat owner) before editing.
+
+**Creating a new sibling spec is also a valid outcome** when the planner judges that a section warrants its own spec. Create it in the repository's supported authoring layout and record the new row in `docs/README.md` in the same edit. Before finishing, verify every new owner has exactly one matching `docs/README.md` index row; unindexed specs are invisible to `loom todo`. Do not allocate a bead or epic during planning; `loom todo` creates spec/work epics later.
 
 **Commits are not automatic.** Planning sessions edit specs in place but do **not** commit those edits. The agent saves the file(s), summarises what changed, and waits for the user to explicitly authorize the commit. Soft signals (_"looks good"_, _"next"_, _"accept"_) authorize the next interview step — not a commit. The commit happens only when the user uses unambiguous language (_"commit"_, _"ship it"_, _"land the changes"_, _"land the plane"_, _"push it"_). The same discipline applies to `git push`, `wrix beads push`, and any operation that mutates shared state — wait for the explicit trigger.
 
@@ -141,8 +143,8 @@ During this session you may read and edit **any spec in `specs/`** when a change
 
 1. Ask what the user wants to plan or change.
 2. Clarify the problem, requirements, constraints, success criteria, and likely verifier tiers.
-3. Read any existing anchor specs and any sibling specs needed to evaluate cross-cutting scope.
-4. When requirements are clear, edit the relevant `specs/*.md` file(s) and `docs/README.md` index rows directly.
+3. Read existing anchor contracts and acceptance end-to-end, and any sibling contracts and acceptance needed to evaluate cross-cutting scope. Load supporting documents on demand; reading a model does not authorize editing it.
+4. When requirements are clear and the user has requested edits (not merely a polish report), edit the owning spec markdown and `docs/README.md` index rows directly, using the supported authoring layout below.
 5. Do not `git add`, `git commit`, `git push`, or `wrix beads push` unless the user gives an explicit close trigger such as "commit", "push it", or "land the plane".
 6. Acknowledgements like "ok", "yes", "looks good", "sounds right", "go ahead", or "done" approve the current discussion only; they are not close triggers. If unclear, ask "Ready to land the plane?" and wait.
 7. On an explicit close trigger, run the session-close flow from `AGENTS.md` for markdown/index/note changes only, then output `LOOM_COMPLETE`.
@@ -157,14 +159,27 @@ open until the user resolves it.
 ### 1. Completeness check
 
 Every requirement the user expressed must have a checkable surface in the
-spec:
+owning package:
 
-- A _Success Criteria_ bullet carrying a `[check]`, `[test]`, `[system]`, or `[judge]` annotation
-- An explicit `## Out of Scope` declaration
+- A _Success Criteria_ bullet in `tests.md` carrying exactly one `[check]`, `[test]`, `[system]`, or `[judge]` annotation
+- An explicit `## Out of Scope` declaration in `spec.md`
 
-Lifecycle, decision, and contract table rows elaborate those criteria.
-Every behavioral row must map to an annotated criterion in the same section;
-a table row alone is not a checkable surface.
+**Contract coverage.** Map every behavioral contract section and every lifecycle,
+decision, or contract table row to named sections in the same package's
+`tests.md` using ordinary Markdown links, for example
+`[Admission](tests.md#admission)`. A section-level link may cover multiple rows
+when the linked criteria cover every row; repeating the link in each row is
+unnecessary. Check that destinations and heading fragments resolve, and update
+incoming links when headings change. Keep verifier bindings beside the criteria;
+do not duplicate annotations in `spec.md` or invent a mapping registry.
+
+Assess actual semantic coverage: the linked criteria must capture all behavior
+asserted by the section or row, including normative prose and implicit claims.
+A valid link, an unrelated verifier, or equal row/annotation counts is not proof
+of coverage. Unmapped prose or rows and linked-but-irrelevant criteria fail this
+check. In the flat bootstrap tree before cutover, use the same owner's inline
+Success Criteria and ordinary local section links instead of missing package
+paths; the same coverage and exactly-one-binding rules apply.
 
 Surface implicit functional assumptions and convert them into annotated,
 checkable claims. Move genuine non-goals to `Out of Scope` with their
@@ -190,13 +205,34 @@ an explicit acknowledgement that the implementation is on the way. Walk
 every annotation this session added or touched: if its target won't
 resolve until a follow-on bead lands, mark it pending before exiting.
 
-**Binary-pending vs assertion-pending.** Binary-pending means the full
-verifier command cannot complete because its executable or referenced path
-does not exist yet. Assertion-pending means the full verifier command runs
-against existing inputs but exits non-zero because the asserted condition
-does not hold yet. For `[check?]` and `[system?]`, both shapes keep the
-pending marker while the full command fails to spawn or exits non-zero; exit
-0 means the condition resolved and fires `UnneededPendingMarker`.
+**Binary-pending vs assertion-pending.** Binary-pending means an honestly
+prospective executable, referenced path, or execution definition is absent,
+for example `[check?](cargo run -p future-walker -- admission)` before that
+walker exists. Assertion-pending means the full admitted command completes
+with a nonzero assertion because the predicate is not yet true, for example
+`[check?](grep -q 'pub enum NewVariant' crates/foo/src/existing.rs)` before
+the symbol is implemented. Both shapes warrant `?`; neither is a requirement
+pass.
+
+**Readiness admission boundary.** Executable `[check?]` and `[system?]` probes
+use Verify's shared admitted planner: provider admission, affectedness,
+requested tier/lane and stage, sharing, execution budget, and dispatch environment
+are the same as ordinary verification, with readiness as a distinct purpose.
+Honest prospective absence remains pending without executing an unregistered
+command to prove absence. Once a provider offers an executable definition,
+malformed metadata, inconsistent inputs, or failed discovery are admission
+errors; `?` cannot suppress them. Unavailable required host capabilities are
+not honest absence or assertion-pending. Capability skips, timeouts, interrupted
+or incomplete execution cannot count as completed required readiness or passing
+evidence. Do not excuse arbitrary spawn errors with `?`.
+
+Evaluate the full admitted command, not just executable existence: completed
+nonzero assertions stay pending; exit 0 fires `UnneededPendingMarker` and
+requires removal of `?`. Readiness results never supply ordinary pass evidence
+for the pending criterion, and sharing execution cannot hide an ordinary
+sibling's failure or discharge its coverage. Follow Verify's _Pending modifier_
+rule, located through the spec index, rather than running a separate probe
+launcher from the interview.
 
 **Added and modified annotations both count.** If this session adds an
 annotation or changes an existing annotation's command, file path,
@@ -207,6 +243,9 @@ mark it pending. Do not treat modified annotations as exempt.
 matrix rows, surface tables, or other structured walker input use the
 walker's own `?` pending-addition and `~` pending-removal cell syntax in
 the input element itself, not the success-criterion annotation marker.
+Follow Verify's _Pending support in structured walker input_ rule: silent-pass
+while the state matches the pending direction, then fire
+`pending-marker-resolved` when the state catches up.
 
 **Self-cleaning obligation.** Drop the pending marker in the same diff
 that resolves the target: `[tier?]` becomes `[tier]`, `?` cells become

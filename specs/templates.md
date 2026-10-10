@@ -944,7 +944,7 @@ bundled documents in front of the agent with zero configuration.
   ordinary Markdown section links, preserves exactly one binding per criterion
   and the pending policy, and does not demand duplicated annotations in
   `spec.md`, a mapping registry, or equal row/annotation counts.
-  [test?](plan_rubric_maps_contracts_to_package_acceptance)
+  [test](plan_rubric_maps_contracts_to_package_acceptance)
 
 <!-- prettier-ignore -->
 - `partial/plan_stage_rubric.md` exists and is included by `plan.md` only

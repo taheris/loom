@@ -420,6 +420,18 @@ _Trust tiers_ / _Single source of truth_ / _Length guidance_ sections:
   architectural role → flag.
 - A `[check]`, `[test]`, or `[system]` annotation on a claim that requires
   judgement (mock discipline, scope, prose style rule) — tier-skip → flag.
+- Behavioral contract sections, normative prose, and lifecycle / decision /
+  contract table rows must map through ordinary Markdown links to named sections
+  in the same package's `tests.md`. Read the linked criteria and judge whether
+  they capture every asserted behavior. A section-level link may cover multiple
+  rows; do not demand repeated links per row, duplicated annotations in
+  `spec.md`, or a mapping registry. A valid link, unrelated bindings, or equal
+  row/annotation counts does not establish semantic coverage. Flag unmapped
+  claims and linked criteria that leave behavior uncovered under TST-5. Before
+  cutover, use the flat owner's inline Success Criteria and local section links.
+- Each criterion has exactly one adjacent verifier binding; annotations belong
+  in acceptance, not duplicated beside contract prose. Pending annotations still
+  follow Verify's admission and self-cleaning rules, not a blanket exemption.
 - A criterion bullet with no annotation, or whose annotation points at
   a missing or stubbed verifier → already a `loom gate verify` flag;
   surface it here too when introduced by the diff or visible in the

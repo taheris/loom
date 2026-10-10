@@ -146,13 +146,14 @@ planning agent:
   package's `tests.md`, flagging unmapped behavioral claims and table rows or
   linked criteria that do not cover them. Annotations need not be duplicated in
   contract prose, and unrelated bindings or matching counts do not establish
-  coverage. [judge?](../tests/judges/package-contract-coverage.md)
+  coverage.
+  [judge](../tests/judges/package-contract-coverage.md#judge_package_contract_coverage)
 
 - Rendered planning guidance preserves binary/assertion pending and mandatory
   marker removal while explaining that executable probes use Verify's admitted
   planner; provider errors and required capability gaps cannot be excused by
   adding `?` or called passing evidence.
-  [test?](plan_stage_rubric_preserves_readiness_admission_boundary)
+  [test](plan_stage_rubric_preserves_readiness_admission_boundary)
 
 ### Interview authority and modes
 
@@ -160,7 +161,8 @@ planning agent:
   authority and explicit commit consent: soft acknowledgements do not authorize
   commits or publication, polish is report-only unless edits are requested, and
   one-by-one mode asks one prose question with a suggested default before
-  waiting. [judge?](../tests/judges/planning-interview-authority.md)
+  waiting.
+  [judge](../tests/judges/planning-interview-authority.md#judge_planning_interview_authority)
 
 ### Workflow commands
 

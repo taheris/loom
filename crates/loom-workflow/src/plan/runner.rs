@@ -487,6 +487,72 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
     }
 
     #[test]
+    fn plan_launch_delivers_canonical_contract_and_acceptance_read_paths() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        seed_workspace(dir.path())?;
+        let package = dir.path().join("specs/queue");
+        std::fs::create_dir(&package)?;
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/planning/coverage/split");
+        for document in ["spec.md", "tests.md"] {
+            std::fs::copy(fixture.join(document), package.join(document))?;
+        }
+        std::fs::write(
+            dir.path().join("docs/README.md"),
+            "## Specs\n\n| Spec | Purpose |\n| --- | --- |\n| [queue](../specs/queue/spec.md) | Queue |\n",
+        )?;
+        let manifest = three_profile_manifest(dir.path())?;
+        let bin = stub_wrix(dir.path())?;
+
+        run_with_timeout(
+            dir.path(),
+            plan_opts(vec![SpecLabel::new("queue")?], bin, manifest),
+            Duration::from_secs(1),
+        )?;
+
+        let delivered = std::fs::read_to_string(dir.path().join("argv.log"))?;
+        assert!(delivered.contains("[queue](../specs/queue/spec.md)"));
+        assert!(delivered.contains("read both `specs/queue/spec.md` and `specs/queue/tests.md`"));
+        assert!(
+            delivered.contains(
+                "an indexed missing document or incomplete package is an error to resolve"
+            )
+        );
+        assert!(delivered.contains("Do NOT write or modify code, models"));
+        assert!(!dir.path().join("specs/queue.md").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn plan_launch_preserves_flat_bootstrap_anchor_context() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        seed_workspace(dir.path())?;
+        std::fs::write(
+            dir.path().join("specs/queue.md"),
+            "# Queue\n## Success Criteria\n",
+        )?;
+        std::fs::write(
+            dir.path().join("docs/README.md"),
+            "## Specs\n\n| Spec | Purpose |\n| --- | --- |\n| [queue](../specs/queue.md) | Queue |\n",
+        )?;
+        let manifest = three_profile_manifest(dir.path())?;
+        let bin = stub_wrix(dir.path())?;
+
+        run_with_timeout(
+            dir.path(),
+            plan_opts(vec![SpecLabel::new("queue")?], bin, manifest),
+            Duration::from_secs(1),
+        )?;
+
+        let delivered = std::fs::read_to_string(dir.path().join("argv.log"))?;
+        assert!(delivered.contains("[queue](../specs/queue.md)"));
+        assert!(delivered.contains("read `specs/queue.md`, including its inline Success Criteria"));
+        assert!(delivered.contains("Until cutover, preserve the entirely flat"));
+        assert!(!dir.path().join("specs/queue").exists());
+        Ok(())
+    }
+
+    #[test]
     fn plan_accepts_zero_anchors_and_uses_plan_scratch_key() -> Result<()> {
         let dir = tempfile::tempdir()?;
         seed_workspace(dir.path())?;

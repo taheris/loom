@@ -439,10 +439,37 @@ fn plan_template_prohibits_bd_writes() -> Result<()> {
 }
 
 #[test]
+fn plan_template_limits_interview_modes_and_close_consent_to_planning_output() -> Result<()> {
+    let out = plan_ctx().render()?;
+    let normalized = out.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for instruction in [
+        "Do NOT write or modify code, models, or other implementation files",
+        "Do NOT create beads, epics, bd state",
+        "Planning alone authorizes neither implementation nor publication",
+        "When requirements are clear and the user has requested edits (not merely a polish report)",
+        "report-only spec/doc review",
+        "do not apply edits unless explicitly asked to apply them",
+        "ask exactly one question per turn",
+        "propose a suggested default with a short rationale",
+        "wait for the user's prose answer before moving to the next",
+        "they are not close triggers",
+        "unless the user gives an explicit close trigger",
+        "for markdown/index/note changes only",
+    ] {
+        assert!(
+            normalized.contains(instruction),
+            "missing boundary: {instruction}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn plan_template_requires_index_rows_for_new_specs() -> Result<()> {
     let out = plan_ctx().render()?;
 
-    assert!(out.contains("verify every new `specs/<label>.md` file has exactly one"));
+    assert!(out.contains("verify every new owner has exactly one matching"));
     assert!(out.contains("unindexed specs are invisible to `loom todo`"));
     Ok(())
 }
@@ -463,10 +490,69 @@ fn plan_stage_rubric_requires_annotated_criteria_for_behavioral_rows() -> Result
     let out = plan_ctx().render()?;
     let normalized = out.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    assert!(normalized.contains(
-        "Every behavioral row must map to an annotated criterion in the same section; a table row alone is not a checkable surface."
-    ));
-    assert!(!out.contains("- A lifecycle / decision / contract table row"));
+    assert!(normalized.contains("Map every behavioral contract section and every lifecycle, decision, or contract table row to named sections in the same package's `tests.md`"));
+    assert!(!out.contains("in the same section;"));
+    Ok(())
+}
+
+#[test]
+fn plan_rubric_maps_contracts_to_package_acceptance() -> Result<()> {
+    let out = plan_ctx().render()?;
+    let normalized = out.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for instruction in [
+        "using ordinary Markdown links",
+        "[Admission](tests.md#admission)",
+        "A section-level link may cover multiple rows when the linked criteria cover every row",
+        "repeating the link in each row is unnecessary",
+        "Keep verifier bindings beside the criteria; do not duplicate annotations in `spec.md` or invent a mapping registry",
+        "linked criteria must capture all behavior asserted by the section or row",
+        "including normative prose and implicit claims",
+        "Unmapped prose or rows and linked-but-irrelevant criteria fail",
+        "equal row/annotation counts is not proof of coverage",
+        "same owner's inline Success Criteria and ordinary local section links",
+        "exactly one `[check]`, `[test]`, `[system]`, or `[judge]` annotation",
+        "Check that destinations and heading fragments resolve",
+    ] {
+        assert!(
+            normalized.contains(instruction),
+            "missing guidance: {instruction}"
+        );
+    }
+    assert!(
+        !normalized.contains(
+            "Every behavioral row must map to an annotated criterion in the same section"
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn plan_stage_rubric_preserves_readiness_admission_boundary() -> Result<()> {
+    let out = plan_ctx().render()?;
+    let normalized = out.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for instruction in [
+        "Verify's shared admitted planner",
+        "provider admission, affectedness, requested tier/lane and stage, sharing, execution budget, and dispatch environment",
+        "Once a provider offers an executable definition, malformed metadata, inconsistent inputs, or failed discovery are admission errors; `?` cannot suppress them",
+        "Unavailable required host capabilities are not honest absence or assertion-pending",
+        "Capability skips, timeouts, interrupted or incomplete execution cannot count as completed required readiness or passing evidence",
+        "Do not excuse arbitrary spawn errors with `?`",
+        "completed nonzero assertions stay pending; exit 0 fires `UnneededPendingMarker`",
+        "Readiness results never supply ordinary pass evidence",
+        "cannot hide an ordinary sibling's failure or discharge its coverage",
+        "Added and modified annotations both count",
+        "`?` pending-addition and `~` pending-removal cell syntax",
+        "Drop the pending marker in the same diff that resolves the target",
+        "pending-marker-resolved",
+    ] {
+        assert!(
+            normalized.contains(instruction),
+            "missing guidance: {instruction}"
+        );
+    }
+    assert!(!normalized.contains("while the full command fails to spawn or exits non-zero"));
     Ok(())
 }
 
@@ -492,20 +578,20 @@ fn plan_stage_rubric_distinguishes_binary_from_assertion_pending_by_exit_status(
 
     assert!(
         normalized.contains(
-            "Binary-pending means the full verifier command cannot complete because its executable or referenced path does not exist yet.",
+            "Binary-pending means an honestly prospective executable, referenced path, or execution definition is absent,",
         ),
         "plan rubric must describe binary-pending commands: {out}",
     );
     assert!(
         normalized.contains(
-            "Assertion-pending means the full verifier command runs against existing inputs but exits non-zero because the asserted condition does not hold yet.",
+            "Assertion-pending means the full admitted command completes with a nonzero assertion because the predicate is not yet true,",
         ),
         "plan rubric must describe assertion-pending command failures: {out}",
     );
     assert!(
-        normalized
-            .contains("fails to spawn or exits non-zero; exit 0 means the condition resolved")
-            && normalized.contains("UnneededPendingMarker"),
+        normalized.contains(
+            "completed nonzero assertions stay pending; exit 0 fires `UnneededPendingMarker`"
+        ) && normalized.contains("UnneededPendingMarker"),
         "plan rubric must tie pending markers to the full command's exit status: {out}",
     );
     Ok(())

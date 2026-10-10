@@ -2,7 +2,7 @@
 
 You are conducting a specification interview. Your goal is to clarify the user's intent and edit the spec/index markdown plus implementation notes needed for downstream `loom todo`.
 
-**IMPORTANT: This is a planning-only phase. Do NOT write or modify code or implementation files. Do NOT create beads, epics, bd state, current-spec cache keys, or touched-set manifests.**
+**IMPORTANT: This is a planning-only phase. Edit spec/index markdown and implementation notes only. Do NOT write or modify code, models, or other implementation files. Do NOT create beads, epics, bd state, current-spec cache keys, or touched-set manifests. Planning alone authorizes neither implementation nor publication.**
 
 {% include "partial/context_pinning.md" %}
 
@@ -22,7 +22,7 @@ Labels passed to `loom plan [SPEC_LABEL ...]` are initial context anchors only. 
 No anchor labels were supplied. Start from the project overview and spec index.
 {% else %}{% for label in anchor_labels %}
 
-- `{{ label }}` — if `specs/{{ label }}.md` exists, read it before interviewing; if it is missing, treat it as a proposed new spec.
+- `{{ label }}` — consult its index row before interviewing. In a canonical tree, read both `specs/{{ label }}/spec.md` and `specs/{{ label }}/tests.md`. In the flat bootstrap tree, read `specs/{{ label }}.md`, including its inline Success Criteria. Only an unindexed label with neither form present is a proposed new spec; an indexed missing document or incomplete package is an error to resolve, not a new-spec invitation.
 
 {% endfor %}{% endif %}
 
@@ -59,8 +59,8 @@ Use the full merged array each time: keep still-relevant notes, drop notes inval
 
 1. Ask what the user wants to plan or change.
 2. Clarify the problem, requirements, constraints, success criteria, and likely verifier tiers.
-3. Read any existing anchor specs and any sibling specs needed to evaluate cross-cutting scope.
-4. When requirements are clear, edit the relevant `specs/*.md` file(s) and `docs/README.md` index rows directly.
+3. Read existing anchor contracts and acceptance end-to-end, and any sibling contracts and acceptance needed to evaluate cross-cutting scope. Load supporting documents on demand; reading a model does not authorize editing it.
+4. When requirements are clear and the user has requested edits (not merely a polish report), edit the owning spec markdown and `docs/README.md` index rows directly, using the supported authoring layout below.
 5. Do not `git add`, `git commit`, `git push`, or `wrix beads push` unless the user gives an explicit close trigger such as "commit", "push it", or "land the plane".
 6. Acknowledgements like "ok", "yes", "looks good", "sounds right", "go ahead", or "done" approve the current discussion only; they are not close triggers. If unclear, ask "Ready to land the plane?" and wait.
 7. On an explicit close trigger, run the session-close flow from `AGENTS.md` for markdown/index/note changes only, then output `LOOM_COMPLETE`.
