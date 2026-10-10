@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+write_script() {
+  # Generated executables need an interpreter available inside the Nix sandbox.
+  {
+    printf '#!%s\n' "$BASH"
+    cat
+  } >"$1"
+  chmod +x "$1"
+}
+
 must_fail() {
   local pattern="$1"
   shift
@@ -19,13 +28,11 @@ test_provisioning_and_batching() {
   mkdir -p "$tmp/bin"
   export LOOM_REAL_QUINT="$real_quint"
   export LOOM_QUINT_CALLS="$tmp/calls"
-  cat >"$tmp/bin/quint" <<'SH'
-#!/usr/bin/env bash
+  write_script "$tmp/bin/quint" <<'SH'
 set -euo pipefail
 printf '%s\n' "$1" >> "$LOOM_QUINT_CALLS"
 exec "$LOOM_REAL_QUINT" "$@"
 SH
-  chmod +x "$tmp/bin/quint"
   PATH="$tmp/bin:$PATH" "$BASH" "$LOOM_QUINT_SOURCE/scripts/test-quint.sh" provisioning-and-batching >"$tmp/receipts"
   [[ "$(grep -c '^run$' "$tmp/calls")" -eq 3 ]]
   [[ "$(grep -c '^--version$' "$tmp/calls")" -eq 1 ]]
@@ -37,21 +44,17 @@ test_fail_closed() {
   must_fail 'unknown scenario' "$BASH" "$script" unknown
   must_fail 'not implemented' "$BASH" "$script" model
   must_fail 'missing provisioned tool' env PATH="$tmp/empty" "$BASH" "$script" provisioning-and-batching
-  cat >"$tmp/failed-runner" <<'SH'
-#!/usr/bin/env bash
+  write_script "$tmp/failed-runner" <<'SH'
 set -euo pipefail
 if [[ "$1" == budget ]]; then echo 1; else exit 1; fi
 SH
-  chmod +x "$tmp/failed-runner"
   must_fail 'no bounded success' env LOOM_QUINT_BIN="$tmp/failed-runner" "$BASH" "$script" provisioning-and-batching
-  cat >"$tmp/failed-runner" <<'SH'
-#!/usr/bin/env bash
+  write_script "$tmp/failed-runner" <<'SH'
 set -euo pipefail
 if [[ "$1" == budget ]]; then echo 1; else exit 0; fi
 SH
   must_fail 'missing or incomplete bounded receipt' env LOOM_QUINT_BIN="$tmp/failed-runner" "$BASH" "$script" provisioning-and-batching
-  cat >"$tmp/failed-runner" <<'SH'
-#!/usr/bin/env bash
+  write_script "$tmp/failed-runner" <<'SH'
 set -euo pipefail
 if [[ "$1" == budget ]]; then echo 1; else sleep 5; fi
 SH
@@ -83,7 +86,10 @@ p = pathlib.Path(sys.argv[1])
 p.write_text(p.read_text().replace("action replayStep = any { replayObserve }", "action replayStep = all { false, count' = count, accepted' = accepted }"))
 PY
   must_fail 'incomplete trace batch' "$LOOM_QUINT_BIN" bridge-replay "$tmp/source"
-  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'exit 0' >"$tmp/bin/quint"
+  write_script "$tmp/bin/quint" <<'SH'
+set -euo pipefail
+exit 0
+SH
   must_fail 'zero traces' env PATH="$tmp/bin:$PATH" "$LOOM_QUINT_BIN" bridge-replay "$LOOM_QUINT_SOURCE"
 }
 

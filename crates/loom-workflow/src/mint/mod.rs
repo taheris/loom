@@ -1149,23 +1149,6 @@ async fn create_molecule_batch<R: CommandRunner>(
             };
         }
     };
-    let molecule = match parent.as_str().parse::<MoleculeId>() {
-        Ok(molecule) => molecule,
-        Err(error) => {
-            return BatchOutcome::Errored {
-                fingerprint,
-                message: error.to_string(),
-            };
-        }
-    };
-    if let Err(err) = bd.mol_bond(molecule.as_str(), bead_id.as_str()).await {
-        return BatchOutcome::Errored {
-            fingerprint,
-            message: format!(
-                "created routed bead `{bead_id}` but failed to bond it to molecule `{molecule}`: {err}",
-            ),
-        };
-    }
     let status = match state {
         MoleculeBatchState::Ready => MaterializedStatus::Open,
         MoleculeBatchState::Deferred => MaterializedStatus::Deferred,
@@ -2579,6 +2562,8 @@ fn evidence_excerpt(evidence: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod real_beads;
+
     use super::*;
     use loom_driver::bd::{BdError, RunOutput};
     use loom_driver::config::LoomConfig;
@@ -2748,7 +2733,6 @@ mod tests {
     #[derive(Debug)]
     struct StatefulBdState {
         beads: Vec<Bead>,
-        bonds: Vec<(MoleculeId, BeadId)>,
         next_child: u32,
         duplicate_on_children_query: Option<Finding>,
         notes_after_create: Option<String>,
@@ -2777,7 +2761,6 @@ mod tests {
             Self {
                 state: Arc::new(Mutex::new(StatefulBdState {
                     beads,
-                    bonds: Vec::new(),
                     next_child: 1,
                     duplicate_on_children_query: None,
                     notes_after_create: None,
@@ -2788,10 +2771,6 @@ mod tests {
 
         fn beads(&self) -> Vec<Bead> {
             self.state.lock().expect("state lock").beads.clone()
-        }
-
-        fn bonds(&self) -> Vec<(MoleculeId, BeadId)> {
-            self.state.lock().expect("state lock").bonds.clone()
         }
 
         fn inject_duplicate_on_children_query(&self, finding: Finding) {
@@ -2884,14 +2863,6 @@ mod tests {
                         .find(|bead| bead.id == id)
                         .expect("updated bead exists");
                     apply_stateful_update(bead, &argv);
-                    Ok(ok_stdout(""))
-                }
-                Some("mol") if argv.get(1).is_some_and(|arg| arg == "bond") => {
-                    let molecule =
-                        MoleculeId::new(argv.get(2).map(String::as_str).unwrap_or_default())
-                            .unwrap();
-                    let bead = BeadId::new(argv.get(3).map(String::as_str).unwrap_or_default())?;
-                    state.bonds.push((molecule, bead));
                     Ok(ok_stdout(""))
                 }
                 other => Ok(RunOutput {
@@ -3130,9 +3101,7 @@ mod tests {
 
     #[tokio::test]
     async fn stateful_bd_runner_conforms_to_routing_command_contract() {
-        let runner = StatefulBdRunner::molecule();
-        let state = runner.clone();
-        let bd = BdClient::with_runner(runner);
+        let bd = BdClient::with_runner(StatefulBdRunner::molecule());
         let parent = BeadId::new("lm-mol").expect("molecule id");
 
         let child = bd
@@ -3146,9 +3115,6 @@ mod tests {
             })
             .await
             .expect("create child");
-        bd.mol_bond("lm-mol", child.as_str())
-            .await
-            .expect("bond child");
         bd.update(
             &child,
             UpdateOpts {
@@ -3177,11 +3143,11 @@ mod tests {
 
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].id, child);
-        assert_eq!(ready, [] as [loom_driver::bd::Bead; 0]);
         assert_eq!(
-            state.bonds(),
-            vec![(MoleculeId::new("lm-mol").unwrap(), child)]
+            children[0].parent.as_ref().map(BeadId::as_str),
+            Some("lm-mol")
         );
+        assert_eq!(ready, [] as [loom_driver::bd::Bead; 0]);
     }
 
     #[tokio::test]
@@ -3725,10 +3691,6 @@ mod tests {
                 .any(|label| { label.as_str() == finding_label(&finding) })
         );
         assert!(!remediation.labels.iter().any(Label::is_deferred));
-        assert_eq!(
-            state.bonds(),
-            vec![(MoleculeId::new("lm-mol").unwrap(), remediation.id)],
-        );
     }
 
     #[tokio::test]
@@ -3769,10 +3731,6 @@ mod tests {
         assert_eq!(
             remediation.parent.as_ref().map(BeadId::as_str),
             Some("lm-mol")
-        );
-        assert_eq!(
-            state.bonds(),
-            vec![(MoleculeId::new("lm-mol").unwrap(), remediation.id)],
         );
     }
 

@@ -4184,9 +4184,9 @@ mod tests {
             );
             assert!(create.iter().any(|arg| arg.contains("loom:deferred")));
             assert!(
-                calls
+                !calls
                     .iter()
-                    .any(|call| { call == &["mol", "bond", "lm-mol1", "lm-routed.1"] })
+                    .any(|call| call.starts_with(&["mol".to_owned(), "bond".to_owned()]))
             );
             assert!(calls.iter().any(|call| {
                 call.windows(2)
