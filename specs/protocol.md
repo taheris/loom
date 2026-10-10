@@ -162,12 +162,12 @@ resolution contracts live in
   role, and payload in the message table with checked identifiers, nonempty
   references, and required nonblank text; arbitrary JSON blobs and invalid
   construction cannot substitute for those typed payloads.
-  [test?](canonical_agent_output_message_contract_is_constructible)
+  [test](canonical_agent_output_message_contract_is_constructible)
 
 - Independent literal wire fixtures pin every marker's unit/data shape and
   decoded variant. Missing or extra payloads and invalid required fields fail;
   serialization round trips alone do not define the accepted language.
-  [test?](canonical_agent_output_wire_fixtures_pin_variant_shapes)
+  [test](canonical_agent_output_wire_fixtures_pin_variant_shapes)
 
 ### Framing and errors
 
@@ -177,34 +177,34 @@ resolution contracts live in
   terminal; malformed recognized JSON fails without newline/control-character
   repair. Non-whitespace suffixes on the object's closing line fail rather than
   being reclassified as commentary or another message.
-  [test?](shared_decoder_enforces_root_line_framing_and_strict_json)
+  [test](shared_decoder_enforces_root_line_framing_and_strict_json)
 
 - Valid compact and pretty-printed JSON decode to the same message, including
   correctly escaped multiline evidence; terminal placement uses the complete
   logical object rather than its final physical line.
-  [test?](shared_decoder_treats_multiline_payload_as_one_logical_message)
+  [test](shared_decoder_treats_multiline_payload_as_one_logical_message)
 
 - Admitted sessions have exactly one final logical terminal. Missing, duplicate,
   earlier, or trailing-text terminals and records after terminal fail without
   manufacturing success from a suffix.
-  [test?](shared_decoder_enforces_terminal_cardinality_and_position)
+  [test](shared_decoder_enforces_terminal_cardinality_and_position)
 
 - Errors retain raw text, source spans, valid decoded context, and an
   independently established terminal when available. Unterminated payloads
   cannot turn ambiguous interior text into a live message or passing result.
-  [test?](shared_decoder_retains_valid_context_with_raw_errors)
+  [test](shared_decoder_retains_valid_context_with_raw_errors)
 
 ### Phase admission
 
 - Every cell of the phase-admission table is exercised against the canonical
   decoder: permitted records and terminals are admitted, wrong-phase messages
   are rejected, and decoding alone performs no workflow mutation.
-  [test?](canonical_phase_admission_rejects_wrong_message_roles)
+  [test](canonical_phase_admission_rejects_wrong_message_roles)
 
 - Multiple `Clarify` records aggregate the exact decision-ID union without
   duplicate queue identity or silent loss of invalid references; reporting is
   independent of the emitter's final outcome.
-  [test?](clarify_records_aggregate_exact_decision_ids)
+  [test](clarify_records_aggregate_exact_decision_ids)
 
 ### Consumer conformance
 

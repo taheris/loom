@@ -2458,7 +2458,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "loom"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2485,7 +2485,7 @@ dependencies = [
 
 [[package]]
 name = "loom-agent"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "blake3",
  "displaydoc",
@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "loom-direct-runner"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "displaydoc",
@@ -2531,7 +2531,7 @@ dependencies = [
 
 [[package]]
 name = "loom-driver"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "displaydoc",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "loom-events"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "displaydoc",
@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "loom-gate"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "blake3",
  "displaydoc",
@@ -2597,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "loom-llm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -2622,12 +2622,13 @@ dependencies = [
 
 [[package]]
 name = "loom-protocol"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "blake3",
  "displaydoc",
  "loom-events",
  "loom-test-support",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -2638,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "loom-render"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "crossterm",
  "displaydoc",
@@ -2652,7 +2653,7 @@ dependencies = [
 
 [[package]]
 name = "loom-skill"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "blake3",
  "displaydoc",
@@ -2669,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "loom-templates"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "askama",
@@ -2685,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "loom-test-support"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "loom-events",
@@ -2697,7 +2698,7 @@ dependencies = [
 
 [[package]]
 name = "loom-tune"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "displaydoc",
  "glob",
@@ -2714,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "loom-walk"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "displaydoc",
@@ -2733,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "loom-workflow"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "askama",

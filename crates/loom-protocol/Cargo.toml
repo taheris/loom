@@ -33,6 +33,7 @@ thiserror = { workspace = true }
 # crate's own Cargo.toml dep set in `tests/protocol_surface.rs`).
 [dev-dependencies]
 loom-test-support = { workspace = true }
+proptest = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
 trybuild = { workspace = true }
