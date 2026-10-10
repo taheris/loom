@@ -1,25 +1,15 @@
-//! Verdict-gate direct-emit `LOOM_CLARIFY` validation.
-//!
-//! When the agent self-reports `LOOM_CLARIFY`, the verdict gate inspects
-//! the target bead's notes ∪ description for a well-formed
-//! `## Options — <summary>` heading with at least one `### Option <N> — <title>`
-//! subsection (per `specs/gate.md` § *Options Format Contract*). A
-//! well-formed block applies `loom:clarify`; an absent or malformed
-//! block downgrades to `loom:blocked` carrying
-//! [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] so `loom inbox`'s queue is not handed
-//! an empty options block.
-//!
-//! Target bead for direct-emit is the bead under dispatch for the
-//! `loop` / `review` phases and the molecule epic for the `todo_*`
-//! phases (`specs/templates.md` § Decomposition Discipline).
+//! Direct clarification admission requires one canonical decision brief across
+//! the target's notes and description. Defective briefs become blocked repair
+//! items with their producer context preserved.
 
 use std::path::PathBuf;
 
 use loom_driver::bd::{BdClient, BdError, CommandRunner, UpdateOpts};
 use loom_driver::identifier::BeadId;
 use loom_events::{DriverEventPayload, DriverKind};
-use loom_protocol::gate::options::has_well_formed_block;
 use serde::Serialize;
+
+use crate::inbox::parse_options_in;
 
 /// Cause string written into the target bead's notes when the gate
 /// downgrades a direct-emit `LOOM_CLARIFY` because the bead's notes ∪
@@ -157,9 +147,8 @@ pub(crate) fn evidence_excerpt(text: &str) -> String {
     }
 }
 
-/// Inspect the target bead's notes ∪ description for a well-formed
-/// options block; apply `loom:clarify` when found, `loom:blocked` with
-/// cause [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] otherwise.
+/// Admit one unique Options brief from the target's notes and description;
+/// otherwise retain a blocked repair item with its original context.
 ///
 /// Either path
 /// transitions the bead to `status=blocked` so `bd ready` excludes it
@@ -190,45 +179,61 @@ pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
     bead: &BeadId,
 ) -> Result<ClarifyApplyReport, BdError> {
     let snapshot = bd.show(bead).await?;
-    let mut union = snapshot.notes.unwrap_or_default();
+    let mut union = snapshot.notes.clone().unwrap_or_default();
     if !union.is_empty() {
         union.push('\n');
     }
     union.push_str(&snapshot.description);
 
-    if has_well_formed_block(&union) {
-        bd.update(
-            bead,
-            UpdateOpts {
-                status: Some(loom_driver::bd::Status::Blocked),
-                add_labels: vec!["loom:clarify".to_string()],
-                ..UpdateOpts::default()
-            },
-        )
-        .await?;
-        Ok(ClarifyApplyReport {
-            outcome: ClarifyApplyOutcome::Clarify,
-            options_parse_result: OptionsParseResult::WellFormed,
-            evidence_hash: evidence_hash(&union),
-            evidence_excerpt: evidence_excerpt(&union),
-        })
-    } else {
-        bd.update(
-            bead,
-            UpdateOpts {
-                status: Some(loom_driver::bd::Status::Blocked),
-                add_labels: vec!["loom:blocked".to_string()],
-                notes: Some(CLARIFY_WITHOUT_OPTIONS_CAUSE.to_string()),
-                ..UpdateOpts::default()
-            },
-        )
-        .await?;
-        Ok(ClarifyApplyReport {
-            outcome: ClarifyApplyOutcome::BlockedClarifyWithoutOptions,
-            options_parse_result: OptionsParseResult::MissingOrMalformed,
-            evidence_hash: evidence_hash(&union),
-            evidence_excerpt: evidence_excerpt(&union),
-        })
+    match parse_options_in(snapshot.notes.as_deref(), &snapshot.description) {
+        Ok(_) => {
+            bd.update(
+                bead,
+                UpdateOpts {
+                    status: Some(loom_driver::bd::Status::Blocked),
+                    add_labels: vec!["loom:clarify".to_string()],
+                    remove_labels: vec!["loom:blocked".to_string()],
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
+            Ok(ClarifyApplyReport {
+                outcome: ClarifyApplyOutcome::Clarify,
+                options_parse_result: OptionsParseResult::WellFormed,
+                evidence_hash: evidence_hash(&union),
+                evidence_excerpt: evidence_excerpt(&union),
+            })
+        }
+        Err(error) => {
+            let repair = format!("## Decision brief repair\n\n{}", error.repair_message());
+            let notes = match snapshot.notes {
+                Some(notes) if !notes.trim().is_empty() => {
+                    if notes.contains(&repair) {
+                        notes
+                    } else {
+                        format!("{notes}\n\n{repair}")
+                    }
+                }
+                _ => repair,
+            };
+            bd.update(
+                bead,
+                UpdateOpts {
+                    status: Some(loom_driver::bd::Status::Blocked),
+                    add_labels: vec!["loom:blocked".to_string()],
+                    remove_labels: vec!["loom:clarify".to_string()],
+                    notes: Some(notes),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
+            Ok(ClarifyApplyReport {
+                outcome: ClarifyApplyOutcome::BlockedClarifyWithoutOptions,
+                options_parse_result: OptionsParseResult::MissingOrMalformed,
+                evidence_hash: evidence_hash(&union),
+                evidence_excerpt: evidence_excerpt(&union),
+            })
+        }
     }
 }
 
@@ -301,6 +306,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_options_brief_is_unique_and_supplies_decision_summary() {
+        use crate::inbox::{InboxKind, build_inbox_context, build_queue, build_rows};
+        use loom_driver::bd::{Bead, Label};
+        use loom_templates::SkillIndexMarkdown;
+        use std::path::Path;
+
+        let brief = "## Options — canonical question\n\n### Option 1 — Keep\nCost: debt.\n\n### Option 2 — Change\nCost: churn.\n";
+        let fenced = format!("```markdown\n{brief}```\n");
+        let duplicate = format!("{brief}\n{brief}");
+        let overlong = format!(
+            "## Options — {}\n### Option 1 — Keep\nCost: debt.",
+            "x".repeat(51)
+        );
+        for (notes, description, valid) in [
+            (None, brief, true),
+            (Some(brief), "plain description", true),
+            (Some(fenced.as_str()), brief, true),
+            (Some(brief), fenced.as_str(), true),
+            (Some("```markdown\n"), brief, true),
+            (None, "plain description", false),
+            (None, fenced.as_str(), false),
+            (Some(brief), brief, false),
+            (None, duplicate.as_str(), false),
+            (Some("## Options\n"), brief, false),
+            (None, overlong.as_str(), false),
+            (
+                None,
+                "## Options —\n### Option 1 — Keep\nCost: debt.",
+                false,
+            ),
+            (
+                None,
+                "## Options — question\n### Option 2 — Keep\nCost: debt.",
+                false,
+            ),
+            (
+                None,
+                "## Options — question\n### Option 1 —\nCost: debt.",
+                false,
+            ),
+            (None, "## Options — question\n### Option 1 — Keep\n", false),
+            (
+                Some("## Options — question\n### Option 1 — Keep\n"),
+                "plain description",
+                false,
+            ),
+            (
+                Some("## Options — question\n"),
+                "### Option 1 — Keep\nCost: debt.",
+                false,
+            ),
+        ] {
+            let row = bead_row("lm-decision", description, notes);
+            let mut beads: Vec<Bead> = serde_json::from_str(&row).expect("bead snapshot");
+            beads[0].labels = vec![Label::new("loom:clarify").expect("label")];
+            let snapshot = beads.clone();
+            let parsed = parse_options_in(notes, description);
+            assert_eq!(parsed.is_ok(), valid, "{notes:?} / {description}");
+
+            let queue = build_queue(&beads, None, None, true);
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].brief, parsed);
+            assert_eq!(
+                queue[0].kind,
+                if valid {
+                    InboxKind::Clarify
+                } else {
+                    InboxKind::Blocked
+                }
+            );
+            let rows = build_rows(&queue, None);
+            let context = build_inbox_context(
+                Path::new("/workspace"),
+                String::new(),
+                Vec::new(),
+                &queue,
+                "/workspace/.loom/scratch/inbox/scratch.md".into(),
+                SkillIndexMarkdown::empty(),
+            );
+            let item = &context.inbox_items[0];
+            if valid {
+                assert_eq!(rows[0].summary, "canonical question");
+                assert_eq!(item.options_summary.as_deref(), Some("canonical question"));
+                assert_eq!(item.options.len(), 2);
+                assert_eq!(item.options[0].title.as_deref(), Some("Keep"));
+                assert_eq!(item.options[1].body.as_deref(), Some("Cost: churn."));
+            } else {
+                assert_eq!(rows[0].summary, "Repair Options brief");
+                assert!(item.options_summary.is_none());
+                assert!(item.options.is_empty());
+                let repair = queue[0].brief_repair().expect("repair diagnostic");
+                assert!(repair.chars().count() < 400);
+                assert!(
+                    item.notes
+                        .as_deref()
+                        .expect("repair context")
+                        .contains(&repair)
+                );
+            }
+            assert_eq!(beads, snapshot, "queue/context must not mutate bead state");
+
+            let runner = ScriptedRunner::new(vec![ok(&row), ok("")]);
+            let invocations = runner.invocations_handle();
+            let bd = BdClient::with_runner(runner);
+            let report = apply_clarify_or_blocked_report(&bd, &beads[0].id)
+                .await
+                .expect("admission");
+            assert_eq!(
+                report.outcome,
+                if valid {
+                    ClarifyApplyOutcome::Clarify
+                } else {
+                    ClarifyApplyOutcome::BlockedClarifyWithoutOptions
+                }
+            );
+            assert!(report.evidence_excerpt.chars().count() <= 241);
+            let calls = argv(&invocations);
+            let update = &calls[1];
+            let label = if valid {
+                "loom:clarify"
+            } else {
+                "loom:blocked"
+            };
+            assert!(update.windows(2).any(|args| args == ["--add-label", label]));
+            if !valid {
+                let repair_notes = &update[update
+                    .iter()
+                    .position(|arg| arg == "--notes")
+                    .expect("notes flag")
+                    + 1];
+                assert!(repair_notes.contains(CLARIFY_WITHOUT_OPTIONS_CAUSE));
+                if let Some(notes) = notes {
+                    assert!(repair_notes.starts_with(notes), "preserve producer context");
+                }
+                assert_eq!(
+                    parse_options_in(Some(repair_notes), description),
+                    parsed,
+                    "repair diagnostics must not complete or hide a defective brief"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn well_formed_block_in_description_applies_clarify() {
         let description = "\
 ## Options — pick a path
@@ -321,8 +470,10 @@ body
             "loom:clarify expected: {update:?}",
         );
         assert!(
-            !update.iter().any(|a| a == "loom:blocked"),
-            "loom:blocked must NOT be applied when block is well-formed: {update:?}",
+            update
+                .windows(2)
+                .any(|args| args == ["--remove-label", "loom:blocked"]),
+            "obsolete blocked label must be removed: {update:?}",
         );
     }
 
@@ -357,8 +508,10 @@ body
             "loom:blocked expected on downgrade: {update:?}",
         );
         assert!(
-            !update.iter().any(|a| a == "loom:clarify"),
-            "loom:clarify MUST NOT be applied on malformed block: {update:?}",
+            update
+                .windows(2)
+                .any(|args| args == ["--remove-label", "loom:clarify"]),
+            "defective clarify label must be removed: {update:?}",
         );
         assert!(
             update

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tracing::warn;
 
-use super::options::parse_options_in;
+use super::options::{Brief, Error as BriefError, parse_options_in};
 
 const TUNE_LABEL: &str = "loom:tune";
 const TUNE_STATE_KEY: &str = "loom.tune.state";
@@ -125,11 +125,24 @@ pub struct InboxItem {
     pub kind: InboxKind,
     pub spec: Option<SpecLabel>,
     pub summary: String,
+    pub brief: Result<Brief, BriefError>,
     pub tune: Option<TuneInfo>,
     pub infra: Option<InfraInfo>,
 }
 
 impl InboxItem {
+    pub fn brief_repair(&self) -> Option<String> {
+        match &self.brief {
+            Err(error)
+                if matches!(self.kind, InboxKind::Clarify | InboxKind::Blocked)
+                    && needs_brief_repair(&self.bead) =>
+            {
+                Some(error.repair_message())
+            }
+            _ => None,
+        }
+    }
+
     pub fn durable_id(&self) -> &str {
         match &self.tune {
             Some(tune) => &tune.proposal_id,
@@ -157,7 +170,11 @@ pub fn kind_of(bead: &Bead) -> Option<InboxKind> {
     if is_tune_bead(bead) {
         Some(InboxKind::Tune)
     } else if bead.labels.iter().any(Label::is_clarify) {
-        Some(InboxKind::Clarify)
+        if parse_options_in(bead.notes.as_deref(), &bead.description).is_ok() {
+            Some(InboxKind::Clarify)
+        } else {
+            Some(InboxKind::Blocked)
+        }
     } else if bead.labels.iter().any(Label::is_blocked) {
         Some(InboxKind::Blocked)
     } else if bead.labels.iter().any(Label::is_infra) {
@@ -368,15 +385,23 @@ fn build_candidate(
     if is_closed(bead) || (!include_epics && bead.issue_type == loom_driver::bd::IssueType::Epic) {
         return None;
     }
-    let classified = classify_visible(bead)?;
+    let mut classified = classify_visible(bead)?;
+    let brief = parse_options_in(bead.notes.as_deref(), &bead.description);
+    let defective_brief = matches!(classified.kind, InboxKind::Clarify | InboxKind::Blocked)
+        && brief.is_err()
+        && needs_brief_repair(bead);
+    if defective_brief {
+        classified.kind = InboxKind::Blocked;
+    }
     if kind.is_some_and(|want| want != classified.kind) || !matches_spec(bead, spec) {
         return None;
     }
     let mut visible_bead = bead.clone();
-    if classified
-        .tune
-        .as_ref()
-        .is_some_and(|tune| matches!(tune.state.as_str(), "blocked" | "apply_failed"))
+    if defective_brief
+        || classified
+            .tune
+            .as_ref()
+            .is_some_and(|tune| matches!(tune.state.as_str(), "blocked" | "apply_failed"))
     {
         visible_bead.status = loom_driver::bd::Status::Blocked;
     }
@@ -387,7 +412,14 @@ fn build_candidate(
             bead: visible_bead,
             kind: classified.kind,
             spec: spec_label_of(bead).or_else(|| metadata_spec_label(&bead.metadata)),
-            summary: summary_for(bead),
+            summary: if defective_brief {
+                "Repair Options brief".to_owned()
+            } else {
+                brief
+                    .as_ref()
+                    .map_or_else(|_| bead.title.clone(), |brief| brief.summary().to_owned())
+            },
+            brief,
             tune: classified.tune,
             infra: classified.infra,
         },
@@ -430,6 +462,14 @@ fn classify_visible(bead: &Bead) -> Option<Classified> {
         });
     }
     None
+}
+
+fn needs_brief_repair(bead: &Bead) -> bool {
+    bead.labels.iter().any(Label::is_clarify)
+        || bead
+            .notes
+            .as_deref()
+            .is_some_and(|notes| notes.contains(crate::gate_clarify::CLARIFY_WITHOUT_OPTIONS_CAUSE))
 }
 
 fn is_closed(bead: &Bead) -> bool {
@@ -543,15 +583,6 @@ fn metadata_bool(metadata: &BTreeMap<String, serde_json::Value>, key: &str) -> O
     }
 }
 
-fn summary_for(bead: &Bead) -> String {
-    let parsed = parse_options_in(bead.notes.as_deref(), &bead.description);
-    if parsed.summary.is_empty() {
-        bead.title.clone()
-    } else {
-        parsed.summary
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,9 +615,19 @@ mod tests {
             .insert(TUNE_STATE_KEY.into(), json!("pending"));
         let beads = vec![
             bead("lm-1", "blocked old", "", &["loom:blocked"]),
-            bead("lm-2", "clarify old", "", &["loom:clarify"]),
+            bead(
+                "lm-2",
+                "clarify old",
+                "## Options — old\n### Option 1 — title\nbody",
+                &["loom:clarify"],
+            ),
             tune,
-            bead("lm-3", "clarify new", "", &["loom:clarify"]),
+            bead(
+                "lm-3",
+                "clarify new",
+                "## Options — new\n### Option 1 — title\nbody",
+                &["loom:clarify"],
+            ),
             bead("lm-5", "infra", "", &["loom:infra"]),
         ];
         let queue = build_queue(&beads, None, None, true);
@@ -594,6 +635,52 @@ mod tests {
         assert_eq!(ids, vec!["lm-2", "lm-3", "lm-1", "lm-5", "lm-4"]);
         assert_eq!(queue[0].index, 1);
         assert_eq!(queue[4].index, 5);
+    }
+
+    #[test]
+    fn staged_candidates_are_not_queue_items() {
+        let mut staged = bead(
+            "lm-staged",
+            "candidate",
+            "## Options — question\n### Option 1 — title\nCost: debt.",
+            &[],
+        );
+        staged.status = loom_driver::bd::Status::Blocked;
+        assert_eq!(
+            build_queue(&[staged], None, None, true),
+            [] as [InboxItem; 0]
+        );
+    }
+
+    #[test]
+    fn defective_clarify_is_filtered_as_a_blocked_repair_item() {
+        let defective = bead(
+            "lm-defective",
+            "untrusted summary",
+            "## Options\n",
+            &["loom:clarify"],
+        );
+        assert_eq!(kind_of(&defective), Some(InboxKind::Blocked));
+        assert_eq!(
+            build_queue(
+                std::slice::from_ref(&defective),
+                None,
+                Some(InboxKind::Clarify),
+                true
+            ),
+            [] as [InboxItem; 0]
+        );
+        let queue = build_queue(
+            std::slice::from_ref(&defective),
+            None,
+            Some(InboxKind::Blocked),
+            true,
+        );
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].summary, "Repair Options brief");
+        assert_eq!(queue[0].bead.status, loom_driver::bd::Status::Blocked);
+        assert!(queue[0].brief_repair().expect("repair").contains("summary"));
+        assert_eq!(defective.status, loom_driver::bd::Status::Open);
     }
 
     #[test]

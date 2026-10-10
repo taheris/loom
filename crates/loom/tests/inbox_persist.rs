@@ -454,6 +454,72 @@ fn inbox_view_modes_render_host_side_with_infra_diagnostics() {
 }
 
 #[test]
+fn defective_options_are_read_only_blocked_repairs_not_clarifications() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let state_dir = workspace.join("bd-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let bin_dir = install_bd_shim(workspace);
+    seed_bead(
+        &state_dir,
+        "lm-defective",
+        "duplicated decision",
+        CLARIFY_DESC,
+        "open",
+        &["loom:clarify"],
+    );
+    seed_notes(&state_dir, "lm-defective", CLARIFY_DESC);
+    seed_bead(
+        &state_dir,
+        "lm-staged",
+        "candidate",
+        CLARIFY_DESC,
+        "blocked",
+        &[],
+    );
+
+    let list = run_loom_inbox(workspace, &bin_dir, &state_dir, &["list"]);
+    assert!(list.status.success(), "{}", stderr(&list));
+    let out = stdout(&list);
+    assert!(out.contains("lm-defective [blocked]"), "{out}");
+    assert!(out.contains("Repair Options brief"), "{out}");
+    assert!(!out.contains("lm-staged"), "{out}");
+    let view = run_loom_inbox(
+        workspace,
+        &bin_dir,
+        &state_dir,
+        &["view", "-b", "lm-defective"],
+    );
+    assert!(view.status.success(), "{}", stderr(&view));
+    let out = stdout(&view);
+    assert!(
+        out.contains("clarify-without-options: multiple active Options briefs"),
+        "{out}"
+    );
+    assert!(!out.contains("options summary:"), "{out}");
+    assert!(out.contains("loom inbox chat -b lm-defective"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join("lm-defective/status")).unwrap(),
+        "open"
+    );
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join("lm-defective/labels")).unwrap(),
+        "loom:clarify"
+    );
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join("lm-defective/notes")).unwrap(),
+        CLARIFY_DESC
+    );
+    let invocations = std::fs::read_to_string(state_dir.join(".invocations.log")).unwrap();
+    assert!(
+        !invocations
+            .lines()
+            .any(|line| line.starts_with("update ") || line.starts_with("close ")),
+        "{invocations}"
+    );
+}
+
+#[test]
 fn inbox_removed_flags_and_address_exclusivity() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();

@@ -197,7 +197,7 @@ prerequisites are satisfied, through Loop's attributed wait resumption.
   subsection. The canonical summary supplies the human question/list summary;
   missing, malformed, or ambiguous briefs cannot be admitted as valid direct
   clarification context.
-  [test?](canonical_options_brief_is_unique_and_supplies_decision_summary)
+  [test](canonical_options_brief_is_unique_and_supplies_decision_summary)
 
 - One Inbox session exposes the complete admitted decision batch under the
   selected queue filters, supports conversational partial resolution, and leaves

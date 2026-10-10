@@ -35,7 +35,7 @@ use loom_gate::{
 use loom_protocol::todo::parse_todo_success;
 use loom_workflow::inbox::{
     InboxItem, InboxKind, build_queue, build_rows, find_by_bead_id, find_by_index,
-    find_by_proposal_id, frame_unavailable_tune_items, parse_options_in,
+    find_by_proposal_id, frame_unavailable_tune_items,
 };
 use loom_workflow::r#loop::{
     GateOutcome, InfraRetryPolicy, LoopOutcome, NoGateReason, Parallelism,
@@ -4879,16 +4879,17 @@ fn render_inbox_item_view_text(workspace: &Path, item: &InboxItem) -> String {
         push_blank(&mut out);
         push_line(&mut out, format!("notes:\n{notes}"));
     }
-    let parsed = parse_options_in(item.bead.notes.as_deref(), &item.bead.description);
-    if !parsed.summary.is_empty() || !parsed.options.is_empty() {
+    if let Ok(brief) = &item.brief {
         push_blank(&mut out);
-        push_line(&mut out, format!("options summary: {}", parsed.summary));
-        for option in parsed.options {
+        push_line(&mut out, format!("options summary: {}", brief.summary()));
+        for option in brief.options() {
             push_line(&mut out, format!("option {}: {}", option.n, option.title));
-            if !option.body.is_empty() {
-                push_line(&mut out, option.body);
-            }
+            push_line(&mut out, &option.body);
         }
+    }
+    if let Some(repair) = item.brief_repair() {
+        push_blank(&mut out);
+        push_line(&mut out, repair);
     }
     push_blank(&mut out);
     push_line(&mut out, "manual escape hatches:");

@@ -6,7 +6,6 @@ use loom_templates::inbox::{
 };
 
 use super::list::{InboxItem, InboxKind};
-use super::options::parse_options_in;
 
 /// Build the typed [`InboxContext`] consumed by the `inbox.md` Askama template.
 pub fn build_inbox_context(
@@ -30,21 +29,28 @@ pub fn build_inbox_context(
 }
 
 fn to_template_item(workspace: &Path, item: &InboxItem) -> TemplateItem {
-    let parsed = parse_options_in(item.bead.notes.as_deref(), &item.bead.description);
-    let options_summary = if parsed.summary.is_empty() {
-        None
-    } else {
-        Some(parsed.summary)
+    let (options_summary, options) = match &item.brief {
+        Ok(brief) => (
+            Some(brief.summary().to_owned()),
+            brief
+                .options()
+                .iter()
+                .map(|opt| ClarifyOption {
+                    n: opt.n,
+                    title: Some(opt.title.clone()),
+                    body: Some(opt.body.clone()),
+                })
+                .collect(),
+        ),
+        Err(_) => (None, Vec::new()),
     };
-    let options = parsed
-        .options
-        .into_iter()
-        .map(|opt| ClarifyOption {
-            n: opt.n,
-            title: option_field(opt.title),
-            body: option_field(opt.body),
-        })
-        .collect();
+    let mut notes = item.bead.notes.clone().filter(|notes| !notes.is_empty());
+    if let Some(repair) = item.brief_repair() {
+        notes = Some(match notes {
+            Some(notes) => format!("{notes}\n\n{repair}"),
+            None => repair,
+        });
+    }
     TemplateItem {
         index: item.index,
         id: item.durable_id().to_owned(),
@@ -55,7 +61,7 @@ fn to_template_item(workspace: &Path, item: &InboxItem) -> TemplateItem {
             .map_or_else(|| "—".to_owned(), ToString::to_string),
         title: item.bead.title.clone(),
         body: item.bead.description.clone(),
-        notes: item.bead.notes.clone().filter(|notes| !notes.is_empty()),
+        notes,
         options_summary,
         options,
         kind: match item.kind {
@@ -91,10 +97,6 @@ fn to_template_item(workspace: &Path, item: &InboxItem) -> TemplateItem {
             }
         }),
     }
-}
-
-fn option_field(s: String) -> Option<String> {
-    if s.is_empty() { None } else { Some(s) }
 }
 
 #[cfg(test)]

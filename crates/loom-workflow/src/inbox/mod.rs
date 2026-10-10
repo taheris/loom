@@ -20,6 +20,6 @@ pub use list::{
     find_by_index, find_by_proposal_id, frame_unavailable_tune_items, kind_of, spec_label_of,
 };
 pub use options::{
-    OptionEntry, OptionsParse, find_options_block_range, parse_options, parse_options_in,
-    strip_options_block,
+    Brief, Error as BriefError, OptionEntry, find_options_block_range, parse_options,
+    parse_options_in, strip_options_block,
 };
