@@ -134,9 +134,9 @@ fn retry_session(reason: &str) -> (SessionResult, Option<ExitSignal>) {
             exit_code: 0,
             cost_usd: None,
         }),
-        Some(ExitSignal::Retry {
-            reason: reason.to_string(),
-        }),
+        Some(ExitSignal::Retry(loom_protocol::output::Reason {
+            reason: loom_protocol::todo::NonEmptyString::new(reason).unwrap(),
+        })),
     )
 }
 
@@ -368,9 +368,12 @@ async fn bead_workspace_survives_retry_until_close() -> Result<()> {
                         exit_code: 0,
                         cost_usd: None,
                     }),
-                    Some(ExitSignal::Blocked {
-                        reason: "stop after persistence assertion".to_string(),
-                    }),
+                    Some(ExitSignal::Blocked(loom_protocol::output::Reason {
+                        reason: loom_protocol::todo::NonEmptyString::new(
+                            "stop after persistence assertion",
+                        )
+                        .unwrap(),
+                    })),
                 )
             }
         },

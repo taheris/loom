@@ -80,8 +80,11 @@ fn loom_workflow_re_exports_walk_output_and_exit_signal_from_loom_protocol() {
     let proto_signal = loom_protocol::gate::ExitSignal::Complete;
     let _: loom_workflow::todo::ExitSignal = identity(proto_signal);
 
-    let parsed =
-        loom_workflow::todo::parse_exit_signal("LOOM_COMPLETE\n").expect("complete marker parses");
+    let parsed = loom_workflow::todo::parse_exit_signal(
+        "LOOM_COMPLETE\n",
+        loom_protocol::output::Phase::Loop,
+    )
+    .expect("complete marker parses");
     let _: loom_protocol::gate::ExitSignal = identity(parsed);
 
     // Function-pointer identity pin for parse_walk_output: same signature

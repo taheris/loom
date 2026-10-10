@@ -647,7 +647,15 @@ fn classify_review_phase_with_suppressions(
     exit_code: i32,
     suppressions: &[SuppressionConfig],
 ) -> ReviewOutcome {
-    let marker = exit_signal_from_terminal(walk.terminal());
+    if let Some(badwalk) = walk.protocol_bad_walk() {
+        return ReviewOutcome::Incomplete {
+            detail: format!(
+                "agent exit code {exit_code}: {}",
+                PreviousFailure::BadWalk(badwalk)
+            ),
+        };
+    }
+    let marker = exit_signal_from_walk(walk);
     if matches!(marker, Some(ExitSignal::Complete)) && exit_code != 0 {
         return ReviewOutcome::Incomplete {
             detail: format!("agent emitted COMPLETE but exited code {exit_code}"),
@@ -762,6 +770,11 @@ fn phase_verdict_from_walk_with_suppressions(
     walk: &WalkOutput,
     suppressions: &[SuppressionConfig],
 ) -> PhaseVerdict {
+    if let Some(badwalk) = walk.protocol_bad_walk() {
+        return PhaseVerdict::Recovery {
+            cause: RecoveryCause::BadWalk(badwalk),
+        };
+    }
     if !walk.finding_errors().is_empty() {
         let badwalk = loom_templates::previous_failure::BadWalk::MalformedFinding {
             errors: walk.finding_errors().to_vec(),
@@ -771,7 +784,7 @@ fn phase_verdict_from_walk_with_suppressions(
             cause: RecoveryCause::BadWalk(badwalk),
         };
     }
-    let marker = exit_signal_from_terminal(walk.terminal());
+    let marker = exit_signal_from_walk(walk);
     let inputs = GateInputs {
         bd_closed: true,
         diff_empty: false,
@@ -824,7 +837,9 @@ fn ineffective_suppression_matches(
 }
 
 fn all_findings_suppressed(walk: &WalkOutput, suppressions: &[SuppressionConfig]) -> bool {
-    matches!(walk.terminal(), TerminalSurface::Concern { .. })
+    walk.decoded().is_ok()
+        && walk.finding_errors().is_empty()
+        && matches!(walk.terminal(), TerminalSurface::Concern { .. })
         && !walk.findings().is_empty()
         && walk
             .findings()
@@ -858,35 +873,10 @@ fn suppress_review_concern(
     }
 }
 
-/// Reverse [`WalkOutput::terminal`] back to the per-phase [`ExitSignal`]
-/// the gate's [`decide`] table consumes. A
-/// [`TerminalSurface::Malformed`] payload feeds
-/// [`ExitSignal::BadWalk`] with [`BadWalk::Concern { payload, .. }`],
-/// preserving the literal payload through the gate boundary.
-fn exit_signal_from_terminal(terminal: &TerminalSurface) -> Option<ExitSignal> {
-    match terminal {
-        TerminalSurface::Complete => Some(ExitSignal::Complete),
-        TerminalSurface::Noop => Some(ExitSignal::Noop),
-        TerminalSurface::Waiting => Some(ExitSignal::Waiting),
-        TerminalSurface::Blocked { reason } => Some(ExitSignal::Blocked {
-            reason: reason.clone(),
-        }),
-        TerminalSurface::Clarify { question } => Some(ExitSignal::Clarify {
-            question: question.clone(),
-        }),
-        TerminalSurface::Retry { reason } => Some(ExitSignal::Retry {
-            reason: reason.clone(),
-        }),
-        TerminalSurface::Concern { summary } => Some(ExitSignal::Concern {
-            summary: summary.clone(),
-        }),
-        TerminalSurface::Malformed { payload } => Some(ExitSignal::BadWalk(
-            loom_templates::previous_failure::BadWalk::Concern {
-                payload: payload.clone(),
-                parsed_findings: Vec::new(),
-            },
-        )),
-        TerminalSurface::Missing => None,
+fn exit_signal_from_walk(walk: &WalkOutput) -> Option<ExitSignal> {
+    match walk.decoded() {
+        Ok(session) => Some(session.terminal().message.clone()),
+        Err(_) => None,
     }
 }
 
@@ -938,7 +928,7 @@ where
         );
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);
-        let (outcome, marker, stdout) = result?;
+        let (outcome, _transport_marker, stdout) = result?;
         let validator = WorkspaceFindingValidator::new(&self.workspace);
         let walk = WalkOutput::from_stdout(&stdout, self.dispatch_scope, &validator);
         let suppressed_findings = suppressed_findings(&walk, &self.suppressions);
@@ -991,7 +981,7 @@ where
             if matches!(typed_outcome, ReviewOutcome::Complete) && suppressed_review_concern {
                 Some(ExitSignal::Complete)
             } else {
-                marker
+                exit_signal_from_walk(&walk)
             };
         if let (Some(path), Some(verified)) = (
             self.resolve_review_log_for_marker(),
@@ -1451,9 +1441,15 @@ mod tests {
             TerminalSurface::Complete => "LOOM_COMPLETE\n".to_string(),
             TerminalSurface::Noop => "LOOM_NOOP\n".to_string(),
             TerminalSurface::Waiting => "LOOM_WAITING\n".to_string(),
-            TerminalSurface::Blocked { reason } => format!("{reason}\nLOOM_BLOCKED\n"),
-            TerminalSurface::Clarify { question } => format!("{question}\nLOOM_CLARIFY\n"),
-            TerminalSurface::Retry { reason } => format!("{reason}\nLOOM_RETRY\n"),
+            TerminalSurface::Blocked { reason } => {
+                format!("LOOM_BLOCKED: {}\n", serde_json::json!({"reason":reason}))
+            }
+            TerminalSurface::Clarify { .. } => {
+                "LOOM_CLARIFY: {\"decisions\":[\"lm-decision\"]}\nLOOM_COMPLETE\n".to_owned()
+            }
+            TerminalSurface::Retry { reason } => {
+                format!("LOOM_RETRY: {}\n", serde_json::json!({"reason":reason}))
+            }
             TerminalSurface::Concern { summary } => {
                 let json = serde_json::json!({ "summary": summary }).to_string();
                 format!("LOOM_CONCERN: {json}\n")
@@ -1507,10 +1503,9 @@ mod tests {
             0,
         ) {
             ReviewOutcome::Incomplete { detail } => assert!(
-                detail.contains("wrong-review-path")
-                    && detail.contains("LOOM_CLARIFY")
-                    && detail.contains("route=\"clarify\"")
-                    && detail.contains("LOOM_CONCERN"),
+                detail.contains("canonical admission")
+                    && detail.contains("WrongPhase")
+                    && detail.contains("LOOM_CLARIFY"),
                 "clarify detail should explain the review-only route: {detail}",
             ),
             other @ ReviewOutcome::Complete => panic!("expected Incomplete, got {other:?}"),
@@ -1519,8 +1514,8 @@ mod tests {
         // the swallowed-marker phrasing.
         match classify_review_phase(&walk_with_terminal(TerminalSurface::Missing), 0) {
             ReviewOutcome::Incomplete { detail } => assert!(
-                detail.contains("swallowed marker"),
-                "swallowed-marker text missing: {detail}",
+                detail.contains("MissingTerminal"),
+                "missing-terminal diagnostic absent: {detail}",
             ),
             other @ ReviewOutcome::Complete => panic!("expected Incomplete, got {other:?}"),
         }
@@ -1726,6 +1721,35 @@ mod tests {
                 cell.stdout,
             );
             let verdict = phase_verdict_from_walk(&walk);
+            if let Err(failure) = walk.decoded() {
+                let PhaseVerdict::Recovery {
+                    cause:
+                        RecoveryCause::BadWalk(BadWalk::Protocol {
+                            context,
+                            diagnostics,
+                            parsed_findings,
+                            finding_errors,
+                        }),
+                } = &verdict
+                else {
+                    panic!(
+                        "[{}] rejected output was not a protocol recovery: {verdict:?}",
+                        cell.name
+                    );
+                };
+                assert_eq!(context.as_ref(), failure.context());
+                assert_eq!(context.raw(), cell.stdout);
+                assert_eq!(parsed_findings.len(), cell.expected_well_formed_findings);
+                assert_eq!(finding_errors.len(), cell.expected_malformed_findings);
+                assert_eq!(diagnostics.len(), failure.diagnostics().len());
+                for ((span, detail), original) in diagnostics.iter().zip(failure.diagnostics()) {
+                    assert_eq!(span, &original.span);
+                    assert!(!detail.is_empty());
+                }
+                let rendered = render_for_display_check(&verdict).unwrap();
+                assert!(rendered.contains(&cell.stdout));
+                continue;
+            }
             match (&cell.expect, &verdict) {
                 (CellExpect::Done, PhaseVerdict::Done)
                 | (
@@ -1938,8 +1962,8 @@ mod tests {
 
     const FINDING_F1_LINE: &str = r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test --lib f1"},"evidence":"first finding"}"#;
     const FINDING_F2_LINE: &str = r#"LOOM_FINDING: {"token":"weak-assertion","route":"deferred","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test --lib f2"},"evidence":"second finding"}"#;
-    const BACKTICK_BAD_FINDING_LINE_A: &str = "`LOOM_FINDING: {not valid json A}`";
-    const BACKTICK_BAD_FINDING_LINE_B: &str = "`LOOM_FINDING: {not valid json B}`";
+    const BAD_FINDING_LINE_A: &str = "LOOM_FINDING: {not valid json A}";
+    const BAD_FINDING_LINE_B: &str = "LOOM_FINDING: {not valid json B}";
 
     const T_COMPLETE: &str = "LOOM_COMPLETE";
     const T_NOOP: &str = "LOOM_NOOP";
@@ -1953,12 +1977,8 @@ mod tests {
         match name {
             "S0" => (vec![], 0, 0),
             "S1" => (vec![FINDING_F1_LINE, FINDING_F2_LINE], 2, 0),
-            "S2" => (vec![FINDING_F1_LINE, BACKTICK_BAD_FINDING_LINE_A], 1, 1),
-            "S3" => (
-                vec![BACKTICK_BAD_FINDING_LINE_A, BACKTICK_BAD_FINDING_LINE_B],
-                0,
-                2,
-            ),
+            "S2" => (vec![FINDING_F1_LINE, BAD_FINDING_LINE_A], 1, 1),
+            "S3" => (vec![BAD_FINDING_LINE_A, BAD_FINDING_LINE_B], 0, 2),
             other => panic!("unknown stream label: {other}"),
         }
     }
@@ -2744,9 +2764,10 @@ mod tests {
                             exit_code: 0,
                             cost_usd: None,
                         },
-                        Some(ExitSignal::Concern {
-                            summary: "tree drift".to_owned(),
-                        }),
+                        Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                            summary: loom_protocol::todo::NonEmptyString::new("tree drift")
+                                .unwrap(),
+                        })),
                         stdout,
                     ))
                 }
@@ -2833,9 +2854,10 @@ mod tests {
                             exit_code: 0,
                             cost_usd: None,
                         },
-                        Some(ExitSignal::Concern {
-                            summary: "bad anchor".to_owned(),
-                        }),
+                        Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                            summary: loom_protocol::todo::NonEmptyString::new("bad anchor")
+                                .unwrap(),
+                        })),
                         stdout,
                     ))
                 }

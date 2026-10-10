@@ -326,6 +326,21 @@ fn concern_label_from_findings(findings: &[Finding]) -> String {
 
 fn render_bad_walk(badwalk: &BadWalk) -> String {
     match badwalk {
+        BadWalk::Protocol {
+            context,
+            diagnostics,
+            parsed_findings,
+            finding_errors,
+        } => {
+            let mut out = format!(
+                "Agent output failed canonical admission: {diagnostics:?}\nFinding resolution errors: {finding_errors:?}\n\nOriginal output:\n{}",
+                context.raw()
+            );
+            for finding in parsed_findings {
+                append_finding_digest(&mut out, finding);
+            }
+            out
+        }
         BadWalk::Concern {
             payload,
             parsed_findings,
@@ -371,7 +386,7 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
                 "One or more LOOM_FINDING: records failed strict validation. \
                  Re-emit each finding as JSON: \
                  `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`. \
-                 Use \\n escapes or raw line breaks only inside JSON strings.",
+                 Use JSON escapes for newlines inside strings; do not emit raw control characters.",
             );
             for err in errors {
                 out.push_str("\n\n");

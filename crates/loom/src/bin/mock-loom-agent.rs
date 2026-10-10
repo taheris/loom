@@ -16,10 +16,9 @@
 //!
 //! Modes (set `LOOM_TEST_AGENT_MODE`):
 //!
-//! - `blocked-marker`  — emit `<reason>\nLOOM_BLOCKED` and `agent_end`.
-//!   Drives the run gate's `AgentOutcome::Blocked` branch.
-//! - `clarify-marker`  — emit `<question>\nLOOM_CLARIFY` and `agent_end`.
-//!   Drives the run gate's `AgentOutcome::Clarify` branch.
+//! - `blocked-marker` — emit a typed blocked reason and `agent_end`.
+//! - `clarify-marker` — emit the retired bare clarification spelling;
+//!   exercises rejection before contextual decision admission.
 //! - `complete-marker` — emit `done\nLOOM_COMPLETE` and `agent_end`.
 //!   Used by the negative case in B6: the agent should also call
 //!   `bd close` itself, but the test asserts the *driver* doesn't.
@@ -40,8 +39,7 @@
 //!   `LOOM_TEST_FINDING_LINE` supplies the finding record for admission tests.
 //! - `finding-complete` — emit a finding followed by `LOOM_COMPLETE`, an invalid walk.
 //! - `concern-then-complete` — emit `LOOM_CONCERN: {"summary": "…"}` then
-//!   `LOOM_COMPLETE` on a later line. The final-line parser must pick
-//!   the trailing `LOOM_COMPLETE`; this is the literal May-19 sequence.
+//!   `LOOM_COMPLETE` on a later line; canonical admission rejects both terminals.
 
 #![allow(
     clippy::unwrap_used,
@@ -115,21 +113,17 @@ fn main() -> ExitCode {
     // mode env var carries the test's intent already.
     let _prompt = read_line(&stdin);
 
-    // Step 3 — emit the marker as a message_delta. parse_exit_signal
-    // scans the accumulated text for `LOOM_BLOCKED` / `LOOM_CLARIFY` /
-    // `LOOM_COMPLETE` markers; emitting the reason on the prior line
-    // matches `reason_for`'s "non-empty line before the marker" rule.
     match mode.as_str() {
         MODE_BLOCKED => {
-            emit_message_delta(&mut stdout, BLOCKED_REASON);
-            emit_message_delta(&mut stdout, "LOOM_BLOCKED");
+            let reason = serde_json::json!({ "reason": BLOCKED_REASON });
+            emit_message_delta(&mut stdout, &format!("LOOM_BLOCKED: {reason}"));
         }
         MODE_CLARIFY => {
             emit_message_delta(&mut stdout, CLARIFY_QUESTION);
             emit_message_delta(&mut stdout, "LOOM_CLARIFY");
         }
         MODE_COMPLETE => {
-            emit_message_delta(&mut stdout, "did the work");
+            emit_message_delta(&mut stdout, "did the work\n");
             emit_message_delta(&mut stdout, "LOOM_COMPLETE");
         }
         MODE_WAITING => {
@@ -159,13 +153,6 @@ fn main() -> ExitCode {
             );
         }
         MODE_CONCERN_THEN_COMPLETE => {
-            // The May-19 sequence: a `LOOM_CONCERN: …` line followed by a
-            // separate `LOOM_COMPLETE` line. `parse_exit_signal` reads
-            // only the final non-empty line, so the trailing
-            // `LOOM_COMPLETE` wins. Newlines are embedded in the delta
-            // payload — pi-mono text_deltas concatenate verbatim, so
-            // separate emits without a trailing newline collapse onto
-            // one line and trigger the multi-marker swallow path.
             emit_message_delta(&mut stdout, &format!("{CONCERN_LINE}\n"));
             emit_message_delta(&mut stdout, "did the work\n");
             emit_message_delta(&mut stdout, "LOOM_COMPLETE");

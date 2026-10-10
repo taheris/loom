@@ -462,11 +462,11 @@ fn active_work_epic(id: &str) -> RunOutput {
     ))
 }
 
-fn work_epic_with_notes(id: &str, notes: &str) -> RunOutput {
-    let notes_json = serde_json::Value::String(notes.to_string());
-    ok(&format!(
-        r#"[{{"id":"{id}","title":"todo","status":"open","issue_type":"epic","description":"plain","labels":["loom:todo"],"notes":{notes_json}}}]"#
-    ))
+fn decision_record() -> ExitSignal {
+    ExitSignal::Clarify(loom_protocol::output::Decisions {
+        decisions: loom_protocol::todo::NonEmptyVec::new(vec!["lm-decision".parse().unwrap()])
+            .unwrap(),
+    })
 }
 
 fn created(id: &str) -> RunOutput {
@@ -1847,102 +1847,61 @@ async fn todo_output_summarizes_every_changed_spec_outcome() -> Result<()> {
 }
 
 #[tokio::test]
-async fn todo_clarify_marks_work_epic() -> Result<()> {
+async fn todo_record_cannot_authorize_a_terminal_or_beads_mutation() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
-    let mut responses = preflight_responses(&base, &head);
-    responses.push(work_epic_with_notes(
-        "lm-work",
-        "## Options — choose decomposition\n\n### Option 1 — proceed\nCost: churn.",
-    ));
-    responses.push(empty_json());
-    let runner = CapturingRunner::new(responses);
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
     let calls = runner.clone();
     let mut ctrl = controller(dir.path(), runner)?;
     let _session = ctrl.build_session().await?;
-
-    let record = ctrl
+    let before = calls.calls()?.len();
+    let result = ctrl
         .record_outcome(
             &SessionOutcome {
                 exit_code: 0,
                 cost_usd: None,
             },
-            Some(&ExitSignal::Clarify {
-                question: "which decomposition?".to_string(),
-            }),
+            Some(&decision_record()),
             None,
         )
-        .await?;
-
-    assert_eq!(record.spec_outcomes.len(), 0);
-    let calls = calls.calls()?;
-    assert!(
-        calls
-            .iter()
-            .any(|argv| argv.first().is_some_and(|arg| arg == "show")
-                && argv.get(1).is_some_and(|arg| arg == "lm-work"))
-    );
-    assert!(
-        calls
-            .iter()
-            .any(|argv| argv.iter().any(|arg| arg == "loom:clarify"))
-    );
+        .await;
+    assert!(matches!(
+        result,
+        Err(loom_workflow::todo::TodoError::GenericTodoMarker)
+    ));
+    assert_eq!(calls.calls()?.len(), before);
     Ok(())
 }
 
 #[tokio::test]
-async fn clarify_downgrade_emits_driver_events_and_bd_breadcrumb() -> Result<()> {
+async fn rejected_todo_record_emits_diagnostic_route_without_state_transition() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
-    let mut responses = preflight_responses(&base, &head);
-    responses.push(work_epic_with_notes("lm-work", "clarify without options"));
-    responses.push(empty_json());
-    let runner = CapturingRunner::new(responses);
-    let calls = runner.clone();
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
     let logs_root = dir.path().join(".loom/logs");
     let when = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let mut ctrl = controller(dir.path(), runner)?.with_phase_log(logs_root.clone(), when);
     let _session = ctrl.build_session().await?;
-
-    ctrl.record_outcome(
-        &SessionOutcome {
-            exit_code: 0,
-            cost_usd: None,
-        },
-        Some(&ExitSignal::Clarify {
-            question: "which decomposition?".to_string(),
-        }),
-        None,
-    )
-    .await?;
-
+    assert!(
+        ctrl.record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None
+            },
+            Some(&decision_record()),
+            None,
+        )
+        .await
+        .is_err()
+    );
     let log_path = phase_log_path(&logs_root, "todo", when);
     let events = std::fs::read_to_string(&log_path)?
         .lines()
         .map(serde_json::from_str::<serde_json::Value>)
         .collect::<Result<Vec<_>, _>>()?;
-    let kinds = events
-        .iter()
-        .map(|event| event["driver_kind"].as_str().unwrap_or_default())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        kinds,
-        vec!["marker_routed", "clarify_downgraded", "bd_state_transition"]
-    );
-    let downgrade = &events[1];
-    assert_eq!(downgrade["payload"]["cause"], "clarify-without-options");
-    assert_eq!(downgrade["payload"]["event_sequence"], downgrade["seq"]);
-    assert_eq!(
-        downgrade["payload"]["gate_log_path"],
-        log_path.to_string_lossy().as_ref(),
-    );
-    assert!(calls.calls()?.iter().any(|argv| {
-        argv.first().is_some_and(|arg| arg == "update")
-            && argv.iter().any(|arg| arg == "loom:blocked")
-            && argv
-                .iter()
-                .any(|arg| arg.contains("clarify-without-options"))
-    }));
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["driver_kind"], "marker_routed");
+    assert_eq!(events[0]["payload"]["route"], "wrong-phase-marker");
     Ok(())
 }
 

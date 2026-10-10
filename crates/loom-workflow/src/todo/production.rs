@@ -1160,36 +1160,14 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
                 "exit_code": outcome.exit_code,
             }),
         ));
-        if let Some(ExitSignal::Clarify { .. }) = marker {
-            if let Some(preflight) = self.preflight.clone() {
-                let report = crate::gate_clarify::apply_clarify_or_blocked_report(
-                    &self.bd,
-                    &preflight.work_epic,
-                )
-                .await?;
-                let context = crate::gate_clarify::ClarifyRouteContext {
-                    source_route: crate::gate_clarify::ClarifySourceRoute::TodoMarker,
-                    identity: "LOOM_CLARIFY".to_string(),
-                    gate_log_path: self
-                        .phase_log_root
-                        .as_deref()
-                        .map(|root| phase_log_path(root, "todo", self.phase_log_when)),
-                };
-                for event in report.routing_events(&preflight.work_epic, &context) {
-                    self.emit_driver_event(event);
-                }
-                info!(work_epic = %preflight.work_epic, outcome = ?report.outcome, "loom todo: LOOM_CLARIFY routed to work epic");
-            }
-            return Ok(TodoRecord::default());
-        }
-        if let Some(ExitSignal::Blocked { reason }) = marker {
-            return self.record_blocked(reason).await;
-        }
-        if matches!(
-            marker,
-            Some(ExitSignal::Complete | ExitSignal::Noop | ExitSignal::Waiting)
-        ) {
+        if let Some(message) = marker
+            && (!loom_protocol::output::Phase::Todo.admits(message)
+                || message.role() != loom_protocol::output::Role::Terminal)
+        {
             return Err(TodoError::GenericTodoMarker);
+        }
+        if let Some(ExitSignal::Blocked(payload)) = marker {
+            return self.record_blocked(payload.reason.as_str()).await;
         }
         if outcome.exit_code != 0 {
             debug!(exit_code = outcome.exit_code, marker = ?marker, "loom todo: agent exited before finalizing success");
@@ -1217,16 +1195,11 @@ const fn todo_outcome_route(
     todo_success: Option<&TodoSuccess>,
 ) -> &'static str {
     match marker {
-        Some(ExitSignal::Clarify { .. }) => "clarify",
-        Some(ExitSignal::Blocked { .. }) => "blocked",
-        Some(ExitSignal::Retry { .. }) => "retry",
-        Some(
-            ExitSignal::Complete
-            | ExitSignal::Noop
-            | ExitSignal::Waiting
-            | ExitSignal::Concern { .. }
-            | ExitSignal::BadWalk(_),
-        ) => "wrong-phase-marker",
+        Some(ExitSignal::Blocked(_)) => "blocked",
+        Some(ExitSignal::Retry(_)) => "retry",
+        Some(ExitSignal::Waiting) => "waiting",
+        Some(ExitSignal::Todo(_)) if todo_success.is_some() => "success",
+        Some(_) => "wrong-phase-marker",
         None if outcome.exit_code != 0 => "recovery",
         None if todo_success.is_some() => "success",
         None => "recovery",

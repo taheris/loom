@@ -213,12 +213,9 @@ fn loom_loop_bead_routes_blocked_marker_to_label_and_status_blocked() {
     );
 }
 
-/// Agent emits `LOOM_CLARIFY` with a question. Same shape as
-/// blocked-marker: `status=blocked`, `loom:clarify` label, no driver-side
-/// close. The status transition is the dedup mechanism per the paired
-/// label+status contract.
+/// A retired clarification terminal cannot create a human decision queue item.
 #[test]
-fn loom_loop_bead_routes_clarify_marker_to_label_and_status_blocked() {
+fn loom_loop_rejects_bare_clarify_before_contextual_decision_admission() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -268,8 +265,8 @@ fn loom_loop_bead_routes_clarify_marker_to_label_and_status_blocked() {
 
     let labels = read_labels(&state_dir, "lm-clara");
     assert!(
-        labels.iter().any(|l| l == "loom:clarify"),
-        "clarify bead must carry loom:clarify. labels={labels:?}\nbd-shim log:\n{log}",
+        labels.iter().any(|l| l == "loom:blocked") && !labels.iter().any(|l| l == "loom:clarify"),
+        "invalid terminal must enter recovery, not a decision queue. labels={labels:?}\nbd-shim log:\n{log}",
     );
 
     assert!(
@@ -386,7 +383,7 @@ fn waiting_marker_without_blocker_is_recovery_not_silent_parking() {
 }
 
 #[test]
-fn direct_emit_clarify_without_options_block_falls_back_to_blocked() {
+fn bare_clarify_rejection_preserves_protocol_diagnostics_in_recovery() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -428,7 +425,7 @@ fn direct_emit_clarify_without_options_block_falls_back_to_blocked() {
         "{labels:?}\n{log}"
     );
     assert!(
-        read_field(&state_dir, "lm-noopts", "notes").contains("clarify-without-options"),
+        read_field(&state_dir, "lm-noopts", "notes").contains("canonical admission"),
         "{log}"
     );
     assert!(!driver_closed_bead(&log, "lm-noopts"), "{log}");

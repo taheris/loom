@@ -1087,9 +1087,9 @@ mod tests {
             review: Some(ReviewOutcome::Incomplete {
                 detail: "review concern".into(),
             }),
-            review_marker: Some(ExitSignal::Concern {
-                summary: "scope".into(),
-            }),
+            review_marker: Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                summary: loom_protocol::todo::NonEmptyString::new("scope").unwrap(),
+            })),
             pre_beads: vec![closed.clone()],
             post_beads: vec![closed],
             ..FakeController::default()
@@ -1455,9 +1455,12 @@ mod tests {
             review: Some(ReviewOutcome::Incomplete {
                 detail: "LOOM_CONCERN: spec-conventions-violation -- bad diff".into(),
             }),
-            review_marker: Some(ExitSignal::Concern {
-                summary: "spec-conventions-violation in the diff".into(),
-            }),
+            review_marker: Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                summary: loom_protocol::todo::NonEmptyString::new(
+                    "spec-conventions-violation in the diff",
+                )
+                .unwrap(),
+            })),
             pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
                 bead("lm-1", &["spec:harness"]),
@@ -1499,9 +1502,10 @@ mod tests {
             review: Some(ReviewOutcome::Incomplete {
                 detail: "LOOM_CONCERN: scope -- diff strays".into(),
             }),
-            review_marker: Some(ExitSignal::Concern {
-                summary: "scope drift across the diff".into(),
-            }),
+            review_marker: Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                summary: loom_protocol::todo::NonEmptyString::new("scope drift across the diff")
+                    .unwrap(),
+            })),
             pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
                 bead("lm-1", &["spec:harness"]),
@@ -1567,9 +1571,12 @@ mod tests {
             review: Some(ReviewOutcome::Incomplete {
                 detail: "LOOM_CONCERN: scope -- diff strays in harness lane".into(),
             }),
-            review_marker: Some(ExitSignal::Concern {
-                summary: "scope drift across the harness diff".into(),
-            }),
+            review_marker: Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                summary: loom_protocol::todo::NonEmptyString::new(
+                    "scope drift across the harness diff",
+                )
+                .unwrap(),
+            })),
             pre_beads: vec![bead("lm-harness.3", &["spec:harness"])],
             post_beads: vec![
                 bead("lm-harness.3", &["spec:harness"]),
@@ -1702,9 +1709,12 @@ mod tests {
                     review: Some(ReviewOutcome::Incomplete {
                         detail: "LOOM_CONCERN: scope -- bad".into(),
                     }),
-                    review_marker: Some(ExitSignal::Concern {
-                        summary: "scope drift in the diff".into(),
-                    }),
+                    review_marker: Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                        summary: loom_protocol::todo::NonEmptyString::new(
+                            "scope drift in the diff",
+                        )
+                        .unwrap(),
+                    })),
                     pre_beads: vec![bead("lm-1", &["spec:harness"])],
                     post_beads: vec![
                         bead("lm-1", &["spec:harness"]),
@@ -1796,9 +1806,12 @@ mod tests {
                     review: Some(ReviewOutcome::Incomplete {
                         detail: "LOOM_CONCERN: scope -- bad".into(),
                     }),
-                    review_marker: Some(ExitSignal::Concern {
-                        summary: "scope drift in the diff".into(),
-                    }),
+                    review_marker: Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                        summary: loom_protocol::todo::NonEmptyString::new(
+                            "scope drift in the diff",
+                        )
+                        .unwrap(),
+                    })),
                     pre_beads: vec![bead("lm-1", &["spec:harness"])],
                     post_beads: vec![
                         bead("lm-1", &["spec:harness"]),
@@ -1956,9 +1969,10 @@ mod tests {
                 c.review = Some(ReviewOutcome::Incomplete {
                     detail: "LOOM_CONCERN: scope -- nope".into(),
                 });
-                c.review_marker = Some(ExitSignal::Concern {
-                    summary: "scope drift in the diff".into(),
-                });
+                c.review_marker = Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                    summary: loom_protocol::todo::NonEmptyString::new("scope drift in the diff")
+                        .unwrap(),
+                }));
                 c.post_beads.push(bead("lm-fix", &["spec:harness"]));
                 c
             }),

@@ -427,9 +427,6 @@ fn score_review(
     expected: &crate::case::ReviewExpected,
     validator: &dyn FindingValidator,
 ) -> Result<Scores, Error> {
-    if output::decode(output, Phase::Review).is_err() {
-        return binary_score(false);
-    }
     let Ok(findings) = parse_walk_output(output, DispatchScope::Tree, validator) else {
         return binary_score(false);
     };

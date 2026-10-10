@@ -407,8 +407,8 @@ async fn run_gate_review(
         .await
         .map_err(|source| source.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let marker = parse_exit_signal(&stdout);
-    if output.status.success() && matches!(marker, Some(ExitSignal::Complete)) {
+    let marker = parse_exit_signal(&stdout, loom_protocol::output::Phase::Review);
+    if output.status.success() && matches!(marker, Ok(ExitSignal::Complete)) {
         return Ok(());
     }
     Err(command_detail("loom gate review", &output))

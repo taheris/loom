@@ -815,36 +815,7 @@ pub enum FindingParseError {
 }
 
 impl Finding {
-    /// Parse and resolve a single `LOOM_FINDING:` payload against its dispatch context.
-    ///
-    /// `line_number` is the 1-based line offset in the agent's stdout
-    /// buffer; included in every error variant so the caller can quote
-    /// the offending line back to the agent on a re-run. `scope` is
-    /// the active dispatch scope per `specs/gate.md` § *Concern tokens
-    /// and target variants* — tokens whose [`ConcernToken::scope_kind`]
-    /// does not [`ScopeKind::admits`] this scope surface a typed
-    /// [`FindingParseError::TokenScopeMismatch`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FindingParseError`] when the payload is malformed or its
-    /// token, target, bonds, route, or dispatch scope are inconsistent.
-    fn parse_payload<V: FindingValidator + ?Sized>(
-        payload: &str,
-        line_number: usize,
-        raw_line: &str,
-        scope: DispatchScope,
-        validator: &V,
-    ) -> Result<Self, FindingParseError> {
-        let raw: RawFinding =
-            serde_json::from_str(payload).map_err(|source| FindingParseError::Json {
-                line_number,
-                raw: raw_line.to_owned(),
-                message: source.to_string(),
-            })?;
-        Self::resolve(raw, line_number, raw_line, scope, validator)
-    }
-
+    /// Resolve typed finding input against its dispatch context, retaining its source location.
     fn resolve<V: FindingValidator + ?Sized>(
         raw: RawFinding,
         line_number: usize,
@@ -929,7 +900,7 @@ impl RawFinding {
     /// I/O-bearing validation: Layer 3 (every bond resolves to a known
     /// workspace spec) and Layer 5 (the target's identity-bearing
     /// fields resolve on disk). Pure JSON / closed-set / variant /
-    /// bonds-spec rules already fired in [`Finding::parse_payload`];
+    /// bonds-spec rules already fired in [`Finding::resolve`];
     /// this is the second stage that the mint driver runs once the
     /// resolver is wired.
     ///
@@ -1073,6 +1044,13 @@ fn target_unresolved_detail(target: &FindingTarget) -> String {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BadWalk {
+    /// Canonical framing or phase admission failed; diagnostic context is not authority.
+    Protocol {
+        context: Box<crate::output::Context>,
+        diagnostics: Vec<(crate::output::Span, String)>,
+        parsed_findings: Vec<Finding>,
+        finding_errors: Vec<FindingParseError>,
+    },
     /// `LOOM_CONCERN:` payload did not parse as
     /// `{"summary": "<non-empty>"}` — invalid JSON, missing
     /// `summary` field, or empty `summary`. The literal post-marker
@@ -1109,35 +1087,26 @@ pub enum BadWalk {
     },
 }
 
-/// Typed terminal surface left by a review walk.
+/// Compatibility diagnostic projection; only canonical decoding can admit a walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalSurface {
-    /// `LOOM_COMPLETE` on the final non-empty line.
+    /// Independently decoded completion.
     Complete,
-    /// `LOOM_NOOP` on the final non-empty line.
+    /// Independently decoded no-op, rejected in Review.
     Noop,
-    /// Loop worker declared a dependency wait with `LOOM_WAITING` on the
-    /// final non-empty line. The workflow validates the Beads dependency
-    /// graph before accepting this terminal.
+    /// Independently decoded dependency wait, rejected in Review.
     Waiting,
-    /// `LOOM_BLOCKED` on the final non-empty line; `reason` is the
-    /// non-empty adjacent prose read by the parser.
+    /// Reason from a decoded typed blocked payload.
     Blocked { reason: String },
-    /// `LOOM_CLARIFY` on the final non-empty line; `question` is the
-    /// adjacent prose read by the parser.
+    /// Legacy recovery context, never produced by canonical terminal admission.
     Clarify { question: String },
-    /// `LOOM_RETRY` on the final non-empty line; `reason` is the
-    /// adjacent prose the parser captured verbatim. Worker-phase-only
-    /// per `specs/harness.md` § Marker definitions — the verdict gate
-    /// rejects this in interactive phases as `wrong-phase-marker`.
+    /// Reason from a decoded typed retry payload.
     Retry { reason: String },
     /// `LOOM_CONCERN: {"summary": "..."}` parsed cleanly.
     Concern { summary: String },
-    /// `LOOM_CONCERN:` was present but its JSON payload failed parse
-    /// (invalid JSON, missing `summary`, or empty `summary`). The
-    /// literal post-marker text is preserved.
+    /// Legacy recovery context; canonical failures retain full context and spans.
     Malformed { payload: String },
-    /// No terminator on the final non-empty line.
+    /// No unique independently decoded terminal.
     Missing,
 }
 
@@ -1176,267 +1145,17 @@ impl TerminalSurface {
     }
 }
 
-/// Parsed exit signal from an agent session — the trailing line the agent
-/// emits to signal the gate's verdict.
+pub use crate::output::Message as ExitSignal;
+
+/// Decode a phase terminal without granting workflow authority.
 ///
-/// Markers are **mutually exclusive** and live on the final non-empty line
-/// of the agent's last assistant message. [`parse_exit_signal`] enforces
-/// the mechanical half of that rule: only the final line is inspected, and
-/// a final line carrying more than one marker is treated as a
-/// swallowed-marker (returned as `None`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExitSignal {
-    /// Agent finished cleanly; the driver advances per-spec cursors and
-    /// commits the spec file.
-    Complete,
-
-    /// Agent finished cleanly but the phase intentionally produced an
-    /// empty diff — the work was already done. Without this signal an
-    /// empty diff is treated as zero-progress.
-    Noop,
-
-    /// Loop-only dependency wait request. The marker is bare because the
-    /// Beads graph is the durable authority; workflow code accepts it only
-    /// after proving the current bead is open and has an active blocking
-    /// dependency.
-    Waiting,
-
-    /// Agent could not proceed; the driver surfaces the non-empty reason
-    /// to the user without advancing state.
-    Blocked { reason: String },
-
-    /// Agent needs human input; the driver applies the `loom:clarify`
-    /// label and bails.
-    Clarify { question: String },
-
-    /// Worker-phase self-report: this attempt cannot finish but a fresh
-    /// dispatch is likely to succeed (environmental failure or agent
-    /// self-reset per `specs/harness.md` § Marker definitions). `reason`
-    /// is the prose the agent wrote on the line preceding the marker,
-    /// captured verbatim. The verdict gate maps this to
-    /// `RecoveryCause::AgentRetry` and routes through the existing
-    /// `[loop] max_retries` counter; consecutive `LOOM_RETRY` exits that
-    /// exhaust the counter escalate to `loom:blocked` with cause
-    /// `retry-exhausted`. Worker-phase-only — emitting `LOOM_RETRY` from
-    /// an interactive phase is a `wrong-phase-marker` error.
-    Retry { reason: String },
-
-    /// Review-phase concern. Carries the parsed `summary` field from the
-    /// terminal `LOOM_CONCERN: {"summary": "..."}` marker. The summary is
-    /// for the verdict log only; per-finding routing is decided on each
-    /// streamed `LOOM_FINDING:` record's token per `specs/gate.md` §
-    /// `LOOM_CONCERN` payload. Review-phase-only — emitting `LOOM_CONCERN`
-    /// from any other phase is a `wrong-phase-marker` error in the verdict
-    /// gate per `specs/harness.md` § Marker definitions.
-    Concern { summary: String },
-
-    /// Review walk's terminal `LOOM_CONCERN:` payload was malformed —
-    /// invalid JSON, missing `summary`, or empty `summary`. Wraps the
-    /// typed [`BadWalk`] variant so the verdict gate routes to
-    /// `RecoveryCause::BadWalk` per `specs/gate.md` § `LOOM_CONCERN` payload
-    /// — JSON shape and parse discipline. Only the
-    /// [`BadWalk::Concern`] sub-variant is produced here; the
-    /// stream/terminator pairing-rule variants are owned by the verdict
-    /// gate.
-    BadWalk(BadWalk),
-}
-
-impl ExitSignal {
-    /// Canonical marker identity used by route observability.
-    #[must_use]
-    pub const fn identity(&self) -> &'static str {
-        match self {
-            Self::Complete => "LOOM_COMPLETE",
-            Self::Noop => "LOOM_NOOP",
-            Self::Waiting => "LOOM_WAITING",
-            Self::Blocked { .. } => "LOOM_BLOCKED",
-            Self::Clarify { .. } => "LOOM_CLARIFY",
-            Self::Retry { .. } => "LOOM_RETRY",
-            Self::Concern { .. } | Self::BadWalk(_) => "LOOM_CONCERN",
-        }
-    }
-}
-
-const COMPLETE: &str = "LOOM_COMPLETE";
-const NOOP: &str = "LOOM_NOOP";
-const WAITING: &str = "LOOM_WAITING";
-const BLOCKED: &str = "LOOM_BLOCKED";
-const CLARIFY: &str = "LOOM_CLARIFY";
-const RETRY: &str = "LOOM_RETRY";
-const CONCERN: &str = "LOOM_CONCERN";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TerminalMarker {
-    Complete,
-    Noop,
-    Waiting,
-    Blocked,
-    Clarify,
-    Retry,
-    Concern,
-}
-
-impl TerminalMarker {
-    const ALL: [(Self, &'static str); 7] = [
-        (Self::Complete, COMPLETE),
-        (Self::Noop, NOOP),
-        (Self::Waiting, WAITING),
-        (Self::Blocked, BLOCKED),
-        (Self::Clarify, CLARIFY),
-        (Self::Retry, RETRY),
-        (Self::Concern, CONCERN),
-    ];
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MarkerMatch {
-    marker: TerminalMarker,
-    start: usize,
-    end: usize,
-}
-
-/// Scan the agent's combined output (or the `result` field of the final
-/// stream-json line) for an exit signal.
-///
-/// The parser inspects **only the final non-empty line** of `output`. Any
-/// marker emitted earlier in the session is treated as swallowed; multiple
-/// markers on the final line likewise collapse to `None` per the
-/// mutual-exclusivity rule in `specs/harness.md` § Marker definitions.
-/// Marker-shaped text inside a quoted JSON string is payload, not a terminal.
-///
-/// `LOOM_WAITING`, `LOOM_BLOCKED`, and `LOOM_CLARIFY` are bare markers — no
-/// trailing colon or payload. Waiting context comes from the Beads graph;
-/// blocked/clarify reason or question text is read from the text
-/// **before** the marker on the final line, falling back to the most recent
-/// non-empty line before the final line if the same-line prefix is empty.
-/// `LOOM_BLOCKED` is accepted only when that captured reason is non-empty.
-///
-/// `LOOM_CONCERN` carries a JSON payload on the final line:
-/// `LOOM_CONCERN: {"summary": "<non-empty string>"}`. A well-formed payload
-/// surfaces as [`ExitSignal::Concern`]; a malformed payload (invalid JSON,
-/// missing `summary`, or empty `summary`) surfaces as
-/// [`ExitSignal::BadWalk`] carrying [`BadWalk::Concern`] with the literal
-/// post-marker text so the verdict gate can route to recovery without
-/// silently collapsing.
-///
-/// `None` means no signal was found on the final line and the caller
-/// should surface the equivalent swallowed-marker recovery cause.
-pub fn parse_exit_signal(output: &str) -> Option<ExitSignal> {
-    let lines: Vec<&str> = output.lines().collect();
-    let final_idx = lines.iter().rposition(|line| !line.trim().is_empty())?;
-    let final_line = lines[final_idx];
-    let prior = &lines[..final_idx];
-
-    let markers = terminal_markers(final_line);
-    let [terminal] = markers.as_slice() else {
-        return None;
-    };
-
-    match terminal.marker {
-        TerminalMarker::Complete => Some(ExitSignal::Complete),
-        TerminalMarker::Noop => Some(ExitSignal::Noop),
-        TerminalMarker::Waiting if final_line.trim() == WAITING => Some(ExitSignal::Waiting),
-        TerminalMarker::Waiting => None,
-        TerminalMarker::Blocked => required_reason_at(terminal.start, final_line, prior)
-            .map(|reason| ExitSignal::Blocked { reason }),
-        TerminalMarker::Clarify => Some(ExitSignal::Clarify {
-            question: reason_at(terminal.start, final_line, prior),
-        }),
-        TerminalMarker::Retry => Some(ExitSignal::Retry {
-            reason: reason_at(terminal.start, final_line, prior),
-        }),
-        TerminalMarker::Concern => Some(parse_concern(&final_line[terminal.end..])),
-    }
-}
-
-fn terminal_markers(line: &str) -> Vec<MarkerMatch> {
-    let mut markers = Vec::new();
-    let mut in_string = false;
-    let mut escaping = false;
-    for (start, ch) in line.char_indices() {
-        if in_string {
-            if escaping {
-                escaping = false;
-            } else if ch == '\\' {
-                escaping = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        if ch == '"' {
-            in_string = true;
-            continue;
-        }
-        for (marker, token) in TerminalMarker::ALL {
-            if line[start..].starts_with(token) {
-                markers.push(MarkerMatch {
-                    marker,
-                    start,
-                    end: start + token.len(),
-                });
-            }
-        }
-    }
-    markers
-}
-
-fn final_line_contains_marker(output: &str, marker: TerminalMarker) -> bool {
-    output
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| {
-            terminal_markers(line)
-                .iter()
-                .any(|candidate| candidate.marker == marker)
-        })
-}
-
-#[derive(Deserialize)]
-struct ConcernPayload {
-    summary: String,
-}
-
-/// Parse the post-`LOOM_CONCERN` payload into a typed [`ExitSignal`].
-///
-/// Returns [`ExitSignal::Concern`] with the JSON-parsed `summary` when the
-/// payload is a well-formed `{"summary": "<non-empty>"}` object. Any parse
-/// failure (invalid JSON, missing field, empty summary) returns
-/// [`ExitSignal::BadWalk`] carrying [`BadWalk::Concern`] with the literal
-/// post-marker text so the verdict gate can render the recovery prompt
-/// with the original payload intact.
-fn parse_concern(after_marker: &str) -> ExitSignal {
-    let payload = after_marker.trim_start_matches(':').trim();
-    match serde_json::from_str::<ConcernPayload>(payload) {
-        Ok(body) if !body.summary.is_empty() => ExitSignal::Concern {
-            summary: body.summary,
-        },
-        _ => ExitSignal::BadWalk(BadWalk::Concern {
-            payload: payload.to_string(),
-            parsed_findings: Vec::new(),
-        }),
-    }
-}
-
-fn required_reason_at(marker_start: usize, line: &str, prior: &[&str]) -> Option<String> {
-    let reason = reason_at(marker_start, line, prior);
-    (!reason.is_empty()).then_some(reason)
-}
-
-fn reason_at(marker_start: usize, line: &str, prior: &[&str]) -> String {
-    let same_line = line[..marker_start].trim();
-    if !same_line.is_empty() {
-        return same_line.to_string();
-    }
-    prior
-        .iter()
-        .rev()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        })
-        .unwrap_or_default()
+/// # Errors
+/// Returns original text, independently decoded context, and located diagnostics.
+pub fn parse_exit_signal(
+    output: &str,
+    phase: crate::output::Phase,
+) -> Result<ExitSignal, crate::output::Failure> {
+    crate::output::decode(output, phase).map(|session| session.terminal().message.clone())
 }
 
 /// Finding or terminal-contract failure from [`parse_walk_output`].
@@ -1463,249 +1182,22 @@ pub enum WalkOutputError {
     MissingTerminalMarker { findings_count: usize },
 }
 
-/// Parsed review output containing its terminal, findings, and errors.
-///
-/// `WalkOutput`'s fields are private at the `loom-protocol` crate
-/// boundary. The silent-loss failure class — production caller
-/// constructs `WalkOutput` with bogus fields, bypassing the typed parse
-/// pipeline — is structurally unrepresentable via field-privacy per
-/// `specs/gate.md` § *Structural enforcement* and the
-/// `walk_output_fields_private_only_constructor_is_from_stdout`
-/// criterion. [`Self::from_stdout`] is the only construction path;
-/// consumers read state via the [`Self::terminal`] / [`Self::findings`] /
-/// [`Self::finding_errors`] accessors.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Canonical review admission and resolved diagnostic findings; fields cannot be forged.
+#[derive(Debug, Clone)]
 pub struct WalkOutput {
-    /// Typed terminal surface read from the final non-empty line of
-    /// stdout — well-formed [`ExitSignal`] variants surface as the
-    /// corresponding [`TerminalSurface`] variant; a malformed
-    /// `LOOM_CONCERN:` payload surfaces as
-    /// [`TerminalSurface::Malformed`]; absence of any marker surfaces
-    /// as [`TerminalSurface::Missing`].
+    decoded: std::sync::Arc<Result<crate::output::Session, crate::output::Failure>>,
+    /// Independently decoded terminal context, not successful admission.
     terminal: TerminalSurface,
     /// Findings that passed strict per-layer validation. Order
     /// preserves stdout emission order.
     findings: Vec<Finding>,
-    /// Per-record parse failures for `LOOM_FINDING:` substring matches
-    /// that did not pass strict validation. Carries the offending
-    /// 1-based start line and verbatim record text so the recovery
-    /// prompt can quote it back.
+    /// Located finding syntax or resolution diagnostics.
     finding_errors: Vec<FindingParseError>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RawFindingRecord {
-    line_number: usize,
-    raw: String,
-    payload: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CapturedRecord {
-    record: RawFindingRecord,
-    next_offset: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct JsonObjectScan {
-    end: usize,
-    normalized: String,
-}
-
-fn finding_records(output: &str) -> Vec<RawFindingRecord> {
-    let mut records = Vec::new();
-    let mut offset = 0;
-    while let Some(relative_start) = output[offset..].find(LOOM_FINDING_PREFIX) {
-        let prefix_start = offset + relative_start;
-        let line_number = line_number_at(output, prefix_start);
-        let line_start = line_start_at(output, prefix_start);
-        let payload_start = prefix_start + LOOM_FINDING_PREFIX.len();
-        let object_start = skip_horizontal_whitespace(output, payload_start);
-        let captured = if output[object_start..].starts_with('{') {
-            capture_object_record(output, line_start, payload_start, object_start, line_number)
-        } else {
-            capture_line_record(output, line_start, payload_start, line_number)
-        };
-        offset = captured.next_offset;
-        records.push(captured.record);
-    }
-    records
-}
-
-fn capture_object_record(
-    output: &str,
-    line_start: usize,
-    payload_start: usize,
-    object_start: usize,
-    line_number: usize,
-) -> CapturedRecord {
-    let line_end = line_end_after(output, payload_start);
-    let line_payload = output[payload_start..line_end].trim_start();
-    if !payload_needs_multiline_scan(line_payload) {
-        return capture_line_record(output, line_start, payload_start, line_number);
-    }
-    let Some(scan) = scan_json_object(output, object_start) else {
-        return capture_line_record(output, line_start, payload_start, line_number);
-    };
-    let line_end = line_end_after(output, scan.end);
-    let trailing = &output[scan.end..line_end];
-    let payload = if trailing.trim().is_empty() {
-        scan.normalized
-    } else {
-        output[object_start..line_end].to_owned()
-    };
-    CapturedRecord {
-        record: RawFindingRecord {
-            line_number,
-            raw: output[line_start..line_end].to_owned(),
-            payload,
-        },
-        next_offset: next_line_offset(output, line_end),
-    }
-}
-
-fn capture_line_record(
-    output: &str,
-    line_start: usize,
-    payload_start: usize,
-    line_number: usize,
-) -> CapturedRecord {
-    let line_end = line_end_after(output, payload_start);
-    CapturedRecord {
-        record: RawFindingRecord {
-            line_number,
-            raw: output[line_start..line_end].to_owned(),
-            payload: output[payload_start..line_end].trim_start().to_owned(),
-        },
-        next_offset: next_line_offset(output, line_end),
-    }
-}
-
-fn payload_needs_multiline_scan(payload: &str) -> bool {
-    match serde_json::from_str::<serde_json::Value>(payload) {
-        Ok(_) => false,
-        Err(err) => matches!(err.classify(), serde_json::error::Category::Eof),
-    }
-}
-
-fn scan_json_object(output: &str, object_start: usize) -> Option<JsonObjectScan> {
-    let mut normalized = String::new();
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaping = false;
-    let mut chars = output[object_start..].char_indices().peekable();
-    while let Some((relative_index, ch)) = chars.next() {
-        let absolute_index = object_start + relative_index;
-        if in_string {
-            if escaping {
-                normalized.push(ch);
-                escaping = false;
-                continue;
-            }
-            match ch {
-                '\\' => {
-                    normalized.push(ch);
-                    escaping = true;
-                }
-                '"' => {
-                    normalized.push(ch);
-                    in_string = false;
-                }
-                '\r' => {
-                    normalized.push_str("\\n");
-                    if chars.peek().is_some_and(|(_, next)| *next == '\n') {
-                        chars.next();
-                    }
-                }
-                '\n' => normalized.push_str("\\n"),
-                c if c.is_control() => push_control_escape(&mut normalized, c),
-                c => normalized.push(c),
-            }
-            continue;
-        }
-        match ch {
-            '"' => {
-                normalized.push(ch);
-                in_string = true;
-            }
-            '{' => {
-                normalized.push(ch);
-                depth += 1;
-            }
-            '}' => {
-                if depth == 0 {
-                    return None;
-                }
-                normalized.push(ch);
-                depth -= 1;
-                if depth == 0 {
-                    return Some(JsonObjectScan {
-                        end: absolute_index + ch.len_utf8(),
-                        normalized,
-                    });
-                }
-            }
-            c => normalized.push(c),
-        }
-    }
-    None
-}
-
-fn push_control_escape(out: &mut String, ch: char) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let code = ch as u32;
-    out.push_str("\\u00");
-    out.push(HEX[((code >> 4) & 0x0f) as usize] as char);
-    out.push(HEX[(code & 0x0f) as usize] as char);
-}
-
-fn line_number_at(output: &str, byte_index: usize) -> usize {
-    output[..byte_index].bytes().filter(|b| *b == b'\n').count() + 1
-}
-
-fn line_start_at(output: &str, byte_index: usize) -> usize {
-    output[..byte_index]
-        .rfind('\n')
-        .map_or(0, |newline| newline + 1)
-}
-
-fn line_end_after(output: &str, byte_index: usize) -> usize {
-    output[byte_index..]
-        .find('\n')
-        .map_or(output.len(), |relative_end| byte_index + relative_end)
-}
-
-const fn next_line_offset(output: &str, line_end: usize) -> usize {
-    if line_end < output.len() {
-        line_end + 1
-    } else {
-        line_end
-    }
-}
-
-fn skip_horizontal_whitespace(output: &str, byte_index: usize) -> usize {
-    let mut index = byte_index;
-    while let Some(ch) = output[index..].chars().next() {
-        if ch != ' ' && ch != '\t' {
-            return index;
-        }
-        index += ch.len_utf8();
-    }
-    index
-}
-
 impl WalkOutput {
-    /// Parse the agent's combined stdout into a typed `WalkOutput`.
-    /// Runs `LOOM_FINDING:` substring search, strict per-record
-    /// validation against `validator`, and terminal-marker
-    /// classification through [`parse_exit_signal`] — once, here, so
-    /// downstream classifier code consumes the typed product and
-    /// cannot accidentally re-derive it from `&str`.
-    ///
-    /// The struct's fields are private at the crate boundary; this is
-    /// the only construction path. Consumers read state through the
-    /// [`Self::terminal`] / [`Self::findings`] / [`Self::finding_errors`]
-    /// accessors.
+    /// Decode agent-origin Review text and resolve independently decoded findings.
+    /// Protocol failures preserve raw context and spans, without granting scope evidence.
     pub fn from_stdout<V: FindingValidator + ?Sized>(
         output: &str,
         scope: DispatchScope,
@@ -1713,28 +1205,69 @@ impl WalkOutput {
     ) -> Self {
         let mut findings = Vec::new();
         let mut finding_errors = Vec::new();
-        for record in finding_records(output) {
-            match Finding::parse_payload(
-                &record.payload,
-                record.line_number,
-                &record.raw,
-                scope,
-                validator,
-            ) {
-                Ok(finding) => findings.push(finding),
-                Err(e) => finding_errors.push(e),
+        let decoded = crate::output::decode(output, crate::output::Phase::Review);
+        let context = match &decoded {
+            Ok(session) => session.context(),
+            Err(failure) => failure.context(),
+        };
+        for located in context.messages() {
+            if let crate::output::Message::Finding(raw) = &located.message {
+                match Finding::resolve(
+                    raw.clone(),
+                    located.span.line,
+                    &output[located.span.bytes.clone()],
+                    scope,
+                    validator,
+                ) {
+                    Ok(finding) => findings.push(finding),
+                    Err(error) => finding_errors.push(error),
+                }
             }
         }
-        let terminal = terminal_surface_from_stdout(output);
+        if let Err(failure) = &decoded {
+            for diagnostic in failure.diagnostics() {
+                let raw = &output[diagnostic.span.bytes.clone()];
+                if raw.starts_with(LOOM_FINDING_PREFIX) {
+                    finding_errors.push(FindingParseError::Json {
+                        line_number: diagnostic.span.line,
+                        raw: raw.to_owned(),
+                        message: format!("{:?}", diagnostic.error),
+                    });
+                }
+            }
+        }
+        let terminal = terminal_surface_from_context(context);
         Self {
+            decoded: std::sync::Arc::new(decoded),
             terminal,
             findings,
             finding_errors,
         }
     }
 
-    /// Typed terminal surface read from the final non-empty line of
-    /// the parsed stdout.
+    /// Canonical decode/admission result, including original context and spans on failure.
+    pub fn decoded(&self) -> &Result<crate::output::Session, crate::output::Failure> {
+        &self.decoded
+    }
+
+    /// Diagnostic recovery context; never a successful admitted walk.
+    pub fn protocol_bad_walk(&self) -> Option<BadWalk> {
+        match self.decoded() {
+            Ok(_) => None,
+            Err(failure) => Some(BadWalk::Protocol {
+                context: Box::new(failure.context().clone()),
+                diagnostics: failure
+                    .diagnostics()
+                    .iter()
+                    .map(|diagnostic| (diagnostic.span.clone(), format!("{:?}", diagnostic.error)))
+                    .collect(),
+                parsed_findings: self.findings.clone(),
+                finding_errors: self.finding_errors.clone(),
+            }),
+        }
+    }
+
+    /// Independently established terminal for diagnostics, not admission.
     #[must_use]
     pub const fn terminal(&self) -> &TerminalSurface {
         &self.terminal
@@ -1746,43 +1279,33 @@ impl WalkOutput {
         &self.findings
     }
 
-    /// Per-record parse failures for `LOOM_FINDING:` substring matches
-    /// that did not pass strict validation.
+    /// Located finding syntax or resolution diagnostics.
     #[must_use]
     pub fn finding_errors(&self) -> &[FindingParseError] {
         &self.finding_errors
     }
 }
 
-/// Resolve the typed [`TerminalSurface`] from the agent's combined
-/// stdout. Well-formed terminal markers route through
-/// [`parse_exit_signal`] so the parser surface is shared with the
-/// `LOOM_FINDING:` stream check; a malformed terminal surfaces as
-/// [`TerminalSurface::Malformed`]; absence surfaces as
-/// [`TerminalSurface::Missing`].
-fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
-    match parse_exit_signal(output) {
+/// Diagnostic projection from canonical context, never a second parser.
+fn terminal_surface_from_context(context: &crate::output::Context) -> TerminalSurface {
+    match context.terminal().map(|located| &located.message) {
         Some(ExitSignal::Complete) => TerminalSurface::Complete,
         Some(ExitSignal::Noop) => TerminalSurface::Noop,
         Some(ExitSignal::Waiting) => TerminalSurface::Waiting,
-        Some(ExitSignal::Blocked { reason }) => TerminalSurface::Blocked { reason },
-        Some(ExitSignal::Clarify { question }) => TerminalSurface::Clarify { question },
-        Some(ExitSignal::Retry { reason }) => TerminalSurface::Retry { reason },
-        Some(ExitSignal::Concern { summary }) => TerminalSurface::Concern { summary },
-        Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
-            TerminalSurface::Malformed { payload }
-        }
-        Some(ExitSignal::BadWalk(_)) | None => TerminalSurface::Missing,
+        Some(ExitSignal::Blocked(payload)) => TerminalSurface::Blocked {
+            reason: payload.reason.to_string(),
+        },
+        Some(ExitSignal::Retry(payload)) => TerminalSurface::Retry {
+            reason: payload.reason.to_string(),
+        },
+        Some(ExitSignal::Concern(payload)) => TerminalSurface::Concern {
+            summary: payload.summary.to_string(),
+        },
+        _ => TerminalSurface::Missing,
     }
 }
 
-/// Parse validated findings whose stream agrees with its review terminal.
-///
-/// Findings interleave with markers in stdout order — the returned
-/// vector preserves emission order, and the terminal-marker check
-/// reads through [`parse_exit_signal`] so the parser surface used by
-/// `LOOM_CONCERN` / `LOOM_COMPLETE` is the same one consulted here
-/// (no separate channel).
+/// Resolve phase-admitted findings whose emission order agrees with their Review terminal.
 ///
 /// # Errors
 ///
@@ -1795,6 +1318,9 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
     validator: &V,
 ) -> Result<Vec<Finding>, WalkOutputError> {
     let walk = WalkOutput::from_stdout(output, scope, validator);
+    if let Some(bad_walk) = walk.protocol_bad_walk() {
+        return Err(WalkOutputError::BadWalk { bad_walk });
+    }
     if !walk.finding_errors().is_empty() {
         return Err(WalkOutputError::BadWalk {
             bad_walk: BadWalk::MalformedFinding {
@@ -1822,9 +1348,13 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
                 parsed_findings: walk.findings().to_vec(),
             },
         }),
-        TerminalSurface::Noop => Err(WalkOutputError::InvalidTerminal { marker: NOOP }),
+        TerminalSurface::Noop => Err(WalkOutputError::InvalidTerminal {
+            marker: ExitSignal::Noop.marker(),
+        }),
         TerminalSurface::Waiting if walk.findings().is_empty() => {
-            Err(WalkOutputError::InvalidTerminal { marker: WAITING })
+            Err(WalkOutputError::InvalidTerminal {
+                marker: ExitSignal::Waiting.marker(),
+            })
         }
         TerminalSurface::Complete if !walk.findings().is_empty() => Err(WalkOutputError::BadWalk {
             bad_walk: BadWalk::FindingsWithoutConcern {
@@ -1844,26 +1374,22 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
                 },
             })
         }
-        TerminalSurface::Missing if final_line_contains_marker(output, TerminalMarker::Waiting) => {
-            Err(WalkOutputError::InvalidTerminal { marker: WAITING })
-        }
-        TerminalSurface::Missing if final_line_contains_marker(output, TerminalMarker::Blocked) => {
-            Err(WalkOutputError::InvalidTerminal { marker: BLOCKED })
-        }
         TerminalSurface::Missing if !walk.findings().is_empty() => {
             Err(WalkOutputError::MissingTerminalMarker {
                 findings_count: walk.findings().len(),
             })
         }
         TerminalSurface::Blocked { reason } => Err(WalkOutputError::CannotComplete {
-            marker: BLOCKED,
+            marker: "LOOM_BLOCKED",
             reason: reason.clone(),
         }),
         TerminalSurface::Retry { reason } => Err(WalkOutputError::CannotComplete {
-            marker: RETRY,
+            marker: "LOOM_RETRY",
             reason: reason.clone(),
         }),
-        TerminalSurface::Waiting => Err(WalkOutputError::InvalidTerminal { marker: WAITING }),
+        TerminalSurface::Waiting => Err(WalkOutputError::InvalidTerminal {
+            marker: ExitSignal::Waiting.marker(),
+        }),
         TerminalSurface::Missing | TerminalSurface::Complete => Ok(Vec::new()),
     }
 }
@@ -2111,260 +1637,78 @@ mod tests {
     }
 
     #[test]
-    fn complete_on_bare_marker() {
-        assert_eq!(
-            parse_exit_signal("ok\nLOOM_COMPLETE\n"),
-            Some(ExitSignal::Complete)
-        );
+    fn exit_adapter_returns_canonical_phase_admitted_terminals() {
+        use crate::output::Phase;
+        for (wire, expected) in [
+            ("commentary\nLOOM_COMPLETE", ExitSignal::Complete),
+            ("commentary\nLOOM_NOOP", ExitSignal::Noop),
+            ("commentary\nLOOM_WAITING", ExitSignal::Waiting),
+        ] {
+            assert_eq!(parse_exit_signal(wire, Phase::Loop).unwrap(), expected);
+        }
+        assert!(parse_exit_signal("LOOM_NOOP", Phase::Review).is_err());
+        assert!(parse_exit_signal("LOOM_WAITING", Phase::Review).is_err());
     }
 
     #[test]
-    fn noop_on_bare_marker() {
-        assert_eq!(
-            parse_exit_signal("already done\nLOOM_NOOP\n"),
-            Some(ExitSignal::Noop)
-        );
-    }
-
-    #[test]
-    fn waiting_marker_parses_as_typed_exit_signal() {
-        assert_eq!(
-            parse_exit_signal("declared blocker in Beads\nLOOM_WAITING\n"),
-            Some(ExitSignal::Waiting),
-        );
-        assert_eq!(TerminalSurface::Waiting.identity(), "LOOM_WAITING");
-        assert_eq!(parse_exit_signal("LOOM_WAITING: later\n"), None);
-        assert!(matches!(
-            parse_walk_output("LOOM_WAITING: later\n", DispatchScope::Tree, &AlwaysValid,),
-            Err(WalkOutputError::InvalidTerminal {
-                marker: "LOOM_WAITING"
-            })
-        ));
-    }
-
-    #[test]
-    fn blocked_carries_reason_from_prior_line() {
-        let out = "doing things\nspec is missing the requirements section\nLOOM_BLOCKED\n";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Blocked { reason }) => {
-                assert_eq!(reason, "spec is missing the requirements section");
-            }
-            other => panic!("expected Blocked, got {other:?}"),
+    fn exit_adapter_rejects_legacy_prose_scraping_and_invalid_cardinality() {
+        use crate::output::Phase;
+        for wire in [
+            "the actual reason\nLOOM_BLOCKED",
+            "the question\nLOOM_CLARIFY",
+            "the reason\nLOOM_RETRY",
+            "prefix LOOM_BLOCKED",
+            "LOOM_COMPLETE\nLOOM_COMPLETE",
+            "LOOM_BLOCKED\nLOOM_COMPLETE",
+            "LOOM_COMPLETE\ntrailing prose",
+            "LOOM_REVIEW_FLAG: retired\nLOOM_COMPLETE",
+            "LOOM_COMPLETE LOOM_COMPLETE",
+        ] {
+            let failure = parse_exit_signal(wire, Phase::Loop).unwrap_err();
+            assert_eq!(failure.context().raw(), wire);
+            assert!(!failure.diagnostics().is_empty());
         }
     }
 
     #[test]
-    fn clarify_carries_question_from_prior_line() {
-        let out = "should the migration be additive only?\nLOOM_CLARIFY";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Clarify { question }) => {
-                assert_eq!(question, "should the migration be additive only?");
-            }
-            other => panic!("expected Clarify, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn retry_co_occurring_with_other_marker_swallowed() {
-        let out = "LOOM_RETRY LOOM_BLOCKED\n";
-        assert_eq!(parse_exit_signal(out), None);
-    }
-
-    #[test]
-    fn terminal_surface_retry_label_round_trips() {
-        let ts = TerminalSurface::Retry {
-            reason: "tool exec broke".into(),
+    fn exit_adapter_accepts_typed_multiline_reasons_without_prose_repair() {
+        use crate::output::Phase;
+        let wire = "commentary\nLOOM_RETRY:\n{\n\"reason\":\"sandbox unlinked\\ntry again\"\n}";
+        let ExitSignal::Retry(payload) = parse_exit_signal(wire, Phase::Loop).unwrap() else {
+            panic!("expected retry");
         };
-        assert_eq!(ts.label(), "LOOM_RETRY");
-    }
-
-    #[test]
-    fn no_signal_returns_none() {
-        assert_eq!(
-            parse_exit_signal("just some output\nno marker here\n"),
-            None
+        assert_eq!(payload.reason.as_str(), "sandbox unlinked\ntry again");
+        assert!(
+            parse_exit_signal("LOOM_RETRY: {\"reason\":\"raw\nnewline\"}", Phase::Loop).is_err()
         );
-    }
-
-    #[test]
-    fn marker_recognized_inside_a_longer_line() {
-        let out = "Final result: missing schema LOOM_BLOCKED\n";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Blocked { reason }) => {
-                assert_eq!(reason, "Final result: missing schema");
-            }
-            other => panic!("expected Blocked, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn blank_lines_between_reason_and_marker_are_skipped() {
-        let out = "the actual reason\n\n\nLOOM_BLOCKED\n";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Blocked { reason }) => assert_eq!(reason, "the actual reason"),
-            other => panic!("expected Blocked, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn blocked_marker_without_prior_reason_is_not_a_valid_exit_signal() {
-        let out = "LOOM_BLOCKED";
-        assert_eq!(parse_exit_signal(out), None);
-    }
-
-    #[test]
-    fn marker_on_non_final_line_is_swallowed() {
-        let out = "LOOM_COMPLETE\nfollow-up prose that hides the marker\n";
-        assert_eq!(parse_exit_signal(out), None);
-    }
-
-    #[test]
-    fn multiple_markers_on_final_line_swallow_the_signal() {
-        let out = "LOOM_BLOCKED LOOM_COMPLETE\n";
-        assert_eq!(parse_exit_signal(out), None);
-    }
-
-    #[test]
-    fn final_line_is_authoritative_when_prior_line_also_has_a_marker() {
-        let out = "tentative\nLOOM_BLOCKED\nactually nevermind\nLOOM_COMPLETE";
-        assert_eq!(parse_exit_signal(out), Some(ExitSignal::Complete));
     }
 
     #[test]
     fn concern_payload_parses_as_json_with_summary_field() {
-        let out = r#"LOOM_CONCERN: {"summary": "verifier-bypass on the agent backend mock"}"#;
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Concern { summary }) => {
-                assert_eq!(summary, "verifier-bypass on the agent backend mock");
-            }
-            other => panic!("expected Concern, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn concern_payload_marker_names_are_data_not_terminal_markers() {
-        let expected =
-            "missing-marker path reported as LOOM_COMPLETE, not LOOM_BLOCKED or LOOM_RETRY";
-        let out = format!(r#"LOOM_CONCERN: {{"summary":"{expected}"}}"#);
-        match parse_exit_signal(&out) {
-            Some(ExitSignal::Concern { summary }) => assert_eq!(summary, expected),
-            other => panic!("expected Concern, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn concern_with_trailing_terminal_marker_is_rejected() {
-        let out = r#"LOOM_CONCERN: {"summary":"scope drift"} LOOM_COMPLETE"#;
-        assert_eq!(parse_exit_signal(out), None);
-    }
-
-    #[test]
-    fn duplicate_same_terminal_marker_is_rejected() {
-        assert_eq!(parse_exit_signal("LOOM_COMPLETE LOOM_COMPLETE"), None);
-    }
-
-    #[test]
-    fn concern_trims_whitespace_around_payload() {
-        let out = "LOOM_CONCERN:    {\"summary\":\"scope drift\"}   \n";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Concern { summary }) => assert_eq!(summary, "scope drift"),
-            other => panic!("expected Concern, got {other:?}"),
-        }
+        let wire = r#"LOOM_CONCERN: {"summary":"scope drift with LOOM_COMPLETE in payload"}"#;
+        let ExitSignal::Concern(payload) =
+            parse_exit_signal(wire, crate::output::Phase::Review).unwrap()
+        else {
+            panic!("expected concern");
+        };
+        assert_eq!(
+            payload.summary.as_str(),
+            "scope drift with LOOM_COMPLETE in payload"
+        );
     }
 
     #[test]
     fn concern_malformed_payload_routes_to_bad_walk_concern_with_literal_payload() {
-        let out = "LOOM_CONCERN: malformed payload with no separator\n";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
-                assert_eq!(payload, "malformed payload with no separator");
-            }
-            other => panic!("expected BadWalk::Concern, got {other:?}"),
+        for wire in [
+            "LOOM_CONCERN: malformed",
+            "LOOM_CONCERN: {}",
+            "LOOM_CONCERN: {\"summary\":\"\"}",
+            "LOOM_CONCERN: {\"summary\":\"scope\"} suffix",
+        ] {
+            let failure = parse_exit_signal(wire, crate::output::Phase::Review).unwrap_err();
+            assert_eq!(failure.context().raw(), wire);
+            assert_eq!(failure.diagnostics()[0].span.bytes, 0..wire.len());
         }
-    }
-
-    #[test]
-    fn concern_with_empty_summary_routes_to_bad_walk_concern() {
-        let out = r#"LOOM_CONCERN: {"summary": ""}"#;
-        match parse_exit_signal(out) {
-            Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
-                assert_eq!(payload, r#"{"summary": ""}"#);
-            }
-            other => panic!("expected BadWalk::Concern, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn concern_with_missing_summary_field_routes_to_bad_walk_concern() {
-        let out = r#"LOOM_CONCERN: {"summery": "typo in the field name"}"#;
-        match parse_exit_signal(out) {
-            Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
-                assert_eq!(payload, r#"{"summery": "typo in the field name"}"#);
-            }
-            other => panic!("expected BadWalk::Concern, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn concern_on_non_final_line_is_swallowed() {
-        let out = "LOOM_CONCERN: {\"summary\": \"scope drift\"}\nclosing prose\n";
-        assert_eq!(parse_exit_signal(out), None);
-    }
-
-    #[test]
-    fn legacy_review_flag_keyword_on_prior_line_does_not_shadow_final_complete() {
-        let out =
-            "LOOM_REVIEW_FLAG: verifier-bypass -- test mocks the agent backend\nLOOM_COMPLETE\n";
-        assert_eq!(parse_exit_signal(out), Some(ExitSignal::Complete));
-    }
-
-    #[test]
-    fn retry_carries_reason_from_prior_line() {
-        let out = "tools failing mid-session, sandbox unlinked\nLOOM_RETRY\n";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Retry { reason }) => {
-                assert_eq!(reason, "tools failing mid-session, sandbox unlinked");
-            }
-            other => panic!("expected Retry, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn retry_reads_reason_from_same_line_prefix() {
-        let out = "prompt context exhausted LOOM_RETRY\n";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Retry { reason }) => {
-                assert_eq!(reason, "prompt context exhausted");
-            }
-            other => panic!("expected Retry, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn retry_at_start_with_no_prior_lines_yields_empty_reason() {
-        let out = "LOOM_RETRY";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Retry { reason }) => assert_eq!(reason, ""),
-            other => panic!("expected Retry with empty reason, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn retry_with_other_marker_on_final_line_is_swallowed() {
-        let out = "LOOM_RETRY LOOM_COMPLETE\n";
-        assert_eq!(parse_exit_signal(out), None);
-    }
-
-    #[test]
-    fn retry_with_blocked_on_final_line_is_swallowed() {
-        let out = "LOOM_BLOCKED LOOM_RETRY\n";
-        assert_eq!(parse_exit_signal(out), None);
-    }
-
-    #[test]
-    fn retry_on_non_final_line_is_swallowed() {
-        let out = "LOOM_RETRY\nfollow-up prose that hides the marker\n";
-        assert_eq!(parse_exit_signal(out), None);
     }
 
     #[test]
@@ -2396,7 +1740,7 @@ mod tests {
             }
         }
         let walk = WalkOutput::from_stdout(
-            "sandbox cwd unlinked\nLOOM_RETRY\n",
+            "LOOM_RETRY: {\"reason\":\"sandbox cwd unlinked\"}\n",
             DispatchScope::Tree,
             &AcceptAll,
         );
@@ -2499,14 +1843,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_token_reason_payload_routes_to_bad_walk_concern() {
+    fn legacy_token_reason_payload_retains_protocol_failure() {
         let out = "LOOM_CONCERN: verifier-bypass -- test mocks the agent backend\n";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
-                assert_eq!(payload, "verifier-bypass -- test mocks the agent backend");
-            }
-            other => panic!("expected BadWalk::Concern, got {other:?}"),
-        }
+        let failure = parse_exit_signal(out, crate::output::Phase::Review).unwrap_err();
+        assert_eq!(failure.context().raw(), out);
+        assert!(failure.context().terminal().is_none());
     }
 
     struct AlwaysValid;
@@ -2593,17 +1934,15 @@ mod tests {
         scope: DispatchScope,
         validator: &dyn FindingValidator,
     ) -> (FindingParseError, TerminalSurface) {
-        match parse_walk_output(output, scope, validator) {
-            Err(WalkOutputError::BadWalk {
-                bad_walk: BadWalk::MalformedFinding { errors, terminal },
-            }) => {
-                let [error] = errors.as_slice() else {
-                    panic!("expected one malformed finding error, got {errors:?}");
-                };
-                (error.clone(), terminal)
-            }
-            other => panic!("expected MalformedFinding bad walk, got {other:?}"),
-        }
+        let walk = WalkOutput::from_stdout(output, scope, validator);
+        let [error] = walk.finding_errors() else {
+            panic!(
+                "expected one malformed finding error, got {:?}",
+                walk.finding_errors()
+            );
+        };
+        assert!(parse_walk_output(output, scope, validator).is_err());
+        (error.clone(), walk.terminal().clone())
     }
 
     #[test]
@@ -2662,8 +2001,7 @@ mod tests {
     }
 
     #[test]
-    fn backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved()
-     {
+    fn backtick_wrapped_finding_is_commentary_not_a_live_record() {
         let good_line = finding_line(
             "spec-coherence-fail",
             &["gate"],
@@ -2675,24 +2013,8 @@ mod tests {
         let walk = WalkOutput::from_stdout(&output, DispatchScope::Tree, &AlwaysValid);
         assert_eq!(walk.findings().len(), 1, "well-formed line still parses");
         assert_eq!(walk.findings()[0].token, ConcernToken::SpecCoherenceFail);
-        assert_eq!(
-            walk.finding_errors().len(),
-            1,
-            "backtick-wrapped line errored"
-        );
-        match &walk.finding_errors()[0] {
-            FindingParseError::Json { raw, .. } => {
-                assert!(
-                    raw.contains("not valid json"),
-                    "raw payload preserved: {raw}",
-                );
-                assert!(
-                    raw.starts_with('`'),
-                    "raw line preserves the surrounding backticks: {raw}",
-                );
-            }
-            other => panic!("expected Json error, got {other:?}"),
-        }
+        assert!(walk.finding_errors().is_empty());
+        assert!(walk.decoded().is_ok());
         assert_eq!(
             walk.terminal(),
             &TerminalSurface::Complete,
@@ -2702,7 +2024,7 @@ mod tests {
 
     #[test]
     fn parse_walk_output_malformed_findings_preserves_all_errors_and_terminal() {
-        let bad_json = format!("{LOOM_FINDING_PREFIX} {{not valid json");
+        let bad_json = format!("{LOOM_FINDING_PREFIX} {{not valid json}}");
         let bad_target = finding_line(
             "orphan-integration",
             &["gate"],
@@ -2714,19 +2036,27 @@ mod tests {
 
         match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::BadWalk {
-                bad_walk: BadWalk::MalformedFinding { errors, terminal },
+                bad_walk:
+                    BadWalk::Protocol {
+                        context,
+                        finding_errors: errors,
+                        ..
+                    },
             }) => {
                 assert_eq!(errors.len(), 2);
-                assert!(matches!(errors[0], FindingParseError::Json { .. }));
-                assert!(matches!(
-                    errors[1],
-                    FindingParseError::TokenVariantMismatch { .. }
-                ));
-                assert_eq!(
-                    terminal,
-                    TerminalSurface::Concern {
-                        summary: "bad findings".to_owned()
-                    }
+                assert!(
+                    errors
+                        .iter()
+                        .any(|error| matches!(error, FindingParseError::Json { .. }))
+                );
+                assert!(
+                    errors.iter().any(|error| matches!(
+                        error,
+                        FindingParseError::TokenVariantMismatch { .. }
+                    ))
+                );
+                assert!(
+                    matches!(&context.terminal().unwrap().message, crate::output::Message::Concern(payload) if payload.summary.as_str() == "bad findings")
                 );
             }
             other => panic!("expected all malformed finding errors, got {other:?}"),
@@ -2806,42 +2136,56 @@ mod tests {
         );
         let output = format!("preamble\n{line}\ntrailing prose without a marker\n");
         match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::MissingTerminalMarker { findings_count }) => {
-                assert_eq!(findings_count, 1);
+            Err(WalkOutputError::BadWalk {
+                bad_walk:
+                    BadWalk::Protocol {
+                        context,
+                        parsed_findings,
+                        ..
+                    },
+            }) => {
+                assert_eq!(parsed_findings.len(), 1);
+                assert_eq!(context.raw(), output);
+                assert!(context.terminal().is_none());
             }
-            other => panic!("expected MissingTerminalMarker, got {other:?}"),
+            other => panic!("expected protocol failure, got {other:?}"),
         }
     }
 
     #[test]
-    fn mint_walk_without_findings_does_not_require_terminal_marker() {
+    fn mint_walk_without_findings_still_requires_a_terminal() {
         let output = "preamble with no findings and no markers\n";
-        let findings =
-            parse_walk_output(output, DispatchScope::Tree, &AlwaysValid).expect("vacuous case");
-        assert_eq!(findings.len(), 0);
+        let walk = WalkOutput::from_stdout(output, DispatchScope::Tree, &AlwaysValid);
+        assert!(walk.decoded().is_err());
+        assert!(parse_walk_output(output, DispatchScope::Tree, &AlwaysValid).is_err());
     }
 
     #[test]
-    fn direct_clarify_terminal_is_wrong_review_path() {
-        let output = "Should the reviewer pick a schema path?\nLOOM_CLARIFY\n";
-        match parse_walk_output(output, DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::WrongReviewPath { question }) => {
-                assert_eq!(question, "Should the reviewer pick a schema path?");
+    fn direct_clarify_record_is_rejected_by_review_admission() {
+        let output = "LOOM_CLARIFY: {\"decisions\":[\"lm-decision\"]}\nLOOM_COMPLETE";
+        let walk = WalkOutput::from_stdout(output, DispatchScope::Tree, &AlwaysValid);
+        let failure = walk.decoded().as_ref().unwrap_err();
+        assert_eq!(failure.context().messages().len(), 2);
+        assert!(failure.diagnostics().iter().any(|diagnostic| matches!(
+            diagnostic.error,
+            crate::output::Error::WrongPhase {
+                marker: "LOOM_CLARIFY",
+                ..
             }
-            other => panic!("expected WrongReviewPath for direct LOOM_CLARIFY, got {other:?}"),
-        }
+        )));
+        assert!(parse_walk_output(output, DispatchScope::Tree, &AlwaysValid).is_err());
     }
 
     #[test]
     fn cannot_complete_review_terminals_do_not_parse_as_empty_success() {
         for (output, expected_marker, expected_reason) in [
             (
-                "review logs were truncated\nLOOM_RETRY\n",
+                "LOOM_RETRY: {\"reason\":\"review logs were truncated\"}\n",
                 "LOOM_RETRY",
                 "review logs were truncated",
             ),
             (
-                "cannot access the workspace\nLOOM_BLOCKED\n",
+                "LOOM_BLOCKED: {\"reason\":\"cannot access the workspace\"}\n",
                 "LOOM_BLOCKED",
                 "cannot access the workspace",
             ),
@@ -2858,18 +2202,22 @@ mod tests {
 
     #[test]
     fn blocked_review_terminal_without_reason_is_invalid_not_clean() {
-        match parse_walk_output("LOOM_BLOCKED\n", DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::InvalidTerminal { marker }) => assert_eq!(marker, "LOOM_BLOCKED"),
-            other => panic!("expected InvalidTerminal for reasonless LOOM_BLOCKED, got {other:?}"),
-        }
+        assert!(matches!(
+            parse_walk_output("LOOM_BLOCKED\n", DispatchScope::Tree, &AlwaysValid),
+            Err(WalkOutputError::BadWalk {
+                bad_walk: BadWalk::Protocol { .. }
+            })
+        ));
     }
 
     #[test]
     fn noop_terminal_is_not_a_review_walk_success() {
-        match parse_walk_output("LOOM_NOOP\n", DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::InvalidTerminal { marker }) => assert_eq!(marker, "LOOM_NOOP"),
-            other => panic!("expected InvalidTerminal for LOOM_NOOP, got {other:?}"),
-        }
+        assert!(matches!(
+            parse_walk_output("LOOM_NOOP\n", DispatchScope::Tree, &AlwaysValid),
+            Err(WalkOutputError::BadWalk {
+                bad_walk: BadWalk::Protocol { .. }
+            })
+        ));
     }
 
     #[test]
@@ -2896,7 +2244,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_multiline_evidence_is_normalized_before_strict_validation() {
+    fn raw_multiline_evidence_is_rejected_without_repair() {
         let output = concat!(
             "preamble\n",
             "LOOM_FINDING: {\"token\":\"invariant-clash\",\"route\":\"clarify\",\"bonds\":[\"gate\"],\"target\":{\"kind\":\"Invariant\",\"spec\":\"gate\",\"section\":\"Out of Scope\",\"tag\":\"loom-runs-podman\"},\"evidence\":\"The implementation conflicts with the invariant.\n",
@@ -2910,25 +2258,12 @@ mod tests {
             "Cost: spec update and follow-up work.\"}\n",
             "LOOM_CONCERN: {\"summary\":\"clarify invariant clash\"}\n",
         );
-        let findings = parse_walk_output(output, DispatchScope::Tree, &AlwaysValid)
-            .expect("raw multiline evidence parses");
-        let [finding] = findings.as_slice() else {
-            panic!("expected one finding, got {findings:?}");
-        };
-        assert_eq!(finding.token, ConcernToken::InvariantClash);
-        assert_eq!(finding.route, FindingRoute::Clarify);
-        assert!(
-            finding
-                .evidence
-                .contains("## Options — resolve invariant clash\n\n### Option 1"),
-            "evidence preserves raw line breaks: {:?}",
-            finding.evidence,
-        );
-        assert!(
-            finding.evidence.contains("### Option 2 — Change invariant"),
-            "second option survived normalization: {:?}",
-            finding.evidence,
-        );
+        let walk = WalkOutput::from_stdout(output, DispatchScope::Tree, &AlwaysValid);
+        let failure = walk.decoded().as_ref().unwrap_err();
+        assert_eq!(failure.context().raw(), output);
+        assert!(walk.findings().is_empty());
+        assert!(!failure.diagnostics().is_empty());
+        assert!(parse_walk_output(output, DispatchScope::Tree, &AlwaysValid).is_err());
     }
 
     #[test]
@@ -2969,15 +2304,16 @@ mod tests {
         match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::BadWalk {
                 bad_walk:
-                    BadWalk::Concern {
-                        payload,
+                    BadWalk::Protocol {
+                        context,
                         parsed_findings,
+                        ..
                     },
             }) => {
-                assert_eq!(payload, "orphan-integration -- legacy");
+                assert_eq!(context.raw(), output);
                 assert_eq!(parsed_findings[0].token, ConcernToken::OrphanIntegration);
             }
-            other => panic!("expected BadWalk::Concern, got {other:?}"),
+            other => panic!("expected protocol failure, got {other:?}"),
         }
     }
 

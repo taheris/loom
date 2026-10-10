@@ -44,7 +44,7 @@ use crate::review::{
     decide,
 };
 use crate::suppression::suppresses_rubric_finding;
-use crate::todo::{ExitSignal, parse_exit_signal};
+use crate::todo::ExitSignal;
 use loom_templates::previous_failure::{TerminalSurface, VerifierFailure};
 use loom_templates::run::PreviousFailure;
 
@@ -60,10 +60,8 @@ pub const REVIEW_PHASE_WHEN_ENV: &str = "LOOM_REVIEW_PHASE_WHEN_MILLIS";
 
 /// Requests review output from the molecule-completion handoff.
 ///
-/// The handoff sets this when spawning `loom gate review` so the child emits
-/// the agent's combined stdout to its own stdout. The parent captures it via
-/// [`Command::output`] and runs
-/// [`parse_exit_signal`] on the final non-empty line.
+/// The child emits its agent-origin transcript for canonical Review decoding;
+/// driver-authored finding-status records are not promoted into agent messages.
 pub const REVIEW_EMIT_STDOUT_ENV: &str = "LOOM_REVIEW_EMIT_STDOUT";
 
 /// Selects the review handoff's spec context and log namespace.
@@ -1101,7 +1099,7 @@ where
                 exit_code: verify_code,
                 stdout: stdout_tail.clone(),
                 stderr: stderr_tail.clone(),
-                terminal_marker: parse_exit_signal(&stdout_tail),
+                terminal_marker: None,
                 integration_sha,
                 tree_oid,
                 config_digest: pre_commit_config_digest(&gate_workspace)?,
@@ -1329,13 +1327,21 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         .filter(|finding| !suppresses_rubric_finding(&config.suppress, finding))
         .cloned()
         .collect::<Vec<_>>();
-    let suppressed_review_concern = matches!(walk.terminal(), TerminalSurface::Concern { .. })
+    let suppressed_review_concern = walk.decoded().is_ok()
+        && walk.finding_errors().is_empty()
+        && matches!(walk.terminal(), TerminalSurface::Concern { .. })
         && !walk.findings().is_empty()
         && unsuppressed_findings.is_empty();
     let review_marker = if suppressed_review_concern {
         Some(ExitSignal::Complete)
     } else {
-        parse_exit_signal(&review_stdout)
+        match walk.decoded() {
+            Ok(session) => Some(session.terminal().message.clone()),
+            Err(failure) => {
+                warn!(error = ?failure, "molecule review output failed canonical admission");
+                None
+            }
+        }
     };
     let review_concern = match walk.terminal() {
         TerminalSurface::Concern { summary } if !unsuppressed_findings.is_empty() => {
@@ -1797,19 +1803,19 @@ fn terminal_marker_json(marker: &ExitSignal) -> serde_json::Value {
         ExitSignal::Complete => serde_json::json!({ "kind": "complete" }),
         ExitSignal::Noop => serde_json::json!({ "kind": "noop" }),
         ExitSignal::Waiting => serde_json::json!({ "kind": "waiting" }),
-        ExitSignal::Blocked { reason } => {
-            serde_json::json!({ "kind": "blocked", "reason": reason })
+        ExitSignal::Blocked(payload) => {
+            serde_json::json!({ "kind": "blocked", "reason": payload.reason })
         }
-        ExitSignal::Clarify { question } => {
-            serde_json::json!({ "kind": "clarify", "question": question })
+        ExitSignal::Clarify(payload) => {
+            serde_json::json!({ "kind": "clarify", "decisions": payload.decisions })
         }
-        ExitSignal::Retry { reason } => serde_json::json!({ "kind": "retry", "reason": reason }),
-        ExitSignal::Concern { summary } => {
-            serde_json::json!({ "kind": "concern", "summary": summary })
+        ExitSignal::Retry(payload) => {
+            serde_json::json!({ "kind": "retry", "reason": payload.reason })
         }
-        ExitSignal::BadWalk(badwalk) => {
-            serde_json::json!({ "kind": "bad-walk", "detail": format!("{badwalk:?}") })
+        ExitSignal::Concern(payload) => {
+            serde_json::json!({ "kind": "concern", "summary": payload.summary })
         }
+        message => serde_json::json!({ "kind": "wrong-phase", "marker": message.marker() }),
     }
 }
 
@@ -1857,7 +1863,9 @@ pub fn format_unknown_runtime_for_profile_error(
 
 const fn session_exit_code(session: &SessionResult) -> Option<i32> {
     match session {
-        SessionResult::Complete(outcome) => Some(outcome.exit_code),
+        SessionResult::Complete(outcome) | SessionResult::Decoded { outcome, .. } => {
+            Some(outcome.exit_code)
+        }
         SessionResult::PreflightFailed { .. }
         | SessionResult::MidSessionFailed { .. }
         | SessionResult::StaticInfra { .. }
@@ -1904,6 +1912,18 @@ pub(super) const fn agent_outcome_route(outcome: &AgentOutcome) -> &'static str 
 /// trusted blindly.
 pub fn classify_session(session: SessionResult, marker: Option<&ExitSignal>) -> AgentOutcome {
     match session {
+        SessionResult::Decoded { outcome, output } => match output.as_ref() {
+            Ok(admitted) => classify_session(
+                SessionResult::Complete(outcome),
+                Some(&admitted.terminal().message),
+            ),
+            Err(failure) => AgentOutcome::Failure {
+                error: format!(
+                    "agent output failed canonical admission (exit {}): {failure:?}",
+                    outcome.exit_code
+                ),
+            },
+        },
         SessionResult::PreflightFailed { error } => AgentOutcome::InfraPreflight { error },
         SessionResult::MidSessionFailed { error } => AgentOutcome::InfraMidSession { error },
         SessionResult::StaticInfra { cause, error } => AgentOutcome::StaticInfra { cause, error },
@@ -1914,16 +1934,15 @@ pub fn classify_session(session: SessionResult, marker: Option<&ExitSignal>) -> 
             0,
         ),
         SessionResult::Complete(outcome) => {
-            if let Some(ExitSignal::Concern { summary }) = marker {
+            if let Some(message) = marker
+                && (!loom_protocol::output::Phase::Loop.admits(message)
+                    || message.role() != loom_protocol::output::Role::Terminal)
+            {
                 return AgentOutcome::Failure {
                     error: format!(
-                        "wrong-phase-marker: LOOM_CONCERN ({summary}) is review-phase only",
+                        "wrong-phase-marker: {} is not a loop terminal: {message:?}",
+                        message.marker()
                     ),
-                };
-            }
-            if matches!(marker, Some(ExitSignal::BadWalk(_))) {
-                return AgentOutcome::Failure {
-                    error: "wrong-phase-marker: LOOM_CONCERN is review-phase only".to_string(),
                 };
             }
             if let Some(marker @ (ExitSignal::Complete | ExitSignal::Noop | ExitSignal::Waiting)) =
@@ -1969,7 +1988,7 @@ fn verdict_to_outcome(verdict: PhaseVerdict, exit_code: i32) -> AgentOutcome {
         } => AgentOutcome::Failure {
             error: if exit_code == 0 {
                 "agent exited 0 without LOOM_COMPLETE / LOOM_NOOP / LOOM_WAITING / \
-                 LOOM_RETRY / LOOM_BLOCKED / LOOM_CLARIFY marker (swallowed marker)"
+                 LOOM_RETRY / LOOM_BLOCKED terminal (swallowed marker)"
                     .to_string()
             } else {
                 format!("agent exited with code {exit_code}")
@@ -2144,23 +2163,21 @@ mod tests {
         // `BLOCKED` self-report → terminal `Blocked` (gate row 1).
         match classify_session(
             session_ok(),
-            Some(&ExitSignal::Blocked {
-                reason: "missing schema".into(),
-            }),
+            Some(&ExitSignal::Blocked(loom_protocol::output::Reason {
+                reason: loom_protocol::todo::NonEmptyString::new("missing schema").unwrap(),
+            })),
         ) {
             AgentOutcome::Blocked { reason } => assert_eq!(reason, "missing schema"),
             other => panic!("expected Blocked, got {other:?}"),
         }
-        // `CLARIFY` self-report → terminal `Clarify` (gate row 2).
-        match classify_session(
-            session_ok(),
-            Some(&ExitSignal::Clarify {
-                question: "additive only?".into(),
-            }),
-        ) {
-            AgentOutcome::Clarify { question } => assert_eq!(question, "additive only?"),
-            other => panic!("expected Clarify, got {other:?}"),
-        }
+        let record = ExitSignal::Clarify(loom_protocol::output::Decisions {
+            decisions: loom_protocol::todo::NonEmptyVec::new(vec!["lm-decision".parse().unwrap()])
+                .unwrap(),
+        });
+        assert!(matches!(
+            classify_session(session_ok(), Some(&record)),
+            AgentOutcome::Failure { .. }
+        ));
         // `COMPLETE` + clean exit → `Success` (gate row "Done" with neutral inputs).
         assert_eq!(
             classify_session(session_ok(), Some(&ExitSignal::Complete)),
@@ -2202,9 +2219,12 @@ mod tests {
                     exit_code: 0,
                     cost_usd: None,
                 }),
-                Some(&ExitSignal::Blocked {
-                    reason: "semantic dead end with no safe options".to_string(),
-                }),
+                Some(&ExitSignal::Blocked(loom_protocol::output::Reason {
+                    reason: loom_protocol::todo::NonEmptyString::new(
+                        "semantic dead end with no safe options",
+                    )
+                    .unwrap(),
+                })),
             ),
         ];
 
@@ -2269,9 +2289,12 @@ mod tests {
         });
         match classify_session(
             session,
-            Some(&ExitSignal::Concern {
-                summary: "verifier-bypass on the agent backend mock".into(),
-            }),
+            Some(&ExitSignal::Concern(loom_protocol::output::Summary {
+                summary: loom_protocol::todo::NonEmptyString::new(
+                    "verifier-bypass on the agent backend mock",
+                )
+                .unwrap(),
+            })),
         ) {
             AgentOutcome::Failure { error } => {
                 assert!(

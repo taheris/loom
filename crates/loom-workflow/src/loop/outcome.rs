@@ -209,6 +209,13 @@ pub enum SessionResult {
     /// caller distinguishes that from infra failures via the variant.
     Complete(SessionOutcome),
 
+    /// Canonical phase admission retains records and rejected diagnostic context.
+    Decoded {
+        outcome: SessionOutcome,
+        output:
+            std::sync::Arc<Result<loom_protocol::output::Session, loom_protocol::output::Failure>>,
+    },
+
     /// No canonical `source = agent` event was observed before the infra
     /// failure: spawn/setup, prompt write, pre-stream EOF, framing, process,
     /// or sink failure.

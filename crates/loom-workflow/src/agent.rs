@@ -35,6 +35,29 @@ use crate::r#loop::{MISSING_AGENT_BINARY_CAUSE, SessionResult};
 use crate::observer::DefaultObserverChain;
 use crate::redaction::{Sink, redact_agent_input};
 
+/// Admit captured agent-origin output without changing workflow state.
+pub fn admit_session_output(
+    result: SessionResult,
+    text: &str,
+    phase: loom_protocol::output::Phase,
+) -> (SessionResult, Option<loom_protocol::output::Message>) {
+    let SessionResult::Complete(outcome) = result else {
+        return (result, None);
+    };
+    let output = loom_protocol::output::decode(text, phase);
+    let terminal = match &output {
+        Ok(session) => Some(session.terminal().message.clone()),
+        Err(_) => None,
+    };
+    (
+        SessionResult::Decoded {
+            outcome,
+            output: std::sync::Arc::new(output),
+        },
+        terminal,
+    )
+}
+
 /// Drive `B` through one full session: spawn, prompt, then consume events
 /// until `SessionComplete` arrives. Returns the resulting [`SessionOutcome`]
 /// (exit code + cost, when surfaced by the backend).
@@ -59,6 +82,12 @@ pub async fn run_agent<B: AgentBackend>(
 ) -> Result<SessionOutcome, ProtocolError> {
     match run_agent_classified::<B>(config, sink, None, text_capture, None).await {
         SessionResult::Complete(outcome) => Ok(outcome),
+        SessionResult::Decoded { outcome, output } => match output.as_ref() {
+            Ok(_) => Ok(outcome),
+            Err(failure) => Err(ProtocolError::Io(std::io::Error::other(format!(
+                "{failure:?}"
+            )))),
+        },
         // Callers that only accept the legacy `Result` shape (todo, plan,
         // inbox, batch dispatch) treat both infra phases as a single failure
         // surface. The run-loop dispatch path in `main.rs` calls
@@ -1231,18 +1260,25 @@ mod tests {
         script.push('\'');
     }
 
-    async fn capture_external<B: AgentBackend>(wire: Vec<serde_json::Value>) -> String {
+    async fn drive_external<B: AgentBackend>(
+        wire: Vec<serde_json::Value>,
+    ) -> (SessionResult, String) {
         let dir = tempfile::tempdir().unwrap();
         let mut config = sample_spawn_config(dir.path());
         config.initial_prompt =
             "LOOM_COMPLETE\nLOOM_APPLY: {\"proposals\":[\"lm-prompt.1\"]}".into();
         config.agent_args = wire.into_iter().map(|value| value.to_string()).collect();
         let mut output = String::new();
-        let outcome = run_agent::<B>(&config, None, Some(&mut output))
-            .await
-            .unwrap_or_else(|error| panic!("{}: {error:#}", std::any::type_name::<B>()));
-        assert_eq!(outcome.exit_code, 0);
-        output
+        let result = run_agent_classified::<B>(&config, None, None, Some(&mut output), None).await;
+        assert!(
+            matches!(&result, SessionResult::Complete(outcome) if outcome.exit_code == 0),
+            "{result:?}"
+        );
+        (result, output)
+    }
+
+    async fn capture_external<B: AgentBackend>(wire: Vec<serde_json::Value>) -> String {
+        drive_external::<B>(wire).await.1
     }
 
     fn pi_output(record: &str, terminal: &str) -> Vec<serde_json::Value> {
@@ -1316,6 +1352,55 @@ mod tests {
                 session.terminal().message,
                 loom_protocol::output::Message::Retry(_)
             ));
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_admission_retains_external_records_and_protocol_failures() {
+        use crate::r#loop::{AgentOutcome, classify_session};
+        use loom_protocol::output::Phase;
+
+        let record = "LOOM_CLARIFY: {\n\"decisions\":[\"lm-decision.1\"]\n}";
+        for (terminal, succeeds) in [
+            ("LOOM_COMPLETE", true),
+            ("LOOM_RETRY: {\"reason\":\"raw\nnewline\"}", false),
+            ("LOOM_APPLY: {\"proposals\":[\"lm-proposal.1\"]}", false),
+        ] {
+            let runs = [
+                drive_external::<ControlledPi>(pi_output(record, terminal)).await,
+                drive_external::<ControlledClaude>(claude_output(record, terminal)).await,
+                drive_external::<ControlledDirect>(direct_output(record, terminal)).await,
+            ];
+            for (result, text) in runs {
+                let (result, marker) = admit_session_output(result, &text, Phase::Loop);
+                let SessionResult::Decoded { output, .. } = &result else {
+                    panic!("expected located phase admission: {result:?}");
+                };
+                let context = match output.as_ref() {
+                    Ok(session) => {
+                        assert!(succeeds);
+                        session.context()
+                    }
+                    Err(failure) => {
+                        assert!(!succeeds);
+                        assert!(!failure.diagnostics().is_empty());
+                        assert!(marker.is_none());
+                        failure.context()
+                    }
+                };
+                assert_eq!(context.raw(), text);
+                assert_eq!(context.decisions().len(), 1);
+                let classified = classify_session(result, marker.as_ref());
+                if succeeds {
+                    assert!(matches!(classified, AgentOutcome::Success));
+                } else {
+                    let AgentOutcome::Failure { error } = classified else {
+                        panic!("rejected output must not authorize success: {classified:?}");
+                    };
+                    assert!(error.contains("lm-decision.1"));
+                    assert!(error.contains("canonical admission"));
+                }
+            }
         }
     }
 

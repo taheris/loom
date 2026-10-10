@@ -58,6 +58,11 @@ macro_rules! messages {
                 }
             }
 
+            /// Compatibility identity delegates to the canonical marker metadata.
+            pub const fn identity(&self) -> &'static str {
+                self.marker()
+            }
+
             pub const fn role(&self) -> Role {
                 match self {
                     $(Self::$variant $( (messages!(@pattern $payload)) )? => Role::$role),+

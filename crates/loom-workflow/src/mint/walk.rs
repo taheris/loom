@@ -887,9 +887,10 @@ mod tests {
                         exit_code: 0,
                         cost_usd: None,
                     },
-                    Some(ExitSignal::Concern {
-                        summary: "rubric finding".to_owned(),
-                    }),
+                    Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                        summary: loom_protocol::todo::NonEmptyString::new("rubric finding")
+                            .unwrap(),
+                    })),
                     stdout,
                 ))
             }

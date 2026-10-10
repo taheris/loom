@@ -340,9 +340,9 @@ impl GateSuccess {
                 .reviewed
                 .clone()
                 .ok_or_else(|| match evidence.review_marker.clone() {
-                    Some(ExitSignal::Concern { summary }) => {
-                        fail(GateFailReason::ReviewConcern { summary })
-                    }
+                    Some(ExitSignal::Concern(payload)) => fail(GateFailReason::ReviewConcern {
+                        summary: payload.summary.to_string(),
+                    }),
                     Some(ExitSignal::Noop) => fail(GateFailReason::EmptyDiffNoop),
                     _ => fail(GateFailReason::ReviewEvidenceMissing),
                 })?;
@@ -903,7 +903,7 @@ fn marker_to_wire(marker: &ExitSignal) -> Option<String> {
     match marker {
         ExitSignal::Complete => Some("complete".to_string()),
         ExitSignal::Noop => Some("noop".to_string()),
-        ExitSignal::Concern { summary } => Some(format!("concern:{summary}")),
+        ExitSignal::Concern(payload) => Some(format!("concern:{}", payload.summary)),
         _ => None,
     }
 }
@@ -952,11 +952,18 @@ fn marker_from_str(marker: &str) -> Option<ExitSignal> {
     match marker {
         "complete" => Some(ExitSignal::Complete),
         "noop" => Some(ExitSignal::Noop),
-        _ => marker
-            .strip_prefix("concern:")
-            .map(|summary| ExitSignal::Concern {
-                summary: summary.to_owned(),
-            }),
+        _ => {
+            let summary = marker.strip_prefix("concern:")?;
+            match loom_protocol::todo::NonEmptyString::new(summary) {
+                Ok(summary) => Some(ExitSignal::Concern(loom_protocol::output::Summary {
+                    summary,
+                })),
+                Err(error) => {
+                    tracing::warn!(error = ?error, "gate lifecycle log contains an invalid concern summary");
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -1342,9 +1349,9 @@ mod tests {
 
         let mut review_concern = clean.clone();
         review_concern.reviewed = None;
-        review_concern.review_marker = Some(ExitSignal::Concern {
-            summary: "scope concern".to_owned(),
-        });
+        review_concern.review_marker = Some(ExitSignal::Concern(loom_protocol::output::Summary {
+            summary: loom_protocol::todo::NonEmptyString::new("scope concern").unwrap(),
+        }));
         assert!(matches!(
             GateSuccess::new(&review_concern, 1),
             Err(GateFail {

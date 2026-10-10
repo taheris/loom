@@ -223,24 +223,14 @@ pub struct GateInputs {
 /// Apply the spec's decision table to the parsed marker plus mechanical
 /// signals.
 ///
-/// `marker = None` means no exit marker was found in the agent
-/// output (translated from [`crate::todo::parse_exit_signal`] returning
-/// `None`).
+/// `None` means no admitted terminal proposal is available.
 pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
     match marker {
         None => PhaseVerdict::Recovery {
             cause: RecoveryCause::SwallowedMarker,
         },
-        Some(ExitSignal::Blocked { reason }) if reason.trim().is_empty() => {
-            PhaseVerdict::Recovery {
-                cause: RecoveryCause::SwallowedMarker,
-            }
-        }
-        Some(ExitSignal::Blocked { reason }) => PhaseVerdict::Blocked {
-            reason: reason.clone(),
-        },
-        Some(ExitSignal::Clarify { question }) => PhaseVerdict::Clarify {
-            question: question.clone(),
+        Some(ExitSignal::Blocked(payload)) => PhaseVerdict::Blocked {
+            reason: payload.reason.to_string(),
         },
         Some(ExitSignal::Complete) => {
             if !inputs.streamed_findings.is_empty() {
@@ -256,28 +246,22 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
         }
         Some(ExitSignal::Noop) => decide_progress_marker(true, inputs),
         Some(ExitSignal::Waiting) => PhaseVerdict::Waiting,
-        Some(ExitSignal::Retry { reason }) => PhaseVerdict::Recovery {
+        Some(ExitSignal::Retry(payload)) => PhaseVerdict::Recovery {
             cause: RecoveryCause::AgentRetry {
-                reason: reason.clone(),
+                reason: payload.reason.to_string(),
             },
         },
-        Some(ExitSignal::Concern { summary }) => decide_concern(summary, inputs),
-        Some(ExitSignal::BadWalk(badwalk)) => PhaseVerdict::Recovery {
-            cause: RecoveryCause::BadWalk(badwalk.clone()),
+        Some(ExitSignal::Concern(payload)) => decide_concern(payload.summary.as_str(), inputs),
+        Some(message) => PhaseVerdict::Recovery {
+            cause: RecoveryCause::WrongPhaseMarker {
+                marker_name: message.marker(),
+                phase_kind: "terminal",
+            },
         },
     }
 }
 
-/// Class of phase from the marker-admissibility perspective.
-///
-/// Loop and todo workers admit direct self-report markers, but only loop
-/// admits the dependency-wait terminal. Review is single-shot and
-/// inspection-only: it admits `LOOM_RETRY` / `LOOM_BLOCKED` for
-/// cannot-complete self-reports and routes clarify-worthy decisions
-/// through `route="clarify"` findings instead of direct `LOOM_CLARIFY`.
-/// Interactive phases use the generic completion surface here because the
-/// human is in the room to resolve friction in-turn; `loom inbox chat` parses
-/// its `LOOM_APPLY` handoff in `inbox::terminal` before this layer.
+/// Compatibility workflow grouping projected onto canonical phase admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseKind {
     /// `loom loop` — admits progress, self-report, and dependency-wait
@@ -305,14 +289,7 @@ impl PhaseKind {
     }
 }
 
-/// Phase-aware wrapper around [`decide`].
-///
-/// Defense-in-depth: rejects every
-/// marker the selected phase does not own, including worker self-reports in
-/// interactive phases, generic progress in todo, and dependency waiting
-/// outside loop. The template partial-pinning matrix is the primary
-/// enforcement; this function is the mechanical backstop for code paths that
-/// parse markers from a phase-specific session.
+/// Apply [`decide`] only to canonical phase-permitted terminal proposals.
 #[must_use]
 pub fn decide_for_phase(
     marker: Option<&ExitSignal>,
@@ -326,42 +303,17 @@ pub fn decide_for_phase(
 }
 
 fn reject_marker_for_phase(marker: Option<&ExitSignal>, phase: PhaseKind) -> Option<PhaseVerdict> {
-    let name = match (phase, marker?) {
-        (PhaseKind::Interactive, ExitSignal::Retry { .. }) => "LOOM_RETRY",
-        (PhaseKind::Interactive, ExitSignal::Blocked { .. }) => "LOOM_BLOCKED",
-        (PhaseKind::Interactive | PhaseKind::Review, ExitSignal::Clarify { .. }) => "LOOM_CLARIFY",
-        (
-            PhaseKind::Interactive | PhaseKind::Loop | PhaseKind::Todo,
-            ExitSignal::Concern { .. } | ExitSignal::BadWalk(_),
-        ) => "LOOM_CONCERN",
-        (PhaseKind::Review | PhaseKind::Todo, ExitSignal::Noop) => "LOOM_NOOP",
-        (PhaseKind::Todo, ExitSignal::Complete) => "LOOM_COMPLETE",
-        (PhaseKind::Todo | PhaseKind::Review | PhaseKind::Interactive, ExitSignal::Waiting) => {
-            "LOOM_WAITING"
-        }
-        (
-            PhaseKind::Loop,
-            ExitSignal::Complete
-            | ExitSignal::Noop
-            | ExitSignal::Waiting
-            | ExitSignal::Retry { .. }
-            | ExitSignal::Blocked { .. }
-            | ExitSignal::Clarify { .. },
-        )
-        | (
-            PhaseKind::Todo,
-            ExitSignal::Retry { .. } | ExitSignal::Blocked { .. } | ExitSignal::Clarify { .. },
-        )
-        | (
-            PhaseKind::Review,
-            ExitSignal::Complete
-            | ExitSignal::Retry { .. }
-            | ExitSignal::Blocked { .. }
-            | ExitSignal::Concern { .. }
-            | ExitSignal::BadWalk(_),
-        )
-        | (PhaseKind::Interactive, ExitSignal::Complete | ExitSignal::Noop) => return None,
+    let message = marker?;
+    let projection = match phase {
+        PhaseKind::Loop => loom_protocol::output::Phase::Loop,
+        PhaseKind::Todo => loom_protocol::output::Phase::Todo,
+        PhaseKind::Review => loom_protocol::output::Phase::Review,
+        PhaseKind::Interactive => loom_protocol::output::Phase::Plan,
     };
+    if projection.admits(message) && message.role() == loom_protocol::output::Role::Terminal {
+        return None;
+    }
+    let name = message.marker();
     Some(PhaseVerdict::Recovery {
         cause: RecoveryCause::WrongPhaseMarker {
             marker_name: name,
@@ -384,7 +336,7 @@ fn reject_marker_for_phase(marker: Option<&ExitSignal>, phase: PhaseKind) -> Opt
 /// summary with at least one finding routes to `ReviewConcern`, not
 /// `SwallowedMarker`. Malformed terminal payloads never reach this
 /// branch — [`crate::todo::exit::parse_concern`] routes them to
-/// [`ExitSignal::BadWalk`] at the parser layer.
+/// a canonical protocol failure at the parser boundary.
 fn decide_concern(summary: &str, inputs: GateInputs) -> PhaseVerdict {
     if inputs.streamed_findings.is_empty() {
         return PhaseVerdict::Recovery {
@@ -443,6 +395,26 @@ fn decide_progress_marker(is_noop: bool, inputs: GateInputs) -> PhaseVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_protocol::output::{Decisions, Reason, Summary};
+    use loom_protocol::todo::{NonEmptyString, NonEmptyVec};
+
+    fn reason(text: &str) -> Reason {
+        Reason {
+            reason: NonEmptyString::new(text).unwrap(),
+        }
+    }
+
+    fn summary(text: &str) -> Summary {
+        Summary {
+            summary: NonEmptyString::new(text).unwrap(),
+        }
+    }
+
+    fn decision_record() -> ExitSignal {
+        ExitSignal::Clarify(Decisions {
+            decisions: NonEmptyVec::new(vec!["lm-decision".parse().unwrap()]).unwrap(),
+        })
+    }
     use loom_events::identifier::SpecLabel;
     use loom_templates::finding::{ConcernToken, FindingTarget};
 
@@ -496,9 +468,7 @@ mod tests {
 
     #[test]
     fn concern_marker_with_streamed_findings_routes_to_review_concern_recovery() {
-        let m = ExitSignal::Concern {
-            summary: "verifier-bypass -- one finding".into(),
-        };
+        let m = ExitSignal::Concern(summary("verifier-bypass -- one finding"));
         let g = GateInputs {
             streamed_findings: vec![streamed_finding(ConcernToken::VerifierBypass)],
             ..inputs(true, false, true)
@@ -524,9 +494,7 @@ mod tests {
     /// `decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed`.
     #[test]
     fn decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed() {
-        let m = ExitSignal::Concern {
-            summary: "fictional-concern not in 12-variant enum".into(),
-        };
+        let m = ExitSignal::Concern(summary("fictional-concern not in 12-variant enum"));
         let g = GateInputs {
             streamed_findings: vec![streamed_finding(ConcernToken::WeakAssertion)],
             ..inputs(true, false, true)
@@ -547,9 +515,7 @@ mod tests {
 
     #[test]
     fn concern_without_streamed_findings_routes_to_badwalk_concern_without_findings() {
-        let m = ExitSignal::Concern {
-            summary: "scope drift around the mint pipeline".into(),
-        };
+        let m = ExitSignal::Concern(summary("scope drift around the mint pipeline"));
         let g = GateInputs {
             streamed_findings: Vec::new(),
             ..GateInputs::default()
@@ -593,26 +559,18 @@ mod tests {
     }
 
     #[test]
-    fn bad_walk_concern_marker_routes_to_bad_walk_recovery_cause() {
-        let m = ExitSignal::BadWalk(BadWalk::Concern {
-            payload: "verifier-bypass -- legacy wire format".into(),
-            parsed_findings: Vec::new(),
-        });
-        match decide(Some(&m), inputs(true, false, true)) {
-            PhaseVerdict::Recovery {
-                cause: RecoveryCause::BadWalk(BadWalk::Concern { payload, .. }),
-            } => {
-                assert_eq!(payload, "verifier-bypass -- legacy wire format");
-            }
-            other => panic!("expected Recovery::BadWalk(Concern), got {other:?}"),
-        }
+    fn malformed_concern_is_not_a_constructible_terminal_proposal() {
+        let failure = crate::todo::parse_exit_signal(
+            "LOOM_CONCERN: verifier-bypass -- legacy wire format",
+            loom_protocol::output::Phase::Review,
+        )
+        .unwrap_err();
+        assert!(failure.context().terminal().is_none());
     }
 
     #[test]
     fn blocked_marker_routes_to_blocked_with_reason() {
-        let m = ExitSignal::Blocked {
-            reason: "missing schema".into(),
-        };
+        let m = ExitSignal::Blocked(reason("missing schema"));
         match decide(Some(&m), inputs(false, true, false)) {
             PhaseVerdict::Blocked { reason } => assert_eq!(reason, "missing schema"),
             other => panic!("expected Blocked, got {other:?}"),
@@ -620,27 +578,21 @@ mod tests {
     }
 
     #[test]
-    fn blocked_marker_without_reason_routes_to_swallowed_marker_recovery() {
-        let m = ExitSignal::Blocked {
-            reason: "  ".into(),
-        };
-        assert_eq!(
-            decide(Some(&m), GateInputs::default()),
-            PhaseVerdict::Recovery {
-                cause: RecoveryCause::SwallowedMarker,
-            },
-        );
+    fn blocked_marker_without_reason_is_rejected_at_construction() {
+        assert!(NonEmptyString::new("  ").is_err());
     }
 
     #[test]
-    fn clarify_marker_routes_to_clarify_with_question() {
-        let m = ExitSignal::Clarify {
-            question: "additive only?".into(),
-        };
-        match decide(Some(&m), inputs(true, false, true)) {
-            PhaseVerdict::Clarify { question } => assert_eq!(question, "additive only?"),
-            other => panic!("expected Clarify, got {other:?}"),
-        }
+    fn clarify_record_cannot_be_used_as_a_terminal_outcome() {
+        assert!(matches!(
+            decide(Some(&decision_record()), inputs(true, false, true)),
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::WrongPhaseMarker {
+                    marker_name: "LOOM_CLARIFY",
+                    ..
+                }
+            },
+        ));
     }
 
     #[test]
@@ -992,9 +944,7 @@ mod tests {
     /// `PreviousFailure::AgentRetry { reason }` for the next attempt.
     #[test]
     fn retry_marker_routes_to_agent_retry_recovery_cause() {
-        let m = ExitSignal::Retry {
-            reason: "tools failing mid-session; cwd unlinked".into(),
-        };
+        let m = ExitSignal::Retry(reason("tools failing mid-session; cwd unlinked"));
         match decide(Some(&m), GateInputs::default()) {
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::AgentRetry { reason },
@@ -1013,9 +963,7 @@ mod tests {
     /// rule mechanically.
     #[test]
     fn retry_marker_from_interactive_phase_is_wrong_phase_marker() {
-        let m = ExitSignal::Retry {
-            reason: "should never get here".into(),
-        };
+        let m = ExitSignal::Retry(reason("should never get here"));
         match decide_for_phase(Some(&m), GateInputs::default(), PhaseKind::Interactive) {
             PhaseVerdict::Recovery {
                 cause:
@@ -1034,9 +982,7 @@ mod tests {
     /// Loop and todo both admit direct worker self-reports.
     #[test]
     fn retry_marker_admitted_under_loop_and_todo_phases() {
-        let marker = ExitSignal::Retry {
-            reason: "transient io".into(),
-        };
+        let marker = ExitSignal::Retry(reason("transient io"));
         for phase in [PhaseKind::Loop, PhaseKind::Todo] {
             match decide_for_phase(Some(&marker), GateInputs::default(), phase) {
                 PhaseVerdict::Recovery {
@@ -1048,20 +994,23 @@ mod tests {
     }
 
     #[test]
-    fn clarify_marker_admitted_under_loop_and_todo_phases() {
-        let marker = ExitSignal::Clarify {
-            question: "additive only?".into(),
-        };
+    fn clarify_records_are_not_loop_or_todo_terminal_outcomes() {
+        let marker = decision_record();
         for phase in [PhaseKind::Loop, PhaseKind::Todo] {
-            match decide_for_phase(Some(&marker), GateInputs::default(), phase) {
-                PhaseVerdict::Clarify { question } => assert_eq!(question, "additive only?"),
-                other => panic!("expected Clarify, got {other:?}"),
-            }
+            assert!(matches!(
+                decide_for_phase(Some(&marker), GateInputs::default(), phase),
+                PhaseVerdict::Recovery {
+                    cause: RecoveryCause::WrongPhaseMarker {
+                        marker_name: "LOOM_CLARIFY",
+                        ..
+                    }
+                },
+            ));
         }
     }
 
     #[test]
-    fn waiting_marker_is_loop_only() {
+    fn waiting_marker_admission_matches_canonical_worker_phases() {
         assert_eq!(
             decide_for_phase(
                 Some(&ExitSignal::Waiting),
@@ -1070,7 +1019,15 @@ mod tests {
             ),
             PhaseVerdict::Waiting,
         );
-        for phase in [PhaseKind::Todo, PhaseKind::Review, PhaseKind::Interactive] {
+        assert_eq!(
+            decide_for_phase(
+                Some(&ExitSignal::Waiting),
+                GateInputs::default(),
+                PhaseKind::Todo
+            ),
+            PhaseVerdict::Waiting
+        );
+        for phase in [PhaseKind::Review, PhaseKind::Interactive] {
             assert!(matches!(
                 decide_for_phase(Some(&ExitSignal::Waiting), GateInputs::default(), phase),
                 PhaseVerdict::Recovery {
@@ -1085,9 +1042,7 @@ mod tests {
 
     #[test]
     fn clarify_marker_from_review_phase_is_wrong_review_path() {
-        let m = ExitSignal::Clarify {
-            question: "additive only?".into(),
-        };
+        let m = decision_record();
         match decide_for_phase(Some(&m), GateInputs::default(), PhaseKind::Review) {
             PhaseVerdict::Recovery {
                 cause:
@@ -1105,9 +1060,7 @@ mod tests {
 
     #[test]
     fn retry_and_blocked_markers_are_admitted_under_review_phase() {
-        let retry = ExitSignal::Retry {
-            reason: "logs disappeared".into(),
-        };
+        let retry = ExitSignal::Retry(reason("logs disappeared"));
         match decide_for_phase(Some(&retry), GateInputs::default(), PhaseKind::Review) {
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::AgentRetry { reason },
@@ -1115,9 +1068,7 @@ mod tests {
             other => panic!("expected AgentRetry under review, got {other:?}"),
         }
 
-        let blocked = ExitSignal::Blocked {
-            reason: "workspace cannot be read".into(),
-        };
+        let blocked = ExitSignal::Blocked(reason("workspace cannot be read"));
         match decide_for_phase(Some(&blocked), GateInputs::default(), PhaseKind::Review) {
             PhaseVerdict::Blocked { reason } => assert_eq!(reason, "workspace cannot be read"),
             other => panic!("expected Blocked under review, got {other:?}"),
@@ -1125,16 +1076,13 @@ mod tests {
     }
 
     #[test]
-    fn blocked_marker_without_reason_is_not_admitted_under_loop_or_review_phase() {
-        let marker = ExitSignal::Blocked {
-            reason: String::new(),
-        };
-        for phase in [PhaseKind::Loop, PhaseKind::Review] {
-            assert_eq!(
-                decide_for_phase(Some(&marker), GateInputs::default(), phase),
-                PhaseVerdict::Recovery {
-                    cause: RecoveryCause::SwallowedMarker,
-                },
+    fn blocked_marker_without_reason_fails_shared_worker_admission() {
+        for phase in [
+            loom_protocol::output::Phase::Loop,
+            loom_protocol::output::Phase::Review,
+        ] {
+            assert!(
+                crate::todo::parse_exit_signal("LOOM_BLOCKED: {\"reason\":\"\"}", phase).is_err()
             );
         }
     }
@@ -1233,7 +1181,7 @@ mod tests {
                 &validator
             ),
             Err(WalkOutputError::BadWalk {
-                bad_walk: BadWalk::Concern { .. }
+                bad_walk: BadWalk::Protocol { .. }
             })
         ));
         let output = concat!(
@@ -1241,7 +1189,8 @@ mod tests {
             "LOOM_CONCERN: {\"summary\":\"Summary is not a concern token\"}\n",
         );
         let findings = parse_walk_output(output, DispatchScope::Tree, &validator).unwrap();
-        let marker = crate::todo::parse_exit_signal(output).unwrap();
+        let marker =
+            crate::todo::parse_exit_signal(output, loom_protocol::output::Phase::Review).unwrap();
         let PhaseVerdict::Recovery { cause } = decide_for_phase(
             Some(&marker),
             GateInputs {

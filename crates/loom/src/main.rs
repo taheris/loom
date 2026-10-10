@@ -32,7 +32,7 @@ use loom_gate::{
     FsCommandResolver, InputResolver, RunnerSpec, StatusCache, TestScope, Tier, TierCwds, Verdict,
     is_missing_binary_target, render_report,
 };
-use loom_protocol::todo::parse_todo_success;
+use loom_protocol::output;
 use loom_workflow::inbox::{
     InboxItem, InboxKind, build_queue, build_rows, find_by_bead_id, find_by_index,
     find_by_proposal_id, frame_unavailable_tune_items,
@@ -53,6 +53,16 @@ use loom_workflow::todo::{
     ExitSignal, ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
 };
 use loom_workflow::{DefaultObserverChain, init, logs_cmd, plan, spec, status, use_spec};
+
+fn phase_terminal(text: &str, phase: output::Phase) -> Option<ExitSignal> {
+    match parse_exit_signal(text, phase) {
+        Ok(message) => Some(message),
+        Err(failure) => {
+            tracing::warn!(?phase, error = ?failure, "agent output failed canonical admission");
+            None
+        }
+    }
+}
 
 /// Top-level CLI surface.
 #[derive(Debug, Parser)]
@@ -2437,7 +2447,7 @@ fn run_gate_mint(
                                     Some(&mut output),
                                 )
                                 .await?;
-                                let marker = parse_exit_signal(&output);
+                                let marker = phase_terminal(&output, output::Phase::Review);
                                 Ok((outcome, marker, output))
                             }
                         },
@@ -2530,7 +2540,7 @@ fn run_gate_mint(
                     match walker.run_rubric(&scope).await {
                         Ok(stdout) => {
                             let output_bytes = stdout.len();
-                            let marker = parse_exit_signal(&stdout);
+                            let marker = phase_terminal(&stdout, output::Phase::Review);
                             match loom_workflow::review::parse_walk_output(
                                 &stdout,
                                 scope.dispatch_scope(),
@@ -3334,8 +3344,11 @@ fn run_sequential_loop_root(
                         observer_config,
                     )
                     .await;
-                    let marker = parse_exit_signal(&output);
-                    (session, marker)
+                    loom_workflow::agent::admit_session_output(
+                        session,
+                        &output,
+                        output::Phase::Loop,
+                    )
                 }
             },
         )
@@ -3646,7 +3659,8 @@ async fn dispatch_for_slot(
     )
     .await;
     drop(scratch);
-    let marker = parse_exit_signal(&output);
+    let (result, marker) =
+        loom_workflow::agent::admit_session_output(result, &output, output::Phase::Loop);
     let outcome = classify_session(result, marker.as_ref());
     Ok(
         loom_workflow::r#loop::validate_waiting_outcome(&BdClient::new(), &slot.bead.id, outcome)
@@ -3732,6 +3746,12 @@ async fn dispatch_with_envelope(
 fn session_result_to_legacy_result(result: SessionResult) -> Result<SessionOutcome, ProtocolError> {
     match result {
         SessionResult::Complete(outcome) => Ok(outcome),
+        SessionResult::Decoded { outcome, output } => match output.as_ref() {
+            Ok(_) => Ok(outcome),
+            Err(failure) => Err(ProtocolError::Io(std::io::Error::other(format!(
+                "{failure:?}"
+            )))),
+        },
         SessionResult::PreflightFailed { error }
         | SessionResult::MidSessionFailed { error }
         | SessionResult::StaticInfra { error, .. } => {
@@ -4495,7 +4515,7 @@ fn run_review(
                         Some(&mut output),
                     )
                     .await?;
-                    let marker = parse_exit_signal(&output);
+                    let marker = phase_terminal(&output, output::Phase::Review);
                     stdout_capture
                         .lock()
                         .map_err(|_| {
@@ -5047,19 +5067,14 @@ fn run_todo(
                     Some(build_phase_envelope_builder(Phase::Todo)),
                 )
                 .await?;
-                let final_line = output.lines().rev().find(|line| !line.trim().is_empty());
-                let todo_success = match final_line {
-                    Some(line) if line.starts_with(loom_protocol::todo::TODO_SUCCESS_PREFIX) => {
-                        Some(
-                            parse_todo_success(line).map_err(|e| {
-                                ProtocolError::Io(std::io::Error::other(e.to_string()))
-                            })?,
-                        )
-                    }
+                let decoded = output::decode(&output, output::Phase::Todo)
+                    .map_err(|failure| ProtocolError::Io(std::io::Error::other(failure)))?;
+                let terminal = decoded.terminal().message.clone();
+                let todo_success = match &terminal {
+                    output::Message::Todo(success) => Some(success.clone()),
                     _ => None,
                 };
-                let marker = parse_exit_signal(&output);
-                Ok((outcome, marker, todo_success))
+                Ok((outcome, Some(terminal), todo_success))
             }
         })
         .await

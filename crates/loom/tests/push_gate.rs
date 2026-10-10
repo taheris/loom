@@ -567,6 +567,7 @@ mod tests {
             "finding-complete",
             "blocked-marker",
             "no-marker",
+            "concern-then-complete",
         ] {
             let fixture = Fixture::new();
             let before = bead_files(&fixture.state);
@@ -609,7 +610,8 @@ mod tests {
                 .output()
                 .unwrap(),
         );
-        assert!(stdout.contains("inspection Complete"));
+        assert!(stdout.contains("inspection Incomplete"));
+        assert!(stdout.contains("DuplicateTerminal"));
         assert!(stdout.trim_end().ends_with("LOOM_COMPLETE"));
         fixture.assert_read_only(&before);
     }
