@@ -43,12 +43,39 @@ pub enum Role {
     Terminal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arity {
+    Unit,
+    Data,
+}
+
+/// Prompt-visible syntax derived from the same declaration as decoding and admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Syntax {
+    pub marker: &'static str,
+    pub role: Role,
+    pub arity: Arity,
+    phases: &'static [Phase],
+}
+
 macro_rules! messages {
-    ($($variant:ident $(($payload:ty))? => ($marker:literal, $role:ident)),+ $(,)?) => {
+    ($($variant:ident $(($payload:ty))? => ($marker:literal, $role:ident, $($phase:ident)|+)),+ $(,)?) => {
         /// Typed proposals only; decoding grants no workflow authority.
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub enum Message {
             $($variant $(($payload))?),+
+        }
+
+        const SYNTAX: &[Syntax] = &[
+            $(Syntax { marker: $marker, role: Role::$role, arity: messages!(@arity $($payload)?), phases: &[$(Phase::$phase),+] }),+
+        ];
+
+        impl Phase {
+            pub const fn admits(self, message: &Message) -> bool {
+                match message {
+                    $(Message::$variant $( (messages!(@pattern $payload)) )? => matches!(self, $(Self::$phase)|+)),+
+                }
+            }
         }
 
         impl Message {
@@ -92,6 +119,8 @@ macro_rules! messages {
             }
         }
     };
+    (@arity $payload:ty) => { Arity::Data };
+    (@arity) => { Arity::Unit };
     (@pattern $payload:ty) => { _ };
     (@binding $payload:ty, $value:ident) => { $value };
     (@encode $marker:literal, $value:ident, $payload:ty) => {
@@ -115,16 +144,16 @@ macro_rules! messages {
 }
 
 messages! {
-    Finding(RawFinding) => ("LOOM_FINDING", Record),
-    Clarify(Decisions) => ("LOOM_CLARIFY", Record),
-    Complete => ("LOOM_COMPLETE", Terminal),
-    Noop => ("LOOM_NOOP", Terminal),
-    Waiting => ("LOOM_WAITING", Terminal),
-    Concern(Summary) => ("LOOM_CONCERN", Terminal),
-    Retry(Reason) => ("LOOM_RETRY", Terminal),
-    Blocked(Reason) => ("LOOM_BLOCKED", Terminal),
-    Todo(TodoSuccess) => ("LOOM_TODO", Terminal),
-    Apply(Proposals) => ("LOOM_APPLY", Terminal),
+    Finding(RawFinding) => ("LOOM_FINDING", Record, Review),
+    Clarify(Decisions) => ("LOOM_CLARIFY", Record, Todo|Loop),
+    Complete => ("LOOM_COMPLETE", Terminal, Plan|Loop|Review|Inbox),
+    Noop => ("LOOM_NOOP", Terminal, Loop),
+    Waiting => ("LOOM_WAITING", Terminal, Todo|Loop),
+    Concern(Summary) => ("LOOM_CONCERN", Terminal, Review),
+    Retry(Reason) => ("LOOM_RETRY", Terminal, Todo|Loop|Review),
+    Blocked(Reason) => ("LOOM_BLOCKED", Terminal, Todo|Loop|Review),
+    Todo(TodoSuccess) => ("LOOM_TODO", Terminal, Todo),
+    Apply(Proposals) => ("LOOM_APPLY", Terminal, Inbox),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,36 +166,10 @@ pub enum Phase {
 }
 
 impl Phase {
-    pub const fn admits(self, message: &Message) -> bool {
-        match self {
-            Self::Plan => matches!(message, Message::Complete),
-            Self::Todo => matches!(
-                message,
-                Message::Clarify(_)
-                    | Message::Todo(_)
-                    | Message::Waiting
-                    | Message::Retry(_)
-                    | Message::Blocked(_)
-            ),
-            Self::Loop => matches!(
-                message,
-                Message::Clarify(_)
-                    | Message::Complete
-                    | Message::Noop
-                    | Message::Waiting
-                    | Message::Retry(_)
-                    | Message::Blocked(_)
-            ),
-            Self::Review => matches!(
-                message,
-                Message::Finding(_)
-                    | Message::Complete
-                    | Message::Concern(_)
-                    | Message::Retry(_)
-                    | Message::Blocked(_)
-            ),
-            Self::Inbox => matches!(message, Message::Complete | Message::Apply(_)),
-        }
+    pub fn syntax(self) -> impl Iterator<Item = &'static Syntax> {
+        SYNTAX
+            .iter()
+            .filter(move |entry| entry.phases.contains(&self))
     }
 }
 

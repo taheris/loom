@@ -72,3 +72,9 @@ pub struct ReviewContext {
     pub default_profile: ProfileName,
     pub skill_index: SkillIndexMarkdown,
 }
+
+impl ReviewContext {
+    pub fn output_contract(&self) -> String {
+        crate::output::contract(loom_protocol::output::Phase::Review)
+    }
+}

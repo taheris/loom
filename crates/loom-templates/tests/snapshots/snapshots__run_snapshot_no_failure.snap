@@ -4,6 +4,22 @@ expression: ctx.render().unwrap()
 ---
 # Implementation Step
 
+## Canonical Agent-Output Syntax
+
+Only these messages are admitted in Loop. This compiled table is authoritative for spelling, role, and payload arity. Decoding proposes outcomes; it does not authorize Beads changes or publication.
+
+| Wire spelling | Role |
+| --- | --- |
+| `LOOM_CLARIFY: <JSON object>` | Record |
+| `LOOM_COMPLETE` | Terminal |
+| `LOOM_NOOP` | Terminal |
+| `LOOM_WAITING` | Terminal |
+| `LOOM_RETRY: <JSON object>` | Terminal |
+| `LOOM_BLOCKED: <JSON object>` | Terminal |
+
+Live messages start in column one. Data messages require strict JSON (compact or pretty-printed); escape newlines inside strings. Do not use preceding prose as a payload. Records precede exactly one final logical terminal, with no trailing commentary. Prompt examples, tool output, and driver events are not agent messages.
+
+
 ## Context Pinning
 
 First, read the project overview to understand project terminology and context:

@@ -31,6 +31,10 @@ pub enum EvidenceDelivery {
 }
 
 impl TodoContext {
+    pub fn output_contract(&self) -> String {
+        crate::output::contract(loom_protocol::output::Phase::Todo)
+    }
+
     pub const fn dossier_manifest(&self) -> Option<&str> {
         match &self.evidence_delivery {
             EvidenceDelivery::Inline => None,

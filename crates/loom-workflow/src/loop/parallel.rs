@@ -755,7 +755,7 @@ async fn merge_back_one(
     }
 }
 
-fn inferred_terminal_marker(outcome: &AgentOutcome) -> Option<&'static str> {
+const fn inferred_terminal_marker(outcome: &AgentOutcome) -> Option<&'static str> {
     match outcome {
         AgentOutcome::Success => Some("LOOM_COMPLETE"),
         AgentOutcome::Noop => Some("LOOM_NOOP"),
@@ -763,9 +763,6 @@ fn inferred_terminal_marker(outcome: &AgentOutcome) -> Option<&'static str> {
         AgentOutcome::Retry { .. } => Some("LOOM_RETRY"),
         AgentOutcome::Blocked { .. } => Some("LOOM_BLOCKED"),
         AgentOutcome::Clarify { .. } => Some("LOOM_CLARIFY"),
-        AgentOutcome::Failure { error } if error.contains("LOOM_CONCERN") => Some("LOOM_CONCERN"),
-        AgentOutcome::Failure { error } if error.contains("LOOM_COMPLETE") => Some("LOOM_COMPLETE"),
-        AgentOutcome::Failure { error } if error.contains("LOOM_NOOP") => Some("LOOM_NOOP"),
         AgentOutcome::Failure { .. }
         | AgentOutcome::InfraPreflight { .. }
         | AgentOutcome::InfraMidSession { .. }
@@ -791,19 +788,19 @@ mod tests {
     use tokio::sync::Barrier;
 
     #[test]
-    fn terminal_marker_inference_covers_marker_failures_and_missing_markers() {
+    fn terminal_marker_inference_never_promotes_diagnostic_prose() {
         let cases = [
             (
                 AgentOutcome::Failure {
                     error: "wrong-phase-marker: LOOM_CONCERN".to_string(),
                 },
-                "LOOM_CONCERN",
+                "missing",
             ),
             (
                 AgentOutcome::Failure {
                     error: "agent emitted LOOM_COMPLETE but exited code 1".to_string(),
                 },
-                "LOOM_COMPLETE",
+                "missing",
             ),
             (
                 AgentOutcome::Failure {

@@ -98,6 +98,7 @@ const MEMBER_CRATES: &[&str] = &[
 /// a freshly registered walk never silently declares an empty input set.
 pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
     match name {
+        "agent_output_single_decoder" => super::agent_output_single_decoder::inputs(root),
         // Production source + tests: `narrow_to_loom_files(all_rs_files(..))`.
         "finding_no_duplicate_definitions"
         | "no_hardcoded_tmp_paths"

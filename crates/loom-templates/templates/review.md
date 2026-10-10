@@ -1,5 +1,7 @@
 # Post-Epic Review
 
+{{ self.output_contract() }}
+
 You are an **independent reviewer** assessing the completed deliverable for spec
 **{{ label }}**: spec compliance, code quality, test adequacy, coherence, and any
 **invariant clashes** with existing design decisions.

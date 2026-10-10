@@ -26,6 +26,7 @@ use std::fmt;
 pub mod criterion_status;
 pub mod finding;
 pub mod inbox;
+mod output;
 pub mod plan;
 pub mod previous_failure;
 pub mod review;

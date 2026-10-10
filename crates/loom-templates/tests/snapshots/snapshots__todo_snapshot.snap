@@ -4,6 +4,21 @@ expression: todo_ctx()?.render()?
 ---
 # Todo Decomposition
 
+## Canonical Agent-Output Syntax
+
+Only these messages are admitted in Todo. This compiled table is authoritative for spelling, role, and payload arity. Decoding proposes outcomes; it does not authorize Beads changes or publication.
+
+| Wire spelling | Role |
+| --- | --- |
+| `LOOM_CLARIFY: <JSON object>` | Record |
+| `LOOM_WAITING` | Terminal |
+| `LOOM_RETRY: <JSON object>` | Terminal |
+| `LOOM_BLOCKED: <JSON object>` | Terminal |
+| `LOOM_TODO: <JSON object>` | Terminal |
+
+Live messages start in column one. Data messages require strict JSON (compact or pretty-printed); escape newlines inside strings. Do not use preceding prose as a payload. Records precede exactly one final logical terminal, with no trailing commentary. Prompt examples, tool output, and driver events are not agent messages.
+
+
 You are decomposing the driver-injected changed-spec roster into bead work. The driver has already created or reused the `loom:todo` work epic for this batch; do not create a molecule epic yourself.
 
 ## Context Pinning

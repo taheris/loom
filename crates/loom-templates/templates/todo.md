@@ -1,5 +1,7 @@
 # Todo Decomposition
 
+{{ self.output_contract() }}
+
 You are decomposing the driver-injected changed-spec roster into bead work. The driver has already created or reused the `loom:todo` work epic for this batch; do not create a molecule epic yourself.
 
 {% include "partial/context_pinning.md" %}

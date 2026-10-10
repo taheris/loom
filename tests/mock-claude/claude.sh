@@ -70,14 +70,8 @@ extract_settings_arg() {
 
 hook_command_from_settings() {
     local settings_path="$1"
-    local line command=""
-    while IFS= read -r line; do
-        if [[ "$line" =~ \"command\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
-            command="${BASH_REMATCH[1]}"
-            break
-        fi
-    done < "$settings_path"
-    if [[ -z "$command" ]]; then
+    local command
+    if ! command="$(jq -er '.hooks.SessionStart[] | select(.matcher == "compact") | .hooks[] | select(.type == "command") | .command | strings' "$settings_path")"; then
         echo "mock-claude: settings missing compact hook command" >&2
         exit 3
     fi

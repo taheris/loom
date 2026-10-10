@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 pub use inputs::render_print_inputs;
 
 mod agent_backend_trait_contract;
+mod agent_output_single_decoder;
 mod audit_makes_no_bd_writes_outside_mint_module;
 mod cli_surface;
 mod clock_audit;
@@ -144,6 +145,10 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "agent_backend_trait_contract",
         run: agent_backend_trait_contract::run,
+    },
+    Walk {
+        name: "agent_output_single_decoder",
+        run: agent_output_single_decoder::run,
     },
     Walk {
         name: "audit_makes_no_bd_writes_outside_mint_module",

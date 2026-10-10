@@ -15,3 +15,9 @@ pub struct PlanContext {
     pub spec_conventions: String,
     pub skill_index: SkillIndexMarkdown,
 }
+
+impl PlanContext {
+    pub fn output_contract(&self) -> String {
+        crate::output::contract(loom_protocol::output::Phase::Plan)
+    }
+}

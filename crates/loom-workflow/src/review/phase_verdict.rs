@@ -322,21 +322,7 @@ fn reject_marker_for_phase(marker: Option<&ExitSignal>, phase: PhaseKind) -> Opt
     })
 }
 
-/// `LOOM_CONCERN` is review-phase-only per `specs/harness.md` § Marker
-/// definitions. The pairing-rule cross-check from `specs/gate.md`'s
-/// *Streaming + terminator pairing rule* fires first: a `LOOM_CONCERN`
-/// marker with zero preceding `LOOM_FINDING:` lines is a
-/// [`BadWalk::ConcernWithoutFindings`]. With one or more streamed
-/// findings, the verdict routes to
-/// [`RecoveryCause::ReviewConcern { summary, findings }`]; the
-/// human-readable concern label is derived downstream from
-/// `findings[0].token` (or a `multiple` label when heterogeneous), NOT
-/// from the terminal summary. The legacy `summary`-as-token fallthrough
-/// is gone: under the streaming-finding contract an unrecognised
-/// summary with at least one finding routes to `ReviewConcern`, not
-/// `SwallowedMarker`. Malformed terminal payloads never reach this
-/// branch — [`crate::todo::exit::parse_concern`] routes them to
-/// a canonical protocol failure at the parser boundary.
+/// Pair admitted concerns with resolved findings; summaries never identify tokens.
 fn decide_concern(summary: &str, inputs: GateInputs) -> PhaseVerdict {
     if inputs.streamed_findings.is_empty() {
         return PhaseVerdict::Recovery {

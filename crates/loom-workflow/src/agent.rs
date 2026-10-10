@@ -1357,6 +1357,10 @@ mod tests {
 
     #[tokio::test]
     async fn loop_admission_retains_external_records_and_protocol_failures() {
+        loop_admission_cases().await;
+    }
+
+    async fn loop_admission_cases() {
         use crate::r#loop::{AgentOutcome, classify_session};
         use loom_protocol::output::Phase;
 
@@ -1401,6 +1405,178 @@ mod tests {
                     assert!(error.contains("canonical admission"));
                 }
             }
+        }
+    }
+
+    async fn controlled_outputs(record: &str, terminal: &str) -> Vec<String> {
+        vec![
+            capture_external::<ControlledPi>(pi_output(record, terminal)).await,
+            capture_external::<ControlledClaude>(claude_output(record, terminal)).await,
+            capture_external::<ControlledDirect>(direct_output(record, terminal)).await,
+        ]
+    }
+
+    fn tune_review_score(text: &str, validator: &dyn loom_protocol::gate::FindingValidator) -> f64 {
+        use loom_tune::{case, checker, config, evidence, executor, plan};
+
+        let target: loom_tune::target::Target = "skill:loom-context-before-edit".parse().unwrap();
+        let id = case::Id::new("protocol-boundary").unwrap();
+        let cases = case::LoadedCases::new(
+            vec![case::Case {
+                id: id.clone(),
+                checker: "behavior.review.finding-recall".parse().unwrap(),
+                targets: vec![target.clone()],
+                role: checker::CaseRole::Regression,
+                input: case::Input::ReviewFindingRecall {
+                    patch: case::RepoPath {
+                        relative: "fixture.patch".into(),
+                        kind: case::PathKind::File,
+                    },
+                },
+                expected: case::Expected::ReviewFindingRecall(case::ReviewExpected {
+                    findings: vec![],
+                    max_extra_findings: Some(0),
+                }),
+                source: case::Source {
+                    path: "cases.md".into(),
+                    line: 1,
+                },
+            }],
+            vec![],
+        );
+        let registry = checker::Registry::builtin().unwrap();
+        let evidence = evidence::Snapshot::empty(evidence::SplitMetadata {
+            algorithm: "sha256-salt-v1".into(),
+            salt_id: "fixture".into(),
+            selection_fraction: config::SelectionFraction::new(0.34).unwrap(),
+        });
+        let plan = plan::build(plan::Request {
+            targets: vec![target],
+            level: checker::Level::Run,
+            cases: &cases,
+            evidence: &evidence,
+            config: &config::TuneConfig::default(),
+            registry: &registry,
+            seed: 1,
+        })
+        .unwrap();
+        assert_eq!(plan.selected_cases.len(), 1);
+        let replay = executor::Replay::new(
+            plan::PlannedCaseId::Declared(id),
+            executor::Evidence::text(text),
+            executor::Evidence::text(text),
+        );
+        let results = executor::run(&plan, &cases, &[replay], &registry, validator).unwrap();
+        results[0].candidate.hard.get()
+    }
+
+    #[tokio::test]
+    async fn production_phase_consumers_enforce_shared_agent_output_contract() {
+        use crate::review::{
+            PhaseVerdict, RecoveryCause, WorkspaceFindingValidator, phase_verdict_from_walk,
+        };
+        use loom_protocol::gate::{BadWalk, DispatchScope, WalkOutput};
+        use loom_protocol::output::{Message, Phase};
+        use loom_protocol::todo::{ParseTodoSuccessError, parse_todo_success};
+
+        let decisions = "LOOM_CLARIFY: {\n\"decisions\":[\"lm-decision.1\"]\n}";
+        let todo = "LOOM_TODO: {\n\"head\":\"0123456789abcdef0123456789abcdef01234567\",\n\"fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n\"work_epic\":\"lm-work\",\"title\":\"Work\",\"specs\":[{\"label\":\"alpha\",\"outcome\":\"no-work\",\"reason\":\"already implemented\"}]\n}";
+        for (terminal, succeeds) in [
+            (todo, true),
+            ("LOOM_RETRY: {\"reason\":\"raw\nnewline\"}", false),
+            ("LOOM_COMPLETE", false),
+        ] {
+            for text in controlled_outputs(decisions, terminal).await {
+                assert_eq!(text, format!("{decisions}\n{terminal}\n"));
+                match parse_todo_success(&text) {
+                    Ok(success) => {
+                        assert!(succeeds);
+                        assert_eq!(success.work_epic.as_str(), "lm-work");
+                    }
+                    Err(ParseTodoSuccessError::Contract(failure)) => {
+                        assert!(!succeeds);
+                        assert_eq!(failure.context().raw(), text);
+                        assert_eq!(failure.context().decisions().len(), 1);
+                        assert!(!failure.diagnostics().is_empty());
+                    }
+                    result => panic!("unexpected Todo admission: {result:?}"),
+                }
+            }
+        }
+        loop_admission_cases().await;
+
+        for (terminal, succeeds) in [
+            ("LOOM_APPLY: {\n\"proposals\":[\"lm-proposal.1\"]\n}", true),
+            ("LOOM_APPLY: {\"proposals\":[\"bad id\"]}", false),
+            ("LOOM_RETRY: {\"reason\":\"wrong phase\"}", false),
+        ] {
+            for text in controlled_outputs("ordinary assistant commentary", terminal).await {
+                let result = loom_protocol::inbox::parse(&text);
+                assert_eq!(result.is_ok(), succeeds, "{result:?}");
+                if let Err(loom_protocol::inbox::TerminalMarkerError::Contract(failure)) = result {
+                    assert_eq!(failure.context().raw(), text);
+                    assert!(!failure.diagnostics().is_empty());
+                }
+            }
+        }
+        for text in controlled_outputs("ordinary assistant commentary", "LOOM_COMPLETE").await {
+            assert_eq!(
+                crate::todo::parse_exit_signal(&text, Phase::Plan).unwrap(),
+                Message::Complete
+            );
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("tests")).unwrap();
+        std::fs::write(
+            directory.path().join("tests/check.rs"),
+            "#[test] fn check() {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir(directory.path().join("specs")).unwrap();
+        std::fs::write(
+            directory.path().join("specs/alpha.md"),
+            "## Success Criteria\n\n- check assertion [test](check)\n",
+        )
+        .unwrap();
+        let validator = WorkspaceFindingValidator::new(directory.path());
+        let finding = "LOOM_FINDING: {\"token\":\"mock-discipline\",\"target\":{\"kind\":\"TestPath\",\"path\":\"tests/check.rs\"},\"evidence\":\"first\\nsecond\",\"route\":\"blocking\",\"bonds\":[\"alpha\"]}";
+        for terminal in [
+            "LOOM_CONCERN: {\"summary\":\"raw\nnewline\"}",
+            "LOOM_NOOP",
+            "LOOM_COMPLETE\nLOOM_COMPLETE",
+        ] {
+            for text in controlled_outputs(finding, terminal).await {
+                let walk = WalkOutput::from_stdout(&text, DispatchScope::Tree, &validator);
+                assert_eq!(walk.findings().len(), 1, "{walk:?}");
+                let PhaseVerdict::Recovery {
+                    cause:
+                        RecoveryCause::BadWalk(BadWalk::Protocol {
+                            context,
+                            diagnostics,
+                            parsed_findings,
+                            ..
+                        }),
+                } = phase_verdict_from_walk(&walk)
+                else {
+                    panic!("rejected Review output must not certify clean scope: {walk:?}");
+                };
+                assert_eq!(context.raw(), text);
+                assert!(!diagnostics.is_empty());
+                assert_eq!(parsed_findings.len(), 1);
+                assert_eq!(
+                    tune_review_score(&text, &validator).to_bits(),
+                    0.0_f64.to_bits()
+                );
+            }
+        }
+        for text in controlled_outputs("ordinary assistant commentary", "LOOM_COMPLETE").await {
+            let walk = WalkOutput::from_stdout(&text, DispatchScope::Tree, &validator);
+            assert!(matches!(phase_verdict_from_walk(&walk), PhaseVerdict::Done));
+            assert_eq!(
+                tune_review_score(&text, &validator).to_bits(),
+                1.0_f64.to_bits()
+            );
         }
     }
 

@@ -1,5 +1,7 @@
 # Implementation Step
 
+{{ self.output_contract() }}
+
 {% include "partial/context_pinning.md" %}
 
 {% include "partial/spec_header.md" %}

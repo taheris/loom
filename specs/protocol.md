@@ -212,12 +212,12 @@ resolution contracts live in
 - Production agent-marker consumers and domain parser entry points use the
   shared decoder and canonical message vocabulary, with no independent legacy
   terminal enum, substring scanner, reason/question prose scraper, or JSON
-  repair path. [check?](cargo run -p loom-walk -- agent_output_single_decoder)
+  repair path. [check](cargo run -p loom-walk -- agent_output_single_decoder)
 
 - Production phase entry points exercise the shared decode/admission path with
   controlled external agent output, retain context on malformed messages, and
   do not interpret prompt/tool/driver text as emitted agent messages.
-  [test?](production_phase_consumers_enforce_shared_agent_output_contract)
+  [test](production_phase_consumers_enforce_shared_agent_output_contract)
 
 ## Out of Scope
 

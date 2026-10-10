@@ -5036,6 +5036,123 @@ fn test_nix_surface_contract_fail_when_dolt_readiness_is_not_called() {
 }
 
 #[test]
+fn agent_output_single_decoder_rejects_independent_parsing() {
+    for (source, reason) in [
+        (
+            "enum ExitSignal { Complete, Retry(String) }",
+            "terminal vocabulary",
+        ),
+        (
+            "fn parse(s: &str) -> bool { s.contains(\"LOOM_COMPLETE\") }",
+            "string scanner",
+        ),
+        (
+            "const MARKERS: [&str; 2] = [\"LOOM_COMPLETE\", \"LOOM_RETRY\"];",
+            "string registry",
+        ),
+        (
+            "fn parse(s: &str) { match s { \"LOOM_COMPLETE\" => (), _ => () } }",
+            "literal marker dispatch",
+        ),
+        (
+            "fn repair(s: &str) { s.replace(\"\\n\", \"\\\\n\"); }",
+            "JSON repair",
+        ),
+        (
+            "fn reason_at(s: &str) -> &str { s.lines().next().unwrap() }",
+            "prose scanner",
+        ),
+        (
+            "fn parse(s: &str) { serde_json::from_str::<RawFinding>(s); }",
+            "payload decoder",
+        ),
+        (
+            "use loom_protocol::todo::TodoSuccess as Success; fn parse(s: &str) { serde_json::from_str::<Success>(s); }",
+            "payload decoder",
+        ),
+        (
+            "fn parse(s: &str) -> bool { s == \"LOOM_COMPLETE\" }",
+            "marker comparison",
+        ),
+        (
+            "fn parse(s: &str) -> bool { matches!(s, \"LOOM_COMPLETE\") }",
+            "macro dispatch",
+        ),
+    ] {
+        let ws = make_workspace();
+        seed(ws.path(), "crates/loom-workflow/src/consumer.rs", source);
+        assert_fail(
+            &invoke(&["agent_output_single_decoder"], Some(ws.path()), None),
+            reason,
+        );
+    }
+}
+
+#[test]
+fn agent_output_single_decoder_accepts_delegation_and_unrelated_message_types() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-workflow/src/consumer.rs",
+        r#"
+        use loom_protocol::output::{decode, Message as ExitSignal, Phase};
+        fn parse(text: &str) { decode(text, Phase::Loop); }
+        enum Message { User(String), Assistant(String) }
+        #[cfg(test)] mod tests { fn example() { text.contains("LOOM_COMPLETE"); } }
+    "#,
+    );
+    seed(
+        ws.path(),
+        "crates/loom-agent/src/wire.rs",
+        "enum Message { Complete, Retry(String) }",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-protocol/src/output/mod.rs",
+        "const MARKERS: [&str; 1] = [\"LOOM_COMPLETE\"];",
+    );
+    assert_pass(&invoke(
+        &["agent_output_single_decoder"],
+        Some(ws.path()),
+        None,
+    ));
+}
+
+#[test]
+fn agent_output_single_decoder_declares_and_filters_inputs() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-workflow/src/bad.rs",
+        "enum TerminalMarker { Complete }",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-workflow/src/good.rs",
+        "use loom_protocol::output::decode;",
+    );
+    assert_pass(&invoke(
+        &["agent_output_single_decoder"],
+        Some(ws.path()),
+        Some("crates/loom-workflow/src/good.rs"),
+    ));
+    let out = invoke(
+        &["agent_output_single_decoder", "--print-inputs"],
+        Some(ws.path()),
+        None,
+    );
+    assert!(out.status.success());
+    let declared: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        declared["inputs"],
+        serde_json::json!([
+            "crates/loom-workflow/src/bad.rs",
+            "crates/loom-workflow/src/good.rs"
+        ])
+    );
+}
+
+#[test]
 fn test_nix_surface_contract_fail_when_smoke_loop_is_not_called() {
     let ws = make_workspace();
     seed_test_nix_surface(ws.path());

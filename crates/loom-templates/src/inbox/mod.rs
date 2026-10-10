@@ -15,6 +15,12 @@ pub struct InboxContext {
     pub skill_index: SkillIndexMarkdown,
 }
 
+impl InboxContext {
+    pub fn output_contract(&self) -> String {
+        crate::output::contract(loom_protocol::output::Phase::Inbox)
+    }
+}
+
 /// A single visible inbox item surfaced to the chat session.
 #[derive(Debug, Clone)]
 pub struct InboxItem {

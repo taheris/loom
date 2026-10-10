@@ -196,7 +196,7 @@ fn score(
             )
         }
         Expected::LoopVerifyAfterEdit(expected) => {
-            if expected.marker != "LOOM_COMPLETE" {
+            if expected.marker != Message::Complete.marker() {
                 return Err(unavailable(
                     "verify-after-edit only supports the loop completion protocol",
                 ));

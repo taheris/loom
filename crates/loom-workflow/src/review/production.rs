@@ -49,9 +49,7 @@ use tracing::{info, warn};
 use super::context::{beads_summary, default_profile_for_spec};
 use super::error::ReviewError;
 use super::finding::{DispatchScope, FindingValidator, TerminalSurface, WalkOutput};
-use super::phase_verdict::{
-    GateInputs, PhaseKind, PhaseVerdict, RecoveryCause, decide, decide_for_phase,
-};
+use super::phase_verdict::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use super::verdict::PushGateRefuseCause;
 use super::workspace_validator::WorkspaceFindingValidator;
@@ -719,12 +717,6 @@ const fn review_outcome_route(outcome: &ReviewOutcome) -> &'static str {
 }
 
 fn wrong_phase_marker_detail(marker_name: &str, phase_kind: &str) -> String {
-    if phase_kind == "review" && marker_name == "LOOM_CLARIFY" {
-        return "wrong-review-path: direct LOOM_CLARIFY is not a review terminal; emit a \
-                route=\"clarify\" LOOM_FINDING with the canonical Options block in evidence, \
-                then terminate with LOOM_CONCERN"
-            .to_string();
-    }
     if phase_kind == "review" {
         return format!(
             "wrong-review-path: {marker_name} is not a review terminal; expected \
@@ -734,36 +726,10 @@ fn wrong_phase_marker_detail(marker_name: &str, phase_kind: &str) -> String {
     format!("wrong-phase-marker: {marker_name} is not valid in {phase_kind} phase")
 }
 
-/// Apply the verdict-gate decision table to a parsed [`WalkOutput`],
-/// preserving the maximum well-formed context by struct shape per
-/// `specs/gate.md` § *Maximum-context preservation invariant*.
-///
-/// Per-line `LOOM_FINDING:` parse failures route through
-/// [`BadWalk::MalformedFinding`] alongside the typed terminal surface
-/// before the pairing-rule checks fire. Otherwise the gate's
-/// [`decide`] gate function is consulted with the typed marker and any
-/// well-formed findings, then the review-only marker restrictions are
-/// layered on via [`decide_for_phase`]. A malformed terminal payload paired
-/// with well-formed findings threads both into
-/// [`BadWalk::Concern { payload, parsed_findings }`].
+/// Classify canonical admission before finding pairing and suppressions.
 #[cfg(test)]
-fn phase_verdict_from_walk(walk: &WalkOutput) -> PhaseVerdict {
+pub fn phase_verdict_from_walk(walk: &WalkOutput) -> PhaseVerdict {
     phase_verdict_from_walk_with_suppressions(walk, &[])
-}
-
-fn decide_review_phase(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
-    let baseline = decide(marker, inputs.clone());
-    let review_verdict = decide_for_phase(marker, inputs, PhaseKind::Review);
-    if matches!(
-        review_verdict,
-        PhaseVerdict::Recovery {
-            cause: RecoveryCause::WrongPhaseMarker { .. }
-        }
-    ) {
-        review_verdict
-    } else {
-        baseline
-    }
 }
 
 fn phase_verdict_from_walk_with_suppressions(
@@ -792,26 +758,7 @@ fn phase_verdict_from_walk_with_suppressions(
         streamed_findings: walk.findings().to_vec(),
         ..GateInputs::default()
     };
-    let mut verdict = decide_review_phase(marker.as_ref(), inputs);
-    if let PhaseVerdict::Recovery {
-        cause:
-            RecoveryCause::BadWalk(loom_templates::previous_failure::BadWalk::Concern {
-                payload,
-                parsed_findings,
-            }),
-    } = &mut verdict
-    {
-        if let TerminalSurface::Malformed {
-            payload: from_term, ..
-        } = walk.terminal()
-        {
-            payload.clone_from(from_term);
-        }
-        if parsed_findings.is_empty() && !walk.findings().is_empty() {
-            *parsed_findings = walk.findings().to_vec();
-        }
-    }
-    suppress_review_concern(verdict, suppressions)
+    suppress_review_concern(decide(marker.as_ref(), inputs), suppressions)
 }
 
 fn suppressed_findings(
@@ -1427,15 +1374,7 @@ mod tests {
         )))
     }
 
-    /// FR12 — `loom review`'s phase-end MUST route the reviewer's marker
-    /// through the canonical [`decide_for_phase`] gate function rather than its own
-    /// ad-hoc `match` on `exit_code`. This test pins the marker → outcome
-    /// mapping that `decide_for_phase(..., Review)` produces for the review phase:
-    /// `COMPLETE` reaches `Complete`, `BLOCKED` surfaces as `Incomplete`,
-    /// direct `CLARIFY` is rejected as the wrong review path, and a missing
-    /// marker routes to `swallowed-marker` recovery (mapped to `Incomplete`). Combined
-    /// with the source-level `decide_for_phase()` import in `classify_review_phase`,
-    /// the two together fence the FR12 contract.
+    /// Walk fixtures cannot bypass canonical Review admission.
     fn walk_with_terminal(terminal: TerminalSurface) -> WalkOutput {
         let stdout = match terminal {
             TerminalSurface::Complete => "LOOM_COMPLETE\n".to_string(),
@@ -2229,7 +2168,7 @@ mod tests {
             ),
             (
                 "T_missing",
-                "no terminal on the final non-empty line",
+                "no unique independently decoded terminal",
                 TerminalSurface::Missing,
                 vec![],
             ),

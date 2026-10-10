@@ -42,3 +42,9 @@ pub struct LoopContext {
     pub style_rules: String,
     pub skill_index: SkillIndexMarkdown,
 }
+
+impl LoopContext {
+    pub fn output_contract(&self) -> String {
+        crate::output::contract(loom_protocol::output::Phase::Loop)
+    }
+}

@@ -1140,7 +1140,7 @@ impl TerminalSurface {
             Self::Retry { .. } => "LOOM_RETRY".to_owned(),
             Self::Concern { summary } => format!("LOOM_CONCERN: {summary}"),
             Self::Malformed { payload } => format!("LOOM_CONCERN: <malformed: {payload}>"),
-            Self::Missing => "(no terminal on the final non-empty line)".to_owned(),
+            Self::Missing => "(no unique independently decoded terminal)".to_owned(),
         }
     }
 }
@@ -1839,7 +1839,10 @@ mod tests {
         assert_eq!(concern.label(), "LOOM_CONCERN: two findings");
 
         let missing = TerminalSurface::Missing;
-        assert_eq!(missing.label(), "(no terminal on the final non-empty line)");
+        assert_eq!(
+            missing.label(),
+            "(no unique independently decoded terminal)"
+        );
     }
 
     #[test]

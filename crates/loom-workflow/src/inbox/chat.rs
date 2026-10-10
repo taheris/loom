@@ -5,10 +5,9 @@
 //! controlled RPC bridge retained for non-TTY execution and tests.
 
 use std::fs;
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
+use std::process::{Command, Stdio};
 
 use askama::Template;
 use displaydoc::Display;
@@ -118,6 +117,8 @@ pub enum ChatError {
     Skill(#[from] SkillError),
     /// inbox terminal marker error
     Terminal(#[from] TerminalMarkerError),
+    /// native assistant capture settings failed
+    CaptureSettings(#[from] serde_json::Error),
     /// tune proposal apply failed
     Apply(#[from] ApplyError),
     /// no inbox item at index {index} ({total} outstanding)
@@ -201,6 +202,7 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
 
     let stdout = match selection.kind() {
         AgentKind::Claude => {
+            install_claude_capture(workspace, &scratch)?;
             let claude_settings_path =
                 container_workspace_path(workspace, &scratch.claude_settings());
             let argv = build_wrix_argv(
@@ -223,13 +225,9 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
             command
                 .args(&argv)
                 .envs(opts.launcher_env.iter().map(|(key, value)| (key, value)));
-            let output = run_wrix_and_capture_stdout(command).map_err(ChatError::Scratch)?;
-            if !output.status.success() {
-                return Err(ChatError::WrixExit {
-                    status: output.status.to_string(),
-                });
-            }
-            output.stdout
+            run_native(command)?;
+            let raw = fs::read_to_string(scratch.path().join("native-transcript.jsonl"))?;
+            session_transcript_from_str(&raw, AgentKind::Claude)?
         }
         AgentKind::Pi => {
             if should_use_pi_tui_shell_out() {
@@ -613,36 +611,24 @@ fn prepare_pi_tui_launch(
     pi_tui::prepare_launch(workspace, selection, scratch_dir).map_err(ChatError::Scratch)
 }
 
-fn run_pi_tui_shell_out(mut command: Command, session_dir: &Path) -> Result<String, ChatError> {
-    let captured = if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        let status = command
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()?;
-        WrixOutput {
-            status,
-            stdout: String::new(),
-        }
+fn run_native(mut command: Command) -> Result<(), ChatError> {
+    let status = command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+    if status.success() {
+        Ok(())
     } else {
-        run_wrix_and_capture_stdout(command)?
-    };
+        Err(ChatError::WrixExit {
+            status: status.to_string(),
+        })
+    }
+}
 
-    if !captured.status.success() {
-        return Err(ChatError::WrixExit {
-            status: captured.status.to_string(),
-        });
-    }
-    if parse_terminal_marker(&captured.stdout).is_ok() {
-        return Ok(captured.stdout);
-    }
-
-    let transcript = read_pi_session_transcript(session_dir)?;
-    if transcript.trim().is_empty() {
-        Ok(captured.stdout)
-    } else {
-        Ok(transcript)
-    }
+fn run_pi_tui_shell_out(command: Command, session_dir: &Path) -> Result<String, ChatError> {
+    run_native(command)?;
+    read_pi_session_transcript(session_dir)
 }
 
 fn read_pi_session_transcript(session_dir: &Path) -> Result<String, ChatError> {
@@ -650,7 +636,7 @@ fn read_pi_session_transcript(session_dir: &Path) -> Result<String, ChatError> {
         return Ok(String::new());
     };
     let raw = fs::read_to_string(path)?;
-    pi_session_transcript_from_str(&raw)
+    session_transcript_from_str(&raw, AgentKind::Pi)
 }
 
 fn latest_pi_session_file(session_dir: &Path) -> Result<Option<PathBuf>, ChatError> {
@@ -677,7 +663,7 @@ fn latest_pi_session_file(session_dir: &Path) -> Result<Option<PathBuf>, ChatErr
     Ok(newest.map(|(_, path)| path))
 }
 
-fn pi_session_transcript_from_str(raw: &str) -> Result<String, ChatError> {
+fn session_transcript_from_str(raw: &str, kind: AgentKind) -> Result<String, ChatError> {
     let mut messages = Vec::new();
     for line in raw.lines() {
         if line.trim().is_empty() {
@@ -685,6 +671,23 @@ fn pi_session_transcript_from_str(raw: &str) -> Result<String, ChatError> {
         }
         let entry = serde_json::from_str::<serde_json::Value>(line)
             .map_err(|err| ProtocolError::invalid_protocol_line(line, err))?;
+        let expected_type = match kind {
+            AgentKind::Pi => "message",
+            AgentKind::Claude => "assistant",
+            AgentKind::Direct => {
+                return Err(ChatError::AgentSelection(
+                    "Direct has no native transcript".into(),
+                ));
+            }
+        };
+        if entry.get("type").and_then(serde_json::Value::as_str) != Some(expected_type)
+            || entry
+                .get("isSidechain")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        {
+            continue;
+        }
         let Some(message) = entry.get("message") else {
             continue;
         };
@@ -719,41 +722,28 @@ fn pi_content_text(content: Option<&serde_json::Value>) -> String {
     }
 }
 
-struct WrixOutput {
-    status: ExitStatus,
-    stdout: String,
-}
-
-fn run_wrix_and_capture_stdout(mut command: Command) -> std::io::Result<WrixOutput> {
-    let mut child = command
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| std::io::Error::other("wrix stdout pipe unavailable"))?;
-    let reader = thread::spawn(move || -> std::io::Result<String> {
-        let mut captured = Vec::new();
-        let mut buffer = [0_u8; 8192];
-        let mut terminal = std::io::stdout();
-        loop {
-            let n = stdout.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            terminal.write_all(&buffer[..n])?;
-            terminal.flush()?;
-            captured.extend_from_slice(&buffer[..n]);
-        }
-        Ok(String::from_utf8_lossy(&captured).into_owned())
-    });
-    let status = child.wait()?;
-    let stdout = reader
-        .join()
-        .map_err(|_| std::io::Error::other("wrix stdout reader panicked"))??;
-    Ok(WrixOutput { status, stdout })
+fn install_claude_capture(workspace: &Path, scratch: &ScratchSession) -> Result<(), ChatError> {
+    let script = scratch.path().join("capture-claude.sh");
+    fs::write(
+        &script,
+        "#!/usr/bin/env bash\nset -euo pipefail\ncapture_dir=\"$(cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd)\"\nrm -f -- \"$capture_dir/native-transcript.jsonl\"\ntranscript=\"$(jq -er '.transcript_path | strings')\"\ncp -- \"$transcript\" \"$capture_dir/native-transcript.jsonl.tmp\"\nmv -- \"$capture_dir/native-transcript.jsonl.tmp\" \"$capture_dir/native-transcript.jsonl\"\n",
+    )?;
+    let relative = script
+        .strip_prefix(workspace)
+        .map_err(|error| ChatError::Config(error.to_string()))?;
+    let command = format!(
+        "bash '{}'",
+        relative.to_string_lossy().replace('\'', "'\\''")
+    );
+    let mut settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(scratch.claude_settings())?)?;
+    settings["hooks"]["SessionEnd"] =
+        serde_json::json!([{"hooks":[{"type":"command","command":command}]}]);
+    fs::write(
+        scratch.claude_settings(),
+        format!("{}\n", serde_json::to_string_pretty(&settings)?),
+    )?;
+    Ok(())
 }
 
 pub fn build_wrix_argv(
@@ -1009,13 +999,110 @@ mod tests {
             serde_json::json!({"type":"message","id":"a","parentId":"u","timestamp":"now","message":{"role":"assistant","content":[{"type":"text","text":"Done\n"},{"type":"text","text":"LOOM_COMPLETE"}]}}).to_string(),
         ]
         .join("\n");
-        let transcript = pi_session_transcript_from_str(&raw).expect("transcript parses");
+        let transcript =
+            session_transcript_from_str(&raw, AgentKind::Pi).expect("transcript parses");
         assert_eq!(transcript, "Done\nLOOM_COMPLETE");
     }
 
     #[test]
+    fn native_claude_session_end_capture_is_authoritative_and_not_appended_twice() {
+        use std::io::Write as _;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let scratch = ScratchSession::open(
+            workspace.path(),
+            "native-capture",
+            "LOOM_APPLY: prompt echo",
+            "test",
+        )
+        .unwrap();
+        install_claude_capture(workspace.path(), &scratch).unwrap();
+        let transcript = scratch.path().join("fixture.jsonl");
+        let raw = [
+            serde_json::json!({"type":"user","message":{"role":"user","content":"LOOM_APPLY: {\"proposals\":[\"lm-prompt.1\"]}"}}),
+            serde_json::json!({"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":"LOOM_NOOP"}}),
+            serde_json::json!({"type":"driver_event","message":{"role":"assistant","content":"LOOM_RETRY"}}),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","text":"LOOM_WAITING"},{"type":"text","text":"Hello"}]}}),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"LOOM_COMPLETE"}]}}),
+        ].into_iter().map(|value| value.to_string()).collect::<Vec<_>>().join("\n");
+        fs::write(&transcript, raw).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_slice(&fs::read(scratch.claude_settings()).unwrap()).unwrap();
+        let hook = settings["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        for _ in 0..2 {
+            let mut child = Command::new("bash")
+                .args(["-c", hook])
+                .current_dir(workspace.path())
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            write!(
+                child.stdin.take().unwrap(),
+                "{}",
+                serde_json::json!({"transcript_path":transcript})
+            )
+            .unwrap();
+            assert!(child.wait().unwrap().success());
+        }
+        let captured = fs::read_to_string(scratch.path().join("native-transcript.jsonl")).unwrap();
+        let text = session_transcript_from_str(&captured, AgentKind::Claude).unwrap();
+        assert_eq!(text, "Hello\nLOOM_COMPLETE");
+        assert!(matches!(
+            parse_terminal_marker(&text).unwrap(),
+            TerminalMarker::Complete
+        ));
+    }
+
+    #[test]
+    fn native_capture_failure_cannot_reuse_an_earlier_snapshot() {
+        let workspace = tempfile::tempdir().unwrap();
+        let scratch =
+            ScratchSession::open(workspace.path(), "failed-capture", "prompt", "test").unwrap();
+        install_claude_capture(workspace.path(), &scratch).unwrap();
+        let snapshot = scratch.path().join("native-transcript.jsonl");
+        fs::write(&snapshot, "stale admitted transcript").unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_slice(&fs::read(scratch.claude_settings()).unwrap()).unwrap();
+        let hook = settings["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        let mut child = Command::new("bash")
+            .args(["-c", hook])
+            .current_dir(workspace.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"{}").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert!(!snapshot.exists());
+    }
+
+    #[test]
+    fn native_pi_never_promotes_stdout_when_session_text_is_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut command = Command::new("bash");
+        command.args([
+            "-c",
+            "set -euo pipefail\nprintf 'LOOM_APPLY: {\"proposals\":[\"lm-false.1\"]}\\n'",
+        ]);
+        let captured = run_pi_tui_shell_out(command, directory.path()).unwrap();
+        assert!(captured.is_empty());
+        assert!(
+            parse_terminal_marker(&captured)
+                .unwrap_err()
+                .is_conversation()
+        );
+    }
+
+    #[test]
     fn pi_session_transcript_rejects_malformed_jsonl_record() {
-        let err = pi_session_transcript_from_str("{not json}\n").expect_err("malformed record");
+        let err = session_transcript_from_str("{not json}\n", AgentKind::Pi)
+            .expect_err("malformed record");
         assert!(
             matches!(err, ChatError::Protocol(ProtocolError::InvalidJson { .. })),
             "malformed transcript record must surface the parse error: {err}"
