@@ -10,8 +10,15 @@ fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 real_nix=$(command -v nix)
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+export NIX_CONF_DIR="$fixture/nix-conf" NIX_USER_CONF_FILES=/dev/null
+export NIX_CONFIG='experimental-features ='
 unset GIT_CONFIG_COUNT
-mkdir -p "$fixture/repo/scripts" "$fixture/repo/.cargo" "$fixture/bin"
+mkdir -p "$fixture/repo/scripts" "$fixture/repo/.cargo" "$fixture/bin" "$NIX_CONF_DIR"
+if "$real_nix" eval --raw --expr '"unexpected"' > "$fixture/nix-features.log" 2>&1; then
+    printf 'Bootstrap fixture unexpectedly enables nix-command\n' >&2
+    exit 1
+fi
+[[ "$(<"$fixture/nix-features.log")" == *"experimental Nix feature 'nix-command' is disabled"* ]]
 cp "$repo_root/scripts/configure-cargo-patches.sh" "$repo_root/scripts/cargo-patch-key.nix" "$fixture/repo/scripts/"
 cd "$fixture/repo"
 git init -q
@@ -39,7 +46,8 @@ printf 'paths = []\n' > "$NIX_PATCH_BUILD_RESULT"
 cat > "$fixture/bin/nix" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == build ]]; then
+if [[ "${1:-}" == --extra-experimental-features && "${3:-}" == build ]]; then
+    [[ "$2" == 'nix-command flakes' ]]
     printf '%s\n' "$@" >> "$NIX_PATCH_BUILD_CALLS"
     printf '%s\n' "$NIX_PATCH_BUILD_RESULT"
 else

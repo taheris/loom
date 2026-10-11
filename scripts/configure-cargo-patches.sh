@@ -5,7 +5,7 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd) # best-effort: Nix
 config="${1:-}"
 if [[ -n "$config" && -n "${2:-}" ]]; then
     expected="${2} ${3:?Cargo patch checksum is required with its version}"
-    actual=$(LOOM_PATCH_LOCKFILE="$repo_root/Cargo.lock" nix eval --raw --impure \
+    actual=$(LOOM_PATCH_LOCKFILE="$repo_root/Cargo.lock" nix --extra-experimental-features nix-command eval --raw --impure \
         --file "$repo_root/scripts/cargo-patch-key.nix" \
         --apply 'reader: reader { lockfile = builtins.getEnv "LOOM_PATCH_LOCKFILE"; }')
     if [[ "$actual" != "$expected" ]]; then
@@ -14,7 +14,8 @@ if [[ -n "$config" && -n "${2:-}" ]]; then
 fi
 if [[ -z "$config" ]]; then
     mkdir -p "$repo_root/.loom"
-    config=$(nix build --out-link "$repo_root/.loom/cargo-patches" --print-out-paths "$repo_root#cargo-patches")
+    config=$(nix --extra-experimental-features 'nix-command flakes' build \
+        --out-link "$repo_root/.loom/cargo-patches" --print-out-paths "$repo_root#cargo-patches")
 fi
 if [[ ! -f "$config" ]]; then
     printf 'Cargo patch configuration is missing: %s\n' "$config" >&2
