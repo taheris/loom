@@ -15,6 +15,7 @@ mod contract {
     const BAD_JSON: &str = "LOOM_FINDING: {not json}";
     const BAD_TARGET: &str = r#"LOOM_FINDING: {"token":"mock-discipline","route":"deferred","bonds":["alpha"],"target":{"kind":"TestPath","path":"tests/missing.rs"},"evidence":"missing target"}"#;
     const CONCERN: &str = r#"LOOM_CONCERN: {"summary":"review summary"}"#;
+    const TODO: &str = r#"LOOM_TODO: {"head":"0123456789abcdef0123456789abcdef01234567","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","work_epic":"lm-work","title":"Work","specs":[{"label":"alpha","outcome":"no-work","reason":"already implemented"}]}"#;
 
     fn workspace() -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
@@ -76,9 +77,18 @@ mod contract {
                 "LOOM_NOOP",
                 "LOOM_WAITING",
                 "LOOM_APPLY: {\"proposals\":[\"lm-proposal\"]}",
+                TODO,
                 "LOOM_CLARIFY: {\"decisions\":[\"lm-decision\"]}\nLOOM_COMPLETE",
                 "LOOM_CONCERN: {\"summary\":\"\"}",
                 "LOOM_CONCERN: {\"summary\":\"raw\nnewline\"}",
+                "LOOM_RETRY",
+                "LOOM_RETRY: {}",
+                "LOOM_RETRY: {\"reason\":\"\"}",
+                "LOOM_RETRY: {\"reason\":\"raw\nnewline\"}",
+                "LOOM_BLOCKED",
+                "LOOM_BLOCKED: {}",
+                "LOOM_BLOCKED: {\"reason\":\"\"}",
+                "LOOM_BLOCKED: {\"reason\":\"raw\nnewline\"}",
                 "",
                 "LOOM_COMPLETE\nLOOM_COMPLETE",
                 "LOOM_COMPLETE\ntrailing commentary",
@@ -98,6 +108,13 @@ mod contract {
                         );
                         if let crate::review::ReviewOutcome::Incomplete { detail } = outcome {
                             assert!(!detail.is_empty());
+                            if let PhaseVerdict::Recovery {
+                                cause: RecoveryCause::AgentRetry { reason },
+                            }
+                            | PhaseVerdict::Blocked { reason } = &verdict
+                            {
+                                assert!(detail.contains(reason), "{text}: {detail}");
+                            }
                         }
                     }
                     match &verdict {
@@ -126,6 +143,17 @@ mod contract {
                                     assert_eq!(&parsed, bad_walk);
                                     if walk.decoded().is_err() {
                                         assert!(matches!(bad_walk, BadWalk::Protocol { .. }));
+                                        if terminal == TODO {
+                                            assert!(bad_walk.diagnostics().iter().any(
+                                                |diagnostic| matches!(
+                                                    diagnostic.error,
+                                                    Error::WrongPhase {
+                                                        marker: "LOOM_TODO",
+                                                        phase: Phase::Review,
+                                                    }
+                                                )
+                                            ));
+                                        }
                                     } else if errors > 0 {
                                         assert!(matches!(
                                             bad_walk,

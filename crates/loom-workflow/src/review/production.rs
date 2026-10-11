@@ -701,7 +701,7 @@ pub fn classify_review_phase_with_suppressions(
             detail: wrong_phase_marker_detail(marker_name, phase_kind),
         },
         PhaseVerdict::Recovery { cause } => ReviewOutcome::Incomplete {
-            detail: format!("unexpected gate verdict: {}", cause.as_str()),
+            detail: super::recovery::cause_to_previous_failure(&cause).to_string(),
         },
     }
 }
@@ -1406,8 +1406,8 @@ mod tests {
             0,
         ) {
             ReviewOutcome::Incomplete { detail } => assert!(
-                detail.contains("agent-retry"),
-                "retry detail should name recovery cause: {detail}",
+                detail.contains("logs disappeared"),
+                "retry detail should retain the typed reason: {detail}",
             ),
             other @ ReviewOutcome::Complete => panic!("expected Incomplete, got {other:?}"),
         }
