@@ -2,7 +2,7 @@
 set -euo pipefail
 
 cat >wrix.toml <<'TOML'
-[wrix.git]
+[git]
 deploy = true
 sign = true
 TOML
