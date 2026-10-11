@@ -19,6 +19,13 @@ if "$real_nix" eval --raw --expr '"unexpected"' > "$fixture/nix-features.log" 2>
     exit 1
 fi
 [[ "$(<"$fixture/nix-features.log")" == *"experimental Nix feature 'nix-command' is disabled"* ]]
+export NIX_REMOTE="local?root=$fixture/unavailable-store"
+touch "$fixture/unavailable-store"
+if "$real_nix" --extra-experimental-features nix-command eval --raw --expr '"unexpected"' > "$fixture/nix-store.log" 2>&1; then
+    printf 'Bootstrap fixture unexpectedly opens an unavailable store\n' >&2
+    exit 1
+fi
+[[ "$(<"$fixture/nix-store.log")" == *'Not a directory'* ]]
 cp "$repo_root/scripts/configure-cargo-patches.sh" "$repo_root/scripts/cargo-patch-key.nix" "$fixture/repo/scripts/"
 cd "$fixture/repo"
 git init -q
@@ -79,6 +86,7 @@ if "$cargo_bin" build --locked > "$fixture/ambiguous.log" 2>&1; then
     printf 'Cargo wrapper accepted an ambiguous patch identity\n' >&2
     exit 1
 fi
+[[ "$(<"$fixture/ambiguous.log")" == *'Cargo.lock must contain exactly one nextest-filtering package'* ]]
 [[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
 
 cd "$fixture"

@@ -222,8 +222,10 @@
             export HOME="$TMPDIR/home"
             export NIX_CONF_DIR="$TMPDIR/nix-conf"
             export NIX_CONFIG='experimental-features ='
+            export NIX_REMOTE="local?root=$TMPDIR/unavailable-store"
             mkdir -p "$HOME" "$NIX_CONF_DIR"
-            [[ "$(${sandboxProfileEnv}/bin/nix --extra-experimental-features nix-command eval --offline --raw --expr '"worker-nix-ok"')" == worker-nix-ok ]]
+            touch "$TMPDIR/unavailable-store"
+            [[ "$(${sandboxProfileEnv}/bin/nix --extra-experimental-features nix-command eval --store dummy:// --offline --raw --expr '"worker-nix-ok"')" == worker-nix-ok ]]
             touch "$out"
           '';
 
