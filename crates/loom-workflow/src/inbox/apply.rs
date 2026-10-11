@@ -14,7 +14,7 @@ use loom_driver::identifier::BeadId;
 use loom_gate::{
     GateRun, GateSuccess, HandoffEvidence, MarkerProof, append_gate_run_lifecycle_events,
 };
-use loom_protocol::gate::{ExitSignal, parse_exit_signal};
+use loom_protocol::gate::ExitSignal;
 use loom_tune::proposal::State as TuneState;
 use serde_json::json;
 use thiserror::Error;
@@ -399,6 +399,7 @@ async fn run_gate_review(
 ) -> Result<(), String> {
     let output = Command::new(loom_bin)
         .current_dir(integration)
+        .env(crate::r#loop::REVIEW_EMIT_STDOUT_ENV, "1")
         .arg("gate")
         .arg("review")
         .arg("--diff")
@@ -407,11 +408,26 @@ async fn run_gate_review(
         .await
         .map_err(|source| source.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let marker = parse_exit_signal(&stdout, loom_protocol::output::Phase::Review);
-    if output.status.success() && matches!(marker, Ok(ExitSignal::Complete)) {
+    let validator = crate::review::WorkspaceFindingValidator::new(integration);
+    let walk = crate::review::WalkOutput::from_stdout(
+        &stdout,
+        crate::review::DispatchScope::PerBead,
+        &validator,
+    );
+    let config = LoomConfig::load(LoomConfig::resolve_path(integration))
+        .map_err(|source| format!("review config: {source:#}"))?;
+    let outcome = crate::review::classify_review_phase_with_suppressions(
+        &walk,
+        output.status.code().unwrap_or(-1),
+        &config.suppress,
+    );
+    if output.status.success() && matches!(outcome, crate::review::ReviewOutcome::Complete) {
         return Ok(());
     }
-    Err(command_detail("loom gate review", &output))
+    Err(format!(
+        "{}\n{outcome:?}",
+        command_detail("loom gate review", &output)
+    ))
 }
 
 async fn abort_attempt(git: &GitClient, ctx: &AttemptContext) -> Result<(), ApplyError> {
@@ -683,4 +699,36 @@ fn blocked<T>(id: BeadId, reason: impl Into<String>) -> Result<T, ApplyError> {
         id,
         reason: reason.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_gate_review;
+
+    #[tokio::test]
+    async fn tune_apply_review_handoff_requires_resolved_paired_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let stdout = dir.path().join("review-stdout");
+        let stub = dir.path().join("review.sh");
+        loom_test_support::write_executable_bash_script(&stub, &format!(
+            "set -euo pipefail\n[[ \"$*\" == 'gate review --diff base..head' ]]\n[[ \"${{LOOM_REVIEW_EMIT_STDOUT:?}}\" == 1 ]]\ncat {stdout:?}\n",
+        )).unwrap();
+        for (wire, admitted) in [
+            ("LOOM_COMPLETE\n", true),
+            ("LOOM_FINDING: {broken}\nLOOM_COMPLETE\n", false),
+            (
+                "LOOM_CLARIFY: {\"decisions\":[\"lm-choice\"]}\nLOOM_COMPLETE\n",
+                false,
+            ),
+            ("LOOM_CONCERN: {\"summary\":\"missing findings\"}\n", false),
+            (
+                "LOOM_FINDING: {\"token\":\"spec-coherence-fail\",\"route\":\"deferred\",\"bonds\":[\"unknown\"],\"target\":{\"kind\":\"Criterion\",\"spec\":\"unknown\",\"anchor\":\"missing\"},\"evidence\":\"unresolved\"}\nLOOM_COMPLETE\n",
+                false,
+            ),
+        ] {
+            std::fs::write(&stdout, wire).unwrap();
+            let result = run_gate_review(&stub, dir.path(), "base..head").await;
+            assert_eq!(result.is_ok(), admitted, "{wire}: {result:?}");
+        }
+    }
 }

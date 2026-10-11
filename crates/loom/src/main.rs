@@ -45,8 +45,7 @@ use loom_workflow::r#loop::{
 };
 use loom_workflow::mint::{BatchOutcome, FindingStatusAction, FindingStatusRecord, MintWalker};
 use loom_workflow::review::{
-    AcceptAllFindingValidator, DispatchScope, ProductionReviewController, ReviewController,
-    ReviewLane, WalkOutput, WorkspaceFindingValidator,
+    ProductionReviewController, ReviewController, ReviewLane, WorkspaceFindingValidator,
 };
 use loom_workflow::run_agent_classified;
 use loom_workflow::todo::{
@@ -4482,11 +4481,6 @@ fn run_review(
     let style_rules_for_review = config.style_rules.clone();
     let suppressions_for_review = config.suppress.clone();
     let skills_cfg_for_review = config.skills.clone();
-    let dispatch_scope = if opts.scope.is_tree() {
-        DispatchScope::Tree
-    } else {
-        DispatchScope::PerBead
-    };
     let captured_review_stdout = Arc::new(Mutex::new(String::new()));
     let stdout_capture_for_spawn = Arc::clone(&captured_review_stdout);
     let result = runtime.block_on(async move {
@@ -4527,7 +4521,6 @@ fn run_review(
                         Some(&mut output),
                     )
                     .await?;
-                    let marker = phase_terminal(&output, output::Phase::Review);
                     stdout_capture
                         .lock()
                         .map_err(|_| {
@@ -4536,7 +4529,7 @@ fn run_review(
                             ))
                         })?
                         .clone_from(&output);
-                    Ok((outcome, marker, output))
+                    Ok((outcome, output))
                 }
             },
         );
@@ -4556,7 +4549,7 @@ fn run_review(
         .lock()
         .map_err(|_| anyhow::anyhow!("review stdout capture poisoned"))?
         .clone();
-    emit_review_finding_statuses(&review_stdout, dispatch_scope, &config.suppress)?;
+    emit_review_finding_statuses(&result.findings, &config.suppress, emit_stdout)?;
     if !emit_stdout {
         println!("loom review: inspection {:?}", result.outcome);
     }
@@ -4566,26 +4559,29 @@ fn run_review(
 
 #[expect(
     clippy::print_stdout,
-    reason = "review finding-status records form a JSON-lines stdout protocol"
+    clippy::print_stderr,
+    reason = "finding statuses use stdout for inspection and stderr for agent-only handoffs"
 )]
 fn emit_review_finding_statuses(
-    review_stdout: &str,
-    dispatch_scope: DispatchScope,
+    findings: &[loom_workflow::review::Finding],
     suppressions: &[loom_driver::config::SuppressionConfig],
+    handoff: bool,
 ) -> anyhow::Result<()> {
-    for record in review_finding_status_records(review_stdout, dispatch_scope, suppressions) {
-        println!("{}", record.render()?);
+    for record in review_finding_status_records(findings, suppressions) {
+        if handoff {
+            eprintln!("{}", record.render()?);
+        } else {
+            println!("{}", record.render()?);
+        }
     }
     Ok(())
 }
 
 fn review_finding_status_records(
-    review_stdout: &str,
-    dispatch_scope: DispatchScope,
+    findings: &[loom_workflow::review::Finding],
     suppressions: &[loom_driver::config::SuppressionConfig],
 ) -> Vec<FindingStatusRecord> {
-    let walk = WalkOutput::from_stdout(review_stdout, dispatch_scope, &AcceptAllFindingValidator);
-    walk.findings()
+    findings
         .iter()
         .map(|finding| {
             let action = if suppression_matches_finding(suppressions, finding) {
@@ -6031,11 +6027,6 @@ mod tests {
             evidence: "suppressed finding".to_owned(),
         })
         .expect("valid fixture finding");
-        let stdout = format!(
-            "LOOM_FINDING: {}\nLOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"two findings\"}}\n",
-            serde_json::to_string(&reported).expect("finding json"),
-            serde_json::to_string(&suppressed).expect("finding json"),
-        );
         let suppressions = vec![
             loom_driver::config::SuppressionConfig::new(
                 loom_driver::config::SuppressionSelector::Id(suppressed.id()),
@@ -6044,7 +6035,8 @@ mod tests {
             .unwrap(),
         ];
 
-        let records = review_finding_status_records(&stdout, DispatchScope::PerBead, &suppressions);
+        let records =
+            review_finding_status_records(&[reported.clone(), suppressed.clone()], &suppressions);
 
         assert!(records.iter().any(|record| {
             record.id == reported.id() && record.action == FindingStatusAction::Reported
@@ -6067,12 +6059,7 @@ mod tests {
             evidence: "tree-scope cross-spec clash".to_owned(),
         })
         .expect("valid fixture finding");
-        let stdout = format!(
-            "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"tree finding\"}}\n",
-            serde_json::to_string(&finding).expect("finding json"),
-        );
-
-        let records = review_finding_status_records(&stdout, DispatchScope::Tree, &[]);
+        let records = review_finding_status_records(std::slice::from_ref(&finding), &[]);
 
         assert!(records.iter().any(|record| {
             record.id == finding.id() && record.action == FindingStatusAction::Reported
@@ -6341,7 +6328,7 @@ mod tests {
         );
         let findings = loom_workflow::review::parse_walk_output(
             output,
-            DispatchScope::Tree,
+            loom_workflow::review::DispatchScope::Tree,
             &WorkspaceFindingValidator::new(tmp.path()),
         )
         .expect("reviewer target aliases should parse");

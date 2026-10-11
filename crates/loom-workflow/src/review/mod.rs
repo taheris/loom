@@ -37,7 +37,9 @@ pub use phase_verdict::{
 };
 #[cfg(test)]
 pub(crate) use production::phase_verdict_from_walk;
-pub use production::{AcceptAllFindingValidator, ProductionReviewController};
+pub use production::{
+    AcceptAllFindingValidator, ProductionReviewController, classify_review_phase_with_suppressions,
+};
 pub use recovery::{
     RETRY_EXHAUSTED_CAUSE, RecoveryResolution, cause_to_previous_failure,
     concern_label_from_findings, resolve_recovery,

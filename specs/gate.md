@@ -217,7 +217,7 @@ this acceptance document owns Gate composition and authorization.
   finding resolution before scope-evidence admission; valid pretty-printed
   payloads work, malformed or wrong-phase messages cannot grant review
   authority, and live rendering/prompt/tool text cannot become result records.
-  [test?](review_handoff_uses_shared_messages_before_scope_evidence_admission)
+  [test](review_handoff_uses_shared_messages_before_scope_evidence_admission)
 
 - Bare `loom gate` (no subcommand) prints `loom gate --help` — identical output
   to `loom gate --help`. No verifier runs, no cache read, no bd writes

@@ -1321,6 +1321,13 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
     let validator = WorkspaceFindingValidator::new(&gate_workspace);
     let walk = WalkOutput::from_stdout(&review_stdout, DispatchScope::PerBead, &validator);
     let config = LoomConfig::load(LoomConfig::resolve_path(&gate_workspace))?;
+    let review_outcome = crate::review::classify_review_phase_with_suppressions(
+        &walk,
+        review_status.code().unwrap_or(-1),
+        &config.suppress,
+    );
+    let review_admitted =
+        review_status.success() && matches!(review_outcome, crate::review::ReviewOutcome::Complete);
     let unsuppressed_findings = walk
         .findings()
         .iter()
@@ -1344,7 +1351,11 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         }
     };
     let review_concern = match walk.terminal() {
-        TerminalSurface::Concern { summary } if !unsuppressed_findings.is_empty() => {
+        TerminalSurface::Concern { summary }
+            if walk.decoded().is_ok()
+                && walk.finding_errors().is_empty()
+                && !unsuppressed_findings.is_empty() =>
+        {
             Some(PreviousFailure::ReviewConcern {
                 summary: summary.clone(),
                 findings: unsuppressed_findings.clone(),
@@ -1381,13 +1392,15 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
             "review subprocess exited {}",
             review_status.code().unwrap_or(-1),
         ))
+    } else if let crate::review::ReviewOutcome::Incomplete { detail } = &review_outcome {
+        Some(detail.clone())
     } else if !has_review_run {
         Some("review subprocess produced no completed gate evidence".to_string())
     } else {
         None
     };
     if let Some(failure) = review_failure.as_deref() {
-        if !has_review_run || (!review_status.success() && !has_failed_review_run) {
+        if !has_review_run || (!review_admitted && !has_failed_review_run) {
             let failed_review = GateRun {
                 phase: GatePhase::Review,
                 push_range: diff_range.clone(),
@@ -1411,7 +1424,16 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
     }
 
     let mut runs = parse_gate_runs_from_jsonl(&verify_log_path);
-    runs.extend(parse_gate_runs_from_jsonl(&review_log_path));
+    runs.extend(
+        parse_gate_runs_from_jsonl(&review_log_path)
+            .into_iter()
+            .map(|mut run| {
+                if !review_admitted && run.phase == GatePhase::Review {
+                    run.status = GateRunStatus::Failed;
+                }
+                run
+            }),
+    );
     let mut evidence = HandoffEvidence::from_runs(runs);
     evidence.molecule_state = if mint_summary.is_some() {
         MoleculeState::Unresolved
@@ -3832,7 +3854,16 @@ mod tests {
     async fn clean_push_fixture(
         parent_git: Option<&std::path::Path>,
     ) -> (tempfile::TempDir, HandoffEvidence, PathBuf) {
+        review_push_fixture(parent_git, "LOOM_COMPLETE\n").await
+    }
+
+    async fn review_push_fixture(
+        parent_git: Option<&std::path::Path>,
+        review_stdout: &str,
+    ) -> (tempfile::TempDir, HandoffEvidence, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
+        let stdout_path = dir.path().join("review-stdout");
+        std::fs::write(&stdout_path, review_stdout).unwrap();
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("gamma").unwrap();
         let workspace = dir.path().to_path_buf();
@@ -3868,7 +3899,7 @@ mod tests {
              payload=$(printf '{{\"phase\":\"review\",\"push_range\":\"%s\",\"tree_oid\":\"%s\",\"config_digest\":\"%s\",\"log_path\":\"%s\",\"exit_code\":0,\"status\":\"success\",\"marker\":\"complete\",\"covered_hooks\":[]}}' \"$range\" \"$tree_oid\" \"$config_digest\" \"$log\")\n\
              printf '{{\"kind\":\"driver_event\",\"driver_kind\":\"gate_run_start\",\"payload\":%s}}\\n' \"$payload\" >> \"$log\"\n\
              printf '{{\"kind\":\"driver_event\",\"driver_kind\":\"gate_run_end\",\"payload\":%s}}\\n' \"$payload\" >> \"$log\"\n\
-             printf 'LOOM_COMPLETE\\n'\n",
+             cat {stdout_path:?}\n",
             argv = argv_log.to_string_lossy(),
         );
         loom_test_support::write_executable_bash_script(&stub, &stub_body)
@@ -3909,6 +3940,29 @@ mod tests {
             .await
             .expect("exec_review must succeed with populated evidence");
         (dir, handoff, gate_workspace)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn molecule_review_handoff_rejects_invalid_stdout_even_with_success_logs() {
+        for stdout in [
+            "LOOM_FINDING: {broken}\nLOOM_COMPLETE\n",
+            "LOOM_CLARIFY: {\"decisions\":[\"lm-mol9\"]}\nLOOM_COMPLETE\n",
+            "LOOM_CONCERN: {\"summary\":\"missing findings\"}\n",
+            "LOOM_FINDING: {\"token\":\"spec-coherence-fail\",\"route\":\"deferred\",\"bonds\":[\"gamma\"],\"target\":{\"kind\":\"Criterion\",\"spec\":\"gamma\",\"anchor\":\"unresolved\"},\"evidence\":\"no current target\"}\nLOOM_COMPLETE\n",
+            "LOOM_FINDING_STATUS: {}\nLOOM_COMPLETE\n",
+        ] {
+            let (_dir, handoff, gate_workspace) = review_push_fixture(None, stdout).await;
+            assert!(handoff.verified.is_some(), "verification completed");
+            assert!(
+                handoff.reviewed.is_none(),
+                "stdout must precede scope admission: {handoff:?}"
+            );
+            assert!(
+                GateSuccess::new(&handoff, 1).is_err(),
+                "success logs cannot override stdout: {handoff:?}"
+            );
+            assert!(!gate_workspace.join(".loom/marker.json").exists());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

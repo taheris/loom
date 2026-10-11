@@ -37,6 +37,8 @@
 //! - `finding-concern` — emit one `LOOM_FINDING:` JSON line followed by
 //!   `LOOM_CONCERN: {"summary": "…"}` without mutating bd state. An optional
 //!   `LOOM_TEST_FINDING_LINE` supplies the finding record for admission tests.
+//! - `review-output` — emit `LOOM_TEST_REVIEW_TEXT` as assistant text and
+//!   `LOOM_TEST_TOOL_TEXT` as a tool result, without Beads mutation.
 //! - `finding-complete` — emit a finding followed by `LOOM_COMPLETE`, an invalid walk.
 //! - `concern-then-complete` — emit `LOOM_CONCERN: {"summary": "…"}` then
 //!   `LOOM_COMPLETE` on a later line; canonical admission rejects both terminals.
@@ -60,6 +62,7 @@ const MODE_NO_MARKER: &str = "no-marker";
 const MODE_CONCERN: &str = "concern-marker";
 const MODE_FINDING_CONCERN: &str = "finding-concern";
 const MODE_FINDING_COMPLETE: &str = "finding-complete";
+const MODE_REVIEW_OUTPUT: &str = "review-output";
 const MODE_CONCERN_THEN_COMPLETE: &str = "concern-then-complete";
 
 const BLOCKED_REASON: &str = "spec section is missing the schema for this bead";
@@ -151,6 +154,40 @@ fn main() -> ExitCode {
                     FINDING_CONCERN_LINE
                 },
             );
+        }
+        MODE_REVIEW_OUTPUT => {
+            let text = env::var("LOOM_TEST_REVIEW_TEXT").expect("review text fixture");
+            let tool_text = match env::var("LOOM_TEST_TOOL_TEXT") {
+                Ok(text) => Some(text),
+                Err(env::VarError::NotPresent) => None,
+                Err(error) => panic!("invalid fixture tool text: {error}"),
+            };
+            if let Some(tool_text) = tool_text {
+                emit(
+                    &mut stdout,
+                    &serde_json::json!({
+                        "type": "tool_execution_start",
+                        "toolCallId": "fixture-tool",
+                        "toolName": "Read",
+                        "args": {"path": "prompt.txt"},
+                    })
+                    .to_string(),
+                );
+                emit(
+                    &mut stdout,
+                    &serde_json::json!({
+                        "type": "tool_execution_end",
+                        "toolCallId": "fixture-tool",
+                        "toolName": "Read",
+                        "result": {"content": [{"type": "text", "text": tool_text}]},
+                        "isError": false,
+                    })
+                    .to_string(),
+                );
+            }
+            for chunk in text.split_inclusive('\n') {
+                emit_message_delta(&mut stdout, chunk);
+            }
         }
         MODE_CONCERN_THEN_COMPLETE => {
             emit_message_delta(&mut stdout, &format!("{CONCERN_LINE}\n"));

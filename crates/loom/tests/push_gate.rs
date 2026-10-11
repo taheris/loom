@@ -141,7 +141,10 @@ mod tests {
                 .env_remove("LOOM_REVIEW_EMIT_STDOUT")
                 .env_remove("LOOM_REVIEW_SPEC_LABEL")
                 .env_remove("LOOM_REVIEW_PHASE_WHEN_MILLIS")
-                .env_remove("LOOM_REVIEW_VERIFIED_LOG");
+                .env_remove("LOOM_REVIEW_VERIFIED_LOG")
+                .env_remove("LOOM_TEST_REVIEW_TEXT")
+                .env_remove("LOOM_TEST_TOOL_TEXT")
+                .env_remove("LOOM_TEST_FINDING_LINE");
             loom_test_support::scrub_git_local_env(&mut command);
             command
         }
@@ -524,6 +527,180 @@ mod tests {
         let evidence = HandoffEvidence::from_runs(fixture.review_runs());
         assert_eq!(evidence.reviewed.unwrap().push_range(), fixture.range());
         fixture.assert_read_only(&before);
+    }
+
+    #[test]
+    fn review_handoff_uses_shared_messages_before_scope_evidence_admission() {
+        use loom_workflow::review::{DispatchScope, WalkOutput, WorkspaceFindingValidator};
+
+        let finding = r#"{"token":"spec-coherence-fail","route":"deferred","bonds":["acme"],"target":{"kind":"Criterion","spec":"acme","anchor":"finding-status-output"},"evidence":"escaped\nmultiline evidence"}"#;
+        let raw: loom_protocol::gate::RawFinding = serde_json::from_str(finding).unwrap();
+        let pretty = serde_json::to_string_pretty(&raw).unwrap();
+        let concern = "LOOM_CONCERN: {\n  \"summary\": \"review concern\"\n}\n";
+        let valid_concern = format!("LOOM_FINDING: {pretty}\n{concern}");
+        let complete = "LOOM_COMPLETE\n";
+        let cases = [
+            ("clean", complete.to_owned(), true),
+            ("pretty suppressed concern", valid_concern.clone(), true),
+            ("unsuppressed concern", valid_concern.clone(), false),
+            (
+                "malformed record",
+                format!("LOOM_FINDING: {{broken}}\n{complete}"),
+                false,
+            ),
+            (
+                "raw string newline",
+                format!(
+                    "LOOM_FINDING: {}\n{complete}",
+                    finding.replace("escaped\\n", "escaped\n")
+                ),
+                false,
+            ),
+            (
+                "malformed terminal",
+                "LOOM_CONCERN: {\"summary\":\"\"}\n".to_owned(),
+                false,
+            ),
+            (
+                "wrong record phase",
+                format!("LOOM_CLARIFY: {{\"decisions\":[\"lm-work\"]}}\n{complete}"),
+                false,
+            ),
+            ("wrong terminal phase", "LOOM_NOOP\n".to_owned(), false),
+            (
+                "missing Concern pair",
+                format!("LOOM_FINDING: {pretty}\n{complete}"),
+                false,
+            ),
+            ("missing findings", concern.to_owned(), false),
+            (
+                "missing terminal",
+                format!("LOOM_FINDING: {pretty}\n"),
+                false,
+            ),
+            ("duplicate terminal", format!("{concern}{complete}"), false),
+            (
+                "trailing text",
+                format!("{complete}trailing prose\n"),
+                false,
+            ),
+            (
+                "JSON suffix",
+                format!("LOOM_FINDING: {finding} suffix\n{complete}"),
+                false,
+            ),
+            (
+                "unknown message",
+                format!("LOOM_FNDING: {finding}\n{complete}"),
+                false,
+            ),
+            (
+                "unresolved target",
+                format!(
+                    "LOOM_FINDING: {}\n{concern}",
+                    finding.replace("finding-status-output", "absent-anchor")
+                ),
+                false,
+            ),
+            (
+                "examples",
+                format!(
+                    "```text\nLOOM_FINDING: {pretty}\n{concern}```\n> LOOM_FINDING: {finding}\n{complete}"
+                ),
+                true,
+            ),
+            (
+                "tool terminal only",
+                "no assistant terminal\n".to_owned(),
+                false,
+            ),
+        ];
+        for (name, text, admitted) in cases {
+            let fixture = Fixture::new();
+            let resolved = raw
+                .clone()
+                .resolve(
+                    DispatchScope::PerBead,
+                    &WorkspaceFindingValidator::new(fixture.root()),
+                )
+                .unwrap();
+            if name == "unsuppressed concern" {
+                fixture.file("loom.toml", "suppress = []\n");
+            } else {
+                fixture.file(
+                    "loom.toml",
+                    &format!(
+                        "[[suppress]]\nid = {:?}\nreason = \"fixture false positive\"\n",
+                        resolved.id(),
+                    ),
+                );
+            }
+            fixture.commit();
+            let before = bead_files(&fixture.state);
+            let verified_log = fixture.verified_log();
+            let output = fixture
+                .command(&["review", "--diff", &fixture.range()], "review-output")
+                .env("LOOM_REVIEW_VERIFIED_LOG", &verified_log)
+                .env("LOOM_REVIEW_EMIT_STDOUT", "1")
+                .env("LOOM_TEST_REVIEW_TEXT", &text)
+                .env("LOOM_TEST_TOOL_TEXT", format!("{valid_concern}{complete}"))
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+            let stdout = success(output);
+            assert!(
+                stdout.ends_with(&text),
+                "{name}: raw handoff retained: {stdout}"
+            );
+            assert!(
+                !stdout.contains("# Post-Epic Review"),
+                "{name}: prompt contamination"
+            );
+            assert!(
+                stderr.contains("# Post-Epic Review"),
+                "{name}: prompt rendered only on stderr"
+            );
+            assert!(fixture.events().iter().any(|event| matches!(event,
+                loom_events::AgentEvent::ToolResult { output, .. } if output.contains("LOOM_FINDING")
+            )), "{name}: external fixture must emit real tool events");
+            let walk = WalkOutput::from_stdout(
+                &stdout,
+                DispatchScope::PerBead,
+                &WorkspaceFindingValidator::new(fixture.root()),
+            );
+            if name == "pretty suppressed concern" || name == "unsuppressed concern" {
+                assert!(walk.decoded().is_ok(), "{walk:?}");
+                assert_eq!(walk.findings(), &[resolved]);
+                assert!(stderr.contains("LOOM_FINDING_STATUS:"));
+                assert!(!stdout.contains("LOOM_FINDING_STATUS:"));
+            } else if admitted || name == "unresolved target" {
+                assert!(
+                    walk.findings().is_empty(),
+                    "{name}: no resolved finding: {walk:?}"
+                );
+                assert!(
+                    !stdout.contains("LOOM_FINDING_STATUS:"),
+                    "{name}: cannot enrich untrusted findings"
+                );
+            }
+            let review_runs = fixture.review_runs();
+            assert_eq!(review_runs.len(), 1, "{name}");
+            let mut runs = parse_gate_runs_from_jsonl(&verified_log);
+            runs.extend(review_runs);
+            let mut evidence = HandoffEvidence::from_runs(runs);
+            evidence.molecule_state = loom_gate::MoleculeState::Clean;
+            assert_eq!(
+                evidence.reviewed.is_some(),
+                admitted,
+                "{name}: {evidence:?}"
+            );
+            assert_eq!(
+                loom_gate::GateSuccess::new(&evidence, 1).is_ok(),
+                admitted,
+                "{name}: syntax is not authority"
+            );
+            fixture.assert_read_only(&before);
+        }
     }
 
     #[test]

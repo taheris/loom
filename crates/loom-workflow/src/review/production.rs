@@ -103,9 +103,7 @@ fn pre_commit_config_digest(workspace: &Path) -> Result<String, ReviewError> {
 pub struct ProductionReviewController<S, F, R: CommandRunner = TokioRunner>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
-    F: std::future::Future<
-            Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
-        > + Send,
+    F: std::future::Future<Output = Result<(SessionOutcome, String), ProtocolError>> + Send,
 {
     bd: BdClient<R>,
     label: SpecLabel,
@@ -204,9 +202,7 @@ fn review_dispatch_scope_pin(scope: DispatchScope, range: Option<&str>) -> Strin
 impl<S, F, R: CommandRunner> ProductionReviewController<S, F, R>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
-    F: std::future::Future<
-            Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
-        > + Send,
+    F: std::future::Future<Output = Result<(SessionOutcome, String), ProtocolError>> + Send,
 {
     /// Re-resolve the review log path the same way `exec_review` does, from
     /// `(phase_log_root, "review", phase_log_when)`, keeping it only
@@ -640,7 +636,8 @@ fn classify_review_phase(walk: &WalkOutput, exit_code: i32) -> ReviewOutcome {
     classify_review_phase_with_suppressions(walk, exit_code, &[])
 }
 
-fn classify_review_phase_with_suppressions(
+/// Admit decoded/resolved Review output and its pairing before applying suppressions.
+pub fn classify_review_phase_with_suppressions(
     walk: &WalkOutput,
     exit_code: i32,
     suppressions: &[SuppressionConfig],
@@ -830,9 +827,7 @@ fn exit_signal_from_walk(walk: &WalkOutput) -> Option<ExitSignal> {
 impl<S, F, R: CommandRunner> ReviewController for ProductionReviewController<S, F, R>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
-    F: std::future::Future<
-            Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
-        > + Send,
+    F: std::future::Future<Output = Result<(SessionOutcome, String), ProtocolError>> + Send,
 {
     async fn run_review(&mut self) -> Result<RunReviewOutput, ReviewError> {
         self.require_matching_verified_scope()?;
@@ -875,7 +870,7 @@ where
         );
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);
-        let (outcome, _transport_marker, stdout) = result?;
+        let (outcome, stdout) = result?;
         let validator = WorkspaceFindingValidator::new(&self.workspace);
         let walk = WalkOutput::from_stdout(&stdout, self.dispatch_scope, &validator);
         let suppressed_findings = suppressed_findings(&walk, &self.suppressions);
@@ -959,6 +954,7 @@ where
         Ok(RunReviewOutput {
             outcome: typed_outcome,
             marker: effective_marker,
+            findings: walk.findings().to_vec(),
             suppressed_findings,
             ineffective_suppression_matches,
         })
@@ -1359,7 +1355,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::future::Ready;
 
-    type SpawnFuture = Ready<Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>>;
+    type SpawnFuture = Ready<Result<(SessionOutcome, String), ProtocolError>>;
     type NoopSpawn = fn(SpawnConfig) -> SpawnFuture;
     type NoopController = ProductionReviewController<NoopSpawn, SpawnFuture, ScriptedBd>;
 
@@ -1369,7 +1365,6 @@ mod tests {
                 exit_code: 0,
                 cost_usd: None,
             },
-            Some(ExitSignal::Complete),
             "LOOM_COMPLETE\n".to_string(),
         )))
     }
@@ -2613,7 +2608,6 @@ mod tests {
                         exit_code: 0,
                         cost_usd: None,
                     },
-                    Some(ExitSignal::Complete),
                     "LOOM_COMPLETE\n".to_string(),
                 ))
             },
@@ -2703,10 +2697,6 @@ mod tests {
                             exit_code: 0,
                             cost_usd: None,
                         },
-                        Some(ExitSignal::Concern(loom_protocol::output::Summary {
-                            summary: loom_protocol::todo::NonEmptyString::new("tree drift")
-                                .unwrap(),
-                        })),
                         stdout,
                     ))
                 }
@@ -2793,10 +2783,6 @@ mod tests {
                             exit_code: 0,
                             cost_usd: None,
                         },
-                        Some(ExitSignal::Concern(loom_protocol::output::Summary {
-                            summary: loom_protocol::todo::NonEmptyString::new("bad anchor")
-                                .unwrap(),
-                        })),
                         stdout,
                     ))
                 }
@@ -2848,7 +2834,6 @@ mod tests {
                         exit_code: 7,
                         cost_usd: None,
                     },
-                    None,
                     String::new(),
                 ))
             },
@@ -3124,7 +3109,6 @@ mod tests {
                             exit_code: 0,
                             cost_usd: None,
                         },
-                        Some(ExitSignal::Complete),
                         "LOOM_COMPLETE\n".to_owned(),
                     ))
                 }
@@ -3397,7 +3381,6 @@ mod tests {
                             exit_code: 0,
                             cost_usd: None,
                         },
-                        Some(ExitSignal::Complete),
                         "LOOM_COMPLETE\n".to_string(),
                     ))
                 }
@@ -3480,7 +3463,6 @@ mod tests {
                         exit_code: 0,
                         cost_usd: None,
                     },
-                    Some(ExitSignal::Complete),
                     "LOOM_COMPLETE\n".to_string(),
                 ))
             },

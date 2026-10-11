@@ -206,12 +206,12 @@ pub trait ReviewController: Send {
     }
 }
 
-/// Reviewer agent run result. Carries the typed [`ReviewOutcome`]
-/// alongside the effective exit marker and suppression decisions.
+/// Contextually resolved review findings, outcome, and suppression decisions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunReviewOutput {
     pub outcome: ReviewOutcome,
     pub marker: Option<ExitSignal>,
+    pub findings: Vec<Finding>,
     pub suppressed_findings: Vec<Finding>,
     pub ineffective_suppression_matches: Vec<Finding>,
 }
@@ -311,6 +311,7 @@ pub async fn review_loop<C: ReviewController>(
         marker,
         suppressed_findings,
         ineffective_suppression_matches,
+        ..
     } = controller.run_review().await?;
     emit_suppression_summary(
         controller,
@@ -754,6 +755,7 @@ mod tests {
             Ok(RunReviewOutput {
                 outcome: self.review.clone().unwrap_or(ReviewOutcome::Complete),
                 marker: self.review_marker.clone(),
+                findings: Vec::new(),
                 suppressed_findings: self.suppressed_findings.clone(),
                 ineffective_suppression_matches: self.ineffective_suppression_matches.clone(),
             })
