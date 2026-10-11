@@ -133,6 +133,7 @@
         src = stagedSrc;
         inherit cargoArtifacts;
         cargoVendorDir = (inputs.crane.mkLib pkgs).vendorCargoDeps { src = stagedSrc; };
+        nativeBuildInputs = [ (pkgs.lib.getBin pkgs.nix) ];
         doCheck = true;
         doInstallCargoArtifacts = false;
         preBuild = ''
