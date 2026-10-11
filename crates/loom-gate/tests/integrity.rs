@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use loom_gate::Tier;
-use loom_gate::annotation::{parse, parse_content};
+use loom_gate::annotation::{ParsedSpecs, parse};
 use loom_gate::integrity::{
     CommandResolver, DispatchPendingExecutor, FsCommandResolver, IntegrityFinding,
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
@@ -18,6 +18,10 @@ use loom_gate::integrity::{
 };
 use loom_gate::{Annotation, DispatchOptions, TierCwds};
 use tempfile::tempdir;
+
+fn parse_content(path: &Path, content: &str) -> ParsedSpecs {
+    loom_gate::annotation::parse_content(path, content).unwrap()
+}
 
 fn write(dir: &Path, name: &str, content: &str) {
     fs::write(dir.join(name), content).unwrap();

@@ -225,14 +225,14 @@ rather than silently detached.
   fields, conflicting declarations, or detached/ambiguous criterion-stage blocks
   fail validation. Absence retains criteria and baseline obligations; local
   declarations do not become package-wide defaults.
-  [test?](quint_verify_blocks_parse_optional_strict_strategy)
+  [test](quint_verify_blocks_parse_optional_strict_strategy)
 
 - Package-level strategy parsing accepts `[rust].property_filters` as an array
   of nextest expression strings and repeatable `[[role_exception]]` tables with
   `subject`, `role`, and `reason`. It rejects malformed field types and retains
   typed references and source context for separate inventory resolution; the
   ordinary TOML example in conventions does not become active policy.
-  [test?](quint_verify_blocks_parse_property_filters_and_role_exceptions)
+  [test](quint_verify_blocks_parse_property_filters_and_role_exceptions)
 
 ### Annotation parsing
 
@@ -356,7 +356,7 @@ rather than silently detached.
   when the normalized requirement text is unchanged; changing that text still
   changes the ID. Strategy metadata remains available for current-policy
   interpretation rather than being discarded as irrelevant.
-  [test?](criterion_identity_excludes_strategy_metadata)
+  [test](criterion_identity_excludes_strategy_metadata)
 
 - `CriterionStatus` is a struct with fields `spec_label`, `criterion_id`,
   `criterion_text`, `annotation`, and `evidence`; `EvidenceState` is a tagged

@@ -26,8 +26,10 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use displaydoc::Display;
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use thiserror::Error;
+
+pub mod strategy;
 
 /// Verifier tier for one annotation. Closed set per RS-17; the wire
 /// strings line up with the `[tier]` text in spec files.
@@ -119,15 +121,23 @@ pub struct Criterion {
 pub struct ParsedSpecs {
     pub annotations: Vec<Annotation>,
     pub criteria: Vec<Criterion>,
+    pub strategy: Vec<strategy::Declaration>,
 }
 
-/// Discovery, navigation, and document-read failures; executable targets are not validated.
+/// Discovery, navigation, document-read, and strategy failures; targets are not resolved.
 #[derive(Debug, Display, Error)]
 pub enum ParseError {
     /// failed to discover complete spec packages
     Package(#[from] loom_driver::spec::package::Error),
     /// invalid contract-to-acceptance navigation
     Link(#[from] loom_driver::spec::link::Error),
+    /// invalid verification strategy at `{path}`:{line}
+    Strategy {
+        path: PathBuf,
+        line: u32,
+        #[source]
+        source: strategy::Error,
+    },
     /// failed to read specs directory `{path}`: {source}
     ReadDir {
         path: PathBuf,
@@ -180,7 +190,7 @@ pub fn parse_workspace(workspace: &Path) -> Result<ParsedSpecs, ParseError> {
 /// Aggregate already discovered owners without treating supporting files as acceptance.
 ///
 /// # Errors
-/// Returns contextual document-read or contract-navigation errors.
+/// Returns contextual document-read, contract-navigation, or strategy errors.
 pub fn parse_packages(
     packages: &[loom_driver::spec::package::Package],
 ) -> Result<ParsedSpecs, ParseError> {
@@ -192,9 +202,10 @@ pub fn parse_packages(
             path: path.to_path_buf(),
             source,
         })?;
-        let parsed = parse_content(path, &content);
+        let parsed = parse_content(path, &content)?;
         out.annotations.extend(parsed.annotations);
         out.criteria.extend(parsed.criteria);
+        out.strategy.extend(parsed.strategy);
     }
     Ok(out)
 }
@@ -202,13 +213,16 @@ pub fn parse_packages(
 /// Parse a single in-memory spec body.
 ///
 /// `source_spec` is recorded as-is on every emitted record so callers can produce filename-tagged
-/// errors without re-resolving the path. Infallible: markdown parsing
-/// never errors and the parser does not validate annotation targets.
-pub fn parse_content(source_spec: &Path, content: &str) -> ParsedSpecs {
+/// errors without re-resolving the path. Executable annotation targets are not resolved.
+///
+/// # Errors
+/// Rejects invalid, conflicting, or structurally detached verification strategy.
+pub fn parse_content(source_spec: &Path, content: &str) -> Result<ParsedSpecs, ParseError> {
     let line_index = LineIndex::from(content);
     let structure = StructuralPass::run(content);
 
     let hits = structure.bindings(content);
+    let strategy = strategy::parse(source_spec, content, &structure, &hits)?;
     let excluded = structure.text_exclusions(&hits);
     let mut annotations: Vec<Annotation> = Vec::new();
     for hit in hits {
@@ -236,10 +250,11 @@ pub fn parse_content(source_spec: &Path, content: &str) -> ParsedSpecs {
         })
         .collect();
 
-    ParsedSpecs {
+    Ok(ParsedSpecs {
         annotations,
         criteria,
-    }
+        strategy,
+    })
 }
 
 /// One annotation token recovered by the byte-level scanner.
@@ -434,6 +449,7 @@ struct StructuralPass {
     paragraph_ranges: Vec<Range<usize>>,
     item_ranges: Vec<(Range<usize>, u32)>,
     criterion_bullet_lines: BTreeSet<u32>,
+    strategy_fences: Vec<strategy::Fence>,
 }
 
 impl StructuralPass {
@@ -444,6 +460,8 @@ impl StructuralPass {
         let mut paragraph_ranges: Vec<Range<usize>> = Vec::new();
         let mut item_ranges: Vec<(Range<usize>, u32)> = Vec::new();
         let mut criterion_bullet_lines: BTreeSet<u32> = BTreeSet::new();
+        let mut strategy_fences: Vec<strategy::Fence> = Vec::new();
+        let mut active_strategy = None;
 
         let mut sc_level: Option<HeadingLevel> = None;
         let mut in_heading: Option<HeadingLevel> = None;
@@ -474,9 +492,26 @@ impl StructuralPass {
                         code_ranges.push(range);
                     }
                 }
-                Event::Start(Tag::CodeBlock(_)) | Event::Code(_) => {
+                Event::Start(Tag::CodeBlock(kind)) => {
+                    if matches!(kind, CodeBlockKind::Fenced(info) if info.as_ref() == "loom-verify")
+                    {
+                        active_strategy = Some(strategy_fences.len());
+                        strategy_fences.push(strategy::Fence {
+                            range: range.clone(),
+                            body: String::new(),
+                        });
+                    }
                     code_ranges.push(range);
                 }
+                Event::End(TagEnd::CodeBlock) => active_strategy = None,
+                Event::Text(text) if active_strategy.is_some() => {
+                    if let Some(fence) =
+                        active_strategy.and_then(|index| strategy_fences.get_mut(index))
+                    {
+                        fence.body.push_str(&text);
+                    }
+                }
+                Event::Code(_) => code_ranges.push(range),
                 Event::Start(Tag::HtmlBlock) | Event::InlineHtml(_)
                     if content[range.clone()].trim_start().starts_with("<!--") =>
                 {
@@ -500,6 +535,7 @@ impl StructuralPass {
             paragraph_ranges,
             item_ranges,
             criterion_bullet_lines,
+            strategy_fences,
         }
     }
 
@@ -519,6 +555,7 @@ impl StructuralPass {
     fn text_exclusions(&self, hits: &[TokenHit]) -> Vec<Range<usize>> {
         let mut ranges = self.comment_ranges.clone();
         ranges.extend(hits.iter().map(|hit| hit.start..hit.end));
+        ranges.extend(self.strategy_fences.iter().map(|fence| fence.range.clone()));
         ranges.sort_unstable_by_key(|range| range.start);
         ranges
     }
@@ -583,6 +620,10 @@ impl LineIndex {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    fn parse_content(path: &Path, content: &str) -> ParsedSpecs {
+        super::parse_content(path, content).unwrap()
+    }
 
     fn spec_path() -> PathBuf {
         PathBuf::from("specs/example.md")

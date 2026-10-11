@@ -914,6 +914,7 @@ mod tests {
     #[test]
     fn spec_summary_separates_annotated_from_unannotated() {
         let parsed = ParsedSpecs {
+            strategy: vec![],
             annotations: vec![Annotation {
                 tier: Tier::Test,
                 target: "crate::a::t".into(),

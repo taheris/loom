@@ -126,7 +126,7 @@ pub fn load_review_sources_for_lane(
         path: spec_path.to_path_buf(),
         source,
     })?;
-    let parsed = parse_content(spec_path, &body);
+    let parsed = parse_content(spec_path, &body)?;
     load_review_sources_for_annotations(workspace, &parsed.annotations, lane)
 }
 

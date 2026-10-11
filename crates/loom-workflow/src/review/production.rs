@@ -482,7 +482,7 @@ where
             let Ok(body) = std::fs::read_to_string(&abs) else {
                 continue;
             };
-            let parsed = annotation::parse_content(rel, &body);
+            let parsed = annotation::parse_content(rel, &body)?;
             annotations.extend(parsed.annotations);
         }
         if annotations.is_empty() {

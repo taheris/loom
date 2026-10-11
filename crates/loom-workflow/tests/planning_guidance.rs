@@ -61,7 +61,7 @@ fn planning_package_probes_are_structurally_valid_without_claiming_semantic_cove
             parse_content(
                 &package.join("spec.md"),
                 &fs::read_to_string(package.join("spec.md"))?
-            )
+            )?
             .annotations,
             vec![]
         );
@@ -85,7 +85,7 @@ fn planning_package_probes_are_structurally_valid_without_claiming_semantic_cove
 fn planning_judges_collect_delivered_guidance_and_semantic_inputs() -> Result<()> {
     let root = repo_root()?;
     let source = root.join("specs/plan.md");
-    let parsed = parse_content(&source, &fs::read_to_string(&source)?);
+    let parsed = parse_content(&source, &fs::read_to_string(&source)?)?;
     let mut resolver = InputResolver::new(root);
     for (file, fixture) in [
         (

@@ -2241,7 +2241,7 @@ fn criterion_id_for_annotation(
             source_spec.to_string_lossy()
         )
     })?;
-    let parsed = loom_gate::annotation::parse_content(source_spec, &content);
+    let parsed = loom_gate::annotation::parse_content(source_spec, &content)?;
     let criterion_text = parsed
         .criteria
         .iter()
@@ -5321,7 +5321,7 @@ fn run_spec(
         .join("specs")
         .join(format!("{}.md", label.as_str()));
     let body = std::fs::read_to_string(&spec_path)?;
-    let parsed = loom_gate::annotation::parse_content(&spec_path, &body);
+    let parsed = loom_gate::annotation::parse_content(&spec_path, &body)?;
     let mut annotated_lines: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     for ann in &parsed.annotations {
         annotated_lines.insert(ann.criterion_line);
@@ -5383,7 +5383,9 @@ mod tests {
             writeln!(content, "- Criterion {index}. [test](case_{index})").unwrap();
         }
         std::fs::write(&source, &content).unwrap();
-        let annotations = loom_gate::annotation::parse_content(&source, &content).annotations;
+        let annotations = loom_gate::annotation::parse_content(&source, &content)
+            .unwrap()
+            .annotations;
         assert_eq!(annotations.len(), 128);
         let cache = StatusCache::open(&workspace.path().join(".loom/cache.db")).unwrap();
         let mut verdict = loom_gate::dispatch::VerifierVerdict::from_outcome(

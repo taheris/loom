@@ -3,7 +3,15 @@
 use std::path::Path;
 
 use loom_driver::identifier::SpecLabel;
-use loom_gate::annotation::{criterion_id_for, criterion_text_for_line, parse_content};
+use loom_gate::annotation::{ParsedSpecs, criterion_id_for, criterion_text_for_line};
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "This extraction helper only receives syntactically valid acceptance fixtures."
+)]
+fn parse_content(path: &Path, content: &str) -> ParsedSpecs {
+    loom_gate::annotation::parse_content(path, content).unwrap()
+}
 
 fn texts(body: &str) -> Vec<String> {
     parse_content(Path::new("specs/example.md"), body)

@@ -247,7 +247,14 @@ fn path_exists_from(base: &Path, target: &str) -> bool {
 }
 
 fn criterion_aliases(spec: &SpecLabel, source: &Path, body: &str) -> Vec<String> {
-    let parsed = annotation::parse_content(source, body);
+    let parsed = match annotation::parse_content(source, body) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            warn!(spec_label = %spec, path = %source.display(), error = ?err,
+                "invalid acceptance strategy for finding validation");
+            return Vec::new();
+        }
+    };
     let mut aliases = Vec::new();
     for criterion in &parsed.criteria {
         aliases.push(annotation::criterion_id_for(spec, &criterion.text));
@@ -362,7 +369,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
         let body = "# Gate\n\n## Success Criteria\n\n- A thing must hold [check](true)\n";
         std::fs::write(tmp.path().join("specs/gate.md"), body).expect("write spec");
-        let parsed = annotation::parse_content(&PathBuf::from("specs/gate.md"), body);
+        let parsed = annotation::parse_content(&PathBuf::from("specs/gate.md"), body).unwrap();
         let gate = SpecLabel::new("gate").unwrap();
         let criterion_id = annotation::criterion_id_for(&gate, &parsed.criteria[0].text);
         let validator = WorkspaceFindingValidator::new(tmp.path());

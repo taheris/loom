@@ -75,7 +75,7 @@ fn write_spec(workspace: &Path, label: &str, body: &str) -> PathBuf {
 }
 
 fn criterion_id(label: &SpecLabel, body: &str, line_index: usize) -> String {
-    let parsed = parse_content(Path::new("specs/alpha.md"), body);
+    let parsed = parse_content(Path::new("specs/alpha.md"), body).unwrap();
     let line = parsed.criteria[line_index].line;
     criterion_id_for(label, &criterion_text_for_line(body, line))
         .as_str()
@@ -129,6 +129,82 @@ async fn todo_criterion_identity_survives_markdown_formatting() {
     assert_eq!(current[0].criterion_id, expected_id);
     assert_eq!(current, initial);
     assert!(matches!(current[0].evidence, EvidenceState::Current { .. }));
+}
+
+#[tokio::test]
+async fn criterion_identity_excludes_strategy_metadata() {
+    use loom_gate::annotation::strategy::{Declaration, Deferral};
+
+    let dir = init_git_repo();
+    let workspace = dir.path();
+    let label = SpecLabel::new("alpha").unwrap();
+    let baseline = "## Success Criteria\n\n- A criterion [check](cargo test)\n";
+    let spec_rel = write_spec(workspace, "alpha", baseline);
+    let git = GitClient::open(workspace).unwrap();
+    let cache_path = workspace.join(".loom/cache.db");
+    let expected = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .unwrap();
+    assert_eq!(expected.len(), 1);
+    let attached = format!("{baseline}\n  ```loom-verify\n  defer_until = 'publication'\n  ```\n");
+    let edited = attached.replace(
+        "defer_until = 'publication'",
+        "# explicit cost exception\n  defer_until = \"publication\"",
+    );
+    for (body, count) in [(attached.as_str(), 1), (edited.as_str(), 1), (baseline, 0)] {
+        write_spec(workspace, "alpha", body);
+        let parsed = parse_content(&spec_rel, body).unwrap();
+        assert_eq!(parsed.strategy.len(), count);
+        if count == 1 {
+            assert!(matches!(
+                parsed.strategy[0],
+                Declaration::Criterion {
+                    line: 3,
+                    defer_until: Deferral::Publication,
+                    ..
+                }
+            ));
+        }
+        let current = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+            .await
+            .unwrap();
+        assert_eq!(current, expected);
+        assert_eq!(
+            current[0].criterion_id.as_str(),
+            loom_gate::annotation::criterion_id_for(&label, &parsed.criteria[0].text)
+        );
+    }
+    let changed = attached.replace("A criterion", "A changed requirement");
+    write_spec(workspace, "alpha", &changed);
+    let changed = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
+        .await
+        .unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_ne!(changed[0].criterion_id, expected[0].criterion_id);
+    assert_eq!(changed[0].criterion_text, "A changed requirement");
+}
+
+#[tokio::test]
+async fn invalid_strategy_cannot_become_empty_successful_criterion_status() {
+    let dir = init_git_repo();
+    let workspace = dir.path();
+    let label = SpecLabel::new("alpha").unwrap();
+    let body = "## Success Criteria\n- Requirement [test](shared)\n\n  ```loom-verify\n  defer_until = 'never'\n  ```\n";
+    let source = write_spec(workspace, "alpha", body);
+    let git = GitClient::open(workspace).unwrap();
+    assert!(matches!(
+        build_criterion_status(
+            workspace,
+            &workspace.join(".loom/cache.db"),
+            &label,
+            &source,
+            &git
+        )
+        .await,
+        Err(loom_workflow::todo::TodoError::Parse(
+            loom_gate::annotation::ParseError::Strategy { .. }
+        ))
+    ));
 }
 
 #[tokio::test]

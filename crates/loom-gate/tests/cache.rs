@@ -211,6 +211,7 @@ fn render_report_reads_from_disk_and_summarises_per_tier() {
         .unwrap();
 
     let parsed = ParsedSpecs {
+        strategy: vec![],
         annotations: vec![Annotation {
             tier: Tier::Test,
             target: "crate::a::t".into(),
@@ -435,6 +436,7 @@ fn stale_annotations_join_typed_criterion_ids_against_current_snapshot() {
         })
         .unwrap();
     let parsed = ParsedSpecs {
+        strategy: vec![],
         annotations: vec![Annotation {
             tier: Tier::Test,
             target: "crate::new_test".into(),

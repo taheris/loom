@@ -37,7 +37,7 @@ pub async fn build_criterion_status(
         path: spec_abs,
         source,
     })?;
-    let parsed = parse_content(spec_path, &content);
+    let parsed = parse_content(spec_path, &content)?;
 
     let mut annotations_by_line: BTreeMap<u32, Vec<&Annotation>> = BTreeMap::new();
     for ann in &parsed.annotations {

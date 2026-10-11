@@ -110,6 +110,7 @@ mod tests {
             Path::new("specs/gate.md"),
             &std::fs::read_to_string(root.join("specs/gate.md")).unwrap(),
         )
+        .unwrap()
         .annotations;
         let config = LoomConfig::load(root.join("loom.toml")).unwrap();
         let runners = loom_gate::runner::integrity_runner_specs(&config).unwrap();

@@ -40,6 +40,9 @@ pub enum TodoError {
     /// {diagnostic}
     PendingTodoEpicConflict { ids: String, diagnostic: String },
 
+    /// failed to parse todo acceptance declarations
+    Parse(#[from] loom_gate::annotation::ParseError),
+
     /// invalid todo acceptance criteria
     Criteria(#[from] loom_protocol::acceptance::SnapshotError),
 

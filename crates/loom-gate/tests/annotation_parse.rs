@@ -125,7 +125,7 @@ fn package_relocation_preserves_criterion_hashing_and_target_bytes() {
     let dir = tempdir().unwrap();
     let label = loom_driver::identifier::SpecLabel::new("alpha").unwrap();
     let content = "## Success Criteria\n- Exact requirement [check](bash -c 'printf \"(first)\\n\";\n  printf \"second\"') qualifier\n";
-    let flat = loom_gate::annotation::parse_content(Path::new("specs/alpha.md"), content);
+    let flat = loom_gate::annotation::parse_content(Path::new("specs/alpha.md"), content).unwrap();
     write_package(dir.path(), "alpha", content);
     write_index(dir.path(), &["alpha"]);
     let packaged = parse(&dir.path().join("specs")).unwrap();
