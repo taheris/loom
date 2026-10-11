@@ -1,6 +1,7 @@
 /target/
 /result
 /result-*
+/.cargo/nix-patches.*
 .claude/
 .direnv/
 .loom/

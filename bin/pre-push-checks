@@ -18,6 +18,9 @@ scrub_git_local_env() {
 
 exec_sanitized() {
     scrub_git_local_env
+    if [[ -f scripts/configure-cargo-patches.sh ]]; then
+        bash scripts/configure-cargo-patches.sh
+    fi
     exec "$@"
 }
 
@@ -111,4 +114,4 @@ if loom gate verify-marker --hook-id "$hook_id" --hook-entry "$hook_entry" --pus
     exit 0
 fi
 
-exec "$@"
+exec_sanitized "$@"

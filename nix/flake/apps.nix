@@ -62,12 +62,14 @@ _:
       testApp = pkgs.writeShellApplication {
         name = "test";
         runtimeInputs = testRuntimeInputs;
+        runtimeEnv.LOOM_CARGO_PATCHES = loom.cargoConfig;
         text = builtins.readFile ../../scripts/full-test.sh;
       };
 
       requiredTestApp = pkgs.writeShellApplication {
         name = "test-required";
         runtimeInputs = testRuntimeInputs;
+        runtimeEnv.LOOM_CARGO_PATCHES = loom.cargoConfig;
         text = builtins.readFile ../../scripts/required-test.sh;
       };
 

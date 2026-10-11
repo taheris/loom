@@ -18,6 +18,7 @@ _:
         inherit profileManifest;
         profile-images = profileManifest;
 
+        cargo-patches = loom.cargoConfig;
         default = loom.bin;
         loom = loom.bin;
         loom-wrix = loomBin;

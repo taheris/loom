@@ -14,15 +14,33 @@ consumers. No third-party source is checked into this repository.
 
 Cargo dependencies use compatible version requirements. `Cargo.lock` retains the
 published crate's registry source and checksum; `cargo update` can select new
-compatible releases without a path override. The patch applies only to Nix
-builds: bare Cargo uses the unpatched upstream parser.
+compatible releases. Native Cargo uses the same patched source through a
+generated `paths` override, which does not alter registry resolution or the
+dependency graph. The dev shells, test apps, and pre-push wrapper initialize
+`.cargo/nix-patches.toml`; only its optional include is tracked in Git.
+
+To initialize or refresh native Cargo after updating dependencies:
+
+```bash
+bash scripts/configure-cargo-patches.sh
+```
+
+The helper selects the crate version and checksum from the current `Cargo.lock`
+and retains its Nix store closure. `cargo update` still resolves compatible
+registry releases; subsequent push hooks refresh the override automatically.
+Outside a prepared checkout, native Cargo still uses the upstream parser.
 
 Run the public-entrypoint regressions against the Nix-patched dependency:
 
 ```bash
 nix build .#checks.x86_64-linux.nextest-filtering-syntax
+nix build .#checks.x86_64-linux.native-cargo-patches
 ```
 
-Remove the overlay and patch once an upstream release passes these regressions
-without them. A patch-application failure after a dependency update requires
-review rather than silently falling back to the recovering parser.
+The native check starts with unpatched registry sources, verifies the strict
+regression fails, initializes the override, and runs the parser and strategy
+tests through ordinary Cargo without changing the lockfile.
+
+Remove the overlay and native override once an upstream release passes these
+regressions without them. A patch-application failure after a dependency update
+requires review rather than silently falling back to the recovering parser.

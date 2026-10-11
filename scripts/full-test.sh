@@ -8,6 +8,10 @@ export GIT_CONFIG_GLOBAL="$repo_root/tests/fixtures/git/test-gitconfig"
 export GIT_CONFIG_SYSTEM=/dev/null
 unset WRIX_SIGNING_KEY
 
+if [[ -f "$repo_root/scripts/configure-cargo-patches.sh" ]]; then
+    bash "$repo_root/scripts/configure-cargo-patches.sh" "${LOOM_CARGO_PATCHES:-}"
+fi
+
 nix flake check --no-warn-dirty
 cargo clippy --workspace -- -D warnings
 cargo clippy --workspace --all-targets -- -D warnings

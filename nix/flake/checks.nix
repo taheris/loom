@@ -1,4 +1,4 @@
-_:
+{ inputs, ... }:
 
 {
   perSystem =
@@ -84,6 +84,29 @@ _:
         doInstallCargoArtifacts = false;
         buildPhaseCargoCommand = "cargo test --locked -p loom-gate --test nextest_filtering --no-run";
         checkPhaseCargoCommand = "cargo test --locked -p loom-gate --test nextest_filtering";
+        installPhaseCommand = "touch $out";
+      };
+
+      native-cargo-patches = craneLib.mkCargoDerivation {
+        pname = "native-cargo-patches";
+        version = "0.0.0";
+        src = stagedSrc;
+        inherit cargoArtifacts;
+        cargoVendorDir = (inputs.crane.mkLib pkgs).vendorCargoDeps { src = stagedSrc; };
+        doCheck = true;
+        doInstallCargoArtifacts = false;
+        preBuild = ''
+          cp Cargo.lock "$TMPDIR/original-Cargo.lock"
+          if cargo test --locked -p loom-gate --test nextest_filtering \
+            nextest_filter_grammar_errors_retain_upstream_diagnostics > "$TMPDIR/unpatched.log" 2>&1; then
+            echo "unpatched parser unexpectedly passed the strict regression" >&2
+            exit 1
+          fi
+          grep -F 'test nextest_filter_grammar_errors_retain_upstream_diagnostics ... FAILED' "$TMPDIR/unpatched.log"
+          bash ${../../scripts/configure-cargo-patches.sh} ${loom.cargoConfig}
+        '';
+        buildPhaseCargoCommand = "cargo test --locked -p loom-gate --test nextest_filtering --test strategy";
+        checkPhaseCargoCommand = ''cmp Cargo.lock "$TMPDIR/original-Cargo.lock"'';
         installPhaseCommand = "touch $out";
       };
 
@@ -685,6 +708,7 @@ _:
           agent-entrypoint-contract
           loom-gate-check
           nextest-filtering-syntax
+          native-cargo-patches
           loom-wrapper-preserves-spaced-output-path
           loom-wrix-does-not-default-launcher-override
           wrix-requires-explicit-profile-config

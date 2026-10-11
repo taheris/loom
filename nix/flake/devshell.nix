@@ -35,6 +35,12 @@ _:
       ]
       ++ wrixSpawnRuntimePackages;
 
+      cargoPatchSetup = ''
+        if [[ -f .cargo/config.toml ]]; then
+          ${pkgs.bash}/bin/bash ${../../scripts/configure-cargo-patches.sh} ${loom.cargoConfig}
+        fi
+      '';
+
       commonEnv = {
         LOOM_PROFILES_MANIFEST = profileManifest;
         LOOM_WRIX_BIN = "${sandbox.package}/bin/wrix";
@@ -46,6 +52,7 @@ _:
           profile = rustProfile;
           env = commonEnv;
           packages = commonPackages;
+          shellHook = cargoPatchSetup;
         };
 
         # Hook-free shell used by CI/system checks. The default wrix devShell
@@ -54,6 +61,7 @@ _:
         # and must not prompt for host SSH/deploy-key credentials.
         ci = pkgs.mkShell {
           packages = [ loom.bin ];
+          shellHook = cargoPatchSetup;
         };
       };
     };

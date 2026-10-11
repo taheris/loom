@@ -56,6 +56,15 @@ let
     };
   };
 
+  lockedNextest =
+    lib.findFirst (package: package.name == "nextest-filtering")
+      (throw "Cargo.lock does not contain nextest-filtering")
+      (builtins.fromTOML (builtins.readFile commonArgs.cargoLock)).package;
+  patchedNextest = craneLib.downloadCargoPackage lockedNextest;
+  cargoConfig = pkgs.writeText "loom-cargo-patches.toml" ''
+    paths = [ "${patchedNextest}" ]
+  '';
+
   cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
   # Specs, mock binaries, and any other non-Cargo inputs the tests and
@@ -139,6 +148,7 @@ in
     clippy
     nextest
     cargoArtifacts
+    cargoConfig
     craneLib
     stagedSrc
     ;
