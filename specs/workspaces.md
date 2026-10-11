@@ -507,6 +507,11 @@ for worker feedback.
   would outrank its repository deploy-key transport
   [test](repository_mode_rejects_ambient_git_transport_override)
 
+- Repository-built Rust worker images initialize native dependency patches without a
+  dev-shell hook, refreshes them for a changed lockfile identity inside the
+  private worker store, and leaves health probes and unrelated repositories
+  untouched [check](nix build .#checks.x86_64-linux.native-cargo-bootstrap)
+
 - New and reused bead clones receive context-stable Wrix transport/signing
   config before host-side preflight; no host private-key path is persisted, and
   stale host signing config is repaired on redispatch

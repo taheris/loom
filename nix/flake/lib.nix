@@ -39,6 +39,7 @@ in
         agent ? "pi",
         agentPkg ? null,
         extraPackages ? [ ],
+        nativeCargo ? null,
         loomBin ?
           (loomLib.mkLoom {
             inherit
@@ -62,6 +63,7 @@ in
           agent
           agentPkg
           extraPackages
+          nativeCargo
           loomBin
           ;
       };
@@ -152,7 +154,14 @@ in
         toolchain = rustToolchainFile;
         sha256 = rustToolchainSha256;
       };
-      workerRustProfile = workerProfile rustProfile;
+      nativeCargo = import ../native-cargo.nix {
+        pkgs = wrixLinuxPkgs;
+        config = imageLoom.cargoConfig;
+        toolchain = imageLoom.toolchain;
+      };
+      workerRustProfile = workerProfile (
+        rustProfile // { packages = [ nativeCargo ] ++ rustProfile.packages; }
+      );
 
       loom = loomLib.mkLoom {
         inherit pkgs;
@@ -195,7 +204,7 @@ in
       smokeProfileManifest = wrixLib.mkProfileImages { base = smokeSandbox.image; };
 
       profileManifest = loomLib.mkProfileManifest {
-        inherit pkgs wrixLib;
+        inherit pkgs wrixLib nativeCargo;
         profiles = {
           inherit (wrixLib.profiles) base python;
           rust = rustProfile;
@@ -223,6 +232,7 @@ in
           imageTreefmtWrapper
           loom
           loomBin
+          nativeCargo
           patchedWrixSrc
           profileManifest
           rustProfile

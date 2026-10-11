@@ -61,9 +61,16 @@ let
       (throw "Cargo.lock does not contain nextest-filtering")
       (builtins.fromTOML (builtins.readFile commonArgs.cargoLock)).package;
   patchedNextest = craneLib.downloadCargoPackage lockedNextest;
-  cargoConfig = pkgs.writeText "loom-cargo-patches.toml" ''
-    paths = [ "${patchedNextest}" ]
-  '';
+  cargoConfig =
+    (pkgs.writeText "loom-cargo-patches.toml" ''
+      paths = [ "${patchedNextest}" ]
+    '').overrideAttrs
+      {
+        passthru = {
+          nextestVersion = lockedNextest.version;
+          nextestChecksum = lockedNextest.checksum;
+        };
+      };
 
   cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 

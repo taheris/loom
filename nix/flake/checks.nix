@@ -7,6 +7,7 @@
       imagePiCodingAgent,
       imageTreefmtWrapper,
       loom,
+      nativeCargo,
       sandbox,
       profileManifest,
       patchedWrixSrc,
@@ -87,6 +88,45 @@
         installPhaseCommand = "touch $out";
       };
 
+      checkedNativeCargo = import ../native-cargo.nix {
+        inherit pkgs;
+        config = loom.cargoConfig;
+        toolchain = loom.toolchain;
+      };
+      bootstrapConfig = (pkgs.writeText "bootstrap-cargo-patches.toml" "paths = []\n").overrideAttrs {
+        passthru = {
+          nextestVersion = "0.23.0";
+          nextestChecksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        };
+      };
+      bootstrapCargo = import ../native-cargo.nix {
+        inherit pkgs;
+        config = bootstrapConfig;
+        toolchain = pkgs.writeShellScriptBin "cargo" ''
+          set -euo pipefail
+          printf '%s\n' "$@"
+        '';
+      };
+      native-cargo-bootstrap =
+        pkgs.runCommand "native-cargo-bootstrap"
+          {
+            nativeBuildInputs = [
+              pkgs.git
+              (pkgs.lib.getBin pkgs.nix)
+              pkgs.coreutils
+            ];
+          }
+          ''
+            set -euo pipefail
+            cp -r ${../..} source
+            chmod -R u+w source
+            cd source
+            git init -q
+            bash tests/agent/native-cargo.sh ${bootstrapCargo}/bin/cargo \
+              ${bootstrapConfig} ${bootstrapConfig.nextestVersion} ${bootstrapConfig.nextestChecksum}
+            touch "$out"
+          '';
+
       native-cargo-patches = craneLib.mkCargoDerivation {
         pname = "native-cargo-patches";
         version = "0.0.0";
@@ -103,7 +143,11 @@
             exit 1
           fi
           grep -F 'test nextest_filter_grammar_errors_retain_upstream_diagnostics ... FAILED' "$TMPDIR/unpatched.log"
-          bash ${../../scripts/configure-cargo-patches.sh} ${loom.cargoConfig}
+          ${checkedNativeCargo}/bin/cargo --version
+          test ! -e .cargo/nix-patches.toml
+          ${checkedNativeCargo}/bin/cargo test --locked -p loom-gate --test nextest_filtering \
+            nextest_filter_grammar_errors_retain_upstream_diagnostics
+          test -L .cargo/nix-patches.toml
         '';
         buildPhaseCargoCommand = "cargo test --locked -p loom-gate --test nextest_filtering --test strategy";
         checkPhaseCargoCommand = ''cmp Cargo.lock "$TMPDIR/original-Cargo.lock"'';
@@ -191,6 +235,7 @@
               (
                 export PATH="${rustSandbox.image.profileEnv}/bin:$PATH"
                 export RUSTC="${rustSandbox.profile.env.RUSTC}"
+                [[ "$(readlink -f "$(command -v cargo)")" == "${nativeCargo}/bin/cargo" ]]
                 for tool in rustc cargo rustdoc cargo-clippy clippy-driver rustfmt; do
                   expected=$("${loom.toolchain}/bin/$tool" --version)
                   actual=$("$tool" --version)
@@ -709,6 +754,7 @@
           loom-gate-check
           nextest-filtering-syntax
           native-cargo-patches
+          native-cargo-bootstrap
           loom-wrapper-preserves-spaced-output-path
           loom-wrix-does-not-default-launcher-override
           wrix-requires-explicit-profile-config

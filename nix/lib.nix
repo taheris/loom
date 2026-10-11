@@ -24,6 +24,7 @@ in
       wrixLib,
       loomBin,
       extraPackages ? [ ],
+      nativeCargo ? null,
       profiles ? { inherit (wrixLib.profiles) base rust python; },
       # Back-compat for callers that previously selected the single runtime via
       # `agent` and optionally overrode its package via `agentPkg`. The manifest
@@ -50,13 +51,18 @@ in
       inherit (pkgs.lib) optionalAttrs;
 
       mkSandboxForRuntime =
-        profile: runtime: runtimeConfig:
+        profileName: profile: runtime: runtimeConfig:
         let
           agentPkgOverride = runtimeConfig.agentPkg or null;
         in
         wrixLib.mkSandbox (
           {
-            profile = workerProfile profile;
+            profile = workerProfile (
+              profile
+              // optionalAttrs (profileName == "rust" && nativeCargo != null) {
+                packages = [ nativeCargo ] ++ profile.packages;
+              }
+            );
             agent = runtime;
             packages = [ loomBin ] ++ extraPackages;
           }
@@ -66,8 +72,10 @@ in
         );
 
       sandboxes = mapAttrs (
-        _profileName: profile:
-        mapAttrs (runtime: runtimeConfig: mkSandboxForRuntime profile runtime runtimeConfig) runtimes
+        profileName: profile:
+        mapAttrs (
+          runtime: runtimeConfig: mkSandboxForRuntime profileName profile runtime runtimeConfig
+        ) runtimes
       ) profiles;
       images = mapAttrs (
         _profileName: byRuntime: mapAttrs (_runtime: sandbox: sandbox.image) byRuntime

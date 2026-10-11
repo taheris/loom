@@ -28,7 +28,13 @@ bash scripts/configure-cargo-patches.sh
 The helper selects the crate version and checksum from the current `Cargo.lock`
 and retains its Nix store closure. `cargo update` still resolves compatible
 registry releases; subsequent push hooks refresh the override automatically.
-Outside a prepared checkout, native Cargo still uses the upstream parser.
+Loom's Rust worker images also carry this exact dependency closure and a Cargo
+wrapper that initializes the override before build/test commands, without a
+dev-shell hook or host execution bridge. The wrapper checks the dispatched
+lockfile's version and checksum against its bundled source; a changed identity
+rebuilds the override in the worker's private Nix store. Cargo health/help
+probes and unrelated repositories do not initialize an override. Outside a
+prepared checkout, native Cargo still uses the upstream parser.
 
 Run the public-entrypoint regressions against the Nix-patched dependency:
 

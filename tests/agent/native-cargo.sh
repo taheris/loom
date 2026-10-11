@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cargo_bin="${1:?Cargo wrapper path is required}"
+config="${2:?Cargo patch config is required}"
+version="${3:?Cargo patch version is required}"
+checksum="${4:?Cargo patch checksum is required}"
+repo_root=$(git rev-parse --show-toplevel)
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' EXIT
+real_nix=$(command -v nix)
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+unset GIT_CONFIG_COUNT
+mkdir -p "$fixture/repo/scripts" "$fixture/repo/.cargo" "$fixture/bin"
+cp "$repo_root/scripts/configure-cargo-patches.sh" "$repo_root/scripts/cargo-patch-key.nix" "$fixture/repo/scripts/"
+cd "$fixture/repo"
+git init -q
+printf 'include = [{ path = "nix-patches.toml", optional = true }]\n' > .cargo/config.toml
+cat > Cargo.lock <<TOML
+version = 4
+[[package]]
+name = "nextest-filtering"
+version = "$version"
+checksum = "$checksum"
+TOML
+cp Cargo.lock "$fixture/original-Cargo.lock"
+for probe in --version -V -vV -Vv --help -h version help; do
+    [[ "$("$cargo_bin" "$probe")" == "$probe" ]]
+    [[ ! -e .cargo/nix-patches.toml ]]
+done
+[[ "$("$cargo_bin" build --locked)" == $'build\n--locked' ]]
+[[ "$(readlink .cargo/nix-patches.toml)" == "$config" ]]
+cmp Cargo.lock "$fixture/original-Cargo.lock"
+
+export REAL_NIX="$real_nix"
+export NIX_PATCH_BUILD_RESULT="$fixture/refreshed.toml"
+export NIX_PATCH_BUILD_CALLS="$fixture/build-calls"
+printf 'paths = []\n' > "$NIX_PATCH_BUILD_RESULT"
+cat > "$fixture/bin/nix" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == build ]]; then
+    printf '%s\n' "$@" >> "$NIX_PATCH_BUILD_CALLS"
+    printf '%s\n' "$NIX_PATCH_BUILD_RESULT"
+else
+    exec "$REAL_NIX" "$@"
+fi
+SH
+chmod +x "$fixture/bin/nix"
+export PATH="$fixture/bin:$PATH"
+cat > Cargo.lock <<'TOML'
+version = 4
+[[package]]
+name = "nextest-filtering"
+version = "999.0.0"
+checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+TOML
+cp Cargo.lock "$fixture/changed-Cargo.lock"
+[[ "$("$cargo_bin" build --locked)" == $'build\n--locked' ]]
+[[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
+[[ -s "$NIX_PATCH_BUILD_CALLS" ]]
+cmp Cargo.lock "$fixture/changed-Cargo.lock"
+
+cat >> Cargo.lock <<'TOML'
+[[package]]
+name = "nextest-filtering"
+version = "999.0.1"
+checksum = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+TOML
+if "$cargo_bin" build --locked > "$fixture/ambiguous.log" 2>&1; then
+    printf 'Cargo wrapper accepted an ambiguous patch identity\n' >&2
+    exit 1
+fi
+[[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
+
+cd "$fixture"
+[[ "$("$cargo_bin" build --locked)" == $'build\n--locked' ]]
+[[ ! -e .cargo/nix-patches.toml ]]
