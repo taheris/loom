@@ -999,7 +999,7 @@ fn query_inputs(mut cmd: Command, command: &str) -> Result<InputQueryDocument, S
     }
 }
 
-fn bounded_query_diagnostic(text: &str) -> String {
+pub(crate) fn bounded_query_diagnostic(text: &str) -> String {
     redact_query_diagnostic(text, std::env::vars_os())
 }
 

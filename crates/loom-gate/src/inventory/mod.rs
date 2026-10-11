@@ -1,0 +1,557 @@
+//! Project subjects and baseline obligations discovered independently of providers.
+
+mod nix;
+mod rust;
+pub mod snapshot;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use displaydoc::Display;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::annotation::strategy::{Declaration, Source};
+use snapshot::{Identity, ResourcePath, Snapshot};
+
+/// An exact project target or resource name, never a membership glob.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Name(String);
+
+impl TryFrom<String> for Name {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Error> {
+        if value.trim().is_empty()
+            || value
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '*' | '?' | '[' | ']'))
+        {
+            return Err(Error::Name { value });
+        }
+        Ok(Self(value))
+    }
+}
+
+impl Name {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
+pub enum Tool {
+    /// cargo
+    Cargo,
+    /// nix
+    Nix,
+}
+
+impl Tool {
+    const fn program(self) -> &'static str {
+        match self {
+            Self::Cargo => "cargo",
+            Self::Nix => "nix",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Role {
+    RustSource,
+    NixSource,
+    TestFixture,
+    Generated,
+    Document,
+    Configuration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Duty {
+    Build,
+    Lint,
+    Test,
+    Evaluate,
+    Check,
+    Produce,
+    Document,
+}
+
+/// Required responsibility exists even when no provider offers it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct Obligation {
+    subject: Name,
+    duty: Duty,
+    responsible: Name,
+}
+
+impl Obligation {
+    pub const fn subject(&self) -> &Name {
+        &self.subject
+    }
+    pub const fn duty(&self) -> Duty {
+        self.duty
+    }
+    pub const fn responsible(&self) -> &Name {
+        &self.responsible
+    }
+}
+
+/// Membership and relationships come from the project definition, not spec policy.
+#[derive(Debug, Clone)]
+pub struct Subject {
+    name: Name,
+    role: Role,
+    members: BTreeSet<ResourcePath>,
+    consumers: BTreeSet<Name>,
+    producer: Option<Name>,
+    testable: bool,
+    origin: ResourcePath,
+}
+
+impl Subject {
+    pub const fn name(&self) -> &Name {
+        &self.name
+    }
+    pub const fn role(&self) -> Role {
+        self.role
+    }
+    pub const fn members(&self) -> &BTreeSet<ResourcePath> {
+        &self.members
+    }
+    pub const fn origin(&self) -> &ResourcePath {
+        &self.origin
+    }
+}
+
+/// A resolved policy is bound to one independently discovered snapshot.
+#[derive(Debug, Clone)]
+pub struct Inventory {
+    snapshot: Identity,
+    subjects: BTreeMap<Name, Subject>,
+    obligations: BTreeSet<Obligation>,
+}
+
+impl Inventory {
+    /// Discover native targets, source ownership, and project resources before joining providers.
+    ///
+    /// # Errors
+    /// Rejects failed discovery, orphan/unsupported subjects, and unresolved resource responsibilities.
+    pub fn discover(snapshot: &Snapshot) -> Result<Self, Error> {
+        let staged = snapshot.stage()?;
+        let mut subjects = BTreeMap::new();
+        rust::discover(snapshot, staged.path(), &mut subjects)?;
+        nix::discover(snapshot, staged.path(), &mut subjects)?;
+        classify_remaining(snapshot, &mut subjects)?;
+        snapshot.require_current()?;
+        let inventory = Self::finish(snapshot.identity().clone(), subjects)?;
+        let mut declarations = Vec::new();
+        for path in snapshot.files().keys().filter(|path| {
+            let parts: Vec<_> = path.as_path().iter().collect();
+            parts.len() == 3 && parts[0] == "specs" && parts[2] == "tests.md"
+        }) {
+            declarations.extend(
+                crate::annotation::parse_content(path.as_path(), snapshot.text(path)?)?.strategy,
+            );
+        }
+        inventory.with_policy(&declarations)
+    }
+
+    fn finish(snapshot: Identity, subjects: BTreeMap<Name, Subject>) -> Result<Self, Error> {
+        let obligations = subjects
+            .values()
+            .map(|subject| obligations_for(subject, &subjects))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok(Self {
+            snapshot,
+            subjects,
+            obligations,
+        })
+    }
+
+    pub const fn snapshot(&self) -> &Identity {
+        &self.snapshot
+    }
+    pub const fn subjects(&self) -> &BTreeMap<Name, Subject> {
+        &self.subjects
+    }
+    pub const fn obligations(&self) -> &BTreeSet<Obligation> {
+        &self.obligations
+    }
+
+    /// Resolve a reference to exactly one current subject; no alias or glob inference.
+    ///
+    /// # Errors
+    /// Unknown references retain their source and an existing retry command.
+    pub fn subject(&self, name: &Name) -> Result<&Subject, Error> {
+        self.subjects
+            .get(name)
+            .ok_or_else(|| Error::Unknown { name: name.clone() })
+    }
+
+    fn with_policy(&self, declarations: &[Declaration]) -> Result<Self, Error> {
+        let mut subjects = self.subjects.clone();
+        let mut seen = BTreeSet::new();
+        for declaration in declarations {
+            let Declaration::Package { source, policy } = declaration else {
+                continue;
+            };
+            for exception in &policy.role_exceptions {
+                let name =
+                    Name::try_from(exception.subject.as_str().to_owned()).map_err(|error| {
+                        Error::Policy {
+                            source_context: source.clone(),
+                            detail: error.to_string(),
+                        }
+                    })?;
+                let role = match exception.role.as_str() {
+                    "test-fixture" => Role::TestFixture,
+                    "generated" => Role::Generated,
+                    "document" => Role::Document,
+                    other => {
+                        return Err(Error::Policy {
+                            source_context: source.clone(),
+                            detail: format!(
+                                "unsupported role `{other}`; use a supported classification"
+                            ),
+                        });
+                    }
+                };
+                let subject = subjects.get_mut(&name).ok_or_else(|| Error::Policy {
+                    source_context: source.clone(), detail: format!("unknown subject `{}`; reference a current project target/resource, not a file glob", name.as_str()),
+                })?;
+                if !seen.insert(name.clone()) {
+                    return Err(Error::Policy {
+                        source_context: source.clone(),
+                        detail: format!("ambiguous repeated exception for `{}`", name.as_str()),
+                    });
+                }
+                if role == Role::Document && subject.role != Role::Document {
+                    return Err(Error::Policy {
+                        source_context: source.clone(),
+                        detail:
+                            "source cannot become documentation to remove its consumer obligations"
+                                .into(),
+                    });
+                }
+                subject.role = role;
+                let name = subject.name.clone();
+                if let Some(subject) = subjects.get(&name) {
+                    obligations_for(subject, &subjects).map_err(|error| Error::Policy {
+                        source_context: source.clone(),
+                        detail: error.to_string(),
+                    })?;
+                }
+            }
+        }
+        Self::finish(self.snapshot.clone(), subjects)
+    }
+}
+
+fn obligations_for(
+    subject: &Subject,
+    subjects: &BTreeMap<Name, Subject>,
+) -> Result<Vec<Obligation>, Error> {
+    let duties = match subject.role {
+        Role::RustSource => {
+            let mut duties = vec![
+                (Duty::Build, subject.name.clone()),
+                (Duty::Lint, subject.name.clone()),
+            ];
+            if subject.testable {
+                duties.push((Duty::Test, subject.name.clone()));
+            }
+            duties
+        }
+        Role::NixSource => {
+            let mut duties = vec![(Duty::Evaluate, subject.name.clone())];
+            duties.extend(
+                subject
+                    .consumers
+                    .iter()
+                    .cloned()
+                    .map(|name| (Duty::Check, name)),
+            );
+            if subject.consumers.is_empty() {
+                duties.push((Duty::Check, subject.name.clone()));
+            }
+            duties
+        }
+        Role::Document => vec![(Duty::Document, subject.name.clone())],
+        Role::TestFixture => consumer_tests(subject, subjects)?,
+        Role::Configuration => consumer_duties(subject, subjects)?,
+        Role::Generated => {
+            let Some(producer) = &subject.producer else {
+                return Err(Error::Responsibility {
+                    name: subject.name.clone(),
+                    role: subject.role,
+                });
+            };
+            if subject.consumers.is_empty() {
+                return Err(Error::Responsibility {
+                    name: subject.name.clone(),
+                    role: subject.role,
+                });
+            }
+            let mut duties = vec![(Duty::Produce, producer.clone())];
+            if !subjects.contains_key(producer) {
+                return Err(Error::Unknown {
+                    name: producer.clone(),
+                });
+            }
+            duties.extend(consumer_duties(subject, subjects)?);
+            duties
+        }
+    };
+    Ok(duties
+        .into_iter()
+        .map(|(duty, responsible)| Obligation {
+            subject: subject.name.clone(),
+            duty,
+            responsible,
+        })
+        .collect())
+}
+
+fn consumer_duties(
+    subject: &Subject,
+    subjects: &BTreeMap<Name, Subject>,
+) -> Result<Vec<(Duty, Name)>, Error> {
+    if subject.consumers.is_empty() {
+        return Err(Error::Responsibility {
+            name: subject.name.clone(),
+            role: subject.role,
+        });
+    }
+    let mut duties = Vec::new();
+    for name in &subject.consumers {
+        let consumer = subjects
+            .get(name)
+            .ok_or_else(|| Error::Unknown { name: name.clone() })?;
+        match consumer.role {
+            Role::RustSource => {
+                duties.extend([(Duty::Build, name.clone()), (Duty::Lint, name.clone())]);
+                if consumer.testable {
+                    duties.push((Duty::Test, name.clone()));
+                }
+            }
+            Role::NixSource => {
+                duties.extend([(Duty::Evaluate, name.clone()), (Duty::Check, name.clone())]);
+            }
+            Role::TestFixture if consumer.testable => {
+                duties.push((Duty::Test, name.clone()));
+            }
+            _ => {
+                return Err(Error::Responsibility {
+                    name: subject.name.clone(),
+                    role: subject.role,
+                });
+            }
+        }
+    }
+    Ok(duties)
+}
+
+fn consumer_tests(
+    subject: &Subject,
+    subjects: &BTreeMap<Name, Subject>,
+) -> Result<Vec<(Duty, Name)>, Error> {
+    if subject.consumers.is_empty() {
+        return Err(Error::Responsibility {
+            name: subject.name.clone(),
+            role: subject.role,
+        });
+    }
+    subject
+        .consumers
+        .iter()
+        .map(|name| {
+            let consumer = subjects
+                .get(name)
+                .ok_or_else(|| Error::Unknown { name: name.clone() })?;
+            if !consumer.testable {
+                return Err(Error::Responsibility {
+                    name: subject.name.clone(),
+                    role: subject.role,
+                });
+            }
+            Ok((Duty::Test, name.clone()))
+        })
+        .collect()
+}
+
+fn insert(subjects: &mut BTreeMap<Name, Subject>, subject: Subject) -> Result<(), Error> {
+    if subjects.contains_key(&subject.name) {
+        return Err(Error::Ambiguous { name: subject.name });
+    }
+    subjects.insert(subject.name.clone(), subject);
+    Ok(())
+}
+
+fn single(path: &ResourcePath, role: Role, prefix: &str) -> Result<Subject, Error> {
+    Ok(Subject {
+        name: Name::try_from(format!("{prefix}:{}", path.as_path().display()))?,
+        role,
+        members: BTreeSet::from([path.clone()]),
+        consumers: BTreeSet::new(),
+        producer: None,
+        testable: false,
+        origin: path.clone(),
+    })
+}
+
+fn classify_remaining(
+    snapshot: &Snapshot,
+    subjects: &mut BTreeMap<Name, Subject>,
+) -> Result<(), Error> {
+    let accounted: BTreeSet<_> = subjects
+        .values()
+        .flat_map(|subject| subject.members.iter().cloned())
+        .collect();
+    let consumers = subjects
+        .values()
+        .filter(|subject| matches!(subject.role, Role::RustSource | Role::NixSource))
+        .map(|subject| subject.name.clone())
+        .collect::<BTreeSet<_>>();
+    let documents: BTreeSet<_> = subjects
+        .values()
+        .filter(|subject| subject.role == Role::Document)
+        .flat_map(|subject| subject.members.iter().cloned())
+        .collect();
+    let resources: BTreeSet<_> = subjects
+        .values()
+        .filter(|subject| {
+            matches!(
+                subject.role,
+                Role::TestFixture | Role::Generated | Role::Document
+            )
+        })
+        .flat_map(|subject| subject.members.iter().cloned())
+        .collect();
+    for path in snapshot.files().keys() {
+        let extension = path.as_path().extension().and_then(|ext| ext.to_str());
+        let filename = path.as_path().file_name().and_then(|name| name.to_str());
+        let document = is_document(path);
+        if accounted.contains(path)
+            && (resources.contains(path) || !document || documents.contains(path))
+        {
+            if !matches!(
+                extension,
+                Some("rs" | "nix" | "md" | "txt" | "rst" | "toml" | "lock")
+            ) && !resources.contains(path)
+            {
+                return Err(Error::Unclassified { path: path.clone() });
+            }
+            continue;
+        }
+        let role = match (extension, filename) {
+            (Some("md" | "txt" | "rst"), _) | (_, Some("LICENSE")) => Role::Document,
+            (Some("toml" | "lock"), _) | (_, Some(".gitignore")) => Role::Configuration,
+            (Some("rs"), _) => return Err(Error::Orphan { path: path.clone() }),
+            _ => return Err(Error::Unclassified { path: path.clone() }),
+        };
+        let mut subject = single(path, role, "resource")?;
+        if role == Role::Configuration {
+            subject.consumers.clone_from(&consumers);
+        }
+        insert(subjects, subject)?;
+    }
+    Ok(())
+}
+
+fn is_document(path: &ResourcePath) -> bool {
+    matches!(
+        path.as_path().extension().and_then(|ext| ext.to_str()),
+        Some("md" | "txt" | "rst")
+    ) || matches!(
+        path.as_path().file_name().and_then(|name| name.to_str()),
+        Some("LICENSE" | "README")
+    )
+}
+
+fn command(root: &Path, program: Tool, args: &[&str]) -> Result<Vec<u8>, Error> {
+    let output = Command::new(program.program())
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Error::Capability { program }
+            } else {
+                Error::Io(error)
+            }
+        })?;
+    if !output.status.success() {
+        return Err(Error::Discovery {
+            program,
+            detail: crate::inputs::bounded_query_diagnostic(&String::from_utf8_lossy(
+                &output.stderr,
+            )),
+        });
+    }
+    Ok(output.stdout)
+}
+
+fn relative(root: &Path, path: &Path) -> Result<ResourcePath, Error> {
+    Ok(ResourcePath::try_from(
+        path.strip_prefix(root)
+            .map_err(|_| Error::Outside {
+                path: path.to_path_buf(),
+            })?
+            .to_path_buf(),
+    )?)
+}
+
+#[derive(Debug, Display, Error)]
+pub enum Error {
+    /// failed to capture current project inputs
+    Snapshot(#[from] snapshot::Error),
+    /// project discovery I/O failed
+    Io(#[from] std::io::Error),
+    /// required discovery tool `{program}` is unavailable; provision the declared capability and rerun `loom gate verify`
+    Capability { program: Tool },
+    /// malformed native project definition `{definition:?}`; repair it and rerun `loom gate verify`
+    Definition {
+        definition: ResourcePath,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// invalid spec-owned verification strategy
+    Strategy(#[from] crate::annotation::ParseError),
+    /// source syntax cannot be resolved for `{path:?}`
+    Syntax {
+        path: ResourcePath,
+        #[source]
+        source: syn::Error,
+    },
+    /// `{program}` project discovery failed: {detail}; repair the project and rerun `loom gate verify`
+    Discovery { program: Tool, detail: String },
+    /// project definition references external source `{path}`; declare its origin explicitly
+    Outside { path: PathBuf },
+    /// invalid subject name `{value}`; use one exact current project target/resource
+    Name { value: String },
+    /// duplicate or ambiguous project subject `{name:?}`; give project resources unique names
+    Ambiguous { name: Name },
+    /// unknown project subject `{name:?}`; correct the project reference and rerun `loom gate verify`
+    Unknown { name: Name },
+    /// orphan Rust source `{path:?}`; attach it to a Cargo target or consuming fixture resource
+    Orphan { path: ResourcePath },
+    /// unsupported/unclassified subject `{path:?}`; supply a supported project resource definition and rerun `loom gate verify`
+    Unclassified { path: ResourcePath },
+    /// subject `{name:?}` classified as {role:?} has no required consumer/producer; wire its responsible target and rerun `loom gate verify`
+    Responsibility { name: Name, role: Role },
+    /// invalid role exception at `{source_context:?}`: {detail}; correct `tests.md` and rerun `loom gate verify`
+    Policy {
+        source_context: Source,
+        detail: String,
+    },
+    /// ambiguous Rust module `{path}`; remove the duplicate module definition
+    Module { path: PathBuf },
+}

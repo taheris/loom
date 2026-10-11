@@ -1,0 +1,127 @@
+//! Nix evaluation and check subjects from current native project definitions.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use serde::Deserialize;
+
+use super::snapshot::Snapshot;
+use super::{Error, Name, Role, Subject, command, insert, single};
+
+#[derive(Deserialize)]
+struct Outputs {
+    #[serde(default)]
+    checks: BTreeMap<String, BTreeMap<String, Check>>,
+}
+
+#[derive(Deserialize)]
+struct Check {
+    #[serde(rename = "type")]
+    kind: Kind,
+    #[serde(rename = "name")]
+    _name: Name,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Kind {
+    Derivation,
+}
+
+pub(super) fn discover(
+    snapshot: &Snapshot,
+    root: &Path,
+    subjects: &mut BTreeMap<Name, Subject>,
+) -> Result<(), Error> {
+    let nix_files: BTreeSet<_> = snapshot
+        .files()
+        .keys()
+        .filter(|path| path.as_path().extension().is_some_and(|ext| ext == "nix"))
+        .cloned()
+        .collect();
+    let flakes: Vec<_> = nix_files
+        .iter()
+        .filter(|path| {
+            path.as_path()
+                .file_name()
+                .is_some_and(|name| name == "flake.nix")
+        })
+        .collect();
+    for flake in &flakes {
+        let directory = flake.as_path().parent().unwrap_or_else(|| Path::new(""));
+        let members: BTreeSet<_> = nix_files
+            .iter()
+            .filter(|path| {
+                path.as_path().starts_with(directory)
+                    && !flakes.iter().any(|other| {
+                        other != flake
+                            && other.as_path().parent().is_some_and(|nested| {
+                                nested.starts_with(directory) && path.as_path().starts_with(nested)
+                            })
+                    })
+            })
+            .cloned()
+            .collect();
+        let project = root.join(directory);
+        let reference = format!("path:{}", project.display());
+        let outputs: Outputs = serde_json::from_slice(&command(
+            &project,
+            super::Tool::Nix,
+            &[
+                "flake",
+                "show",
+                &reference,
+                "--json",
+                "--all-systems",
+                "--no-write-lock-file",
+                "--offline",
+            ],
+        )?)
+        .map_err(|source| Error::Definition {
+            definition: (*flake).clone(),
+            source,
+        })?;
+        let mut checks = BTreeSet::new();
+        for (system, entries) in outputs.checks {
+            for (attribute, definition) in entries {
+                let Check {
+                    kind: Kind::Derivation,
+                    _name: _,
+                } = definition;
+                let name = Name::try_from(format!(
+                    "nix:check:{}:{system}:{attribute}",
+                    flake.as_path().display()
+                ))?;
+                checks.insert(name.clone());
+                insert(
+                    subjects,
+                    Subject {
+                        name,
+                        role: Role::NixSource,
+                        members: members.clone(),
+                        consumers: BTreeSet::new(),
+                        producer: None,
+                        testable: false,
+                        origin: (*flake).clone(),
+                    },
+                )?;
+            }
+        }
+        insert(
+            subjects,
+            Subject {
+                name: Name::try_from(format!("nix:flake:{}", flake.as_path().display()))?,
+                role: Role::NixSource,
+                members,
+                consumers: checks,
+                producer: None,
+                testable: false,
+                origin: (*flake).clone(),
+            },
+        )?;
+    }
+    for path in &nix_files {
+        insert(subjects, single(path, Role::NixSource, "nix")?)?;
+    }
+    Ok(())
+}
