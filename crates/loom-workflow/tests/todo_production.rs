@@ -1357,13 +1357,9 @@ async fn todo_package_index_disagreement_blocks_before_beads_mutation() -> Resul
             ctrl.build_session().await,
             Err(TodoError::SpecIndex { .. })
         ));
-        assert!(
-            runner
-                .state
-                .lock()
-                .map_err(|_| anyhow!("lock"))?
-                .calls
-                .is_empty()
+        assert_eq!(
+            runner.state.lock().map_err(|_| anyhow!("lock"))?.calls,
+            [] as [Vec<String>; 0]
         );
     }
     Ok(())
@@ -1525,7 +1521,10 @@ async fn todo_package_retry_reuses_batch_notes_drafts_and_checkpoint() -> Result
         )
         .await?;
     drop(session);
-    assert!(cache.notes_list(None, Some("implementation"))?.is_empty());
+    assert_eq!(
+        cache.notes_list(None, Some("implementation"))?,
+        [] as [loom_driver::state::NoteRow; 0]
+    );
     assert!(matches!(
         retry.build_session().await,
         Err(TodoError::NoChangedSpecs)

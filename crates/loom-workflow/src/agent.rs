@@ -1389,7 +1389,7 @@ mod tests {
                     }
                     Err(failure) => {
                         assert!(!succeeds);
-                        assert!(!failure.diagnostics().is_empty());
+                        assert_ne!(failure.diagnostics(), []);
                         assert!(marker.is_none());
                         failure.context()
                     }
@@ -1499,7 +1499,7 @@ mod tests {
                         assert!(!succeeds);
                         assert_eq!(failure.context().raw(), text);
                         assert_eq!(failure.context().decisions().len(), 1);
-                        assert!(!failure.diagnostics().is_empty());
+                        assert_ne!(failure.diagnostics(), []);
                     }
                     result => panic!("unexpected Todo admission: {result:?}"),
                 }
@@ -1517,7 +1517,7 @@ mod tests {
                 assert_eq!(result.is_ok(), succeeds, "{result:?}");
                 if let Err(loom_protocol::inbox::TerminalMarkerError::Contract(failure)) = result {
                     assert_eq!(failure.context().raw(), text);
-                    assert!(!failure.diagnostics().is_empty());
+                    assert_ne!(failure.diagnostics(), []);
                 }
             }
         }
@@ -1564,7 +1564,7 @@ mod tests {
                     panic!("rejected Review output must not certify clean scope: {walk:?}");
                 };
                 assert_eq!(context.raw(), text);
-                assert!(!diagnostics.is_empty());
+                assert_ne!(diagnostics, [] as [loom_protocol::output::Diagnostic; 0]);
                 assert_eq!(parsed_findings.len(), 1);
                 assert_eq!(
                     tune_review_score(&text, &validator).to_bits(),

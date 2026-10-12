@@ -1091,7 +1091,7 @@ mod tests {
             "set -euo pipefail\nprintf 'LOOM_APPLY: {\"proposals\":[\"lm-false.1\"]}\\n'",
         ]);
         let captured = run_pi_tui_shell_out(command, directory.path()).unwrap();
-        assert!(captured.is_empty());
+        assert_eq!(captured, "");
         assert!(
             parse_terminal_marker(&captured)
                 .unwrap_err()

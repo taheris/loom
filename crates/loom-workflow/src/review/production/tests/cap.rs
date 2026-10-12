@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(summary.errors, 0, "{}", summary.render());
         assert_eq!(summary.refused, 0, "{}", summary.render());
         let remediation = children(&bd, &parent).await;
-        assert!(!remediation.is_empty());
+        assert_ne!(remediation, [] as [loom_driver::bd::Bead; 0]);
         let recovery_context = remediation
             .iter()
             .map(|bead| bead.description.as_str())
@@ -233,14 +233,14 @@ mod tests {
             );
         }
         assert_eq!(controller.bd.show(&parent).await.unwrap(), epic_before);
-        assert!(
+        assert_eq!(
             controller
                 .bd
                 .dependency_snapshot(&parent)
                 .await
                 .unwrap()
-                .active_blockers()
-                .is_empty()
+                .active_blockers(),
+            [] as [loom_driver::identifier::BeadId; 0]
         );
         let first = decisions[0].id.clone();
         let second = decisions[1].id.clone();
@@ -318,7 +318,10 @@ mod tests {
         )
         .unwrap();
         let mut corrected = InputResolver::new(root.to_path_buf()).with_runners(runners.clone());
-        assert!(loom_gate::check_inputs_protocol(&annotations, &mut corrected).is_empty());
+        assert_eq!(
+            loom_gate::check_inputs_protocol(&annotations, &mut corrected),
+            [] as [loom_gate::IntegrityFinding; 0]
+        );
         let provider_annotation = annotations
             .iter()
             .find(|ann| ann.target == "provider-check")

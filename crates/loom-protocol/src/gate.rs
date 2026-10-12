@@ -1767,7 +1767,7 @@ mod tests {
         ] {
             let failure = parse_exit_signal(wire, Phase::Loop).unwrap_err();
             assert_eq!(failure.context().raw(), wire);
-            assert!(!failure.diagnostics().is_empty());
+            assert_ne!(failure.diagnostics(), []);
         }
     }
 
@@ -2157,7 +2157,7 @@ mod tests {
         let walk = WalkOutput::from_stdout(&output, DispatchScope::Tree, &AlwaysValid);
         assert_eq!(walk.findings().len(), 1, "well-formed line still parses");
         assert_eq!(walk.findings()[0].token, ConcernToken::SpecCoherenceFail);
-        assert!(walk.finding_errors().is_empty());
+        assert_eq!(walk.finding_errors(), []);
         assert!(walk.decoded().is_ok());
         assert_eq!(
             walk.terminal(),
@@ -2387,8 +2387,8 @@ mod tests {
         let walk = WalkOutput::from_stdout(output, DispatchScope::Tree, &AlwaysValid);
         let failure = walk.decoded().as_ref().unwrap_err();
         assert_eq!(failure.context().raw(), output);
-        assert!(walk.findings().is_empty());
-        assert!(!failure.diagnostics().is_empty());
+        assert_eq!(walk.findings(), []);
+        assert_ne!(failure.diagnostics(), []);
         assert!(parse_walk_output(output, DispatchScope::Tree, &AlwaysValid).is_err());
     }
 

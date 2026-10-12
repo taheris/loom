@@ -164,8 +164,8 @@ fn cli_known_unaffected_targets_are_not_executed() {
         let fixture = Fixture::new();
         Fixture::assert_success(&fixture.run_gate(gate, &["--files", "src/unrelated.rs"]));
         assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-        assert!(fixture.lines("executions.txt").is_empty());
-        assert!(fixture.lines("batches.txt").is_empty());
+        assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
+        assert_eq!(fixture.lines("batches.txt"), [] as [String; 0]);
     }
 }
 
@@ -355,9 +355,9 @@ fn cli_runner_ownership_does_not_cross_tiers() {
             stderr.contains("verify:alpha") && stderr.contains("does not resolve"),
             "{stderr}"
         );
-        assert!(fixture.lines("queries.txt").is_empty());
-        assert!(fixture.lines("executions.txt").is_empty());
-        assert!(fixture.lines("batches.txt").is_empty());
+        assert_eq!(fixture.lines("queries.txt"), [] as [String; 0]);
+        assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
+        assert_eq!(fixture.lines("batches.txt"), [] as [String; 0]);
     }
 }
 
@@ -377,8 +377,8 @@ fn cli_explicit_files_still_reports_unclaimed_missing_paths() {
             stderr.contains("./missing-verifier.sh") && stderr.contains("does not resolve"),
             "{stderr}"
         );
-        assert!(fixture.lines("queries.txt").is_empty());
-        assert!(fixture.lines("executions.txt").is_empty());
+        assert_eq!(fixture.lines("queries.txt"), [] as [String; 0]);
+        assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
     }
 }
 

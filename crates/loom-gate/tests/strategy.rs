@@ -51,7 +51,10 @@ fn quint_verify_blocks_parse_optional_strict_strategy() {
     }
     let baseline = parse("## Success Criteria\n- Ordinary [test](shared)\n").unwrap();
     assert_eq!(baseline.criteria.len(), 1);
-    assert!(baseline.strategy.is_empty());
+    assert_eq!(
+        baseline.strategy,
+        [] as [loom_gate::annotation::strategy::Declaration; 0]
+    );
     for invalid in [
         local_block("not TOML"),
         local_block("defer_until = 'feedback'"),
@@ -116,7 +119,10 @@ fn quint_verify_blocks_parse_property_filters_and_role_exceptions() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec-conventions.md"),
     )
     .unwrap();
-    assert!(parse(&conventions).unwrap().strategy.is_empty());
+    assert_eq!(
+        parse(&conventions).unwrap().strategy,
+        [] as [loom_gate::annotation::strategy::Declaration; 0]
+    );
 }
 
 #[test]
@@ -124,7 +130,10 @@ fn absent_strategy_preserves_baseline_criteria_and_bindings() {
     let body =
         "## Success Criteria\n- Ordinary [test](shared)\n- Future [check?](future-command)\n";
     let parsed = parse(body).unwrap();
-    assert!(parsed.strategy.is_empty());
+    assert_eq!(
+        parsed.strategy,
+        [] as [loom_gate::annotation::strategy::Declaration; 0]
+    );
     assert_eq!(parsed.criteria.len(), 2);
     assert_eq!(parsed.annotations.len(), 2);
     assert_eq!(parsed.criteria[0].text, "Ordinary");
@@ -150,7 +159,10 @@ fn only_exact_fenced_info_strings_activate_strategy() {
     }
     let indented = "## Success Criteria\n- Real [test](real)\n\nOutside paragraph.\n\n    ```loom-verify\n    not even TOML [test](fake)\n    ```\n";
     let parsed = parse(indented).unwrap();
-    assert!(parsed.strategy.is_empty());
+    assert_eq!(
+        parsed.strategy,
+        [] as [loom_gate::annotation::strategy::Declaration; 0]
+    );
     assert_eq!(parsed.annotations.len(), 1);
 }
 
@@ -158,7 +170,10 @@ fn only_exact_fenced_info_strings_activate_strategy() {
 fn ordinary_toml_example_is_requirement_text_not_policy() {
     let body = "## Success Criteria\n- Example [test](real)\n\n  ```toml\n  [rust]\n  property_filters = ['all()']\n  ```\n";
     let parsed = parse(body).unwrap();
-    assert!(parsed.strategy.is_empty());
+    assert_eq!(
+        parsed.strategy,
+        [] as [loom_gate::annotation::strategy::Declaration; 0]
+    );
     assert!(
         parsed.criteria[0]
             .text
@@ -363,8 +378,14 @@ fn ordinary_example_edits_change_requirement_identity() {
         loom_gate::annotation::criterion_id_for(&label, &before.criteria[0].text),
         loom_gate::annotation::criterion_id_for(&label, &after.criteria[0].text)
     );
-    assert!(before.strategy.is_empty());
-    assert!(after.strategy.is_empty());
+    assert_eq!(
+        before.strategy,
+        [] as [loom_gate::annotation::strategy::Declaration; 0]
+    );
+    assert_eq!(
+        after.strategy,
+        [] as [loom_gate::annotation::strategy::Declaration; 0]
+    );
 }
 
 #[test]

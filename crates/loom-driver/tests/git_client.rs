@@ -1001,7 +1001,7 @@ fn integration_objects(repo: &Path, storage: ObjectStorage) -> Result<Vec<PathBu
         git(repo, &["repack", "-ad"])?;
     }
     let files = object_files(repo)?;
-    assert!(!files.is_empty());
+    assert_ne!(files, [] as [std::path::PathBuf; 0]);
     match storage {
         ObjectStorage::Loose => assert!(files.iter().all(|path| !path.starts_with("pack"))),
         ObjectStorage::Packed => {

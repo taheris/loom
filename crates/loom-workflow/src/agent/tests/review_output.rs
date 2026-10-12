@@ -107,7 +107,7 @@ mod contract {
                             "{text}: {outcome:?}",
                         );
                         if let crate::review::ReviewOutcome::Incomplete { detail } = outcome {
-                            assert!(!detail.is_empty());
+                            assert_ne!(detail, "");
                             if let PhaseVerdict::Recovery {
                                 cause: RecoveryCause::AgentRetry { reason },
                             }
@@ -190,7 +190,7 @@ mod contract {
                             }
                             let saved = previous.clone();
                             let rendered = previous.to_string();
-                            assert!(!rendered.is_empty());
+                            assert_ne!(rendered, "");
                             assert!(rendered.len() <= PREVIOUS_FAILURE_MAX_LEN);
                             assert_eq!(previous, saved);
                         }
@@ -292,7 +292,7 @@ mod contract {
             panic!("raw string newline repaired");
         };
         assert_eq!(bad_walk.context().raw(), text);
-        assert!(bad_walk.parsed_findings().is_empty());
+        assert_eq!(bad_walk.parsed_findings(), []);
         assert_eq!(bad_walk.finding_errors()[0].line_number(), 1);
     }
 
@@ -333,7 +333,7 @@ mod contract {
                         }
                     ))
         );
-        assert!(bad_walk.finding_errors().is_empty());
+        assert_eq!(bad_walk.finding_errors(), []);
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod contract {
                 assert_eq!(walk.findings().len(), 1);
                 assert_eq!(walk.context().messages().len(), 2);
             } else {
-                assert!(walk.findings().is_empty());
+                assert_eq!(walk.findings(), []);
                 assert!(matches!(
                     walk.bad_walk(),
                     Some(BadWalk::ConcernWithoutFindings { .. })
