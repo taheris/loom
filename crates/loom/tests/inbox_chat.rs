@@ -521,7 +521,12 @@ fn chat_command(env: &ChatRun, mode: &str, args: &[&str], extra_env: &[(&str, &s
         .env("LOOM_PROFILES_MANIFEST", &env.manifest)
         .env("BD_STATE_DIR", &env.state_dir)
         .env("XDG_STATE_HOME", env.workspace.join(".loom-test-state"))
-        .env_remove("LOOM_INSIDE");
+        .env_remove("LOOM_INSIDE")
+        .env_remove("LOOM_REVIEW_VERIFIED_LOG")
+        .env_remove("LOOM_REVIEW_PHASE_WHEN_MILLIS")
+        .env_remove("LOOM_REVIEW_EMIT_STDOUT")
+        .env_remove("LOOM_REVIEW_SPEC_LABEL")
+        .env("LOOM_TEST_AGENT_MODE", "complete-marker");
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -558,6 +563,9 @@ fn install_apply_loom_stub(dir: &Path) -> PathBuf {
         r#"set -euo pipefail
 
 log={log:?}
+real_loom={real_loom:?}
+review_launcher={review_launcher:?}
+export LOOM_WRIX_SPAWN_BIN="$review_launcher"
 printf '%s\n' "$*" >> "$log"
 
 case "${{1:-}} ${{2:-}}" in
@@ -566,12 +574,36 @@ case "${{1:-}} ${{2:-}}" in
             printf 'verify failed\n' >&2
             exit 42
         fi
+        if [[ "${{LOOM_APPLY_STUB_VERIFY:-pass}}" == "changed-tree" ]]; then
+            printf 'changed during verification\n' > README.md
+        fi
         printf 'LOOM_COMPLETE\n'
         ;;
     'gate review')
         case "${{LOOM_APPLY_STUB_REVIEW:-pass}}" in
             pass)
+                exec "$real_loom" --host-key --agent pi "$@"
+                ;;
+            complete-only)
                 printf 'LOOM_COMPLETE\n'
+                ;;
+            missing-log|incomplete|failed-log|wrong-range|wrong-tree|wrong-config|wrong-log|duplicate-log|changed-tree|changed-verify-log|marker-write-failed|contradictory-output)
+                "$real_loom" --host-key --agent pi "$@"
+                review_log="$(python3 -c 'import datetime,os; t=int(os.environ["LOOM_REVIEW_PHASE_WHEN_MILLIS"])/1000; print(".loom/logs/review/review-"+datetime.datetime.fromtimestamp(t,datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")+".jsonl")')"
+                case "$LOOM_APPLY_STUB_REVIEW" in
+                    missing-log) rm "$review_log" ;;
+                    incomplete) jq -c 'select(.driver_kind != "gate_run_end")' "$review_log" > "$review_log.tmp"; mv "$review_log.tmp" "$review_log" ;;
+                    failed-log) jq -c 'if .driver_kind == "gate_run_end" then .payload.status="failed" | .payload.exit_code=1 else . end' "$review_log" > "$review_log.tmp"; mv "$review_log.tmp" "$review_log" ;;
+                    wrong-range) jq -c '.payload.push_range="wrong-range"' "$review_log" > "$review_log.tmp"; mv "$review_log.tmp" "$review_log" ;;
+                    wrong-tree) jq -c '.payload.tree_oid="wrong-tree"' "$review_log" > "$review_log.tmp"; mv "$review_log.tmp" "$review_log" ;;
+                    wrong-config) jq -c '.payload.config_digest="wrong-config"' "$review_log" > "$review_log.tmp"; mv "$review_log.tmp" "$review_log" ;;
+                    wrong-log) jq -c '.payload.log_path="old-attempt.jsonl"' "$review_log" > "$review_log.tmp"; mv "$review_log.tmp" "$review_log" ;;
+                    duplicate-log) cp "$review_log" "$review_log.tmp"; cat "$review_log.tmp" >> "$review_log"; rm "$review_log.tmp" ;;
+                    changed-tree) printf 'changed after review\n' > README.md ;;
+                    changed-verify-log) printf 'removed verification evidence\n' > "${{LOOM_REVIEW_VERIFIED_LOG:?}}" ;;
+                    marker-write-failed) mkdir .loom/marker.json ;;
+                    contradictory-output) printf 'LOOM_CONCERN: {{"summary":"not complete"}}\n' ;;
+                esac
                 ;;
             fail)
                 printf 'review failed\n' >&2
@@ -593,6 +625,8 @@ case "${{1:-}} ${{2:-}}" in
 esac
 "#,
         log = log.display(),
+        real_loom = env!("CARGO_BIN_EXE_loom"),
+        review_launcher = env!("CARGO_BIN_EXE_mock-loom-agent"),
     ));
     std::fs::write(&bin, script).expect("write apply loom stub");
     let mut perm = std::fs::metadata(&bin)
@@ -688,6 +722,14 @@ fn apply_marker(ids: &[&str]) -> String {
 
 fn init_apply_repo(env: &ChatRun) {
     init_test_repo_with_integration(&env.workspace).expect("init git repo with integration");
+    let integration = env.workspace.join(".loom/integration");
+    std::fs::create_dir_all(integration.join("specs")).unwrap();
+    std::fs::write(
+        integration.join("specs/fixture.md"),
+        "# Fixture\n\n## Success Criteria\n\n- Tune apply evidence\n",
+    )
+    .unwrap();
+    commit_all_in(&integration, "Add review context").unwrap();
     std::fs::write(
         env.workspace.join(".git/info/exclude"),
         "/bd-state/\n/bd-bin/\n/wrix-bin/\n/apply-loom-bin/\n/profile-images.json\n/base.tar\n/argv.log\n/env.log\n/apply-loom.log\n",
@@ -1428,6 +1470,7 @@ fn inbox_apply_marker_triggers_single_driver_handoff() {
     init_apply_repo(&env);
     let loom_stub = install_apply_loom_stub(&env.workspace);
     create_tune_proposal(&env, "lm-app1", &[("proposal.txt", "accepted\n")]);
+    let origin_before = sync_rev_parse(&bare_origin_path(&env.workspace), "main").unwrap();
     let marker = apply_marker(&["lm-app1"]);
     let loom_stub_path = loom_stub.to_string_lossy().into_owned();
 
@@ -1462,11 +1505,315 @@ fn inbox_apply_marker_triggers_single_driver_handoff() {
         1,
         "{gate_log}"
     );
-    let integration_head =
-        sync_head_commit_sha(&env.workspace.join(".loom/integration")).expect("integration head");
+    let integration = env.workspace.join(".loom/integration");
+    let proof = loom_gate::verify_marker(&integration).expect("marker requires real matching logs");
+    assert_eq!(proof.covered_hooks().len(), 1);
+    let marker: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(integration.join(loom_gate::MARKER_PATH)).expect("marker"),
+    )
+    .expect("marker json");
+    let log_paths: Vec<PathBuf> = serde_json::from_value(marker["gate_log_paths"].clone()).unwrap();
+    assert_eq!(
+        log_paths.len(),
+        2,
+        "verify and reviewer own separate evidence logs"
+    );
+    let runs: Vec<_> = log_paths
+        .iter()
+        .flat_map(|path| loom_gate::parse_gate_runs_from_jsonl(path))
+        .collect();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].phase, loom_gate::GatePhase::Verify);
+    assert_eq!(runs[1].phase, loom_gate::GatePhase::Review);
+    assert_eq!(runs[0].push_range, proof.push_range());
+    assert_eq!(runs[1].push_range, proof.push_range());
+    assert_eq!(
+        proof.push_range(),
+        format!(
+            "{origin_before}..{}",
+            sync_head_commit_sha(&integration).unwrap()
+        )
+    );
+    assert!(
+        runs[1]
+            .log_path
+            .starts_with(integration.join(".loom/logs/review"))
+    );
+    let integration_head = sync_head_commit_sha(&integration).expect("integration head");
     let origin_head =
         sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin head");
     assert_eq!(integration_head, origin_head);
+}
+
+#[test]
+fn inbox_apply_requires_completed_matching_reviewer_evidence() {
+    for mode in [
+        "complete-only",
+        "missing-log",
+        "incomplete",
+        "failed-log",
+        "wrong-range",
+        "wrong-tree",
+        "wrong-config",
+        "wrong-log",
+        "duplicate-log",
+        "changed-tree",
+        "contradictory-output",
+    ] {
+        let env = setup_chat();
+        init_apply_repo(&env);
+        let loom_stub = install_apply_loom_stub(&env.workspace);
+        create_tune_proposal(&env, "lm-evidence", &[("proposal.txt", "candidate\n")]);
+        let integration = env.workspace.join(".loom/integration");
+        let pre_head = sync_head_commit_sha(&integration).unwrap();
+        let origin_pre = sync_rev_parse(&bare_origin_path(&env.workspace), "main").unwrap();
+        let marker = apply_marker(&["lm-evidence"]);
+        let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+        let output = run_chat_extra(
+            &env,
+            "accept-tune",
+            &[],
+            &[
+                ("WRIX_STUB_MARKER", &marker),
+                ("LOOM_INBOX_APPLY_LOOM_BIN", &loom_stub_path),
+                ("LOOM_APPLY_STUB_REVIEW", mode),
+            ],
+        );
+        assert!(
+            !output.status.success(),
+            "mode {mode} must not authorize push"
+        );
+        assert_apply_failed_kind(&env, "lm-evidence", "review_failed");
+        assert_eq!(
+            sync_head_commit_sha(&integration).unwrap(),
+            pre_head,
+            "mode {mode}"
+        );
+        assert_eq!(
+            sync_rev_parse(&bare_origin_path(&env.workspace), "main").unwrap(),
+            origin_pre,
+            "mode {mode}"
+        );
+        assert_eq!(
+            status_porcelain_sync(&integration).unwrap(),
+            "",
+            "mode {mode}"
+        );
+        assert!(
+            !integration.join(loom_gate::MARKER_PATH).exists(),
+            "mode {mode}"
+        );
+    }
+}
+
+#[test]
+fn inbox_apply_rejects_verification_evidence_changed_during_review() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-modified", &[("proposal.txt", "candidate\n")]);
+    let integration = env.workspace.join(".loom/integration");
+    let before = sync_head_commit_sha(&integration).unwrap();
+    let origin_before = sync_rev_parse(&bare_origin_path(&env.workspace), "main").unwrap();
+    let marker = apply_marker(&["lm-modified"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", &marker),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", &loom_stub_path),
+            ("LOOM_APPLY_STUB_REVIEW", "changed-verify-log"),
+        ],
+    );
+    assert!(!output.status.success());
+    assert_apply_failed_kind(&env, "lm-modified", "verify_failed");
+    assert_eq!(sync_head_commit_sha(&integration).unwrap(), before);
+    assert_eq!(
+        sync_rev_parse(&bare_origin_path(&env.workspace), "main").unwrap(),
+        origin_before
+    );
+    assert_eq!(status_porcelain_sync(&integration).unwrap(), "");
+    assert!(!integration.join(loom_gate::MARKER_PATH).exists());
+}
+
+#[test]
+fn inbox_apply_cannot_reuse_previous_attempt_review_log() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-retry", &[("proposal.txt", "candidate\n")]);
+    let marker = apply_marker(&["lm-retry"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+    let first = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", &marker),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", &loom_stub_path),
+            ("LOOM_APPLY_STUB_REVIEW", "changed-tree"),
+        ],
+    );
+    assert!(!first.status.success());
+    let integration = env.workspace.join(".loom/integration");
+    let logs = integration.join(".loom/logs/review");
+    let old_log = std::fs::read_dir(&logs)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(
+        loom_gate::HandoffEvidence::from_runs(loom_gate::parse_gate_runs_from_jsonl(&old_log))
+            .reviewed
+            .is_some()
+    );
+    let before = sync_head_commit_sha(&integration).unwrap();
+    let second = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", &marker),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", &loom_stub_path),
+            ("LOOM_APPLY_STUB_REVIEW", "complete-only"),
+        ],
+    );
+    assert!(
+        !second.status.success(),
+        "old successful review cannot fill an empty current log"
+    );
+    assert_apply_failed_kind(&env, "lm-retry", "review_failed");
+    assert_eq!(sync_head_commit_sha(&integration).unwrap(), before);
+    assert_eq!(std::fs::read_dir(logs).unwrap().count(), 2);
+    assert_eq!(
+        std::fs::read_dir(env.workspace.join(".loom/logs/inbox"))
+            .unwrap()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn inbox_apply_runs_pre_push_verification_before_review() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-hook", &[("proposal.txt", "candidate\n")]);
+    let hook = env.workspace.join(".loom/test-prek-hooks/pre-push");
+    loom_test_support::write_executable_bash_script(
+        &hook,
+        "set -euo pipefail\nprintf 'actual pre-push failed\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+    let marker = apply_marker(&["lm-hook"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+    let integration = env.workspace.join(".loom/integration");
+    let before = sync_head_commit_sha(&integration).unwrap();
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", &marker),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", &loom_stub_path),
+        ],
+    );
+    assert!(!output.status.success());
+    assert_apply_failed_kind(&env, "lm-hook", "verify_failed");
+    assert_eq!(sync_head_commit_sha(&integration).unwrap(), before);
+    let log = std::fs::read_to_string(env.workspace.join("apply-loom.log")).unwrap();
+    assert!(
+        !log.contains("gate review"),
+        "review cannot consume failed verification: {log}"
+    );
+    assert!(!integration.join(loom_gate::MARKER_PATH).exists());
+}
+
+#[test]
+fn inbox_apply_rejects_workspace_changes_during_verification() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-verifyedit", &[("proposal.txt", "candidate\n")]);
+    let marker = apply_marker(&["lm-verifyedit"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+    let integration = env.workspace.join(".loom/integration");
+    let before = sync_head_commit_sha(&integration).unwrap();
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", &marker),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", &loom_stub_path),
+            ("LOOM_APPLY_STUB_VERIFY", "changed-tree"),
+        ],
+    );
+    assert!(!output.status.success());
+    assert_apply_failed_kind(&env, "lm-verifyedit", "verify_failed");
+    assert_eq!(sync_head_commit_sha(&integration).unwrap(), before);
+    assert_eq!(status_porcelain_sync(&integration).unwrap(), "");
+    let log = std::fs::read_to_string(env.workspace.join("apply-loom.log")).unwrap();
+    assert!(!log.contains("gate review"));
+    assert!(!integration.join(loom_gate::MARKER_PATH).exists());
+}
+
+#[test]
+fn inbox_apply_marker_write_failure_keeps_actual_pre_push_checks() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-fallback", &[("proposal.txt", "candidate\n")]);
+    let marker_path = env
+        .workspace
+        .join(".loom/integration")
+        .join(loom_gate::MARKER_PATH);
+    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    std::fs::write(marker_path, "previous attempt marker").unwrap();
+    let hook = env.workspace.join(".loom/test-prek-hooks/pre-push");
+    loom_test_support::write_executable_bash_script(
+        &hook,
+        "set -euo pipefail\nmkdir -p .loom\nprintf 'pre-push ran\\n' >> .loom/push-checks.log\n",
+    )
+    .unwrap();
+    let marker = apply_marker(&["lm-fallback"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", &marker),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", &loom_stub_path),
+            ("LOOM_APPLY_STUB_REVIEW", "marker-write-failed"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        read_metadata(&env.state_dir, "lm-fallback")["loom.tune.state"],
+        "applied"
+    );
+    let integration = env.workspace.join(".loom/integration");
+    assert!(loom_gate::verify_marker(&integration).is_err());
+    assert_eq!(
+        std::fs::read_to_string(integration.join(".loom/push-checks.log"))
+            .unwrap()
+            .lines()
+            .count(),
+        2,
+        "both verification rehearsal and actual push run hooks"
+    );
+    assert_eq!(
+        sync_head_commit_sha(&integration).unwrap(),
+        sync_rev_parse(&bare_origin_path(&env.workspace), "main").unwrap()
+    );
 }
 
 #[test]
@@ -1645,13 +1992,8 @@ fn inbox_apply_push_failure_aborts_batch() {
     let integration = env.workspace.join(".loom/integration");
     let pre_head = sync_head_commit_sha(&integration).expect("pre integration head");
     let origin_pre = sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin pre");
-    let remote = git_command()
-        .arg("-C")
-        .arg(&integration)
-        .args(["remote", "set-url", "origin", "/definitely/missing/origin"])
-        .status()
-        .expect("set invalid origin");
-    assert!(remote.success(), "remote set-url failed: {remote}");
+    let hook = env.workspace.join(".loom/test-prek-hooks/pre-push");
+    loom_test_support::write_executable_bash_script(&hook, "set -euo pipefail\nmkdir -p .loom\nif [[ -f .loom/rehearsed ]]; then\n    printf 'actual push refused after rehearsal\\n' >&2\n    exit 1\nfi\nprintf 'rehearsed\\n' > .loom/rehearsed\n").unwrap();
     let marker = apply_marker(&["lm-app7"]);
     let loom_stub_path = loom_stub.to_string_lossy().into_owned();
 
@@ -1666,6 +2008,12 @@ fn inbox_apply_push_failure_aborts_batch() {
     );
     assert!(!output.status.success(), "push failure must fail apply");
     assert_apply_failed_kind(&env, "lm-app7", "push_failed");
+    assert!(!integration.join(loom_gate::MARKER_PATH).exists());
+    let log = std::fs::read_to_string(env.workspace.join("apply-loom.log")).unwrap();
+    assert!(
+        log.contains("gate review"),
+        "push refusal occurs after verified/reviewed admission"
+    );
     assert_eq!(
         sync_head_commit_sha(&integration).expect("post integration head"),
         pre_head

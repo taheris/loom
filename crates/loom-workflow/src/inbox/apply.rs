@@ -3,18 +3,21 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use displaydoc::Display;
 use loom_driver::bd::{BdClient, BdError, Bead, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomConfig, LoomConfigError};
-use loom_driver::git::{GitClient, GitError, MergeResult, head_tree_oid_sync};
-use loom_driver::identifier::BeadId;
-use loom_gate::{
-    GateRun, GateSuccess, HandoffEvidence, MarkerProof, append_gate_run_lifecycle_events,
+use loom_driver::git::{
+    ActualPushRange, GitClient, GitError, MergeResult, head_tree_oid_sync, sync_head_commit_sha,
 };
-use loom_protocol::gate::ExitSignal;
+use loom_driver::identifier::BeadId;
+use loom_driver::logging::phase_log_path;
+use loom_gate::{
+    GateRun, GateSuccess, HandoffEvidence, MarkerProof, MintError, VerifiedScope,
+    append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
+};
 use loom_tune::proposal::State as TuneState;
 use serde_json::json;
 use thiserror::Error;
@@ -22,6 +25,8 @@ use tokio::process::Command;
 use tracing::warn;
 
 use super::list::read_manifest_identity;
+use crate::r#loop::{REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, REVIEW_VERIFIED_LOG_ENV};
+use crate::review::{DispatchScope, WalkOutput, WorkspaceFindingValidator};
 
 const TUNE_LABEL: &str = "loom:tune";
 const TUNE_STATE_KEY: &str = "loom.tune.state";
@@ -345,74 +350,165 @@ async fn attempt_batch(
             }
         }
     }
-    let diff_range = format!("{}..HEAD", ctx.pre_tip);
+    let actual = git
+        .prepare_actual_push_range()
+        .await
+        .map_err(|source| BatchFailure::new(FailureKind::PushFailed, source.to_string()))?;
+    let diff_range = &actual.range;
     let loom_bin = loom_bin().map_err(|source| {
         BatchFailure::new(
             FailureKind::VerifyFailed,
             format!("resolve loom binary: {source}"),
         )
     })?;
-    run_gate_verify(&loom_bin, &git.loom_workspace(), &diff_range)
+    let (verify_run, verified) = run_gate_verify(&loom_bin, git, &actual, &ctx.log_path)
         .await
         .map_err(|detail| BatchFailure::new(FailureKind::VerifyFailed, detail))?;
-    run_gate_review(&loom_bin, &git.loom_workspace(), &diff_range)
+    let review_run = run_gate_review(
+        &loom_bin,
+        &git.loom_workspace(),
+        &verified,
+        &verify_run.log_path,
+    )
+    .await
+    .map_err(|detail| BatchFailure::new(FailureKind::ReviewFailed, detail))?;
+    require_current_scope(git, &actual, verified.config_digest())
         .await
         .map_err(|detail| BatchFailure::new(FailureKind::ReviewFailed, detail))?;
-    if let Err(detail) = mint_marker(git, &diff_range, &ctx.log_path) {
-        warn!(
-            %detail,
-            "inbox tune apply: marker mint failed; pre-push falls through to slow verification",
-        );
+    if parse_gate_runs_from_jsonl(&verify_run.log_path) != [verify_run.clone()] {
+        return Err(BatchFailure::new(
+            FailureKind::VerifyFailed,
+            "verification evidence changed during review",
+        ));
+    }
+    let mut evidence = HandoffEvidence::from_runs(vec![verify_run, review_run]);
+    evidence.molecule_state = loom_gate::MoleculeState::Clean;
+    evidence.push_range = Some(diff_range.clone());
+    evidence.tree_oid = Some(actual.tree_oid.to_string());
+    let success = GateSuccess::new(&evidence, 1)
+        .map_err(|fail| BatchFailure::new(FailureKind::ReviewFailed, fail.reason.to_string()))?;
+    match MarkerProof::mint(success, &git.loom_workspace(), &SystemClock::new()) {
+        Ok(_) => {}
+        Err(error @ MintError::Write { .. }) => warn!(
+            ?error,
+            "inbox tune apply: marker write failed; pre-push falls through to slow verification",
+        ),
+        Err(error) => {
+            return Err(BatchFailure::new(
+                FailureKind::ReviewFailed,
+                error.to_string(),
+            ));
+        }
     }
     git.push_once()
         .await
         .map_err(|source| BatchFailure::new(FailureKind::PushFailed, source.to_string()))?;
     Ok(AttemptOutcome {
-        push_range: diff_range,
+        push_range: diff_range.clone(),
     })
 }
 
 async fn run_gate_verify(
     loom_bin: &Path,
-    integration: &Path,
-    diff_range: &str,
-) -> Result<(), String> {
+    git: &GitClient,
+    actual: &ActualPushRange,
+    log_path: &Path,
+) -> Result<(GateRun, VerifiedScope), String> {
+    let integration = git.loom_workspace();
+    remove_marker(&integration).map_err(|source| source.to_string())?;
+    let config_digest =
+        pre_commit_config_digest(&integration).map_err(|source| source.to_string())?;
+    let hooks = loom_gate::pre_push_hook_coverage_from_config(&integration)
+        .map_err(|source| source.to_string())?;
     let output = Command::new(loom_bin)
-        .current_dir(integration)
+        .current_dir(&integration)
         .arg("gate")
         .arg("verify")
         .arg("--diff")
-        .arg(diff_range)
+        .arg(&actual.range)
         .output()
         .await
         .map_err(|source| source.to_string())?;
-    if output.status.success() {
-        return Ok(());
+    if !output.status.success() {
+        return Err(command_detail("loom gate verify", &output));
     }
-    Err(command_detail("loom gate verify", &output))
+    require_current_scope(git, actual, &config_digest).await?;
+    git.run_pre_push_chain()
+        .await
+        .map_err(|source| source.to_string())?;
+    require_current_scope(git, actual, &config_digest).await?;
+    let run = GateRun::successful_verify(
+        actual.range.clone(),
+        actual.tree_oid.to_string(),
+        config_digest,
+        log_path.to_path_buf(),
+        hooks,
+    );
+    append_gate_run_lifecycle_events(log_path, &run).map_err(|source| source.to_string())?;
+    let runs = parse_gate_runs_from_jsonl(log_path);
+    if runs != [run.clone()] {
+        return Err("verification produced no unique completed scope evidence".to_owned());
+    }
+    let verified = VerifiedScope::from_run(&run)
+        .ok_or_else(|| "verification produced no completed scope evidence".to_owned())?;
+    Ok((run, verified))
+}
+
+async fn require_current_scope(
+    git: &GitClient,
+    actual: &ActualPushRange,
+    config_digest: &str,
+) -> Result<(), String> {
+    let integration = git.loom_workspace();
+    ensure_integration_clean(git)
+        .await
+        .map_err(|source| source.to_string())?;
+    let tree = head_tree_oid_sync(&integration).map_err(|source| source.to_string())?;
+    let head = sync_head_commit_sha(&integration).map_err(|source| source.to_string())?;
+    let digest = pre_commit_config_digest(&integration).map_err(|source| source.to_string())?;
+    if tree != actual.tree_oid
+        || actual.range.rsplit_once("..").map(|(_, to)| to) != Some(head.as_str())
+        || digest != config_digest
+    {
+        return Err("gate evidence does not match the current push range/tree/config".to_owned());
+    }
+    Ok(())
 }
 
 async fn run_gate_review(
     loom_bin: &Path,
     integration: &Path,
-    diff_range: &str,
-) -> Result<(), String> {
+    verified: &VerifiedScope,
+    verify_log: &Path,
+) -> Result<GateRun, String> {
+    let (review_log, when) =
+        allocate_review_log(integration).map_err(|source| source.to_string())?;
     let output = Command::new(loom_bin)
         .current_dir(integration)
-        .env(crate::r#loop::REVIEW_EMIT_STDOUT_ENV, "1")
+        .env(REVIEW_VERIFIED_LOG_ENV, verify_log)
+        .env(REVIEW_PHASE_WHEN_ENV, when.to_string())
+        .env(REVIEW_EMIT_STDOUT_ENV, "1")
         .arg("gate")
         .arg("review")
         .arg("--diff")
-        .arg(diff_range)
+        .arg(verified.push_range())
         .output()
         .await
         .map_err(|source| source.to_string())?;
+    admit_review_output(&output, integration, verified, &review_log)
+}
+
+fn admit_review_output(
+    output: &std::process::Output,
+    integration: &Path,
+    verified: &VerifiedScope,
+    review_log: &Path,
+) -> Result<GateRun, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let validator = crate::review::WorkspaceFindingValidator::new(integration);
-    let walk = crate::review::WalkOutput::from_stdout(
+    let walk = WalkOutput::from_stdout(
         &stdout,
-        crate::review::DispatchScope::PerBead,
-        &validator,
+        DispatchScope::PerBead,
+        &WorkspaceFindingValidator::new(integration),
     );
     let config = LoomConfig::load(LoomConfig::resolve_path(integration))
         .map_err(|source| format!("review config: {source:#}"))?;
@@ -421,13 +517,56 @@ async fn run_gate_review(
         output.status.code().unwrap_or(-1),
         &config.suppress,
     );
-    if output.status.success() && matches!(outcome, crate::review::ReviewOutcome::Complete) {
-        return Ok(());
+    if !output.status.success() || !matches!(outcome, crate::review::ReviewOutcome::Complete) {
+        return Err(format!(
+            "{}\n{outcome:?}",
+            command_detail("loom gate review", output)
+        ));
     }
-    Err(format!(
-        "{}\n{outcome:?}",
-        command_detail("loom gate review", &output)
-    ))
+    let runs = parse_gate_runs_from_jsonl(review_log);
+    let [run] = runs.as_slice() else {
+        return Err("review produced no unique completed scope evidence".to_owned());
+    };
+    let reviewed = loom_gate::ReviewedScope::from_run(run).ok_or_else(|| {
+        format!(
+            "review produced no completed scope evidence in {}",
+            review_log.display()
+        )
+    })?;
+    if run.log_path != review_log
+        || reviewed.push_range() != verified.push_range()
+        || reviewed.tree_oid() != verified.tree_oid()
+        || reviewed.config_digest() != verified.config_digest()
+    {
+        return Err("review evidence does not match this attempt's verified scope".to_owned());
+    }
+    Ok(run.clone())
+}
+
+fn allocate_review_log(workspace: &Path) -> Result<(PathBuf, u128), std::io::Error> {
+    let logs_root = workspace.join(".loom/logs");
+    let mut when = SystemClock::new().wall_now();
+    loop {
+        let path = phase_log_path(&logs_root, "review", when);
+        fs::create_dir_all(logs_root.join("review"))?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => {
+                let millis = when
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(std::io::Error::other)?
+                    .as_millis();
+                return Ok((path, millis));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                when += Duration::from_secs(1);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 async fn abort_attempt(git: &GitClient, ctx: &AttemptContext) -> Result<(), ApplyError> {
@@ -525,45 +664,6 @@ async fn mark_apply_failed(
     Ok(())
 }
 
-fn mint_marker(git: &GitClient, diff_range: &str, log_path: &Path) -> Result<(), String> {
-    let marker_workspace = git.loom_workspace();
-    let tree = head_tree_oid_sync(&marker_workspace)
-        .map_err(|source| source.to_string())?
-        .to_string();
-    let config_digest =
-        pre_commit_config_digest(&marker_workspace).map_err(|source| source.to_string())?;
-    let hook_coverage = loom_gate::pre_push_hook_coverage_from_config(&marker_workspace)
-        .map_err(|source| source.to_string())?;
-    append_gate_run_lifecycle_events(
-        log_path,
-        &GateRun::successful_verify(
-            diff_range.to_string(),
-            tree.clone(),
-            config_digest.clone(),
-            log_path.to_path_buf(),
-            hook_coverage,
-        ),
-    )
-    .map_err(|source| source.to_string())?;
-    append_gate_run_lifecycle_events(
-        log_path,
-        &GateRun::successful_review(
-            diff_range.to_string(),
-            tree,
-            config_digest,
-            log_path.to_path_buf(),
-            ExitSignal::Complete,
-        ),
-    )
-    .map_err(|source| source.to_string())?;
-    let mut evidence = HandoffEvidence::from_runs(loom_gate::parse_gate_runs_from_jsonl(log_path));
-    evidence.molecule_state = loom_gate::MoleculeState::Clean;
-    let success = GateSuccess::new(&evidence, 1).map_err(|fail| format!("{:?}", fail.reason))?;
-    MarkerProof::mint(success, &marker_workspace, &SystemClock::new())
-        .map_err(|source| source.to_string())?;
-    Ok(())
-}
-
 fn remove_marker(workspace: &Path) -> Result<(), ApplyError> {
     let path = workspace.join(loom_gate::MARKER_PATH);
     match fs::remove_file(&path) {
@@ -597,7 +697,25 @@ fn apply_log_path(workspace: &Path) -> Result<PathBuf, ApplyError> {
         path: dir.clone(),
         source,
     })?;
-    Ok(dir.join(format!("apply-{millis}.jsonl")))
+    for suffix in 0..1000_u16 {
+        let path = dir.join(format!("apply-{millis}-{suffix}.jsonl"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(source) => return Err(ApplyError::Io { path, source }),
+        }
+    }
+    Err(ApplyError::Io {
+        path: dir,
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate tune apply log",
+        ),
+    })
 }
 
 fn write_apply_log(path: &Path, value: &serde_json::Value) -> Result<(), ApplyError> {
@@ -703,16 +821,36 @@ fn blocked<T>(id: BeadId, reason: impl Into<String>) -> Result<T, ApplyError> {
 
 #[cfg(test)]
 mod tests {
-    use super::run_gate_review;
+    use std::os::unix::process::ExitStatusExt as _;
 
-    #[tokio::test]
-    async fn tune_apply_review_handoff_requires_resolved_paired_messages() {
+    use loom_gate::HookCoverage;
+    use loom_protocol::gate::ExitSignal;
+
+    use super::*;
+
+    #[test]
+    fn tune_apply_review_handoff_requires_resolved_paired_messages() {
         let dir = tempfile::tempdir().unwrap();
-        let stdout = dir.path().join("review-stdout");
-        let stub = dir.path().join("review.sh");
-        loom_test_support::write_executable_bash_script(&stub, &format!(
-            "set -euo pipefail\n[[ \"$*\" == 'gate review --diff base..head' ]]\n[[ \"${{LOOM_REVIEW_EMIT_STDOUT:?}}\" == 1 ]]\ncat {stdout:?}\n",
-        )).unwrap();
+        let verify_run = GateRun::successful_verify(
+            "base..head".into(),
+            "tree".into(),
+            "config".into(),
+            dir.path().join("verify.jsonl"),
+            vec![HookCoverage {
+                id: "hook".into(),
+                entry: "entry".into(),
+            }],
+        );
+        let verified = VerifiedScope::from_run(&verify_run).unwrap();
+        let review_log = dir.path().join("review.jsonl");
+        let review_run = GateRun::successful_review(
+            "base..head".into(),
+            "tree".into(),
+            "config".into(),
+            review_log.clone(),
+            ExitSignal::Complete,
+        );
+        append_gate_run_lifecycle_events(&review_log, &review_run).unwrap();
         for (wire, admitted) in [
             ("LOOM_COMPLETE\n", true),
             ("LOOM_FINDING: {broken}\nLOOM_COMPLETE\n", false),
@@ -726,9 +864,28 @@ mod tests {
                 false,
             ),
         ] {
-            std::fs::write(&stdout, wire).unwrap();
-            let result = run_gate_review(&stub, dir.path(), "base..head").await;
+            let output = std::process::Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: wire.as_bytes().to_vec(),
+                stderr: Vec::new(),
+            };
+            let result = admit_review_output(&output, dir.path(), &verified, &review_log);
             assert_eq!(result.is_ok(), admitted, "{wire}: {result:?}");
         }
+    }
+
+    #[test]
+    fn tune_apply_reserves_fresh_evidence_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (first, _) = allocate_review_log(dir.path()).unwrap();
+        std::fs::write(&first, "old attempt").unwrap();
+        let (second, _) = allocate_review_log(dir.path()).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "old attempt");
+        assert!(std::fs::read(second).unwrap().is_empty());
+        assert_ne!(
+            apply_log_path(dir.path()).unwrap(),
+            apply_log_path(dir.path()).unwrap()
+        );
     }
 }
