@@ -1,0 +1,26 @@
+---
+source: crates/loom-templates/tests/snapshots.rs
+expression: "PreviousFailure::BadWalk(walk.bad_walk().unwrap()).to_string()"
+---
+Agent output failed canonical admission: Re-emit each finding as strict JSON: `LOOM_FINDING: {"token":"...","route":"blocking|deferred|clarify","bonds":[...],"target":{...},"evidence":"..."}`. Messages start in column one, unfenced. Use JSON escapes such as `\n` inside strings, never raw newlines or control characters; malformed JSON is not repaired.
+
+Your terminal was: LOOM_CONCERN: {"summary":"review summary"}
+
+Finding resolution errors:
+line 2: LOOM_FINDING payload is not valid JSON (Json { source: Error("key must be a string", line: 1, column: 2) }) — `LOOM_FINDING: {not json}`
+
+Parsed findings:
+- mock-discipline @ test:tests/check.rs — first
+second 🧶
+
+Parsed findings:
+- mock-discipline @ test:tests/check.rs — last finding
+
+Canonical diagnostic at line 2: Json { source: Error("key must be a string", line: 1, column: 2) }
+Literal message: LOOM_FINDING: {not json}
+
+Original output:
+LOOM_FINDING: {"token":"mock-discipline","route":"deferred","bonds":["alpha"],"target":{"kind":"TestPath","path":"tests/check.rs"},"evidence":"first\nsecond 🧶"}
+LOOM_FINDING: {not json}
+LOOM_FINDING: {"token":"mock-discipline","route":"deferred","bonds":["alpha"],"target":{"kind":"TestPath","path":"tests/check.rs"},"evidence":"last finding"}
+LOOM_CONCERN: {"summary":"review summary"}

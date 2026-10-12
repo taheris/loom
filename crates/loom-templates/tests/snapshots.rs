@@ -229,6 +229,48 @@ fn run_snapshot() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn recovery_display_snapshots() {
+    let message = loom_protocol::gate::parse_exit_signal(
+        r#"LOOM_RETRY: {"reason":"socket vanished\nretry 🧶"}"#,
+        loom_protocol::output::Phase::Loop,
+    )
+    .unwrap();
+    let loom_protocol::output::Message::Retry(payload) = message else {
+        panic!("retry fixture must decode");
+    };
+    insta::assert_snapshot!(
+        "agent_retry_display",
+        PreviousFailure::AgentRetry {
+            reason: payload.reason.to_string(),
+        }
+        .to_string()
+    );
+    let first = r#"LOOM_FINDING: {"token":"mock-discipline","route":"deferred","bonds":["alpha"],"target":{"kind":"TestPath","path":"tests/check.rs"},"evidence":"first\nsecond 🧶"}"#;
+    let last = first.replace("first\\nsecond 🧶", "last finding");
+    let invalid_target = first.replace("mock-discipline", "verifier-bypass");
+    for (error_name, error) in [
+        ("validation", invalid_target.as_str()),
+        ("syntax", "LOOM_FINDING: {not json}"),
+    ] {
+        for (terminal_name, terminal) in [
+            ("decoded", r#"LOOM_CONCERN: {"summary":"review summary"}"#),
+            ("malformed", r#"LOOM_RETRY: {"reason":""}"#),
+            ("missing", ""),
+        ] {
+            let walk = loom_protocol::gate::WalkOutput::from_stdout(
+                &format!("{first}\n{error}\n{last}\n{terminal}"),
+                loom_protocol::gate::DispatchScope::Tree,
+                &loom_test_support::finding::FixtureSymbols,
+            );
+            insta::assert_snapshot!(
+                format!("mixed_bad_walk_{error_name}_{terminal_name}"),
+                PreviousFailure::BadWalk(walk.bad_walk().unwrap()).to_string(),
+            );
+        }
+    }
+}
+
 /// Fresh dispatch: `attempt = 0` with `previous_failure = None` must render
 /// the false branch of the first-instruction reframe — no blockquote, no
 /// retry line — so a clean run prompt is byte-stable against the false

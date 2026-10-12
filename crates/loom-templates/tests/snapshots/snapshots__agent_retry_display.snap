@@ -1,0 +1,14 @@
+---
+source: crates/loom-templates/tests/snapshots.rs
+expression: "PreviousFailure::AgentRetry\n{ reason: payload.reason.to_string(), }.to_string()"
+---
+Previous attempt requested retry — reason: socket vanished
+retry 🧶
+
+Use LOOM_RETRY: {"reason":"<nonblank reason>"} only when a fresh dispatch is likely to help (environmental failure or agent self-reset). The reason belongs in strict JSON, never on a bare preceding line.
+
+In Loop/Todo, for unresolved human decisions with safe options, persist dedicated decisions with structured Options briefs and report nonterminal LOOM_CLARIFY records: LOOM_CLARIFY: {"decisions":["<decision-bead-id>"]}. Choose the source outcome independently; decision reporting is not a terminal and does not itself require waiting.
+
+In Loop/Todo, use LOOM_WAITING only for genuine prerequisites: declare active blocking dependencies with bd dep add, leave this bead open, then emit the bare terminal. Otherwise finish independent work with the appropriate success terminal.
+
+Use LOOM_BLOCKED: {"reason":"<why no safe options can be framed>"} only for a semantic dead end whose reason explains why no candidate options can be safely enumerated. Records precede exactly one final logical terminal, with no trailing commentary. Review stays inspection-only: use clarify-route finding Options evidence, never mutate Beads or emit Clarify records.

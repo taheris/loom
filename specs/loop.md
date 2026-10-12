@@ -1058,7 +1058,7 @@ mutation permission.
 - `PreviousFailure::AgentRetry { reason }` carries the decoded JSON reason and
   renders it with cause-appropriate bounded recovery guidance rather than
   reconstructing a reason from adjacent stdout.
-  [test?](agent_retry_json_reason_reaches_previous_failure_rendering)
+  [test](agent_retry_json_reason_reaches_previous_failure_rendering)
 
 <!-- prettier-ignore -->
 - `TreeNotClean` variant carries `dirty_paths: Vec<String>` capped at 30 entries

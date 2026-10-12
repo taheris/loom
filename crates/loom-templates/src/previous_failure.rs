@@ -100,8 +100,8 @@ pub enum PreviousFailure {
     },
     /// Worker phase emitted `LOOM_RETRY` — the agent self-reported that this
     /// attempt could not finish but a fresh dispatch is likely to succeed.
-    /// `reason` is the prose the agent wrote on the line preceding the
-    /// marker, captured verbatim. Consumes one slot in `[loop] max_retries`;
+    /// `reason` is the decoded JSON payload's reason, retained without
+    /// presentation truncation. Consumes one slot in `[loop] max_retries`;
     /// exhaustion escalates to `loom:blocked` with cause `retry-exhausted`.
     AgentRetry { reason: String },
 }
@@ -210,14 +210,28 @@ fn render_body(failure: &PreviousFailure) -> String {
 }
 
 fn render_agent_retry(reason: &str) -> String {
-    format!(
-        "Previous attempt requested retry — reason: {reason}\n\n\
-         If the same problem persists after this attempt, escalate to LOOM_BLOCKED \
-         only for a semantic dead end whose reason explains why no candidate \
-         options can be safely enumerated. Otherwise persist dedicated decisions \
-         with structured Options briefs, report nonterminal LOOM_CLARIFY records, \
-         and choose the source outcome independently instead of retrying again.",
-    )
+    let heading = "Previous attempt requested retry — reason: ";
+    let guidance = "\n\nUse LOOM_RETRY: {\"reason\":\"<nonblank reason>\"} only when a fresh \
+                    dispatch is likely to help (environmental failure or agent self-reset). \
+                    The reason belongs in strict JSON, never on a bare preceding line.\n\n\
+                    In Loop/Todo, for unresolved human decisions with safe options, persist dedicated decisions \
+                    with structured Options briefs and report nonterminal LOOM_CLARIFY records: \
+                    LOOM_CLARIFY: {\"decisions\":[\"<decision-bead-id>\"]}. Choose the source outcome independently; \
+                    decision reporting is not a terminal and does not itself require waiting.\n\n\
+                    In Loop/Todo, use LOOM_WAITING only for genuine prerequisites: declare active blocking \
+                    dependencies with bd dep add, leave this bead open, then emit the bare terminal. \
+                    Otherwise finish independent work with the appropriate success terminal.\n\n\
+                    Use LOOM_BLOCKED: {\"reason\":\"<why no safe options can be framed>\"} only for a \
+                    semantic dead end whose reason explains why no candidate options can be safely enumerated. \
+                    Records precede exactly one final logical terminal, with no trailing commentary. \
+                    Review stays inspection-only: use clarify-route finding Options evidence, \
+                    never mutate Beads or emit Clarify records.";
+    let mut reason = reason.to_owned();
+    truncate_at_char_boundary_with_marker(
+        &mut reason,
+        PREVIOUS_FAILURE_MAX_LEN.saturating_sub(heading.len() + guidance.len()),
+    );
+    format!("{heading}{reason}{guidance}")
 }
 
 fn render_integration_conflict(files: &[PathBuf], new_base_sha: &GitOid) -> String {
@@ -326,21 +340,8 @@ fn concern_label_from_findings(findings: &[Finding]) -> String {
 
 fn render_bad_walk(badwalk: &BadWalk) -> String {
     match badwalk {
-        BadWalk::Protocol {
-            context,
-            diagnostics,
-            parsed_findings,
-            finding_errors,
-            ..
-        } => {
-            let mut out = format!(
-                "Agent output failed canonical admission: {diagnostics:?}\nFinding resolution errors: {finding_errors:?}\n\nOriginal output:\n{}",
-                context.raw()
-            );
-            for finding in parsed_findings {
-                append_finding_digest(&mut out, finding);
-            }
-            out
+        BadWalk::Protocol { .. } => {
+            render_bad_walk_context(badwalk, "Agent output failed canonical admission:")
         }
         BadWalk::Concern {
             payload,
@@ -384,22 +385,81 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
             }
             out
         }
-        BadWalk::MalformedFinding {
-            errors, terminal, ..
-        } => {
-            let mut out = String::from(
-                "One or more LOOM_FINDING: records failed strict validation. \
-                 Re-emit each finding as JSON: \
-                 `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`. \
-                 Use JSON escapes for newlines inside strings; do not emit raw control characters.",
-            );
-            for err in errors {
-                out.push_str("\n\n");
-                out.push_str(&err.to_string());
+        BadWalk::MalformedFinding { .. } => render_bad_walk_context(
+            badwalk,
+            "One or more LOOM_FINDING: records failed strict validation.",
+        ),
+    }
+}
+
+fn render_bad_walk_context(badwalk: &BadWalk, heading: &str) -> String {
+    let mut out = format!(
+        "{heading} Re-emit each finding as strict JSON: \
+         `LOOM_FINDING: {{\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{{...}},\"evidence\":\"...\"}}`. \
+         Messages start in column one, unfenced. Use JSON escapes such as \
+         `\\n` inside strings, never raw newlines or control characters; malformed JSON is not repaired."
+    );
+    let context = badwalk.context();
+    let terminal = context.terminal().map_or_else(
+        || badwalk.terminal().label(),
+        |located| render_message(&located.message),
+    );
+    let mut entries = vec![format!("Your terminal was: {terminal}")];
+    if let surface @ TerminalSurface::Malformed { .. } = badwalk.terminal() {
+        entries.push(format!("Malformed terminal context: {}", surface.label()));
+    }
+    if context.terminal().is_none() {
+        for located in context.messages() {
+            if located.message.role() == loom_protocol::output::Role::Terminal {
+                entries.push(format!(
+                    "Decoded terminal at line {}: {}",
+                    located.span.line,
+                    render_message(&located.message),
+                ));
             }
-            let _ = write!(out, "\n\nYour terminal was: {}", terminal.label());
-            out
         }
+    }
+    for error in badwalk.finding_errors() {
+        entries.push(format!("Finding resolution errors:\n{error}"));
+    }
+    for finding in badwalk.parsed_findings() {
+        let mut entry = String::from("Parsed findings:");
+        append_finding_digest(&mut entry, finding);
+        entries.push(entry);
+    }
+    for diagnostic in badwalk.diagnostics() {
+        let literal = context
+            .raw()
+            .get(diagnostic.span.bytes.clone())
+            .unwrap_or("<invalid source span>");
+        let literal = if literal.is_empty() {
+            "(no message text)"
+        } else {
+            literal
+        };
+        entries.push(format!(
+            "Canonical diagnostic at line {}: {:?}\nLiteral message: {literal}",
+            diagnostic.span.line, diagnostic.error,
+        ));
+    }
+    if matches!(badwalk, BadWalk::Protocol { .. }) {
+        entries.push(format!("Original output:\n{}", context.raw()));
+    }
+    let count = entries.len();
+    for (index, mut entry) in entries.into_iter().enumerate() {
+        let remaining = PREVIOUS_FAILURE_MAX_LEN.saturating_sub(out.len());
+        let allowance = (remaining / (count - index)).saturating_sub(2);
+        truncate_at_char_boundary_with_marker(&mut entry, allowance.min(STDERR_TAIL_PER_BLOCK));
+        out.push_str("\n\n");
+        out.push_str(&entry);
+    }
+    out
+}
+
+fn render_message(message: &loom_protocol::output::Message) -> String {
+    match message.to_wire() {
+        Ok(wire) => wire,
+        Err(error) => format!("{} (payload rendering failed: {error})", message.marker()),
     }
 }
 
@@ -807,12 +867,7 @@ mod tests {
         );
     }
 
-    /// `Display` on `AgentRetry { reason }` surfaces the agent's verbatim
-    /// `reason` and instructs the next attempt to escalate to
-    /// `LOOM_BLOCKED` only with a no-options rationale, or to
-    /// `LOOM_CLARIFY` when candidate resolutions can be framed, rather
-    /// than emitting `LOOM_RETRY` again. Criterion:
-    /// `agent_retry_display_renders_reason_and_escalation_guidance`.
+    /// Retry recovery distinguishes independent decision reporting from terminal outcomes.
     #[test]
     fn agent_retry_display_renders_reason_and_escalation_guidance() {
         let pf = PreviousFailure::AgentRetry {
@@ -1011,7 +1066,7 @@ mod tests {
 
             context: Box::new(
                 loom_protocol::output::decode(
-                    "LOOM_COMPLETE",
+                    r#"LOOM_CONCERN: {"summary":"two findings"}"#,
                     loom_protocol::output::Phase::Review,
                 )
                 .unwrap()
@@ -1037,13 +1092,8 @@ mod tests {
             "terminal label prefix missing: {rendered}",
         );
         assert!(
-            rendered.contains(
-                &TerminalSurface::Concern {
-                    summary: "two findings".into()
-                }
-                .label(),
-            ),
-            "rendered terminal label missing: {rendered}",
+            rendered.contains(r#"Your terminal was: LOOM_CONCERN: {"summary":"two findings"}"#),
+            "canonical terminal context missing: {rendered}",
         );
     }
 

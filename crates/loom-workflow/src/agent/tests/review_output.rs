@@ -2,9 +2,9 @@
 mod contract {
     use super::super::controlled_outputs;
     use crate::review::{
-        DispatchScope, FindingParseError, PhaseVerdict, RecoveryCause, WalkOutput,
-        WorkspaceFindingValidator, cause_to_previous_failure, classify_review_phase,
-        phase_verdict_from_walk,
+        DispatchScope, FindingParseError, GateInputs, PhaseKind, PhaseVerdict, RecoveryCause,
+        WalkOutput, WorkspaceFindingValidator, cause_to_previous_failure, classify_review_phase,
+        decide_for_phase, phase_verdict_from_walk,
     };
     use loom_protocol::gate::{BadWalk, TerminalSurface, WalkOutputError, parse_walk_output};
     use loom_protocol::output::{Error, Phase, decode};
@@ -216,6 +216,212 @@ mod contract {
                         .iter()
                         .any(|diagnostic| matches!(diagnostic.error, Error::TrailingText))
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn agent_retry_display_teaches_shared_decision_and_terminal_roles() {
+        let text =
+            "Not the retry reason.\nLOOM_RETRY: {\n  \"reason\": \"socket vanished\\nretry 🧶\"\n}";
+        let message = crate::todo::parse_exit_signal(text, Phase::Loop).unwrap();
+        let PhaseVerdict::Recovery { cause } =
+            decide_for_phase(Some(&message), GateInputs::default(), PhaseKind::Loop)
+        else {
+            panic!("decoded retry must recover");
+        };
+        let previous = cause_to_previous_failure(&cause);
+        assert_eq!(
+            previous,
+            PreviousFailure::AgentRetry {
+                reason: "socket vanished\nretry 🧶".into(),
+            }
+        );
+        let rendered = previous.to_string();
+        assert!(
+            rendered.starts_with(
+                "Previous attempt requested retry — reason: socket vanished\nretry 🧶"
+            )
+        );
+        assert!(!rendered.contains("Not the retry reason."));
+        for instruction in [
+            "fresh dispatch is likely to help",
+            "strict JSON, never on a bare preceding line",
+            "dedicated decisions with structured Options briefs",
+            "nonterminal LOOM_CLARIFY records",
+            "source outcome independently",
+            "decision reporting is not a terminal",
+            "LOOM_WAITING only for genuine prerequisites",
+            "active blocking dependencies with bd dep add",
+            "leave this bead open",
+            "appropriate success terminal",
+            "semantic dead end",
+            "why no candidate options can be safely enumerated",
+            "exactly one final logical terminal",
+            "no trailing commentary",
+            "Review stays inspection-only",
+        ] {
+            assert!(rendered.contains(instruction), "{instruction}: {rendered}");
+        }
+        for (wire, role) in [
+            (
+                r#"LOOM_CLARIFY: {"decisions":["lm-decision"]}"#,
+                loom_protocol::output::Role::Record,
+            ),
+            ("LOOM_WAITING", loom_protocol::output::Role::Terminal),
+            (
+                r#"LOOM_RETRY: {"reason":"<nonblank reason>"}"#,
+                loom_protocol::output::Role::Terminal,
+            ),
+            (
+                r#"LOOM_BLOCKED: {"reason":"<why no safe options can be framed>"}"#,
+                loom_protocol::output::Role::Terminal,
+            ),
+        ] {
+            let guidance = wire.replace("lm-decision", "<decision-bead-id>");
+            assert!(rendered.contains(&guidance), "{rendered}");
+            let complete = if role == loom_protocol::output::Role::Record {
+                format!("{wire}\nLOOM_COMPLETE")
+            } else {
+                wire.to_owned()
+            };
+            let session = decode(&complete, Phase::Loop).unwrap();
+            assert_eq!(session.context().messages()[0].message.role(), role);
+        }
+    }
+
+    #[test]
+    fn agent_retry_json_reason_reaches_previous_failure_rendering() {
+        for suffix in [String::new(), "🧶é中".repeat(2000)] {
+            let reason = format!("transport failed\n{suffix}full reason retained");
+            let text = format!(
+                "Misleading preceding prose.\nLOOM_RETRY: {}",
+                serde_json::json!({"reason": reason})
+            );
+            let message = crate::todo::parse_exit_signal(&text, Phase::Loop).unwrap();
+            let PhaseVerdict::Recovery { cause } =
+                decide_for_phase(Some(&message), GateInputs::default(), PhaseKind::Loop)
+            else {
+                panic!("retry must recover");
+            };
+            let previous = cause_to_previous_failure(&cause);
+            let saved = previous.clone();
+            let rendered = previous.to_string();
+            assert!(rendered.len() <= PREVIOUS_FAILURE_MAX_LEN);
+            assert!(rendered.chars().count() <= PREVIOUS_FAILURE_MAX_LEN);
+            assert!(rendered.contains("transport failed\n"));
+            assert!(rendered.contains("LOOM_WAITING only for genuine prerequisites"));
+            assert!(rendered.ends_with("never mutate Beads or emit Clarify records."));
+            assert!(!rendered.contains("Misleading preceding prose."));
+            assert_eq!(previous, saved);
+            assert_eq!(previous, PreviousFailure::AgentRetry { reason });
+            if !suffix.is_empty() {
+                assert!(rendered.contains("[truncated]"));
+            }
+        }
+        for text in [
+            "Bare preceding reason.\nLOOM_RETRY",
+            "LOOM_RETRY: {\"reason\":\"raw\nnewline\"}",
+        ] {
+            assert!(crate::todo::parse_exit_signal(text, Phase::Loop).is_err());
+        }
+    }
+
+    #[test]
+    fn mixed_bad_walk_display_surfaces_findings_errors_and_terminal() {
+        let directory = workspace();
+        let validator = WorkspaceFindingValidator::new(directory.path());
+        for suffix in [String::new(), "🧶é中".repeat(2000)] {
+            let first = FIRST.replace("second 🧶", &format!("second 🧶{suffix}"));
+            let last = LAST.replace("last finding", &format!("last finding{suffix}"));
+            let unresolved =
+                BAD_TARGET.replace("missing target", &format!("missing target{suffix}"));
+            let invalid = format!("LOOM_FINDING: {{not json{suffix}}}");
+            let clean = parse_walk_output(
+                &format!("{first}\n{last}\n{CONCERN}"),
+                DispatchScope::Tree,
+                &validator,
+            )
+            .unwrap();
+            for records in [
+                vec![unresolved.as_str()],
+                vec![invalid.as_str()],
+                vec![unresolved.as_str(), invalid.as_str()],
+            ] {
+                let errors = records.join("\n");
+                for terminal in [
+                    CONCERN,
+                    "LOOM_COMPLETE",
+                    r#"LOOM_RETRY: {"reason":"decoded retry\nreason 🧶"}"#,
+                    r#"LOOM_BLOCKED: {"reason":"decoded blocked reason"}"#,
+                    r#"LOOM_CONCERN: {"summary":""}"#,
+                    "LOOM_RETRY",
+                    "",
+                ] {
+                    let text = format!("{first}\n{errors}\n{last}\n{terminal}");
+                    let walk = WalkOutput::from_stdout(&text, DispatchScope::Tree, &validator);
+                    let PhaseVerdict::Recovery {
+                        cause: RecoveryCause::BadWalk(bad_walk),
+                    } = phase_verdict_from_walk(&walk)
+                    else {
+                        panic!("mixed stream must recover: {text}");
+                    };
+                    assert_bad_walk_transfer(&walk, &bad_walk);
+                    assert_eq!(bad_walk.parsed_findings(), clean);
+                    assert_eq!(bad_walk.finding_errors().len(), records.len());
+                    let previous =
+                        cause_to_previous_failure(&RecoveryCause::BadWalk(bad_walk.clone()));
+                    let saved = previous.clone();
+                    let rendered = previous.to_string();
+                    assert!(rendered.len() <= PREVIOUS_FAILURE_MAX_LEN, "{rendered}");
+                    assert!(rendered.chars().count() <= PREVIOUS_FAILURE_MAX_LEN);
+                    for (index, record) in records.iter().enumerate() {
+                        assert!(
+                            rendered.contains(&format!("line {}", index + 2)),
+                            "{rendered}"
+                        );
+                        let literal = if *record == unresolved {
+                            "tests/missing.rs"
+                        } else {
+                            "LOOM_FINDING: {not json"
+                        };
+                        assert!(rendered.contains(literal), "{rendered}");
+                    }
+                    assert!(
+                        rendered
+                            .contains("mock-discipline @ test:tests/check.rs — first\nsecond 🧶"),
+                        "{rendered}"
+                    );
+                    assert!(
+                        rendered.contains("mock-discipline @ test:tests/check.rs — last finding"),
+                        "{rendered}"
+                    );
+                    assert!(rendered.contains("column one, unfenced"));
+                    assert!(rendered.contains("`\\n` inside strings, never raw newlines"));
+                    assert!(rendered.contains("malformed JSON is not repaired"));
+                    if matches!(bad_walk.terminal(), TerminalSurface::Missing) {
+                        assert!(
+                            rendered.contains("no unique independently decoded terminal"),
+                            "{rendered}"
+                        );
+                        if !terminal.is_empty() {
+                            assert!(
+                                rendered.contains(&format!("Literal message: {terminal}")),
+                                "{rendered}"
+                            );
+                        }
+                    } else {
+                        assert!(
+                            rendered.contains(&format!("Your terminal was: {terminal}")),
+                            "{rendered}"
+                        );
+                    }
+                    if !suffix.is_empty() {
+                        assert!(rendered.contains("[truncated]"));
+                    }
+                    assert_eq!(previous, saved);
+                    assert_eq!(previous, PreviousFailure::BadWalk(bad_walk));
+                }
             }
         }
     }

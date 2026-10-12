@@ -1113,7 +1113,7 @@ bundled documents in front of the agent with zero configuration.
 - Recovery rendering surfaces the decoded retry reason and distinguishes
   reporting dedicated decisions, genuinely waiting, and terminal semantic
   blocking, without teaching a bare reason or terminal clarification.
-  [test?](agent_retry_display_teaches_shared_decision_and_terminal_roles)
+  [test](agent_retry_display_teaches_shared_decision_and_terminal_roles)
 
 - `FindingParseError` is defined in `loom-protocol::gate` and re-exported from
   `loom-templates::finding` / `loom-workflow::review::finding` as the per-record
@@ -1134,7 +1134,7 @@ bundled documents in front of the agent with zero configuration.
   valid findings, and decoded/malformed/missing terminal context within the
   existing budget. Presentation truncation does not discard the underlying typed
   diagnosis or replace it with an empty finding list.
-  [test?](mixed_bad_walk_display_surfaces_findings_errors_and_terminal)
+  [test](mixed_bad_walk_display_surfaces_findings_errors_and_terminal)
 
 - `VerifierFailure` carries `target: String`, `exit_code: i32`,
   `stderr_tail: String` (capped per-block at ~1500 chars)
