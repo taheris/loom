@@ -63,7 +63,7 @@ Diff:
 
 Read `{{ manifest }}` first. It identifies this fixed batch's complete per-spec criterion, implementation-note, and diff pages. Page paths are relative to that manifest. Read pages one owner/topic at a time; do not concatenate the entire dossier into context. Nothing was truncated or inferred from missing cache rows.
 
-Every implementation note describes work that must become one or more beads unless you persist a structured clarify question to the work epic and self-report. Before decomposing an owner, inspect all its criterion/status and implementation-note pages. Consult diff pages and representative source as needed; formatting or ownership changes and `Missing` evidence do not by themselves require implementation beads. Preserve every owner in the final result, including justified no-work outcomes. A partial audit is not success.
+Every implementation note describes work that must become one or more beads unless a genuinely unresolved choice requires a dedicated child decision brief and nonterminal Clarify reporting; reconcile decomposition independently. Before decomposing an owner, inspect all its criterion/status and implementation-note pages. Consult diff pages and representative source as needed; formatting or ownership changes and `Missing` evidence do not by themselves require implementation beads. Preserve every owner in the final result, including justified no-work outcomes. A partial audit is not success.
 
 Before creating tasks, inspect durable drafts with `bd show {{ work_epic }} --json` and `bd list --parent {{ work_epic }} --all --limit 0 --json`. Reconcile and reuse existing children rather than duplicating them. Merge concise progress (audited owners, child IDs, evidence references and remaining questions) into the work epic's **description** after each topic, preserving prior human decisions; driver diagnostics may replace its notes. This checkpoint is a hint to recheck, not authoritative acceptance or permission to advance cursors. Scratch pages are regenerated on retry; the work epic and child beads survive.
 
@@ -71,7 +71,7 @@ Before creating tasks, inspect durable drafts with `bd show {{ work_epic }} --js
 
 ## Implementation Notes
 
-The following implementation notes were captured during planning. **Every note below describes work that MUST become one or more beads in this session** unless you persist a structured clarify question to the work epic and self-report.
+The following implementation notes were captured during planning. **Every note below describes work that MUST become one or more beads in this session** unless a genuinely unresolved choice requires a dedicated child decision brief and nonterminal Clarify reporting; reconcile decomposition independently.
 
 {% for group in implementation_notes %}{% if !group.notes.is_empty() %}
 
@@ -125,8 +125,8 @@ The status cache below shows the latest cached verifier verdict for each Success
 4. Set execution order with `bd dep add <later-task> <earlier-task>` where required.
 5. When finished, stop using tools and emit success only through the typed todo payload described below as your final assistant message. Do not use `bash`, `python`, `echo`, `printf`, or any other tool to print the terminal line.
 
-{% include "partial/options_format.md" %}
-
 {% include "partial/self_report_markers.md" %}
+
+{% include "partial/dependency_wait.md" %}
 
 {% include "partial/todo_success.md" %}

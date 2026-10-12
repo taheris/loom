@@ -24,6 +24,45 @@ use loom_templates::{
     WorkspaceAlignment, WorkspaceRecovery,
 };
 
+#[derive(askama::Template)]
+#[template(
+    source = "{% include \"partial/findings_walk.md\" %}\n{% include \"partial/progress_markers.md\" %}\n{% include \"partial/review_self_report_markers.md\" %}",
+    ext = "md",
+    escape = "none"
+)]
+struct ConsumerReview {
+    phase: loom_protocol::output::Phase,
+    tokens: &'static [ConcernToken],
+}
+
+impl ConsumerReview {
+    pub const fn output_phase(&self) -> loom_protocol::output::Phase {
+        self.phase
+    }
+
+    pub const fn finding_tokens(&self) -> &'static [ConcernToken] {
+        self.tokens
+    }
+}
+
+#[test]
+fn downstream_review_composes_partials_with_canonical_typed_metadata() -> Result<()> {
+    use askama::Template as _;
+
+    let prompt = ConsumerReview {
+        phase: loom_protocol::output::Phase::Review,
+        tokens: ConcernToken::prompt_visible(),
+    }
+    .render()?;
+    assert!(prompt.contains("| `scope-shortfall` | `Criterion` | `per-bead-only` |"));
+    assert!(prompt.contains("A clean inspection ends with `LOOM_COMPLETE`"));
+    assert!(!prompt.contains("LOOM_NOOP\n```"));
+    let inert = loom_protocol::output::decode(&prompt, loom_protocol::output::Phase::Review)
+        .expect_err("composed prompt examples are not live messages");
+    assert!(inert.context().messages().is_empty());
+    Ok(())
+}
+
 #[test]
 fn pinned_context_holds_project_overview_and_style_rules() {
     let ctx = PinnedContext {

@@ -161,7 +161,7 @@ silent-pass during the pending window per
 | `interview_modes.md`             |   ✓    |        |        |          |         |
 | `chat_interview.md`              |   ✓    |        |        |          |    ✓    |
 | `decomposition_discipline.md`    |        |   ✓    |        |          |         |
-| `dependency_wait.md`             |        |   ?    |   ✓    |          |         |
+| `dependency_wait.md`             |        |   ✓    |   ✓    |          |         |
 | `plan_stage_rubric.md`           |   ✓    |        |        |          |         |
 | `invariant_clash.md`             |   ✓    |        |        |          |         |
 | `review_rubric.md`               |        |        |        |    ✓     |         |
@@ -1007,7 +1007,7 @@ bundled documents in front of the agent with zero configuration.
   supplied criterion IDs in the shared typed handoff, delegates binding metadata
   persistence to Rust, and does not instruct the agent to compute IDs or issue
   binding-metadata writes through `bd`.
-  [test?](todo_prompt_proposes_bindings_for_driver_persistence)
+  [test](todo_prompt_proposes_bindings_for_driver_persistence)
 
 <!-- prettier-ignore -->
 - `partial/todo_success.md` is the canonical presentation of Todo's success
@@ -1032,7 +1032,7 @@ bundled documents in front of the agent with zero configuration.
   strict JSON with escaped evidence, preserves explicit finding/concern pairing,
   and does not authorize reviewer Beads mutation or duplicate evidence
   narration.
-  [test?](review_prompt_uses_strict_shared_messages_and_domain_pairing)
+  [test](review_prompt_uses_strict_shared_messages_and_domain_pairing)
 
 <!-- prettier-ignore -->
 - `review.md` includes `findings_walk.md` via `{% include %}` rather than
@@ -1058,7 +1058,7 @@ bundled documents in front of the agent with zero configuration.
 - Loop and Todo waiting guidance requires actual prerequisites, non-closure of
   waiting work, preservation, and driver-attributed visible parking/resumption;
   it distinguishes a decision record from the session's waiting terminal.
-  [test?](loop_and_todo_render_attributed_waits_and_nonterminal_decisions)
+  [test](loop_and_todo_render_attributed_waits_and_nonterminal_decisions)
 
 <!-- prettier-ignore -->
 - `partial/self_report_markers.md` covers direct loop/todo self-report markers
@@ -1263,7 +1263,7 @@ bundled documents in front of the agent with zero configuration.
   reports the full discovered set, and waits on the work epic only when
   decomposition itself has actual prerequisites; decision children cannot
   satisfy implementation assignments or the success roster.
-  [test?](todo_prompt_separates_decisions_waiting_and_implementation_handoff)
+  [test](todo_prompt_separates_decisions_waiting_and_implementation_handoff)
 
 <!-- prettier-ignore -->
 - `todo.md` receives an already-created work epic from the driver before any
@@ -1274,22 +1274,22 @@ bundled documents in front of the agent with zero configuration.
 - Executable examples extracted from actual rendered phase prompts decode and
   admit through the common production protocol, covering every phase-permitted
   emit variant without teaching another phase's executable output shapes.
-  [test?](rendered_phase_message_examples_decode_under_shared_contract)
+  [test](rendered_phase_message_examples_decode_under_shared_contract)
 
 - Rendered finding examples cover the complete typed prompt-visible token,
   target, and scope subset and resolve through the real workspace validator
   against fixture specs, files, and anchors; wrong combinations fail.
-  [test?](rendered_finding_examples_resolve_prompt_visible_token_target_scope_subset)
+  [test](rendered_finding_examples_resolve_prompt_visible_token_target_scope_subset)
 
 - Conformance retains independent literal positive/negative fixtures and
   boundary cases; deliberate spelling, arity, role, target, scope, and rendered
   example drift fails even when generated values still round-trip together.
-  [test?](prompt_parser_conformance_keeps_independent_negative_wire_fixtures)
+  [test](prompt_parser_conformance_keeps_independent_negative_wire_fixtures)
 
 - Closed protocol facts and prompt-visible domain metadata come from the
   canonical typed contracts, not an independent production token/phase registry.
   Rendering and exhaustive coverage tests expose missing or inconsistent
-  projections. [test?](protocol_metadata_controls_prompt_variant_coverage)
+  projections. [test](protocol_metadata_controls_prompt_variant_coverage)
 
 ### Unit tests
 

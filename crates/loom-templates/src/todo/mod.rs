@@ -32,7 +32,11 @@ pub enum EvidenceDelivery {
 
 impl TodoContext {
     pub fn output_contract(&self) -> String {
-        crate::output::contract(loom_protocol::output::Phase::Todo)
+        crate::output::contract(self.output_phase())
+    }
+
+    pub const fn output_phase(&self) -> loom_protocol::output::Phase {
+        loom_protocol::output::Phase::Todo
     }
 
     pub const fn dossier_manifest(&self) -> Option<&str> {

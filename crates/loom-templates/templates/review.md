@@ -7,11 +7,11 @@ You are an **independent reviewer** assessing the completed deliverable for spec
 **invariant clashes** with existing design decisions.
 
 This phase is **inspection-only**. You stream findings as structured
-JSON lines on stdout and terminate with one marker — the wire format
+JSON messages in assistant text and terminate with one logical terminal — the wire format
 is documented under _Findings — Streaming Wire Format_ below. You
 do **NOT** mutate `bd` state — the driver consumes your streamed
-findings and mints the fix-up beads itself (per `loom gate mint` in
-`specs/gate.md`).
+findings; only trusted act paths materialize fix-up beads (per `loom gate mint`
+in `specs/findings.md`).
 
 {% include "partial/context_pinning.md" %}
 
@@ -147,10 +147,9 @@ minted clarify bead's description so `loom inbox` can render it. The format
 applies to every clarify situation; invariant clash is one common trigger,
 not the only one.
 
-**Required shape** (embed inside `evidence` verbatim — let the
-three-paths principle above shape the actual options):
-
-{% include "partial/options_format.md" %}
+The canonical shape appears once in the Findings partial below. Embed it inside
+`evidence`, with JSON-escaped newlines; let the three-paths principle shape the
+actual options rather than repeating evidence in separate prose.
 
 **Persistence (REQUIRED — the gate does NOT parse your prose).** The
 gate routes on mechanical signals (the streamed finding lines,

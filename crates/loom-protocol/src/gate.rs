@@ -209,6 +209,29 @@ pub enum ConcernToken {
 }
 
 impl ConcernToken {
+    /// Rubric-origin tokens taught in review prompts, excluding driver-only diagnostics.
+    pub const fn prompt_visible() -> &'static [Self] {
+        &[
+            Self::SpecCoherenceFail,
+            Self::OrphanIntegration,
+            Self::StyleRuleViolation,
+            Self::VerifierBypass,
+            Self::WeakAssertion,
+            Self::FabricatedResult,
+            Self::CoincidentalPass,
+            Self::MockDiscipline,
+            Self::VerifierTooNarrow,
+            Self::ConcurrencyUntested,
+            Self::JudgeFlag,
+            Self::InvariantClash,
+            Self::TemplateSpecDrift,
+            Self::CrossSpecClash,
+            Self::SpecConventionsViolation,
+            Self::ScopeCreep,
+            Self::ScopeShortfall,
+        ]
+    }
+
     /// Canonical wire string used in `LOOM_FINDING:` JSON, bd labels,
     /// and finding identity input. Matches the leftmost column in
     /// `specs/gate.md` §"Concern tokens and target variants".

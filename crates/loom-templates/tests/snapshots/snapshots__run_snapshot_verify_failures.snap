@@ -219,61 +219,60 @@ Before outputting LOOM_COMPLETE, follow the **Session Protocol** in `AGENTS.md`.
 
 ## Dependency-Wait Marker
 
-`LOOM_WAITING` is the loop-only terminal for pausing this open bead on work
-owned by another bead. Before emitting it:
+`LOOM_WAITING` is a bare, unit terminal admitted in Loop and Todo. It pauses
+open source work only on actual work owned by another bead. Before emitting it:
 
-1. Declare the blocking edge with `bd dep add <current-bead> <blocker-bead>`.
-2. Leave the current bead open; do **not** run `bd close`.
+1. Declare the actual blocking edge with `bd dep add <source> <blocker>`.
+2. Leave the source open; do **not** run `bd close`.
 3. Ensure at least one declared blocker is still active (not closed).
 
-Then end with the bare marker as the final non-empty line:
 
-```text
+Here the source is the current bead. A valid wait preserves its workspace and
+branch and skips integration and per-bead gates. The scheduler continues other
+ready work rather than redispatching this source to rediscover its blockers.
+
+
+```text loom-example
 LOOM_WAITING
 ```
 
-The marker carries no JSON or prose payload because the Beads dependency graph
-is the durable authority. A valid wait preserves this bead's workspace and
-branch, skips integration and per-bead gates, consumes no retry budget, and
-adds no blocked/clarify/infra label or status. The scheduler continues other
-ready work; `bd ready` resurfaces this bead after its blockers close.
-
-A marker on a closed bead or without an active declared blocking dependency is
-invalid and enters recovery rather than silently parking the bead.
+The marker carries no JSON or prose payload: Beads prerequisites are the durable
+authority. A valid wait consumes no retry budget and adds no human-queue label
+to the source. After admission the driver records an attributed wait and parks
+eligible work visibly as `status=blocked`; it selectively releases only its own
+wait when current prerequisites resolve, never unrelated human blocking state.
+Dependency release does not close implementation work. A closed source or a
+source without an active declared prerequisite is invalid and enters recovery.
 
 ## Progress Markers
 
-End your response with exactly **one** marker on its own line, as
-the final output of the session. The orchestrator parses **only the
-final non-empty line** verbatim to derive the gate's verdict —
-markers emitted on any earlier line are treated as
-`swallowed-marker`, and multiple markers on the final line are
-likewise rejected. Markers are mutually exclusive: emit one and
-only one.
+End the session with exactly **one final logical terminal**, mutually exclusive
+with every other terminal. The compiled Canonical Agent-Output Syntax table
+above supplies this phase's spelling, role, and unit/data arity. Nonterminal
+records may precede it; no commentary may follow it. A pretty-printed JSON
+object is one logical message, not several physical-line markers.
 
-Progress markers report that the session's work is **done**. Their
-phase-specific meaning is:
 
-- `LOOM_COMPLETE` — The phase succeeded. In review, this means a
-  clean inspection with zero findings; no diff is expected and
-  `bd close` is not part of review. In interactive plan/inbox
-  sessions, it ends the human-in-the-loop chat. In `loom loop`, it
-  also means the bead's acceptance criteria are met, the bead has
-  been closed via `bd close`, and the diff is non-empty (real
-  changes); see `LOOM_NOOP` below for the loop zero-diff variant.
-- `LOOM_NOOP` — Loop-only success: the work was already done in tree
-  and this `loom loop` phase intentionally produced an empty diff.
-  Close the bead with `bd close` before emitting. Use `LOOM_NOOP`
-  instead of `LOOM_COMPLETE` whenever the loop diff is empty — an
-  empty loop diff with `LOOM_COMPLETE` is treated as `zero-progress`
-  and enters recovery. `LOOM_NOOP` is not a review, plan, todo, or
-  inbox terminal.
+- `LOOM_COMPLETE` — The bead's acceptance criteria are met, the bead is closed
+  via `bd close`, and the diff is non-empty (real changes).
+- `LOOM_NOOP` — Loop-only success: work was already done in tree and this
+  session intentionally produced an empty diff. Close the bead via `bd close`.
+  An empty loop diff with `LOOM_COMPLETE` enters zero-progress recovery.
 
-If this phase pins self-report markers and you cannot finish — needing
-human input or a decision among multiple resolutions — emit one of the
-self-report markers documented separately (see _Self-Report Markers_).
-Interactive plan/inbox sessions resolve friction with the human in-turn
-instead of worker self-report markers.
+Success examples (choose only the one matching the actual diff):
+
+```text loom-example
+LOOM_COMPLETE
+```
+
+```text loom-example
+LOOM_NOOP
+```
+
+
+Worker cannot-finish outcomes and decision records are documented separately.
+Interactive sessions resolve friction with the human in-turn instead of worker
+self-reports. Do not confuse decision discovery with success or source waiting.
 
 ## Decision Records and Self-Reports
 
@@ -281,8 +280,16 @@ Decision discovery is independent of the session's terminal outcome. Loop and
 Todo report all currently discovered unresolved human decisions through
 nonterminal records, never a bare `LOOM_CLARIFY` terminal:
 
-```text
-LOOM_CLARIFY: {"decisions":["<decision-bead-id>","<another-decision-id>"]}
+The `decisions` array must be nonempty and contain dedicated decision bead IDs,
+not source/task IDs. Repeated IDs identify one decision. The terminal remains
+independent. For example, after staging both decisions and declaring the source's
+actual prerequisite, report them and wait:
+
+```text loom-example
+LOOM_CLARIFY: {
+  "decisions": ["lm-decision.1", "lm-decision.2"]
+}
+LOOM_WAITING
 ```
 
 Each decision has one dedicated bead with one canonical Options brief. Parent it
@@ -294,6 +301,16 @@ alongside the brief and proposed edges; the driver admits references and briefs
 before queue or scheduling effects. Reuse compatible existing decisions rather
 than duplicating them. Report the full known set, including persisted candidates
 from an interrupted attempt; do not leave an invisible unreported decision.
+Account for **all owned persisted candidates** before any terminal, including
+ones affecting only other work. Valid prior dispositions and historical closed
+decisions remain accounted for without redundant emissions. Candidate metadata
+is an untrusted proposal, not task acceptance or queue/wait authority. A failed
+reference/graph handoff retains candidates for repair, never silently treats
+them as implementation tasks. The driver admits valid briefs to `loom:clarify`
+and downgrades defective briefs on that decision to `loom:blocked`; the source's
+outcome remains independent. Workers own the brief, ordinary bead creation,
+labels, descriptions and proposed affected-work edges; do not copy Options
+briefs onto the source or work epic.
 
 ```markdown
 ## Options — <one-line summary of the decision, ≤80 chars>
@@ -337,6 +354,19 @@ work, finish independent work and use the normal `LOOM_COMPLETE` / `LOOM_NOOP`
 (Loop) or valid `LOOM_TODO` payload (Todo). A decision record is not completion,
 and a human answer does not automatically close implementation work.
 
+
+If only other work needs the decisions and this source meets its own acceptance,
+close the source and report decisions before the normal completion terminal:
+
+```text loom-example
+LOOM_CLARIFY: {"decisions":["lm-decision.1","lm-decision.2"]}
+LOOM_COMPLETE
+```
+
+Use Noop instead when that independent source produced an intentionally empty
+diff; use neither success terminal when its own prerequisites remain unresolved.
+
+
 Do not ask for ratification of a clear recommended path. When the spec, code,
 and research establish a safe preference, implement or file that plan directly.
 Reserve decisions for genuinely unresolved viable choices with materially
@@ -359,7 +389,19 @@ non-empty line, instead of a success terminal:
 **Discriminator.** Fresh dispatch likely to help? → Retry. Safe unresolved
 options available? → dedicated decision records plus the actual source outcome.
 Semantic dead end with no safe options? → Blocked with the no-options reason.
-Never use a Clarify record as a terminal or combine two terminals.
+Never use a Clarify record as a terminal or combine two terminals. Reasons
+belong inside the typed JSON object, not in preceding prose. Strict JSON permits
+pretty objects and escaped string newlines; raw string newlines are not repaired.
+
+```text loom-example
+LOOM_RETRY: {"reason":"Workspace IO failed; a fresh dispatch can retry the read."}
+```
+
+```text loom-example
+LOOM_BLOCKED: {
+  "reason": "The required source evidence is irrecoverably absent; options would invent unsupported obligations."
+}
+```
 
 **Worker phases only.** Review is inspection-only: it uses clarify-route finding
 Options evidence, never direct decision-bead mutation or Clarify records.

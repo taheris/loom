@@ -74,7 +74,15 @@ pub struct ReviewContext {
 }
 
 impl ReviewContext {
+    pub const fn finding_tokens(&self) -> &'static [loom_protocol::gate::ConcernToken] {
+        loom_protocol::gate::ConcernToken::prompt_visible()
+    }
+
     pub fn output_contract(&self) -> String {
-        crate::output::contract(loom_protocol::output::Phase::Review)
+        crate::output::contract(self.output_phase())
+    }
+
+    pub const fn output_phase(&self) -> loom_protocol::output::Phase {
+        loom_protocol::output::Phase::Review
     }
 }

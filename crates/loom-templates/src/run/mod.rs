@@ -45,6 +45,10 @@ pub struct LoopContext {
 
 impl LoopContext {
     pub fn output_contract(&self) -> String {
-        crate::output::contract(loom_protocol::output::Phase::Loop)
+        crate::output::contract(self.output_phase())
+    }
+
+    pub const fn output_phase(&self) -> loom_protocol::output::Phase {
+        loom_protocol::output::Phase::Loop
     }
 }

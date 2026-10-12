@@ -284,7 +284,7 @@ fn shared_options_partial_preserves_call_site_list_nesting() -> Result<()> {
         .split_once("## Decision Records and Self-Reports\n")
         .unwrap()
         .1
-        .split_once("## Todo Success Marker\n")
+        .split_once("## Dependency-Wait Marker\n")
         .unwrap()
         .0;
     let items = markdown_list_items(self_report, 1);
@@ -303,6 +303,40 @@ fn shared_options_partial_preserves_call_site_list_nesting() -> Result<()> {
     assert_eq!(items.len(), 6);
     assert!(items[0].starts_with("The ## Options header carries a one-line summary"));
     assert_eq!(markdown_list_items(self_report, 2), [] as [String; 0]);
+    Ok(())
+}
+
+#[test]
+fn review_options_contract_remains_nested_under_clarify_guidance() -> Result<()> {
+    let out = ReviewContext {
+        pinned_context: PINNED_CONTEXT_BODY.into(),
+        label: SpecLabel::new("example")?,
+        spec_path: "specs/example.md".into(),
+        companion_paths: vec![],
+        beads_summary: None,
+        base_commit: None,
+        molecule_id: None,
+        test_sources: vec![],
+        judge_rubrics: vec![],
+        scratchpad_path: SCRATCHPAD_PATH_BODY.into(),
+        style_rules: "docs/style-rules.md".into(),
+        lane: ReviewLane::Both,
+        default_profile: ProfileName::new("base")?,
+        skill_index: SkillIndexMarkdown::empty(),
+    }
+    .render()?;
+    let contract = out
+        .split_once("### Concern tokens\n")
+        .unwrap()
+        .1
+        .split_once("### Executable examples\n")
+        .unwrap()
+        .0;
+    let nested = markdown_list_items(contract, 2);
+    assert_eq!(nested.len(), 4);
+    assert!(nested[0].starts_with("The ## Options header carries a one-line summary"));
+    assert!(nested[1].starts_with("Each option is ### Option N"));
+    assert_eq!(markdown_list_items(contract, 1).len(), 1);
     Ok(())
 }
 
@@ -726,8 +760,8 @@ fn loop_template_renders_dependency_wait_marker() -> Result<()> {
     let out = ctx.render()?;
 
     assert!(out.contains("## Dependency-Wait Marker"));
-    assert!(out.contains("bd dep add <current-bead> <blocker-bead>"));
-    assert!(out.contains("Leave the current bead open"));
+    assert!(out.contains("bd dep add <source> <blocker>"));
+    assert!(out.contains("Leave the source open"));
     assert!(out.contains("LOOM_WAITING"));
     assert!(out.contains("skips integration and per-bead gates"));
     assert!(out.contains("invalid and enters recovery"));
@@ -1548,7 +1582,7 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
     }
 
     assert!(
-        out.contains("target.spec") && out.contains("MUST appear in `bonds`"),
+        out.contains("target.spec") && out.contains("must appear in `bonds`"),
         "validation rule (Criterion/Invariant target.spec ∈ bonds) must be documented: {out}",
     );
     assert!(
@@ -1560,8 +1594,8 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
         "pairing rule heading missing: {out}",
     );
     assert!(
-        out.contains("`LOOM_COMPLETE` means zero findings")
-            && out.contains("`LOOM_CONCERN` means\n≥1 finding"),
+        out.contains("pairs zero findings with Complete")
+            && out.contains("findings with Concern and a nonblank JSON `summary`"),
         "pairing rule semantics missing: {out}",
     );
     Ok(())
@@ -1608,15 +1642,15 @@ fn review_self_report_markers_do_not_authorize_bd_writes() -> Result<()> {
         );
     }
     assert!(
-        out.contains("do **not** use direct `LOOM_CLARIFY`")
+        out.contains("not direct decision-bead writes or Clarify")
             && out.contains("`route=\"clarify\"`")
             && out.contains("`evidence`"),
         "review clarifications must route through finding evidence, not direct LOOM_CLARIFY: {out}",
     );
     assert!(
-        out.contains("`LOOM_BLOCKED` instead")
-            && out.contains("explaining why options cannot be safely")
-            && out.contains("surfaced"),
+        out.contains("`Blocked`")
+            && out.contains("why\n  no safe options can be enumerated")
+            && out.contains("inside the JSON payload, never on a preceding line"),
         "review guidance must name LOOM_BLOCKED for no-options dead ends: {out}",
     );
     Ok(())
@@ -1967,11 +2001,11 @@ fn progress_markers_render_phase_specific_diff_rules() -> Result<()> {
     .render()?;
 
     assert!(
-        review_out.contains("clean inspection with zero findings"),
+        review_out.contains("A clean inspection ends with `LOOM_COMPLETE`: zero findings"),
         "review LOOM_COMPLETE must not inherit loop diff semantics: {review_out}",
     );
     assert!(
-        review_out.contains("no diff is expected"),
+        review_out.contains("no expected diff"),
         "review prompt must say no diff is expected for clean review: {review_out}",
     );
     assert!(
@@ -1980,8 +2014,8 @@ fn progress_markers_render_phase_specific_diff_rules() -> Result<()> {
         "LOOM_NOOP must stay loop-only: {review_out}",
     );
     assert!(
-        review_out.contains("empty loop diff with `LOOM_COMPLETE`"),
-        "loop zero-progress rule must stay scoped to loop: {review_out}",
+        !review_out.contains("empty loop diff with `LOOM_COMPLETE`"),
+        "review must not inherit loop zero-progress recovery: {review_out}",
     );
     Ok(())
 }

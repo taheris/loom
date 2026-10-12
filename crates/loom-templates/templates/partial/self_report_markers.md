@@ -4,8 +4,16 @@ Decision discovery is independent of the session's terminal outcome. Loop and
 Todo report all currently discovered unresolved human decisions through
 nonterminal records, never a bare `LOOM_CLARIFY` terminal:
 
-```text
-LOOM_CLARIFY: {"decisions":["<decision-bead-id>","<another-decision-id>"]}
+The `decisions` array must be nonempty and contain dedicated decision bead IDs,
+not source/task IDs. Repeated IDs identify one decision. The terminal remains
+independent. For example, after staging both decisions and declaring the source's
+actual prerequisite, report them and wait:
+
+```text loom-example
+LOOM_CLARIFY: {
+  "decisions": ["lm-decision.1", "lm-decision.2"]
+}
+LOOM_WAITING
 ```
 
 Each decision has one dedicated bead with one canonical Options brief. Parent it
@@ -17,6 +25,16 @@ alongside the brief and proposed edges; the driver admits references and briefs
 before queue or scheduling effects. Reuse compatible existing decisions rather
 than duplicating them. Report the full known set, including persisted candidates
 from an interrupted attempt; do not leave an invisible unreported decision.
+Account for **all owned persisted candidates** before any terminal, including
+ones affecting only other work. Valid prior dispositions and historical closed
+decisions remain accounted for without redundant emissions. Candidate metadata
+is an untrusted proposal, not task acceptance or queue/wait authority. A failed
+reference/graph handoff retains candidates for repair, never silently treats
+them as implementation tasks. The driver admits valid briefs to `loom:clarify`
+and downgrades defective briefs on that decision to `loom:blocked`; the source's
+outcome remains independent. Workers own the brief, ordinary bead creation,
+labels, descriptions and proposed affected-work edges; do not copy Options
+briefs onto the source or work epic.
 
 {% include "partial/options_format.md" %}
 
@@ -27,6 +45,19 @@ then end with `LOOM_WAITING`. If a decision affects only other implementation
 work, finish independent work and use the normal `LOOM_COMPLETE` / `LOOM_NOOP`
 (Loop) or valid `LOOM_TODO` payload (Todo). A decision record is not completion,
 and a human answer does not automatically close implementation work.
+
+{% if self.output_phase() == loom_protocol::output::Phase::Loop %}
+If only other work needs the decisions and this source meets its own acceptance,
+close the source and report decisions before the normal completion terminal:
+
+```text loom-example
+LOOM_CLARIFY: {"decisions":["lm-decision.1","lm-decision.2"]}
+LOOM_COMPLETE
+```
+
+Use Noop instead when that independent source produced an intentionally empty
+diff; use neither success terminal when its own prerequisites remain unresolved.
+{% endif %}
 
 Do not ask for ratification of a clear recommended path. When the spec, code,
 and research establish a safe preference, implement or file that plan directly.
@@ -50,7 +81,19 @@ non-empty line, instead of a success terminal:
 **Discriminator.** Fresh dispatch likely to help? → Retry. Safe unresolved
 options available? → dedicated decision records plus the actual source outcome.
 Semantic dead end with no safe options? → Blocked with the no-options reason.
-Never use a Clarify record as a terminal or combine two terminals.
+Never use a Clarify record as a terminal or combine two terminals. Reasons
+belong inside the typed JSON object, not in preceding prose. Strict JSON permits
+pretty objects and escaped string newlines; raw string newlines are not repaired.
+
+```text loom-example
+LOOM_RETRY: {"reason":"Workspace IO failed; a fresh dispatch can retry the read."}
+```
+
+```text loom-example
+LOOM_BLOCKED: {
+  "reason": "The required source evidence is irrecoverably absent; options would invent unsupported obligations."
+}
+```
 
 **Worker phases only.** Review is inspection-only: it uses clarify-route finding
 Options evidence, never direct decision-bead mutation or Clarify records.

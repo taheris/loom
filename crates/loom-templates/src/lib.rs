@@ -107,13 +107,11 @@ pub const PARTIAL_CONTEXT_PINNING: &str = include_str!("../templates/partial/con
 /// Pins the
 /// rule on `todo`: every authored bead must correspond to
 /// evidence-confirmed missing work (read off `criterion_status` and
-/// representative implementations), or the agent emits `LOOM_CLARIFY` on
-/// the work epic per the *Options Format Contract* in `specs/gate.md`.
+/// representative implementations), with unresolved decisions reported separately.
 pub const PARTIAL_DECOMPOSITION_DISCIPLINE: &str =
     include_str!("../templates/partial/decomposition_discipline.md");
 
-/// `partial/dependency_wait.md` — loop-only `LOOM_WAITING` protocol for an
-/// open bead with an active declared blocker.
+/// `partial/dependency_wait.md` — Loop/Todo prerequisite waits on open source work.
 pub const PARTIAL_DEPENDENCY_WAIT: &str = include_str!("../templates/partial/dependency_wait.md");
 
 /// Planning chat discipline from `partial/chat_interview.md`.
@@ -148,8 +146,7 @@ pub const PARTIAL_WORKSPACE_RECOVERY: &str =
 /// success marker contract.
 pub const PARTIAL_TODO_SUCCESS: &str = include_str!("../templates/partial/todo_success.md");
 
-/// `partial/self_report_markers.md` — direct loop/todo cannot-finish
-/// terminators (`LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`).
+/// `partial/self_report_markers.md` — Loop/Todo decisions and typed retry/blocked outcomes.
 pub const PARTIAL_SELF_REPORT_MARKERS: &str =
     include_str!("../templates/partial/self_report_markers.md");
 

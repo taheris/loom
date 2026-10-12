@@ -272,4 +272,22 @@ these markers to intermediate turns mid-conversation; end mid-conversation
 replies with normal prose (or nothing) and reserve the marker for the
 session-close turn. Emitting a marker every turn pollutes the transcript,
 misaligns your own self-model ("each reply is the end"), and risks tripping
-orchestrator parsers that trust the marker as terminal.
+orchestrator parsers that trust the marker as terminal. These are unit/data
+messages as shown in the compiled syntax table, not an optional prose payload.
+Do not emit worker Retry/Blocked/Clarify messages in either interactive phase.
+
+
+Final-turn examples, after human-confirmed resolution (choose one):
+
+```text loom-example
+LOOM_COMPLETE
+```
+
+```text loom-example
+LOOM_APPLY: {
+  "proposals": ["lm-tune.1", "lm-tune.2"]
+}
+```
+
+Apply is only a typed proposal for the trusted driver; decoding does not
+authorize publication or applying unconfirmed tune proposals yourself.

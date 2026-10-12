@@ -126,7 +126,7 @@ running log.
 
 ## Implementation Notes
 
-The following implementation notes were captured during planning. **Every note below describes work that MUST become one or more beads in this session** unless you persist a structured clarify question to the work epic and self-report.
+The following implementation notes were captured during planning. **Every note below describes work that MUST become one or more beads in this session** unless a genuinely unresolved choice requires a dedicated child decision brief and nonterminal Clarify reporting; reconcile decomposition independently.
 
 
 
@@ -241,48 +241,22 @@ A fixed decomposition axis applied across the board irrespective of evidence —
 4. Set execution order with `bd dep add <later-task> <earlier-task>` where required.
 5. When finished, stop using tools and emit success only through the typed todo payload described below as your final assistant message. Do not use `bash`, `python`, `echo`, `printf`, or any other tool to print the terminal line.
 
-```markdown
-## Options — <one-line summary of the decision, ≤80 chars>
-
-### Option 1 — <short title>
-<body paragraph(s) describing the option, naming its cost>
-
-### Option 2 — <short title>
-<body, including cost>
-
-### Option 3 — <short title>
-<body, including cost>
-```
-
-**Rules:**
-
-- The `## Options` header carries a one-line summary (≤50 chars)
-  separated from the word `Options` by em-dash `—` (default),
-  en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
-  tolerate any of these; emit em-dash by default.
-- Each option is `### Option N — <title>` where `N` is 1-based
-  sequential. Numbering is required so `loom inbox` can parse and
-  render each option consistently.
-- Each option body extends from its `### Option N` heading until
-  the next `### Option` or the next `##` heading; name the cost
-  (churn, debt, coupling, risk).
-- Use contextual options per decision — typically 2–4, each
-  naming its cost. Do NOT emit a fixed A/B/C menu.
-
-`loom inbox` parses this format to render the SUMMARY column,
-enumerate options for view mode, and provide structured chat context.
-A malformed block — or one that lives only in your prose, never
-persisted to bead state — leaves the options invisible to
-`loom inbox`'s queue and chat context.
-
 ## Decision Records and Self-Reports
 
 Decision discovery is independent of the session's terminal outcome. Loop and
 Todo report all currently discovered unresolved human decisions through
 nonterminal records, never a bare `LOOM_CLARIFY` terminal:
 
-```text
-LOOM_CLARIFY: {"decisions":["<decision-bead-id>","<another-decision-id>"]}
+The `decisions` array must be nonempty and contain dedicated decision bead IDs,
+not source/task IDs. Repeated IDs identify one decision. The terminal remains
+independent. For example, after staging both decisions and declaring the source's
+actual prerequisite, report them and wait:
+
+```text loom-example
+LOOM_CLARIFY: {
+  "decisions": ["lm-decision.1", "lm-decision.2"]
+}
+LOOM_WAITING
 ```
 
 Each decision has one dedicated bead with one canonical Options brief. Parent it
@@ -294,6 +268,16 @@ alongside the brief and proposed edges; the driver admits references and briefs
 before queue or scheduling effects. Reuse compatible existing decisions rather
 than duplicating them. Report the full known set, including persisted candidates
 from an interrupted attempt; do not leave an invisible unreported decision.
+Account for **all owned persisted candidates** before any terminal, including
+ones affecting only other work. Valid prior dispositions and historical closed
+decisions remain accounted for without redundant emissions. Candidate metadata
+is an untrusted proposal, not task acceptance or queue/wait authority. A failed
+reference/graph handoff retains candidates for repair, never silently treats
+them as implementation tasks. The driver admits valid briefs to `loom:clarify`
+and downgrades defective briefs on that decision to `loom:blocked`; the source's
+outcome remains independent. Workers own the brief, ordinary bead creation,
+labels, descriptions and proposed affected-work edges; do not copy Options
+briefs onto the source or work epic.
 
 ```markdown
 ## Options — <one-line summary of the decision, ≤80 chars>
@@ -337,6 +321,8 @@ work, finish independent work and use the normal `LOOM_COMPLETE` / `LOOM_NOOP`
 (Loop) or valid `LOOM_TODO` payload (Todo). A decision record is not completion,
 and a human answer does not automatically close implementation work.
 
+
+
 Do not ask for ratification of a clear recommended path. When the spec, code,
 and research establish a safe preference, implement or file that plan directly.
 Reserve decisions for genuinely unresolved viable choices with materially
@@ -359,16 +345,58 @@ non-empty line, instead of a success terminal:
 **Discriminator.** Fresh dispatch likely to help? → Retry. Safe unresolved
 options available? → dedicated decision records plus the actual source outcome.
 Semantic dead end with no safe options? → Blocked with the no-options reason.
-Never use a Clarify record as a terminal or combine two terminals.
+Never use a Clarify record as a terminal or combine two terminals. Reasons
+belong inside the typed JSON object, not in preceding prose. Strict JSON permits
+pretty objects and escaped string newlines; raw string newlines are not repaired.
+
+```text loom-example
+LOOM_RETRY: {"reason":"Workspace IO failed; a fresh dispatch can retry the read."}
+```
+
+```text loom-example
+LOOM_BLOCKED: {
+  "reason": "The required source evidence is irrecoverably absent; options would invent unsupported obligations."
+}
+```
 
 **Worker phases only.** Review is inspection-only: it uses clarify-route finding
 Options evidence, never direct decision-bead mutation or Clarify records.
 Interactive Plan/Inbox resolve questions with the human in-turn and do not use
 worker self-reports.
 
+## Dependency-Wait Marker
+
+`LOOM_WAITING` is a bare, unit terminal admitted in Loop and Todo. It pauses
+open source work only on actual work owned by another bead. Before emitting it:
+
+1. Declare the actual blocking edge with `bd dep add <source> <blocker>`.
+2. Leave the source open; do **not** run `bd close`.
+3. Ensure at least one declared blocker is still active (not closed).
+
+
+Here the source is the injected work epic identified in Todo Batch above. Wait only when
+**decomposition itself** cannot finish without that prerequisite. A decision
+needed only by particular implementation tasks blocks those tasks, not the work
+epic; report it and finish the exact roster with Todo instead. Keep the pending
+work epic, children, fixed batch and drafts for resumption. Waiting does not
+advance spec cursors, consume implementation notes, or activate the work epic.
+
+
+```text loom-example
+LOOM_WAITING
+```
+
+The marker carries no JSON or prose payload: Beads prerequisites are the durable
+authority. A valid wait consumes no retry budget and adds no human-queue label
+to the source. After admission the driver records an attributed wait and parks
+eligible work visibly as `status=blocked`; it selectively releases only its own
+wait when current prerequisites resolve, never unrelated human blocking state.
+Dependency release does not close implementation work. A closed source or a
+source without an active declared prerequisite is invalid and enters recovery.
+
 ## Todo Success Marker
 
-A successful `loom todo` session ends with exactly one final line using the typed todo protocol:
+A successful `loom todo` session ends with exactly one final logical terminal using the typed todo protocol (compact or pretty-printed strict JSON):
 
 ```text
 LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","title":"<final work epic title>","specs":[...]}
@@ -380,4 +408,26 @@ Write this line directly as normal assistant text in the final assistant respons
 
 For each spec entry, use `{"label":"<spec>","outcome":"decomposed","beads":[...],"assignments":[{"task":"<child-id>","criteria":[{"spec_label":"<injected-label>","criterion_id":"<injected-criterion-id>"}]}]}` when you created one or more beads, or `{"label":"<spec>","outcome":"no-work","reason":"<non-empty audit reason>"}` when inspection proves no implementation work is needed. Propose one nonempty criterion assignment per implementation child, using only the injected criterion IDs; never compute IDs, scrape descriptions for bindings, or write acceptance metadata with `bd`. Include existing drafts in the complete roster. Rust resolves proposals against preflight acceptance and persists reference-only metadata. Bead lists, assignment lists, criterion sets, and no-work reasons are typed non-empty values in `TodoSuccess`; empty lists, empty reasons, omitted specs, duplicate specs, `Blocked`, and `pending` are not success states.
 
-`LOOM_COMPLETE` and `LOOM_NOOP` are wrong-phase success markers for todo. Use `LOOM_TODO: <json>` as final assistant text for success, or the worker self-report markers above when the session cannot complete.
+Dedicated decision children, including malformed-brief repair items, are **not implementation tasks**. They cannot satisfy `Decomposed.beads`, assignment proposals or criterion coverage. Account for all owned candidates separately through decision admission; an unreported candidate prevents finalization. Do not copy briefs onto the epic. Only actual decomposition prerequisites justify waiting on the work epic; implementation-only decisions leave a complete valid roster free to finalize.
+
+Ordinary task creation, labels, descriptions, and dependency edges remain agent-owned. Rust alone resolves the supplied criterion-ID proposals and persists accepted reference metadata; no second Beads JSON schema is authored here.
+
+Illustrative success payloads below use sample IDs, not assignments to copy into your batch. Substitute the injected batch identity, complete changed-spec roster, actual implementation children and supplied criterion IDs. The first is a decomposed roster; the second is an independently audited no-work roster. In the first example a
+staged decision affects only implementation work, not decomposition itself:
+
+```text loom-example
+LOOM_CLARIFY: {"decisions":["lm-decision.1"]}
+LOOM_TODO: {
+  "head": "0123456789abcdef0123456789abcdef01234567",
+  "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "work_epic": "lm-work",
+  "title": "Implement the example contract",
+  "specs": [{"label":"example","outcome":"decomposed","beads":["lm-work.1"],"assignments":[{"task":"lm-work.1","criteria":[{"spec_label":"example","criterion_id":"criterion-0000000000000001"}]}]}]
+}
+```
+
+```text loom-example
+LOOM_TODO: {"head":"0123456789abcdef0123456789abcdef01234567","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","work_epic":"lm-work","title":"Audit the example contract","specs":[{"label":"example","outcome":"no-work","reason":"Representative implementation and verifier inspection confirm the wording-only change requires no implementation."}]}
+```
+
+`LOOM_COMPLETE` and `LOOM_NOOP` are wrong-phase success markers for todo. Use `LOOM_TODO: <json>` as final assistant text for success, or Waiting/Retry/Blocked when the session cannot complete. Nonterminal Clarify records may precede any of these terminals; they never replace the terminal.

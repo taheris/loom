@@ -17,7 +17,11 @@ pub struct InboxContext {
 
 impl InboxContext {
     pub fn output_contract(&self) -> String {
-        crate::output::contract(loom_protocol::output::Phase::Inbox)
+        crate::output::contract(self.output_phase())
+    }
+
+    pub const fn output_phase(&self) -> loom_protocol::output::Phase {
+        loom_protocol::output::Phase::Inbox
     }
 }
 

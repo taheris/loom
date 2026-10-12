@@ -1,34 +1,35 @@
 ## Review Self-Report Markers
 
 Review is inspection-only. Do not mutate `bd` state or persist review
-self-report state with bd commands. A completed review reports concerns
-through the streaming finding protocol above; these self-report markers are
-only for cases where the review walk itself cannot complete. When you use
-one, place exactly one marker on the final non-empty line.
+self-report state with bd commands. Completed inspection reports findings
+through the streaming protocol above, paired with Concern, or Complete for
+zero findings. These outcomes are only for when the walk itself cannot finish;
+use exactly one final logical terminal, with no trailing commentary.
 
-- `LOOM_RETRY` — The review attempt cannot finish but a fresh dispatch is
-  likely to succeed. Use this for environmental failures such as corrupt
-  logs, inaccessible workspace state, transient IO, or a missing prerequisite
-  that should be present. Write the reason on the line immediately before
-  the marker; the driver records it as retry context.
-- Clarify-worthy review decisions do **not** use direct `LOOM_CLARIFY`.
-  If you can safely enumerate candidate resolutions, emit a
-  `route="clarify"` `LOOM_FINDING` whose `evidence` embeds the canonical
-  `## Options — …` block, then finish the walk with `LOOM_CONCERN`. If
-  the review cannot proceed and no options can be safely articulated, use
-  `LOOM_BLOCKED` instead.
-- `LOOM_BLOCKED` — A genuine semantic dead end: retry is not expected to
-  help, the review cannot proceed, and you have no safe candidate
-  resolutions to enumerate. Write a non-empty dead-end reason on the line
-  immediately before the marker explaining why options cannot be safely
-  surfaced. Do not create, update, label, or close beads from the review
-  prompt.
+- `Retry` — A fresh dispatch is likely to succeed after an environmental failure
+  such as inaccessible workspace state or transient IO. Carry the nonblank
+  reason inside the JSON payload, never on a preceding line.
+- Clarify-worthy decisions use a clarify-route finding with one canonical
+  Options brief in `evidence`, not direct decision-bead writes or Clarify
+  records. If inspection can finish, pair those findings with Concern. Do not
+  duplicate the evidence as separate prose narration.
+- `Blocked` — A genuine semantic dead end: retry will not help and candidate
+  resolutions cannot be safely framed. Its nonblank JSON reason explains **why
+  no safe options can be enumerated**, not merely that human input is needed.
 
-**Discriminator.** expect retry to succeed? → RETRY. Can you safely
-surface candidate options? → emit a clarify-route finding. Semantic dead
-end with no safe options? → BLOCKED with the no-options rationale on the
-prior line.
+```text loom-example
+LOOM_RETRY: {"reason":"Workspace IO interrupted inspection; a fresh dispatch can read the evidence."}
+```
 
-**Review-phase only.** These self-report rules apply only to `review`.
-`loop` and `todo` use the direct worker self-report partial; interactive
-sessions (`plan`, `inbox`) do not emit worker self-report markers.
+```text loom-example
+LOOM_BLOCKED: {
+  "reason": "The contractual source cannot be recovered; any proposed option would invent the intended invariant."
+}
+```
+
+**Discriminator.** Fresh dispatch likely to help? → Retry. Viable unresolved
+options? → clarify-route finding, then the actual review outcome. No safe
+options? → Blocked with its typed rationale. Strict JSON accepts pretty objects
+and escaped evidence newlines, never raw newline repair or preceding prose as a
+reason/question payload. Loop/Todo use worker decision records; interactive
+Plan/Inbox resolve questions with the human in-turn instead of self-reports.

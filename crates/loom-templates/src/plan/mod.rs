@@ -18,6 +18,10 @@ pub struct PlanContext {
 
 impl PlanContext {
     pub fn output_contract(&self) -> String {
-        crate::output::contract(loom_protocol::output::Phase::Plan)
+        crate::output::contract(self.output_phase())
+    }
+
+    pub const fn output_phase(&self) -> loom_protocol::output::Phase {
+        loom_protocol::output::Phase::Plan
     }
 }

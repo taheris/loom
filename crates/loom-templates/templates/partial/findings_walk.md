@@ -1,216 +1,162 @@
 ## Findings — Streaming Wire Format
 
-You communicate every concern by emitting one `LOOM_FINDING:` JSON
-record per finding on stdout, **streamed as findings are identified**
-(not batched at end-of-walk). The driver parses each record
-incrementally and mints the corresponding fix-up beads itself — the
-agent never invokes `bd create` / `bd update` / `bd mol bond`.
+Communicate every concern as a `LOOM_FINDING` record in normal assistant text,
+streamed as findings are identified (not batched at end-of-walk). Review is
+**inspection-only**: never invoke `bd create`, `bd update`, or `bd mol bond`.
+The trusted driver records/materializes admitted findings at its act boundary;
+decoding a record is not permission to mutate Beads or publish.
 
 ### Emit shape
 
 ```text
-LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<spec>",...],"target":<target>,"evidence":"<evidence>"}
+LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<spec>"],"target":<target>,"evidence":"<evidence>"}
 ```
 
-- **`token`** — concern identifier from the closed-set enum listed
-  under _Concern tokens_ below.
-- **`route`** — workflow route for this finding: `blocking` retries
-  the current bead, `deferred` records remediation outside the current
-  bead's hot path, and `clarify` creates human-decision work with an
-  options block. At `--tree` scope, emit `deferred` for mechanical
-  remediation and `clarify` for options-block decisions; do not emit
-  `blocking` because there is no current bead to retry.
-- **`bonds`** — array of spec labels the fix-up should bond to.
-  Always present, always at least one element. The driver picks the
-  bonding lead from this array.
-- **`target`** — tagged JSON object whose `kind` discriminator selects
-  the variant per the table below; carries identity-bearing fields
-  specific to the variant.
-- **`evidence`** — your reasoning string, stored verbatim on the
-  minted fix-up bead's description. For `route="clarify"` findings,
-  this **MUST** embed the canonical `## Options — …` block per the
-  Options Format Contract.
+- **`token`** — rubric concern from the compiled Findings metadata table below.
+- **`route`** — `blocking` requests current-bead recovery, `deferred` requests
+  remediation outside its hot path, and `clarify` carries human-decision
+  Options evidence. At tree scope prefer deferred or clarify; blocking is
+  accepted as ready remediation for compatibility. Push-gate scope rejects
+  blocking. Neither a route nor a terminal authorizes reviewer Beads writes.
+- **`bonds`** — nonempty array of actual workspace spec labels; the driver
+  selects the bonding lead.
+- **`target`** — tagged object; its `kind` and identity fields must match the
+  token, resolve in the workspace and obey the active dispatch scope.
+- **`evidence`** — reasoning stored verbatim with the finding. Every
+  `route="clarify"` finding **MUST** embed one canonical Options brief here.
+  Do not duplicate the evidence in adjacent prose or reproduce briefs on a
+  source/epic. Ordinary commentary before the terminal is otherwise allowed.
 
-Emit compact one-line JSON when possible. For long evidence or
-`route="clarify"` Options blocks, prefer `\n` escape sequences inside the
-`evidence` string; if you emit raw line breaks inside a JSON string, the
-driver normalizes them before strict validation. Do not split field names,
-tokens, target JSON, or other structural JSON across prose outside the object.
+Compact JSON is convenient, but pretty-printed objects are equally valid.
+Escape newlines, quotes and controls inside evidence strings: raw JSON-string
+newlines are **not repaired**. No preceding prose supplies fields or questions.
+Emit live messages in column one, without fences; the fenced examples here are
+instructional data, not live agent output. Malformed recognized records fail
+with typed diagnostics retaining raw text, source spans and valid context;
+there is no silent skip or guessed boundary in an unterminated string.
 
-### Canonical target shapes per token
+### Canonical target kinds and scopes
 
-| Token                        | `target` shape                                                                   |
-| ---------------------------- | -------------------------------------------------------------------------------- |
-| `spec-coherence-fail`        | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}`                       |
-| `orphan-integration`         | `{"kind":"Contract","id":"<contract-id>"}`                                       |
-| `style-rule-violation`       | `{"kind":"StyleRule","rule_id":"<rule-id>","subject":"<stable-subject>"}`        |
-| `verifier-bypass`            | `{"kind":"Annotation","target_string":"<target>"}`                               |
-| `weak-assertion`             | `{"kind":"Annotation","target_string":"<target>"}`                               |
-| `fabricated-result`          | `{"kind":"Annotation","target_string":"<target>"}`                               |
-| `coincidental-pass`          | `{"kind":"Annotation","target_string":"<target>"}`                               |
-| `mock-discipline`            | `{"kind":"TestPath","path":"<path>"}`                                            |
-| `verifier-too-narrow`        | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}`                       |
-| `concurrency-untested`       | `{"kind":"LockSite","file":"<file>","line":<line>}`                              |
-| `judge-flag`                 | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}`                       |
-| `invariant-clash`            | `{"kind":"Invariant","spec":"<spec>","section":"<section>","tag":"<tag>"}`       |
-| `template-spec-drift`        | `{"kind":"Template","path":"<path>"}` — `--tree` scope only                      |
-| `cross-spec-clash`           | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
-| `spec-conventions-violation` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
+This table is compiled from Findings' prompt-visible rubric subset. Driver-only
+deterministic/integrity tokens are not reviewer emit instructions. Target fields
+are illustrated by the executable examples below.
 
-`scope-creep` and `scope-shortfall` are per-bead-only tokens; do not
-emit them at `--tree` scope. `template-spec-drift`, `cross-spec-clash`,
-and `spec-conventions-violation` apply at `--tree` scope only (see
-`specs/gate.md` § _Standing-safety-net checks_).
-
-Example records:
-
-```text
-LOOM_FINDING: {"token":"spec-coherence-fail","route":"deferred","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"The bead claims to verify live-path coverage but every annotation mocks the binary."}
-LOOM_FINDING: {"token":"style-rule-violation","route":"deferred","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"RS-12","subject":"crates/loom-gate/src/finding.rs#Finding"},"evidence":"crates/loom-gate/src/finding.rs:42-58 holds a placeholder String that consumers must overwrite — RS-12 forbids placeholder fields on production types."}
-LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["harness"],"target":{"kind":"LockSite","file":"crates/loom-workflow/src/run/runner.rs","line":210},"evidence":"New Arc<Mutex<T>> introduced at runner.rs:210 has no concurrent-load test exercising contention."}
-```
+| Token | Target kind | Scope |
+| ----- | ----------- | ----- |
+{% for token in self.finding_tokens() -%}
+| `{{ token.as_wire() }}` | `{{ token.expected_target_kind().as_wire() }}` | `{{ token.scope_kind().label() }}` |
+{% endfor %}
 
 ### Validation rules
 
-- **`Criterion.anchor` MUST be copyable from the spec surface**: a
-  markdown heading slug, a criterion id when one is shown, or an
-  attached verifier / judge function name or target string. Do not
-  invent a fresh label.
-- **`Annotation.target_string` MUST be only the raw annotation target**
-  inside `[check](...)`, `[test](...)`, `[system](...)`, or
-  `[judge](...)`. Omit `specs/foo.md:line` prefixes and the `[tier]`
-  wrapper.
-- **`target.spec` MUST appear in `bonds`** for `Criterion` and
-  `Invariant` target variants. You cannot cite a criterion or
-  invariant in spec X while bonding only to spec Y. The driver
-  rejects a violating finding with a typed parse error and fails the
-  mint invocation. This rule applies to every token whose canonical
-  target is `Criterion` (`spec-coherence-fail`,
-  `verifier-too-narrow`, `judge-flag`, `cross-spec-clash`,
-  `spec-conventions-violation`) and the `Invariant` target
-  (`invariant-clash`). For `Invariant`, `section` must name an actual
-  heading in the spec, and `tag` must be a short slug made from words
-  that appear in that invariant's prose; do not invent labels.
-- **`StyleRule` targets MUST include a concrete `subject`** in
-  addition to `rule_id`; a rule-only target is too broad for dedup or
-  suppression, and a bare line number is not a stable subject.
-- **`route="clarify"` findings MUST embed the canonical `## Options — …`
-  block in their `evidence` field**. The driver lifts the block into
-  the minted clarify bead's description; if it is missing, mint falls
-  back to `loom:blocked` with cause `clarify-without-options`.
-- **Malformed records fail the run.** A `LOOM_FINDING:` record that
-  does not parse after raw line breaks inside JSON strings are
-  normalized — invalid JSON, unknown token, a `bonds` element that
-  does not resolve to a workspace spec, a `target` variant
-  mismatching the token's expected variant, or unresolved target
-  content (criterion anchor not in spec, file path absent on disk) —
-  is rejected with a typed error naming the offending record's start
-  line. No silent skip.
+- `Criterion.anchor` must be copyable from the spec: a heading slug, shown
+  criterion ID, attached verifier/judge function name or target string.
+- `Annotation.target_string` is only the raw declared annotation target, without
+  a spec/line prefix or `[tier]` wrapper.
+- `target.spec` must appear in `bonds` for Criterion and Invariant targets.
+  Invariant `section` names an actual heading; `tag` is a short slug made from
+  words in its prose, not an invented label.
+- StyleRule includes both `rule_id` and a concrete, stable `subject`; a rule or
+  bare line number alone is too broad for identity/suppression.
+- File-shaped TestPath, LockSite and Template targets must exist. LockSite uses
+  a source line. Unresolved labels/anchors/files, wrong token/target
+  combinations and forbidden scopes fail contextual resolution.
+- Clarify evidence must carry the Options Format Contract. Missing or malformed
+  briefs are downgraded by materialization to `loom:blocked` with cause
+  `clarify-without-options`, not repaired from adjacent narration.
 
 ### Concern tokens
 
-`<token>` is one of the following enum tokens (lowercase, hyphenated).
-The first four are the verifier-honesty sub-checks — one finding per
-failing sub-check, cited against the offending test path:
+Verifier-honesty tokens identify bypassed live paths, tautological assertions,
+fabricated pass results or coincidental passes; their targets are annotations.
+Mock discipline identifies tests substituting internal logic; verifier-too-narrow
+identifies a criterion checked on only one side of its seam. Concurrency findings
+identify synchronization sites missing contention tests. Judge flags identify
+unsatisfied rubric criteria. Style-rule evidence cites the violating rule and
+concrete file/range; coherence evidence identifies unrealized spec claims.
+Orphan integration identifies an incomplete cross-component contract. Scope
+creep/shortfall compare a finite diff with the task's criterion obligations.
+Tree-only template drift, cross-spec clash and spec-convention violations cite
+respectively a template, the primary spec/anchor with all involved bonds, or the
+offending spec/anchor and convention section.
 
-- `verifier-bypass` — at least one deterministic-tier annotation
-  (`[check]`, `[test]`, or `[system]`) on the bead must exercise the
-  live path; the bead's full set bypasses it.
-- `fabricated-result` — the verifier's pass relies on a value the
-  test itself synthesized.
-- `weak-assertion` — the assertion tautologically passes.
-- `coincidental-pass` — the test passes for the wrong reason.
-
-The remaining tokens cover the other rubric dimensions:
-
-- `mock-discipline` — a mock stands in for the very thing the test
-  claims to test.
-- `verifier-too-narrow` — a multi-component contract has a verifier
-  that exercises only one side of the seam.
-- `concurrency-untested` — production code introduces or modifies
-  shared-state synchronisation primitives without at least one
-  concurrent-load test.
-- `judge-flag` — a `[judge]` rubric is not satisfied.
-- `style-rule-violation` — the diff violates a rule in the pinned
-  style-rules document; the `target.rule_id` names the violating rule,
-  `target.subject` names the stable violated surface, and the
-  `evidence` cites file/line range.
-- `spec-coherence-fail` — a claim in a touched spec section is not
-  realised by the code (no passing verifier and no LLM trace).
-- `orphan-integration` — a multi-component contract spans beads but
-  the closure is not complete in the molecule's diff or bonded
-  siblings.
-- `invariant-clash` — a load-bearing invariant in the touched spec
-  set is silently contradicted by the diff. This token defaults to
-  `route="clarify"`; **embed the canonical `## Options — …` block in
-  `evidence`** using the exact heading shape below (prose
-  `Recommended:` / `Alternative:` headings do NOT count and degrade
-  the minted bead to `loom:blocked` with cause
-  `clarify-without-options`):
+- **Invariant clash and all other clarify-worthy findings** carry contextual
+  options (typically 2–4, each with a concrete cost), not a fixed menu:
 
   {% filter indent(2) %}{% include "partial/options_format.md" %}{% endfilter %}
 
-  The driver attaches `loom:clarify` to the minted bead and lifts
-  the block into its description.
+  Embed this Markdown as escaped JSON evidence, once per finding. The trusted
+  driver lifts the brief into the decision description; the reviewer does not.
 
-- `template-spec-drift` — at `--tree` scope, a prompt template under
-  `crates/loom-templates/templates/` directs agents toward behaviour
-  a spec contradicts (Invariant 3 from `specs/gate.md`).
-- `cross-spec-clash` — at `--tree` scope, sibling specs make duplicate,
-  paraphrased, or contradictory claims about a shared surface. Use a
-  `Criterion` target for the primary spec/anchor, include every involved
-  spec in `bonds`, and quote the other side(s) in `evidence`.
-- `spec-conventions-violation` — at `--tree` scope, a spec violates
-  `docs/spec-conventions.md` in a way that requires intent-aware review.
-  Use a `Criterion` target for the offending spec/anchor and name the
-  convention section in `evidence`.
+### Executable examples
+
+These sample workspace declarations use spec `example`, heading `Acceptance`,
+contract `example-contract`, an annotated Rust test and an existing template.
+Substitute actual workspace identities and concrete evidence, not invented
+anchors. Each block is a separate completed review, not messages to concatenate.
+
+Any-scope rubric examples (also valid at tree and push-gate scope):
+
+```text loom-example any-scope
+LOOM_FINDING: {"token":"spec-coherence-fail","route":"deferred","bonds":["example"],"target":{"kind":"Criterion","spec":"example","anchor":"acceptance"},"evidence":"The declared live-path behavior is absent."}
+LOOM_FINDING: {"token":"orphan-integration","route":"deferred","bonds":["example"],"target":{"kind":"Contract","id":"example-contract"},"evidence":"The producer and consumer contract do not join."}
+LOOM_FINDING: {"token":"style-rule-violation","route":"deferred","bonds":["example"],"target":{"kind":"StyleRule","rule_id":"RS-12","subject":"tests/example.rs#run"},"evidence":"The production value relies on a sentinel; RS-12 forbids it."}
+LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["example"],"target":{"kind":"Annotation","target_string":"crate::example::test_live"},"evidence":"The annotation bypasses the real consumer."}
+LOOM_FINDING: {"token":"weak-assertion","route":"deferred","bonds":["example"],"target":{"kind":"Annotation","target_string":"crate::example::test_live"},"evidence":"The assertion is tautological."}
+LOOM_FINDING: {"token":"fabricated-result","route":"deferred","bonds":["example"],"target":{"kind":"Annotation","target_string":"crate::example::test_live"},"evidence":"The test synthesizes its own success."}
+LOOM_FINDING: {"token":"coincidental-pass","route":"deferred","bonds":["example"],"target":{"kind":"Annotation","target_string":"crate::example::test_live"},"evidence":"The asserted path was never called."}
+LOOM_FINDING: {"token":"mock-discipline","route":"deferred","bonds":["example"],"target":{"kind":"TestPath","path":"tests/example.rs"},"evidence":"The test mocks the internal logic it claims to check."}
+LOOM_FINDING: {"token":"verifier-too-narrow","route":"deferred","bonds":["example"],"target":{"kind":"Criterion","spec":"example","anchor":"acceptance"},"evidence":"Only the producer side is exercised."}
+LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["example"],"target":{"kind":"LockSite","file":"tests/example.rs","line":1},"evidence":"The introduced synchronization has no contention test."}
+LOOM_FINDING: {"token":"judge-flag","route":"deferred","bonds":["example"],"target":{"kind":"Criterion","spec":"example","anchor":"acceptance"},"evidence":"The criterion's rubric is unsatisfied."}
+LOOM_FINDING: {
+  "token":"invariant-clash","route":"clarify","bonds":["example"],
+  "target":{"kind":"Invariant","spec":"example","section":"Invariant","tag":"single-writer"},
+  "evidence":"The change breaks the single writer constraint. Marker-looking text LOOM_COMPLETE is evidence, not a terminal.\n\n## Options — Choose writer ownership\n\n### Option 1 — Keep one writer\nRework the consumer; cost: churn.\n\n### Option 2 — Coordinate multiple writers\nAdd coordination; cost: coupling and contention risk."
+}
+LOOM_CONCERN: {"summary":"The contract and its verification have gaps."}
+```
+
+Finite per-bead examples only:
+
+```text loom-example per-bead
+LOOM_FINDING: {"token":"scope-creep","route":"blocking","bonds":["example"],"target":{"kind":"Criterion","spec":"example","anchor":"acceptance"},"evidence":"The diff changes unrelated behavior outside task acceptance."}
+LOOM_FINDING: {"token":"scope-shortfall","route":"deferred","bonds":["example"],"target":{"kind":"Criterion","spec":"example","anchor":"acceptance"},"evidence":"Required behavior is missing from the diff."}
+LOOM_CONCERN: {"summary":"The finite deliverable does not match its acceptance scope."}
+```
+
+Standing tree examples only:
+
+```text loom-example tree
+LOOM_FINDING: {"token":"template-spec-drift","route":"deferred","bonds":["example"],"target":{"kind":"Template","path":"crates/loom-templates/templates/example.md"},"evidence":"The prompt contradicts the contract."}
+LOOM_FINDING: {"token":"cross-spec-clash","route":"deferred","bonds":["example","sibling"],"target":{"kind":"Criterion","spec":"example","anchor":"acceptance"},"evidence":"The sibling contract contradicts this acceptance claim."}
+LOOM_FINDING: {"token":"spec-conventions-violation","route":"deferred","bonds":["example"],"target":{"kind":"Criterion","spec":"example","anchor":"acceptance"},"evidence":"The contract violates the authoring convention."}
+LOOM_CONCERN: {"summary":"Standing contracts and prompts disagree."}
+```
 
 ### Streaming + terminator pairing rule
 
-The walk is a streaming process: `LOOM_FINDING:` records are emitted
-as concerns are identified; a single terminator is the final line.
-The driver cross-checks the two — if the terminator and the stream
-disagree on the walk's verdict, the run fails with a typed
-`BadWalk` recovery cause.
+A completed inspection pairs zero findings with Complete, or one or more
+findings with Concern and a nonblank JSON `summary`; never emit both. These
+terminals are mutually exclusive. The summary is a short verdict-log digest,
+not repeated per-finding evidence or routing authority. A valid pretty terminal:
 
-`LOOM_CONCERN:` is the verdict-carrying terminator for a walk that
-streamed at least one `LOOM_FINDING:` record; `LOOM_COMPLETE` is the
-clean-walk terminator. The payload of `LOOM_CONCERN:` is a JSON
-object with a single required field, `summary`, whose value is a
-non-empty string:
-
-```text
-LOOM_CONCERN: {"summary":"<one-sentence summary of the strongest concern>"}
+```text loom-example
+LOOM_FINDING: {"token":"judge-flag","route":"deferred","bonds":["example"],"target":{"kind":"Criterion","spec":"example","anchor":"acceptance"},"evidence":"The live consumer is not tested."}
+LOOM_CONCERN: {
+  "summary": "The criterion lacks live consumer coverage."
+}
 ```
 
-The driver parses the payload with the same `serde_json` pipeline
-that consumes `LOOM_FINDING:` records. Parse failures — invalid JSON,
-missing `summary`, empty `summary` — surface as the typed
-`BadWalk::Concern { payload, parsed_findings }` recovery cause,
-preserving any well-formed findings streamed before the bad terminator.
-The summary is for the verdict log only; per-finding routing is decided
-from each streamed finding's `route`, not from the terminal marker.
+| Findings | Terminal                                            | Result                                                 |
+| -------- | --------------------------------------------------- | ------------------------------------------------------ |
+| 0        | Complete                                            | Clean inspection                                       |
+| ≥1       | Concern with nonblank summary                       | Findings retained for trusted routing                  |
+| 0        | Concern                                             | ConcernWithoutFindings recovery                        |
+| ≥1       | Complete                                            | FindingsWithoutConcern recovery with findings retained |
+| any      | Malformed, missing, duplicate or misplaced terminal | Typed recovery; no manufactured success                |
 
-| Findings streamed      | Terminator                                                      | Verdict                                                                                                                                                                    |
-| ---------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0                      | `LOOM_COMPLETE`                                                 | clean — phase done                                                                                                                                                         |
-| ≥1                     | `LOOM_CONCERN: {"summary":"..."}`                               | recovery — findings minted, summary threaded into `previous_failure`                                                                                                       |
-| 0                      | `LOOM_CONCERN: {...}`                                           | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration                                                                                        |
-| ≥1                     | `LOOM_COMPLETE`                                                 | `BadWalk::FindingsWithoutConcern { finding_count, findings }` — findings streamed but terminator claims clean, and the parsed findings ride through to the recovery prompt |
-| any well-formed stream | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings }` — payload parse failure preserves the literal payload and any well-formed findings                                         |
-| any                    | missing or duplicate marker                                     | `SwallowedMarker` (existing)                                                                                                                                               |
-
-**Agent's mental model.** Review the diff. Every time you identify a
-concern, immediately emit a `LOOM_FINDING:` record with the structured
-JSON detail and continue reviewing. When the walk is complete, end
-your response with `LOOM_COMPLETE` if you found nothing, or
-`LOOM_CONCERN: {"summary":"<one-sentence summary>"}` if you emitted
-one or more `LOOM_FINDING:` records. The terminator must match the
-stream: `LOOM_COMPLETE` means zero findings, `LOOM_CONCERN` means
-≥1 finding. The two are mutually exclusive — never emit both, and
-never alongside any other marker.
-
-A walk that emits `LOOM_FINDING:` records without a terminal marker is
-a crashed run; the driver fails the mint invocation with non-zero
-exit. Emitting `LOOM_CONCERN:` from any non-review phase is a
-`wrong-phase-marker` error in the verdict gate.
+Retry/Blocked are cannot-complete outcomes, documented below, not clean
+inspection. Missing/duplicate terminals or a record/commentary after a terminal
+fail shared decoding. Valid records retained on failure are diagnostic context,
+not permission to mint. Concern is review-only; Clarify is not a review record.
