@@ -25,14 +25,16 @@ _: {
         cargoExtraArgs = "--locked --package loom-workflow --test todo_production";
         doCheck = false;
         installPhaseCommand = ''
-          set -euo pipefail
-          mkdir -p "$out/bin"
-          for binary in target/release/deps/todo_production-*; do
-            if [[ -f "$binary" && -x "$binary" ]]; then
-              cp "$binary" "$out/bin/todo-acceptance-persistence"
-            fi
-          done
-          test -x "$out/bin/todo-acceptance-persistence"
+          (
+            set -euo pipefail
+            mkdir -p "$out/bin"
+            for binary in target/release/deps/todo_production-*; do
+              if [[ -f "$binary" && -x "$binary" ]]; then
+                cp "$binary" "$out/bin/todo-acceptance-persistence"
+              fi
+            done
+            test -x "$out/bin/todo-acceptance-persistence"
+          )
         '';
       };
       app = pkgs.writeShellApplication {
