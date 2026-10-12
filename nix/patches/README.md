@@ -4,7 +4,12 @@
 
 `nextest-filtering-parse.patch` makes `ParsedExpr::parse` return upstream
 diagnostics when parser recovery produces an AST with errors. The grammar, AST,
-and diagnostic messages and spans remain unchanged.
+and diagnostic messages and spans remain unchanged. In particular, an unpatched
+`ParsedExpr::parse("test(")` recovers an empty contains matcher while discarding
+`InvalidString` and `ExpectedCloseParenthesis` diagnostics. That recovered AST
+is not accepted syntax at Loom’s strict boundary. Keep these negative fixtures;
+empty regexes (`test(//)`), wildcard globs (`test(#*)`), and escaped closing
+parentheses are valid edge syntax and have positive coverage.
 
 `../nextest-filtering-overlay.nix` overlays Crane's `downloadCargoPackage` to
 apply this patch when unpacking the registry crate. `../workspace.nix` uses that

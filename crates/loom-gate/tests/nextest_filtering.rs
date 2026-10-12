@@ -13,6 +13,10 @@ fn nextest_filter_grammar_errors_retain_upstream_diagnostics() {
             ],
         ),
         (
+            "test()",
+            vec![ParseSingleError::InvalidString((5, 0).into())],
+        ),
+        (
             "test(name",
             vec![ParseSingleError::ExpectedCloseParenthesis((9, 0).into())],
         ),
@@ -41,14 +45,32 @@ fn nextest_filter_grammar_errors_retain_upstream_diagnostics() {
 
 #[test]
 fn nextest_filter_invalid_regex_retains_upstream_message_and_span() {
-    let errors = ParsedExpr::parse("package(/foo(ab/)").expect_err("invalid regex");
-    assert_eq!(
-        errors,
-        vec![ParseSingleError::InvalidRegex {
-            span: (12, 1).into(),
-            message: "unclosed group".to_owned(),
-        }]
-    );
+    for (input, span, message) in [
+        ("package(/foo(ab/)", (12, 1), "unclosed group"),
+        ("test(/[/)", (6, 1), "unclosed character class"),
+    ] {
+        let errors = ParsedExpr::parse(input).expect_err(input);
+        assert_eq!(
+            errors,
+            vec![ParseSingleError::InvalidRegex {
+                span: span.into(),
+                message: message.to_owned(),
+            }],
+            "input: {input}"
+        );
+    }
+}
+
+#[test]
+fn nextest_filter_accepts_empty_regex_glob_and_escaped_closing_parentheses() {
+    for (input, canonical) in [
+        (" test(//) ", "test(//)"),
+        ("test(#*)", "test(#*)"),
+        (r"test(some(thing\))", r"test(some(thing\))"),
+    ] {
+        let parsed = ParsedExpr::parse(input).expect(input);
+        assert_eq!(parsed.to_string(), canonical, "input: {input}");
+    }
 }
 
 #[test]

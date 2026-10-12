@@ -104,7 +104,7 @@ fn quint_verify_blocks_parse_property_filters_and_role_exceptions() {
     for invalid in [
         "[rust]\nproperty_filters = 'all()'",
         "[rust]\nproperty_filters = [42]",
-        "[rust]\nproperty_filters = ['test(']",
+        "[rust]\nproperty_filters = ['test(/[/)']",
         "[[role_exception]]\nsubject = 42\nrole = 'fixture'\nreason = 'cost'",
         "[[role_exception]]\nsubject = 'a'\nrole = false\nreason = 'cost'",
         "[[role_exception]]\nsubject = 'a'\nrole = 'fixture'\nreason = []",
@@ -235,7 +235,14 @@ fn malformed_package_strategy_fails_closed() {
 
 #[test]
 fn nextest_filter_grammar_errors_retain_upstream_diagnostics() {
-    for expression in ["test(", "unknown(name)", "test(/[/)", "all() trailing", ""] {
+    for expression in [
+        "test(",
+        "test()",
+        "unknown(name)",
+        "test(/[/)",
+        "all() trailing",
+        "",
+    ] {
         let body = package_block(&format!("[rust]\nproperty_filters = ['{expression}']"));
         let Err(ParseError::Strategy {
             source:
@@ -250,6 +257,26 @@ fn nextest_filter_grammar_errors_retain_upstream_diagnostics() {
         };
         assert_eq!(actual, expression);
         assert_eq!(errors, ParsedExpr::parse(expression).unwrap_err());
+    }
+}
+
+#[test]
+fn property_filters_accept_empty_regex_glob_and_escaped_closing_parentheses() {
+    for (expression, canonical) in [
+        (" test(//) ", "test(//)"),
+        ("test(#*)", "test(#*)"),
+        (r"test(some(thing\))", r"test(some(thing\))"),
+    ] {
+        let body = package_block(&format!("[rust]\nproperty_filters = ['{expression}']"));
+        let parsed = parse(&body).unwrap();
+        let [Declaration::Package { policy, .. }] = parsed.strategy.as_slice() else {
+            panic!("expected package strategy");
+        };
+        let filters = &policy.rust.as_ref().unwrap().property_filters;
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].expression(), expression);
+        assert_eq!(filters[0].parsed(), &ParsedExpr::parse(expression).unwrap());
+        assert_eq!(filters[0].parsed().to_string(), canonical);
     }
 }
 

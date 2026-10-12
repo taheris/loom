@@ -56,6 +56,15 @@ worktree; do not run broad worktree pruning.
 
 ## Verify
 
+Initialize native Cargo’s dependency patches before running Cargo commands,
+including outside a dev shell or when the worker image has no Cargo wrapper:
+
+```bash
+bash scripts/configure-cargo-patches.sh
+```
+
+See `nix/patches/README.md` for the strict nextest parser boundary.
+
 Run both Clippy commands separately: `--all-targets` enables test-only
 dependency features and does not cover the production-only configuration.
 
