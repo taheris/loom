@@ -67,7 +67,7 @@ _: {
           }
           ''
             set -euo pipefail
-            ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
+            TMPDIR=/tmp ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
             touch "$out"
           '';
       checks.quint-harness =
