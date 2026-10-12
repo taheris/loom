@@ -17,7 +17,7 @@ const CONCERN: &str = r#"LOOM_CONCERN: {"summary":"Observed failure"}"#;
 const RETRY: &str = r#"LOOM_RETRY: {"reason":"Transient failure"}"#;
 const BLOCKED: &str = r#"LOOM_BLOCKED: {"reason":"No safe options"}"#;
 const APPLY: &str = r#"LOOM_APPLY: {"proposals":["lm-tune.1","lm-tune.2"]}"#;
-const TODO: &str = r#"LOOM_TODO: {"head":"0123456789abcdef0123456789abcdef01234567","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","work_epic":"lm-work.1","title":"Protocol work","specs":[{"label":"protocol","outcome":"decomposed","beads":["lm-task.1"]}]}"#;
+const TODO: &str = r#"LOOM_TODO: {"head":"0123456789abcdef0123456789abcdef01234567","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","work_epic":"lm-work.1","title":"Protocol work","specs":[{"label":"protocol","outcome":"decomposed","beads":["lm-task.1"],"assignments":[{"task":"lm-task.1","criteria":[{"spec_label":"protocol","criterion_id":"criterion-0123456789abcdef"}]}]}]}"#;
 const TODO_NO_WORK: &str = r#"LOOM_TODO: {"head":"0123456789abcdef0123456789abcdef01234567","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","work_epic":"lm-work.1","title":"Protocol work","specs":[{"label":"protocol","outcome":"no-work","reason":"Already covered"}]}"#;
 
 fn text(value: &str) -> NonEmptyString {
@@ -137,6 +137,15 @@ fn fixtures() -> Vec<Fixture> {
             wire: TODO,
             message: todo(TodoSpecOutcome::Decomposed {
                 beads: ids(&["lm-task.1"]),
+                assignments: NonEmptyVec::new(vec![loom_protocol::todo::Assignment {
+                    task: "lm-task.1".parse().unwrap(),
+                    criteria: loom_protocol::acceptance::References::parse([(
+                        "protocol",
+                        "criterion-0123456789abcdef",
+                    )])
+                    .unwrap(),
+                }])
+                .unwrap(),
             }),
             phase: Phase::Todo,
         },

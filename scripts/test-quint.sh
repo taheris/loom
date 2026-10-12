@@ -7,6 +7,10 @@ if [[ "$#" -ne 1 ]]; then
 fi
 
 case "$1" in
+  todo-acceptance-persistence)
+    : "${LOOM_TODO_ACCEPTANCE_BIN:?missing provisioned Todo acceptance runner}"
+    exec "$LOOM_TODO_ACCEPTANCE_BIN" acceptance:: --nocapture
+    ;;
   provisioning-and-batching | bridge-smoke)
     campaigns=(routine bridge-replay)
     ;;

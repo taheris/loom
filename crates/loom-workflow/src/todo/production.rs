@@ -1,6 +1,6 @@
 //! Production [`TodoController`] used by the `loom todo` binary.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -20,6 +20,7 @@ use loom_driver::state::{CacheDb, SpecEpicRow, WorkEpicRow};
 use loom_events::{
     AgentEvent, AgentStartMetadata, DriverEventPayload, DriverKind, EnvelopeBuilder, Source,
 };
+use loom_protocol::acceptance::{Candidates, METADATA_KEY, Reference, References, Snapshot};
 use loom_protocol::todo::{GitSha, TodoSpecOutcome, TodoSuccess};
 use tracing::{debug, info};
 
@@ -50,6 +51,7 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     git: Arc<GitClient>,
     bd: Arc<BdClient<R>>,
     preflight: Option<Preflight>,
+    admitted_decisions: HashSet<BeadId>,
     loom_cfg: LoomTopConfig,
     skills_cfg: SkillsConfig,
     phase_log_root: Option<PathBuf>,
@@ -66,6 +68,7 @@ struct Preflight {
     work_epic_title: String,
     work_epic_was_todo: bool,
     work_epic_was_active: bool,
+    acceptance: Arc<Snapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +102,17 @@ struct NoteMutation {
     next: String,
 }
 
+struct BindingMutation {
+    bead_id: BeadId,
+    previous: Option<String>,
+    next: String,
+}
+
 enum Compensation {
+    Binding {
+        bead_id: BeadId,
+        previous: Option<String>,
+    },
     Note {
         bead_id: BeadId,
         previous: Option<String>,
@@ -155,12 +168,19 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             git,
             bd,
             preflight: None,
+            admitted_decisions: HashSet::new(),
             loom_cfg: LoomTopConfig::default(),
             skills_cfg: SkillsConfig::default(),
             phase_log_root: None,
             phase_log_when: SystemClock::new().wall_now(),
             envelope_builder: Mutex::new(None),
         }
+    }
+
+    /// Supply only contextually admitted decision/brief-repair identities for this batch.
+    /// These remain outside implementation membership after human resolution.
+    pub fn set_admitted_decisions(&mut self, decisions: impl IntoIterator<Item = BeadId>) {
+        self.admitted_decisions = decisions.into_iter().collect();
     }
 
     #[must_use]
@@ -320,6 +340,17 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             });
         }
         let fingerprint = todo_fingerprint(&head, docs_blob.as_str(), &fingerprint_specs);
+        let packages = loom_driver::spec::package::discover_indexed(&self.workspace)
+            .map_err(|error| TodoError::SpecIndex {
+                detail: format!("{error:#}"),
+            })?
+            .into_iter()
+            .filter(|package| changed.iter().any(|spec| spec.label == *package.label()))
+            .collect::<Vec<_>>();
+        let acceptance = Arc::new(
+            loom_gate::acceptance::load_packages(&packages)
+                .map_err(|source| TodoError::AcceptanceSnapshot(Box::new(source)))?,
+        );
         let work_epic = self.ensure_work_epic(&head, &fingerprint, &changed).await?;
         Ok(Some(Preflight {
             head,
@@ -329,6 +360,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             work_epic_title: work_epic.title,
             work_epic_was_todo: work_epic.was_todo,
             work_epic_was_active: work_epic.was_active,
+            acceptance,
         }))
     }
 
@@ -684,7 +716,10 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         }))
     }
 
-    async fn validate_success(&self, success: &TodoSuccess) -> Result<(), TodoError> {
+    async fn validate_success(
+        &self,
+        success: &TodoSuccess,
+    ) -> Result<Vec<BindingMutation>, TodoError> {
         let preflight = self
             .preflight
             .as_ref()
@@ -709,6 +744,29 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .iter()
             .map(|spec| spec.label.to_string())
             .collect::<BTreeSet<_>>();
+        let children = self
+            .bd
+            .list(ListOpts {
+                all: true,
+                limit: Some(0),
+                parent: Some(preflight.work_epic.clone()),
+                ..ListOpts::default()
+            })
+            .await?;
+        if children
+            .iter()
+            .any(|bead| bead.parent.as_ref() != Some(&preflight.work_epic))
+        {
+            return Err(TodoError::TodoValidation {
+                detail: "Beads child roster contains a task outside the work epic".into(),
+            });
+        }
+        let implementation = children
+            .iter()
+            .filter(|bead| !self.admitted_decisions.contains(&bead.id))
+            .map(|bead| bead.id.clone())
+            .collect::<HashSet<_>>();
+        let mut references: HashMap<BeadId, Vec<Reference>> = HashMap::new();
         let mut seen = BTreeSet::new();
         for spec in success.specs.as_slice() {
             let label = spec.label.to_string();
@@ -722,21 +780,38 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                     detail: format!("LOOM_TODO reported unexpected spec `{}`", spec.label),
                 });
             }
-            if let TodoSpecOutcome::Decomposed { beads } = &spec.outcome {
-                for bead_id in beads.as_slice() {
-                    let bead = self.bd.show(bead_id).await.map_err(|source| {
-                        TodoError::TodoValidation {
-                            detail: format!("bead `{bead_id}` could not be found: {source}"),
-                        }
-                    })?;
-                    if bead.parent.as_ref() != Some(&preflight.work_epic) {
+            if let TodoSpecOutcome::Decomposed { beads, assignments } = &spec.outcome {
+                let roster = beads.iter().cloned().collect::<HashSet<_>>();
+                let mut assigned = HashSet::new();
+                if roster.len() != beads.len() || !roster.is_subset(&implementation) {
+                    return Err(TodoError::TodoValidation {
+                        detail: format!(
+                            "spec `{}` must name distinct implementation children of the work epic",
+                            spec.label
+                        ),
+                    });
+                }
+                for assignment in assignments.as_slice() {
+                    if !roster.contains(&assignment.task)
+                        || !assigned.insert(assignment.task.clone())
+                    {
                         return Err(TodoError::TodoValidation {
                             detail: format!(
-                                "bead `{bead_id}` is not parented under work epic `{}`",
-                                preflight.work_epic
+                                "assignment for `{}` is duplicated or outside the decomposed roster",
+                                assignment.task
                             ),
                         });
                     }
+                    preflight.acceptance.resolve(&assignment.criteria)?;
+                    references
+                        .entry(assignment.task.clone())
+                        .or_default()
+                        .extend_from_slice(assignment.criteria.as_slice());
+                }
+                if assigned != roster {
+                    return Err(TodoError::TodoValidation {
+                        detail: format!("spec `{}` omitted task assignments", spec.label),
+                    });
                 }
             }
         }
@@ -750,7 +825,27 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 detail: format!("LOOM_TODO omitted changed spec(s): {missing}"),
             });
         }
-        Ok(())
+        if references.keys().cloned().collect::<HashSet<_>>() != implementation {
+            return Err(TodoError::TodoValidation {
+                detail: "LOOM_TODO must account for every implementation child, including existing drafts".into(),
+            });
+        }
+        let mut references = references.into_iter().collect::<Vec<_>>();
+        references.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
+        references.into_iter().map(|(bead_id, references)| {
+            let criteria = References::new(references)?;
+            let bead = children.iter().find(|bead| bead.id == bead_id)
+                .ok_or_else(|| TodoError::TodoValidation { detail: format!("missing child `{bead_id}`") })?;
+            Ok(BindingMutation {
+                bead_id,
+                previous: bead.metadata.get(METADATA_KEY).map(|value| {
+                    value.as_str().map(ToOwned::to_owned).ok_or_else(|| TodoError::TodoValidation {
+                        detail: format!("task `{}` has non-string acceptance metadata; repair it before finalization", bead.id),
+                    })
+                }).transpose()?,
+                next: serde_json::to_string(&Candidates::Implementation { criteria })?,
+            })
+        }).collect()
     }
 
     async fn record_validation_failure(&self, detail: &str) -> Result<(), TodoError> {
@@ -761,7 +856,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .update(
                 &preflight.work_epic,
                 UpdateOpts {
-                    notes: Some(format!("LOOM_TODO validation failed: {detail}")),
+                    append_notes: Some(format!("LOOM_TODO validation failed: {detail}")),
                     ..UpdateOpts::default()
                 },
             )
@@ -811,7 +906,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     async fn note_mutations(&self, success: &TodoSuccess) -> Result<Vec<NoteMutation>, TodoError> {
         let mut mutations: Vec<NoteMutation> = Vec::new();
         for spec in success.specs.as_slice() {
-            let TodoSpecOutcome::Decomposed { beads } = &spec.outcome else {
+            let TodoSpecOutcome::Decomposed { beads, .. } = &spec.outcome else {
                 continue;
             };
             let notes = self
@@ -850,10 +945,10 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         compensation: Compensation,
         completed: &mut Vec<Compensation>,
     ) -> Result<(), TodoError> {
+        completed.push(compensation);
         if let Err(source) = self.bd.update(bead_id, update).await {
             return Err(self.rollback_error(TodoError::Bd(source), completed).await);
         }
-        completed.push(compensation);
         Ok(())
     }
 
@@ -863,7 +958,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             source
         } else {
             TodoError::TodoCompensation {
-                cause: source.to_string(),
+                cause: format!("{source:#}"),
                 failures: failures.join("; "),
             }
         }
@@ -873,6 +968,19 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let mut failures = Vec::new();
         for compensation in completed.iter().rev() {
             let (bead_id, update) = match compensation {
+                Compensation::Binding { bead_id, previous } => {
+                    let update = match previous {
+                        Some(encoded) => UpdateOpts {
+                            set_metadata: vec![(METADATA_KEY.into(), encoded.clone())],
+                            ..UpdateOpts::default()
+                        },
+                        None => UpdateOpts {
+                            unset_metadata: vec![METADATA_KEY.into()],
+                            ..UpdateOpts::default()
+                        },
+                    };
+                    (bead_id, update)
+                }
                 Compensation::Note { bead_id, previous } => (
                     bead_id,
                     UpdateOpts {
@@ -904,13 +1012,17 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 }
             };
             if let Err(error) = self.bd.update(bead_id, update).await {
-                failures.push(format!("{bead_id}: {error}"));
+                failures.push(format!("{bead_id}: {error:#}"));
             }
         }
         failures
     }
 
-    async fn finalize_success(&self, success: &TodoSuccess) -> Result<TodoRecord, TodoError> {
+    async fn finalize_success(
+        &self,
+        success: &TodoSuccess,
+        binding_mutations: Vec<BindingMutation>,
+    ) -> Result<TodoRecord, TodoError> {
         let preflight = self
             .preflight
             .clone()
@@ -919,6 +1031,21 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let active_work_epics = self.active_work_epics().await?;
         let mut completed = Vec::new();
 
+        for mutation in &binding_mutations {
+            self.update_or_rollback(
+                &mutation.bead_id,
+                UpdateOpts {
+                    set_metadata: vec![(METADATA_KEY.into(), mutation.next.clone())],
+                    ..UpdateOpts::default()
+                },
+                Compensation::Binding {
+                    bead_id: mutation.bead_id.clone(),
+                    previous: mutation.previous.clone(),
+                },
+                &mut completed,
+            )
+            .await?;
+        }
         for mutation in &note_mutations {
             self.update_or_rollback(
                 &mutation.bead_id,
@@ -1192,13 +1319,14 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             self.record_missing_exit_signal(outcome, marker).await?;
             return Err(TodoError::MissingExitSignal);
         };
-        if let Err(err) = self.validate_success(success).await {
-            if let TodoError::TodoValidation { detail } = &err {
-                self.record_validation_failure(detail).await?;
+        let bindings = match self.validate_success(success).await {
+            Ok(bindings) => bindings,
+            Err(err) => {
+                self.record_validation_failure(&format!("{err:#}")).await?;
+                return Err(err);
             }
-            return Err(err);
-        }
-        self.finalize_success(success).await
+        };
+        self.finalize_success(success, bindings).await
     }
 }
 
@@ -1304,7 +1432,7 @@ fn summarize_success(success: &TodoSuccess) -> Vec<TodoSpecSummary> {
         .iter()
         .map(|spec| {
             let outcome = match &spec.outcome {
-                TodoSpecOutcome::Decomposed { beads } => {
+                TodoSpecOutcome::Decomposed { beads, .. } => {
                     let bead_list = beads
                         .as_slice()
                         .iter()

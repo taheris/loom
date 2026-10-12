@@ -1545,6 +1545,16 @@ mod tests {
     }
 
     #[test]
+    fn finding_hash_round_trips_through_acceptance_reference() {
+        let hash = sample_finding().hash();
+        let reference = crate::acceptance::FindingHash::new(hash.clone()).unwrap();
+        assert_eq!(reference.as_str(), hash);
+        let encoded = serde_json::to_string(&reference).unwrap();
+        let decoded: crate::acceptance::FindingHash = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, reference);
+    }
+
+    #[test]
     fn mint_computes_versioned_finding_id_excluding_volatile_context() {
         let a = finding(
             ConcernToken::SpecCoherenceFail,

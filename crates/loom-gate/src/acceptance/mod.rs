@@ -16,7 +16,15 @@ use crate::annotation::{self, Annotation, Tier};
 /// Rejects discovery/navigation/read failures and broken or ambiguous criterion bindings.
 pub fn load(workspace: &Path) -> Result<Snapshot, Error> {
     let packages = package::discover_indexed(workspace)?;
-    let parsed = annotation::parse_packages(&packages)?;
+    load_packages(&packages)
+}
+
+/// Capture acceptance for a driver-selected roster without executable admission.
+///
+/// # Errors
+/// Rejects broken navigation, unreadable documents, and ambiguous bindings.
+pub fn load_packages(packages: &[package::Package]) -> Result<Snapshot, Error> {
+    let parsed = annotation::parse_packages(packages)?;
     let inputs = packages.iter().map(|package| PackageInput {
         spec_label: package.label().clone(),
         criteria: parsed

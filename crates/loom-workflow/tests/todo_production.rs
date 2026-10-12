@@ -5,6 +5,9 @@
     reason = "validated identifier literals are fixed integration-test fixtures"
 )]
 
+#[path = "todo_production/acceptance.rs"]
+mod acceptance;
+
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Write;
@@ -73,7 +76,10 @@ fn init_workspace(workspace: &Path) -> Result<(String, String)> {
     )?;
     run_git(workspace, &["commit", "-q", "-m", "seed specs"])?;
     let base = git_output(workspace, &["rev-parse", "HEAD"])?;
-    std::fs::write(workspace.join("specs/alpha.md"), "# Alpha\n\nchanged\n")?;
+    std::fs::write(
+        workspace.join("specs/alpha.md"),
+        "# Alpha\n\nchanged\n\n## Success Criteria\n\n- Persist pending work [test?](pending_verifier)\n",
+    )?;
     std::fs::write(
         workspace.join("docs/README.md"),
         "- [Alpha](../specs/alpha.md)\n- [Beta](../specs/beta.md)\n- [Gamma](../specs/gamma.md)\n",
@@ -175,6 +181,7 @@ struct StatefulBd {
     calls: Vec<Vec<String>>,
     update_attempt: usize,
     fail_update: Option<usize>,
+    fail_update_after_write: bool,
     fail_close: Option<String>,
 }
 
@@ -268,9 +275,11 @@ fn stateful_list(state: &StatefulBd, argv: &[String]) -> Result<RunOutput, BdErr
     let status = prefixed_value(argv, "--status=");
     let label = prefixed_value(argv, "--label=");
     let issue_type = prefixed_value(argv, "--type=");
+    let parent = prefixed_value(argv, "--parent=");
     let beads = state
         .beads
         .values()
+        .filter(|bead| parent.is_none_or(|value| bead.parent.as_deref() == Some(value)))
         .filter(|bead| status.is_none_or(|value| bead.status == value))
         .filter(|bead| label.is_none_or(|value| bead.labels.iter().any(|label| label == value)))
         .filter(|bead| issue_type.is_none_or(|value| bead.issue_type == value))
@@ -361,9 +370,13 @@ fn stateful_close(state: &mut StatefulBd, argv: &[String]) -> RunOutput {
 
 fn stateful_update(state: &mut StatefulBd, argv: &[String]) -> RunOutput {
     state.update_attempt += 1;
+    let fail_after_write =
+        state.fail_update == Some(state.update_attempt) && state.fail_update_after_write;
     if state.fail_update == Some(state.update_attempt) {
         state.fail_update = None;
-        return failed("injected update failure");
+        if !fail_after_write {
+            return failed("injected update failure");
+        }
     }
     let Some(bead) = argv.get(1).and_then(|id| state.beads.get_mut(id)) else {
         return failed("missing fake bead");
@@ -375,6 +388,13 @@ fn stateful_update(state: &mut StatefulBd, argv: &[String]) -> RunOutput {
             "--title" => bead.title = value,
             "--status" => bead.status = value,
             "--notes" => bead.notes = Some(value),
+            "--append-notes" => {
+                bead.notes = Some(
+                    bead.notes
+                        .as_ref()
+                        .map_or_else(|| value.clone(), |notes| format!("{notes}\n{value}")),
+                );
+            }
             "--description" => bead.description = Some(value),
             "--add-label" => {
                 if !bead.labels.iter().any(|label| label == &value) {
@@ -397,7 +417,11 @@ fn stateful_update(state: &mut StatefulBd, argv: &[String]) -> RunOutput {
         }
         index += 2;
     }
-    empty_json()
+    if fail_after_write {
+        failed("injected failure after update")
+    } else {
+        empty_json()
+    }
 }
 
 fn prefixed_value<'a>(argv: &'a [String], prefix: &str) -> Option<&'a str> {
@@ -634,8 +658,17 @@ fn todo_success_with_specs(
     let head = field(prompt, "Todo head")?;
     let fingerprint = field(prompt, "Todo fingerprint")?;
     let work_epic = field(prompt, "Work epic")?;
+    let mut rows: Vec<serde_json::Value> = serde_json::from_str(&format!("[{spec_json}]"))?;
+    for row in &mut rows {
+        if row["outcome"] == "decomposed" && row.get("assignments").is_none() {
+            row["assignments"] = serde_json::Value::Array(row["beads"].as_array().unwrap().iter().map(|task| {
+                serde_json::json!({"task": task, "criteria": [{"spec_label":"alpha", "criterion_id": loom_protocol::criterion::CriterionId::for_spec_text(&SpecLabel::new("alpha").unwrap(), "Persist pending work")}]})
+            }).collect());
+        }
+    }
+    let spec_json = serde_json::to_string(&rows)?;
     Ok(parse_todo_success(&format!(
-        "{TODO_SUCCESS_PREFIX}{{\"head\":\"{head}\",\"fingerprint\":\"{fingerprint}\",\"work_epic\":\"{work_epic}\",\"title\":\"Pin changed spec follow-ups\",\"specs\":[{spec_json}]}}"
+        "{TODO_SUCCESS_PREFIX}{{\"head\":\"{head}\",\"fingerprint\":\"{fingerprint}\",\"work_epic\":\"{work_epic}\",\"title\":\"Pin changed spec follow-ups\",\"specs\":{spec_json}}}"
     ))?)
 }
 
@@ -1083,6 +1116,7 @@ async fn todo_finalization_sets_active_and_advances_all_cursors() -> Result<()> 
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
     let mut responses = preflight_responses(&base, &head);
+    responses.push(empty_json());
     responses.push(active_work_epic("lm-oldactive"));
     let runner = CapturingRunner::new(responses);
     let calls = runner.clone();
@@ -1509,7 +1543,20 @@ async fn todo_package_retry_reuses_batch_notes_drafts_and_checkpoint() -> Result
             .count(),
         1
     );
-    let success = todo_success(&prompt, &["alpha"])?;
+    let criterion = loom_protocol::criterion::CriterionId::for_spec_text(
+        &SpecLabel::new("alpha")?,
+        "First package requirement",
+    );
+    let success = todo_success_with_specs(
+        &prompt,
+        &serde_json::json!({
+            "label":"alpha", "outcome":"decomposed", "beads":["lm-draft"],
+            "assignments":[{"task":"lm-draft", "criteria":[{
+                "spec_label":"alpha", "criterion_id":criterion
+            }]}]
+        })
+        .to_string(),
+    )?;
     retry
         .record_outcome(
             &SessionOutcome {
@@ -1551,11 +1598,14 @@ async fn todo_package_malformed_acceptance_blocks_before_dispatch() -> Result<()
         let runner = StatefulRunner::new(&base, None);
         let mut ctrl = controller(dir.path(), runner.clone())?;
         assert!(
-            matches!(ctrl.build_session().await, Err(TodoError::Criteria(_))),
+            matches!(
+                ctrl.build_session().await,
+                Err(TodoError::AcceptanceSnapshot(_))
+            ),
             "{criterion}"
         );
         assert_eq!(runner.bead("lm-alpha")?.metadata["loom.todo_cursor"], base);
-        assert!(runner.bead("lm-work")?.labels.contains(&"loom:todo".into()));
+        assert!(runner.bead("lm-work").is_err());
         assert!(!dir.path().join(".loom/scratch/lm-work").exists());
     }
     Ok(())

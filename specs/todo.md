@@ -266,7 +266,7 @@ cursor advancement.
   requirement text, verifier bindings, or verdicts. Malformed identifiers fail
   ingestion; externally supplied JSON cannot construct snapshot-resolved
   acceptance without the separate resolution boundary.
-  [test?](task_acceptance_metadata_serde_preserves_reference_boundary)
+  [test](task_acceptance_metadata_serde_preserves_reference_boundary)
 
 <!-- prettier-ignore -->
 - The production todo finalizer resolves agent-proposed assignments against its
@@ -274,7 +274,7 @@ cursor advancement.
   metadata through the Rust Beads boundary without replacing unrelated metadata.
   Invalid assignments or binding-write failures prevent activation, cursor
   advancement, and note consumption; prose descriptions cannot substitute for
-  the structured proposals. [system?](nix run .#test-quint -- todo-acceptance-persistence)
+  the structured proposals. [system](nix run .#test-quint -- todo-acceptance-persistence)
 
 ### Workflow commands
 
@@ -339,7 +339,7 @@ cursor advancement.
   validation; labels/prose cannot hide unaccounted candidates or ordinary
   drafts. Exact changed-spec coverage remains required. Decisions blocking only
   implementation do not prevent an otherwise valid final handoff.
-  [test?](todo_finalization_distinguishes_decisions_from_implementation_roster)
+  [test](todo_finalization_distinguishes_decisions_from_implementation_roster)
 
 ### Cache database
 

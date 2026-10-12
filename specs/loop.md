@@ -470,7 +470,7 @@ mutation permission.
   nonempty criterion-reference or remediation-reference variant. Mixed, empty,
   malformed, and unknown variants fail ingestion; parsed candidates cannot stand
   in for the separately resolved immutable dispatch value.
-  [test?](task_acceptance_refs_are_exclusive_nonempty_variants)
+  [test](task_acceptance_refs_are_exclusive_nonempty_variants)
 
 <!-- prettier-ignore -->
 - Actual dispatch distinguishes explicitly bound implementation tasks from

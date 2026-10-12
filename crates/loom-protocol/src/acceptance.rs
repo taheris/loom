@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use displaydoc::Display;
-use loom_events::identifier::{ParseSpecLabelError, SpecLabel};
+use loom_events::identifier::{BeadId, ParseSpecLabelError, SpecLabel};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -116,6 +116,118 @@ impl From<References> for Vec<Reference> {
     }
 }
 
+/// Beads metadata key for serialized reference candidates, never resolved authority.
+pub const METADATA_KEY: &str = "loom.acceptance";
+
+/// Exactly one nonempty task purpose; driver resolution remains mandatory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "purpose", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Candidates {
+    Implementation { criteria: References },
+    Remediation { goals: GoalReferences },
+}
+
+impl Candidates {
+    /// Parse the string-valued Serde payload used by the Beads metadata boundary.
+    ///
+    /// # Errors
+    /// Rejects non-string metadata, malformed identifiers, empty or mixed purposes.
+    pub fn from_metadata(value: &serde_json::Value) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(value.clone())
+            .and_then(|encoded: String| serde_json::from_str(&encoded))
+    }
+}
+
+/// Checked compact finding identity; membership and collisions require driver resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct FindingHash(String);
+
+impl FindingHash {
+    /// Parse the versioned twelve-character lowercase finding hash.
+    ///
+    /// # Errors
+    /// Rejects malformed hashes.
+    pub fn new(value: String) -> Result<Self, ParseError> {
+        let valid = value.strip_prefix("v1:").is_some_and(|hash| {
+            hash.len() == 12
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        });
+        if !valid {
+            return Err(ParseError::FindingHash { value });
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for FindingHash {
+    type Error = ParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<FindingHash> for String {
+    fn from(value: FindingHash) -> Self {
+        value.0
+    }
+}
+
+/// Candidate identity in a persisted finding batch, without copied targets or evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalReference {
+    pub batch: BeadId,
+    pub finding_hash: FindingHash,
+}
+
+/// Nonempty, duplicate-free finding candidates, not resolved remediation goals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<GoalReference>", into = "Vec<GoalReference>")]
+pub struct GoalReferences(Vec<GoalReference>);
+
+impl GoalReferences {
+    /// Require distinct nonempty goal references.
+    ///
+    /// # Errors
+    /// Rejects empty or duplicate goal candidates.
+    pub fn new(goals: Vec<GoalReference>) -> Result<Self, ParseError> {
+        if goals.is_empty() {
+            return Err(ParseError::EmptyGoals);
+        }
+        let mut seen = HashSet::new();
+        if goals.iter().any(|goal| !seen.insert(goal)) {
+            return Err(ParseError::DuplicateGoal);
+        }
+        Ok(Self(goals))
+    }
+
+    pub fn as_slice(&self) -> &[GoalReference] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<GoalReference>> for GoalReferences {
+    type Error = ParseError;
+
+    fn try_from(value: Vec<GoalReference>) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<GoalReferences> for Vec<GoalReference> {
+    fn from(value: GoalReferences) -> Self {
+        value.0
+    }
+}
+
 /// Task-reference syntax and assignment-shape failures.
 #[derive(Debug, Display, Error)]
 pub enum ParseError {
@@ -131,6 +243,12 @@ pub enum ParseError {
     },
     /// ordinary task acceptance must contain at least one reference
     Empty,
+    /// remediation acceptance must contain at least one goal reference
+    EmptyGoals,
+    /// duplicate remediation goal reference
+    DuplicateGoal,
+    /// invalid finding hash `{value}`: expected v1: followed by twelve lowercase hex characters
+    FindingHash { value: String },
     /// duplicate task reference `{reference}`
     Duplicate { reference: Reference },
 }

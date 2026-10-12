@@ -212,6 +212,10 @@ impl<R: CommandRunner> BdClient<R> {
             args.push("--notes".into());
             args.push(notes.into());
         }
+        if let Some(notes) = opts.append_notes {
+            args.push("--append-notes".into());
+            args.push(notes.into());
+        }
         for (key, value) in opts.set_metadata {
             args.push("--set-metadata".into());
             args.push(format!("{key}={value}").into());
@@ -411,6 +415,8 @@ pub struct UpdateOpts {
     /// run-loop parking paths to record stable cause strings alongside the
     /// applied terminal label.
     pub notes: Option<String>,
+    /// Append diagnostics without replacing existing notes or decomposition checkpoints.
+    pub append_notes: Option<String>,
     /// Additive metadata writes forwarded as repeated `bd update
     /// --set-metadata key=value` flags. Each entry sets one key without
     /// disturbing other metadata on the bead — preferred over the
@@ -999,6 +1005,30 @@ mod tests {
         // The label and notes must travel together.
         assert!(argv.contains(&"--add-label".to_string()));
         assert!(argv.contains(&"loom:blocked".to_string()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_appends_notes_without_replacement_flag() -> Result<()> {
+        let client = BdClient::with_runner(CapturingRunner::new([ok(b"")]));
+        client
+            .update(
+                &BeadId::new("lm-task")?,
+                UpdateOpts {
+                    append_notes: Some("diagnostic\nnext line".into()),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
+        assert_eq!(
+            argv_of(&client.runner, 0),
+            [
+                "update",
+                "lm-task",
+                "--append-notes",
+                "diagnostic\nnext line"
+            ]
+        );
         Ok(())
     }
 

@@ -68,6 +68,18 @@ pub enum TodoError {
     /// LOOM_TODO validation failed: {detail}
     TodoValidation { detail: String },
 
+    /// todo preflight acceptance snapshot is invalid
+    AcceptanceSnapshot(#[source] Box<loom_gate::acceptance::Error>),
+
+    /// todo criterion assignment does not resolve in the preflight snapshot
+    AcceptanceResolution(#[from] loom_protocol::acceptance::ResolveError),
+
+    /// todo task assignment is invalid
+    AcceptanceReferences(#[from] loom_protocol::acceptance::ParseError),
+
+    /// todo acceptance metadata could not be serialized
+    AcceptanceSerde(#[from] serde_json::Error),
+
     /// todo finalization failed ({cause}) and compensation also failed: {failures}
     TodoCompensation { cause: String, failures: String },
 

@@ -12,6 +12,7 @@ use loom_events::identifier::{BeadId, ParseBeadIdError, SpecLabel};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+use crate::acceptance::References;
 use crate::oid::{GitOid, ParseGitOidError};
 
 pub const TODO_SUCCESS_PREFIX: &str = "LOOM_TODO: ";
@@ -214,8 +215,21 @@ impl<'de> Deserialize<'de> for TodoSpecSuccess {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "outcome", rename_all = "kebab-case")]
 pub enum TodoSpecOutcome {
-    Decomposed { beads: NonEmptyVec<BeadId> },
-    NoWork { reason: NonEmptyString },
+    Decomposed {
+        beads: NonEmptyVec<BeadId>,
+        assignments: NonEmptyVec<Assignment>,
+    },
+    NoWork {
+        reason: NonEmptyString,
+    },
+}
+
+/// Agent-proposed task membership and criterion references, not trusted metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Assignment {
+    pub task: BeadId,
+    pub criteria: References,
 }
 
 impl<'de> Deserialize<'de> for TodoSpecOutcome {
@@ -295,7 +309,7 @@ impl TryFrom<RawTodoSpecSuccess> for TodoSpecSuccess {
             .parse::<SpecLabel>()
             .map_err(|_| ParseTodoSuccessError::InvalidSpecLabel { value: raw.label })?;
         let outcome = match raw.outcome {
-            RawTodoSpecOutcome::Decomposed { beads } => {
+            RawTodoSpecOutcome::Decomposed { beads, assignments } => {
                 if beads.is_empty() {
                     return Err(ParseTodoSuccessError::EmptyBeadList { label });
                 }
@@ -307,7 +321,11 @@ impl TryFrom<RawTodoSpecSuccess> for TodoSpecSuccess {
                     NonEmptyVec::new(beads).map_err(|_| ParseTodoSuccessError::EmptyBeadList {
                         label: label.clone(),
                     })?;
-                TodoSpecOutcome::Decomposed { beads }
+                TodoSpecOutcome::Decomposed {
+                    beads,
+                    assignments: NonEmptyVec::new(assignments)
+                        .map_err(|_| ParseTodoSuccessError::EmptyAssignments)?,
+                }
             }
             RawTodoSpecOutcome::NoWork { reason } => {
                 let reason = NonEmptyString::new(reason).map_err(|_| {
@@ -327,7 +345,7 @@ impl TryFrom<RawTodoSpecOutcome> for TodoSpecOutcome {
 
     fn try_from(raw: RawTodoSpecOutcome) -> Result<Self, Self::Error> {
         match raw {
-            RawTodoSpecOutcome::Decomposed { beads } => {
+            RawTodoSpecOutcome::Decomposed { beads, assignments } => {
                 if beads.is_empty() {
                     return Err(ParseTodoSuccessError::EmptyOutcomeBeadList);
                 }
@@ -337,7 +355,11 @@ impl TryFrom<RawTodoSpecOutcome> for TodoSpecOutcome {
                     .collect::<Result<Vec<_>, _>>()?;
                 let beads = NonEmptyVec::new(beads)
                     .map_err(|_| ParseTodoSuccessError::EmptyOutcomeBeadList)?;
-                Ok(Self::Decomposed { beads })
+                Ok(Self::Decomposed {
+                    beads,
+                    assignments: NonEmptyVec::new(assignments)
+                        .map_err(|_| ParseTodoSuccessError::EmptyAssignments)?,
+                })
             }
             RawTodoSpecOutcome::NoWork { reason } => {
                 let reason = NonEmptyString::new(reason)
@@ -388,6 +410,8 @@ pub enum ParseTodoSuccessError {
     EmptyNoWorkReason { label: SpecLabel },
     /// decomposed todo outcome must name at least one bead
     EmptyOutcomeBeadList,
+    /// decomposed todo outcome must propose task criterion assignments
+    EmptyAssignments,
     /// no-work todo outcome must carry a non-empty reason
     EmptyOutcomeNoWorkReason,
 }
@@ -409,10 +433,15 @@ struct RawTodoSpecSuccess {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "outcome", rename_all = "kebab-case")]
+#[serde(tag = "outcome", rename_all = "kebab-case", deny_unknown_fields)]
 enum RawTodoSpecOutcome {
-    Decomposed { beads: Vec<String> },
-    NoWork { reason: String },
+    Decomposed {
+        beads: Vec<String>,
+        assignments: Vec<Assignment>,
+    },
+    NoWork {
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -429,6 +458,10 @@ mod tests {
     }
 
     fn success_json(outcome: &str) -> String {
+        let mut outcome = outcome.to_string();
+        if outcome.contains(r#""outcome":"decomposed""#) {
+            outcome.push_str(r#","assignments":[{"task":"lm-task.1","criteria":[{"spec_label":"templates","criterion_id":"criterion-0123456789abcdef"}]}]"#);
+        }
         format!(
             r#"{{"head":"{SHA}","fingerprint":"{FINGERPRINT}","work_epic":"lm-work.1","title":"Pin template prompts","specs":[{{"label":"templates",{outcome}}}]}}"#
         )
@@ -446,12 +479,44 @@ mod tests {
         assert_eq!(parsed.specs.len(), 1);
         let spec = &parsed.specs[0];
         assert_eq!(spec.label.as_str(), "templates");
-        let TodoSpecOutcome::Decomposed { beads } = &spec.outcome else {
+        let TodoSpecOutcome::Decomposed { beads, .. } = &spec.outcome else {
             panic!("expected decomposed outcome");
         };
         assert_eq!(beads.len(), 2);
         assert_eq!(beads[0].as_str(), "lm-task.1");
         assert_eq!(beads[1].as_str(), "lm-task.2");
+    }
+
+    #[test]
+    fn todo_proposals_require_typed_nonempty_assignments() {
+        let valid = success_json(r#""outcome":"decomposed","beads":["lm-task.1"]"#);
+        let value: serde_json::Value = serde_json::from_str(&valid).unwrap();
+        for assignments in [
+            serde_json::json!([]),
+            serde_json::json!([{"task":"bad task","criteria":[{"spec_label":"templates","criterion_id":"criterion-0123456789abcdef"}]}]),
+            serde_json::json!([{"task":"lm-task.1","criteria":[]}]),
+            serde_json::json!([{"task":"lm-task.1","criteria":[{"spec_label":"bad label","criterion_id":"criterion-0123456789abcdef"}]}]),
+            serde_json::json!([{"task":"lm-task.1","criteria":[{"spec_label":"templates","criterion_id":"bad"}]}]),
+            serde_json::json!([{"task":"lm-task.1","criteria":[{"spec_label":"templates","criterion_id":"criterion-0123456789abcdef","resolved":true}]}]),
+        ] {
+            let mut invalid = value.clone();
+            invalid["specs"][0]["assignments"] = assignments;
+            assert!(serde_json::from_value::<super::TodoSuccess>(invalid).is_err());
+        }
+        let mut missing = value;
+        missing["specs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("assignments");
+        assert!(serde_json::from_value::<super::TodoSuccess>(missing).is_err());
+    }
+
+    #[test]
+    fn no_work_cannot_silently_discard_assignments() {
+        let payload = success_json(
+            r#""outcome":"no-work","reason":"audited","assignments":[{"task":"bad task","criteria":[]}]"#,
+        );
+        assert!(parse_todo_success(&marker(&payload)).is_err());
     }
 
     #[test]

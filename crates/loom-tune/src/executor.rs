@@ -404,7 +404,7 @@ fn score_todo(output: &str, expected: &crate::case::TodoExpected) -> Result<Scor
         .specs
         .iter()
         .filter_map(|spec| match &spec.outcome {
-            loom_protocol::todo::TodoSpecOutcome::Decomposed { beads } => Some(beads.len()),
+            loom_protocol::todo::TodoSpecOutcome::Decomposed { beads, .. } => Some(beads.len()),
             loom_protocol::todo::TodoSpecOutcome::NoWork { .. } => None,
         })
         .sum::<usize>();

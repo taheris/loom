@@ -311,7 +311,7 @@ mod contract {
     }
 
     fn todo_output(specs: &[(&str, &str)]) -> String {
-        let specs = specs.iter().map(|(label, bead)| serde_json::json!({"label":label,"outcome":"decomposed","beads":[bead]})).collect::<Vec<_>>();
+        let specs = specs.iter().map(|(label, bead)| serde_json::json!({"label":label,"outcome":"decomposed","beads":[bead],"assignments":[{"task":bead,"criteria":[{"spec_label":label,"criterion_id":"criterion-0123456789abcdef"}]}]})).collect::<Vec<_>>();
         format!(
             "LOOM_TODO: {}",
             serde_json::json!({"head":"a".repeat(40),"fingerprint":"b".repeat(64),"work_epic":"lm-work","title":"Task batch","specs":specs})
