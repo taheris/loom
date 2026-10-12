@@ -50,8 +50,8 @@ export REAL_NIX="$real_nix"
 export NIX_PATCH_BUILD_RESULT="$fixture/refreshed.toml"
 export NIX_PATCH_BUILD_CALLS="$fixture/build-calls"
 printf 'paths = []\n' > "$NIX_PATCH_BUILD_RESULT"
-cat > "$fixture/bin/nix" <<'SH'
-#!/usr/bin/env bash
+printf '#!%s\n' "$(command -v bash)" > "$fixture/bin/nix"
+cat >> "$fixture/bin/nix" <<'SH'
 set -euo pipefail
 if [[ "${1:-}" == --extra-experimental-features && "${3:-}" == build ]]; then
     [[ "$2" == 'nix-command flakes' ]]
