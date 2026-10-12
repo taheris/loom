@@ -17,6 +17,7 @@ pub mod integrity;
 pub mod inventory;
 pub mod marker;
 pub mod pre_commit;
+pub mod provider;
 pub mod runner;
 pub mod scope;
 

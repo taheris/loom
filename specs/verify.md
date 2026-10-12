@@ -254,7 +254,7 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   and specifically supported effects. Unknown kinds and incompatible definitions
   cannot use an effectful fallback; candidate construction or a trust flag
   cannot construct an immutable admitted unit without current-context
-  resolution. [test?](provider_candidates_use_closed_variants_before_admission)
+  resolution. [test](provider_candidates_use_closed_variants_before_admission)
 
 - An executable verifier resolves to an exact target, its subject inventory and
   input-discovery contract, its execution requirements, and its result mapping.

@@ -38,8 +38,21 @@ impl ResourcePath {
 }
 
 /// Content and membership identity, not a verification result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
 pub struct Identity(blake3::Hash);
+
+impl TryFrom<String> for Identity {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Error> {
+        let hash = blake3::Hash::from_hex(&value).map_err(|_| Error::Identity)?;
+        if hash.to_hex().as_str() != value {
+            return Err(Error::Identity);
+        }
+        Ok(Self(hash))
+    }
+}
 
 impl Serialize for Identity {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -164,4 +177,6 @@ pub enum Error {
     Missing { path: ResourcePath },
     /// repository changed during discovery; rerun `loom gate verify` against the current snapshot
     Changed,
+    /// snapshot identities must be canonical 64-character lowercase BLAKE3 hashes
+    Identity,
 }
