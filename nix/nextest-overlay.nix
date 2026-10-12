@@ -3,6 +3,12 @@ final: prev: {
     old:
     {
       patches = (old.patches or [ ]) ++ [ ./patches/nextest-capture-handoff.patch ];
+      preUnpack = ''
+        export HOME="$TMPDIR/home"
+        export CARGO_HOME="$TMPDIR/cargo-home"
+        mkdir -p "$HOME" "$CARGO_HOME"
+      ''
+      + (old.preUnpack or "");
     }
     // final.lib.optionalAttrs final.stdenv.hostPlatform.isLinux {
       doCheck = true;

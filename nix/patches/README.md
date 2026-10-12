@@ -20,6 +20,29 @@ pinned runner; they cannot silently fall back to an ambient runner.
 
 Remove the runner patch after an upstream release preserves these outcomes.
 
+## Nextest capture handoff and Cargo home
+
+`nextest-capture-handoff.patch` prevents unrelated pre-exec children from
+retaining capture writers. `../nextest-overlay.nix` retains the Linux capture
+handoff regression in the packaged runner's check phase.
+
+The pinned nixpkgs Cargo build hook and this runner's check phase invoke Cargo
+without setting `CARGO_HOME`. Even an offline, dependency-free Cargo build
+creates `.global-cache` and package lock files under `$HOME/.cargo`. With Nix's
+unsandboxed default `HOME=/homeless-shelter`, that makes subsequent derivations
+fail the home-directory purity guard.
+
+The overlay sets both `HOME` and `CARGO_HOME` inside the derivation's `TMPDIR`
+before unpacking, so build hooks, the runner, and its Cargo subprocesses share
+private homes throughout the build. No purity guard or regression is disabled.
+The `nextest-cargo-home-isolation` flake check runs the actual hook with fresh
+homes and real offline Cargo build/test commands, including a control that
+reproduces the cache writer in a disposable home.
+
+```bash
+nix build .#checks.x86_64-linux.nextest-cargo-home-isolation
+```
+
 ## Standalone nextest filterset parsing
 
 `nextest-filtering-parse.patch` makes `ParsedExpr::parse` return upstream

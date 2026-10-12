@@ -82,6 +82,22 @@
             touch "$out"
           '';
 
+      nextest-cargo-home-isolation =
+        pkgs.runCommand "nextest-cargo-home-isolation"
+          {
+            nativeBuildInputs = [
+              pkgs.cargo
+              pkgs.rustc
+              pkgs.stdenv.cc
+            ];
+          }
+          ''
+            set -euo pipefail
+            bash ${../../tests/agent/nextest-home.sh} \
+              ${pkgs.writeText "nextest-pre-unpack.sh" pkgs.cargo-nextest.preUnpack}
+            touch "$out"
+          '';
+
       nextest-filtering-syntax = craneLib.mkCargoDerivation {
         pname = "nextest-filtering-syntax";
         version = "0.0.0";
@@ -803,6 +819,7 @@
           loom-gate-check
           nextest-filtering-syntax
           native-check-discovery
+          nextest-cargo-home-isolation
           native-cargo-patches
           native-cargo-bootstrap
           loom-wrapper-preserves-spaced-output-path
