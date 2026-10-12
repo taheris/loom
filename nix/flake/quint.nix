@@ -87,7 +87,8 @@ _: {
           }
           ''
             set -euo pipefail
-            TMPDIR=/tmp ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
+            # Sandbox /tmp may be nobody-owned; use the private builder-owned root.
+            TMPDIR="$NIX_BUILD_TOP" ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
             touch "$out"
           '';
       checks.quint-harness =
