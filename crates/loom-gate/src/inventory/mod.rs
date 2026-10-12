@@ -1,6 +1,6 @@
 //! Project subjects and baseline obligations discovered independently of providers.
 
-mod nix;
+pub mod nix;
 mod rust;
 pub mod snapshot;
 
@@ -111,6 +111,7 @@ pub struct Subject {
     producer: Option<Name>,
     testable: bool,
     origin: ResourcePath,
+    nix: Option<nix::Target>,
 }
 
 impl Subject {
@@ -125,6 +126,9 @@ impl Subject {
     }
     pub const fn origin(&self) -> &ResourcePath {
         &self.origin
+    }
+    pub const fn nix_target(&self) -> Option<&nix::Target> {
+        self.nix.as_ref()
     }
 }
 
@@ -404,6 +408,7 @@ fn single(path: &ResourcePath, role: Role, prefix: &str) -> Result<Subject, Erro
         producer: None,
         testable: false,
         origin: path.clone(),
+        nix: None,
     })
 }
 

@@ -155,6 +155,7 @@ fn discover_package(
                 producer: None,
                 testable: target.test,
                 origin: origin.clone(),
+                nix: None,
             },
         )?;
     }
@@ -193,6 +194,7 @@ fn discover_package(
                     producer: None,
                     testable: false,
                     origin: origin.clone(),
+                    nix: None,
                 },
             )?;
         }
@@ -250,6 +252,7 @@ fn discover_package(
                 producer: resource.producer,
                 testable: false,
                 origin: origin.clone(),
+                nix: None,
             },
         )?;
     }

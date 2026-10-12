@@ -3,10 +3,30 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use super::snapshot::Snapshot;
+use super::snapshot::{ResourcePath, Snapshot};
 use super::{Error, Name, Role, Subject, command, insert, single};
+
+/// Exact native execution binding; subject names are diagnostic identities, not command syntax.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Target {
+    flake: ResourcePath,
+    system: Name,
+    attribute: Name,
+}
+
+impl Target {
+    pub const fn flake(&self) -> &ResourcePath {
+        &self.flake
+    }
+    pub const fn system(&self) -> &Name {
+        &self.system
+    }
+    pub const fn attribute(&self) -> &Name {
+        &self.attribute
+    }
+}
 
 #[derive(Deserialize)]
 struct Outputs {
@@ -103,6 +123,11 @@ pub(super) fn discover(
                         producer: None,
                         testable: false,
                         origin: (*flake).clone(),
+                        nix: Some(Target {
+                            flake: (*flake).clone(),
+                            system: Name::try_from(system.clone())?,
+                            attribute: Name::try_from(attribute)?,
+                        }),
                     },
                 )?;
             }
@@ -117,6 +142,7 @@ pub(super) fn discover(
                 producer: None,
                 testable: false,
                 origin: (*flake).clone(),
+                nix: None,
             },
         )?;
     }

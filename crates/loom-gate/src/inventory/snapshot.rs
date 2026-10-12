@@ -1,6 +1,8 @@
 //! Immutable repository membership and contents for current-context resolution.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
 
 use displaydoc::Display;
@@ -65,6 +67,7 @@ impl Serialize for Identity {
 pub struct Snapshot {
     root: PathBuf,
     files: BTreeMap<ResourcePath, Vec<u8>>,
+    executable: BTreeSet<ResourcePath>,
     identity: Identity,
 }
 
@@ -80,6 +83,7 @@ impl Snapshot {
             return Err(Error::Root);
         }
         let mut files = BTreeMap::new();
+        let mut executable = BTreeSet::new();
         for path in git.repository_files_sync()? {
             let path = ResourcePath::try_from(path)?;
             let absolute = root.join(path.as_path());
@@ -94,18 +98,23 @@ impl Snapshot {
             {
                 return Err(Error::Unsupported { path });
             }
+            #[cfg(unix)]
+            if metadata.permissions().mode() & 0o111 != 0 {
+                executable.insert(path.clone());
+            }
             files.insert(path, std::fs::read(absolute)?);
         }
         let mut hash = blake3::Hasher::new();
         for (path, bytes) in &files {
             hash.update(path.as_path().as_os_str().as_encoded_bytes());
-            hash.update(&[0]);
+            hash.update(&[0, u8::from(executable.contains(path))]);
             hash.update(&(bytes.len() as u64).to_le_bytes());
             hash.update(bytes);
         }
         Ok(Self {
             root,
             files,
+            executable,
             identity: Identity(hash.finalize()),
         })
     }
@@ -134,7 +143,7 @@ impl Snapshot {
         std::str::from_utf8(bytes).map_err(|_| Error::Encoding)
     }
 
-    pub(super) fn stage(&self) -> Result<tempfile::TempDir, Error> {
+    pub(crate) fn stage(&self) -> Result<tempfile::TempDir, Error> {
         let directory = tempfile::tempdir()?;
         for (path, bytes) in &self.files {
             let staged = directory.path().join(path.as_path());
@@ -142,7 +151,16 @@ impl Snapshot {
                 path: staged.clone(),
             })?;
             std::fs::create_dir_all(parent)?;
-            std::fs::write(staged, bytes)?;
+            std::fs::write(&staged, bytes)?;
+            #[cfg(unix)]
+            std::fs::set_permissions(
+                staged,
+                std::fs::Permissions::from_mode(if self.executable.contains(path) {
+                    0o755
+                } else {
+                    0o644
+                }),
+            )?;
         }
         Ok(directory)
     }
@@ -150,7 +168,7 @@ impl Snapshot {
     /// Require a fresh snapshot if project discovery observed a changed checkout.
     ///
     /// # Errors
-    /// Rejects changed contents or membership and propagates discovery failures.
+    /// Rejects changed contents, executable modes or membership and propagates discovery failures.
     pub fn require_current(&self) -> Result<(), Error> {
         if Self::discover(&self.root)?.identity != self.identity {
             return Err(Error::Changed);

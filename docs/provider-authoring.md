@@ -1,4 +1,4 @@
-# Checked provider API example
+# Checked provider API examples
 
 The tracked Rust API binds a named callable, discovered subjects, offered
 duties, checker source/build identity and input access in one `Definition`.
@@ -8,9 +8,9 @@ cannot be constructed from JSON or have its admitted fields rewritten.
 
 This example is a diagnostic execution path, not a substitute for
 `loom gate verify`, inventory-wide coverage, Evidence admission or publication.
-The ordinary gate's provider integration and executable Nix/effect constructors
-are not exposed by this example. Recognized Nix/effect candidate shapes alone do
-not provide registrations or make an arbitrary command executable.
+The ordinary gate's provider integration and effect constructors are not exposed
+by these examples. The Nix API below constructs actual native execution;
+recognized candidate shapes alone cannot register arbitrary commands.
 
 ## Run the Rust example
 
@@ -92,4 +92,94 @@ Changes after resolution require a new snapshot and registration. Tracked access
 does not prove arbitrary Rust code avoids raw I/O: checks must use `Context`,
 and provider conformance must still test deliberately omitted reads.
 Observations from this example do not authorize reuse, skipped obligations or
+publication.
+
+## Run the Nix API example
+
+This example uses `Definition::hermetic` and the same generated query/resolution
+path. It is also a diagnostic API example, not inventory-wide gate admission.
+Run from the Loom checkout with provisioned Nix and immutable Bash. The native
+project has no input registry: `src = self` stages the captured project, and
+Bash's Nix context supplies its actual execution resource. Native discovery
+retains the flake/system/attribute binding rather than splitting subject names
+into commands. The constructor checks the recursive derivation graph and the
+source/tool NAR reference closures.
+
+```bash
+set -euo pipefail
+project=$(mktemp -d)
+system=$(nix config show --json | jq -r '.system.value')
+builder=$(readlink -f "$(command -v bash)")
+builder_store="${builder%/bin/bash}"
+mkdir -p "$project/specs/example"
+printf '# Example\n' > "$project/README.md"
+printf '# Example\n\n## Success Criteria\n\n- A document has a heading [check](document-heading)\n' > "$project/specs/example/tests.md"
+cat > "$project/flake.nix" <<EOF
+{
+  outputs = { self }: {
+    checks."$system".heading = builtins.derivation {
+      name = "document-heading";
+      system = "$system";
+      builder = builtins.appendContext "$builder" {
+        "$builder_store" = { path = true; };
+      };
+      src = self;
+      args = [ "-c" "read -r heading < \"\$src/README.md\"; [[ \"\$heading\" == '# '* ]] && echo success > \"\$out\"" ];
+    };
+  };
+}
+EOF
+git init "$project"
+cargo run -p loom-gate --example nix-provider -- "$project" --print-inputs
+cargo run -p loom-gate --example nix-provider -- "$project"
+```
+
+The constructor resolves the discovered `heading` check uniquely and rejects a
+missing or ambiguous native target. Descriptions bind the actual derivation,
+staged source with executable-file identity, exact execution binary, graph
+identity, offered document responsibility and source origins. Raw descriptions
+and smaller input lists cannot replace that definition. The check must be a
+deterministic, sandboxed derivation; `__noChroot`, host-network/impure-host
+exceptions, impure/dynamic graphs, a network-enabled fixed-output check and
+unregistered or traversing builder paths fail instead of becoming effectful
+execution. This minimal constructor stages the complete project conservatively;
+it does not provide fine-grained resource partitioning.
+
+Execution forces sandboxing with no fallback, extra host paths, remote builders
+or root-output substitution. Valid cold outputs build normally; already-realized
+outputs are checked again rather than accepted as current evidence. An
+unavailable sandbox yields an explicit `unavailable` outcome and a nonzero
+example exit, not a pass or a suggestion to disable sandboxing. A different
+native platform is `inapplicable`. Run on a worker with the declared capability
+and platform to observe an actual check result.
+
+### Native contract failure and correction
+
+Removing the actual staged source makes the native execution contract invalid,
+not a check with an empty input list:
+
+```bash
+set -euo pipefail
+python3 - "$project/flake.nix" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace('      src = self;\n', ''))
+PY
+if cargo run -p loom-gate --example nix-provider -- "$project" --print-inputs; then
+  printf 'unexpected admission of omitted project source\n' >&2
+  exit 1
+fi
+python3 - "$project/flake.nix" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace('      args = ', '      src = self;\n      args = '))
+PY
+cargo run -p loom-gate --example nix-provider -- "$project" --print-inputs
+cargo run -p loom-gate --example nix-provider -- "$project"
+```
+
+The construction error names the target and flake producer, carries the native
+cause through normal stderr feedback, and does not dispatch the invalid graph.
+Correcting the source re-enters the same query/admission path. Query success
+alone does not mean the check ran, discharged baseline obligations or authorized
 publication.

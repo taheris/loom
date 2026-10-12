@@ -93,10 +93,15 @@ pub struct Rust {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Nix {
-    flake: ResourcePath,
-    attribute: Name,
-    system: Name,
-    graph: Digest,
+    pub(super) flake: ResourcePath,
+    pub(super) attribute: Name,
+    pub(super) system: Name,
+    pub(super) graph: Digest,
+    pub(super) derivation: super::nix::StorePath,
+    pub(super) source: super::nix::StorePath,
+    pub(super) executor: super::nix::StorePath,
+    pub(super) binary: ResourcePath,
+    pub(super) artifact: Digest,
 }
 
 /// Deserializing any closed variant still leaves a candidate that requires resolution.

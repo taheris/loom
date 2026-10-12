@@ -15,6 +15,8 @@ use tempfile::TempDir;
 
 #[path = "provider/identity.rs"]
 mod identity;
+#[path = "provider/nix.rs"]
+mod nix;
 
 fn name(value: &str) -> Name {
     value.to_owned().try_into().unwrap()
@@ -298,6 +300,11 @@ fn provider_candidates_use_closed_variants_before_admission() {
     nix["execution"] = serde_json::json!({
         "flake": "flake.nix", "attribute": "checks.x86_64-linux.heading",
         "system": "x86_64-linux", "graph": nix["contract"]["definition"],
+        "derivation": "/nix/store/00000000000000000000000000000000-heading.drv",
+        "source": "/nix/store/00000000000000000000000000000000-source",
+        "executor": "/nix/store/00000000000000000000000000000000-nix",
+        "binary": "bin/nix",
+        "artifact": nix["contract"]["definition"],
     });
     let parsed = Candidate::parse(&nix.to_string()).unwrap();
     assert!(matches!(parsed, Candidate::HermeticNix { .. }));
@@ -484,18 +491,22 @@ fn deleted_document_is_an_invalid_registration_not_an_empty_analysis_scope() {
     let dir = fixture();
     std::fs::remove_file(dir.path().join("README.md")).unwrap();
     let (snapshot, inventory) = context(&dir);
-    assert!(
-        Definition::tracked(
-            &snapshot,
-            &inventory,
-            name("heading"),
-            path("src/lib.rs"),
-            &BTreeSet::from([name("resource:README.md")]),
-            &BTreeSet::from([Duty::Document]),
-            check
-        )
-        .is_err()
-    );
+    let Err(error) = Definition::tracked(
+        &snapshot,
+        &inventory,
+        name("heading"),
+        path("src/lib.rs"),
+        &BTreeSet::from([name("resource:README.md")]),
+        &BTreeSet::from([Duty::Document]),
+        check,
+    ) else {
+        panic!("an absent subject must not register");
+    };
+    let detail = format!("{:#}", anyhow::Error::new(error));
+    assert!(detail.contains("heading"), "{detail}");
+    assert!(detail.contains("src/lib.rs"), "{detail}");
+    assert!(detail.contains("resource:README.md"), "{detail}");
+    assert!(detail.contains("loom gate verify"), "{detail}");
 }
 
 #[test]

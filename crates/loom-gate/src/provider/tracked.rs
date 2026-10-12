@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use super::{Digest, Error, Input};
+use super::{Capability, Digest, Error, Input};
 use crate::inventory::Name;
 use crate::inventory::snapshot::{ResourcePath, Snapshot};
 
@@ -14,7 +14,16 @@ pub type Check = dyn for<'a> Fn(&mut Context<'a>) -> Result<Outcome, Error> + Se
 #[serde(tag = "verdict", rename_all = "kebab-case")]
 pub enum Outcome {
     Pass,
-    Fail { detail: String },
+    Fail {
+        detail: String,
+    },
+    Unavailable {
+        capability: Capability,
+        detail: String,
+    },
+    Inapplicable {
+        system: Name,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -32,6 +41,12 @@ pub enum Observation {
         subject: Name,
         paths: BTreeSet<ResourcePath>,
     },
+    ExecutionGraph {
+        digest: Digest,
+    },
+    Output {
+        path: super::nix::StorePath,
+    },
 }
 
 /// An observed result is not evidence admission or publication authorization.
@@ -43,6 +58,18 @@ pub struct Observed {
 }
 
 impl Observed {
+    pub(super) const fn execution(
+        target: Name,
+        outcome: Outcome,
+        observations: Vec<Observation>,
+    ) -> Self {
+        Self {
+            target,
+            outcome,
+            observations,
+        }
+    }
+
     pub const fn target(&self) -> &Name {
         &self.target
     }

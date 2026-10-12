@@ -1,5 +1,6 @@
 //! Checked definitions produce descriptions; only current-context resolution produces units.
 
+pub mod nix;
 pub mod tracked;
 mod wire;
 
@@ -88,10 +89,18 @@ impl Input {
 #[derive(Clone)]
 pub struct Definition {
     candidate: Candidate,
-    check: Arc<Check>,
-    members: BTreeMap<Name, BTreeSet<ResourcePath>>,
-    executable: PathBuf,
-    artifact: Digest,
+    execution: Execution,
+}
+
+#[derive(Clone)]
+enum Execution {
+    Tracked {
+        check: Arc<Check>,
+        members: BTreeMap<Name, BTreeSet<ResourcePath>>,
+        executable: PathBuf,
+        artifact: Digest,
+    },
+    Nix(Arc<nix::Graph>),
 }
 
 impl Definition {
@@ -120,9 +129,6 @@ impl Definition {
             return Err(Error::Callable { target });
         }
         let entry = Name::try_from(callable.to_owned())?;
-        if subjects.is_empty() || duties.is_empty() {
-            return Err(Error::Responsibility { target });
-        }
         if !inventory.subjects().values().any(|subject| {
             subject.role() == Role::RustSource && subject.members().contains(&checker)
         }) {
@@ -131,28 +137,17 @@ impl Definition {
         let mut members = BTreeMap::new();
         let mut inputs = BTreeMap::<ResourcePath, BTreeSet<Origin>>::new();
         for name in subjects {
-            let subject = inventory.subject(name)?;
+            let subject = inventory
+                .subject(name)
+                .map_err(|source| Error::Construction {
+                    target: target.clone(),
+                    producer: checker.clone(),
+                    source: Box::new(source.into()),
+                })?;
             members.insert(name.clone(), subject.members().clone());
             add_subject_inputs(&mut inputs, subject);
         }
-        let responsibilities: BTreeSet<_> = inventory
-            .obligations()
-            .iter()
-            .filter(|obligation| {
-                subjects.contains(obligation.subject()) && duties.contains(&obligation.duty())
-            })
-            .map(Responsibility::from_obligation)
-            .collect();
-        if subjects.iter().any(|name| {
-            !responsibilities
-                .iter()
-                .any(|offered| &offered.subject == name)
-        }) || duties
-            .iter()
-            .any(|duty| !responsibilities.iter().any(|offered| &offered.duty == duty))
-        {
-            return Err(Error::Responsibility { target });
-        }
+        let responsibilities = responsibility(inventory, &target, subjects, duties)?;
         for subject in inventory
             .subjects()
             .values()
@@ -192,16 +187,68 @@ impl Definition {
                     entry,
                 },
             },
-            check: Arc::new(check),
-            members,
-            executable,
-            artifact,
+            execution: Execution::Tracked {
+                check: Arc::new(check),
+                members,
+                executable,
+                artifact,
+            },
         })
     }
 
     pub const fn description(&self) -> &Candidate {
         &self.candidate
     }
+
+    fn require_current(&self) -> Result<(), Error> {
+        match &self.execution {
+            Execution::Tracked {
+                executable,
+                artifact,
+                ..
+            } => {
+                if read_artifact(executable)? != *artifact {
+                    return Err(Error::BuildChanged {
+                        target: self.candidate.target().clone(),
+                    });
+                }
+            }
+            Execution::Nix(graph) => graph.require_current()?,
+        }
+        Ok(())
+    }
+}
+
+fn responsibility(
+    inventory: &Inventory,
+    target: &Name,
+    subjects: &BTreeSet<Name>,
+    duties: &BTreeSet<Duty>,
+) -> Result<BTreeSet<Responsibility>, Error> {
+    let responsibilities: BTreeSet<_> = inventory
+        .obligations()
+        .iter()
+        .filter(|obligation| {
+            subjects.contains(obligation.subject()) && duties.contains(&obligation.duty())
+        })
+        .map(Responsibility::from_obligation)
+        .collect();
+    if subjects.is_empty()
+        || duties.is_empty()
+        || subjects.iter().any(|name| {
+            !responsibilities
+                .iter()
+                .any(|offered| &offered.subject == name)
+        })
+        || duties
+            .iter()
+            .any(|duty| !responsibilities.iter().any(|offered| &offered.duty == duty))
+    {
+        return Err(Error::Responsibility {
+            target: target.clone(),
+        });
+    }
+    Ok(responsibilities)
 }
 
 fn parse_set<'de, D, T>(deserializer: D) -> Result<BTreeSet<T>, D::Error>
@@ -367,11 +414,7 @@ impl Registry {
             });
         }
         let definition = self.definition(target)?;
-        if read_artifact(&definition.executable)? != definition.artifact {
-            return Err(Error::BuildChanged {
-                target: target.clone(),
-            });
-        }
+        definition.require_current()?;
         if candidate != definition.description() {
             return Err(Error::Inconsistent {
                 target: target.clone(),
@@ -400,8 +443,10 @@ impl Registry {
                 .annotations
                 .into_iter()
                 .filter(|annotation| {
-                    annotation.tier == crate::annotation::Tier::Check
-                        && annotation.target == target.as_str()
+                    matches!(
+                        annotation.tier,
+                        crate::annotation::Tier::Check | crate::annotation::Tier::System
+                    ) && annotation.target == target.as_str()
                 })
                 .collect();
         if annotations.is_empty() {
@@ -493,30 +538,42 @@ impl Unit {
         self.definition.description().responsibilities()
     }
 
+    pub const fn description(&self) -> &Candidate {
+        self.definition.description()
+    }
+
+    pub fn nix_graph(&self) -> Option<&nix::Graph> {
+        match &self.definition.execution {
+            Execution::Nix(graph) => Some(graph),
+            Execution::Tracked { .. } => None,
+        }
+    }
+
     pub const fn annotations(&self) -> &[crate::annotation::Annotation] {
         self.annotations.as_slice()
     }
 
-    /// Run the registered callable over captured tracked inputs, collecting observations cold.
+    /// Run the registered execution over captured inputs, collecting observations cold.
     ///
     /// # Errors
     /// Boundary violations and a changed checkout are failures, not empty input observations.
     pub fn run(&self) -> Result<Observed, Error> {
         self.require_current()?;
-        let mut context = Context::new(&self.snapshot, &self.inputs, &self.definition.members);
-        let result = (self.definition.check)(&mut context)?;
+        let observed = match &self.definition.execution {
+            Execution::Tracked { check, members, .. } => {
+                let mut context = Context::new(&self.snapshot, &self.inputs, members);
+                let result = check(&mut context)?;
+                context.finish(self.target().clone(), result)?
+            }
+            Execution::Nix(graph) => graph.run(self.target().clone())?,
+        };
         self.require_current()?;
-        context.finish(self.target().clone(), result)
+        Ok(observed)
     }
 
     fn require_current(&self) -> Result<(), Error> {
         self.snapshot.require_current()?;
-        if read_artifact(&self.definition.executable)? != self.definition.artifact {
-            return Err(Error::BuildChanged {
-                target: self.target().clone(),
-            });
-        }
-        Ok(())
+        self.definition.require_current()
     }
 }
 
@@ -540,6 +597,15 @@ impl From<crate::annotation::ParseError> for Error {
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
+    /// checked Nix construction failed
+    Nix(#[from] nix::Error),
+    /// provider `{target:?}` construction failed at producer `{producer:?}`; correct the reported cause and retry `loom gate verify`
+    Construction {
+        target: Name,
+        producer: ResourcePath,
+        #[source]
+        source: Box<Error>,
+    },
     /// provider `{target:?}` erased or ambiguous Rust callable identity; register a named function item, not a closure/function pointer, and retry `loom gate verify`
     Callable { target: Name },
     /// failed to locate the running checker artifact
@@ -560,7 +626,7 @@ pub enum Error {
     Description(#[from] serde_json::Error),
     /// failed to parse the captured acceptance contract
     Strategy(#[source] Box<crate::annotation::ParseError>),
-    /// no owning check annotation for provider `{target:?}` in `{contract:?}`; correct its target mapping and retry `loom gate verify`
+    /// no owning executable annotation for provider `{target:?}` in `{contract:?}`; correct its target mapping and retry `loom gate verify`
     Annotation {
         target: Name,
         contract: ResourcePath,

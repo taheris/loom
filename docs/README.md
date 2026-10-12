@@ -13,8 +13,8 @@ Ownership boundaries do not require new crates or commands.
 - [`style-rules.md`](style-rules.md) — code-style and test-quality rules
   organized by rule family (SH-, NX-, DOC-, GIT-, TST-, RS-, COM-, CLI-). Pinned
   by `loom loop` and `loom gate review` sessions.
-- [`provider-authoring.md`](provider-authoring.md) — runnable tracked Rust
-  definition/query/resolution example with failure and correction.
+- [`provider-authoring.md`](provider-authoring.md) — runnable tracked Rust and
+  hermetic Nix definition/query/resolution examples with failure and correction.
 - [`tuning.md`](tuning.md) — Loom tuning handbook: SkillOpt adaptation,
   behavioral checker model, `loom-case` syntax, and consumer tuning guidance.
 
