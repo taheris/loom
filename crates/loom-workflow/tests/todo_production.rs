@@ -1547,6 +1547,44 @@ async fn quint_package_change_tracking_includes_model_inputs() -> Result<()> {
 }
 
 #[tokio::test]
+async fn bootstrap_model_changes_and_deletions_reach_todo_without_moving_contracts() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_, head) = init_workspace(dir.path())?;
+    std::fs::create_dir_all(dir.path().join("specs/alpha/import"))?;
+    let model = dir.path().join("specs/alpha/model.qnt");
+    std::fs::write(&model, "module gate {}\n")?;
+    std::fs::write(
+        dir.path().join("specs/alpha/import/reference.qnt"),
+        "module reference {}\n",
+    )?;
+    run_git(dir.path(), &["add", "specs/alpha"])?;
+    run_git(dir.path(), &["commit", "-qm", "add bootstrap model"])?;
+    let mut ctrl = controller(dir.path(), StatefulRunner::new(&head, None))?;
+    let session = ctrl.build_session().await?;
+    assert!(
+        session
+            .config
+            .initial_prompt
+            .contains("Spec file: `specs/alpha.md`")
+    );
+    let index = std::fs::read_to_string(session.config.scratch_dir.join("evidence/index.md"))?;
+    assert!(index.contains("Acceptance: `specs/alpha.md`"));
+    assert!(index.contains("Tracked input scope: `specs/alpha.md`, `specs/alpha`"));
+    assert!(!session.config.initial_prompt.contains("### beta"));
+    let diff = read_dossier_section(&session.config.scratch_dir.join("evidence/alpha/diff"))?;
+    assert!(diff.contains("model.qnt") && diff.contains("import/reference.qnt"));
+    let before = git_output(dir.path(), &["rev-parse", "HEAD"])?;
+    std::fs::remove_dir_all(dir.path().join("specs/alpha"))?;
+    run_git(dir.path(), &["add", "-u", "specs/alpha"])?;
+    run_git(dir.path(), &["commit", "-qm", "remove bootstrap support"])?;
+    let mut ctrl = controller(dir.path(), StatefulRunner::new(&before, None))?;
+    let session = ctrl.build_session().await?;
+    let diff = read_dossier_section(&session.config.scratch_dir.join("evidence/alpha/diff"))?;
+    assert!(diff.contains("deleted file mode") && diff.contains("model.qnt"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn todo_package_index_disagreement_blocks_before_beads_mutation() -> Result<()> {
     for index in [
         "- [alpha](../specs/alpha/spec.md)\n",

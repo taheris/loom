@@ -378,7 +378,7 @@ review; no keyword classifier or compiler can establish intent.
 - Existing semantic review rejects a fix for a confirmed counterexample that
   omits a portable checked-in replay regression or substitutes a case that does
   not address the defect. No separate approval or review path is introduced.
-  [judge?](../tests/judges/quint-model-alignment.md)
+  [judge](../tests/judges/quint-model-alignment.md)
 
 <!-- prettier-ignore -->
 - **Selection and readiness mutations.** Fault injection detects omitted
@@ -427,7 +427,7 @@ review; no keyword classifier or compiler can establish intent.
 - Semantic review checks correspondence between prose, model assumptions,
   properties, and implementation projections; an unchanged model's passing
   result is not evidence of alignment with changed English requirements.
-  [judge?](../tests/judges/quint-model-alignment.md)
+  [judge](../tests/judges/quint-model-alignment.md)
 
 ### Execution policy and cost
 

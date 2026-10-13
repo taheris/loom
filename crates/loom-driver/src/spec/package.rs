@@ -69,6 +69,7 @@ pub struct Package {
     label: SpecLabel,
     contract: PathBuf,
     acceptance: PathBuf,
+    model: Option<PathBuf>,
 }
 
 impl Package {
@@ -96,6 +97,16 @@ impl Package {
                     .to_path_buf(),
             ]
         }
+    }
+
+    /// Optional executable model support owned by this package or bootstrap document.
+    pub fn model(&self) -> Option<&Path> {
+        self.model.as_deref()
+    }
+
+    /// Transitional support scope; never a second contract or acceptance document.
+    pub fn bootstrap_support_scope(&self) -> Option<PathBuf> {
+        (self.contract == self.acceptance).then(|| self.contract.with_extension(""))
     }
 
     /// Combined ownership budget; bootstrap documents count only once.
@@ -221,12 +232,19 @@ pub fn discover_with(reader: &dyn Reader, specs_dir: &Path) -> Result<Vec<Packag
                 return Err(Error::Incomplete { path });
             }
             has_flat = true;
-            (path.clone(), path)
+            (path.clone(), path.clone())
         };
+        let model_path = if canonical {
+            path.join("model.qnt")
+        } else {
+            contract.with_extension("").join("model.qnt")
+        };
+        let model = regular_file(reader, &model_path)?.then_some(model_path);
         packages.push(Package {
             label,
             contract,
             acceptance,
+            model,
         });
     }
     if has_flat && has_package {
@@ -418,6 +436,20 @@ pub fn document_label(path: &Path) -> Option<&str> {
     }
 }
 
+fn regular_file(reader: &dyn Reader, path: &Path) -> Result<bool, Error> {
+    match reader.kind(path) {
+        Ok(Kind::File) => Ok(true),
+        Ok(_) => Err(Error::Incomplete {
+            path: path.to_path_buf(),
+        }),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(Error::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 fn read_with(reader: &dyn Reader, path: &Path) -> Result<String, Error> {
     reader.read(path).map_err(|source| Error::ReadFile {
         path: path.to_path_buf(),
@@ -466,6 +498,87 @@ mod tests {
             ));
             package(dir.path(), "alpha");
         }
+    }
+
+    #[test]
+    fn canonical_model_discovery_keeps_one_acceptance_document() {
+        let dir = tempfile::tempdir().unwrap();
+        package(dir.path(), "alpha");
+        let specs = dir.path().join("specs");
+        let owners = discover(&specs).unwrap();
+        assert_eq!(owners[0].model(), None);
+        assert_eq!(owners[0].bootstrap_support_scope(), None);
+        let model = specs.join("alpha/model.qnt");
+        fs::write(&model, "module model {}\n").unwrap();
+        let owners = discover(&specs).unwrap();
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].model(), Some(model.as_path()));
+        assert_eq!(owners[0].acceptance(), specs.join("alpha/tests.md"));
+        assert_eq!(owners[0].input_scopes(), vec![specs.join("alpha")]);
+    }
+
+    #[test]
+    fn bootstrap_model_discovery_keeps_flat_contract_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let specs = dir.path().join("specs");
+        fs::create_dir_all(specs.join("alpha/import")).unwrap();
+        fs::write(
+            specs.join("alpha.md"),
+            "## Success Criteria\n- Flat [test](real)\n",
+        )
+        .unwrap();
+        fs::write(specs.join("alpha/model.qnt"), "module model {}\n").unwrap();
+        fs::write(
+            specs.join("alpha/import/reference.qnt"),
+            "module reference {}\n",
+        )
+        .unwrap();
+        fs::write(specs.join("alpha/support.md"), "support, not acceptance").unwrap();
+        let owners = discover(&specs).unwrap();
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].contract(), specs.join("alpha.md"));
+        assert_eq!(owners[0].acceptance(), owners[0].contract());
+        assert_eq!(
+            owners[0].model(),
+            Some(specs.join("alpha/model.qnt").as_path())
+        );
+        assert_eq!(
+            owners[0].bootstrap_support_scope(),
+            Some(specs.join("alpha"))
+        );
+        assert_eq!(owners[0].line_count().unwrap(), 2);
+        fs::write(specs.join("alpha/tests.md"), "second authority").unwrap();
+        assert!(discover(&specs).is_err());
+    }
+
+    #[test]
+    fn bootstrap_support_does_not_hide_invalid_directory_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("alpha.md"), "flat owner").unwrap();
+        fs::create_dir(dir.path().join("alpha.invalid")).unwrap();
+        assert!(matches!(discover(dir.path()), Err(Error::Label { .. })));
+    }
+
+    #[test]
+    fn bootstrap_model_must_be_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("alpha.md"), "flat owner").unwrap();
+        fs::create_dir_all(dir.path().join("alpha/model.qnt")).unwrap();
+        assert!(matches!(
+            discover(dir.path()),
+            Err(Error::Incomplete { .. })
+        ));
+    }
+
+    #[test]
+    fn unpaired_support_directory_is_not_an_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("alpha")).unwrap();
+        fs::write(dir.path().join("alpha/model.qnt"), "module model {}\n").unwrap();
+        assert!(matches!(
+            discover(dir.path()),
+            Err(Error::Incomplete { .. })
+        ));
     }
 
     #[test]

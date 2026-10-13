@@ -14,6 +14,20 @@ use campaign::Mode;
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let command = args.next().context("missing campaign")?;
+    if command == "model-path" {
+        let root = PathBuf::from(args.next().context("missing acceptance source root")?);
+        if args.next().is_some() {
+            bail!("unexpected model discovery argument");
+        }
+        let packages = loom_driver::spec::package::discover_indexed(&root)?;
+        let model = packages
+            .iter()
+            .find(|owner| owner.label().as_str() == "gate")
+            .and_then(loom_driver::spec::package::Package::model)
+            .context("whole-gate model is missing from the discovered owner")?;
+        writeln!(std::io::stdout().lock(), "{}", model.display())?;
+        return Ok(());
+    }
     let budget_only = command == "budget";
     let selection = if budget_only {
         args.next().context("missing budget campaign")?

@@ -83,6 +83,29 @@ fn parse_walks_canonical_package_acceptance_documents() {
 }
 
 #[test]
+fn bootstrap_model_support_is_not_an_acceptance_authority() {
+    let dir = tempdir().unwrap();
+    let specs = dir.path().join("specs");
+    fs::create_dir_all(specs.join("alpha")).unwrap();
+    write(
+        &specs,
+        "alpha.md",
+        "## Success Criteria\n- Flat requirement [test](real_test)\n",
+    );
+    write(&specs.join("alpha"), "model.qnt", "module gate {}\n");
+    write(
+        &specs.join("alpha"),
+        "README.md",
+        "## Success Criteria\n- Support [test](not_acceptance)\n",
+    );
+    let out = parse(&specs).unwrap();
+    assert_eq!(out.criteria.len(), 1);
+    assert_eq!(out.annotations.len(), 1);
+    assert_eq!(out.annotations[0].target, "real_test");
+    assert_eq!(out.annotations[0].source_spec, specs.join("alpha.md"));
+}
+
+#[test]
 fn parse_aggregates_criteria_across_packages() {
     let dir = tempdir().unwrap();
     write_package(
