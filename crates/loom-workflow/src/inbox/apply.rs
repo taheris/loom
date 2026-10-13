@@ -882,7 +882,7 @@ mod tests {
         let (second, _) = allocate_review_log(dir.path()).unwrap();
         assert_ne!(first, second);
         assert_eq!(std::fs::read_to_string(first).unwrap(), "old attempt");
-        assert!(std::fs::read(second).unwrap().is_empty());
+        assert_eq!(std::fs::read(second).unwrap(), [] as [u8; 0]);
         assert_ne!(
             apply_log_path(dir.path()).unwrap(),
             apply_log_path(dir.path()).unwrap()

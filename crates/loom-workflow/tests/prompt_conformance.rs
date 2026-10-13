@@ -681,7 +681,7 @@ fn executable_example_extraction_is_test_only_and_rejects_broken_annotations() -
     let body = fixture::render(Phase::Review)?;
     let decoded = output::decode(&body, Phase::Review)
         .expect_err("production must not promote prompt fences");
-    assert!(decoded.context().messages().is_empty());
+    assert_eq!(decoded.context().messages(), []);
     assert!(!extract::examples(&body)?.is_empty());
     for malformed in [
         "```text loom-example\n```",

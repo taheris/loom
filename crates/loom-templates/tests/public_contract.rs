@@ -59,7 +59,7 @@ fn downstream_review_composes_partials_with_canonical_typed_metadata() -> Result
     assert!(!prompt.contains("LOOM_NOOP\n```"));
     let inert = loom_protocol::output::decode(&prompt, loom_protocol::output::Phase::Review)
         .expect_err("composed prompt examples are not live messages");
-    assert!(inert.context().messages().is_empty());
+    assert_eq!(inert.context().messages(), []);
     Ok(())
 }
 
