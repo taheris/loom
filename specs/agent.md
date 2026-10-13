@@ -58,10 +58,14 @@ agent.backend = "direct"
 agent.model_id = "claude-sonnet-4-6"
 ```
 
-Phases without explicit config inherit `[phase.default]`. The pi backend calls
-`set_model` after spawn if the phase config specifies a provider/model; the
-direct backend reads `agent.model_id` directly into its `Conversation`'s
-`ModelId`.
+Phases without explicit config inherit `[phase.default]`. When neither table
+sets `agent.thinking_level`, built-in reasoning effort is `high` for plan, todo,
+and gate review, and `medium` for loop and inbox. Explicit per-phase values take
+precedence over `[phase.default]`, which takes precedence over built-ins,
+including explicit `off`. These defaults apply to every repository. The pi
+backend calls `set_model` after spawn if the phase config specifies a
+provider/model; the direct backend reads `agent.model_id` directly into its
+`Conversation`'s `ModelId`.
 
 `[phase.plan]` and `[phase.inbox]` are also valid per-phase keys, but the
 interactive phases (`loom plan`, `loom inbox chat`) bypass this dispatch
@@ -1316,14 +1320,22 @@ letting the entrypoint run the wrong runtime.
   round-trips
   [test](thinking_level_serializes_each_variant_as_lowercase_wire_token)
 
+- Missing, empty, and partial repo configuration use built-in thinking levels:
+  `high` for plan, todo, and review; `medium` for loop and inbox
+  [test](agent_for_uses_built_in_thinking_levels_without_repo_settings)
+
+- Explicit named-phase and default-phase thinking levels, including `off`,
+  override built-in reasoning defaults
+  [test](agent_for_explicit_thinking_levels_override_built_in_defaults)
+
 - Phase configuration accepts `max` through named and default-phase fallback
   [test](agent_for_resolves_max_thinking_level_through_named_and_default_phases)
 
 - Native Pi launch forwards configured `max` as `--thinking max`
   [test](native_pi_launch_forwards_max_thinking_level)
 
-- Pi backend skips `set_thinking_level` entirely when phase config leaves it
-  unset [test](set_thinking_level_skipped_when_config_none)
+- Pi backend skips `set_thinking_level` entirely when its spawn configuration
+  leaves it unset [test](set_thinking_level_skipped_when_config_none)
 
 - Pi backend tolerates pi rejection of `set_thinking_level` without aborting the
   handshake [test](set_thinking_level_tolerates_pi_rejection)

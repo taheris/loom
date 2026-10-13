@@ -14,6 +14,11 @@ fi
 printf '%s\n' "{\"type\":\"response\",\"id\":\"${probe_id}\",\"command\":\"get_state\",\"success\":true,\"data\":{\"model\":null,\"thinkingLevel\":\"medium\",\"isStreaming\":false,\"isCompacting\":false,\"messageCount\":0,\"pendingMessageCount\":0}}"
 
 IFS= read -r prompt_line
+if [[ "$prompt_line" == *'"type":"set_thinking_level"'* ]]; then
+    thinking_id="$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' <<<"$prompt_line")"
+    printf '%s\n' "{\"type\":\"response\",\"id\":\"${thinking_id}\",\"command\":\"set_thinking_level\",\"success\":true}"
+    IFS= read -r prompt_line
+fi
 if [[ "$prompt_line" != *'"type":"prompt"'* ]]; then
     printf 'pi-stall-mid-session: expected prompt command\n' >&2
     exit 2

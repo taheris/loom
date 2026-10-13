@@ -63,7 +63,7 @@ pub const CONFIG_PATH_ENV: &str = "LOOM_CONFIG";
 /// when [`CONFIG_PATH_ENV`] is unset.
 pub const DEFAULT_CONFIG_FILENAME: &str = "loom.toml";
 
-use crate::agent::{AgentKind, OutputLimits};
+use crate::agent::{AgentKind, OutputLimits, ThinkingLevel};
 use agent::lookup_phase_field;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -190,6 +190,7 @@ impl LoomConfig {
     /// claude-specific settings are pulled from `[claude]` and `[security]`
     /// so call sites receive everything in one struct.
     ///
+    /// Thinking defaults to high for plan, todo, and review, and medium otherwise.
     /// All configured values are already typed; resolution only applies fallback.
     pub fn agent_for(&self, phase: Phase) -> AgentSelection {
         let profile = lookup_phase_field(&self.phase, phase, |p| &p.profile)
@@ -203,8 +204,14 @@ impl LoomConfig {
             backend: self.backend_settings(kind),
             provider: lookup_phase_field(&self.phase, phase, |p| &p.agent.provider).cloned(),
             model_id: lookup_phase_field(&self.phase, phase, |p| &p.agent.model_id).cloned(),
-            thinking_level: lookup_phase_field(&self.phase, phase, |p| &p.agent.thinking_level)
-                .copied(),
+            thinking_level: Some(
+                lookup_phase_field(&self.phase, phase, |p| &p.agent.thinking_level)
+                    .copied()
+                    .unwrap_or(match phase {
+                        Phase::Plan | Phase::Todo | Phase::Review => ThinkingLevel::High,
+                        Phase::Loop | Phase::Inbox => ThinkingLevel::Medium,
+                    }),
+            ),
         }
     }
 
@@ -953,6 +960,75 @@ agent.thinking_level = "high"
                 cfg.agent_for(Phase::Loop).thinking_level,
                 Some(ThinkingLevel::Max)
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn agent_for_uses_built_in_thinking_levels_without_repo_settings() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        for cfg in [
+            LoomConfig::default(),
+            LoomConfig::from_toml_str("")?,
+            LoomConfig::load(dir.path().join("loom.toml"))?,
+            LoomConfig::from_toml_str(
+                "[phase.default]\nagent.backend = \"pi\"\n[phase.plan]\nprofile = \"rust\"\n",
+            )?,
+        ] {
+            for (phase, expected) in [
+                (Phase::Plan, ThinkingLevel::High),
+                (Phase::Todo, ThinkingLevel::High),
+                (Phase::Review, ThinkingLevel::High),
+                (Phase::Loop, ThinkingLevel::Medium),
+                (Phase::Inbox, ThinkingLevel::Medium),
+            ] {
+                assert_eq!(
+                    cfg.agent_for(phase).thinking_level,
+                    Some(expected),
+                    "{phase:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn agent_for_explicit_thinking_levels_override_built_in_defaults() -> Result<()> {
+        for level in [
+            ThinkingLevel::Off,
+            ThinkingLevel::Minimal,
+            ThinkingLevel::Low,
+            ThinkingLevel::Medium,
+            ThinkingLevel::High,
+            ThinkingLevel::Xhigh,
+            ThinkingLevel::Max,
+        ] {
+            for phase in [
+                Phase::Plan,
+                Phase::Todo,
+                Phase::Review,
+                Phase::Loop,
+                Phase::Inbox,
+            ] {
+                for src in [
+                    format!(
+                        "[phase.default]\nagent.thinking_level = \"{}\"\n",
+                        level.as_str()
+                    ),
+                    format!(
+                        "[phase.default]\nagent.thinking_level = \"max\"\n[phase.'{}']\nagent.thinking_level = \"{}\"\n",
+                        phase.as_str(),
+                        level.as_str(),
+                    ),
+                ] {
+                    let cfg = LoomConfig::from_toml_str(&src)?;
+                    assert_eq!(
+                        cfg.agent_for(phase).thinking_level,
+                        Some(level),
+                        "{phase:?}"
+                    );
+                }
+            }
         }
         Ok(())
     }

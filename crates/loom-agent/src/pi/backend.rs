@@ -1376,14 +1376,14 @@ mod tests {
     }
 
     /// With `thinking_level: None`, the driver must skip
-    /// `set_thinking_level` entirely. `happy-path` only consumes a
+    /// `set_thinking_level` entirely. `happy-path-no-thinking` only consumes a
     /// `prompt` after the probe — any extra post-probe command would
     /// desynchronize it and fail this test before the `LOOM_COMPLETE`
     /// delta arrives.
     #[tokio::test]
     async fn set_thinking_level_skipped_when_config_none() {
         let session = spawn_with_handshake(
-            mock_command("happy-path"),
+            mock_command("happy-path-no-thinking"),
             None,
             None,
             TEST_HANDSHAKE_BUDGET,

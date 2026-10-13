@@ -4,13 +4,3 @@ sccache_dir = ".loom/sccache"
 [phase.default]
 profile = "rust"
 agent.backend = "pi"
-agent.thinking_level = "medium"
-
-[phase.plan]
-agent.thinking_level = "high"
-
-[phase.todo]
-agent.thinking_level = "high"
-
-[phase.gate.review]
-agent.thinking_level = "high"

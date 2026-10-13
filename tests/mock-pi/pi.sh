@@ -147,7 +147,7 @@ run_interactive_compaction_canary() {
 run_interactive_bridge_canary() {
     handle_probe 0
     local _prompt steer_line
-    IFS= read -r _prompt
+    read_prompt _prompt
     emit_compaction_start
     IFS= read -r steer_line
     if [[ "$steer_line" != *"$POLISH_NO_EDIT_PHRASE"* ]]; then
@@ -204,10 +204,27 @@ handle_probe() {
     emit_response_ok "$probe_id" "get_state" "$data"
 }
 
+read_prompt() {
+    local -n destination="$1"
+    IFS= read -r destination
+    if [[ "$(extract_field type "$destination")" == "set_thinking_level" ]]; then
+        if [[ "$MODE" == "happy-path-no-thinking" ]]; then
+            echo "mock-pi: unexpected thinking command" >&2
+            exit 2
+        fi
+        emit_response_ok "$(extract_field id "$destination")" "set_thinking_level"
+        IFS= read -r destination
+    fi
+    if [[ "$(extract_field type "$destination")" != "prompt" ]]; then
+        echo "mock-pi: expected prompt" >&2
+        exit 2
+    fi
+}
+
 run_happy_path() {
     handle_probe 0
     local prompt_line payload bead_id
-    IFS= read -r prompt_line
+    read_prompt prompt_line
     if [[ "${LOOM_SMOKE_WORKER:-0}" == "1" && "$prompt_line" == *"Issue: "* ]]; then
         bead_id="$(sed -n 's/.*Issue: \([a-z0-9.-]*\)\\n.*/\1/p' <<<"$prompt_line")"
         if [[ -z "$bead_id" ]]; then
@@ -233,7 +250,7 @@ run_happy_path() {
 run_tune_review() {
     handle_probe 0
     local prompt_line
-    IFS= read -r prompt_line
+    read_prompt prompt_line
     if [[ "$prompt_line" != *"TUNE_REVIEW_INPUT_CANARY"* ]]; then
         echo "mock-pi: tune review prompt did not contain fixture input" >&2
         exit 4
@@ -249,7 +266,7 @@ run_tune_review() {
 run_codemode_nested_tools() {
     handle_probe 0
     local prompt_line line
-    IFS= read -r prompt_line
+    read_prompt prompt_line
     while IFS= read -r line; do
         emit "$line"
     done < "$(dirname "${BASH_SOURCE[0]}")/../fixtures/pi_codemode_nested_tools.jsonl"
@@ -258,7 +275,7 @@ run_codemode_nested_tools() {
 run_echo_prompt() {
     handle_probe 0
     local prompt_line message
-    IFS= read -r prompt_line
+    read_prompt prompt_line
     message="$(extract_field message "$prompt_line")"
     emit_message_delta "echo: ${message}"
     emit_agent_end
@@ -267,7 +284,7 @@ run_echo_prompt() {
 run_steering() {
     handle_probe 0
     local _prompt steer_line steer_msg
-    IFS= read -r _prompt
+    read_prompt _prompt
     emit_message_delta "first turn response"
     emit_turn_end
 
@@ -281,7 +298,7 @@ run_steering() {
 run_compaction() {
     handle_probe 0
     local prompt_line steer_line repin_msg payload
-    IFS= read -r prompt_line
+    read_prompt prompt_line
     emit_compaction_start
 
     IFS= read -r steer_line
@@ -307,7 +324,7 @@ run_set_model() {
     fi
     emit_response_ok "$sm_id" "set_model"
 
-    IFS= read -r _prompt
+    read_prompt _prompt
     emit_message_delta "model:${provider}:${model_id}"
     emit_agent_end
 }
@@ -338,7 +355,7 @@ run_set_thinking_level() {
     fi
     emit_response_ok "$stl_id" "set_thinking_level"
 
-    IFS= read -r _prompt
+    read_prompt _prompt
     emit_message_delta "thinking:${level}"
     emit_agent_end
 }
@@ -356,7 +373,7 @@ run_set_thinking_level_reject() {
     fi
     emit_response_err "$stl_id" "set_thinking_level" "unsupported by provider"
 
-    IFS= read -r _prompt
+    read_prompt _prompt
     emit_message_delta "thinking-rejected:${level}"
     emit_agent_end
 }
@@ -389,7 +406,7 @@ case "$MODE" in
     set-thinking-level-reject)
         run_set_thinking_level_reject
         ;;
-    happy-path)
+    happy-path|happy-path-no-thinking)
         run_happy_path
         ;;
     tune-review)

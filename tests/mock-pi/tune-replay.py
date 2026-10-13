@@ -24,6 +24,11 @@ assert probe["type"] == "get_state"
 print(json.dumps({"type": "response", "id": probe["id"], "command": "get_state", "success": True,
                   "data": {"isStreaming": False, "isCompacting": False, "messageCount": 0, "pendingMessageCount": 0}}), flush=True)
 prompt = json.loads(input())
+if prompt["type"] == "set_thinking_level":
+    assert prompt["level"] == config["thinking_level"]
+    print(json.dumps({"type": "response", "id": prompt["id"],
+                      "command": "set_thinking_level", "success": True}), flush=True)
+    prompt = json.loads(input())
 assert prompt["type"] == "prompt"
 assert "fixture task context" in prompt["message"]
 assert "original fixture" not in prompt["message"]

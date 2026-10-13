@@ -66,7 +66,14 @@ main() {
         echo "pi-followup: expected initial prompt" >&2
         exit 5
     fi
-    : "$initial_prompt"
+    if [[ "$(extract_field type "$initial_prompt")" == "set_thinking_level" ]]; then
+        emit_response_ok "$(extract_field id "$initial_prompt")" "set_thinking_level"
+        IFS= read -r initial_prompt
+    fi
+    if [[ "$(extract_field type "$initial_prompt")" != "prompt" ]]; then
+        echo "pi-followup: expected initial prompt command" >&2
+        exit 5
+    fi
     emit_message_delta "Please answer before I finish."
     emit_agent_end
 

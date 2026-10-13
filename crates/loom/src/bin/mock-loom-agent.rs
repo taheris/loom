@@ -112,9 +112,22 @@ fn main() -> ExitCode {
     );
     emit(&mut stdout, &probe_response);
 
-    // Step 2 — read the prompt line. We don't need its contents; the
-    // mode env var carries the test's intent already.
-    let _prompt = read_line(&stdin);
+    let mut command = read_line(&stdin).expect("command after probe");
+    if extract_field("type", &command).as_deref() == Some("set_thinking_level") {
+        let id = extract_field("id", &command).expect("thinking command id");
+        emit(
+            &mut stdout,
+            &serde_json::json!({
+                "type": "response",
+                "id": id,
+                "command": "set_thinking_level",
+                "success": true,
+            })
+            .to_string(),
+        );
+        command = read_line(&stdin).expect("prompt after thinking command");
+    }
+    assert_eq!(extract_field("type", &command).as_deref(), Some("prompt"));
 
     match mode.as_str() {
         MODE_BLOCKED => {
