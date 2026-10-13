@@ -8,6 +8,9 @@ cd "$work"
 [[ ! -e .git ]]
 [[ -z "${NIX_REMOTE:-}" && -z "${NIX_DAEMON_SOCKET_PATH:-}" ]]
 [[ ! -S /nix/var/nix/daemon-socket/socket ]]
+for ancestor in /nix /nix/var /nix/var/nix; do
+  [[ "$(stat -c '%u:%a' "$ancestor")" == 0:755 ]]
+done
 nix config show --json | jq -e '."build-users-group".value == "" and .sandbox.value == false' >/dev/null
 nix store ping --json | jq -e '.url == "local"' >/dev/null
 [[ "$(nix eval --offline --raw --expr '"sandbox-nix-eval-ok"')" == sandbox-nix-eval-ok ]]

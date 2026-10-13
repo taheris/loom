@@ -259,6 +259,21 @@
         touch "$out"
       '';
 
+      worker-nix-state-permissions =
+        pkgs.runCommand "worker-nix-state-permissions"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.python3
+            ];
+          }
+          ''
+            set -euo pipefail
+            python3 ${../../tests/sandbox/nix-state-permissions.py} ${patchedWrixSrc}
+            touch "$out"
+          '';
+
       agent-entrypoint-contract =
         pkgs.runCommand "agent-entrypoint-contract"
           {
@@ -763,6 +778,7 @@
           wrix-requires-explicit-profile-config
           profile-manifest-keeps-runtime-path-context
           known-hosts-preserves-store
+          worker-nix-state-permissions
           smoke-beads-fixture
           smoke-preflight-skips-runtime-build
           test-app-ignores-host-git-signing
