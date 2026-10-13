@@ -496,7 +496,11 @@ pub fn scan_workspace_pair(
 ) -> Result<(RustWorkspaceTestResolver, RustWorkspaceStubScanner), IntegrityError> {
     let mut known_leaves: HashSet<String> = HashSet::new();
     let mut stub_leaves: HashSet<String> = HashSet::new();
-    for entry in WalkDir::new(repo_root).follow_links(false) {
+    for entry in WalkDir::new(repo_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !is_excluded_under_root(entry.path(), repo_root))
+    {
         let entry = entry.map_err(|e| IntegrityError::WalkWorkspace {
             root: repo_root.to_path_buf(),
             source: e,
@@ -506,9 +510,6 @@ pub fn scan_workspace_pair(
         }
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "rs") {
-            continue;
-        }
-        if is_excluded_under_root(path, repo_root) {
             continue;
         }
         let Ok(body) = fs::read_to_string(path) else {
@@ -545,7 +546,11 @@ impl RustWorkspaceTestResolver {
     /// Returns an error when repository or verifier integrity cannot be established.
     pub fn scan(repo_root: &Path) -> Result<Self, IntegrityError> {
         let mut known_leaves: HashSet<String> = HashSet::new();
-        for entry in WalkDir::new(repo_root).follow_links(false) {
+        for entry in WalkDir::new(repo_root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !is_excluded_under_root(entry.path(), repo_root))
+        {
             let entry = entry.map_err(|e| IntegrityError::WalkWorkspace {
                 root: repo_root.to_path_buf(),
                 source: e,
@@ -555,9 +560,6 @@ impl RustWorkspaceTestResolver {
             }
             let path = entry.path();
             if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            if is_excluded_under_root(path, repo_root) {
                 continue;
             }
             let Ok(body) = fs::read_to_string(path) else {
@@ -613,7 +615,11 @@ impl RustWorkspaceStubScanner {
     /// Returns an error when repository or verifier integrity cannot be established.
     pub fn scan(repo_root: &Path) -> Result<Self, IntegrityError> {
         let mut stub_leaves: HashSet<String> = HashSet::new();
-        for entry in WalkDir::new(repo_root).follow_links(false) {
+        for entry in WalkDir::new(repo_root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !is_excluded_under_root(entry.path(), repo_root))
+        {
             let entry = entry.map_err(|e| IntegrityError::WalkWorkspace {
                 root: repo_root.to_path_buf(),
                 source: e,
@@ -623,9 +629,6 @@ impl RustWorkspaceStubScanner {
             }
             let path = entry.path();
             if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            if is_excluded_under_root(path, repo_root) {
                 continue;
             }
             let Ok(body) = fs::read_to_string(path) else {
@@ -2292,6 +2295,182 @@ mod tests {
         assert!(resolver.resolves("crate::src::pending"));
         assert!(!scanner.is_stub("passes"));
         assert!(scanner.is_stub("pending"));
+    }
+
+    fn assert_workspace_indexes(repo_root: &Path) {
+        let (paired_resolver, paired_scanner) = scan_workspace_pair(repo_root).unwrap();
+        let resolver = RustWorkspaceTestResolver::scan(repo_root).unwrap();
+        let scanner = RustWorkspaceStubScanner::scan(repo_root).unwrap();
+        for resolver in [&paired_resolver, &resolver] {
+            assert!(resolver.resolves("crate::source::ordinary_test"));
+            assert!(resolver.resolves("crate::source::ordinary_stub"));
+            assert!(!resolver.resolves("crate::archive::excluded_test"));
+            assert!(!resolver.resolves("crate::archive::excluded_stub"));
+        }
+        for scanner in [&paired_scanner, &scanner] {
+            assert!(!scanner.is_stub("ordinary_test"));
+            assert!(scanner.is_stub("ordinary_stub"));
+            assert!(!scanner.is_stub("excluded_stub"));
+        }
+    }
+
+    fn write_workspace_source(repo_root: &Path) {
+        fs::create_dir_all(repo_root.join("src")).unwrap();
+        fs::write(
+            repo_root.join("src/tests.rs"),
+            "#[test]\nfn ordinary_test() { assert!(true); }\n\
+             #[test]\nfn ordinary_stub() { _pending_stub(); }\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn workspace_scanners_exclude_only_exact_components_under_scan_root() {
+        let dir = tempdir().unwrap();
+        let repo_root = dir.path().join("target/.loom/beads/clone");
+        write_workspace_source(&repo_root);
+        for prefix in ["target", ".loom", "nested/target", "nested/.loom"] {
+            let archive = repo_root.join(prefix).join("archive");
+            fs::create_dir_all(&archive).unwrap();
+            fs::write(
+                archive.join("tests.rs"),
+                "#[test]\nfn excluded_test() {}\n\
+                 #[test]\nfn excluded_stub() { _pending_stub(); }\n",
+            )
+            .unwrap();
+        }
+        let ordinary = repo_root.join("target-like/.loom-like");
+        fs::create_dir_all(&ordinary).unwrap();
+        fs::write(
+            ordinary.join("tests.rs"),
+            "#[test]\nfn similarly_named_test() { _pending_stub(); }\n",
+        )
+        .unwrap();
+        assert_workspace_indexes(&repo_root);
+        let (paired_resolver, paired_scanner) = scan_workspace_pair(&repo_root).unwrap();
+        assert!(paired_resolver.resolves("similarly_named_test"));
+        assert!(paired_scanner.is_stub("similarly_named_test"));
+        assert!(
+            RustWorkspaceTestResolver::scan(&repo_root)
+                .unwrap()
+                .resolves("similarly_named_test")
+        );
+        assert!(
+            RustWorkspaceStubScanner::scan(&repo_root)
+                .unwrap()
+                .is_stub("similarly_named_test")
+        );
+    }
+
+    #[cfg(unix)]
+    struct UnreadableDirectory {
+        path: PathBuf,
+        permissions: fs::Permissions,
+    }
+
+    #[cfg(unix)]
+    impl UnreadableDirectory {
+        fn new(path: PathBuf) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            fs::create_dir_all(&path).unwrap();
+            let permissions = fs::metadata(&path).unwrap().permissions();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+            Self { path, permissions }
+        }
+
+        fn permission_denied(&self) -> bool {
+            if let Err(error) = fs::read_dir(&self.path) {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                true
+            } else {
+                eprintln!(
+                    "permission regression not exercised: process bypasses mode bits; rerun as an unprivileged user"
+                );
+                false
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for UnreadableDirectory {
+        fn drop(&mut self) {
+            fs::set_permissions(&self.path, self.permissions.clone()).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_scanners_prune_unreadable_excluded_directories() {
+        let dir = tempdir().unwrap();
+        write_workspace_source(dir.path());
+        for prefix in ["target", ".loom", "nested/target", "nested/.loom"] {
+            let unreadable =
+                UnreadableDirectory::new(dir.path().join(prefix).join("archive/denied"));
+            if !unreadable.permission_denied() {
+                return;
+            }
+            assert_workspace_indexes(dir.path());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_scanners_fail_on_unreadable_nonexcluded_directories() {
+        let dir = tempdir().unwrap();
+        write_workspace_source(dir.path());
+        let unreadable = UnreadableDirectory::new(dir.path().join("src/denied"));
+        if !unreadable.permission_denied() {
+            return;
+        }
+        let errors = [
+            scan_workspace_pair(dir.path())
+                .err()
+                .expect("paired scan must fail"),
+            RustWorkspaceTestResolver::scan(dir.path())
+                .err()
+                .expect("test scan must fail"),
+            RustWorkspaceStubScanner::scan(dir.path())
+                .err()
+                .expect("stub scan must fail"),
+        ];
+        for error in errors {
+            let IntegrityError::WalkWorkspace { root, source } = error;
+            assert_eq!(root, dir.path());
+            assert_eq!(source.path(), Some(unreadable.path.as_path()));
+            assert_eq!(
+                source.io_error().unwrap().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_scanners_do_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        write_workspace_source(dir.path());
+        let external = tempdir().unwrap();
+        fs::write(
+            external.path().join("tests.rs"),
+            "#[test]\nfn excluded_test() {}\n\
+             #[test]\nfn excluded_stub() { _pending_stub(); }\n",
+        )
+        .unwrap();
+        symlink(external.path(), dir.path().join("linked_directory")).unwrap();
+        symlink(
+            external.path().join("tests.rs"),
+            dir.path().join("linked_file.rs"),
+        )
+        .unwrap();
+        symlink(
+            external.path().join("missing"),
+            dir.path().join("broken_link.rs"),
+        )
+        .unwrap();
+        assert_workspace_indexes(dir.path());
     }
 
     #[test]
