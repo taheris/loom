@@ -76,7 +76,7 @@ struct ChangedSpec {
     label: SpecLabel,
     spec_path: String,
     acceptance_path: String,
-    input_scope: String,
+    input_scopes: Vec<String>,
     spec_epic: BeadId,
     cursor: Cursor,
 }
@@ -86,7 +86,7 @@ struct IndexedSpec {
     label: SpecLabel,
     spec_path: String,
     acceptance_path: String,
-    input_scope: String,
+    input_scopes: Vec<String>,
 }
 
 struct PendingWorkEpic {
@@ -327,13 +327,19 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let docs_blob = self.git.head_blob_sha(Path::new("docs/README.md")).await?;
         let mut fingerprint_specs = Vec::with_capacity(changed.len());
         for spec in &changed {
-            let inputs_oid = self.git.head_blob_sha(Path::new(&spec.input_scope)).await?;
+            let mut inputs = Vec::new();
+            for scope in &spec.input_scopes {
+                let oid = self
+                    .git
+                    .blob_sha_at_revision("HEAD", Path::new(scope))
+                    .await?;
+                inputs.push((scope.clone(), oid));
+            }
             fingerprint_specs.push(FingerprintSpecInput {
                 label: spec.label.clone(),
                 spec_path: spec.spec_path.clone(),
                 acceptance_path: spec.acceptance_path.clone(),
-                input_scope: spec.input_scope.clone(),
-                inputs_oid,
+                inputs,
                 spec_epic_id: spec.spec_epic.clone(),
                 todo_cursor: spec.cursor.as_str().map(str::to_owned),
                 initialized: spec.cursor.is_uninitialized(),
@@ -398,7 +404,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             label: spec.label.clone(),
             spec_path: spec.spec_path.clone(),
             acceptance_path: spec.acceptance_path.clone(),
-            input_scope: spec.input_scope.clone(),
+            input_scopes: spec.input_scopes.clone(),
             spec_epic,
             cursor,
         })
@@ -488,12 +494,14 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let Some(cursor) = cursor else {
             return Ok(true);
         };
-        if self
-            .git
-            .path_changed_since(cursor, Path::new(&spec.input_scope))
-            .await?
-        {
-            return Ok(true);
+        for scope in &spec.input_scopes {
+            if self
+                .git
+                .path_changed_since(cursor, Path::new(scope))
+                .await?
+            {
+                return Ok(true);
+            }
         }
         let old_index = self
             .git
@@ -626,19 +634,20 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 Some(spec.spec_epic.as_str().parse()?),
                 spec.cursor.as_str().map(str::to_owned),
             ));
-            let diff = match spec.cursor.as_str() {
-                Some(cursor) => Some(
-                    self.git
-                        .diff_spec(cursor, Path::new(&spec.input_scope))
-                        .await?,
-                ),
-                None => None,
+            let diff = if let Some(cursor) = spec.cursor.as_str() {
+                let mut diff = String::new();
+                for scope in &spec.input_scopes {
+                    diff.push_str(&self.git.diff_spec(cursor, Path::new(scope)).await?);
+                }
+                Some(diff)
+            } else {
+                None
             };
             changed_specs.push(changed_spec_context(
                 spec.label.clone(),
                 spec.spec_path.clone(),
                 spec.acceptance_path.clone(),
-                spec.input_scope.clone(),
+                spec.input_scopes.join("`, `"),
                 diff,
             ));
             let cache_path = self.workspace.join(".loom/cache.db");
@@ -1367,7 +1376,11 @@ fn parse_spec_index(workspace: &Path) -> Result<Vec<IndexedSpec>, TodoError> {
                 label: package.label().clone(),
                 spec_path: relative(package.contract())?,
                 acceptance_path: relative(package.acceptance())?,
-                input_scope: relative(package.input_scope())?,
+                input_scopes: package
+                    .input_scopes()
+                    .iter()
+                    .map(|path| relative(path))
+                    .collect::<Result<_, _>>()?,
             })
         })
         .collect()

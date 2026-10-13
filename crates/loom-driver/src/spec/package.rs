@@ -31,12 +31,17 @@ impl Package {
         &self.acceptance
     }
 
-    /// Git path scope covering every tracked package input, including nested support files.
-    pub fn input_scope(&self) -> &Path {
+    /// Git path scopes covering the contract and all support inputs, including absent trees.
+    pub fn input_scopes(&self) -> Vec<PathBuf> {
         if self.contract == self.acceptance {
-            &self.contract
+            vec![self.contract.clone(), self.contract.with_extension("")]
         } else {
-            self.contract.parent().unwrap_or(&self.contract)
+            vec![
+                self.contract
+                    .parent()
+                    .unwrap_or(&self.contract)
+                    .to_path_buf(),
+            ]
         }
     }
 
@@ -402,6 +407,10 @@ mod tests {
         assert_eq!(packages[0].label().as_str(), "alpha");
         assert_eq!(packages[0].contract(), contract);
         assert_eq!(packages[0].acceptance(), contract);
+        assert_eq!(
+            packages[0].input_scopes(),
+            vec![contract, root.join("specs/alpha")]
+        );
         assert_eq!(discover_workspace(root).unwrap(), packages);
     }
 

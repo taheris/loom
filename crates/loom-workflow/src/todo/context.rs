@@ -28,8 +28,7 @@ pub struct FingerprintSpecInput {
     pub label: SpecLabel,
     pub spec_path: String,
     pub acceptance_path: String,
-    pub input_scope: String,
-    pub inputs_oid: GitOid,
+    pub inputs: Vec<(String, Option<GitOid>)>,
     pub spec_epic_id: BeadId,
     pub todo_cursor: Option<String>,
     pub initialized: bool,
@@ -109,8 +108,7 @@ pub fn todo_fingerprint(
         label: &'a str,
         spec_path: &'a str,
         acceptance_path: &'a str,
-        input_scope: &'a str,
-        inputs_oid: &'a str,
+        inputs: Vec<(&'a str, Option<&'a str>)>,
         spec_epic_id: &'a str,
         todo_cursor: Option<&'a str>,
         initialized: bool,
@@ -127,8 +125,11 @@ pub fn todo_fingerprint(
                 label: spec.label.as_str(),
                 spec_path: &spec.spec_path,
                 acceptance_path: &spec.acceptance_path,
-                input_scope: &spec.input_scope,
-                inputs_oid: spec.inputs_oid.as_str(),
+                inputs: spec
+                    .inputs
+                    .iter()
+                    .map(|(path, oid)| (path.as_str(), oid.as_ref().map(GitOid::as_str)))
+                    .collect(),
                 spec_epic_id: spec.spec_epic_id.as_str(),
                 todo_cursor: spec.todo_cursor.as_deref(),
                 initialized: spec.initialized,
@@ -173,8 +174,7 @@ mod tests {
             label: SpecLabel::new("alpha").unwrap(),
             spec_path: "specs/alpha.md".to_string(),
             acceptance_path: "specs/alpha.md".to_string(),
-            input_scope: "specs/alpha.md".to_string(),
-            inputs_oid: GitOid::new(SHA).unwrap(),
+            inputs: vec![("specs/alpha.md".into(), Some(GitOid::new(SHA).unwrap()))],
             spec_epic_id: work_epic.clone(),
             todo_cursor: None,
             initialized: true,
@@ -252,8 +252,7 @@ mod tests {
             label: SpecLabel::new("alpha").unwrap(),
             spec_path: "specs/alpha.md".to_string(),
             acceptance_path: "specs/alpha.md".to_string(),
-            input_scope: "specs/alpha.md".to_string(),
-            inputs_oid: GitOid::new(SHA).unwrap(),
+            inputs: vec![("specs/alpha.md".into(), Some(GitOid::new(SHA).unwrap()))],
             spec_epic_id: BeadId::new("lm-alpha").expect("valid bead id"),
             todo_cursor: None,
             initialized: true,
@@ -262,8 +261,7 @@ mod tests {
             label: SpecLabel::new("beta").unwrap(),
             spec_path: "specs/beta.md".to_string(),
             acceptance_path: "specs/beta.md".to_string(),
-            input_scope: "specs/beta.md".to_string(),
-            inputs_oid: GitOid::new(SHA).unwrap(),
+            inputs: vec![("specs/beta.md".into(), Some(GitOid::new(SHA).unwrap()))],
             spec_epic_id: BeadId::new("lm-beta").expect("valid bead id"),
             todo_cursor: Some(SHA.to_string()),
             initialized: false,
@@ -280,15 +278,37 @@ mod tests {
             label: SpecLabel::new("alpha").unwrap(),
             spec_path: "specs/alpha/spec.md".into(),
             acceptance_path: "specs/alpha/tests.md".into(),
-            input_scope: "specs/alpha".into(),
-            inputs_oid: GitOid::new(SHA).unwrap(),
+            inputs: vec![("specs/alpha".into(), Some(GitOid::new(SHA).unwrap()))],
             spec_epic_id: BeadId::new("lm-alpha").unwrap(),
             todo_cursor: Some(SHA.into()),
             initialized: false,
         };
         let original = todo_fingerprint(&head, SHA, &[spec.clone()]);
-        spec.inputs_oid = GitOid::new("1123456789abcdef0123456789abcdef01234567").unwrap();
+        spec.inputs[0].1 = Some(GitOid::new("1123456789abcdef0123456789abcdef01234567").unwrap());
         assert_ne!(todo_fingerprint(&head, SHA, &[spec]), original);
+    }
+
+    #[test]
+    fn fingerprint_includes_bootstrap_support_identity_and_absence_at_fixed_head() {
+        let head = GitSha::new(SHA).unwrap();
+        let mut spec = FingerprintSpecInput {
+            label: SpecLabel::new("alpha").unwrap(),
+            spec_path: "specs/alpha.md".into(),
+            acceptance_path: "specs/alpha.md".into(),
+            inputs: vec![
+                ("specs/alpha.md".into(), Some(GitOid::new(SHA).unwrap())),
+                ("specs/alpha".into(), None),
+            ],
+            spec_epic_id: BeadId::new("lm-alpha").unwrap(),
+            todo_cursor: Some(SHA.into()),
+            initialized: false,
+        };
+        let absent = todo_fingerprint(&head, SHA, &[spec.clone()]);
+        spec.inputs[1].1 = Some(GitOid::new(SHA).unwrap());
+        let present = todo_fingerprint(&head, SHA, &[spec.clone()]);
+        assert_ne!(present, absent);
+        spec.inputs[1].1 = Some(GitOid::new("1123456789abcdef0123456789abcdef01234567").unwrap());
+        assert_ne!(todo_fingerprint(&head, SHA, &[spec]), present);
     }
 
     #[test]

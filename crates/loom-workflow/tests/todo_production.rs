@@ -1327,6 +1327,126 @@ fn init_package_workspace(workspace: &Path) -> Result<String> {
     git_output(workspace, &["rev-parse", "HEAD"])
 }
 
+fn init_bootstrap_support_workspace(workspace: &Path) -> Result<String> {
+    init_package_workspace(workspace)?;
+    std::fs::write(
+        workspace.join("docs/README.md"),
+        "- [alpha](../specs/alpha.md)\n- [beta](../specs/beta.md)\n",
+    )?;
+    for label in ["alpha", "beta"] {
+        let package = workspace.join("specs").join(label);
+        let contract = std::fs::read_to_string(package.join("spec.md"))?;
+        let acceptance = std::fs::read_to_string(package.join("tests.md"))?;
+        std::fs::write(package.with_extension("md"), contract + &acceptance)?;
+        std::fs::remove_file(package.join("spec.md"))?;
+        std::fs::remove_file(package.join("tests.md"))?;
+    }
+    run_git(workspace, &["add", "--all"])?;
+    run_git(
+        workspace,
+        &["commit", "-qm", "seed bootstrap support inputs"],
+    )?;
+    git_output(workspace, &["rev-parse", "HEAD"])
+}
+
+#[tokio::test]
+async fn bootstrap_model_and_import_changes_after_cursor_select_only_owner() -> Result<()> {
+    for input in ["model.qnt", "support/imported.qnt", "support/new.json"] {
+        let dir = tempfile::tempdir()?;
+        let base = init_bootstrap_support_workspace(dir.path())?;
+        let runner = StatefulRunner::new(&base, None);
+        let mut ctrl = controller(dir.path(), runner.clone())?;
+        assert!(matches!(
+            ctrl.build_session().await,
+            Err(TodoError::NoChangedSpecs)
+        ));
+        let path = dir.path().join("specs/alpha").join(input);
+        let content = if path.exists() {
+            std::fs::read_to_string(&path)?
+        } else {
+            String::new()
+        };
+        std::fs::write(path, content + "\nChanged bootstrap input.\n")?;
+        run_git(dir.path(), &["add", "--all"])?;
+        run_git(dir.path(), &["commit", "-qm", "change support input only"])?;
+        let session = ctrl.build_session().await?;
+        let prompt = &session.config.initial_prompt;
+        assert!(prompt.contains("### alpha"), "{input}: {prompt}");
+        assert!(!prompt.contains("### beta"), "{input}: {prompt}");
+        assert!(prompt.contains("Spec file: `specs/alpha.md`"));
+        let evidence = session.config.scratch_dir.join("evidence");
+        let index = std::fs::read_to_string(evidence.join("index.md"))?;
+        assert!(index.contains("Tracked input scope: `specs/alpha.md`, `specs/alpha`"));
+        assert!(index.contains("2 criteria."));
+        assert!(index.contains("Acceptance: `specs/alpha.md`"));
+        let criteria = read_dossier_section(&evidence.join("alpha/criteria"))?;
+        assert!(criteria.contains("First package requirement"));
+        assert!(!criteria.contains("Hidden supporting example"));
+        let diff = read_dossier_section(&evidence.join("alpha/diff"))?;
+        assert!(diff.contains(input), "{input}: {diff}");
+        assert!(diff.contains("+Changed bootstrap input."));
+        let success = todo_success(prompt, &["alpha"])?;
+        ctrl.record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            Some(&success),
+        )
+        .await?;
+        let head = git_output(dir.path(), &["rev-parse", "HEAD"])?;
+        assert_eq!(runner.bead("lm-alpha")?.metadata["loom.todo_cursor"], head);
+        assert_eq!(runner.bead("lm-beta")?.metadata["loom.todo_cursor"], base);
+        drop(session);
+        assert!(matches!(
+            ctrl.build_session().await,
+            Err(TodoError::NoChangedSpecs)
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn bootstrap_support_tree_creation_and_deletion_are_tracked() -> Result<()> {
+    for creating in [false, true] {
+        let dir = tempfile::tempdir()?;
+        init_bootstrap_support_workspace(dir.path())?;
+        let support = dir.path().join("specs/alpha");
+        if creating {
+            std::fs::remove_dir_all(&support)?;
+            run_git(dir.path(), &["add", "--all"])?;
+            run_git(
+                dir.path(),
+                &["commit", "-qm", "remove initial support tree"],
+            )?;
+        }
+        let base = git_output(dir.path(), &["rev-parse", "HEAD"])?;
+        if creating {
+            std::fs::create_dir_all(support.join("imports"))?;
+            std::fs::write(support.join("imports/new.qnt"), "module New {}\n")?;
+        } else {
+            std::fs::remove_dir_all(&support)?;
+        }
+        run_git(dir.path(), &["add", "--all"])?;
+        run_git(
+            dir.path(),
+            &["commit", "-qm", "change support tree existence"],
+        )?;
+        let mut ctrl = controller(dir.path(), StatefulRunner::new(&base, None))?;
+        let session = ctrl.build_session().await?;
+        assert!(session.config.initial_prompt.contains("### alpha"));
+        assert!(!session.config.initial_prompt.contains("### beta"));
+        let diff = read_dossier_section(&session.config.scratch_dir.join("evidence/alpha/diff"))?;
+        assert!(diff.contains(if creating {
+            "new file mode"
+        } else {
+            "deleted file mode"
+        }));
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn quint_package_change_tracking_includes_model_inputs() -> Result<()> {
     for input in [
