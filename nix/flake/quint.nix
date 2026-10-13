@@ -48,6 +48,7 @@ _: {
         src = loom.stagedSrc;
         inherit (loom) cargoArtifacts;
         buildPhaseCargoCommand = "cargo test --release --locked --package loom-workflow --lib --no-run";
+        doNotPostBuildInstallCargoBinaries = true;
         doCheck = false;
         installPhaseCommand = ''
           (
