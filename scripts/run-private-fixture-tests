@@ -5,7 +5,8 @@ trusted_root() {
   local path="$1"
   local metadata owner mode
 
-  while :; do
+  # Match Directory::open: the filesystem root anchors traversal; check its children.
+  while [[ "$path" != / ]]; do
     if ! metadata=$(stat --format='%u %a' -- "$path"); then
       return 1
     fi
@@ -14,11 +15,9 @@ trusted_root() {
       (( (8#$mode & 0022) != 0 && (8#$mode & 01000) == 0 )); then
       return 1
     fi
-    if [[ "$path" == / ]]; then
-      return 0
-    fi
     path=$(dirname -- "$path")
   done
+  return 0
 }
 
 private_root() {
@@ -31,7 +30,7 @@ private_root() {
     root=$(realpath -e -- "$candidate")
     if trusted_root "$root"; then
       mktemp -d "$root/loom-fixtures.XXXXXXXX"
-      return 0
+      return
     fi
     printf 'Rejecting unsafe temporary root: %s\n' "$root" >&2
   done
