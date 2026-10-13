@@ -109,8 +109,7 @@ _: {
           }
           ''
             set -euo pipefail
-            # Sandbox /tmp may be nobody-owned; use the private builder-owned root.
-            TMPDIR="$NIX_BUILD_TOP" ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
+            bash ${../../scripts/run-private-fixture-tests} ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
             touch "$out"
           '';
       checks.remediation-acceptance =
@@ -120,7 +119,20 @@ _: {
           }
           ''
             set -euo pipefail
-            TMPDIR="$NIX_BUILD_TOP" ${remediationAcceptance}/bin/remediation-acceptance mint::tests::acceptance::
+            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance mint::tests::acceptance::
+            touch "$out"
+          '';
+      checks.private-fixture-tests =
+        pkgs.runCommand "private-fixture-tests"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.coreutils
+            ];
+          }
+          ''
+            set -euo pipefail
+            bash ${../../scripts/run-private-fixture-tests} bash ${../../tests/fixtures/private-fixture-tests.sh} ${../../scripts/run-private-fixture-tests}
             touch "$out"
           '';
       checks.quint-harness =

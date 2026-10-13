@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+trusted_root() {
+  local path="$1"
+  local metadata owner mode
+
+  while :; do
+    if ! metadata=$(stat --format='%u %a' -- "$path"); then
+      return 1
+    fi
+    read -r owner mode <<<"$metadata"
+    if [[ "$owner" != "$EUID" && "$owner" != 0 ]] ||
+      (( (8#$mode & 0022) != 0 && (8#$mode & 01000) == 0 )); then
+      return 1
+    fi
+    if [[ "$path" == / ]]; then
+      return 0
+    fi
+    path=$(dirname -- "$path")
+  done
+}
+
+private_root() {
+  local candidate root
+
+  for candidate in "${NIX_BUILD_TOP:-}" "${TMPDIR:-}" /tmp; do
+    if [[ -z "$candidate" || ! -d "$candidate" ]]; then
+      continue
+    fi
+    root=$(realpath -e -- "$candidate")
+    if trusted_root "$root"; then
+      mktemp -d "$root/loom-fixtures.XXXXXXXX"
+      return 0
+    fi
+    printf 'Rejecting unsafe temporary root: %s\n' "$root" >&2
+  done
+  printf 'No trusted temporary root is available for test fixtures\n' >&2
+  return 1
+}
+
+if [[ "$#" == 0 ]]; then
+  printf 'Usage: run-private-fixture-tests <command> [args...]\n' >&2
+  exit 2
+fi
+
+umask 077
+TMPDIR=$(private_root)
+export TMPDIR
+trap 'rm -rf -- "$TMPDIR"' EXIT
+"$@"
