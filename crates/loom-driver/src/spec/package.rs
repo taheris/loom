@@ -92,8 +92,8 @@ pub enum Error {
 
 /// Discover complete owners in lexical label order without consulting an index.
 ///
-/// Flat documents are accepted only for an entirely flat bootstrap tree. Supporting files
-/// inside packages never become additional acceptance documents.
+/// Flat bootstrap owners may have paired support directories without canonical documents.
+/// Supporting files never become additional acceptance documents.
 ///
 /// # Errors
 /// Rejects incomplete packages, invalid labels, mixed layouts, and unreadable directories.
@@ -128,6 +128,9 @@ pub fn discover(specs_dir: &Path) -> Result<Vec<Package>, Error> {
                     source,
                 }
             })?;
+        if canonical && is_bootstrap_support(&path)? {
+            continue;
+        }
         let (contract, acceptance) = if canonical {
             has_package = true;
             for document in ["spec.md", "tests.md"] {
@@ -162,6 +165,30 @@ pub fn discover(specs_dir: &Path) -> Result<Vec<Package>, Error> {
     }
     packages.sort_by(|left, right| left.label.as_str().cmp(right.label.as_str()));
     Ok(packages)
+}
+
+fn is_bootstrap_support(path: &Path) -> Result<bool, Error> {
+    let sibling = path.with_extension("md");
+    match fs::symlink_metadata(&sibling) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Ok(false),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(Error::ReadFile {
+                path: sibling,
+                source,
+            });
+        }
+    }
+    for document in ["spec.md", "tests.md"] {
+        let file = path.join(document);
+        match fs::symlink_metadata(&file) {
+            Ok(_) => return Ok(false),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(Error::ReadFile { path: file, source }),
+        }
+    }
+    Ok(true)
 }
 
 /// Parse ordinary index links; code examples do not create index declarations.
@@ -346,6 +373,69 @@ mod tests {
                 Err(Error::Incomplete { path }) if path == file
             ));
             package(dir.path(), "alpha");
+        }
+    }
+
+    #[test]
+    fn indexed_bootstrap_support_preserves_sole_flat_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("specs/alpha/imports")).unwrap();
+        fs::create_dir(root.join("docs")).unwrap();
+        let contract = root.join("specs/alpha.md");
+        fs::write(&contract, "# Contract\n## Success Criteria\n").unwrap();
+        fs::write(root.join("specs/alpha/model.qnt"), "module alpha {}\n").unwrap();
+        fs::write(
+            root.join("specs/alpha/imports/support.qnt"),
+            "module support {}\n",
+        )
+        .unwrap();
+        fs::write(root.join("specs/alpha/support.md"), "Not acceptance\n").unwrap();
+        fs::write(
+            root.join("docs/README.md"),
+            "- [alpha](../specs/alpha.md)\n",
+        )
+        .unwrap();
+
+        let packages = discover_indexed(root).unwrap();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].label().as_str(), "alpha");
+        assert_eq!(packages[0].contract(), contract);
+        assert_eq!(packages[0].acceptance(), contract);
+        assert_eq!(discover_workspace(root).unwrap(), packages);
+    }
+
+    #[test]
+    fn support_without_flat_owner_is_incomplete() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("specs/alpha")).unwrap();
+        fs::write(
+            dir.path().join("specs/alpha/model.qnt"),
+            "module alpha {}\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            discover(&dir.path().join("specs")),
+            Err(Error::Incomplete { path }) if path.ends_with("alpha/spec.md")
+        ));
+    }
+
+    #[test]
+    fn flat_owner_does_not_hide_incomplete_canonical_documents() {
+        for document in ["spec.md", "tests.md"] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::create_dir_all(dir.path().join("specs/alpha")).unwrap();
+            fs::write(dir.path().join("specs/alpha.md"), "Flat authority\n").unwrap();
+            fs::write(dir.path().join("specs/alpha").join(document), "Canonical\n").unwrap();
+            let missing = if document == "spec.md" {
+                "tests.md"
+            } else {
+                "spec.md"
+            };
+            assert!(matches!(
+                discover(&dir.path().join("specs")),
+                Err(Error::Incomplete { path }) if path == dir.path().join("specs/alpha").join(missing)
+            ));
         }
     }
 
