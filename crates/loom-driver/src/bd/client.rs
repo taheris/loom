@@ -799,6 +799,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_rejects_malformed_nested_bead_ids() -> Result<()> {
+        let json = br#"[
+            {"id":"wd-p7z","title":"Root","status":"open"},
+            {"id":"wd-p7z.8..1","title":"Malformed child","status":"open"}
+        ]"#;
+        let client = BdClient::with_runner(CapturingRunner::new([ok(json)]));
+        let error = client
+            .list(ListOpts::default())
+            .await
+            .expect_err("invalid child");
+        assert!(matches!(error, BdError::Decode { .. }), "{error:?}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_parses_nested_bead_ids_and_parent_ids() -> Result<()> {
+        let json = br#"[
+            {"id":"wd-p7z","title":"Root","status":"open"},
+            {"id":"wd-p7z.8.1","title":"Nested child","status":"in_progress","parent":"wd-p7z.8"},
+            {"id":"wd-p7z.8.1.2","title":"Deeper child","status":"blocked","parent":"wd-p7z.8.1"}
+        ]"#;
+        let client = BdClient::with_runner(CapturingRunner::new([ok(json)]));
+        let beads = client
+            .list(ListOpts {
+                statuses: vec![
+                    Status::Open,
+                    Status::InProgress,
+                    Status::Blocked,
+                    Status::Deferred,
+                ],
+                ..ListOpts::default()
+            })
+            .await?;
+        assert_eq!(
+            beads
+                .iter()
+                .map(|bead| bead.id.as_str())
+                .collect::<Vec<_>>(),
+            ["wd-p7z", "wd-p7z.8.1", "wd-p7z.8.1.2"]
+        );
+        assert_eq!(beads[1].parent, Some(BeadId::new("wd-p7z.8")?));
+        assert_eq!(beads[2].parent, Some(BeadId::new("wd-p7z.8.1")?));
+        assert_eq!(
+            argv_of(&client.runner, 0),
+            [
+                "list",
+                "--json",
+                "--status=open,in_progress,blocked,deferred"
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn create_returns_id_from_silent_output() -> Result<()> {
         let runner = CapturingRunner::new([ok(b"lm-new.7\n")]);
         let client = BdClient::with_runner(runner);

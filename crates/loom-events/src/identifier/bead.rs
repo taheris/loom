@@ -10,14 +10,15 @@ pub struct BeadId(String);
 
 impl BeadId {
     /// Parse a bead id from a raw string. Validates the canonical
-    /// `<prefix>-<base32>(.<digits>)?` shape so that subprocess output
+    /// `<prefix>-<base32>(.<digits>)*` shape so that subprocess output
     /// drift (banners, warnings, empty lines) and external input (JSON
     /// from `bd`) is caught at the boundary rather than producing a
     /// malformed [`BeadId`] downstream.
     ///
     /// `<prefix>` is one or more lowercase ASCII letters, `<base32>` is
-    /// one or more lowercase ASCII alphanumerics, and the optional
-    /// `.<digits>` suffix scopes a sub-issue under a molecule.
+    /// one or more lowercase ASCII alphanumerics. Each optional
+    /// `.<digits>` suffix is a nonempty ASCII numeric child segment;
+    /// nested children may have multiple segments.
     ///
     /// # Errors
     ///
@@ -41,7 +42,9 @@ impl BeadId {
             return Err(ParseBeadIdError(s.to_owned()));
         }
         if let Some(suffix) = suffix
-            && (suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()))
+            && suffix
+                .split('.')
+                .any(|segment| segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()))
         {
             return Err(ParseBeadIdError(s.to_owned()));
         }
@@ -75,7 +78,7 @@ impl<'de> Deserialize<'de> for BeadId {
 }
 
 #[derive(Debug, displaydoc::Display, Error, PartialEq, Eq)]
-/// invalid bead id `{0}`: expected `<prefix>-<base32>(.<digits>)?`
+/// invalid bead id `{0}`: expected `<prefix>-<base32>(.<digits>)*`
 pub struct ParseBeadIdError(pub String);
 
 #[cfg(test)]
@@ -102,6 +105,17 @@ mod tests {
     }
 
     #[test]
+    fn serde_round_trips_nested_child_ids() -> Result<()> {
+        for input in ["wd-p7z.8.1", "wd-p7z.8.1.2"] {
+            let json = format!("\"{input}\"");
+            let id: BeadId = serde_json::from_str(&json)?;
+            assert_eq!(id.as_str(), input);
+            assert_eq!(serde_json::to_string(&id)?, json);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn deserialize_rejects_malformed_string() {
         let err = serde_json::from_str::<BeadId>("\"not a bead\"").unwrap_err();
         assert!(err.to_string().contains("invalid bead id"), "{err}");
@@ -109,7 +123,14 @@ mod tests {
 
     #[test]
     fn parse_accepts_canonical_shapes() -> Result<()> {
-        for input in ["lm-abc123", "lm-3hhwq.2", "lm-3hhwq.20", "loom-a1b2c3"] {
+        for input in [
+            "lm-abc123",
+            "lm-3hhwq.2",
+            "lm-3hhwq.20",
+            "loom-a1b2c3",
+            "wd-p7z.8.1",
+            "wd-p7z.8.1.2",
+        ] {
             let id = BeadId::new(input)?;
             assert_eq!(id.as_str(), input);
         }
@@ -126,7 +147,15 @@ mod tests {
             "lm-ABC",
             "lm-abc.",
             "lm-abc.x",
-            "lm-abc.1.2",
+            "lm-abc..1",
+            "lm-abc.1.",
+            "lm-abc.1..2",
+            "lm-abc.1.x",
+            "lm-abc.x.1",
+            "lm-abc.1.-2",
+            "lm-abc.1.٢",
+            "lm-abc.1.2/3",
+            "lm-abc.1.2\n",
             "WX-abc",
             "warning: foo\nlm-abc123",
             "lm-abc 123",
