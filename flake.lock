@@ -138,10 +138,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1791490544,
-        "narHash": "sha256-qScE7Wz6Zg7eg8ItUpnkmKgst8weWschGe0E8jM4rj4=",
+        "lastModified": 1791885023,
+        "narHash": "sha256-C3alQ2MEt0zVrUSho5NUDo3jmhbff72++bfwoqT9Omo=",
         "ref": "main",
-        "rev": "4cfe8d7065cc8ca91c0a50361b6dd74920eeb1f5",
+        "rev": "0d6d739a833ba9a9c93034862e4a7b061a062a1c",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/numtide/treefmt-nix.git"
@@ -190,10 +190,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1791820420,
-        "narHash": "sha256-EI1YtEZDZXkbgnc+N5a2qnOSRfNsE6mpMQ8oVuGl+rg=",
+        "lastModified": 1791891387,
+        "narHash": "sha256-5j02Q9XkuvRp2vWrDS+w5SlAnpW5wsEFz+Kv+9H4MGc=",
         "ref": "main",
-        "rev": "b99d1e644aadfef0e42639d4a6e3482a5275fba8",
+        "rev": "acf4983b432ee1ac818649a9b32c3786f677d8dc",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrix.git"

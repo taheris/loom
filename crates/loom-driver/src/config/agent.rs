@@ -405,6 +405,7 @@ mod tests {
             ("medium", ThinkingLevel::Medium),
             ("high", ThinkingLevel::High),
             ("xhigh", ThinkingLevel::Xhigh),
+            ("max", ThinkingLevel::Max),
         ] {
             let agent: PhaseAgentConfig =
                 serde_json::from_value(serde_json::json!({"thinking_level": token})).unwrap();

@@ -316,6 +316,7 @@ pub enum ThinkingLevel {
     Medium,
     High,
     Xhigh,
+    Max,
 }
 
 impl ThinkingLevel {
@@ -327,6 +328,7 @@ impl ThinkingLevel {
             ThinkingLevel::Medium => "medium",
             ThinkingLevel::High => "high",
             ThinkingLevel::Xhigh => "xhigh",
+            ThinkingLevel::Max => "max",
         }
     }
 }
@@ -599,6 +601,7 @@ mod tests {
             (ThinkingLevel::Medium, "medium"),
             (ThinkingLevel::High, "high"),
             (ThinkingLevel::Xhigh, "xhigh"),
+            (ThinkingLevel::Max, "max"),
         ] {
             let json = serde_json::to_string(&variant).expect("serialize");
             assert_eq!(json, format!("\"{expected}\""));

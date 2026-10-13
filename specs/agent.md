@@ -490,7 +490,7 @@ response echoes it back.
 | `follow_up`           | `message`, `images?`                       | Follow-up after turn completion                                                                                  |
 | `abort`               | —                                          | Terminate current operation                                                                                      |
 | `set_model`           | `provider`, `modelId`                      | Switch LLM provider and model (two separate fields)                                                              |
-| `set_thinking_level`  | `level`                                    | Adjust reasoning: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`                                             |
+| `set_thinking_level`  | `level`                                    | Adjust reasoning: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`                                      |
 | `new_session`         | `parentSession?`                           | Start fresh session (optional parent for forking)                                                                |
 | `compact`             | `customInstructions?`                      | Trigger manual compaction                                                                                        |
 | `set_auto_compaction` | `enabled`                                  | Toggle automatic compaction                                                                                      |
@@ -1309,8 +1309,18 @@ letting the entrypoint run the wrong runtime.
 - Pi backend hard-fails the handshake when pi rejects configured `set_model`
   [test](set_model_rejection_from_pi_hard_fails_handshake)
 
-- Pi backend sends best-effort `set_thinking_level` when phase config sets it
-  [test](set_thinking_level_from_phase_config_reaches_mock_pi)
+- Pi backend sends best-effort `set_thinking_level` when phase config sets it,
+  including `max` [test](set_thinking_level_from_phase_config_reaches_mock_pi)
+
+- Every documented thinking level serializes as its lowercase wire token and
+  round-trips
+  [test](thinking_level_serializes_each_variant_as_lowercase_wire_token)
+
+- Phase configuration accepts `max` through named and default-phase fallback
+  [test](agent_for_resolves_max_thinking_level_through_named_and_default_phases)
+
+- Native Pi launch forwards configured `max` as `--thinking max`
+  [test](native_pi_launch_forwards_max_thinking_level)
 
 - Pi backend skips `set_thinking_level` entirely when phase config leaves it
   unset [test](set_thinking_level_skipped_when_config_none)

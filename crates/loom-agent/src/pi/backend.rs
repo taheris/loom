@@ -1345,34 +1345,34 @@ mod tests {
 
     // -- test_pi_set_thinking_level_from_phase_config ---------------------
 
-    /// Driver-sends-when-config-set: the resolved phase config installs
-    /// `thinking_level: Some(_)` on the spawn config before `PiBackend` issues
-    /// `set_thinking_level` after the probe. The mock acks the command and
-    /// echoes the level back via a `message_delta`, so the test verifies the
-    /// wire token (`high`) reached pi.
+    /// Pi receives the configured reasoning level during its startup handshake.
     #[tokio::test]
     async fn set_thinking_level_from_phase_config_reaches_mock_pi() {
-        let session = spawn_from_phase_config(
-            "[phase.loop]\nagent.backend = \"pi\"\nagent.thinking_level = \"high\"\n",
-            "set-thinking-level",
-        )
-        .await;
+        for level in ["high", "max"] {
+            let session = spawn_from_phase_config(
+                &format!(
+                    "[phase.loop]\nagent.backend = \"pi\"\nagent.thinking_level = \"{level}\"\n"
+                ),
+                "set-thinking-level",
+            )
+            .await;
 
-        let mut session = session.prompt("hi").await.expect("prompt ok");
-        let mut saw_level = false;
-        loop {
-            match session.next_event().await.expect("event ok") {
-                Some(ParsedAgentEvent::TextDelta { text, .. }) => {
-                    if text.contains("thinking:high") {
-                        saw_level = true;
+            let mut session = session.prompt("hi").await.expect("prompt ok");
+            let mut saw_level = false;
+            loop {
+                match session.next_event().await.expect("event ok") {
+                    Some(ParsedAgentEvent::TextDelta { text, .. }) => {
+                        if text.contains(&format!("thinking:{level}")) {
+                            saw_level = true;
+                        }
                     }
+                    Some(ParsedAgentEvent::SessionComplete { .. }) => break,
+                    Some(_) => {}
+                    None => panic!("unexpected EOF"),
                 }
-                Some(ParsedAgentEvent::SessionComplete { .. }) => break,
-                Some(_) => {}
-                None => panic!("unexpected EOF"),
             }
+            assert!(saw_level, "mock did not observe thinking_level {level}");
         }
-        assert!(saw_level, "mock did not observe thinking_level");
     }
 
     /// With `thinking_level: None`, the driver must skip

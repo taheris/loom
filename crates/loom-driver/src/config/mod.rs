@@ -940,6 +940,23 @@ agent.thinking_level = "high"
         Ok(())
     }
 
+    #[test]
+    fn agent_for_resolves_max_thinking_level_through_named_and_default_phases() -> Result<()> {
+        use crate::agent::ThinkingLevel;
+
+        for src in [
+            "[phase.default]\nagent.thinking_level = \"max\"\n",
+            "[phase.default]\nagent.thinking_level = \"medium\"\n[phase.loop]\nagent.thinking_level = \"max\"\n",
+        ] {
+            let cfg = LoomConfig::from_toml_str(src)?;
+            assert_eq!(
+                cfg.agent_for(Phase::Loop).thinking_level,
+                Some(ThinkingLevel::Max)
+            );
+        }
+        Ok(())
+    }
+
     /// Invalid reasoning effort is rejected before any phase is selected.
     #[test]
     fn agent_for_unknown_thinking_level_surfaces_typed_error() {

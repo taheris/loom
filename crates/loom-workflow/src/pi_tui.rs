@@ -196,6 +196,23 @@ mod tests {
     }
 
     #[test]
+    fn native_pi_launch_forwards_max_thinking_level() {
+        let mut selection = pi_selection();
+        selection.thinking_level = Some(ThinkingLevel::Max);
+        let argv = build_wrix_argv(
+            Path::new("/work"),
+            Path::new("/workspace/prompt.txt"),
+            &selection,
+            Path::new("/workspace/pi-sessions"),
+            Path::new("/workspace/repin.js"),
+        );
+        assert!(
+            argv.windows(2)
+                .any(|args| args[0] == "--thinking" && args[1] == "max")
+        );
+    }
+
+    #[test]
     fn repin_extension_raises_errors_when_repin_files_cannot_be_read() {
         let source = repin_extension_source(
             &PathBuf::from("/workspace/.loom/scratch/inbox/prompt.txt"),
