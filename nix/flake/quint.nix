@@ -42,6 +42,26 @@ _: {
           )
         '';
       };
+      remediationAcceptance = loom.craneLib.buildPackage {
+        pname = "loom-remediation-acceptance";
+        version = "1";
+        src = loom.stagedSrc;
+        inherit (loom) cargoArtifacts;
+        buildPhaseCargoCommand = "cargo test --release --locked --package loom-workflow --lib --no-run";
+        doCheck = false;
+        installPhaseCommand = ''
+          (
+            set -euo pipefail
+            mkdir -p "$out/bin"
+            for binary in target/release/deps/loom_workflow-*; do
+              if [[ -f "$binary" && -x "$binary" ]]; then
+                cp "$binary" "$out/bin/remediation-acceptance"
+              fi
+            done
+            [[ -x "$out/bin/remediation-acceptance" ]]
+          )
+        '';
+      };
       workspaceHarness = loom.craneLib.buildPackage {
         pname = "loom-workspace-acceptance";
         version = "1";
@@ -65,6 +85,7 @@ _: {
         ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.podman ];
         text = ''
           export LOOM_TODO_ACCEPTANCE_BIN=${todoAcceptance}/bin/todo-acceptance-persistence
+          export LOOM_REMEDIATION_ACCEPTANCE_BIN=${remediationAcceptance}/bin/remediation-acceptance
           export LOOM_WORKSPACE_SAFETY_BIN=${workspaceHarness}/bin/loom-workspace-safety
           export LOOM_PROFILES_MANIFEST=${profileManifest}
           export LOOM_QUINT_BIN=${harness}/bin/loom-quint
@@ -89,6 +110,16 @@ _: {
             set -euo pipefail
             # Sandbox /tmp may be nobody-owned; use the private builder-owned root.
             TMPDIR="$NIX_BUILD_TOP" ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
+            touch "$out"
+          '';
+      checks.remediation-acceptance =
+        pkgs.runCommand "remediation-acceptance"
+          {
+            nativeBuildInputs = [ pkgs.git ];
+          }
+          ''
+            set -euo pipefail
+            TMPDIR="$NIX_BUILD_TOP" ${remediationAcceptance}/bin/remediation-acceptance mint::tests::acceptance::
             touch "$out"
           '';
       checks.quint-harness =

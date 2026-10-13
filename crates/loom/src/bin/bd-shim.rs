@@ -429,6 +429,7 @@ fn cmd_create(state_dir: &Path, args: &[String]) -> ExitCode {
     let mut title = String::new();
     let mut description = String::new();
     let mut issue_type = "task".to_owned();
+    let mut status = "open".to_owned();
     let mut priority = "2".to_owned();
     let mut parent: Option<String> = None;
     let mut labels: Vec<String> = Vec::new();
@@ -452,6 +453,10 @@ fn cmd_create(state_dir: &Path, args: &[String]) -> ExitCode {
             }
             "--type" => {
                 issue_type = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
+            "--status" => {
+                status = args.get(i + 1).cloned().unwrap_or_default();
                 i += 2;
             }
             "--priority" => {
@@ -496,7 +501,7 @@ fn cmd_create(state_dir: &Path, args: &[String]) -> ExitCode {
     fs::create_dir_all(&bead_dir).expect("mkdir bead dir");
     fs::write(bead_dir.join("title"), title).expect("write title");
     fs::write(bead_dir.join("description"), description).expect("write description");
-    fs::write(bead_dir.join("status"), "open").expect("write status");
+    fs::write(bead_dir.join("status"), status).expect("write status");
     fs::write(bead_dir.join("priority"), priority).expect("write priority");
     fs::write(bead_dir.join("issue_type"), issue_type).expect("write issue_type");
     fs::write(bead_dir.join("labels"), labels.join("\n")).expect("write labels");
@@ -594,6 +599,17 @@ fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
                 fs::write(bead_dir.join("status"), "in_progress").expect("claim status");
                 i += 1;
             }
+            "--unset-metadata" => {
+                let key = args.get(i + 1).cloned().unwrap_or_default();
+                let metadata = metadata.get_or_insert_with(|| {
+                    let serde_json::Value::Object(metadata) = metadata_json(state_dir, id) else {
+                        panic!("bead metadata must be an object");
+                    };
+                    metadata
+                });
+                metadata.remove(&key);
+                i += 2;
+            }
             "--set-metadata" => {
                 let val = args.get(i + 1).cloned().unwrap_or_default();
                 let metadata = metadata.get_or_insert_with(|| {
@@ -624,7 +640,17 @@ fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
 
 fn set_metadata_value(metadata: &mut serde_json::Map<String, serde_json::Value>, assignment: &str) {
     let (key, value) = assignment.split_once('=').unwrap_or((assignment, ""));
-    metadata.insert(key.to_owned(), parse_metadata_value(value));
+    let parsed = if matches!(
+        key,
+        loom_protocol::acceptance::METADATA_KEY
+            | loom_workflow::mint::acceptance::BATCH_KEY
+            | loom_workflow::mint::acceptance::FOLLOW_UP_KEY
+    ) {
+        serde_json::Value::String(value.to_owned())
+    } else {
+        parse_metadata_value(value)
+    };
+    metadata.insert(key.to_owned(), parsed);
 }
 
 fn parse_metadata_value(value: &str) -> serde_json::Value {

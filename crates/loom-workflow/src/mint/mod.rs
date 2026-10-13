@@ -12,6 +12,7 @@
 //! The end-of-run [`MintSummary::render`] surface is stdout-only — the
 //! mint pipeline performs no other writes outside the dedup + mint flow.
 
+pub mod acceptance;
 mod error;
 pub mod integrity;
 pub mod walk;
@@ -125,7 +126,7 @@ const BATCH_FINGERPRINT_HEX_LEN: usize = 12;
 const BD_TITLE_MAX_BYTES: usize = 500;
 const TRUNCATED_TITLE_SUFFIX: &str = "...";
 
-fn mint_error_message(err: &MintError) -> String {
+pub(crate) fn mint_error_message(err: &dyn std::error::Error) -> String {
     let mut rendered = err.to_string();
     let mut source = std::error::Error::source(err);
     while let Some(err) = source {
@@ -1074,18 +1075,23 @@ async fn merge_or_create_deferred_batch<R: CommandRunner>(
                 MoleculeBatchState::Deferred,
             ));
             let labels = molecule_batch_labels(findings, MoleculeBatchState::Deferred);
-            match bd
-                .update(
-                    &existing.id,
-                    UpdateOpts {
-                        status: Some(loom_driver::bd::Status::Deferred),
-                        add_labels: labels,
-                        description: Some(description),
-                        ..UpdateOpts::default()
-                    },
-                )
-                .await
-            {
+            let mut update =
+                match acceptance::batch_update(&existing.id, parent, findings, Some(existing)) {
+                    Ok(update) => update,
+                    Err(err) => {
+                        return BatchOutcome::Refused {
+                            fingerprint,
+                            reason: format!(
+                                "cannot merge finding acceptance: {}",
+                                mint_error_message(&err)
+                            ),
+                        };
+                    }
+                };
+            update.status = Some(loom_driver::bd::Status::Deferred);
+            update.add_labels = labels;
+            update.description = Some(description);
+            match bd.update(&existing.id, update).await {
                 Ok(()) => BatchOutcome::Minted {
                     fingerprint,
                     bead_id: existing.id.clone(),
@@ -1132,6 +1138,7 @@ async fn create_molecule_batch<R: CommandRunner>(
     let created = bd
         .create(CreateOpts {
             title: batch_title(findings, lead_spec),
+            status: Some(loom_driver::bd::Status::Blocked),
             description: molecule_batch_description(findings, state),
             issue_type: Some(loom_driver::bd::IssueType::Task),
             labels,
@@ -1156,7 +1163,7 @@ async fn create_molecule_batch<R: CommandRunner>(
             MaterializedStatus::Blocked
         }
     };
-    match admit_created_batch(bd, &bead_id, findings, status).await {
+    match admit_created_batch(bd, &bead_id, parent, findings, status).await {
         Ok(options_diagnostic) => BatchOutcome::Minted {
             fingerprint,
             bead_id,
@@ -1169,7 +1176,7 @@ async fn create_molecule_batch<R: CommandRunner>(
             fingerprint,
             message: format!(
                 "created routed bead `{bead_id}` but admission failed: {}",
-                mint_error_message(&MintError::from(err)),
+                mint_error_message(&err),
             ),
         },
     }
@@ -1686,18 +1693,20 @@ pub async fn promote_deferred<R: CommandRunner>(
             });
             continue;
         }
-        match bd
-            .update(
-                &bead.id,
-                UpdateOpts {
-                    status: Some(loom_driver::bd::Status::Open),
-                    remove_labels: vec![DEFERRED_LABEL.to_string()],
-                    description: Some(bead.description.clone()),
-                    ..UpdateOpts::default()
-                },
-            )
-            .await
-        {
+        let update = match acceptance::promotion_update(&bead) {
+            Ok(update) => update,
+            Err(err) => {
+                summary.record(BatchOutcome::Refused {
+                    fingerprint: bead.id.to_string(),
+                    reason: format!(
+                        "deferred acceptance requires repair before promotion: {}",
+                        mint_error_message(&err)
+                    ),
+                });
+                continue;
+            }
+        };
+        match bd.update(&bead.id, update).await {
             Ok(()) => {
                 summary.ready_remediation_batches += 1;
                 summary.record(BatchOutcome::PromotedDeferred {
@@ -2262,6 +2271,7 @@ async fn create_batch_under_parent<R: CommandRunner>(
         .create(CreateOpts {
             title,
             description,
+            status: Some(loom_driver::bd::Status::Blocked),
             issue_type: Some(loom_driver::bd::IssueType::Task),
             labels,
             parent: Some(parent.clone()),
@@ -2285,7 +2295,7 @@ async fn create_batch_under_parent<R: CommandRunner>(
             MaterializedStatus::Blocked
         }
     };
-    match admit_created_batch(bd, &bead_id, findings, status).await {
+    match admit_created_batch(bd, &bead_id, parent, findings, status).await {
         Ok(options_diagnostic) => BatchOutcome::Minted {
             fingerprint,
             bead_id,
@@ -2298,7 +2308,7 @@ async fn create_batch_under_parent<R: CommandRunner>(
             fingerprint,
             message: format!(
                 "created routed bead `{bead_id}` but admission failed: {}",
-                mint_error_message(&MintError::from(err)),
+                mint_error_message(&err),
             ),
         },
     }
@@ -2307,9 +2317,13 @@ async fn create_batch_under_parent<R: CommandRunner>(
 async fn admit_created_batch<R: CommandRunner>(
     bd: &BdClient<R>,
     bead: &BeadId,
+    parent: &BeadId,
     findings: &[Finding],
     status: MaterializedStatus,
-) -> Result<Option<BriefError>, loom_driver::bd::BdError> {
+) -> Result<Option<BriefError>, MintError> {
+    let mut update = acceptance::batch_update(bead, parent, findings, None)?;
+    update.status = Some(status.bead_status());
+    bd.update(bead, update).await?;
     if let [finding] = findings
         && finding.route() == FindingRoute::Clarify
     {
@@ -2317,27 +2331,8 @@ async fn admit_created_batch<R: CommandRunner>(
             .await?
             .options_diagnostic)
     } else {
-        apply_materialized_status(bd, bead, status).await?;
         Ok(None)
     }
-}
-
-async fn apply_materialized_status<R: CommandRunner>(
-    bd: &BdClient<R>,
-    bead: &BeadId,
-    status: MaterializedStatus,
-) -> Result<(), loom_driver::bd::BdError> {
-    if status == MaterializedStatus::Open {
-        return Ok(());
-    }
-    bd.update(
-        bead,
-        UpdateOpts {
-            status: Some(status.bead_status()),
-            ..UpdateOpts::default()
-        },
-    )
-    .await
 }
 
 /// Caches bonded-spec resolution so two findings naming the same missing
@@ -2562,6 +2557,7 @@ fn evidence_excerpt(evidence: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod acceptance;
     mod real_beads;
 
     use super::*;
@@ -2835,7 +2831,10 @@ mod tests {
                         description: stateful_flag(&argv, "--description")
                             .unwrap_or_default()
                             .to_string(),
-                        status: loom_driver::bd::Status::Open,
+                        status: stateful_flag(&argv, "--status")
+                            .unwrap_or("open")
+                            .parse()
+                            .unwrap(),
                         priority: loom_driver::bd::Priority::P2,
                         issue_type: stateful_flag(&argv, "--type")
                             .unwrap_or("task")
@@ -2954,6 +2953,14 @@ mod tests {
                 }
                 "--description" => bead.description = argv[index + 1].clone(),
                 "--notes" => bead.notes = Some(argv[index + 1].clone()),
+                "--set-metadata" => {
+                    let (key, value) = argv[index + 1].split_once('=').unwrap();
+                    bead.metadata
+                        .insert(key.to_owned(), serde_json::Value::String(value.to_owned()));
+                }
+                "--unset-metadata" => {
+                    bead.metadata.remove(&argv[index + 1]);
+                }
                 _ => {
                     index += 1;
                     continue;
@@ -3078,7 +3085,7 @@ mod tests {
         } else {
             String::new()
         };
-        format!(
+        let mut bead: Bead = serde_json::from_str(&format!(
             r#"{{
                 "id": "{id}",
                 "title": "deferred fix-up",
@@ -3086,9 +3093,23 @@ mod tests {
                 "status": "{status}",
                 "priority": 2,
                 "issue_type": "task",
+                "parent": "lm-mol",
                 "labels": ["{FINDING_LABEL_PREFIX}{hash}"{deferred}]
             }}"#,
+        ))
+        .unwrap();
+        let finding = contract_finding(vec![spec("gate")], hash, "deferred evidence");
+        let update = super::acceptance::batch_update(
+            &bead.id,
+            bead.parent.as_ref().unwrap(),
+            &[finding],
+            None,
         )
+        .unwrap();
+        for (key, value) in update.set_metadata {
+            bead.metadata.insert(key, serde_json::Value::String(value));
+        }
+        serde_json::to_string(&bead).unwrap()
     }
 
     fn err_stderr(body: &str) -> RunOutput {
@@ -3843,17 +3864,15 @@ mod tests {
             "promotion lists existing children instead of fabricating findings: {calls:?}",
         );
         assert!(
-            calls.iter().any(|call| call
-                == &[
-                    "update",
-                    "lm-mol.1",
-                    "--status",
-                    "open",
-                    "--remove-label",
-                    DEFERRED_LABEL,
-                    "--description",
-                    "deferred evidence",
-                ]),
+            calls.iter().any(|call| call.starts_with(&[
+                "update".into(),
+                "lm-mol.1".into(),
+                "--status".into(),
+                "open".into(),
+                "--remove-label".into(),
+                DEFERRED_LABEL.into(),
+            ]) && flag_arg(call, "--set-metadata")
+                .starts_with("loom.acceptance=")),
             "promotion opens the deferred bead and removes loom:deferred: {calls:?}",
         );
         assert!(
@@ -3961,6 +3980,7 @@ mod tests {
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout(&dedup_response),
             ok_stdout("lm-newfix.1\n"),
+            ok_stdout(""),
         ]);
         let bd = BdClient::with_runner(runner);
         let summary = mint_findings(&bd, &[skipped, minted, refused], "head-sha").await;
@@ -4007,6 +4027,7 @@ mod tests {
             ok_stdout("[]"),
             ok_stdout("[]"),
             ok_stdout("lm-newfix.1\n"),
+            ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
@@ -4183,6 +4204,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("lm-newfix.1\n"),
+            ok_stdout(""),
         ]);
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
@@ -4225,6 +4247,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("lm-newfix.1\n"),
+            ok_stdout(""),
             ok_stdout(&format!(
                 "[{}]",
                 fixup_row_with_labels(
@@ -4279,6 +4302,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("lm-newfix.1\n"),
+            ok_stdout(""),
             ok_stdout(&format!(
                 "[{}]",
                 fixup_row_with_labels(
@@ -4315,7 +4339,8 @@ reason = "false positive"
         assert!(
             calls
                 .iter()
-                .all(|call| call.first().is_none_or(|arg| arg != "update")),
+                .all(|call| !(call.first().is_some_and(|arg| arg == "update")
+                    && call.get(1).is_some_and(|id| id == "lm-partial.1"))),
             "partial-stale reporting must not supersede or split automatically: {calls:?}",
         );
     }
@@ -4363,6 +4388,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("lm-newfix.1\n"),
+            ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
@@ -4397,6 +4423,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("lm-newfix.1\n"),
+            ok_stdout(""),
         ]);
         let bd = BdClient::with_runner(runner);
         let summary = mint_findings(&bd, &[finding], "head-sha").await;
@@ -4636,6 +4663,7 @@ reason = "false positive"
             )),
             ok_stdout("lm-tree\n"),
             ok_stdout("lm-tree.1\n"),
+            ok_stdout(""),
             ok_stdout(&format!(
                 "[{}]",
                 fixup_row_status_description(
@@ -4649,7 +4677,9 @@ reason = "false positive"
             ok_stdout(""),
             ok_stdout(""),
             ok_stdout("lm-tree.2\n"),
+            ok_stdout(""),
             ok_stdout("lm-tree.3\n"),
+            ok_stdout(""),
             ok_stdout(&format!(
                 "[{}]",
                 fixup_row_status_description(
@@ -4971,6 +5001,7 @@ reason = "false positive"
             ok_stdout("lm-tree\n"),
             ok_stdout("lm-tree.1\n"),
             ok_stdout(""),
+            ok_stdout(""),
             err_stderr("second child failed"),
         ]);
         let invocations = runner.invocations_handle();
@@ -5099,6 +5130,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-harn", "harness")),
             ok_stdout("lm-clarify.1\n"),
+            ok_stdout(""),
             ok_stdout(&format!(
                 "[{}]",
                 fixup_row_status_description(
@@ -5133,7 +5165,9 @@ reason = "false positive"
             calls.iter().any(|call| call[0] == "update"
                 && call[1] == "lm-clarify.1"
                 && flag_arg(call, "--status") == "blocked"
-                && flag_arg(call, "--add-label") == "loom:clarify"),
+                && call
+                    .windows(2)
+                    .any(|pair| pair == ["--add-label", "loom:clarify"])),
             "clarify child must be parked pending inbox: {calls:?}",
         );
 
@@ -5164,6 +5198,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-harn", "harness")),
             ok_stdout("lm-blocked.1\n"),
+            ok_stdout(""),
             ok_stdout(&format!(
                 "[{}]",
                 fixup_row_status_description(
@@ -5215,9 +5250,13 @@ reason = "false positive"
             labels.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
             "labels missing batch receipt: {labels}",
         );
-        assert!(calls.iter().any(|call| call[0] == "update"
-            && call[1] == "lm-blocked.1"
-            && flag_arg(call, "--add-label") == "loom:blocked"));
+        assert!(calls.iter().any(|call| {
+            call[0] == "update"
+                && call[1] == "lm-blocked.1"
+                && call
+                    .windows(2)
+                    .any(|pair| pair == ["--add-label", "loom:blocked"])
+        }));
         assert!(
             !labels.contains("loom:clarify"),
             "loom:clarify MUST NOT be applied when options block is missing: {labels}",
@@ -5241,7 +5280,10 @@ reason = "false positive"
             calls.iter().any(|call| call[0] == "update"
                 && call[1] == "lm-blocked.1"
                 && flag_arg(call, "--status") == "blocked"
-                && flag_arg(call, "--notes").contains("missing active Options brief")),
+                && call
+                    .windows(2)
+                    .any(|pair| pair[0] == "--notes"
+                        && pair[1].contains("missing active Options brief"))),
             "blocked fallback must be parked pending inbox: {calls:?}",
         );
     }
@@ -5263,6 +5305,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout("[]"),
             ok_stdout("lm-batch.1\n"),
+            ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
@@ -5335,6 +5378,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout("[]"),
             ok_stdout("lm-batch.2\n"),
+            ok_stdout(""),
         ]);
         let invocations2 = runner2.invocations_handle();
         let bd2 = BdClient::with_runner(runner2);
@@ -5470,6 +5514,7 @@ reason = "false positive"
                 fixup_row("lm-dup.2", &refused_fingerprint),
             )),
             ok_stdout("lm-newfix.1\n"),
+            ok_stdout(""),
         ];
         let runner = ScriptedRunner::new(responses);
         let bd = BdClient::with_runner(runner);
@@ -5537,6 +5582,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("lm-retry.1\n"),
+            ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);

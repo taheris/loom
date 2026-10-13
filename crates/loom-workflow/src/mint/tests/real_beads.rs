@@ -88,6 +88,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn incremental_metadata_preserves_json_payloads_as_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        let bd = client(dir.path()).await;
+        let parent = work_epic(&bd).await;
+        let payload = r#"{"purpose":"remediation","goals":[{"batch":"mint-example","finding_hash":"v1:0123456789ab"}]}"#;
+        bd.update(
+            &parent,
+            UpdateOpts {
+                set_metadata: vec![
+                    ("operator.note".into(), "keep".into()),
+                    ("loom.acceptance".into(), payload.into()),
+                    ("count".into(), "3".into()),
+                    ("flag".into(), "true".into()),
+                    ("proposal".into(), "remove".into()),
+                ],
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        bd.update(
+            &parent,
+            UpdateOpts {
+                unset_metadata: vec!["proposal".into()],
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        let bead = bd.show(&parent).await.unwrap();
+        assert_eq!(bead.metadata["operator.note"], "keep");
+        assert_eq!(bead.metadata["loom.acceptance"], payload);
+        assert_eq!(bead.metadata["count"], 3);
+        assert_eq!(bead.metadata["flag"], true);
+        assert!(!bead.metadata.contains_key("proposal"));
+    }
+
+    #[tokio::test]
     async fn molecule_findings_use_parentage_without_ancestor_blocking() {
         let dir = tempfile::tempdir().unwrap();
         let bd = client(dir.path()).await;

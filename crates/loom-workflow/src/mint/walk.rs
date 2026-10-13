@@ -1133,6 +1133,7 @@ mod tests {
             Ok(ok_stdout(&epic_list("lm-harnessepic", "harness"))),
             Ok(ok_stdout("[]")),
             Ok(ok_stdout("lm-gatebatch.1\n")),
+            Ok(ok_stdout("")),
             Err(BdError::Spawn(std::io::Error::other(
                 "simulated mid-run crash",
             ))),
@@ -1172,6 +1173,7 @@ mod tests {
                 fixup_row("lm-gatebatch.1", &finding_c.hash())
             ))),
             Ok(ok_stdout("lm-harnessbatch.1\n")),
+            Ok(ok_stdout("")),
         ];
         let runner2 = ScriptedRunner::new(pass2_responses);
         let invocations2 = runner2.invocations_handle();

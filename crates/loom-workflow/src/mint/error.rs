@@ -24,6 +24,9 @@ pub enum MintError {
     /// spec → epic resolution failed while minting findings
     Resolve(#[from] ResolveError),
 
+    /// finding acceptance could not be persisted
+    Acceptance(#[from] super::acceptance::Error),
+
     /// finding carried no bonded specs
     EmptyBonds,
 

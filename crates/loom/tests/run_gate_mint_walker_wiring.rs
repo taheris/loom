@@ -146,8 +146,71 @@ fn write_bead(state_dir: &Path, id: &str, status: &str, issue_type: &str, labels
     std::fs::write(dir.join("labels"), labels.join("\n")).expect("labels");
 }
 
-fn write_child_parent(state_dir: &Path, id: &str, parent: &str) {
-    std::fs::write(state_dir.join(id).join("parent"), parent).expect("parent");
+struct ShimRunner {
+    state_dir: PathBuf,
+    binary: PathBuf,
+}
+
+impl loom_driver::bd::CommandRunner for ShimRunner {
+    async fn run(
+        &self,
+        args: Vec<std::ffi::OsString>,
+        timeout: std::time::Duration,
+    ) -> Result<loom_driver::bd::RunOutput, loom_driver::bd::BdError> {
+        let mut command = tokio::process::Command::new(&self.binary);
+        command
+            .args(args)
+            .env("BD_STATE_DIR", &self.state_dir)
+            .env("BD_CREATE_ID", "lm-mol.1");
+        let output = loom_driver::process::output(
+            &mut command,
+            &loom_driver::clock::SystemClock::new(),
+            timeout,
+        )
+        .await
+        .expect("isolated Beads shim completed");
+        Ok(loom_driver::bd::RunOutput {
+            status: output.status.code().unwrap(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn record_deferred_batch(workspace: &Path, state_dir: &Path, binary: PathBuf) {
+    use loom_protocol::gate::{
+        ConcernToken, DispatchScope, FindingRoute, FindingTarget, RawFinding,
+    };
+    let label = loom_driver::identifier::SpecLabel::new(SPEC_LABEL).unwrap();
+    let finding = RawFinding {
+        token: ConcernToken::SpecConventionsViolation,
+        route: FindingRoute::Deferred,
+        bonds: vec![label.clone()],
+        target: FindingTarget::Criterion {
+            spec: label,
+            anchor: "success-criteria".into(),
+        },
+        evidence: "The fixture criterion lacks its verifier annotation.".into(),
+    }
+    .resolve(
+        DispatchScope::Tree,
+        &loom_workflow::review::WorkspaceFindingValidator::new(workspace),
+    )
+    .unwrap();
+    let bd = loom_driver::bd::BdClient::with_runner(ShimRunner {
+        state_dir: state_dir.to_path_buf(),
+        binary,
+    });
+    let summary = tokio::runtime::Runtime::new().unwrap().block_on(
+        loom_workflow::mint::route_molecule_findings(
+            &bd,
+            &loom_driver::identifier::MoleculeId::new("lm-mol").unwrap(),
+            &[finding],
+            &loom_workflow::mint::MintOptions::default(),
+        ),
+    );
+    assert_eq!(summary.minted, 1, "{summary:?}");
+    std::fs::write(state_dir.join(".invocations.log"), "").unwrap();
 }
 
 fn run_gate_mint_molecule_subprocess(workspace: &Path) -> (std::process::Output, PathBuf) {
@@ -155,14 +218,7 @@ fn run_gate_mint_molecule_subprocess(workspace: &Path) -> (std::process::Output,
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir bd-state");
     write_bead(&state_dir, "lm-mol", "open", "epic", &["spec:walker-pin"]);
-    write_bead(
-        &state_dir,
-        "lm-mol.1",
-        "deferred",
-        "task",
-        &["loom:deferred", "finding:hash-a", "spec:walker-pin"],
-    );
-    write_child_parent(&state_dir, "lm-mol.1", "lm-mol");
+    record_deferred_batch(workspace, &state_dir, bin_dir.join("bd"));
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let output = Command::new(loom_bin)
@@ -237,7 +293,9 @@ fn run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion()
     );
     assert!(
         molecule_log.lines().any(|line| {
-            line == "update lm-mol.1 --status open --remove-label loom:deferred --description 'deferred evidence'"
+            line.starts_with(
+                "update lm-mol.1 --status open --remove-label loom:deferred --set-metadata ",
+            ) && line.contains("loom.acceptance=")
         }),
         "molecule promotion must update the existing deferred bead: {molecule_log}",
     );

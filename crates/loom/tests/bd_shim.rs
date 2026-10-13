@@ -26,10 +26,16 @@ fn bd_shim_batches_typed_metadata_and_preserves_existing_keys() {
             "fixture",
             "--description",
             "fixture",
+            "--status",
+            "blocked",
             "--metadata",
             r#"{"existing": "preserved"}"#,
         ]
         .map(str::to_owned),
+    );
+    assert_eq!(
+        std::fs::read_to_string(state.path().join("lm-shim.1/status")).unwrap(),
+        "blocked"
     );
     let mut args = vec!["update".to_owned(), "lm-shim.1".to_owned()];
     for key in 0..20 {
@@ -40,6 +46,12 @@ fn bd_shim_batches_typed_metadata_and_preserves_existing_keys() {
         "--set-metadata".to_owned(),
         "nested={\"paths\":[\"src/lib.rs\"]}".to_owned(),
     ]);
+    args.extend([
+        "--set-metadata".to_owned(),
+        "loom.acceptance={\"purpose\":\"remediation\",\"goals\":[]}".to_owned(),
+        "--unset-metadata".to_owned(),
+        "key19".to_owned(),
+    ]);
     invoke(&args);
     let metadata: serde_json::Value = serde_json::from_slice(
         &std::fs::read(state.path().join("lm-shim.1/metadata.json")).unwrap(),
@@ -47,11 +59,16 @@ fn bd_shim_batches_typed_metadata_and_preserves_existing_keys() {
     .unwrap();
     assert_eq!(metadata["existing"], "preserved");
     assert_eq!(metadata["key0"], true);
-    for key in 1..20 {
+    for key in 1..19 {
         assert_eq!(metadata[format!("key{key}")], key);
     }
+    assert!(metadata.get("key19").is_none());
     assert_eq!(
         metadata["nested"],
         serde_json::json!({"paths": ["src/lib.rs"]})
+    );
+    assert_eq!(
+        metadata["loom.acceptance"],
+        r#"{"purpose":"remediation","goals":[]}"#
     );
 }

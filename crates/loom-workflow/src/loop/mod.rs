@@ -31,6 +31,7 @@
 //! and [`worker`] preparation. Both dispatch into independent bead clones;
 //! parallel mode runs N containers before sequential integration.
 
+pub mod acceptance;
 mod context;
 mod driver_emit;
 mod error;

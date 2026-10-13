@@ -11,6 +11,10 @@ case "$1" in
     : "${LOOM_TODO_ACCEPTANCE_BIN:?missing provisioned Todo acceptance runner}"
     exec "$LOOM_TODO_ACCEPTANCE_BIN" acceptance:: --nocapture
     ;;
+  remediation-acceptance)
+    : "${LOOM_REMEDIATION_ACCEPTANCE_BIN:?missing provisioned remediation acceptance runner}"
+    exec "$LOOM_REMEDIATION_ACCEPTANCE_BIN" mint::tests::acceptance:: --nocapture
+    ;;
   workspace-safety-history)
     : "${LOOM_WORKSPACE_SAFETY_BIN:?missing provisioned workspace acceptance runner}"
     if ! command -v podman >/dev/null || ! podman info >/dev/null; then

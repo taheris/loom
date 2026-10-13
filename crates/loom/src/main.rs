@@ -3633,6 +3633,7 @@ async fn dispatch_for_slot(
     let worker::Worker {
         spawn: mut spawn_config,
         scratch,
+        ..
     } = *worker;
 
     let mut sink = match open_bead_sink_with_renderer(

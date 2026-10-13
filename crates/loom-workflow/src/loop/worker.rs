@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use loom_driver::agent::{AgentRuntime, SpawnConfig};
-use loom_driver::bd::Bead;
+use loom_driver::bd::{BdClient, Bead, CommandRunner};
 use loom_driver::config::{LoomTopConfig, Phase, SkillsConfig};
 use loom_driver::git::{BeadCloneAlignment, GitClient, GitError};
 use loom_driver::identifier::{ProfileName, SpecLabel};
@@ -46,6 +46,7 @@ pub struct Request<'a> {
 pub struct Worker {
     pub spawn: SpawnConfig,
     pub scratch: ScratchSession,
+    pub acceptance: Option<super::acceptance::Resolved>,
 }
 
 pub enum Preparation {
@@ -108,6 +109,47 @@ pub async fn prepare_workspace(
 /// # Errors
 /// Returns preparation failures; static profile faults are classified rejections.
 pub async fn prepare(request: Request<'_>) -> Result<Preparation, LoopError> {
+    prepare_with_bd(&BdClient::new(), request).await
+}
+
+/// Prepare workers using the owning driver's Beads transport and current finding context.
+///
+/// # Errors
+/// Infrastructure setup errors propagate; invalid declared acceptance is a pre-spawn rejection.
+pub async fn prepare_with_bd<R: CommandRunner>(
+    bd: &BdClient<R>,
+    request: Request<'_>,
+) -> Result<Preparation, LoopError> {
+    let task = request.bead;
+    let has_acceptance = task
+        .metadata
+        .contains_key(loom_protocol::acceptance::METADATA_KEY)
+        || task
+            .metadata
+            .contains_key(crate::mint::acceptance::BATCH_KEY)
+        || task
+            .metadata
+            .contains_key(crate::mint::acceptance::FOLLOW_UP_KEY)
+        || task.labels.iter().any(|label| {
+            label
+                .as_str()
+                .starts_with(crate::mint::FINDING_LABEL_PREFIX)
+        });
+    let acceptance = if has_acceptance {
+        match super::acceptance::resolve(bd, task, request.workspace).await {
+            Ok(acceptance) => Some(acceptance),
+            Err(error) => {
+                return Ok(Preparation::Rejected(AgentOutcome::Blocked {
+                    reason: format!(
+                        "task acceptance rejected before spawn: {}",
+                        crate::mint::mint_error_message(&error)
+                    ),
+                }));
+            }
+        }
+    } else {
+        None
+    };
     let Request {
         bead,
         workspace,
@@ -203,7 +245,11 @@ pub async fn prepare(request: Request<'_>) -> Result<Preparation, LoopError> {
         spec_label: label.clone(),
         parent_tool_call_id: None,
     });
-    Ok(Preparation::Ready(Box::new(Worker { spawn, scratch })))
+    Ok(Preparation::Ready(Box::new(Worker {
+        spawn,
+        scratch,
+        acceptance,
+    })))
 }
 
 /// Recovery metadata shared by sequential and parallel event streams.

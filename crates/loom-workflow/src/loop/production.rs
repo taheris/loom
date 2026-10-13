@@ -598,24 +598,27 @@ where
             0
         };
         self.current_attempt = attempt;
-        let worker = match super::worker::prepare(super::worker::Request {
-            bead,
-            workspace: &worktree.path,
-            loom_workspace: &self.workspace,
-            manifest: &self.manifest,
-            cli_profile: self.cli_profile.as_ref(),
-            phase_default: &self.phase_default,
-            runtime: self.runtime,
-            label: &self.label,
-            style_rules: &self.style_rules,
-            loom: &self.loom_cfg,
-            skills: &self.skills_cfg,
-            launcher_env: self.git.launcher_key_env()?,
-            previous_failure: typed_previous_failure,
-            bead_base: preparation.bead_base,
-            workspace_recovery: preparation.recovery,
-            attempt,
-        })
+        let worker = match super::worker::prepare_with_bd(
+            &self.bd,
+            super::worker::Request {
+                bead,
+                workspace: &worktree.path,
+                loom_workspace: &self.workspace,
+                manifest: &self.manifest,
+                cli_profile: self.cli_profile.as_ref(),
+                phase_default: &self.phase_default,
+                runtime: self.runtime,
+                label: &self.label,
+                style_rules: &self.style_rules,
+                loom: &self.loom_cfg,
+                skills: &self.skills_cfg,
+                launcher_env: self.git.launcher_key_env()?,
+                previous_failure: typed_previous_failure,
+                bead_base: preparation.bead_base,
+                workspace_recovery: preparation.recovery,
+                attempt,
+            },
+        )
         .await?
         {
             super::worker::Preparation::Ready(worker) => worker,
@@ -624,6 +627,7 @@ where
         let super::worker::Worker {
             spawn: spawn_config,
             scratch,
+            ..
         } = *worker;
         info!(
             bead = %bead.id,
