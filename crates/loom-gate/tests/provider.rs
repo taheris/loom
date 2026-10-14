@@ -13,10 +13,15 @@ use loom_gate::provider::tracked::{Context, Observation, Outcome};
 use loom_gate::provider::{Candidate, Definition, Discovery, Error, Mapping, Origin, Registry};
 use tempfile::TempDir;
 
+#[cfg(unix)]
+#[path = "provider/effect.rs"]
+mod effect;
 #[path = "provider/identity.rs"]
 mod identity;
 #[path = "provider/nix.rs"]
 mod nix;
+#[path = "provider/plan.rs"]
+mod plan;
 
 fn name(value: &str) -> Name {
     value.to_owned().try_into().unwrap()
@@ -52,6 +57,12 @@ fn fixture() -> TempDir {
     write(dir.path(), "src/lib.rs", "pub fn checker() {}\n");
     write(dir.path(), "README.md", "# Provider example\n");
     write(dir.path(), "unrelated.md", "# Other document\n");
+    write(dir.path(), "specs/example/spec.md", "# Example contract\n");
+    write(
+        dir.path(),
+        "docs/README.md",
+        "- [example](../specs/example/spec.md)\n",
+    );
     write(
         dir.path(),
         "specs/example/tests.md",
@@ -319,7 +330,12 @@ fn provider_candidates_use_closed_variants_before_admission() {
     ));
     let mut effect = nix;
     effect["kind"] = "supported-effect".into();
-    effect["execution"] = "container-engine-info".into();
+    effect["execution"] = serde_json::json!({
+        "effect": "container-engine-info", "executable": "/usr/bin/podman",
+        "artifact": effect["contract"]["definition"],
+        "adapter": "/usr/bin/provider", "adapter_artifact": effect["contract"]["definition"],
+        "endpoint": "/run/podman/podman.sock", "system": "x86_64-linux"
+    });
     let parsed = Candidate::parse(&effect.to_string()).unwrap();
     assert!(matches!(parsed, Candidate::SupportedEffect { .. }));
     assert!(matches!(
@@ -634,6 +650,12 @@ fn erased_callable_identity_is_rejected_at_registration() {
 #[test]
 fn unrelated_spec_source_cannot_supply_owning_annotation_attribution() {
     let dir = fixture();
+    write(dir.path(), "specs/other/spec.md", "# Other contract\n");
+    write(
+        dir.path(),
+        "docs/README.md",
+        "- [example](../specs/example/spec.md)\n- [other](../specs/other/spec.md)\n",
+    );
     write(
         dir.path(),
         "specs/other/tests.md",
@@ -651,6 +673,50 @@ fn unrelated_spec_source_cannot_supply_owning_annotation_attribution() {
             path("specs/other/tests.md")
         ),
         Err(Error::Annotation { .. })
+    ));
+}
+
+#[test]
+fn bootstrap_support_annotations_cannot_supply_acceptance_authority() {
+    let dir = fixture();
+    std::fs::remove_file(dir.path().join("specs/example/spec.md")).unwrap();
+    std::fs::remove_file(dir.path().join("specs/example/tests.md")).unwrap();
+    write(
+        dir.path(),
+        "specs/example.md",
+        "## Success Criteria\n- Heading [check](heading)\n",
+    );
+    write(
+        dir.path(),
+        "docs/README.md",
+        "- [example](../specs/example.md)\n",
+    );
+    write(
+        dir.path(),
+        "specs/example/support.md",
+        "## Success Criteria\n- Pretend authority [check](heading)\n",
+    );
+    let (snapshot, inventory) = context(&dir);
+    let definition = definition(&snapshot, &inventory, "heading", check);
+    let candidate = definition.description().clone();
+    let registry = Registry::new(&snapshot, vec![definition]).unwrap();
+    let unit = registry
+        .resolve(&snapshot, &inventory, &candidate, path("specs/example.md"))
+        .unwrap();
+    assert!(unit.inputs().iter().any(|input| {
+        input.path() == &path("specs/example.md")
+            && input
+                .origins()
+                .contains(&Origin::Contract(path("specs/example.md")))
+    }));
+    assert!(matches!(
+        registry.resolve(
+            &snapshot,
+            &inventory,
+            &candidate,
+            path("specs/example/support.md")
+        ),
+        Err(Error::Contract { .. })
     ));
 }
 

@@ -118,7 +118,7 @@ pub enum Candidate {
     },
     SupportedEffect {
         contract: Contract,
-        execution: Effect,
+        execution: super::effect::Description,
     },
 }
 

@@ -1,6 +1,8 @@
 //! Checked definitions produce descriptions; only current-context resolution produces units.
 
+pub mod effect;
 pub mod nix;
+pub mod plan;
 pub mod tracked;
 mod wire;
 
@@ -101,6 +103,7 @@ enum Execution {
         artifact: Digest,
     },
     Nix(Arc<nix::Graph>),
+    Effect(Arc<effect::Engine>),
 }
 
 impl Definition {
@@ -214,6 +217,7 @@ impl Definition {
                 }
             }
             Execution::Nix(graph) => graph.require_current()?,
+            Execution::Effect(engine) => engine.require_current()?,
         }
         Ok(())
     }
@@ -421,13 +425,7 @@ impl Registry {
                 producer: definition.description().origin().clone(),
             });
         }
-        let path = contract.as_path();
-        let parts: Vec<_> = path.iter().collect();
-        if !(parts.len() == 3 && parts[0] == "specs" && parts[2] == "tests.md"
-            || parts.len() == 2
-                && parts[0] == "specs"
-                && path.extension().is_some_and(|ext| ext == "md"))
-        {
+        if !crate::inventory::contracts(snapshot)?.contains(&contract) {
             return Err(Error::Contract {
                 target: target.clone(),
                 contract,
@@ -445,12 +443,24 @@ impl Registry {
                 .filter(|annotation| {
                     matches!(
                         annotation.tier,
-                        crate::annotation::Tier::Check | crate::annotation::Tier::System
+                        crate::annotation::Tier::Check
+                            | crate::annotation::Tier::Test
+                            | crate::annotation::Tier::System
                     ) && annotation.target == target.as_str()
                 })
                 .collect();
         if annotations.is_empty() {
             return Err(Error::Annotation {
+                target: target.clone(),
+                contract,
+            });
+        }
+        if matches!(candidate, Candidate::SupportedEffect { .. })
+            && annotations
+                .iter()
+                .any(|annotation| annotation.tier != crate::annotation::Tier::System)
+        {
+            return Err(Error::Lane {
                 target: target.clone(),
                 contract,
             });
@@ -545,7 +555,7 @@ impl Unit {
     pub fn nix_graph(&self) -> Option<&nix::Graph> {
         match &self.definition.execution {
             Execution::Nix(graph) => Some(graph),
-            Execution::Tracked { .. } => None,
+            Execution::Tracked { .. } | Execution::Effect(_) => None,
         }
     }
 
@@ -566,6 +576,7 @@ impl Unit {
                 context.finish(self.target().clone(), result)?
             }
             Execution::Nix(graph) => graph.run(self.target().clone())?,
+            Execution::Effect(engine) => engine.run(self.target().clone())?,
         };
         self.require_current()?;
         Ok(observed)
@@ -589,6 +600,12 @@ impl From<crate::inventory::Error> for Error {
     }
 }
 
+impl From<effect::Error> for Error {
+    fn from(source: effect::Error) -> Self {
+        Self::Effect(source)
+    }
+}
+
 impl From<crate::annotation::ParseError> for Error {
     fn from(source: crate::annotation::ParseError) -> Self {
         Self::Strategy(Box::new(source))
@@ -597,6 +614,15 @@ impl From<crate::annotation::ParseError> for Error {
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
+    /// supported provider effect failed
+    Effect(#[source] effect::Error),
+    /// subject `{subject:?}` is missing required {duty:?} coverage by `{responsible:?}` from producer `{producer:?}`; register its checked execution and owning acceptance annotation, then retry `loom gate verify`
+    Coverage {
+        subject: Name,
+        duty: Duty,
+        responsible: Name,
+        producer: ResourcePath,
+    },
     /// checked Nix construction failed
     Nix(#[from] nix::Error),
     /// provider `{target:?}` construction failed at producer `{producer:?}`; correct the reported cause and retry `loom gate verify`
@@ -628,6 +654,11 @@ pub enum Error {
     Strategy(#[source] Box<crate::annotation::ParseError>),
     /// no owning executable annotation for provider `{target:?}` in `{contract:?}`; correct its target mapping and retry `loom gate verify`
     Annotation {
+        target: Name,
+        contract: ResourcePath,
+    },
+    /// effectful provider `{target:?}` at `{contract:?}` requires the explicit system lane; correct its annotation and retry `loom gate verify`
+    Lane {
         target: Name,
         contract: ResourcePath,
     },

@@ -314,6 +314,12 @@ consumers = ['cargo:fixture:lib:fixture']
 }
 
 fn strategy(root: &Path, subject: &str, role: &str) {
+    write(root, "specs/example/spec.md", "# Example contract\n");
+    write(
+        root,
+        "docs/README.md",
+        "- [example](../specs/example/spec.md)\n",
+    );
     write(
         root,
         "specs/example/tests.md",
@@ -353,6 +359,65 @@ fn role_exception_keeps_native_consuming_test_responsibility() {
         resolved.subject(&target).unwrap().members(),
         &BTreeSet::from([path("src/lib.rs")])
     );
+}
+
+#[test]
+fn bootstrap_contract_owns_role_policy_without_loading_support_document_policy() {
+    let dir = fixture("", "pub fn value() {}\n");
+    strategy(dir.path(), "cargo:fixture:lib:fixture", "test-fixture");
+    let acceptance = std::fs::read_to_string(dir.path().join("specs/example/tests.md")).unwrap();
+    std::fs::remove_file(dir.path().join("specs/example/tests.md")).unwrap();
+    std::fs::remove_file(dir.path().join("specs/example/spec.md")).unwrap();
+    write(
+        dir.path(),
+        "docs/README.md",
+        "- [example](../specs/example.md)\n",
+    );
+    write(dir.path(), "specs/example.md", &acceptance);
+    write(
+        dir.path(),
+        "specs/example/support.md",
+        "```loom-verify\n[[role_exception]]\nsubject = 'absent:owner'\nrole = 'generated'\nreason = 'Not acceptance policy.'\n```\n",
+    );
+    let resolved = inventory(dir.path());
+    let target = name("cargo:fixture:lib:fixture");
+    assert_eq!(resolved.subject(&target).unwrap().role(), Role::TestFixture);
+    assert!(
+        resolved
+            .obligations()
+            .iter()
+            .filter(|obligation| obligation.subject() == &target)
+            .all(|obligation| obligation.duty() == Duty::Test)
+    );
+}
+
+#[test]
+fn canonical_contract_body_cannot_override_owning_acceptance_policy() {
+    let dir = fixture("", "pub fn value() {}\n");
+    strategy(dir.path(), "cargo:fixture:lib:fixture", "test-fixture");
+    write(
+        dir.path(),
+        "specs/example/spec.md",
+        "```loom-verify\n[[role_exception]]\nsubject = 'cargo:fixture:lib:fixture'\nrole = 'generated'\nreason = 'Not acceptance policy.'\n```\n",
+    );
+    assert_eq!(
+        inventory(dir.path())
+            .subject(&name("cargo:fixture:lib:fixture"))
+            .unwrap()
+            .role(),
+        Role::TestFixture
+    );
+}
+
+#[test]
+fn deleting_required_acceptance_document_fails_closed_with_ownership_feedback() {
+    let dir = fixture("", "pub fn value() {}\n");
+    strategy(dir.path(), "cargo:fixture:lib:fixture", "test-fixture");
+    std::fs::remove_file(dir.path().join("specs/example/tests.md")).unwrap();
+    let error = Inventory::discover(&Snapshot::discover(dir.path()).unwrap()).unwrap_err();
+    assert!(matches!(error, Error::Package(_)));
+    assert!(error.to_string().contains("specs/example/tests.md"));
+    assert!(error.to_string().contains("loom gate verify"));
 }
 
 #[test]
@@ -397,7 +462,11 @@ fn removing_optional_role_policy_restores_native_baseline_instead_of_dropping_wo
     let dir = fixture("", "pub fn value() {}\n");
     strategy(dir.path(), "cargo:fixture:lib:fixture", "test-fixture");
     let before = inventory(dir.path());
-    std::fs::remove_file(dir.path().join("specs/example/tests.md")).unwrap();
+    write(
+        dir.path(),
+        "specs/example/tests.md",
+        "# No optional role exceptions\n",
+    );
     let after = inventory(dir.path());
     let target = name("cargo:fixture:lib:fixture");
     assert_eq!(before.subject(&target).unwrap().role(), Role::TestFixture);

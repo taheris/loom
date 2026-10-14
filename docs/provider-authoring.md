@@ -8,9 +8,10 @@ cannot be constructed from JSON or have its admitted fields rewritten.
 
 This example is a diagnostic execution path, not a substitute for
 `loom gate verify`, inventory-wide coverage, Evidence admission or publication.
-The ordinary gate's provider integration and effect constructors are not exposed
-by these examples. The Nix API below constructs actual native execution;
-recognized candidate shapes alone cannot register arbitrary commands.
+The ordinary CLI gate's provider integration is not exposed by these examples.
+The APIs also provide inventory-wide admission and a specifically supported
+engine-info effect, described below; recognized candidate shapes alone cannot
+register arbitrary commands.
 
 ## Run the Rust example
 
@@ -18,13 +19,19 @@ From the Loom checkout, create a separate temporary native Cargo project. The
 source below is copied from the shipped example, so the registered checker
 source is also the code compiled for this project. Cargo supplies native
 ownership and lockfile metadata; there is no second input table or hand-authored
-description.
+description. Initialize and copy Loom's exact dependency patches into the
+temporary project before running Cargo; an external Cargo project does not
+inherit this checkout's `.cargo/config.toml`.
 
 ```bash
 set -euo pipefail
 loom_root="$PWD"
+bash "$loom_root/scripts/configure-cargo-patches.sh"
 project=$(mktemp -d)
-mkdir -p "$project/src" "$project/specs/example"
+mkdir -p "$project/src" "$project/specs/example" "$project/docs" "$project/.cargo"
+cp "$(readlink -f "$loom_root/.cargo/nix-patches.toml")" "$project/.cargo/config.toml"
+printf '# Example contract\n' > "$project/specs/example/spec.md"
+printf '%s\n' '- [example](../specs/example/spec.md)' > "$project/docs/README.md"
 cp "$loom_root/crates/loom-gate/examples/provider.rs" "$project/src/main.rs"
 printf '/target/\n' > "$project/.gitignore"
 printf '# Example\n' > "$project/README.md"
@@ -94,6 +101,48 @@ and provider conformance must still test deliberately omitted reads.
 Observations from this example do not authorize reuse, skipped obligations or
 publication.
 
+## Inventory-wide admission
+
+`Registry::resolve_query` is a target diagnostic: it resolves the requested
+candidate definitions, but does not establish that every project duty is
+covered. For inventory-wide deterministic execution use
+`registry.admit(&snapshot, &inventory)?.run()?`. This path discovers the current
+acceptance documents itself, resolves their exact checked definitions, and joins
+all independently discovered obligations before returning an immutable `Plan`.
+An unannotated registration cannot fill a coverage gap. A new resource or a
+missing build/lint/test responsibility fails admission even when a document
+provider resolves successfully. No caller-supplied target list defines coverage.
+
+All sibling definitions are rechecked before the first execution. Each unit
+retains every owning acceptance source when targets are shared across owners.
+Observed results still require Evidence admission: accounting for responsibility
+is not a proof that a check's body adequately tests its claimed behavior, and a
+plan or a successful query is not publication authorization. Ordinary CLI gate
+integration remains a separate unfinished consumer boundary; do not assume the
+legacy input-list resolver uses these immutable plans.
+
+## Supported engine-info effect
+
+`provider::effect::Client::capture(executable, endpoint)` captures an explicit
+absolute Podman client and a parsed absolute Unix `Endpoint`.
+`Definition::container_engine_info` joins that client to current discovered
+subjects, duties, and the producer resource. The constructor supplies the fixed
+`podman --remote --url unix://… info --format json` operation; there is no
+arbitrary command, argv, ambient connection, or SSH fallback. Query descriptions
+include executable content identity, endpoint, platform, source origins,
+required container/kernel capabilities, and exit-status mapping.
+
+The owning annotation must use the explicit `[system]` lane; admission rejects
+`[check]` or `[test]` relabeling of the effectful operation. Use this only for
+an obligation genuinely requiring an engine observation, not to relabel a
+deterministic check or satisfy unrelated semantic responsibilities. A missing
+engine endpoint remains `unavailable`; nonzero engine exit remains `fail`;
+malformed success output is an error, not a pass. Executable replacement
+invalidates the checked definition. Resolution still checks the owning
+annotation and current snapshot before producing a `Unit`. An engine-info pass
+establishes only that observation, not host driver access, devices, lifecycle
+authority, or full workspace readiness.
+
 ## Run the Nix API example
 
 This example uses `Definition::hermetic` and the same generated query/resolution
@@ -111,7 +160,9 @@ project=$(mktemp -d)
 system=$(nix config show --json | jq -r '.system.value')
 builder=$(readlink -f "$(command -v bash)")
 builder_store="${builder%/bin/bash}"
-mkdir -p "$project/specs/example"
+mkdir -p "$project/specs/example" "$project/docs"
+printf '# Example contract\n' > "$project/specs/example/spec.md"
+printf '%s\n' '- [example](../specs/example/spec.md)' > "$project/docs/README.md"
 printf '# Example\n' > "$project/README.md"
 printf '# Example\n\n## Success Criteria\n\n- A document has a heading [check](document-heading)\n' > "$project/specs/example/tests.md"
 cat > "$project/flake.nix" <<EOF

@@ -154,12 +154,9 @@ impl Inventory {
         snapshot.require_current()?;
         let inventory = Self::finish(snapshot.identity().clone(), subjects)?;
         let mut declarations = Vec::new();
-        for path in snapshot.files().keys().filter(|path| {
-            let parts: Vec<_> = path.as_path().iter().collect();
-            parts.len() == 3 && parts[0] == "specs" && parts[2] == "tests.md"
-        }) {
+        for path in contracts(snapshot)? {
             declarations.extend(
-                crate::annotation::parse_content(path.as_path(), snapshot.text(path)?)?.strategy,
+                crate::annotation::parse_content(path.as_path(), snapshot.text(&path)?)?.strategy,
             );
         }
         inventory.with_policy(&declarations)
@@ -257,6 +254,29 @@ impl Inventory {
         }
         Self::finish(self.snapshot.clone(), subjects)
     }
+}
+
+pub(crate) fn contracts(snapshot: &Snapshot) -> Result<Vec<ResourcePath>, Error> {
+    if !snapshot
+        .files()
+        .keys()
+        .any(|path| path.as_path().starts_with("specs"))
+    {
+        return Ok(Vec::new());
+    }
+    let staged = snapshot.stage()?;
+    loom_driver::spec::package::discover_workspace(staged.path())?
+        .into_iter()
+        .map(|package| {
+            let relative = package
+                .acceptance()
+                .strip_prefix(staged.path())
+                .map_err(|_| Error::Outside {
+                    path: package.acceptance().to_path_buf(),
+                })?;
+            Ok(ResourcePath::try_from(relative.to_path_buf())?)
+        })
+        .collect()
 }
 
 fn obligations_for(
@@ -528,6 +548,8 @@ pub enum Error {
         #[source]
         source: serde_json::Error,
     },
+    /// spec ownership discovery failed: {0}; repair the owning acceptance documents/index and rerun `loom gate verify`
+    Package(#[from] loom_driver::spec::package::Error),
     /// invalid spec-owned verification strategy
     Strategy(#[from] crate::annotation::ParseError),
     /// source syntax cannot be resolved for `{path:?}`

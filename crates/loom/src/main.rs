@@ -1359,24 +1359,19 @@ fn gate_dispatch_options(args: &GateScope) -> DispatchOptions {
     }
 }
 
-/// Construct an [`InputResolver`] rooted at `workspace`, wiring up the
-/// `cargo metadata`-backed [`CargoMetadataScope`] when the workspace
-/// manifest is reachable and `cargo` is available. Graceful degradation
-/// matters here: the bead container has no `cargo`, so
-/// `CargoMetadataScope::from_manifest` returns `Err` and we proceed
-/// with a resolver that has no `TestScope` attached — the spec-section
-/// auto-include keeps `[test]` annotations scoped to their owning spec
-/// even without the cargo graph.
-fn build_input_resolver(workspace: &Path, runners: &[RunnerSpec]) -> InputResolver {
+/// Construct the file-scope resolver without swallowing native discovery failures.
+/// A Nix-only consumer needs no Cargo scope; a present manifest requires successful
+/// native metadata discovery, not a spec-only or always-run fallback.
+fn build_input_resolver(workspace: &Path, runners: &[RunnerSpec]) -> anyhow::Result<InputResolver> {
     let resolver = InputResolver::new(workspace.to_path_buf()).with_runners(runners.to_vec());
     let manifest = workspace.join("Cargo.toml");
-    if !manifest.exists() {
-        return resolver;
+    if !manifest.try_exists()? {
+        return Ok(resolver);
     }
-    match CargoMetadataScope::from_manifest(&manifest) {
-        Ok(scope) => resolver.with_test_scope(Box::new(scope)),
-        Err(_) => resolver,
-    }
+    let scope = CargoMetadataScope::from_manifest(&manifest).with_context(|| {
+        format!("native verifier scope discovery failed for {}; repair the manifest or provision cargo and retry `loom gate verify`", manifest.display())
+    })?;
+    Ok(resolver.with_test_scope(Box::new(scope)))
 }
 
 /// Scope for annotations already retained by the CLI-level input resolver.
@@ -1757,7 +1752,7 @@ fn dispatch_tier_with_readiness_tiers(
         Tier::Test | Tier::Judge => Vec::new(),
     };
     let mut input_resolver = if args.files().is_some() {
-        build_input_resolver(workspace, &runner_specs)
+        build_input_resolver(workspace, &runner_specs)?
     } else {
         InputResolver::new(workspace.to_path_buf()).with_runners(runner_specs.clone())
     };
@@ -6004,7 +5999,7 @@ mod tests {
 
         let args = changed_scope(tmp.path());
         let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
-        let mut inputs = build_input_resolver(tmp.path(), &specs);
+        let mut inputs = build_input_resolver(tmp.path(), &specs).expect("native scope discovery");
         let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
             .expect("integrity gate runs");
         assert_eq!(code, 1);
@@ -6088,7 +6083,7 @@ mod tests {
             GateScopeRequest::Files(vec![PathBuf::from("src/lib.rs")]),
         );
         let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
-        let mut inputs = build_input_resolver(tmp.path(), &specs);
+        let mut inputs = build_input_resolver(tmp.path(), &specs).expect("native scope discovery");
         let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
             .expect("integrity gate runs");
         assert_eq!(
@@ -6165,10 +6160,24 @@ mod tests {
             GateScopeRequest::Files(vec![tmp.path().join("src/lib.rs")]),
         );
         let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
-        let mut inputs = build_input_resolver(tmp.path(), &specs);
+        let mut inputs = build_input_resolver(tmp.path(), &specs).expect("native scope discovery");
         let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
             .expect("integrity gate runs");
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn native_scope_discovery_failure_retains_actionable_manifest_and_retry_feedback() {
+        let root = tempfile::tempdir().expect("native source fixture");
+        let manifest = root.path().join("Cargo.toml");
+        std::fs::write(&manifest, "[package]\ninvalid TOML\n").expect("malformed native manifest");
+        let Err(error) = build_input_resolver(root.path(), &[]) else {
+            panic!("malformed native metadata silently became a spec-only scope");
+        };
+        let feedback = format!("{error:#}");
+        assert!(feedback.contains(&manifest.display().to_string()));
+        assert!(feedback.contains("cargo metadata"));
+        assert!(feedback.contains("loom gate verify"));
     }
 
     fn test_scope(workspace: &Path, request: GateScopeRequest) -> GateScope {
