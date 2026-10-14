@@ -132,6 +132,15 @@ _:
         fi
         exec ${wrixLinuxPkgs.nix}/bin/nix "$@"
       '';
+      transientNix = wrixLinuxPkgs.writeShellScriptBin "nix" ''
+        set -euo pipefail
+        if [[ "''${1:-}" == copy && ! -e /tmp/loom-transport-transient-seen ]]; then
+          touch /tmp/loom-transport-transient-seen
+          printf 'fixture transient transfer failure\n' >&2
+          exit 1
+        fi
+        exec ${wrixLinuxPkgs.nix}/bin/nix "$@"
+      '';
       stalledNix = wrixLinuxPkgs.writeShellScriptBin "nix" ''
         set -euo pipefail
         if [[ "''${1:-}" == copy ]]; then
@@ -160,6 +169,9 @@ _:
         };
       transportSandbox = mkTransportSandbox (mkTransportProbe "");
       outageSandbox = mkTransportSandbox (mkTransportProbe ''export PATH="${outageNix}/bin:$PATH"'');
+      transientSandbox = mkTransportSandbox (
+        mkTransportProbe ''export PATH="${transientNix}/bin:$PATH"''
+      );
       stalledSandbox = mkTransportSandbox (
         mkTransportProbe ''export PATH="${fixtureTimeout}/bin:${stalledNix}/bin:$PATH"''
       );
@@ -175,6 +187,7 @@ _:
         '';
       transportProfile = mkTransportProfile transportSandbox;
       outageProfile = mkTransportProfile outageSandbox;
+      transientProfile = mkTransportProfile transientSandbox;
       stalledProfile = mkTransportProfile stalledSandbox;
       transportApp = pkgs.writeShellApplication {
         name = "test-worker-transport";
@@ -194,6 +207,16 @@ _:
             --profile-config ${transportProfile} run \
             --no-git-deploy --no-git-sign "$fixture"
 
+          if ! timeout --kill-after=10s 600s ${transientSandbox.launcher}/bin/wrix \
+            --profile-config ${transientProfile} run --no-git-deploy --no-git-sign "$fixture" \
+            > "$fixture/transient.log" 2>&1; then
+            cat "$fixture/transient.log" >&2
+            exit 1
+          fi
+          grep -F 'fixture transient transfer failure' "$fixture/transient.log"
+          grep -F 'sandbox-nix-transport-attempt-failed attempt=1 exit=1' "$fixture/transient.log"
+          grep -F 'sandbox-nix-transport-preflight-ok' "$fixture/transient.log"
+
           if timeout --kill-after=10s 600s ${outageSandbox.launcher}/bin/wrix \
             --profile-config ${outageProfile} run --no-git-deploy --no-git-sign "$fixture" \
             > "$fixture/outage.log" 2>&1; then
@@ -208,6 +231,7 @@ _:
             exit 1
           fi
           grep -F 'fixture upstream unavailable' "$fixture/outage.log"
+          grep -F 'sandbox-nix-transport-attempt-failed attempt=3 exit=1' "$fixture/outage.log"
 
           if timeout --kill-after=10s 600s ${stalledSandbox.launcher}/bin/wrix \
             --profile-config ${stalledProfile} run --no-git-deploy --no-git-sign "$fixture" \
@@ -223,6 +247,7 @@ _:
             exit 1
           fi
           grep -F 'fixture transfer stalled' "$fixture/stalled.log"
+          grep -F 'sandbox-nix-transport-attempt-failed attempt=3 exit=124' "$fixture/stalled.log"
 
           mkdir -m 700 "$fixture/guard"
           printf 'preserved guard fixture\n' > "$fixture/guard/sentinel"
