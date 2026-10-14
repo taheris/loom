@@ -574,6 +574,15 @@ for worker feedback.
   or host-execution bridge; Cargo and rustc also launch successfully.
   [system](nix run .#test-sandbox)
 
+<!-- prettier-ignore -->
+- The isolated transport verifier provisions a pinned profile, checks private
+  Nix-state ancestry, and completes normal signed substitution plus two
+  independent cold imports of the pinned input with matching hashes and sizes.
+  Its fixed harness has no repository keys, runtime secrets, host Nix/engine
+  sockets or canonical Beads/safety authority; unavailable or timed-out input
+  transport fails within a bounded deadline and preserves the purity guard.
+  [system](nix run .#test-worker-transport)
+
 - Profile manifest entries missing launcher or immutable profile configuration
   fail ingestion with regeneration guidance.
   [test](manifest_rejects_missing_launcher_or_profile_config)

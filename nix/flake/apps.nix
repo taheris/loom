@@ -22,6 +22,7 @@ _:
       smokeSandbox,
       smokeServiceImage,
       wrixLib,
+      wrixLinuxPkgs,
       ...
     }:
     let
@@ -114,6 +115,47 @@ _:
       };
 
       sandboxSmokeApp = if isLinux then sandboxSmokeLinux else sandboxSmokeDarwin;
+
+      transportProbe = wrixLinuxPkgs.writeShellScriptBin "loom-direct-runner" ''
+        set -euo pipefail
+        bash ${../../tests/sandbox/nix.sh}
+        exec bash ${../../tests/sandbox/transport.sh}
+      '';
+      transportSandbox = wrixLib.mkSandbox {
+        profile = wrixLib.profiles.base // {
+          name = "verification-transport";
+          mounts = [ ];
+          networkAllowlist = [ "cache.nixos.org" ];
+        };
+        agent = "direct";
+        agentPkg = transportProbe;
+      };
+      transportProfile =
+        pkgs.runCommand "loom-worker-transport-profile.json" { nativeBuildInputs = [ pkgs.jq ]; }
+          ''
+            set -euo pipefail
+            jq '.security.runtime_secrets = {} |
+                .services.beads.enable = false |
+                .services.nix_cache.enable = false |
+            .network.default_mode = "limit"' \
+              ${transportSandbox.profileConfig} > "$out"
+          '';
+      transportApp = pkgs.writeShellApplication {
+        name = "test-worker-transport";
+        runtimeInputs = [
+          pkgs.coreutils
+          pkgs.nix
+          pkgs.skopeo
+        ]
+        ++ pkgs.lib.optionals isLinux [ pkgs.podman ];
+        text = ''
+          fixture=$(mktemp -d)
+          trap 'rm -rf "$fixture"' EXIT
+          timeout --kill-after=10s 600s ${transportSandbox.launcher}/bin/wrix \
+            --profile-config ${transportProfile} run \
+            --no-git-deploy --no-git-sign "$fixture"
+        '';
+      };
     in
     {
       packages.smoke-runtime = smokeRuntime;
@@ -138,6 +180,12 @@ _:
           type = "app";
           program = "${sandboxSmokeApp}/bin/test-sandbox";
           meta.description = "Offline agent health, private Nix builds, and hook-chain checks for the Rust sandbox image (Linux only; Darwin stub)";
+        };
+
+        test-worker-transport = {
+          type = "app";
+          program = "${transportApp}/bin/test-worker-transport";
+          meta.description = "Signed input transport in a provisioned isolated verifier";
         };
 
         fuzz-loom = {
