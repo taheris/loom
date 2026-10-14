@@ -1080,7 +1080,17 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
     let new_path = std::env::join_paths(path_entries).unwrap();
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
-    let output = Command::new(loom_bin)
+    let mut command = Command::new(loom_bin);
+    command
+        .env("HOME", workspace)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+        .env("GIT_CONFIG_VALUE_0", "true")
+        .env_remove("WRIX_SIGNING_KEY");
+    configure_host_key_fixture(&mut command, workspace);
+    let output = command
         .arg("--workspace")
         .arg(workspace)
         .arg("--agent")
@@ -1247,7 +1257,17 @@ fn completed_bead_with_renamed_builtin_source_reaches_publication() {
     )
     .expect("write gate subprocess dispatcher");
 
-    let output = Command::new(loom_bin)
+    let mut command = Command::new(loom_bin);
+    command
+        .env("HOME", workspace)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+        .env("GIT_CONFIG_VALUE_0", "true")
+        .env_remove("WRIX_SIGNING_KEY");
+    configure_host_key_fixture(&mut command, workspace);
+    let output = command
         .arg("--workspace")
         .arg(workspace)
         .arg("--host-key")
