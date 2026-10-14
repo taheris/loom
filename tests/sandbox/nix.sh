@@ -15,6 +15,10 @@ for ancestor in /nix /nix/var /nix/var/nix; do
     exit 1
   fi
 done
+if [[ -e /homeless-shelter ]]; then
+  printf 'worker-profile purity guard is occupied; preserve it and reprovision the isolated executor after fixing its writer\n' >&2
+  exit 1
+fi
 nix config show --json | jq -e '."build-users-group".value == "" and .sandbox.value == false' >/dev/null
 nix store ping --json | jq -e '.url == "local"' >/dev/null
 [[ "$(nix eval --offline --raw --expr '"sandbox-nix-eval-ok"')" == sandbox-nix-eval-ok ]]
