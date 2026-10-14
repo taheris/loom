@@ -1620,8 +1620,8 @@ mod tests {
                 .iter()
                 .all(|(_, failure)| failure.is_none())
         );
-        assert!(controller.blocked.is_empty());
-        assert!(controller.clarified.is_empty());
+        assert_eq!(controller.blocked, Vec::new());
+        assert_eq!(controller.clarified, Vec::new());
         assert_eq!(controller.infra.len(), 1);
         assert_eq!(
             controller.infra[0].1.cause,
