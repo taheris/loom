@@ -113,13 +113,10 @@ impl Definition {
         super::require_context(snapshot, inventory)?;
         let responsibilities = super::responsibility(inventory, &target, subjects, duties)?;
         let mut inputs = BTreeMap::<ResourcePath, BTreeSet<Origin>>::new();
+        super::add_rust_inputs(&mut inputs, inventory, &target, &producer)?;
         for name in subjects {
             super::add_subject_inputs(&mut inputs, inventory.subject(name)?);
         }
-        inputs
-            .entry(producer.clone())
-            .or_default()
-            .insert(Origin::Definition(producer.clone()));
         let inputs = super::capture_inputs(snapshot, inputs)?;
         let description = client.description;
         let definition = Digest::of(&serde_json::to_vec(&(

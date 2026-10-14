@@ -143,6 +143,42 @@ annotation and current snapshot before producing a `Unit`. An engine-info pass
 establishes only that observation, not host driver access, devices, lifecycle
 authority, or full workspace readiness.
 
+### Run the supported effect example
+
+This tests the explicit engine connection configuration's consuming test
+obligation, not build/lint coverage or general worker readiness. Use only an
+engine endpoint already authorized in the calling environment. Do not add engine
+socket mounts or host capabilities to ordinary workers to make this example
+pass. Set `engine_client` and `engine_endpoint` explicitly before running:
+
+```bash
+set -euo pipefail
+: "${engine_client:?absolute permitted podman client is required}"
+: "${engine_endpoint:?absolute permitted Unix endpoint is required}"
+loom_root="$PWD"
+bash "$loom_root/scripts/configure-cargo-patches.sh"
+project=$(mktemp -d)
+mkdir -p "$project/src" "$project/.cargo" "$project/specs/example" "$project/docs"
+cp "$loom_root/crates/loom-gate/examples/effect-provider.rs" "$project/src/main.rs"
+cp "$(readlink -f "$loom_root/.cargo/nix-patches.toml")" "$project/.cargo/config.toml"
+printf '/target/\n' > "$project/.gitignore"
+printf '# Engine observation contract\n' > "$project/specs/example/spec.md"
+printf '%s\n' '- [example](../specs/example/spec.md)' > "$project/docs/README.md"
+printf '## Success Criteria\n\n- The explicit engine connection supports info [system](engine-info)\n' > "$project/specs/example/tests.md"
+printf 'executable = "%s"\nendpoint = "%s"\n' "$engine_client" "$engine_endpoint" > "$project/engine.toml"
+printf '[package]\nname = "engine-effect-example"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nloom-gate = { path = "%s/crates/loom-gate" }\nanyhow = "1"\nserde = { version = "1", features = ["derive"] }\nserde_json = "1"\ntoml = "1.1"\n' "$loom_root" > "$project/Cargo.toml"
+git init "$project"
+cd "$project"
+cargo generate-lockfile --offline
+cargo run --offline -- --print-inputs
+cargo run --offline
+```
+
+A successful invocation records only the actual fixed engine-info observation.
+The same candidate/resolution path retains `unavailable` for an absent endpoint;
+restoring the configured connection and rerunning requires a fresh current
+snapshot and definition, not a copied successful result.
+
 ## Run the Nix API example
 
 This example uses `Definition::hermetic` and the same generated query/resolution

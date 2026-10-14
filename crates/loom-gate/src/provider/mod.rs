@@ -132,13 +132,9 @@ impl Definition {
             return Err(Error::Callable { target });
         }
         let entry = Name::try_from(callable.to_owned())?;
-        if !inventory.subjects().values().any(|subject| {
-            subject.role() == Role::RustSource && subject.members().contains(&checker)
-        }) {
-            return Err(Error::Checker { target, checker });
-        }
         let mut members = BTreeMap::new();
         let mut inputs = BTreeMap::<ResourcePath, BTreeSet<Origin>>::new();
+        add_rust_inputs(&mut inputs, inventory, &target, &checker)?;
         for name in subjects {
             let subject = inventory
                 .subject(name)
@@ -151,17 +147,6 @@ impl Definition {
             add_subject_inputs(&mut inputs, subject);
         }
         let responsibilities = responsibility(inventory, &target, subjects, duties)?;
-        for subject in inventory
-            .subjects()
-            .values()
-            .filter(|subject| matches!(subject.role(), Role::RustSource | Role::Configuration))
-        {
-            add_subject_inputs(&mut inputs, subject);
-        }
-        inputs
-            .entry(checker.clone())
-            .or_default()
-            .insert(Origin::Definition(checker.clone()));
         let inputs = capture_inputs(snapshot, inputs)?;
         let executable = std::env::current_exe().map_err(Error::Executable)?;
         let artifact = read_artifact(&executable)?;
@@ -286,6 +271,36 @@ fn add_subject_inputs(
             .or_default()
             .insert(Origin::Subject(subject.name().clone()));
     }
+}
+
+fn add_rust_inputs(
+    inputs: &mut BTreeMap<ResourcePath, BTreeSet<Origin>>,
+    inventory: &Inventory,
+    target: &Name,
+    producer: &ResourcePath,
+) -> Result<(), Error> {
+    if !inventory
+        .subjects()
+        .values()
+        .any(|subject| subject.role() == Role::RustSource && subject.members().contains(producer))
+    {
+        return Err(Error::Checker {
+            target: target.clone(),
+            checker: producer.clone(),
+        });
+    }
+    for subject in inventory
+        .subjects()
+        .values()
+        .filter(|subject| matches!(subject.role(), Role::RustSource | Role::Configuration))
+    {
+        add_subject_inputs(inputs, subject);
+    }
+    inputs
+        .entry(producer.clone())
+        .or_default()
+        .insert(Origin::Definition(producer.clone()));
+    Ok(())
 }
 
 fn capture_inputs(

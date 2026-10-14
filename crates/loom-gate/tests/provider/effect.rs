@@ -82,6 +82,14 @@ fn supported_effect_uses_generated_query_and_fixed_execution_without_ambient_aut
         BTreeSet::from([Capability::ContainerEngine, Capability::HostKernel])
     );
     assert!(matches!(candidate, Candidate::SupportedEffect { .. }));
+    for native_input in ["Cargo.toml", "Cargo.lock", "src/lib.rs"] {
+        assert!(
+            units[0]
+                .inputs()
+                .iter()
+                .any(|input| input.path() == &path(native_input))
+        );
+    }
     assert_eq!(units[0].run().unwrap().outcome(), &Outcome::Pass);
 }
 
@@ -248,6 +256,26 @@ fn empty_engine_objects_cannot_satisfy_a_complete_capability_response() {
     assert!(matches!(
         unit.run(),
         Err(Error::Effect(loom_gate::provider::effect::Error::Shape))
+    ));
+}
+
+#[test]
+fn supported_effect_definition_requires_actual_native_rust_producer_ownership() {
+    let dir = fixture();
+    let tool = client(&dir, "exit 92");
+    std::fs::write(dir.path().join(".gitignore"), "/target/\n/tools/\n").unwrap();
+    let (snapshot, inventory) = context(&dir);
+    assert!(matches!(
+        Definition::container_engine_info(
+            &snapshot,
+            &inventory,
+            name("heading"),
+            path("README.md"),
+            &BTreeSet::from([name("resource:README.md")]),
+            &BTreeSet::from([Duty::Document]),
+            tool
+        ),
+        Err(Error::Checker { .. })
     ));
 }
 
