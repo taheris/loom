@@ -1408,6 +1408,44 @@ async fn bootstrap_model_and_import_changes_after_cursor_select_only_owner() -> 
 }
 
 #[tokio::test]
+async fn bootstrap_preflight_rejects_contract_absent_from_head() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let base = init_bootstrap_support_workspace(dir.path())?;
+    let contract = dir.path().join("specs/alpha.md");
+    let content = std::fs::read_to_string(&contract)?;
+    std::fs::remove_file(&contract)?;
+    run_git(dir.path(), &["add", "--all"])?;
+    run_git(dir.path(), &["commit", "-qm", "Remove required contract"])?;
+    std::fs::write(contract, content)?;
+    let mut ctrl = controller(dir.path(), StatefulRunner::new(&base, None))?;
+    assert!(matches!(ctrl.build_session().await, Err(TodoError::Git(_))));
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_preflight_rejects_required_document_absent_from_head() -> Result<()> {
+    for document in ["spec.md", "tests.md"] {
+        let dir = tempfile::tempdir()?;
+        let base = init_package_workspace(dir.path())?;
+        let path = dir.path().join("specs/alpha").join(document);
+        let content = std::fs::read_to_string(&path)?;
+        std::fs::remove_file(&path)?;
+        run_git(dir.path(), &["add", "--all"])?;
+        run_git(
+            dir.path(),
+            &["commit", "-qm", "Remove required package document"],
+        )?;
+        std::fs::write(path, content)?;
+        let mut ctrl = controller(dir.path(), StatefulRunner::new(&base, None))?;
+        assert!(
+            matches!(ctrl.build_session().await, Err(TodoError::Git(_))),
+            "{document}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn bootstrap_support_tree_creation_and_deletion_are_tracked() -> Result<()> {
     for creating in [false, true] {
         let dir = tempfile::tempdir()?;

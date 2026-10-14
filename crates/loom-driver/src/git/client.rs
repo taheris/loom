@@ -1421,7 +1421,7 @@ impl GitClient {
         Ok(GitOid::new(raw.trim())?)
     }
 
-    /// `git rev-parse <rev>:<path>` — blob SHA for a path at `rev`, if present.
+    /// Object identity for an exact path at a readable revision, if present.
     ///
     /// # Errors
     ///
@@ -1431,20 +1431,29 @@ impl GitClient {
         rev: &str,
         path: &Path,
     ) -> Result<Option<GitOid>, GitError> {
-        let path_str = path.to_string_lossy();
-        let spec = format!("{rev}:{path_str}");
+        let pathspec = format!(":(literal){}", path.to_string_lossy());
         let output = run_git_raw(
             &self.workdir,
             self.clock.as_ref(),
-            ["rev-parse", &spec],
+            [
+                "ls-tree",
+                "-z",
+                "--format=%(objectname)",
+                rev,
+                "--",
+                &pathspec,
+            ],
             None,
         )
         .await?;
         if !output.status.success() {
-            return Ok(None);
+            return Err(cli_error(&output));
         }
         let raw = String::from_utf8(output.stdout)?;
-        Ok(Some(GitOid::new(raw.trim())?))
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(GitOid::new(raw.trim_end_matches('\0'))?))
     }
 
     /// `git rev-list --count <commit>..HEAD` — number of commits between

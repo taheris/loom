@@ -57,6 +57,47 @@ fn init_repo() -> Result<TempDir> {
     Ok(dir)
 }
 
+#[tokio::test]
+async fn optional_object_lookup_reports_confirmed_absence() -> Result<()> {
+    let dir = init_repo()?;
+    let client = GitClient::open(dir.path())?;
+    assert_eq!(
+        client
+            .blob_sha_at_revision("HEAD", Path::new("absent/support"))
+            .await?,
+        None,
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn optional_object_lookup_preserves_invalid_revision_failure() -> Result<()> {
+    let dir = init_repo()?;
+    let client = GitClient::open(dir.path())?;
+    assert!(matches!(
+        client.blob_sha_at_revision("missing-revision", Path::new("absent/support")).await,
+        Err(GitError::GitCli { status, stderr }) if status != 0 && !stderr.is_empty(),
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn optional_object_lookup_treats_path_metacharacters_literally() -> Result<()> {
+    let dir = init_repo()?;
+    std::fs::write(dir.path().join("model[1].qnt"), "literal input\n")?;
+    std::fs::write(dir.path().join("model1.qnt"), "other input\n")?;
+    git(dir.path(), &["add", "--all"])?;
+    git(dir.path(), &["commit", "-qm", "Add literal input fixture"])?;
+    let client = GitClient::open(dir.path())?;
+    assert_eq!(
+        client
+            .blob_sha_at_revision("HEAD", Path::new("model[1].qnt"))
+            .await?,
+        Some(client.head_blob_sha(Path::new("model[1].qnt")).await?),
+    );
+    Ok(())
+}
+
 /// Loom-integration-workspace path under a repo created by [`init_repo`].
 fn loom_path(repo: &Path) -> std::path::PathBuf {
     repo.join(".loom/integration")

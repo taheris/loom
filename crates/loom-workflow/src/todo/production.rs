@@ -327,12 +327,31 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let docs_blob = self.git.head_blob_sha(Path::new("docs/README.md")).await?;
         let mut fingerprint_specs = Vec::with_capacity(changed.len());
         for spec in &changed {
-            let mut inputs = Vec::new();
+            let mut inputs = vec![(
+                spec.spec_path.clone(),
+                Some(self.git.head_blob_sha(Path::new(&spec.spec_path)).await?),
+            )];
+            if spec.acceptance_path != spec.spec_path {
+                inputs.push((
+                    spec.acceptance_path.clone(),
+                    Some(
+                        self.git
+                            .head_blob_sha(Path::new(&spec.acceptance_path))
+                            .await?,
+                    ),
+                ));
+            }
             for scope in &spec.input_scopes {
-                let oid = self
-                    .git
-                    .blob_sha_at_revision("HEAD", Path::new(scope))
-                    .await?;
+                if inputs.iter().any(|(path, _)| path == scope) {
+                    continue;
+                }
+                let oid = if spec.spec_path == spec.acceptance_path {
+                    self.git
+                        .blob_sha_at_revision("HEAD", Path::new(scope))
+                        .await?
+                } else {
+                    Some(self.git.head_blob_sha(Path::new(scope)).await?)
+                };
                 inputs.push((scope.clone(), oid));
             }
             fingerprint_specs.push(FingerprintSpecInput {
