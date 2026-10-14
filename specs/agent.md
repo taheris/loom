@@ -986,6 +986,18 @@ letting the entrypoint run the wrong runtime.
 
 ## Success Criteria
 
+- `LOOM_NATIVE_PREFLIGHT=rust` is an internal driver-owned request for the
+  pinned image's native source-feedback preflight before the agent starts. The
+  matching manifest `native_preflight` is checked at preparation and does not
+  constitute execution evidence. [system](nix run .#test-native-preflight)
+
+- Missing tools or unsafe executor state exits 78 before canonical agent output
+  and routes to `verification-capability-unavailable`.
+  [test](native_preflight_capability_exit_is_static_infrastructure)
+
+- A preflight-reserved exit after canonical agent output remains an interrupted
+  session. [test](native_preflight_exit_after_agent_output_is_interruption)
+
 ### Compaction recovery
 
 - Interactive `loom plan` shell-outs for Claude and Pi, plus Claude-backed

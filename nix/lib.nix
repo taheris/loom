@@ -21,6 +21,7 @@ in
   mkProfileManifest =
     {
       pkgs,
+      imagePkgs ? pkgs,
       wrixLib,
       loomBin,
       extraPackages ? [ ],
@@ -54,6 +55,47 @@ in
         profileName: profile: runtime: runtimeConfig:
         let
           agentPkgOverride = runtimeConfig.agentPkg or null;
+          nativePreflight = profileName == "rust";
+          patchConfig = if nativeCargo == null then "" else toString nativeCargo.preflightConfig;
+          parserVersion = if nativeCargo == null then "" else nativeCargo.preflightConfig.nextestVersion;
+          parserChecksum = if nativeCargo == null then "" else nativeCargo.preflightConfig.nextestChecksum;
+          program =
+            {
+              pi = "pi";
+              claude = "claude";
+              direct = "loom-direct-runner";
+            }
+            .${runtime};
+          originalAgent =
+            if agentPkgOverride != null then
+              agentPkgOverride
+            else
+              {
+                pi = imagePkgs.pi-coding-agent;
+                claude = imagePkgs.claude-code;
+                direct = loomBin;
+              }
+              .${runtime};
+          checkedAgent = imagePkgs.lib.hiPrio (
+            imagePkgs.writeShellScriptBin program ''
+              set -euo pipefail
+              if [[ "''${LOOM_NATIVE_PREFLIGHT:-}" == rust ]]; then
+                if ${imagePkgs.coreutils}/bin/timeout --kill-after=5s 365s \
+                  ${imagePkgs.bash}/bin/bash ${../scripts/worker-native-preflight.sh} \
+                  ${imagePkgs.lib.escapeShellArg patchConfig} \
+                  ${imagePkgs.lib.escapeShellArg parserVersion} \
+                  ${imagePkgs.lib.escapeShellArg parserChecksum} \
+                  ${../scripts/configure-cargo-patches.sh}; then
+                  :
+                else
+                  status=$?
+                  printf 'loom-native-preflight: executor preparation failed (exit %s); required verification remains unavailable\n' "$status" >&2
+                  exit 78
+                fi
+              fi
+              exec ${originalAgent}/bin/${program} "$@"
+            ''
+          );
         in
         wrixLib.mkSandbox (
           {
@@ -66,8 +108,8 @@ in
             agent = runtime;
             packages = [ loomBin ] ++ extraPackages;
           }
-          // optionalAttrs (agentPkgOverride != null) {
-            agentPkg = agentPkgOverride;
+          // optionalAttrs (nativePreflight || agentPkgOverride != null) {
+            agentPkg = if nativePreflight then checkedAgent else agentPkgOverride;
           }
         );
 
@@ -108,6 +150,9 @@ in
             # Image-backed launches require the immutable ProfileConfig; keep
             # it as a real Nix reference, not just inert JSON text.
             profile_config = "${image.profileConfig}";
+          }
+          // optionalAttrs (profileName == "rust") {
+            native_preflight = "rust";
           }
           // optionalAttrs (image ? digest) {
             digest = "${image.digest}";

@@ -5,7 +5,7 @@
 }:
 
 pkgs.lib.hiPrio (
-  pkgs.writeShellScriptBin "cargo" ''
+  (pkgs.writeShellScriptBin "cargo" ''
     set -euo pipefail
     case "''${1:-}" in
       --version | -V | -vV | -Vv | --help | -h | version | help) ;;
@@ -18,5 +18,8 @@ pkgs.lib.hiPrio (
         ;;
     esac
     exec ${toolchain}/bin/cargo "$@"
-  ''
+  '').overrideAttrs
+    (_: {
+      passthru.preflightConfig = config;
+    })
 )

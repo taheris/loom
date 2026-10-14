@@ -259,6 +259,21 @@
         touch "$out"
       '';
 
+      worker-native-preflight =
+        pkgs.runCommand "worker-native-preflight"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.gnugrep
+            ];
+          }
+          ''
+            set -euo pipefail
+            bash ${../../tests/sandbox/native-preflight-test.sh} ${../../scripts/worker-native-preflight.sh}
+            touch "$out"
+          '';
+
       worker-nix-state-permissions =
         pkgs.runCommand "worker-nix-state-permissions"
           {
@@ -778,6 +793,7 @@
           wrix-requires-explicit-profile-config
           profile-manifest-keeps-runtime-path-context
           known-hosts-preserves-store
+          worker-native-preflight
           worker-nix-state-permissions
           smoke-beads-fixture
           smoke-preflight-skips-runtime-build

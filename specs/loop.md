@@ -464,6 +464,11 @@ mutation permission.
 
 ## Success Criteria
 
+- A native preflight capability gap is attributed to
+  `verification-capability-unavailable`, consumes no semantic retry, and does
+  not prevent independently ready work from continuing.
+  [test](native_capability_gap_continues_independent_work_without_semantic_retry)
+
 ### Task acceptance
 
 - The task-acceptance reference type and its metadata parser admit exactly one

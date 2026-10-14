@@ -849,6 +849,12 @@ fn protocol_error_session_result(
     err: &ProtocolError,
     error: String,
 ) -> SessionResult {
+    if !first_event_seen && matches!(err, ProtocolError::ProcessExit(78)) {
+        return SessionResult::StaticInfra {
+            cause: crate::r#loop::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE.to_string(),
+            error,
+        };
+    }
     if !first_event_seen && matches!(err, ProtocolError::ProcessExit(127)) {
         return SessionResult::StaticInfra {
             cause: MISSING_AGENT_BINARY_CAUSE.to_string(),
@@ -3033,6 +3039,29 @@ printf '%s\n' \
             }
             other => panic!("expected StaticInfra, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn native_preflight_capability_exit_is_static_infrastructure() {
+        let result = protocol_error_session_result(
+            false,
+            &ProtocolError::ProcessExit(78),
+            "native profile cannot execute Nextest".to_owned(),
+        );
+        assert!(matches!(result, SessionResult::StaticInfra { cause, error }
+            if cause == crate::r#loop::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE
+                && error.contains("Nextest")));
+    }
+
+    #[test]
+    fn native_preflight_exit_after_agent_output_is_interruption() {
+        let result = protocol_error_session_result(
+            true,
+            &ProtocolError::ProcessExit(78),
+            "interrupted active agent".to_owned(),
+        );
+        assert!(matches!(result, SessionResult::MidSessionFailed { error }
+            if error == "interrupted active agent"));
     }
 
     #[tokio::test]

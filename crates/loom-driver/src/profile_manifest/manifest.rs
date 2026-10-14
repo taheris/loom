@@ -13,6 +13,12 @@ use super::error::ProfileError;
 /// time.
 pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativePreflight {
+    Rust,
+}
+
 /// One profile-image manifest entry.
 ///
 /// Contains the podman ref to spawn, the Nix store path of the image source
@@ -44,6 +50,9 @@ pub struct ImageEntry {
     /// entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<AgentRuntime>,
+    /// Image-owned availability probes run before the implementation agent starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_preflight: Option<NativePreflight>,
 }
 
 /// Parsed profile-image manifest keyed by workspace profile, then runtime.

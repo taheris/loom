@@ -151,6 +151,7 @@ mod tests {
             profile_config: PathBuf::from("/nix/store/wrix-rust-pi-profile-config.json"),
             digest: Some(PathBuf::from("/nix/store/image-rust-pi-digest")),
             runtime: Some(AgentRuntime::Pi),
+            native_preflight: None,
         }
     }
 

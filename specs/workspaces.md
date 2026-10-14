@@ -19,6 +19,22 @@ Acceptance: [criteria and verifier bindings](#success-criteria).
 
 ### Bead Dispatch
 
+- Rust implementation work requires a provisioned `native_preflight = "rust"`
+  profile. The existing driver derives this from the current tracked Cargo
+  project before starting its agent. The pinned image initializes native Cargo
+  patches and actually probes Cargo, rustc, Clippy, Nextest, Nix, native project
+  metadata and private Nix-state ancestry. Profile absence or observed missing
+  capability is an infrastructure diagnostic; timeout/interruption uses the
+  existing bounded infrastructure budget. The purity guard is preserved.
+  Availability establishes source-feedback readiness, never completed required
+  coverage or publication authority. [system](nix run .#test-native-preflight)
+
+- Native preflight capability failure is infrastructure rather than source
+  failure. [test](native_preflight_capability_exit_is_static_infrastructure)
+
+- Native preflight exit after agent output remains an interruption.
+  [test](native_preflight_exit_after_agent_output_is_interruption)
+
 [Acceptance](#bead-dispatch-1).
 
 Loom operates from a dedicated integration clone rather than the operator's

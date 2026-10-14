@@ -12,5 +12,8 @@ if [[ -f "$repo_root/scripts/configure-cargo-patches.sh" ]]; then
     bash "$repo_root/scripts/configure-cargo-patches.sh" "${LOOM_CARGO_PATCHES:-}"
 fi
 
+nix fmt -- --fail-on-change
+nix build
+cargo build --workspace
 cargo nextest run --workspace
 loom gate system --tree

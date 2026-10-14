@@ -23,6 +23,7 @@ _:
       smokeServiceImage,
       wrixLib,
       wrixLinuxPkgs,
+      profileManifest,
       ...
     }:
     let
@@ -273,6 +274,53 @@ _:
           printf 'sandbox-nix-transport-failure-paths-ok\n'
         '';
       };
+
+      nativePreflightEntry = profileManifest.manifest.rust.direct;
+      nativePreflightProfile =
+        pkgs.runCommand "native-preflight-fixture-profile.json" { nativeBuildInputs = [ pkgs.jq ]; }
+          ''
+            set -euo pipefail
+            jq '.security.runtime_secrets = {} |
+                .services.beads.enable = false |
+                .services.nix_cache.enable = false |
+                .profile.mounts = [] |
+                .profile.env.LOOM_NATIVE_PREFLIGHT = "rust"' \
+              ${nativePreflightEntry.profile_config} > "$out"
+          '';
+      nativePreflightApp = pkgs.writeShellApplication {
+        name = "test-native-preflight";
+        runtimeInputs = [
+          pkgs.git
+          pkgs.nix
+          pkgs.skopeo
+          pkgs.coreutils
+          pkgs.gnugrep
+        ]
+        ++ pkgs.lib.optionals isLinux [ pkgs.podman ];
+        text = ''
+          unset WRIX_UNSAFE_PODMAN_SOCKET WRIX_NETWORK WRIX_NETWORK_ALLOWLIST
+          fixture=$(mktemp -d)
+          trap 'rm -rf "$fixture"' EXIT
+          mkdir -p "$fixture/src" "$fixture/.cargo" "$fixture/scripts"
+          printf '[package]\nname="native-preflight-fixture"\nversion="0.1.0"\nedition="2024"\n' > "$fixture/Cargo.toml"
+          printf 'pub fn fixture() {}\n' > "$fixture/src/lib.rs"
+          cp ${../../Cargo.lock} "$fixture/Cargo.lock"
+          cp ${../../.cargo/config.toml} "$fixture/.cargo/config.toml"
+          cp ${../../scripts/cargo-patch-key.nix} "$fixture/scripts/cargo-patch-key.nix"
+          cp ${../../scripts/configure-cargo-patches.sh} "$fixture/scripts/configure-cargo-patches.sh"
+          git -C "$fixture" init -q
+          if ! timeout --kill-after=10s 400s ${nativePreflightEntry.launcher} \
+            --profile-config ${nativePreflightProfile} run --no-git-deploy --no-git-sign "$fixture" -- --help \
+            > "$fixture/preflight.log" 2>&1; then
+            cat "$fixture/preflight.log" >&2
+            exit 1
+          fi
+          cat "$fixture/preflight.log"
+          grep -F 'source-feedback tools available; required verification remains pending' "$fixture/preflight.log"
+          [[ -s "$fixture/.cargo/nix-patches.toml" ]]
+          printf 'native-preflight-actual-worker-ok\n'
+        '';
+      };
     in
     {
       packages.smoke-runtime = smokeRuntime;
@@ -303,6 +351,12 @@ _:
           type = "app";
           program = "${transportApp}/bin/test-worker-transport";
           meta.description = "Signed input transport in a provisioned isolated verifier";
+        };
+
+        test-native-preflight = {
+          type = "app";
+          program = "${nativePreflightApp}/bin/test-native-preflight";
+          meta.description = "Native availability and pinned patch initialization in an isolated worker";
         };
 
         fuzz-loom = {

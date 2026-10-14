@@ -6,7 +6,7 @@ use loom_driver::bd::{BdClient, Bead, CommandRunner};
 use loom_driver::config::{LoomTopConfig, Phase, SkillsConfig};
 use loom_driver::git::{BeadCloneAlignment, GitClient, GitError};
 use loom_driver::identifier::{ProfileName, SpecLabel};
-use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
+use loom_driver::profile_manifest::{NativePreflight, ProfileError, ProfileImageManifest};
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_events::AgentStartMetadata;
 use loom_protocol::oid::GitOid;
@@ -236,6 +236,29 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         Ok(spawn) => spawn,
         Err(error) => return profile_rejection(error, manifest).map(Preparation::Rejected),
     };
+    if tracked_files
+        .iter()
+        .any(|path| path == Path::new("Cargo.toml"))
+    {
+        let entry = manifest.lookup(&profile, runtime)?;
+        if entry.native_preflight != Some(NativePreflight::Rust) {
+            return Ok(Preparation::Rejected(AgentOutcome::StaticInfra {
+                cause: super::runner::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE.to_owned(),
+                error: format!(
+                    "profile {profile} runtime {runtime} has no provisioned native-Rust preflight; required source feedback remains unverified"
+                ),
+            }));
+        }
+        spawn
+            .env
+            .push(("LOOM_NATIVE_PREFLIGHT".to_owned(), "rust".to_owned()));
+        spawn.handshake_timeout = Some(
+            spawn
+                .handshake_timeout
+                .unwrap_or_default()
+                .max(std::time::Duration::from_secs(370)),
+        );
+    }
     association.validate_worker(workspace, &spawn.mounts, spawn.profile_config.as_deref())?;
     let skill_session = skill_plan.materialize(scratch.path(), workspace)?;
     spawn.skills = Some(skill_session.registered);

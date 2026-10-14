@@ -34,6 +34,14 @@ in
     mkProfileManifest =
       {
         pkgs,
+        imagePkgs ?
+          if pkgs.stdenv.hostPlatform.isLinux then
+            pkgs
+          else
+            import inputs.nixpkgs {
+              system = "${pkgs.stdenv.hostPlatform.parsed.cpu.name}-linux";
+              config.allowUnfree = true;
+            },
         wrixLib,
         profiles ? { inherit (wrixLib.profiles) base rust python; },
         agent ? "pi",
@@ -58,6 +66,7 @@ in
       loomLib.mkProfileManifest {
         inherit
           pkgs
+          imagePkgs
           wrixLib
           profiles
           agent
@@ -206,6 +215,7 @@ in
 
       profileManifest = loomLib.mkProfileManifest {
         inherit pkgs wrixLib nativeCargo;
+        imagePkgs = wrixLinuxPkgs;
         profiles = {
           inherit (wrixLib.profiles) base python;
           rust = rustProfile;

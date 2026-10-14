@@ -303,7 +303,10 @@ fn full_suite_checks_production_and_test_feature_configurations() {
     assert_eq!(
         log.lines().collect::<Vec<_>>(),
         [
+            "nix\tfmt\t--\t--fail-on-change\ttiers=<unset>",
+            "nix\tbuild\ttiers=<unset>",
             "nix\tflake\tcheck\t--no-warn-dirty\ttiers=<unset>",
+            "cargo\tbuild\t--workspace\ttiers=<unset>",
             "cargo\tclippy\t--workspace\t--\t-D\twarnings\ttiers=<unset>",
             "cargo\tclippy\t--workspace\t--all-targets\t--\t-D\twarnings\ttiers=<unset>",
             "cargo\tnextest\trun\t--workspace\ttiers=<unset>",
@@ -400,6 +403,7 @@ fn pre_push_stage_stops_after_failed_flake_check() {
 #[test]
 fn required_suite_keeps_full_nextest_and_system_coverage_without_lint_repetition() {
     let fixture = Fixture::new();
+    install_recording_command(&fixture.tools, "nix");
     let output = fixture
         .recording_command("bash")
         .arg("scripts/required-test.sh")
@@ -410,6 +414,9 @@ fn required_suite_keeps_full_nextest_and_system_coverage_without_lint_repetition
     assert_eq!(
         log.lines().collect::<Vec<_>>(),
         [
+            "nix\tfmt\t--\t--fail-on-change\ttiers=<unset>",
+            "nix\tbuild\ttiers=<unset>",
+            "cargo\tbuild\t--workspace\ttiers=<unset>",
             "cargo\tnextest\trun\t--workspace\ttiers=<unset>",
             "loom\tgate\tsystem\t--tree\ttiers=<unset>"
         ]

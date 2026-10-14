@@ -12,6 +12,8 @@ use crate::scratch::directory::Directory;
 /// A bead launch cannot expose canonical history, either host Git authority, or integration markers.
 pub fn validate_spawn(config: &SpawnConfig) -> Result<(), Error> {
     if let Some(operator) = worker_operator(&config.workspace) {
+        let ambient = std::env::var_os("WRIX_UNSAFE_PODMAN_SOCKET");
+        validate_worker_environment(&config.launcher_env, ambient.as_deref())?;
         let association = Association::resolve(operator)?;
         for (key, value) in &config.launcher_env {
             if matches!(key.as_str(), "HOME" | "USER") && std::env::var(key).as_ref() != Ok(value) {
@@ -27,6 +29,50 @@ pub fn validate_spawn(config: &SpawnConfig) -> Result<(), Error> {
         )?;
     }
     Ok(())
+}
+
+fn validate_worker_environment(
+    launcher_env: &[(String, String)],
+    ambient_unsafe_socket: Option<&std::ffi::OsStr>,
+) -> Result<(), Error> {
+    let requested = ambient_unsafe_socket.is_some_and(|value| value != "0")
+        || launcher_env
+            .iter()
+            .any(|(name, value)| name == "WRIX_UNSAFE_PODMAN_SOCKET" && value != "0");
+    if requested {
+        return Err(Error::Association {
+            reason: "worker launch cannot project the host engine socket through an unsafe launcher override",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::validate_worker_environment;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn worker_environment_rejects_ambient_engine_authority_before_launch() {
+        assert!(validate_worker_environment(&[], Some(OsStr::new("1"))).is_err());
+        assert!(
+            validate_worker_environment(
+                &[("WRIX_UNSAFE_PODMAN_SOCKET".into(), "0".into())],
+                Some(OsStr::new("1")),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn worker_environment_rejects_explicit_engine_authority_before_launch() {
+        assert!(
+            validate_worker_environment(&[("WRIX_UNSAFE_PODMAN_SOCKET".into(), "1".into())], None,)
+                .is_err()
+        );
+        assert!(validate_worker_environment(&[], None).is_ok());
+        assert!(validate_worker_environment(&[], Some(OsStr::new("0"))).is_ok());
+    }
 }
 
 impl Association {

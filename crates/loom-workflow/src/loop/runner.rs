@@ -37,6 +37,9 @@ pub const INVALID_SPAWN_CONFIG_CAUSE: &str = "invalid-spawn-config";
 /// Spec-table cause string for a selected image/runtime missing its agent binary.
 pub const MISSING_AGENT_BINARY_CAUSE: &str = "missing-agent-binary";
 
+/// Required tools or executor isolation are absent from the provisioned profile.
+pub const VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE: &str = "verification-capability-unavailable";
+
 /// Spec-table cause string for failed dirty-work preservation before cleanup.
 pub const WORKSPACE_RECOVERY_FAILED_CAUSE: &str = "workspace-recovery-failed";
 
@@ -1585,6 +1588,47 @@ mod tests {
         assert_eq!(c.infra[0].1.infra_class, "static");
         assert!(c.infra[0].1.error.contains("runtime direct"));
         assert_eq!(summary.beads_blocked, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_capability_gap_continues_independent_work_without_semantic_retry()
+    -> Result<(), LoopError> {
+        let mut controller = FakeController::default();
+        controller
+            .ready_queue
+            .push_back(bead("lm-gap", &["profile:rust"]));
+        controller
+            .ready_queue
+            .push_back(bead("lm-ready", &["profile:base"]));
+        controller
+            .agent_outcomes
+            .push_back(AgentOutcome::StaticInfra {
+                cause: VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE.to_owned(),
+                error: "provisioned profile has no Nextest executable".to_owned(),
+            });
+        controller.agent_outcomes.push_back(AgentOutcome::Success);
+        let outcome = run_loop(&mut controller, RetryPolicy { max_retries: 2 }, 10).await?;
+        assert_eq!(controller.run_calls.len(), 2);
+        assert_eq!(
+            controller.run_calls[1].0,
+            BeadId::new("lm-ready").expect("valid")
+        );
+        assert!(
+            controller
+                .run_calls
+                .iter()
+                .all(|(_, failure)| failure.is_none())
+        );
+        assert!(controller.blocked.is_empty());
+        assert!(controller.clarified.is_empty());
+        assert_eq!(controller.infra.len(), 1);
+        assert_eq!(
+            controller.infra[0].1.cause,
+            VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE
+        );
+        assert_eq!(controller.infra[0].1.infra_class, "static");
+        assert_eq!(outcome.beads_processed, 2);
         Ok(())
     }
 
