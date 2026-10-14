@@ -183,9 +183,11 @@ _:
           pkgs.nix
           pkgs.skopeo
           pkgs.jq
+          pkgs.gnugrep
         ]
         ++ pkgs.lib.optionals isLinux [ pkgs.podman ];
         text = ''
+          unset WRIX_UNSAFE_PODMAN_SOCKET WRIX_NETWORK WRIX_NETWORK_ALLOWLIST
           fixture=$(mktemp -d)
           trap 'rm -rf "$fixture"' EXIT
           timeout --kill-after=10s 600s ${transportSandbox.launcher}/bin/wrix \
