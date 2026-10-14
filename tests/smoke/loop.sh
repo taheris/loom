@@ -11,6 +11,41 @@ log() {
     printf '[smoke] %s\n' "$1" >&2
 }
 
+if [[ "${5:-}" == --interrupt-once ]]; then
+    first_log="$WORKSPACE/.loom/smoke-interrupted-driver.log"
+    ready="$WORKSPACE/.loom/beads/$BEAD_ID/.loom/smoke-interrupted-once"
+    LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
+        "$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID" > "$first_log" 2>&1 &
+    first_pid=$!
+    for _attempt in $(seq 1 120); do
+        if [[ -s "$ready" ]]; then
+            break
+        fi
+        if ! kill -0 "$first_pid" 2>/dev/null; then
+            cat "$first_log" >&2
+            log 'driver exited before interruption readiness'
+            exit 1
+        fi
+        sleep 1
+    done
+    if [[ ! -s "$ready" ]]; then
+        kill -TERM "$first_pid"
+        wait "$first_pid" || true # best-effort: retain the readiness failure during child cleanup.
+        cat "$first_log" >&2
+        log 'driver interruption readiness timed out'
+        exit 1
+    fi
+    kill -KILL "$first_pid"
+    if wait "$first_pid"; then
+        log 'killed driver unexpectedly succeeded'
+        exit 1
+    else
+        first_rc=$?
+    fi
+    [[ "$first_rc" == 137 && -d "$WORKSPACE/.loom/beads/$BEAD_ID/.git" ]]
+    log 'interrupted driver; restarting against the preserved worker checkout'
+fi
+
 set +e
 LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
 "$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID"

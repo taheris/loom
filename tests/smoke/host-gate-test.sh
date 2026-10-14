@@ -27,11 +27,23 @@ mkdir -p bin specs .loom
 cp "$pre_push_checks" bin/pre-push-checks
 printf '.loom/\n' > .gitignore
 printf '# Smoke\n' > specs/smoke.md
+cat >> specs/smoke.md <<'SPEC'
+
+- Required fixture system coverage executes through Gate.
+  [system](bash bin/system-check.sh)
+SPEC
+cat > bin/system-check.sh <<'SYSTEM'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ran\n' > .loom/system-test-ran
+[[ ! -e .loom/reject-system ]]
+SYSTEM
 cat > bin/host-gate-hook.sh <<'HOOK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'ran\n' > .loom/host-hook-ran
 [[ ! -e .loom/reject-hook ]]
+loom gate system --tree
 HOOK
 cat > .pre-commit-config.yaml <<'YAML'
 repos:
@@ -74,5 +86,27 @@ test_smoke_runtime_rejects_failing_host_hook() {
     fi
 }
 
+test_smoke_runtime_rejects_failing_required_system_test() {
+    local rc
+    rm .loom/reject-hook
+    touch .loom/reject-system
+    if loom gate verify --diff HEAD^..HEAD > "$fixture/system-rejected.log" 2>&1; then
+        printf 'host gate accepted a failing required system test\n' >&2
+        exit 1
+    else
+        rc=$?
+    fi
+    if [[ "$rc" -ne 1 || "$(< .loom/system-test-ran)" != ran ]]; then
+        cat "$fixture/system-rejected.log" >&2
+        printf 'expected executed system test to reject host gate (exit %s)\n' "$rc" >&2
+        exit 1
+    fi
+    grep -F 'loom gate [system] FAIL: bash bin/system-check.sh' "$fixture/system-rejected.log"
+    [[ "$(git --git-dir="$fixture/origin.git" rev-list --all --count)" == 0 ]]
+    rm .loom/reject-system
+    loom gate verify --diff HEAD^..HEAD
+}
+
 test_smoke_runtime_executes_host_hook
 test_smoke_runtime_rejects_failing_host_hook
+test_smoke_runtime_rejects_failing_required_system_test

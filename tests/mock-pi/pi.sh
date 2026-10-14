@@ -226,6 +226,15 @@ run_happy_path() {
     local prompt_line payload bead_id
     read_prompt prompt_line
     if [[ "${LOOM_SMOKE_WORKER:-0}" == "1" && "$prompt_line" == *"Issue: "* ]]; then
+        if [[ "${LOOM_SMOKE_INTERRUPT_ONCE:-0}" == 1 && ! -e .loom/smoke-interrupted-once ]]; then
+            mkdir -p .loom
+            printf 'ready\n' > .loom/smoke-interrupted-once
+            emit_message_delta 'smoke worker awaits driver interruption'
+            while IFS= read -r _; do
+                :
+            done
+            return
+        fi
         bead_id="$(sed -n 's/.*Issue: \([a-z0-9.-]*\)\\n.*/\1/p' <<<"$prompt_line")"
         if [[ -z "$bead_id" ]]; then
             echo "mock-pi: smoke prompt missing bead id" >&2

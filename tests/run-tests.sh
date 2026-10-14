@@ -108,6 +108,13 @@ fi
 LOOM_TEST_IMAGE_SOURCE_KIND="${LOOM_TEST_IMAGE_SOURCE_KIND:-nix-descriptor}"
 
 SMOKE_ROOT="$(mktemp -d -t loom-smoke.XXXXXX)"
+export HOME="$SMOKE_ROOT/home"
+export XDG_STATE_HOME="$HOME/.local/state"
+export XDG_CONFIG_HOME="$HOME/.config"
+export XDG_CACHE_HOME="$HOME/.cache"
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+mkdir -m 700 "$HOME"
 WORKSPACE="$SMOKE_ROOT/workspace"
 ORIGIN="$SMOKE_ROOT/origin.git"
 export WRIX_DEPLOY_KEY="$SMOKE_ROOT/deploy-key"
@@ -218,6 +225,10 @@ git -C "$BEADS_WORKTREE" push -q -u origin beads
 
 BEAD_ID=$(bash "$LOOM_TEST_SEED_BEADS")
 
+jq '.profile.env.LOOM_SMOKE_INTERRUPT_ONCE = "1"' \
+    "$LOOM_TEST_PROFILE_CONFIG" > "$SMOKE_ROOT/restart-profile.json"
+LOOM_TEST_PROFILE_CONFIG="$SMOKE_ROOT/restart-profile.json"
+
 cat >"$WORKSPACE/profile-images.json" <<JSON
 {
   "base": {
@@ -236,4 +247,4 @@ JSON
 log "seeded bead: $BEAD_ID"
 
 unset WRIX_AGENT
-bash "$LOOM_TEST_LOOP" "$LOOM_BIN" "$WORKSPACE" "$BEAD_ID" "$START_TS"
+bash "$LOOM_TEST_LOOP" "$LOOM_BIN" "$WORKSPACE" "$BEAD_ID" "$START_TS" --interrupt-once

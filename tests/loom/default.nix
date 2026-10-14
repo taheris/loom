@@ -178,6 +178,7 @@ let
     bin
     pkgs.beads
     pkgs.coreutils
+    pkgs.gnugrep
     pkgs.dolt
     pkgs.jq
     pkgs.nix

@@ -464,6 +464,16 @@ mutation permission.
 
 ## Success Criteria
 
+<!-- prettier-ignore -->
+- The fixed isolated smoke fixture kills its driver after worker output and
+  restarts against the preserved checkout through the real implementation,
+  verification, review, hooks and publication pipeline. [system](nix run .#smoke)
+
+<!-- prettier-ignore -->
+- The signed host-Gate fixture executes a real failing required system test,
+  refuses its hooks without publication, and verifies recovery after correction.
+  [check](nix build --no-link .#checks.x86_64-linux.smoke-host-gate)
+
 - A native preflight capability gap is attributed to
   `verification-capability-unavailable`, consumes no semantic retry, and does
   not prevent independently ready work from continuing.
