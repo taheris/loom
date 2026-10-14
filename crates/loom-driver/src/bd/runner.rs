@@ -61,6 +61,7 @@ impl TokioRunner {
         args: &[OsString],
         timeout: Duration,
     ) -> Result<RunOutput, BdError> {
+        command.env("BD_JSON_ENVELOPE", "1");
         let output = crate::process::output(command, self.clock.as_ref(), timeout)
             .await
             .map_err(|error| match error {
@@ -151,6 +152,19 @@ mod tests {
             assert_eq!(result.stderr, b"stderr");
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn bd_runner_opts_into_json_envelope() {
+        let runner = TokioRunner::default();
+        let mut command = Command::new("bash");
+        command.env("BD_JSON_ENVELOPE", "0");
+        command.args(["-c", "printf '%s' \"$BD_JSON_ENVELOPE\""]);
+        let result = runner
+            .run_command(&mut command, &[], Duration::from_secs(60))
+            .await
+            .expect("run");
+        assert_eq!(result.stdout, b"1");
     }
 
     /// Nonzero process exit is output, not a timeout or spawn failure.

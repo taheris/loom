@@ -263,17 +263,7 @@ impl<R: CommandRunner> BdClient<R> {
             args.push(format!("--type={issue_type}").into());
         }
         let out = self.invoke(args).await?;
-        // `bd list --json` returns `null` when the result set is empty.
-        if out.stdout.iter().all(u8::is_ascii_whitespace) {
-            return Ok(Vec::new());
-        }
-        let trimmed = std::str::from_utf8(&out.stdout)
-            .map(str::trim)
-            .unwrap_or_default();
-        if trimmed == "null" {
-            return Ok(Vec::new());
-        }
-        decode(&out.stdout, &out.args)
+        decode_listing(&out.stdout, &out.args)
     }
 
     /// `bd dep add <issue> <depends-on>`.
@@ -309,16 +299,7 @@ impl<R: CommandRunner> BdClient<R> {
             args.push(format!("--exclude-label={label}").into());
         }
         let out = self.invoke(args).await?;
-        if out.stdout.iter().all(u8::is_ascii_whitespace) {
-            return Ok(Vec::new());
-        }
-        let trimmed = std::str::from_utf8(&out.stdout)
-            .map(str::trim)
-            .unwrap_or_default();
-        if trimmed == "null" {
-            return Ok(Vec::new());
-        }
-        decode(&out.stdout, &out.args)
+        decode_listing(&out.stdout, &out.args)
     }
 
     /// `bd mol bond <left> <right>`. The polymorphic semantics of
@@ -376,10 +357,30 @@ fn args<const N: usize>(strs: [&str; N]) -> Vec<OsString> {
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(stdout: &[u8], args: &str) -> Result<T, BdError> {
-    serde_json::from_slice(stdout).map_err(|source| BdError::Decode {
+    let parse = || {
+        let mut payload: serde_json::Value = serde_json::from_slice(stdout)?;
+        if payload.get("data").is_some() && payload.get("schema_version").is_some() {
+            if payload["schema_version"] != 1 {
+                return Err(<serde_json::Error as serde::de::Error>::custom(
+                    "unsupported bd JSON envelope schema_version",
+                ));
+            }
+            payload = payload["data"].take();
+        }
+        serde_json::from_value(payload)
+    };
+    parse().map_err(|source| BdError::Decode {
         args: args.to_owned(),
         source,
     })
+}
+
+fn decode_listing(stdout: &[u8], args: &str) -> Result<Vec<Bead>, BdError> {
+    if stdout.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Vec::new());
+    }
+    let beads: Option<Vec<Bead>> = decode(stdout, args)?;
+    Ok(beads.unwrap_or_default())
 }
 
 /// Fields accepted by `bd create`. Only fields the workflow actually sets
@@ -556,6 +557,101 @@ mod tests {
         "labels": ["profile:rust", "spec:harness"]
       }
     ]"#;
+
+    #[tokio::test]
+    async fn list_decodes_decisions_in_both_json_formats() -> Result<()> {
+        let payload = r#"[{"id":"lm-choice","title":"Choose","status":"open","issue_type":"decision","labels":["loom:clarify"]}]"#;
+        for json in [
+            payload.to_owned(),
+            format!(r#"{{"schema_version":1,"data":{payload}}}"#),
+        ] {
+            let client = BdClient::with_runner(CapturingRunner::new([ok(json.as_bytes())]));
+            let beads = client.list(ListOpts::default()).await?;
+            assert_eq!(beads.len(), 1);
+            assert_eq!(beads[0].issue_type, IssueType::Decision);
+            assert_eq!(beads[0].labels[0].as_str(), "loom:clarify");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ready_decodes_envelope_with_pagination() -> Result<()> {
+        let json = br#"{"schema_version":1,"data":[{"id":"lm-a","title":"A","status":"open"}],"pagination":{"returned":1,"total":2,"truncated":true}}"#;
+        let client = BdClient::with_runner(CapturingRunner::new([ok(json)]));
+        let beads = client.ready(ReadyOpts::default()).await?;
+        assert_eq!(beads[0].id, BeadId::new("lm-a")?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn listings_accept_null_inside_envelope() -> Result<()> {
+        let json = br#"{"schema_version":1,"data":null}"#;
+        let client = BdClient::with_runner(CapturingRunner::new([ok(json), ok(json)]));
+        assert_eq!(client.list(ListOpts::default()).await?, [] as [Bead; 0]);
+        assert_eq!(client.ready(ReadyOpts::default()).await?, [] as [Bead; 0]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn show_decodes_envelope() -> Result<()> {
+        let json = format!(r#"{{"schema_version":1,"data":{SHOW_FIXTURE}}}"#);
+        let client = BdClient::with_runner(CapturingRunner::new([ok(json.as_bytes())]));
+        assert_eq!(
+            client.show(&BeadId::new("lm-3hhwq.5")?).await?.title,
+            "BdClient"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dependency_snapshot_decodes_envelope() -> Result<()> {
+        let json = br#"{"schema_version":1,"data":[{"status":"open","dependencies":[{"id":"lm-blocker","status":"open","dependency_type":"blocks"}]}]}"#;
+        let client = BdClient::with_runner(CapturingRunner::new([ok(json)]));
+        assert_eq!(
+            client
+                .dependency_snapshot(&BeadId::new("lm-wait")?)
+                .await?
+                .active_blockers(),
+            [BeadId::new("lm-blocker")?]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mol_progress_decodes_envelope() -> Result<()> {
+        let json = br#"{"schema_version":1,"data":{"molecule_id":"lm-mol","completed":1,"in_progress":0,"total":2}}"#;
+        let client = BdClient::with_runner(CapturingRunner::new([ok(json)]));
+        assert_eq!(
+            client
+                .mol_progress(&MoleculeId::new("lm-mol")?)
+                .await?
+                .completed,
+            1
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_rejects_unsupported_envelope_version() {
+        let client = BdClient::with_runner(CapturingRunner::new([ok(
+            br#"{"schema_version":2,"data":[]}"#,
+        )]));
+        let error = client.list(ListOpts::default()).await.unwrap_err();
+        assert!(
+            matches!(error, BdError::Decode { source, .. } if source.to_string().contains("unsupported bd JSON envelope"))
+        );
+    }
+
+    #[tokio::test]
+    async fn list_rejects_invalid_enveloped_bead() {
+        let client = BdClient::with_runner(CapturingRunner::new([ok(
+            br#"{"schema_version":1,"data":[{"id":"lm-a","title":"A","status":"invented"}]}"#,
+        )]));
+        assert!(matches!(
+            client.list(ListOpts::default()).await,
+            Err(BdError::Decode { .. })
+        ));
+    }
 
     #[tokio::test]
     async fn show_parses_first_row_into_bead() -> Result<()> {

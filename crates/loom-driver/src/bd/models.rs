@@ -100,6 +100,14 @@ pub enum IssueType {
     Feature,
     Epic,
     Chore,
+    Decision,
+    Spike,
+    Story,
+    Milestone,
+    Message,
+    Molecule,
+    Gate,
+    Event,
 }
 impl IssueType {
     pub const fn as_str(self) -> &'static str {
@@ -109,6 +117,14 @@ impl IssueType {
             Self::Feature => "feature",
             Self::Epic => "epic",
             Self::Chore => "chore",
+            Self::Decision => "decision",
+            Self::Spike => "spike",
+            Self::Story => "story",
+            Self::Milestone => "milestone",
+            Self::Message => "message",
+            Self::Molecule => "molecule",
+            Self::Gate => "gate",
+            Self::Event => "event",
         }
     }
 }
@@ -173,6 +189,40 @@ pub struct Bead {
     /// causes. Absent ⇒ `None`.
     #[serde(default)]
     pub notes: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IssueType;
+
+    #[test]
+    fn built_in_issue_types_round_trip() {
+        for name in [
+            "task",
+            "bug",
+            "feature",
+            "epic",
+            "chore",
+            "decision",
+            "spike",
+            "story",
+            "milestone",
+            "message",
+            "molecule",
+            "gate",
+            "event",
+        ] {
+            let kind: IssueType = name.parse().expect("built-in type");
+            assert_eq!(kind.as_str(), name);
+            let json = format!("\"{name}\"");
+            assert_eq!(
+                serde_json::from_str::<IssueType>(&json).expect("JSON type"),
+                kind
+            );
+            assert_eq!(serde_json::to_string(&kind).expect("serialize type"), json);
+        }
+        assert!("invented".parse::<IssueType>().is_err());
+    }
 }
 
 /// One molecule row. Beads exposes `bd mol show --json`; the shape is the
