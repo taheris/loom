@@ -25,6 +25,12 @@ impl TryFrom<PathBuf> for Endpoint {
     fn try_from(path: PathBuf) -> Result<Self, Error> {
         let normalized: PathBuf = path.components().collect();
         if !path.is_absolute()
+            || path.file_name().is_none()
+            || path.to_str().is_none_or(|value| {
+                value
+                    .chars()
+                    .any(|character| character.is_control() || matches!(character, '?' | '#' | '%'))
+            })
             || normalized.as_os_str() != path.as_os_str()
             || path
                 .components()
@@ -216,7 +222,7 @@ impl Engine {
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
-    /// effect endpoint `{path}` must be an absolute non-traversing Unix socket path
+    /// effect endpoint `{path}` must be an absolute normalized UTF-8 Unix socket path without URL delimiters or control characters
     Endpoint { path: PathBuf },
     /// supported engine-info provider requires an absolute podman client executable; provision it and retry `loom gate verify`
     Executable,

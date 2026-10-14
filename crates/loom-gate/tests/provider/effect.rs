@@ -283,8 +283,14 @@ fn supported_effect_definition_requires_actual_native_rust_producer_ownership() 
 fn supported_effect_has_no_arbitrary_command_or_endpoint_escape() {
     for value in [
         "relative.sock",
+        "/",
         "/run/../tmp/engine.sock",
         "/run/./engine.sock",
+        "/run/engine.sock?other-endpoint",
+        "/run/engine.sock#other-endpoint",
+        "/run/engine%2fsock",
+        "/run/engine\nsock",
+        "/run/engine\0sock",
     ] {
         assert!(Endpoint::try_from(PathBuf::from(value)).is_err());
     }
