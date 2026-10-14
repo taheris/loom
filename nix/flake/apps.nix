@@ -318,6 +318,26 @@ _:
           cat "$fixture/preflight.log"
           grep -F 'source-feedback tools available; required verification remains pending' "$fixture/preflight.log"
           [[ -s "$fixture/.cargo/nix-patches.toml" ]]
+          mkdir "$fixture/unavailable"
+          git -C "$fixture/unavailable" init -q
+          if timeout --kill-after=10s 400s ${nativePreflightEntry.launcher} \
+            --profile-config ${nativePreflightProfile} run --no-git-deploy --no-git-sign "$fixture/unavailable" -- --help \
+            > "$fixture/unavailable.log" 2>&1; then
+            printf 'native preflight accepted an unavailable Cargo project\n' >&2
+            exit 1
+          else
+            status=$?
+          fi
+          if [[ "$status" != 78 ]]; then
+            cat "$fixture/unavailable.log" >&2
+            printf 'native preflight returned %s instead of infrastructure exit 78\n' "$status" >&2
+            exit 1
+          fi
+          grep -F 'executor preparation failed' "$fixture/unavailable.log"
+          if grep -F 'source-feedback tools available' "$fixture/unavailable.log"; then
+            printf 'failed native preflight claimed source-feedback availability\n' >&2
+            exit 1
+          fi
           printf 'native-preflight-actual-worker-ok\n'
         '';
       };
