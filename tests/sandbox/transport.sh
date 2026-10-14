@@ -21,14 +21,31 @@ upstream=https://cache.nixos.org
 nix config show --json > "$work/transport-config.json"
 jq -e '."require-sigs".value == true' "$work/transport-config.json" >/dev/null
 
-timeout --kill-after=5s 180s nix copy --from "$upstream" "$transport_path"
-timeout --kill-after=5s 180s nix store copy-sigs --substituter "$upstream" --recursive "$transport_path"
+transfer() {
+  local attempt
+  local status
+  for attempt in 1 2 3; do
+    if timeout --kill-after=5s 180s nix "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+    printf 'sandbox-nix-transport-attempt-failed attempt=%s exit=%s\n' "$attempt" "$status" >&2
+    if [[ "$attempt" == 3 ]]; then
+      return "$status"
+    fi
+    sleep 1
+  done
+}
+
+transfer copy --from "$upstream" "$transport_path"
+transfer store copy-sigs --substituter "$upstream" --recursive "$transport_path"
 timeout --kill-after=5s 180s nix store verify --recursive "$transport_path"
 for iteration in 1 2; do
   cold="$work/cold-$iteration"
   mkdir -m 700 "$cold"
   store="local?root=$cold"
-  timeout --kill-after=5s 180s nix copy --from "$upstream" --to "$store" "$transport_path"
+  transfer copy --from "$upstream" --to "$store" "$transport_path"
   timeout --kill-after=5s 180s nix --store "$store" store verify --recursive "$transport_path"
   nix --store "$store" path-info --json "$transport_path" > "$work/transport-$iteration.json"
   jq -e --arg path "$transport_path" --arg hash "$transport_hash" '
