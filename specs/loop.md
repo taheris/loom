@@ -890,6 +890,11 @@ mutation permission.
   active briefs, reopening, or changes to their resolved snapshots.
   [test](inventory_replay_preserves_closed_resolution_without_a_new_brief)
 
+- Guarded decision-brief repair appends its diagnostic rather than replacing
+  notes from an ownership snapshot; same-status human edits after that snapshot
+  survive, without resurrecting the replaced draft or mutating the source.
+  [test](guarded_brief_repair_preserves_same_status_human_notes_written_after_snapshot)
+
 - Brief downgrades emit `DriverKind::ClarifyDowngraded`, write the
   `clarify-without-options` breadcrumb on the defective decision, and pair its
   label/status mutation with `DriverKind::BdStateTransition`; they do not mutate

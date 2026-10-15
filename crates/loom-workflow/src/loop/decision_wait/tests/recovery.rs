@@ -53,6 +53,46 @@ async fn restart_finishes_partial_staging_without_rewriting_human_context() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn guarded_brief_repair_preserves_same_status_human_notes_written_after_snapshot() {
+    let f = Fixture::new().await;
+    let snapshot = f.bd.show(&f.decisions[1]).await.unwrap();
+    let source = f.bd.show(&f.source.id).await.unwrap();
+    let sibling = f.bd.show(&f.decisions[0]).await.unwrap();
+    let human_notes = "human replaced draft after the driver read it; retain this disposition";
+    f.bd.update(
+        &snapshot.id,
+        UpdateOpts {
+            if_status: Some(snapshot.status),
+            notes: Some(human_notes.into()),
+            ..UpdateOpts::default()
+        },
+    )
+    .await
+    .unwrap();
+    let report = crate::gate_clarify::apply_guarded_decision_report(&f.bd, snapshot)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.outcome,
+        crate::gate_clarify::ClarifyApplyOutcome::BlockedClarifyWithoutOptions
+    );
+    let decision = f.bd.show(&f.decisions[1]).await.unwrap();
+    let notes = decision.notes.unwrap();
+    assert!(
+        notes.starts_with(human_notes),
+        "stale snapshots cannot replace current human notes"
+    );
+    assert!(notes.contains("clarify-without-options"));
+    assert!(
+        !notes.contains("human history to retain"),
+        "do not resurrect an intentionally replaced draft"
+    );
+    assert_eq!(f.bd.show(&f.source.id).await.unwrap(), source);
+    assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), sibling);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn restart_acknowledges_completed_release_without_reopening_work() {
     let f = Fixture::new().await;
     assert!(matches!(f.admit().await, AgentOutcome::Waiting { .. }));

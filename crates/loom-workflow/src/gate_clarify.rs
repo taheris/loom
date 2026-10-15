@@ -270,15 +270,27 @@ async fn apply_resolved_brief<R: CommandRunner>(
         }
         Err(error) => {
             let repair = format!("## Decision brief repair\n\n{}", error.repair_message());
-            let notes = match snapshot.notes {
-                Some(notes) if !notes.trim().is_empty() => {
-                    if notes.contains(&repair) {
-                        notes
-                    } else {
-                        format!("{notes}\n\n{repair}")
+            let (notes, append_notes) = if guarded {
+                // Status CAS does not guard notes. Append only the diagnostic
+                // so a same-status human edit cannot be overwritten by a stale
+                // ownership snapshot.
+                let already_present = snapshot
+                    .notes
+                    .as_deref()
+                    .is_some_and(|notes| notes.contains(&repair));
+                (None, (!already_present).then_some(repair))
+            } else {
+                let notes = match snapshot.notes {
+                    Some(notes) if !notes.trim().is_empty() => {
+                        if notes.contains(&repair) {
+                            notes
+                        } else {
+                            format!("{notes}\n\n{repair}")
+                        }
                     }
-                }
-                _ => repair,
+                    _ => repair,
+                };
+                (Some(notes), None)
             };
             bd.update(
                 &snapshot.id,
@@ -291,7 +303,8 @@ async fn apply_resolved_brief<R: CommandRunner>(
                     } else {
                         vec!["loom:clarify".to_string()]
                     },
-                    notes: Some(notes),
+                    notes,
+                    append_notes,
                     ..UpdateOpts::default()
                 },
             )
