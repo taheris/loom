@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use super::{Capability, Digest, Error, Input};
+use super::{Capability, Digest, Error, Input, Origin};
 use crate::inventory::Name;
 use crate::inventory::snapshot::{ResourcePath, Snapshot};
 
@@ -105,11 +105,29 @@ impl<'a> Context<'a> {
     ) -> Self {
         Self {
             snapshot,
-            inputs: inputs.iter().map(Input::path).collect(),
+            inputs: inputs
+                .iter()
+                .filter(|input| {
+                    input.origins().iter().any(|origin| {
+                        matches!(origin, Origin::Subject(subject) if members.contains_key(subject))
+                    })
+                })
+                .map(Input::path)
+                .collect(),
             members,
             observations: Vec::new(),
             violation: None,
         }
+    }
+
+    /// Analysis subjects available to this check, excluding checker-build dependencies.
+    pub fn subjects(&self) -> impl Iterator<Item = &Name> {
+        self.members.keys()
+    }
+
+    /// Captured analysis paths, including their native definition origins.
+    pub fn paths(&self) -> impl Iterator<Item = &ResourcePath> {
+        self.inputs.iter().copied()
     }
 
     /// Read bytes only from the resolved analysis closure.

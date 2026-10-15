@@ -13,6 +13,8 @@ use loom_gate::provider::tracked::{Context, Observation, Outcome};
 use loom_gate::provider::{Candidate, Definition, Discovery, Error, Mapping, Origin, Registry};
 use tempfile::TempDir;
 
+#[path = "provider/access.rs"]
+mod access;
 #[cfg(unix)]
 #[path = "provider/effect.rs"]
 mod effect;
