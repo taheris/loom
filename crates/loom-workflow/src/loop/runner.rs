@@ -1176,10 +1176,10 @@ mod tests {
         controller.ready_queue.push_back(bead("lm-wait", &[]));
         controller.ready_queue.push_back(bead("lm-next", &[]));
         controller.agent_outcomes.push_back(AgentOutcome::Waiting {
-            blockers: crate::r#loop::ActiveBlockers::new(
+            blockers: crate::r#loop::WaitPrerequisites::Native(crate::r#loop::ActiveBlockers::new(
                 BeadId::new("lm-blocker").expect("valid blocker id"),
                 Vec::new(),
-            ),
+            )),
         });
         controller.agent_outcomes.push_back(AgentOutcome::Noop);
 

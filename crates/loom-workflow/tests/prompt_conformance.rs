@@ -542,6 +542,7 @@ fn todo_prompt_separates_decisions_waiting_and_implementation_handoff() -> Resul
 fn loop_and_todo_render_attributed_waits_and_nonterminal_decisions() -> Result<()> {
     for phase in [Phase::Loop, Phase::Todo] {
         let body = fixture::render(phase)?;
+        let instructions = body.split_whitespace().collect::<Vec<_>>().join(" ");
         for instruction in [
             "status=blocked",
             "all owned persisted candidates",
@@ -561,7 +562,9 @@ fn loop_and_todo_render_attributed_waits_and_nonterminal_decisions() -> Result<(
             "never unrelated human blocking state",
         ] {
             assert!(
-                body.to_lowercase().contains(&instruction.to_lowercase()),
+                instructions
+                    .to_lowercase()
+                    .contains(&instruction.to_lowercase()),
                 "missing wait/decision boundary: {instruction}"
             );
         }

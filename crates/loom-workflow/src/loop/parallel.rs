@@ -17,7 +17,9 @@ use super::runner::{
     UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, synthesize_integration_conflict_options,
 };
 use super::verify::{VerifyPass, verify_pass};
+#[cfg(test)]
 use super::waiting::ActiveBlockers;
+use super::waiting::WaitPrerequisites;
 
 /// Pairing of a bead with the worktree that was created for it. Built by
 /// [`create_worktrees`] and consumed by [`run_concurrent_spawns`].
@@ -97,7 +99,7 @@ pub enum BatchResult {
     /// merge-back and per-bead verification are skipped.
     Waiting {
         bead: BeadId,
-        blockers: ActiveBlockers,
+        blockers: WaitPrerequisites,
     },
 
     /// The driver-side rebase onto the integration tip conflicted on the
@@ -944,10 +946,10 @@ mod tests {
             |slot| async move {
                 if slot.bead.id.as_str() == "lm-wait" {
                     AgentOutcome::Waiting {
-                        blockers: ActiveBlockers::new(
+                        blockers: crate::r#loop::WaitPrerequisites::Native(ActiveBlockers::new(
                             BeadId::new("lm-blocker").expect("valid blocker id"),
                             Vec::new(),
-                        ),
+                        )),
                     }
                 } else {
                     AgentOutcome::Success

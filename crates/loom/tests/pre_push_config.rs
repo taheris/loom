@@ -208,6 +208,53 @@ fn run_shell_reexec_check(source: &str) -> Output {
 }
 
 #[test]
+fn pre_commit_gate_receives_complete_file_set_in_one_invocation() {
+    let fixture = Fixture::new();
+    let base = fixture.head();
+    let expected: Vec<_> = (0..64)
+        .map(|index| format!("subject-{index:02}.rs"))
+        .collect();
+    for path in &expected {
+        std::fs::write(fixture.workspace.join(path), "pub fn subject() {}\n")
+            .expect("write changed subject");
+    }
+    git(&fixture.workspace, &["add", "--all"]);
+    git(
+        &fixture.workspace,
+        &["commit", "-q", "-m", "Add affected subjects"],
+    );
+    let head = fixture.head();
+    let output = fixture
+        .recording_command("prek")
+        .args([
+            "run",
+            "loom-gate-verify-files",
+            "--stage",
+            "pre-commit",
+            "--from-ref",
+            &base,
+            "--to-ref",
+            &head,
+        ])
+        .output()
+        .expect("run affected pre-commit gate");
+    assert_success(&output, "prek pre-commit");
+    let log = std::fs::read_to_string(&fixture.log).expect("read invocation log");
+    let lines: Vec<_> = log.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "affected verification must not fan out: {log}"
+    );
+    let fields: Vec<_> = lines[0].split('\t').collect();
+    assert_eq!(&fields[..4], ["loom", "gate", "verify", "--files"]);
+    assert_eq!(fields.last(), Some(&"tiers=<unset>"));
+    let mut received = fields[4..fields.len() - 1].to_vec();
+    received.sort_unstable();
+    assert_eq!(received, expected);
+}
+
+#[test]
 fn pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers() {
     let fixture = Fixture::new();
     let text_base = fixture.head();

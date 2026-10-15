@@ -234,6 +234,8 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
     let mut label_eq: Option<String> = None;
     let mut type_filter: Option<String> = None;
     let mut parent_filter: Option<String> = None;
+    let mut include_closed = false;
+    let mut limit = 50_usize;
     let mut want_json = false;
     let mut i = 0;
     while i < args.len() {
@@ -267,6 +269,19 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
                 extend_csv_filter(&mut status_filters, v);
             }
             i += 2;
+        } else if a == "--all" {
+            include_closed = true;
+            i += 1;
+        } else if a == "--limit" || a.starts_with("--limit=") {
+            let raw = a
+                .strip_prefix("--limit=")
+                .or_else(|| args.get(i + 1).map(String::as_str));
+            let Some(value) = raw.and_then(|value| value.parse::<usize>().ok()) else {
+                eprintln!("bd-shim: list: --limit requires a nonnegative integer");
+                return ExitCode::from(2);
+            };
+            limit = value;
+            i += if a == "--limit" { 2 } else { 1 };
         } else if a == "--type" {
             type_filter = Some(args.get(i + 1).cloned().unwrap_or_default());
             i += 2;
@@ -284,6 +299,15 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
     }
     let mut out = Vec::new();
     for id in list_bead_ids(state_dir) {
+        if !include_closed
+            && status_filters.is_empty()
+            && read_field(state_dir, &id, "status").trim() == "closed"
+        {
+            continue;
+        }
+        if limit != 0 && out.len() >= limit {
+            break;
+        }
         let labels = read_labels(state_dir, &id);
         if !label_any.is_empty() && !labels.iter().any(|l| label_any.contains(l)) {
             continue;

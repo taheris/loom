@@ -297,6 +297,11 @@ declared as such.
 
 ### Configuration
 
+- The affected-file pre-commit gate receives the complete changed-file set in
+  one invocation, avoiding parallel repeated verifier batches without omitting
+  subjects or verification tiers
+  [test](pre_commit_gate_receives_complete_file_set_in_one_invocation)
+
 <!-- prettier-ignore -->
 - The configured pre-commit stage binds native sanitation, formatter,
   shell-reexec, and affected-file gate entries to their intended files and

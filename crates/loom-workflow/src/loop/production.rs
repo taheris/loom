@@ -30,6 +30,7 @@ use loom_gate::{
     append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
 };
 
+use super::decision_wait::{DecisionWaitJournal, held, reconcile_session};
 use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::{AgentOutcome, InfraDiagnostic, SessionResult};
@@ -38,7 +39,6 @@ use super::runner::{
 };
 use super::tree_clean::dirty_paths_from_porcelain;
 use super::verify::{VerifyPass, verify_pass};
-use super::waiting::validate_waiting_outcome;
 use crate::review::{
     DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput, WorkspaceFindingValidator,
     decide,
@@ -442,7 +442,18 @@ where
 {
     async fn next_ready_bead(&mut self, deferred: &[BeadId]) -> Result<Option<Bead>, LoopError> {
         if let Some(queue) = self.fixed_queue.as_mut() {
-            return Ok(queue.pop_front());
+            while let Some(bead) = queue.pop_front() {
+                if matches!(
+                    bead.issue_type,
+                    loom_driver::bd::IssueType::Epic | loom_driver::bd::IssueType::Decision
+                ) {
+                    continue;
+                }
+                if !held(&self.bd, &DecisionWaitJournal::new(&self.workspace), &bead).await? {
+                    return Ok(Some(bead));
+                }
+            }
+            return Ok(None);
         }
         // Dedup of parked beads primarily relies on their paired blocked or
         // deferred status. The explicit label guard below catches stale or
@@ -455,7 +466,7 @@ where
         let beads = self
             .bd
             .ready(ReadyOpts {
-                limit: Some(8),
+                limit: None,
                 label: self
                     .ready_parent
                     .is_none()
@@ -468,11 +479,14 @@ where
             if deferred.iter().any(|id| id == &bead.id) {
                 continue;
             }
-            if bead.issue_type == loom_driver::bd::IssueType::Epic {
+            if matches!(
+                bead.issue_type,
+                loom_driver::bd::IssueType::Epic | loom_driver::bd::IssueType::Decision
+            ) {
                 info!(
                     bead = %bead.id,
                     spec = %self.label,
-                    "loom loop: skipping epic-typed ready bead — workers dispatch leaves only",
+                    "loom loop: skipping container or human decision — workers dispatch implementation only",
                 );
                 continue;
             }
@@ -498,6 +512,9 @@ where
                 );
                 continue;
             }
+            if held(&self.bd, &DecisionWaitJournal::new(&self.workspace), &bead).await? {
+                continue;
+            }
             return Ok(Some(bead));
         }
         self.load_infra_queue().await?;
@@ -505,12 +522,18 @@ where
             if deferred.iter().any(|id| id == &bead.id) {
                 continue;
             }
-            if bead.issue_type == loom_driver::bd::IssueType::Epic {
+            if matches!(
+                bead.issue_type,
+                loom_driver::bd::IssueType::Epic | loom_driver::bd::IssueType::Decision
+            ) {
                 info!(
                     bead = %bead.id,
                     spec = %self.label,
-                    "loom loop: skipping epic-typed infra bead — workers dispatch leaves only",
+                    "loom loop: skipping container or human decision in infrastructure retry",
                 );
+                continue;
+            }
+            if held(&self.bd, &DecisionWaitJournal::new(&self.workspace), &bead).await? {
                 continue;
             }
             return Ok(Some(bead));
@@ -649,10 +672,12 @@ where
             self.emit_payload(event);
         }
 
-        let outcome = validate_waiting_outcome(
+        let outcome = reconcile_session(
             &self.bd,
-            &bead.id,
-            classify_session(session, marker.as_ref()),
+            &DecisionWaitJournal::new(&self.workspace),
+            bead,
+            session,
+            marker.as_ref(),
         )
         .await?;
         self.emit_to_log(
@@ -1233,7 +1258,15 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
                 label: label.to_string(),
             })?,
     };
-    let molecule_state = molecule_state(bd, &molecule).await?;
+    let root = BeadId::new(molecule.as_str())?;
+    let molecule_state = if DecisionWaitJournal::new(workspace)
+        .blocks_scope(bd, &root)
+        .await?
+    {
+        MoleculeState::Unresolved
+    } else {
+        molecule_state(bd, &molecule).await?
+    };
     if molecule_state != MoleculeState::Clean {
         return Ok(MoleculeGateHandoff {
             evidence: HandoffEvidence {
@@ -1526,19 +1559,21 @@ async fn molecule_state<R: CommandRunner>(
     let progress = bd.mol_progress(molecule).await?;
     let beads = bd
         .list(ListOpts {
-            statuses: vec![
-                loom_driver::bd::Status::Open,
-                loom_driver::bd::Status::InProgress,
-                loom_driver::bd::Status::Blocked,
-                loom_driver::bd::Status::Deferred,
-            ],
+            all: true,
+            limit: Some(0),
             parent: Some(parent),
             ..ListOpts::default()
         })
         .await?;
     if bead_has_parked_state(&molecule_bead)
         || progress.completed < progress.total
-        || beads.iter().any(bead_has_parked_state)
+        || beads.iter().any(|bead| {
+            (bead.status != loom_driver::bd::Status::Closed && bead_has_parked_state(bead))
+                || bead
+                    .labels
+                    .iter()
+                    .any(|label| label.as_str() == "loom:decision-wait")
+        })
     {
         Ok(MoleculeState::Unresolved)
     } else {

@@ -40,7 +40,7 @@ use loom_workflow::inbox::{
 use loom_workflow::r#loop::{
     GateOutcome, InfraRetryPolicy, LoopOutcome, NoGateReason, Parallelism,
     ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV,
-    REVIEW_SPEC_LABEL_ENV, REVIEW_VERIFIED_LOG_ENV, RetryPolicy, SessionResult, classify_session,
+    REVIEW_SPEC_LABEL_ENV, REVIEW_VERIFIED_LOG_ENV, RetryPolicy, SessionResult,
     run_loop_with_infra_policy,
 };
 use loom_workflow::mint::{BatchOutcome, FindingStatusAction, FindingStatusRecord, MintWalker};
@@ -3675,11 +3675,14 @@ async fn dispatch_for_slot(
     drop(scratch);
     let (result, marker) =
         loom_workflow::agent::admit_session_output(result, &output, output::Phase::Loop);
-    let outcome = classify_session(result, marker.as_ref());
-    Ok(
-        loom_workflow::r#loop::validate_waiting_outcome(&BdClient::new(), &slot.bead.id, outcome)
-            .await?,
+    Ok(loom_workflow::r#loop::reconcile_session(
+        &BdClient::new(),
+        &loom_workflow::r#loop::DecisionWaitJournal::new(loom_workspace),
+        &slot.bead,
+        result,
+        marker.as_ref(),
     )
+    .await?)
 }
 
 /// Backend-agnostic dispatcher. The match is the only place in the binary

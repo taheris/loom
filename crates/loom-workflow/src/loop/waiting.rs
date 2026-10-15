@@ -28,6 +28,23 @@ impl ActiveBlockers {
     }
 }
 
+/// Distinct contextual proofs for scheduler-safe waits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitPrerequisites {
+    Native(ActiveBlockers),
+    Decisions(super::DecisionHold),
+}
+
+impl WaitPrerequisites {
+    #[must_use]
+    pub const fn count(&self) -> usize {
+        match self {
+            Self::Native(blockers) => blockers.count(),
+            Self::Decisions(hold) => hold.count(),
+        }
+    }
+}
+
 /// Validate a parsed `LOOM_WAITING` request against authoritative Beads state.
 ///
 /// Non-waiting outcomes pass through unchanged. A valid wait becomes the
@@ -62,7 +79,7 @@ pub async fn validate_waiting_outcome<R: CommandRunner>(
         )));
     };
     Ok(AgentOutcome::Waiting {
-        blockers: ActiveBlockers::new(first, blockers.collect()),
+        blockers: WaitPrerequisites::Native(ActiveBlockers::new(first, blockers.collect())),
     })
 }
 
@@ -126,7 +143,10 @@ mod tests {
             AgentOutcome::Waiting { blockers } => {
                 assert_eq!(
                     blockers,
-                    ActiveBlockers::new(bead_id("lm-blocker"), Vec::new()),
+                    WaitPrerequisites::Native(ActiveBlockers::new(
+                        bead_id("lm-blocker"),
+                        Vec::new()
+                    )),
                 );
             }
             other => panic!("expected validated waiting outcome, got {other:?}"),

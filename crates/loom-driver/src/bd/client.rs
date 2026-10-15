@@ -196,6 +196,10 @@ impl<R: CommandRunner> BdClient<R> {
             args.push("--priority".into());
             args.push(p.to_string().into());
         }
+        if let Some(status) = opts.if_status {
+            args.push("--if-status".into());
+            args.push(status.as_str().into());
+        }
         for label in opts.add_labels {
             args.push("--add-label".into());
             args.push(label.into());
@@ -449,6 +453,8 @@ pub struct UpdateOpts {
     pub title: Option<String>,
     pub priority: Option<Priority>,
     pub add_labels: Vec<String>,
+    /// Native compare-and-set status guard; a failed guard is never retried.
+    pub if_status: Option<Status>,
     pub remove_labels: Vec<String>,
     /// Full issue body forwarded to `bd update --description <text>`.
     pub description: Option<String>,
