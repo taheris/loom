@@ -29,23 +29,8 @@ impl Target {
 }
 
 #[derive(Deserialize)]
-struct Outputs {
-    #[serde(default)]
-    checks: BTreeMap<String, BTreeMap<String, Check>>,
-}
-
-#[derive(Deserialize)]
-struct Check {
-    #[serde(rename = "type")]
-    kind: Kind,
-    #[serde(rename = "name")]
-    _name: Name,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum Kind {
-    Derivation,
+struct Metadata {
+    url: String,
 }
 
 pub(super) fn discover(
@@ -84,15 +69,39 @@ pub(super) fn discover(
             .collect();
         let project = root.join(directory);
         let reference = format!("path:{}", project.display());
-        let outputs: Outputs = serde_json::from_slice(&command(
+        let metadata: Metadata = serde_json::from_slice(&command(
             &project,
             super::Tool::Nix,
             &[
                 "flake",
-                "show",
+                "metadata",
                 &reference,
                 "--json",
-                "--all-systems",
+                "--no-write-lock-file",
+                "--offline",
+            ],
+        )?)
+        .map_err(|source| Error::Definition {
+            definition: (*flake).clone(),
+            source,
+        })?;
+        let locked = serde_json::to_string(&metadata.url)
+            .map_err(|source| Error::Definition {
+                definition: (*flake).clone(),
+                source,
+            })?
+            .replace("${", "\\${");
+        let expression = format!(
+            "let flake = builtins.getFlake {locked}; in builtins.mapAttrs (_system: entries: builtins.attrNames entries) (flake.checks or {{}})"
+        );
+        let outputs: BTreeMap<String, Vec<String>> = serde_json::from_slice(&command(
+            &project,
+            super::Tool::Nix,
+            &[
+                "eval",
+                "--json",
+                "--expr",
+                &expression,
                 "--no-write-lock-file",
                 "--offline",
             ],
@@ -102,12 +111,8 @@ pub(super) fn discover(
             source,
         })?;
         let mut checks = BTreeSet::new();
-        for (system, entries) in outputs.checks {
-            for (attribute, definition) in entries {
-                let Check {
-                    kind: Kind::Derivation,
-                    _name: _,
-                } = definition;
+        for (system, entries) in outputs {
+            for attribute in entries {
                 let name = Name::try_from(format!(
                     "nix:check:{}:{system}:{attribute}",
                     flake.as_path().display()

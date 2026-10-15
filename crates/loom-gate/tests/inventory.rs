@@ -12,6 +12,9 @@ use loom_gate::inventory::{Duty, Error, Inventory, Name, Role};
 use loom_test_support::proptest_config;
 use tempfile::TempDir;
 
+#[path = "inventory/nix.rs"]
+mod nix;
+
 fn write(root: &Path, path: &str, text: &str) {
     let path = root.join(path);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();

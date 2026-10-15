@@ -96,6 +96,31 @@ fn failure(dir: &TempDir) -> NixError {
 }
 
 #[test]
+fn lazy_discovery_does_not_turn_a_failed_native_definition_into_a_unit() {
+    let dir = fixture();
+    write(
+        dir.path(),
+        "flake.nix",
+        "{ outputs = { self }: { checks.x86_64-linux.heading = throw \"invalid native execution\"; }; }\n",
+    );
+    assert!(matches!(
+        failure(&dir),
+        NixError::Query { detail } if detail.contains("invalid native execution")
+    ));
+}
+
+#[test]
+fn declared_check_names_do_not_admit_non_derivation_values() {
+    let dir = fixture();
+    write(
+        dir.path(),
+        "flake.nix",
+        "{ outputs = { self }: { checks.x86_64-linux.heading = 7; }; }\n",
+    );
+    assert!(matches!(failure(&dir), NixError::Query { .. }));
+}
+
+#[test]
 fn native_graph_description_resolves_to_the_actual_store_execution() {
     let dir = fixture();
     native_project(&dir, "", true, true);

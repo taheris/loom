@@ -252,6 +252,14 @@ cargo run -p loom-gate --example nix-provider -- "$project" --print-inputs
 cargo run -p loom-gate --example nix-provider -- "$project"
 ```
 
+Native inventory enumerates every declared system and check name from a locked
+flake reference without evaluating the check values or forcing foreign package
+sets. This discovers obligations, not executable definitions: a thrown or
+non-derivation value still fails ordinary checked construction. A malformed
+system namespace fails discovery rather than becoming an empty check set. No
+platform is dropped or converted to a passing or inapplicable result by this
+separation.
+
 The constructor resolves the discovered `heading` check uniquely and rejects a
 missing or ambiguous native target. Descriptions bind the actual derivation,
 staged source with executable-file identity, exact execution binary, graph
