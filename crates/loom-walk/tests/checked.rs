@@ -219,6 +219,34 @@ fn bad_manifest_query_is_nonexecuting_and_correction_reenters_normal_admission()
 }
 
 #[test]
+fn actual_manifest_and_checker_inputs_cannot_be_removed_from_query_descriptions() {
+    let dir = fixture();
+    let (snapshot, inventory) = context(dir.path());
+    let targets = [name("loom_llm_deps")];
+    let registry = registry(&snapshot, &inventory, &targets);
+    let query = registry.query(&targets).unwrap();
+    for omitted in [
+        "crates/loom-llm/Cargo.toml",
+        "crates/loom-walk/src/walk/loom_llm_deps.rs",
+    ] {
+        let mut description: serde_json::Value = serde_json::from_str(&query).unwrap();
+        let inputs = description["units"][0]["contract"]["inputs"]
+            .as_array_mut()
+            .unwrap();
+        let original = inputs.len();
+        let omitted = serde_json::to_value(path(omitted)).unwrap();
+        inputs.retain(|input| input["path"] != omitted);
+        assert_eq!(inputs.len(), original - 1);
+        let malformed = serde_json::to_string(&description).unwrap();
+        assert!(matches!(
+            registry.resolve_query(&snapshot, &inventory, &malformed, &contracts(&targets)),
+            Err(Error::Admission { source, .. })
+                if matches!(*source, Error::Inconsistent { .. })
+        ));
+    }
+}
+
+#[test]
 fn legacy_registration_cannot_be_promoted_from_input_metadata() {
     let dir = fixture();
     let (snapshot, inventory) = context(dir.path());
