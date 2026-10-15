@@ -660,6 +660,9 @@ where
     F: std::future::Future<Output = (SessionResult, Option<ExitSignal>)> + Send,
 {
     async fn next_ready_bead(&mut self, deferred: &[BeadId]) -> Result<Option<Bead>, LoopError> {
+        DecisionWaitJournal::new(&self.workspace)
+            .recover_inventory(&self.bd, self.ready_parent.as_ref(), &self.label)
+            .await?;
         if let Some(queue) = self.fixed_queue.as_mut() {
             while let Some(bead) = queue.pop_front() {
                 if matches!(

@@ -896,6 +896,14 @@ fn install_parallel_bd_stub(dir: &Path) -> PathBuf {
         "#!{bash}\n\
          set -euo pipefail\n\
          cmd=\"${{1:-}}\"\n\
+         if [[ \"$cmd\" == 'list' && \" $* \" == *' --type=decision '* ]]; then\n\
+             printf '[]\\n'\n\
+             exit 0\n\
+         fi\n\
+         if [[ \"$cmd\" == 'show' && ( \"${{2:-}}\" == 'lm-para' || \"${{2:-}}\" == 'lm-parb' ) ]]; then\n\
+             printf '[{{\"id\":\"%s\",\"title\":\"parallel bead\",\"status\":\"open\",\"issue_type\":\"task\"}}]\\n' \"$2\"\n\
+             exit 0\n\
+         fi\n\
          if [[ \"$cmd\" == 'show' ]]; then\n\
              cat <<'__BD_EPIC_JSON__'\n\
 [{{\"id\":\"lm-active\",\"title\":\"active epic\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"loom:active\",\"spec:agent\"]}}]\n\
@@ -1891,6 +1899,10 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
          molecule_b='{{\"id\":\"lm-molb\",\"title\":\"second molecule\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:agent\"]}}'\n\
          if [[ -f {bin}/lm-multia.closed ]]; then bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"status\":\"closed\",\"issue_type\":\"task\",\"parent\":\"lm-mola\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'; fi\n\
          if [[ -f {bin}/lm-multib.closed ]]; then bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"status\":\"closed\",\"issue_type\":\"task\",\"parent\":\"lm-molb\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'; fi\n\
+         if [[ \"${{1:-}}\" == 'list' && \" $* \" == *' --type=decision '* ]]; then\n\
+             printf '[]\\n'\n\
+             exit 0\n\
+         fi\n\
          if [[ \"${{1:-}}\" == 'create' ]]; then\n\
              echo 'lm-work'\n\
              exit 0\n\
@@ -1927,10 +1939,18 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
 }
 
 /// Install a `bd` shim that returns `bead_json` for JSON list subcommands,
-/// complete progress for `bd mol progress`, and a synthetic id for
-/// `bd create --json`. It exits 0 silently for everything else (`bd close`,
+/// complete progress for `bd mol progress`, empty typed decision inventories,
+/// and a synthetic id for `bd create --json`. It exits 0 silently for everything else (`bd close`,
 /// `bd update`). Returns the bin directory the caller should prepend to PATH.
 fn install_bd_bead_stub(dir: &Path, bead_json: &str) -> PathBuf {
+    let beads: Vec<loom_driver::bd::Bead> = serde_json::from_str(bead_json).unwrap();
+    let parent = beads
+        .first()
+        .and_then(|bead| bead.parent.as_ref())
+        .map_or("", |id| id.as_str());
+    let parent_json = serde_json::json!([{
+        "id": parent, "title": "work root", "status": "open", "issue_type": "epic"
+    }]);
     let bin_dir = dir.join("bd-bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let bd = bin_dir.join("bd");
@@ -1955,6 +1975,14 @@ __BD_CLOSED_JSON__\n\
          fi\n\
          if [[ \"${{1:-}}\" == 'mol' && \"${{2:-}}\" == 'progress' ]]; then\n\
              printf '%s\\n' \"{{\\\"molecule_id\\\":\\\"${{3:-}}\\\",\\\"completed\\\":1,\\\"in_progress\\\":0,\\\"total\\\":1,\\\"percent\\\":100.0}}\"\n\
+             exit 0\n\
+         fi\n\
+         if [[ \"${{1:-}}\" == 'list' && \" $* \" == *' --type=decision '* ]]; then\n\
+             printf '[]\\n'\n\
+             exit 0\n\
+         fi\n\
+         if [[ \"${{1:-}}\" == 'show' && -n '{parent}' && \"${{2:-}}\" == '{parent}' ]]; then\n\
+             printf '%s\\n' '{parent_json}'\n\
              exit 0\n\
          fi\n\
          for arg in \"$@\"; do\n\
@@ -2011,6 +2039,52 @@ fn completion_bd_adapters_expose_worker_owned_native_closure() {
         let current = show();
         assert_eq!(current[0]["id"], id);
         assert_eq!(current[0]["status"], "closed");
+    }
+}
+
+#[test]
+fn bd_dispatch_stubs_distinguish_sources_roots_and_decision_inventory_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    let single = dir.path().join("single");
+    let parallel = dir.path().join("parallel");
+    let multi = dir.path().join("multi");
+    let row = r#"[{"id":"lm-source","title":"source","status":"open","issue_type":"task","parent":"lm-root"}]"#;
+    let cases = [
+        (install_bd_bead_stub(&single, row), "lm-source", "lm-root"),
+        (install_parallel_bd_stub(&parallel), "lm-para", "lm-active"),
+        (install_bd_multi_root_stub(&multi), "lm-multia", "lm-mola"),
+    ];
+    for (bin, source, root) in cases {
+        let output = std::process::Command::new(bin.join("bd"))
+            .args([
+                "list",
+                "--all",
+                "--limit",
+                "0",
+                "--parent",
+                source,
+                "--type=decision",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let decisions: Vec<loom_driver::bd::Bead> = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(decisions.is_empty(), "unrelated tasks are not decisions");
+        for (id, kind) in [
+            (source, loom_driver::bd::IssueType::Task),
+            (root, loom_driver::bd::IssueType::Epic),
+        ] {
+            let output = std::process::Command::new(bin.join("bd"))
+                .args(["show", id, "--json"])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let rows: Vec<loom_driver::bd::Bead> = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].id.as_str(), id);
+            assert_eq!(rows[0].issue_type, kind);
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 use super::*;
 
+mod inventory;
 mod recovery;
 mod scope;
 use crate::test_support::{IsolatedBeads, client};

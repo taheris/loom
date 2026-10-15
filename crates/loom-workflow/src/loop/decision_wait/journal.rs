@@ -16,6 +16,21 @@ pub(super) enum Phase {
     Active,
     ReleasePending,
     Released,
+    InventoryPending,
+    InventoryAdmitted,
+}
+
+impl Phase {
+    pub(super) const fn holds_source(self) -> bool {
+        matches!(
+            self,
+            Self::ProjectionPending | Self::Active | Self::ReleasePending
+        )
+    }
+
+    const fn blocks_publication(self) -> bool {
+        self.holds_source() || matches!(self, Self::InventoryPending)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,9 +67,41 @@ impl DecisionWaitJournal {
             .await?)
     }
 
+    /// Complete interrupted queue staging even when the producer is no longer
+    /// returned by native readiness (for example, after agent-side closure).
+    pub(crate) async fn recover_inventory<R: CommandRunner>(
+        &self,
+        bd: &BdClient<R>,
+        root: Option<&BeadId>,
+        label: &loom_driver::identifier::SpecLabel,
+    ) -> Result<(), LoopError> {
+        for entry in self
+            .entries()?
+            .into_iter()
+            .filter(|entry| entry.phase == Phase::InventoryPending)
+        {
+            let source = bd.show(&entry.record.source).await?;
+            let in_scope = if let Some(root) = root {
+                entry.record.root == *root || entry.record.source == *root
+            } else {
+                let owner = bd.show(&entry.record.root).await?;
+                let expected_label = format!("spec:{label}");
+                source
+                    .labels
+                    .iter()
+                    .chain(&owner.labels)
+                    .any(|actual| actual.as_str() == expected_label)
+            };
+            if in_scope {
+                super::held(bd, self, &source).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn has_pending_for(&self, root: &BeadId) -> Result<bool, LoopError> {
         Ok(self.entries()?.iter().any(|entry| {
-            entry.phase != Phase::Released
+            entry.phase.blocks_publication()
                 && (entry.record.root == *root || entry.record.source == *root)
         }))
     }
@@ -72,7 +119,7 @@ impl DecisionWaitJournal {
         for entry in self
             .entries()?
             .into_iter()
-            .filter(|entry| entry.phase != Phase::Released)
+            .filter(|entry| entry.phase.blocks_publication())
         {
             if entry.record.root == *root || entry.record.source == *root {
                 return Ok(true);

@@ -774,6 +774,33 @@ mutation permission.
   its own acceptance has no unresolved prerequisite or independent hold/cancellation.
   [test?](clarify_record_and_completion_have_independent_source_outcomes)
 
+- Shared Loop session reconciliation stages discovery-child decision records for
+  both `Complete` and `Noop` without projecting a wait onto their producer.
+  [test](complete_and_noop_admit_decisions_without_holding_the_producer)
+
+- Zero or partial discovery-child inventories reject positive terminal proposals
+  before queue mutations and identify every omitted unresolved decision.
+  [test](positive_outcomes_reject_zero_or_partial_inventory_before_queue_effects)
+
+- Native source closure cannot bypass persisted discovery-child accounting or
+  cause admission to reopen the source.
+  [test](native_closed_producer_cannot_hide_an_unreported_candidate)
+
+- Interrupted inventory staging resumes without projecting a source wait;
+  already staged sibling decisions retain their current state.
+  [test](inventory_restart_finishes_partial_staging_without_projecting_a_wait)
+
+- Parallel selection recovers pending inventory staging even when native
+  readiness no longer returns the closed producer.
+  [test](parallel_selection_recovers_staging_for_a_closed_producer)
+
+- Inventory-only admission can become an explicit discovery-child wait, but a
+  later completion proposal cannot bypass an unreconciled canonical hold.
+  [test](independent_inventory_can_become_an_explicit_discovery_child_hold)
+
+- Invalid terminal framing cannot stage otherwise valid decision records.
+  [test](malformed_terminal_never_stages_an_otherwise_valid_record)
+
 - Every direct decision reference resolves against the current task/work-root
   and graph before effects; a unique canonical Options brief is required for the
   clarification queue. Missing or malformed briefs retain the per-decision
@@ -803,6 +830,10 @@ mutation permission.
 - Previously admitted closed decision references replay without queue creation,
   reopening, new brief requirements, or loss of the recorded human outcome.
   [test?](closed_decision_reference_replay_preserves_resolution_and_queue_identity)
+
+- Inventory-admitted discovery children replay after human closure without new
+  active briefs, reopening, or changes to their resolved snapshots.
+  [test](inventory_replay_preserves_closed_resolution_without_a_new_brief)
 
 - Brief downgrades emit `DriverKind::ClarifyDowngraded`, write the
   `clarify-without-options` breadcrumb on the defective decision, and pair its

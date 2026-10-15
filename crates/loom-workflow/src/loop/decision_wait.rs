@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use super::{AgentOutcome, LoopError, SessionResult, WaitPrerequisites, classify_session};
 
+mod inventory;
 mod journal;
 pub use journal::DecisionWaitJournal;
 use journal::{Entry, Phase};
@@ -108,6 +109,7 @@ async fn inventory<R: CommandRunner>(
     let mut ids: Vec<_> = ids.into_iter().collect();
     ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     let mut decisions = Vec::with_capacity(ids.len());
+    let mut unreported = Vec::new();
     for id in ids {
         let decision = bd.show(&id).await?;
         if decision.id != id
@@ -121,7 +123,7 @@ async fn inventory<R: CommandRunner>(
             .into());
         }
         if decision.status != Status::Closed && !known.contains(&id) {
-            return Err(invalid(format!("unreported current decision {id}")).into());
+            unreported.push(id.to_string());
         }
         if matches!(decision.status, Status::Pinned | Status::Tombstone) {
             return Err(invalid(format!(
@@ -131,6 +133,13 @@ async fn inventory<R: CommandRunner>(
             .into());
         }
         decisions.push(decision);
+    }
+    if !unreported.is_empty() {
+        return Err(invalid(format!(
+            "unreported current decisions: {}",
+            unreported.join(", ")
+        ))
+        .into());
     }
     Ok(decisions)
 }
@@ -188,9 +197,22 @@ pub async fn reconcile_session<R: CommandRunner>(
             .unwrap_or_default(),
         _ => HashSet::new(),
     };
+    let admitted = matches!(&session, SessionResult::Decoded { output, outcome }
+        if outcome.exit_code == 0 && output.is_ok());
     let source_id = &expected.id;
     let outcome = classify_session(session, marker);
     if outcome != AgentOutcome::WaitingRequested {
+        if admitted {
+            match inventory::admit(bd, journal, expected, &reported).await {
+                Ok(()) => {}
+                Err(LoopError::DecisionWait(error)) => {
+                    return Ok(AgentOutcome::Failure {
+                        error: error.to_string(),
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
         return super::validate_waiting_outcome(bd, source_id, outcome).await;
     }
     match admit(bd, journal, expected, &reported).await {
@@ -262,12 +284,12 @@ async fn admit<R: CommandRunner>(
     };
     if previous
         .as_ref()
-        .is_some_and(|previous| previous.phase != Phase::Released && previous.record != attribution)
+        .is_some_and(|previous| previous.phase.holds_source() && previous.record != attribution)
     {
         return Err(invalid("conflicting live driver hold inventory").into());
     }
     let mut entry = previous
-        .filter(|entry| entry.phase != Phase::Released)
+        .filter(|entry| entry.phase.holds_source())
         .unwrap_or(Entry {
             record: attribution,
             phase: Phase::ProjectionPending,
@@ -296,6 +318,12 @@ pub(super) async fn held<R: CommandRunner>(
         }
         return Ok(false);
     };
+    if matches!(
+        entry.phase,
+        Phase::InventoryPending | Phase::InventoryAdmitted
+    ) {
+        return inventory::recover(bd, journal, bead, &mut entry).await;
+    }
     if entry.phase == Phase::Released {
         if bead.labels.iter().any(|label| label.as_str() == HOLD_LABEL) {
             return Err(

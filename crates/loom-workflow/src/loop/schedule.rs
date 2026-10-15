@@ -712,6 +712,9 @@ pub(super) async fn parallel_ready_batch<R: loom_driver::bd::CommandRunner>(
     deferred: &[BeadId],
     finished: &HashSet<BeadId>,
 ) -> Result<Vec<Bead>, LoopError> {
+    super::DecisionWaitJournal::new(workspace)
+        .recover_inventory(bd, ready_parent, label)
+        .await?;
     let beads = bd
         .ready(loom_driver::bd::ReadyOpts {
             limit: None,
