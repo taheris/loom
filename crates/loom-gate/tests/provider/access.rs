@@ -1,4 +1,51 @@
 use super::*;
+use loom_gate::provider::TrackedSubjects;
+
+#[test]
+fn analysis_dependencies_do_not_claim_their_unrelated_native_obligations() {
+    let dir = fixture();
+    let (snapshot, inventory) = context(&dir);
+    let analysis = BTreeSet::from([name("resource:README.md")]);
+    let owners = inventory
+        .subjects()
+        .values()
+        .filter(|subject| subject.role() == loom_gate::inventory::Role::RustSource)
+        .map(|subject| subject.name().clone())
+        .collect::<BTreeSet<_>>();
+    let definition = Definition::tracked_analysis(
+        &snapshot,
+        &inventory,
+        name("heading"),
+        path("src/lib.rs"),
+        TrackedSubjects::new(&analysis, &owners),
+        &BTreeSet::from([Duty::Lint]),
+        check,
+    )
+    .unwrap();
+    let candidate = definition.description().clone();
+    assert!(
+        candidate
+            .responsibilities()
+            .iter()
+            .all(|offered| { owners.contains(offered.subject()) && offered.duty() == Duty::Lint })
+    );
+    assert!(
+        !candidate
+            .responsibilities()
+            .iter()
+            .any(|offered| analysis.contains(offered.subject()))
+    );
+    let registry = Registry::new(&snapshot, vec![definition]).unwrap();
+    let unit = registry
+        .resolve(
+            &snapshot,
+            &inventory,
+            &candidate,
+            path("specs/example/tests.md"),
+        )
+        .unwrap();
+    assert_eq!(unit.run().unwrap().outcome(), &Outcome::Pass);
+}
 
 fn hidden_build_read<const SOURCE: bool>(context: &mut Context<'_>) -> Result<Outcome, Error> {
     let resource = if SOURCE { "src/lib.rs" } else { "Cargo.toml" };

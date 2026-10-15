@@ -87,6 +87,22 @@ impl Input {
     }
 }
 
+/// Analysis dependencies and offered obligations are independent definition inputs.
+#[derive(Debug, Clone, Copy)]
+pub struct TrackedSubjects<'a> {
+    analysis: &'a BTreeSet<Name>,
+    responsibility: &'a BTreeSet<Name>,
+}
+
+impl<'a> TrackedSubjects<'a> {
+    pub const fn new(analysis: &'a BTreeSet<Name>, responsibility: &'a BTreeSet<Name>) -> Self {
+        Self {
+            analysis,
+            responsibility,
+        }
+    }
+}
+
 /// A registration binds the callable, source identity, responsibility and tracked scope together.
 #[derive(Clone)]
 pub struct Definition {
@@ -123,6 +139,33 @@ impl Definition {
     where
         F: for<'a> Fn(&mut Context<'a>) -> Result<Outcome, Error> + Send + Sync + 'static,
     {
+        Self::tracked_analysis(
+            snapshot,
+            inventory,
+            target,
+            checker,
+            TrackedSubjects::new(subjects, subjects),
+            duties,
+            check,
+        )
+    }
+
+    /// Bind analysis resources without claiming their unrelated native obligations.
+    ///
+    /// # Errors
+    /// Rejects invalid analysis subjects, offered duties, or checker ownership independently.
+    pub fn tracked_analysis<F>(
+        snapshot: &Snapshot,
+        inventory: &Inventory,
+        target: Name,
+        checker: ResourcePath,
+        subjects: TrackedSubjects<'_>,
+        duties: &BTreeSet<Duty>,
+        check: F,
+    ) -> Result<Self, Error>
+    where
+        F: for<'a> Fn(&mut Context<'a>) -> Result<Outcome, Error> + Send + Sync + 'static,
+    {
         require_context(snapshot, inventory)?;
         let callable = std::any::type_name::<F>();
         if std::mem::size_of::<F>() != 0
@@ -135,7 +178,7 @@ impl Definition {
         let mut members = BTreeMap::new();
         let mut inputs = BTreeMap::<ResourcePath, BTreeSet<Origin>>::new();
         add_rust_inputs(&mut inputs, inventory, &target, &checker)?;
-        for name in subjects {
+        for name in subjects.analysis {
             let subject = inventory
                 .subject(name)
                 .map_err(|source| Error::Construction {
@@ -146,7 +189,7 @@ impl Definition {
             members.insert(name.clone(), subject.members().clone());
             add_subject_inputs(&mut inputs, subject);
         }
-        let responsibilities = responsibility(inventory, &target, subjects, duties)?;
+        let responsibilities = responsibility(inventory, &target, subjects.responsibility, duties)?;
         let inputs = capture_inputs(snapshot, inputs)?;
         let executable = std::env::current_exe().map_err(Error::Executable)?;
         let artifact = read_artifact(&executable)?;

@@ -143,9 +143,30 @@ impl Snapshot {
         std::str::from_utf8(bytes).map_err(|_| Error::Encoding)
     }
 
+    pub fn is_executable(&self, path: &ResourcePath) -> bool {
+        self.executable.contains(path)
+    }
+
     pub(crate) fn stage(&self) -> Result<tempfile::TempDir, Error> {
+        self.stage_paths(&self.files.keys().cloned().collect())
+    }
+
+    /// Materialize only the requested captured files, preserving captured executable modes.
+    ///
+    /// # Errors
+    /// Missing captured resources and staging I/O failures are explicit errors.
+    pub(crate) fn stage_paths(
+        &self,
+        paths: &BTreeSet<ResourcePath>,
+    ) -> Result<tempfile::TempDir, Error> {
+        for path in paths {
+            if !self.files.contains_key(path) {
+                return Err(Error::Missing { path: path.clone() });
+            }
+        }
         let directory = tempfile::tempdir()?;
-        for (path, bytes) in &self.files {
+        for path in paths {
+            let bytes = &self.files[path];
             let staged = directory.path().join(path.as_path());
             let parent = staged.parent().ok_or_else(|| Error::Path {
                 path: staged.clone(),
@@ -174,6 +195,78 @@ impl Snapshot {
             return Err(Error::Changed);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(value: &str) -> ResourcePath {
+        ResourcePath::try_from(PathBuf::from(value)).unwrap()
+    }
+
+    fn fixture() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        loom_driver::git::init_test_repo(directory.path()).unwrap();
+        std::fs::create_dir(directory.path().join("selected")).unwrap();
+        std::fs::write(
+            directory.path().join("selected/run.sh"),
+            "#!/bin/sh\necho captured\n",
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("unrelated.txt"), "not staged\n").unwrap();
+        directory
+    }
+
+    #[test]
+    fn exact_partition_stages_captured_bytes_without_unrelated_checkout_inputs() {
+        let directory = fixture();
+        let snapshot = Snapshot::discover(directory.path()).unwrap();
+        std::fs::write(directory.path().join("selected/run.sh"), "changed\n").unwrap();
+        let partition = snapshot
+            .stage_paths(&BTreeSet::from([path("selected/run.sh")]))
+            .unwrap();
+        assert_eq!(
+            std::fs::read(partition.path().join("selected/run.sh")).unwrap(),
+            b"#!/bin/sh\necho captured\n"
+        );
+        assert!(!partition.path().join("unrelated.txt").exists());
+        assert!(matches!(snapshot.require_current(), Err(Error::Changed)));
+    }
+
+    #[test]
+    fn a_partition_cannot_materialize_a_path_absent_from_the_snapshot() {
+        let directory = fixture();
+        let snapshot = Snapshot::discover(directory.path()).unwrap();
+        assert!(matches!(
+            snapshot.stage_paths(&BTreeSet::from([path("absent")])),
+            Err(Error::Missing { path: missing }) if missing == path("absent")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partitions_use_captured_executable_modes_not_later_checkout_permissions() {
+        let directory = fixture();
+        let executable = directory.path().join("selected/run.sh");
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let snapshot = Snapshot::discover(directory.path()).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(snapshot.is_executable(&path("selected/run.sh")));
+        assert!(!snapshot.is_executable(&path("unrelated.txt")));
+        let partition = snapshot
+            .stage_paths(&BTreeSet::from([path("selected/run.sh")]))
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(partition.path().join("selected/run.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert!(matches!(snapshot.require_current(), Err(Error::Changed)));
     }
 }
 
