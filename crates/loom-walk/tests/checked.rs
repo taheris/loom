@@ -725,3 +725,28 @@ fn tracked_transitive_template_reads_and_query_omissions_use_the_real_pinning_ru
         Outcome::Fail { .. }
     ));
 }
+
+#[test]
+fn captured_walk_checks_siblings_of_the_exact_fixture_exemption() {
+    for sibling in ["fixture.rs_extra.rs", "fixture.rs_extra/ordinary.rs"] {
+        let dir = fixture();
+        let root = dir.path();
+        let body = format!(
+            "#[test]\nfn bad() {{ let _ = \"{}hidden\"; }}\n",
+            concat!("/", "tmp/")
+        );
+        write(root, "crates/loom-walk/tests/fixture.rs", &body);
+        assert_eq!(run_target(root, "no_hardcoded_tmp_paths"), Outcome::Pass);
+        let manifest_path = root.join("crates/loom-walk/Cargo.toml");
+        let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+        write(
+            root,
+            "crates/loom-walk/Cargo.toml",
+            &format!("{manifest}\n[[test]]\nname='sibling'\npath='tests/{sibling}'\n"),
+        );
+        write(root, &format!("crates/loom-walk/tests/{sibling}"), &body);
+        assert!(
+            matches!(run_target(root, "no_hardcoded_tmp_paths"), Outcome::Fail { detail } if detail.contains(sibling) && detail.contains("hardcoded"))
+        );
+    }
+}

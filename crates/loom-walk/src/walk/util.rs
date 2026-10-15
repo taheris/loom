@@ -134,10 +134,7 @@ pub fn rs_files_recursive_except(input: &WalkInput, dir: &Path, excluded: &Path)
         return files;
     }
     for path in immediate_children(input, dir) {
-        if path
-            .to_string_lossy()
-            .starts_with(excluded.to_string_lossy().as_ref())
-        {
+        if path.starts_with(excluded) {
             continue;
         }
         if is_dir(input, &path) {

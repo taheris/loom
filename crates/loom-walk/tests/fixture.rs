@@ -638,6 +638,25 @@ fn no_hardcoded_tmp_paths_fail() {
     assert_fail(&out, &needle);
 }
 
+#[test]
+fn fixture_exemption_does_not_hide_similarly_prefixed_test_files() {
+    for sibling in ["fixture.rs_extra.rs", "fixture.rs_extra/ordinary.rs"] {
+        let ws = make_workspace();
+        let body = format!("#[test]\nfn bad() {{ let _ = \"{BANNED_PREFIX}hidden\"; }}\n");
+        seed(ws.path(), "crates/loom-walk/tests/fixture.rs", &body);
+        assert_pass(&invoke(&["no_hardcoded_tmp_paths"], Some(ws.path()), None));
+        seed(
+            ws.path(),
+            &format!("crates/loom-walk/tests/{sibling}"),
+            &body,
+        );
+        assert_fail(
+            &invoke(&["no_hardcoded_tmp_paths"], Some(ws.path()), None),
+            sibling,
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // no_thread_sleep
 // ---------------------------------------------------------------------------
