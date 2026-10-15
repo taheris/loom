@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use loom_driver::agent::{
@@ -136,7 +137,7 @@ impl PiBackend {
             config.model.as_ref(),
             config.thinking_level,
             handshake_budget,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
             agent_end_mode,
         )
         .await?;
@@ -218,7 +219,7 @@ pub async fn spawn_with_handshake(
     model: Option<&ModelSelection>,
     thinking_level: Option<ThinkingLevel>,
     handshake_timeout: Duration,
-    clock: &dyn Clock,
+    clock: Arc<dyn Clock>,
 ) -> Result<AgentSession<Idle>, ProtocolError> {
     spawn_with_handshake_inner(
         cmd,
@@ -237,7 +238,7 @@ async fn spawn_with_handshake_after_wrix_start(
     model: Option<&ModelSelection>,
     thinking_level: Option<ThinkingLevel>,
     handshake_timeout: Duration,
-    clock: &dyn Clock,
+    clock: Arc<dyn Clock>,
     agent_end_mode: AgentEndMode,
 ) -> Result<AgentSession<Idle>, ProtocolError> {
     spawn_with_handshake_inner(
@@ -257,7 +258,7 @@ async fn spawn_with_handshake_inner(
     model: Option<&ModelSelection>,
     thinking_level: Option<ThinkingLevel>,
     handshake_timeout: Duration,
-    clock: &dyn Clock,
+    clock: Arc<dyn Clock>,
     wait_for_wrix_start: bool,
     agent_end_mode: AgentEndMode,
 ) -> Result<AgentSession<Idle>, ProtocolError> {
@@ -285,28 +286,43 @@ async fn spawn_with_handshake_inner(
             .stderr
             .take()
             .ok_or_else(|| ProtocolError::Io(io::Error::other("pi child stderr not piped")))?;
-        if let Err(error) = wait_for_wrix_container_start(stderr, clock).await {
-            return Err(startup_failure(&mut child, error, clock).await);
+        if let Err(error) = wait_for_wrix_container_start(stderr, clock.as_ref()).await {
+            return Err(startup_failure(&mut child, error, clock.as_ref()).await);
         }
     }
 
     let mut writer = BufWriter::new(stdin);
     let mut reader = JsonlReader::new(stdout);
 
-    if let Err(error) = run_probe(&mut writer, &mut reader, handshake_timeout, clock).await {
-        return Err(startup_failure(&mut child, error, clock).await);
+    if let Err(error) = run_probe(&mut writer, &mut reader, handshake_timeout, clock.as_ref()).await
+    {
+        return Err(startup_failure(&mut child, error, clock.as_ref()).await);
     }
 
     if let Some(model) = model {
-        run_set_model(&mut writer, &mut reader, model, handshake_timeout, clock).await?;
+        run_set_model(
+            &mut writer,
+            &mut reader,
+            model,
+            handshake_timeout,
+            clock.as_ref(),
+        )
+        .await?;
     }
 
     if let Some(level) = thinking_level {
-        run_set_thinking_level(&mut writer, &mut reader, level, handshake_timeout, clock).await?;
+        run_set_thinking_level(
+            &mut writer,
+            &mut reader,
+            level,
+            handshake_timeout,
+            clock.as_ref(),
+        )
+        .await?;
     }
 
     let parser = PiParser::with_agent_end_mode(agent_end_mode);
-    Ok(AgentSession::new(child, writer, reader, Box::new(parser)))
+    Ok(AgentSession::new(child, writer, reader, Box::new(parser)).with_clock(clock))
 }
 
 async fn startup_failure(
@@ -900,7 +916,7 @@ mod tests {
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await
         .expect("probe should succeed");
@@ -923,7 +939,7 @@ mod tests {
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await
         .expect("spawn");
@@ -1031,8 +1047,14 @@ mod tests {
             .arg("set -euo pipefail; printf '%s\\n' \"$REJECTED_LINE\"; exec bash \"$MOCK_PI\" happy-path")
             .env("REJECTED_LINE", line)
             .env("MOCK_PI", mock_pi_path());
-        let result =
-            spawn_with_handshake(cmd, None, None, TEST_HANDSHAKE_BUDGET, &SystemClock::new()).await;
+        let result = spawn_with_handshake(
+            cmd,
+            None,
+            None,
+            TEST_HANDSHAKE_BUDGET,
+            Arc::new(SystemClock::new()),
+        )
+        .await;
         match result {
             Err(ref error @ ProtocolError::InvalidJson { ref source, .. }) => {
                 assert_eq!(error.protocol_line(), Some(line));
@@ -1050,7 +1072,7 @@ mod tests {
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await;
         match result {
@@ -1069,7 +1091,7 @@ mod tests {
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await
         .expect("spawn");
@@ -1100,7 +1122,7 @@ mod tests {
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await
         .expect("spawn");
@@ -1146,7 +1168,7 @@ mod tests {
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await
         .expect("spawn");
@@ -1194,7 +1216,7 @@ mod tests {
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await
         .expect("spawn");
@@ -1255,7 +1277,7 @@ mod tests {
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await
         .expect("spawn");
@@ -1366,7 +1388,7 @@ mod tests {
             Some(&model),
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await;
         match result {
@@ -1420,7 +1442,7 @@ mod tests {
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await
         .expect("spawn without thinking_level");
@@ -1458,7 +1480,7 @@ mod tests {
             None,
             Some(ThinkingLevel::Medium),
             TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+            Arc::new(SystemClock::new()),
         )
         .await
         .expect("spawn must succeed even when pi rejects set_thinking_level");

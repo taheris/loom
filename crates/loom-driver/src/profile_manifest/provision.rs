@@ -31,9 +31,7 @@ pub enum ProvisionError {
     Output { reason: &'static str },
 }
 
-/// Load configured profiles, provisioning missing or legacy native feedback from the published driver.
-///
-/// A failed image realization preserves a valid legacy manifest so independent profiles can proceed.
+/// Load published-driver profiles, preserving usable legacy profiles on realization failure.
 /// Authority, signature and malformed-configuration failures remain blocking diagnostics.
 ///
 /// # Errors

@@ -106,7 +106,7 @@ async fn pi_startup_probe_succeeds_with_valid_get_state() {
         None,
         None,
         Duration::from_secs(5),
-        &SystemClock::new(),
+        std::sync::Arc::new(SystemClock::new()),
     )
     .await
     .expect("get_state handshake should succeed");
@@ -134,7 +134,7 @@ async fn pi_startup_probe_fails_with_bad_get_state_shape() {
         None,
         None,
         Duration::from_secs(5),
-        &SystemClock::new(),
+        std::sync::Arc::new(SystemClock::new()),
     )
     .await;
     match result {

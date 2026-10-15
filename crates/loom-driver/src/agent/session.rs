@@ -1,8 +1,9 @@
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 
-use crate::clock::SystemClock;
+use crate::clock::{Clock, SystemClock};
 use crate::process::OwnedChild;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::process::ChildStdin;
@@ -27,6 +28,7 @@ pub struct Active;
 /// `AgentBackend::spawn`.
 pub struct AgentSession<S> {
     child: OwnedChild,
+    clock: Arc<dyn Clock>,
     stdin: BufWriter<ChildStdin>,
     reader: JsonlReader,
     parser: Box<dyn LineParse + Send>,
@@ -63,6 +65,7 @@ impl AgentSession<Idle> {
     ) -> Self {
         Self {
             child,
+            clock: Arc::new(SystemClock::new()),
             stdin,
             reader,
             parser,
@@ -71,6 +74,13 @@ impl AgentSession<Idle> {
             completion_sent: false,
             _state: PhantomData,
         }
+    }
+
+    /// Use the backend's clock for startup-exit and stream-EOF deadlines.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Send the initial prompt and transition the session to [`Active`].
@@ -91,7 +101,7 @@ impl AgentSession<Idle> {
             if error.kind() == std::io::ErrorKind::BrokenPipe
                 && let Some(status) = self
                     .child
-                    .wait_bounded(&SystemClock::new(), Duration::from_secs(5))
+                    .wait_bounded(self.clock.as_ref(), Duration::from_secs(5))
                     .await?
                 && !status.success()
                 && let Some(code) = process_exit_code(status)
@@ -102,6 +112,7 @@ impl AgentSession<Idle> {
         }
         Ok(AgentSession {
             child: self.child,
+            clock: self.clock,
             stdin: self.stdin,
             reader: self.reader,
             parser: self.parser,
@@ -139,7 +150,7 @@ impl AgentSession<Active> {
             } else {
                 if let Some(status) = self
                     .child
-                    .wait_bounded(&SystemClock::new(), Duration::from_secs(5))
+                    .wait_bounded(self.clock.as_ref(), Duration::from_secs(5))
                     .await?
                     && !status.success()
                 {
@@ -235,6 +246,7 @@ impl AgentSession<Active> {
         }
         Ok(AgentSession {
             child: self.child,
+            clock: self.clock,
             stdin: self.stdin,
             reader: self.reader,
             parser: self.parser,
@@ -259,5 +271,117 @@ impl<S> AgentSession<S> {
     /// observes EOF) then wait/signal the child.
     pub fn into_parts(self) -> (OwnedChild, BufWriter<ChildStdin>) {
         (self.child, self.stdin)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::ParsedLine;
+    use crate::clock::{BoxFuture, MockClock};
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Instant, SystemTime};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::net::TcpListener;
+    use tokio::process::Command;
+
+    #[derive(Default)]
+    struct TrackedMockClock {
+        clock: MockClock,
+        sleeps: AtomicUsize,
+    }
+
+    impl Clock for TrackedMockClock {
+        fn now(&self) -> Instant {
+            self.clock.now()
+        }
+        fn wall_now(&self) -> SystemTime {
+            self.clock.wall_now()
+        }
+        fn sleep(&self, duration: Duration) -> BoxFuture<'_, ()> {
+            self.sleeps.fetch_add(1, Ordering::SeqCst);
+            self.clock.sleep(duration)
+        }
+    }
+
+    struct SilentParser;
+
+    impl LineParse for SilentParser {
+        fn parse_line(&self, _line: &str) -> Result<ParsedLine, ProtocolError> {
+            Ok(ParsedLine {
+                events: Vec::new(),
+                response: None,
+            })
+        }
+        fn encode_prompt(&self, msg: &str) -> Result<String, ProtocolError> {
+            Ok(format!("{msg}\n"))
+        }
+        fn encode_steer(&self, msg: &str) -> Result<String, ProtocolError> {
+            self.encode_prompt(msg)
+        }
+        fn encode_abort(&self) -> Result<Option<String>, ProtocolError> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn session_eof_deadline_uses_injected_mock_clock_when_process_has_no_status() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("private fixture listener");
+        let mut command = Command::new("bash");
+        command.args(["-c", "set -euo pipefail\nexec 3<>\"/dev/tcp/127.0.0.1/$1\"\nexec 1>&-\nprintf 'ready\\n' >&2\nIFS= read -r release <&3\n", "session-eof-fixture", &listener.local_addr().expect("address").port().to_string()]);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = OwnedChild::spawn(&mut command).expect("owned child");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let mut stderr = BufReader::new(child.stderr.take().expect("stderr"));
+        let (mut peer, ready) = SystemClock::new()
+            .timeout(Duration::from_secs(30), async {
+                let (peer, _) = listener.accept().await.expect("child connected");
+                let mut ready = String::new();
+                stderr.read_line(&mut ready).await.expect("child readiness");
+                (peer, ready)
+            })
+            .await
+            .expect("OS fixture startup deadline");
+        assert_eq!(ready, "ready\n");
+        let clock = Arc::new(TrackedMockClock::default());
+        let idle = AgentSession::new(
+            child,
+            BufWriter::new(stdin),
+            JsonlReader::new(stdout),
+            Box::new(SilentParser),
+        )
+        .with_clock(clock.clone());
+        let mut active = idle.prompt("prompt").await.expect("open stdin");
+        tokio::time::pause();
+        let started = clock.now();
+        assert!(active.next_event().await.expect("bounded EOF").is_none());
+        assert!(clock.now().duration_since(started) >= Duration::from_secs(5));
+        assert_eq!(clock.sleeps.load(Ordering::SeqCst), 1);
+        assert!(
+            active
+                .child_mut()
+                .try_wait()
+                .expect("status query")
+                .is_none()
+        );
+        tokio::time::resume();
+        peer.write_all(b"release\n")
+            .await
+            .expect("owned fixture release");
+        assert!(
+            active
+                .child_mut()
+                .wait()
+                .await
+                .expect("owned child cleanup")
+                .success()
+        );
     }
 }
