@@ -113,13 +113,25 @@ An unannotated registration cannot fill a coverage gap. A new resource or a
 missing build/lint/test responsibility fails admission even when a document
 provider resolves successfully. No caller-supplied target list defines coverage.
 
-All sibling definitions are rechecked before the first execution. Each unit
-retains every owning acceptance source when targets are shared across owners.
-Observed results still require Evidence admission: accounting for responsibility
-is not a proof that a check's body adequately tests its claimed behavior, and a
-plan or a successful query is not publication authorization. Ordinary CLI gate
-integration remains a separate unfinished consumer boundary; do not assume the
-legacy input-list resolver uses these immutable plans.
+For scoped API execution, resolve the existing `scope::Request` against the
+workspace, then call `plan.run_scoped(&scope)`. It uses the ordinary scope
+selector with `InputResolver::from_plan(&plan)`: inputs come from immutable
+admitted units, including test-tier definitions and all shared acceptance
+owners. Raw input-query helpers and Cargo scope guesses do not replace those
+inputs. An empty finite scope runs no units; exact-target selection remains a
+diagnostic, not whole-project success. Inventory-wide admission still precedes
+selection, so narrowing the scope cannot hide a missing obligation.
+
+All sibling definitions are rechecked before the first execution, even when a
+scope selects only one target. Constructing an input projection runs neither
+queries nor checkers and rejects a stale plan; dispatch rechecks freshness
+again. Each unit retains every owning acceptance source when targets are shared
+across owners. Observed results still require Evidence admission: accounting for
+responsibility is not a proof that a check's body adequately tests its claimed
+behavior, and a plan or a successful query is not publication authorization.
+Ordinary CLI gate integration remains a separate unfinished consumer boundary;
+do not assume the default CLI constructs and consumes these immutable plans
+merely because the API-level selector supports them.
 
 ## Supported engine-info effect
 

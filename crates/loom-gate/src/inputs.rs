@@ -212,6 +212,7 @@ pub struct InputResolver {
     runners: Vec<RunnerSpec>,
     print_inputs_cache: HashMap<String, Vec<PathBuf>>,
     input_query_probes: HashMap<String, InputQueryProbe>,
+    admitted_inputs: Vec<(Annotation, Vec<PathBuf>)>,
 }
 
 impl InputResolver {
@@ -226,7 +227,37 @@ impl InputResolver {
             runners: Vec::new(),
             print_inputs_cache: HashMap::new(),
             input_query_probes: HashMap::new(),
+            admitted_inputs: Vec::new(),
         }
+    }
+
+    /// Project inputs from an inventory-wide admitted plan without running queries or verifiers.
+    /// Selection is not execution authority; dispatch must recheck the plan's current context.
+    ///
+    /// # Errors
+    /// Rejects changed snapshots or checker artifacts before exposing any input projection.
+    pub fn from_plan(plan: &crate::provider::plan::Plan) -> Result<Self, crate::provider::Error> {
+        plan.require_current()?;
+        let mut resolver = Self::new(plan.snapshot().root().to_path_buf());
+        for unit in plan.units() {
+            let paths: Vec<_> = unit
+                .inputs()
+                .iter()
+                .map(|input| input.path().as_path().to_path_buf())
+                .collect();
+            for annotation in unit.annotations() {
+                resolver
+                    .admitted_inputs
+                    .push((annotation.clone(), paths.clone()));
+            }
+        }
+        Ok(resolver)
+    }
+
+    fn admitted_inputs(&self, annotation: &Annotation) -> Option<&Vec<PathBuf>> {
+        self.admitted_inputs
+            .iter()
+            .find_map(|(owner, paths)| (owner == annotation).then_some(paths))
     }
 
     /// Attach the `[check]` / `[system]` runner specs the resolver
@@ -315,6 +346,9 @@ impl InputResolver {
     /// non-zero, or returns a malformed document is
     /// [`InputQueryProbe::Errored`].
     pub fn probe_input_query(&mut self, annotation: &Annotation) -> InputQueryProbe {
+        if self.admitted_inputs(annotation).is_some() {
+            return InputQueryProbe::Honoured;
+        }
         match annotation.tier {
             Tier::Judge => self.probe_judge_query(annotation),
             Tier::Check | Tier::System => self.probe_command_query(annotation),
@@ -445,6 +479,9 @@ impl InputResolver {
     }
 
     fn collect_declared(&mut self, annotation: &Annotation) -> InputDeclaration {
+        if let Some(paths) = self.admitted_inputs(annotation) {
+            return InputDeclaration::Known(paths.clone());
+        }
         match annotation.tier {
             Tier::Test => self.declared_for_test(annotation),
             Tier::Judge => self.declared_for_judge(annotation),
@@ -589,7 +626,7 @@ impl InputResolver {
     pub fn prime_runner_inputs(&mut self, annotations: &[Annotation]) {
         let check: Vec<Annotation> = annotations
             .iter()
-            .filter(|a| a.tier == Tier::Check && !a.pending)
+            .filter(|a| a.tier == Tier::Check && !a.pending && self.admitted_inputs(a).is_none())
             .cloned()
             .collect();
         if check.is_empty() {

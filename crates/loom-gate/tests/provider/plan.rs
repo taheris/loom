@@ -230,6 +230,116 @@ fn shared_targets_keep_every_canonical_acceptance_owner() {
     }
 }
 
+fn selectable_plan(dir: &tempfile::TempDir) -> loom_gate::provider::plan::Plan {
+    write(
+        dir.path(),
+        "specs/example/tests.md",
+        "## Success Criteria\n- Account responsibilities [check](accounting)\n- Heading [test](heading)\n",
+    );
+    let (snapshot, inventory) = context(dir);
+    let registry = Registry::new(
+        &snapshot,
+        vec![
+            offered(&inventory, &snapshot),
+            definition(&snapshot, &inventory, "heading", check),
+        ],
+    )
+    .unwrap();
+    registry.admit(&snapshot, &inventory).unwrap()
+}
+
+#[test]
+fn admitted_test_inputs_preserve_the_checked_closure_without_a_cargo_scope_or_helper() {
+    let dir = fixture();
+    let plan = selectable_plan(&dir);
+    let unit = plan
+        .units()
+        .iter()
+        .find(|unit| unit.target() == &name("heading"))
+        .unwrap();
+    let mut resolver = loom_gate::InputResolver::from_plan(&plan)
+        .unwrap()
+        .with_inputs_for_test_command("false".into());
+    let annotation = &unit.annotations()[0];
+    let (inputs, known) = resolver.resolve_with_provenance(annotation);
+    assert!(known);
+    assert_eq!(
+        inputs.paths,
+        unit.inputs()
+            .iter()
+            .map(|input| input.path().as_path().to_path_buf())
+            .collect::<Vec<_>>()
+    );
+    assert!(inputs.paths.contains(&"src/lib.rs".into()));
+    assert!(inputs.paths.contains(&"README.md".into()));
+    assert!(inputs.paths.contains(&"specs/example/tests.md".into()));
+    assert_eq!(
+        resolver.probe_input_query(annotation),
+        loom_gate::inputs::InputQueryProbe::Honoured
+    );
+}
+
+#[tokio::test]
+async fn ordinary_file_selection_consumes_admitted_test_inputs_before_dispatch() {
+    let dir = fixture();
+    let plan = selectable_plan(&dir);
+    let scope = loom_gate::scope::Request::Files(vec!["unrelated.md".into()])
+        .resolve(dir.path())
+        .await
+        .unwrap();
+    let outcomes = plan.run_scoped(&scope).unwrap();
+    assert_eq!(
+        outcomes
+            .iter()
+            .map(|result| result.target().clone())
+            .collect::<Vec<_>>(),
+        vec![name("accounting")]
+    );
+    let scope = loom_gate::scope::Request::Files(vec!["README.md".into()])
+        .resolve(dir.path())
+        .await
+        .unwrap();
+    let outcomes = plan.run_scoped(&scope).unwrap();
+    assert_eq!(
+        outcomes
+            .iter()
+            .map(|result| result.target().clone())
+            .collect::<Vec<_>>(),
+        vec![name("accounting"), name("heading")]
+    );
+}
+
+#[tokio::test]
+async fn an_empty_finite_scope_does_not_execute_an_admitted_plan() {
+    let dir = fixture();
+    let plan = selectable_plan(&dir);
+    let scope = loom_gate::scope::Request::Files(Vec::new())
+        .resolve(dir.path())
+        .await
+        .unwrap();
+    assert!(plan.run_scoped(&scope).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn exact_target_selection_cannot_bypass_a_stale_unselected_sibling() {
+    let dir = fixture();
+    let plan = selectable_plan(&dir);
+    let scope = loom_gate::scope::Request::Target("heading".into())
+        .resolve(dir.path())
+        .await
+        .unwrap();
+    write(
+        dir.path(),
+        "unrelated.md",
+        "# Changed unselected responsibility\n",
+    );
+    assert!(matches!(plan.run_scoped(&scope), Err(Error::Snapshot(_))));
+    assert!(matches!(
+        loom_gate::InputResolver::from_plan(&plan),
+        Err(Error::Snapshot(_))
+    ));
+}
+
 #[test]
 fn plan_invalidated_by_new_resource_cannot_dispatch_previously_checked_units() {
     let dir = fixture();

@@ -122,10 +122,44 @@ impl Plan {
     /// # Errors
     /// Any invalidated definition rejects the plan before the first unit executes.
     pub fn run(&self) -> Result<Vec<Observed>, Error> {
+        self.require_current()?;
+        self.units.iter().map(Unit::run).collect()
+    }
+
+    /// Apply the ordinary resolved scope to admitted inputs before dispatching selected units.
+    /// Every inventory obligation is admitted before selection, including unselected siblings.
+    ///
+    /// # Errors
+    /// Rejects stale context before the first effect; no scope authorizes an invalid sibling.
+    pub fn run_scoped(&self, scope: &crate::scope::Resolved) -> Result<Vec<Observed>, Error> {
+        let mut resolver = crate::InputResolver::from_plan(self)?;
+        let annotations: Vec<_> = self
+            .units
+            .iter()
+            .flat_map(|unit| unit.annotations().iter().cloned())
+            .collect();
+        let selected = scope.select(&annotations, &mut resolver);
+        self.require_current()?;
+        self.units
+            .iter()
+            .filter(|unit| {
+                unit.annotations()
+                    .iter()
+                    .any(|owner| selected.contains(owner))
+            })
+            .map(Unit::run)
+            .collect()
+    }
+
+    pub(crate) const fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
+    pub(crate) fn require_current(&self) -> Result<(), Error> {
         self.snapshot.require_current()?;
         for unit in &self.units {
             unit.require_current()?;
         }
-        self.units.iter().map(Unit::run).collect()
+        Ok(())
     }
 }
