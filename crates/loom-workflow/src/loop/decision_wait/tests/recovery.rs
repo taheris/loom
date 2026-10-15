@@ -12,6 +12,7 @@ async fn restart_finishes_partial_staging_without_rewriting_human_context() {
             decisions: f.decisions.clone(),
         },
         phase: Phase::Active,
+        context: None,
     };
     f.journal().save(&entry).unwrap();
     f.bd.update(

@@ -331,6 +331,16 @@ finished: Loop excludes them from worker dispatch and Todo refuses to finalize
 unaccounted candidate children. Interrupted producers preserve candidates for
 validated reuse or repair, not automatic queue admission or guessed bindings.
 Candidate provenance is a proposal, never trusted acceptance or wait authority.
+For a new blocked Loop candidate, `loom.decision_candidate` is a JSON string
+with exactly `version: 1`, checked `producer` and `root` bead IDs, and a
+distinct `affected_work` ID array. That array equals the current supported
+native blocking dependents, not an invented parent-to-discovery-child
+prerequisite. The driver checks the complete graph before staging any sibling
+and records it in canonical attribution; later reuse requires the same candidate
+and native edges. Unlabelled blocked candidates without provenance fail
+admission. Legacy native discovery-child holds retain their existing IDs,
+parentage and journals; missing legacy graph context is checked from current
+native state during recovery, never reconstructed from worker hold assertions.
 
 **Admission.** Aggregate the complete reported set and resolve every ID's
 purpose, parent/work-root context, and actual affected-work graph before new
@@ -807,6 +817,51 @@ mutation permission.
   `clarify-without-options` fallback; invalid references cannot
   silently disappear or authorize source completion.
   [test?](decision_batch_admission_resolves_every_reference_and_brief)
+
+- New blocked Loop candidates bind typed producer/work-root provenance to the
+  actual native blocking dependents, preserving supported sibling prerequisites
+  without adding a forbidden producer-to-child edge.
+  [test](staged_candidate_binds_producer_root_and_actual_native_affected_work)
+
+- Wrong producer, wrong root, duplicate affected-work IDs, or a proposal that
+  disagrees with the native graph rejects the whole batch before queue effects.
+  [test](incompatible_candidate_provenance_rejects_the_whole_batch_before_queueing)
+
+- Unlabelled blocked candidates without provenance remain unadmitted, preserving
+  their staged state and valid siblings without guessing authority.
+  [test](staged_candidate_without_provenance_never_becomes_a_queue_item)
+
+- Native affected-work edges outside the decision's work root reject admission
+  without removing those edges or mutating valid sibling candidates.
+  [test](foreign_affected_work_rejects_batch_without_rewriting_native_edges)
+
+- A changed native affected-work graph cannot replace canonical admission or
+  release the existing discovery-child hold.
+  [test](changed_affected_work_cannot_reuse_canonical_decision_admission)
+
+- Native reverse-edge queries include closed affected work rather than relying
+  on `show`'s dependent count or an active-only projection.
+  [test](blocking_dependents_uses_native_reverse_edge_query)
+
+- Malformed IDs or responses containing the wrong edge type fail native reverse
+  edge decoding rather than being silently filtered from graph admission.
+  [test](blocking_dependents_rejects_wrong_kind_or_malformed_ids)
+
+- Unknown candidate fields, unsupported versions and malformed producer IDs do
+  not supply provenance or authorize queue effects.
+  [test](malformed_or_unknown_candidate_fields_never_supply_provenance)
+
+- Publication rechecks inventory-only admission for late unreported discoveries
+  before invoking any publication verifier, without minting replacement authority.
+  [test](publication_rechecks_inventory_only_admission_without_minting_replacement_authority)
+
+- Changed recorded native edges veto publication without upgrading or replacing
+  canonical admission.
+  [test](publication_rejects_changed_recorded_edges_without_upgrading_the_receipt)
+
+- Legacy inventory graph recovery occurs explicitly in mutating selection;
+  publication stays read-only and rejects missing context until that recovery.
+  [test](legacy_inventory_graph_recovery_is_explicit_and_publication_stays_read_only)
 
 - New decision candidates remain blocked and outside human queues and worker
   dispatch until contextual admission; interrupted or unreported candidates

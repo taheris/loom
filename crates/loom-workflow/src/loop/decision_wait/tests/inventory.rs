@@ -137,6 +137,7 @@ mod cases {
                     decisions: f.decisions.clone(),
                 },
                 phase: Phase::InventoryPending,
+                context: None,
             })
             .unwrap();
         assert!(f.journal().has_pending_for(&f.root).unwrap());
@@ -253,6 +254,7 @@ mod cases {
                     decisions: f.decisions.clone(),
                 },
                 phase: Phase::InventoryPending,
+                context: None,
             })
             .unwrap();
         let before = f.bd.show(&f.source.id).await.unwrap();

@@ -1,5 +1,6 @@
 use super::*;
 
+mod graph;
 mod inventory;
 mod recovery;
 mod scope;
@@ -305,6 +306,7 @@ async fn restart_recovers_intent_and_human_takeover_without_reopening() {
                 decisions: f.decisions.clone(),
             },
             phase: Phase::ProjectionPending,
+            context: None,
         })
         .unwrap();
     assert!(held(&f.bd, &f.journal(), &f.source).await.unwrap());

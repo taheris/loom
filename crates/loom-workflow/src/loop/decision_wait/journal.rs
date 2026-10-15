@@ -38,6 +38,8 @@ impl Phase {
 pub(super) struct Entry {
     pub record: Record,
     pub phase: Phase,
+    #[serde(default)]
+    pub context: Option<super::graph::Context>,
 }
 
 /// Not cache state: never reconstructed from worker-writable metadata. The
@@ -75,11 +77,10 @@ impl DecisionWaitJournal {
         root: Option<&BeadId>,
         label: &loom_driver::identifier::SpecLabel,
     ) -> Result<(), LoopError> {
-        for entry in self
-            .entries()?
-            .into_iter()
-            .filter(|entry| entry.phase == Phase::InventoryPending)
-        {
+        for entry in self.entries()?.into_iter().filter(|entry| {
+            entry.phase == Phase::InventoryPending
+                || (entry.phase == Phase::InventoryAdmitted && entry.context.is_none())
+        }) {
             let source = bd.show(&entry.record.source).await?;
             let in_scope = if let Some(root) = root {
                 entry.record.root == *root || entry.record.source == *root
@@ -119,24 +120,38 @@ impl DecisionWaitJournal {
         for entry in self
             .entries()?
             .into_iter()
-            .filter(|entry| entry.phase.blocks_publication())
+            .filter(|entry| entry.phase != Phase::Released)
         {
-            if entry.record.root == *root || entry.record.source == *root {
-                return Ok(true);
+            let mut in_scope = entry.record.root == *root || entry.record.source == *root;
+            if !in_scope {
+                let mut current = bd.show(&entry.record.source).await?;
+                let mut seen = HashSet::new();
+                loop {
+                    if current.id == *root {
+                        in_scope = true;
+                        break;
+                    }
+                    if !seen.insert(current.id.clone()) {
+                        return Err(
+                            invalid("cyclic native ownership at publication barrier").into()
+                        );
+                    }
+                    let Some(parent) = current.parent else {
+                        break;
+                    };
+                    current = bd.show(&parent).await?;
+                    if current.id != parent {
+                        return Err(
+                            invalid("ambiguous native ownership at publication barrier").into()
+                        );
+                    }
+                }
             }
-            let mut current = bd.show(&entry.record.source).await?;
-            let mut seen = HashSet::new();
-            loop {
-                if current.id == *root {
+            if in_scope {
+                if entry.phase.blocks_publication() {
                     return Ok(true);
                 }
-                if !seen.insert(current.id.clone()) {
-                    return Err(invalid("cyclic native ownership at publication barrier").into());
-                }
-                let Some(parent) = current.parent else {
-                    break;
-                };
-                current = bd.show(&parent).await?;
+                super::inventory::audit(bd, &entry).await?;
             }
         }
         Ok(false)
@@ -184,6 +199,10 @@ impl DecisionWaitJournal {
             || entry.record.source != *source
             || ids.is_empty()
             || ids.len() != entry.record.decisions.len()
+            || entry
+                .context
+                .as_ref()
+                .is_some_and(|context| !context.matches_inventory(&entry.record.decisions))
         {
             return Err(
                 invalid("unsupported, empty, duplicate or mismatched host attribution").into(),

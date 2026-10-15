@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use super::{AgentOutcome, LoopError, SessionResult, WaitPrerequisites, classify_session};
 
+mod graph;
 mod inventory;
 mod journal;
 pub use journal::DecisionWaitJournal;
@@ -77,10 +78,10 @@ fn record(source: &Bead) -> Result<Option<Record>, DecisionWaitError> {
 }
 
 async fn root<R: CommandRunner>(bd: &BdClient<R>, source: &Bead) -> Result<BeadId, LoopError> {
-    if let Some(parent) = &source.parent {
-        let parent = bd.show(parent).await?;
-        if parent.id == source.id {
-            return Err(invalid("self-parented waiting source").into());
+    if let Some(parent_id) = &source.parent {
+        let parent = bd.show(parent_id).await?;
+        if parent.id != *parent_id || parent.id == source.id {
+            return Err(invalid("ambiguous or self-parented decision producer").into());
         }
         Ok(parent.id)
     } else {
@@ -132,7 +133,11 @@ async fn inventory<R: CommandRunner>(
             ))
             .into());
         }
-        decisions.push(decision);
+        // Historical closed children are already accounted for. They neither
+        // create new queue authority nor extend an existing hold projection.
+        if decision.status != Status::Closed || known.contains(&id) {
+            decisions.push(decision);
+        }
     }
     if !unreported.is_empty() {
         return Err(invalid(format!(
@@ -265,6 +270,14 @@ async fn admit<R: CommandRunner>(
         }
     }
     let decisions = inventory(bd, &source, &known).await?;
+    let context = graph::resolve(
+        bd,
+        &source,
+        &current_root,
+        &decisions,
+        previous.as_ref().and_then(|entry| entry.context.as_ref()),
+    )
+    .await?;
     let active = decisions
         .iter()
         .filter(|decision| decision.status != Status::Closed)
@@ -293,7 +306,9 @@ async fn admit<R: CommandRunner>(
         .unwrap_or(Entry {
             record: attribution,
             phase: Phase::ProjectionPending,
+            context: None,
         });
+    entry.context = Some(context);
     // Journal intent must survive a crash before projection or queue staging.
     journal.save(&entry)?;
     project(bd, journal, &source, &mut entry).await?;
@@ -348,6 +363,18 @@ pub(super) async fn held<R: CommandRunner>(
     }
     let known = entry.record.decisions.iter().cloned().collect();
     let decisions = inventory(bd, &source, &known).await?;
+    let context = graph::resolve(
+        bd,
+        &source,
+        &entry.record.root,
+        &decisions,
+        entry.context.as_ref(),
+    )
+    .await?;
+    if entry.context.is_none() {
+        entry.context = Some(context);
+        journal.save(&entry)?;
+    }
     if decisions
         .iter()
         .any(|decision| decision.status != Status::Closed)

@@ -150,6 +150,21 @@ enum DependencyKind {
     Other,
 }
 
+/// Row from a native `dep list --direction up --type blocks` query. The
+/// filtered edge kind is still checked rather than trusting CLI filtering.
+#[derive(Debug, Deserialize)]
+pub(super) struct BlockingDependent {
+    pub id: BeadId,
+    #[serde(rename = "dependency_type")]
+    _kind: BlockingKind,
+}
+
+#[derive(Debug, Deserialize)]
+enum BlockingKind {
+    #[serde(rename = "blocks")]
+    Blocks,
+}
+
 /// One bead as produced by `bd show --json` and `bd list --json`.
 ///
 /// `bd` emits more fields than these (timestamps, owner, dependency lists);

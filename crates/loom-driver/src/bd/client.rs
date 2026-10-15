@@ -7,7 +7,7 @@ use crate::identifier::{BeadId, MoleculeId};
 
 use super::Priority;
 use super::error::BdError;
-use super::models::{Bead, DependencySnapshot, IssueType, MolProgress, Status};
+use super::models::{Bead, BlockingDependent, DependencySnapshot, IssueType, MolProgress, Status};
 use super::runner::{CommandRunner, RunOutput, TokioRunner, render_args};
 
 /// Default subprocess timeout. Configurable per [`BdClient`] instance via
@@ -118,6 +118,31 @@ impl<R: CommandRunner> BdClient<R> {
             return Err(BdError::ShowEmpty);
         }
         Ok(snapshots.remove(0))
+    }
+
+    /// Read actual native blocking dependents, including closed work. Native
+    /// `show` exposes only their count, not their identities.
+    ///
+    /// # Errors
+    /// Fails on subprocess errors, malformed IDs or an unfiltered edge kind.
+    pub async fn blocking_dependents(&self, id: &BeadId) -> Result<Vec<BeadId>, BdError> {
+        let out = self
+            .invoke(args([
+                "dep",
+                "list",
+                id.as_str(),
+                "--direction",
+                "up",
+                "--type",
+                "blocks",
+                "--json",
+            ]))
+            .await?;
+        let dependents: Vec<BlockingDependent> = decode(&out.stdout, &out.args)?;
+        Ok(dependents
+            .into_iter()
+            .map(|dependent| dependent.id)
+            .collect())
     }
 
     /// `bd create --silent` → newly created bead id.
@@ -1539,6 +1564,52 @@ mod tests {
             .await?;
         let argv = argv_of(&client.runner, 0);
         assert_eq!(argv, vec!["dep", "add", "lm-a", "lm-b"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn blocking_dependents_uses_native_reverse_edge_query() -> Result<()> {
+        let client = BdClient::with_runner(CapturingRunner::new([ok(br#"[
+            {"id":"lm-work","status":"open","dependency_type":"blocks"},
+            {"id":"lm-closed","status":"closed","dependency_type":"blocks"}
+        ]"#)]));
+        assert_eq!(
+            client
+                .blocking_dependents(&BeadId::new("lm-decision")?)
+                .await?,
+            vec![BeadId::new("lm-work")?, BeadId::new("lm-closed")?]
+        );
+        assert_eq!(
+            argv_of(&client.runner, 0),
+            [
+                "dep",
+                "list",
+                "lm-decision",
+                "--direction",
+                "up",
+                "--type",
+                "blocks",
+                "--json",
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn blocking_dependents_rejects_wrong_kind_or_malformed_ids() -> Result<()> {
+        for json in [
+            br#"[{"id":"lm-work","dependency_type":"parent-child"}]"#.as_slice(),
+            br#"[{"id":"invalid id","dependency_type":"blocks"}]"#.as_slice(),
+            br#"[{"id":"lm-work"}]"#.as_slice(),
+        ] {
+            let client = BdClient::with_runner(CapturingRunner::new([ok(json)]));
+            assert!(matches!(
+                client
+                    .blocking_dependents(&BeadId::new("lm-decision")?)
+                    .await,
+                Err(BdError::Decode { .. })
+            ));
+        }
         Ok(())
     }
 

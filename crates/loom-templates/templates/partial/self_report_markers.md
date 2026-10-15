@@ -36,6 +36,20 @@ outcome remains independent. Workers own the brief, ordinary bead creation,
 labels, descriptions and proposed affected-work edges; do not copy Options
 briefs onto the source or work epic.
 
+{% if self.output_phase() == loom_protocol::output::Phase::Loop %}
+For each new blocked Loop candidate, persist `loom.decision_candidate` metadata
+as a JSON string with exactly these fields:
+`{"version":1,"producer":"<source-id>","root":"<work-root-id>","affected_work":["<affected-work-id>"]}`.
+Use actual IDs from this dispatch, not these placeholders. `affected_work` is the
+complete distinct set of work beads that depend on this decision through
+supported native blocking edges; it may be empty. Do not include the discovery-child producer merely
+because it requests its own driver hold: that is **not** a native blocking edge.
+The driver independently reads native edges, checks work-root membership and
+binds this proposal to the admitted inventory. A changed or uncertain graph
+cannot reuse an old disposition. Legacy discovery children retain their native
+IDs and parentage; worker metadata never replaces driver attribution.
+
+{% endif -%}
 {% include "partial/options_format.md" %}
 
 Only work whose acceptance genuinely requires a decision gets a prerequisite.
