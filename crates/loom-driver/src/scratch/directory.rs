@@ -25,6 +25,9 @@ impl Directory {
         let mut names = Vec::new();
         for entry in Dir::read_from(&self.0)? {
             let entry = entry?;
+            if matches!(entry.file_name().to_bytes(), b"." | b"..") {
+                continue;
+            }
             names.push(std::ffi::OsStr::from_bytes(entry.file_name().to_bytes()).to_owned());
         }
         Ok(names)

@@ -86,11 +86,7 @@ impl Association {
             Err(error) => return Err(error.into()),
         };
         directory.require_private()?;
-        let lock = match directory.read_private_file(Path::new(".lock")) {
-            Ok(lock) => lock,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
+        let lock = directory.read_private_file(Path::new(".lock"))?;
         lock.lock_shared()?;
         let mut latest = BTreeMap::new();
         for (_, name) in record_names(&directory)? {
@@ -114,6 +110,13 @@ impl Association {
         let git = Directory::open(&self.operator().join(".git"))?;
         let directory = git.ensure_child(Path::new(LOG))?;
         directory.require_private()?;
+        let names = directory.names()?;
+        if !names.is_empty() && !names.iter().any(|name| name == ".lock") {
+            return Err(std::io::Error::other(
+                "retained verification history lacks its synchronization lock",
+            )
+            .into());
+        }
         let lock = directory.append_private_file(Path::new(".lock"))?;
         lock.lock()?;
         let sequence = record_names(&directory)?
@@ -123,8 +126,7 @@ impl Association {
                     .checked_add(1)
                     .ok_or_else(|| std::io::Error::other("verification history sequence exhausted"))
             })?;
-        // The lock serializes allocation. Retain interrupted staging files and
-        // choose a fresh name without depending on wall time or PID reuse.
+        // Allocate under the lock, retaining interrupted staging files without clock dependence.
         let existing = directory.names()?;
         let staging = (0..1024)
             .map(|nonce| format!(".pending-{sequence}-{}-{nonce}", std::process::id()))
@@ -229,6 +231,68 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn verification_history_serializes_contending_writers_and_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("operator");
+        let git = crate::git::init_test_repo_with_integration(&workspace).unwrap();
+        let association = Association::resolve(&workspace).unwrap();
+        let label = SpecLabel::new("gate").unwrap();
+        let mut records = Vec::new();
+        for index in 0..4 {
+            let bead = BeadId::new(&format!("lm-contention{index}")).unwrap();
+            let source = git.create_worktree(&label, &bead).await.unwrap();
+            let head = sync_head_commit_sha(&source.path).unwrap();
+            records.push(
+                association
+                    .begin_verification(bead, label.clone(), None, head.clone(), head)
+                    .unwrap(),
+            );
+        }
+        let events = workspace.join(".git").join(LOG);
+        let interrupted = events.join(".pending-interrupted");
+        std::fs::write(&interrupted, b"interrupted bytes").unwrap();
+        let barrier = std::sync::Barrier::new(5);
+        std::thread::scope(|scope| {
+            for record in &records {
+                let workspace = &workspace;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let association = Association::resolve(workspace).unwrap();
+                    barrier.wait();
+                    for _ in 0..8 {
+                        association.append_verification(record).unwrap();
+                    }
+                    association.await_verification_publication(record).unwrap();
+                });
+            }
+            barrier.wait();
+            for _ in 0..16 {
+                assert_eq!(association.verification_continuations().unwrap().len(), 4);
+            }
+        });
+        let retained = association.verification_continuations().unwrap();
+        assert_eq!(retained.len(), 4);
+        assert!(
+            retained
+                .iter()
+                .all(VerificationContinuation::awaiting_publication)
+        );
+        for record in &retained {
+            association.validate_verification(record).unwrap();
+        }
+        let names = record_names(&Directory::open(&events).unwrap()).unwrap();
+        assert_eq!(names.len(), 40);
+        assert_eq!(
+            names
+                .iter()
+                .map(|(sequence, _)| *sequence)
+                .collect::<Vec<_>>(),
+            (1..=40).collect::<Vec<_>>()
+        );
+        assert_eq!(std::fs::read(&interrupted).unwrap(), b"interrupted bytes");
+    }
+
+    #[tokio::test]
     async fn verification_continuation_rejects_replaced_source_missing_authority_and_corrupt_history()
      {
         let dir = tempfile::tempdir().unwrap();
@@ -261,6 +325,14 @@ mod tests {
         std::fs::rename(&saved_binding, &binding).unwrap();
         association.validate_verification(&record).unwrap();
         let events = workspace.join(".git").join(LOG);
+        let lock = events.join(".lock");
+        let saved_lock = events.join(".saved-lock");
+        std::fs::rename(&lock, &saved_lock).unwrap();
+        assert!(association.verification_continuations().is_err());
+        assert!(association.append_verification(&record).is_err());
+        assert!(!lock.exists());
+        std::fs::rename(&saved_lock, &lock).unwrap();
+        assert_eq!(association.verification_continuations().unwrap().len(), 1);
         std::fs::write(
             events.join(".pending-interrupted"),
             b"partial staging record",

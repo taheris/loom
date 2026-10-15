@@ -286,6 +286,38 @@ fn gate_verify_retains_real_infrastructure_exits_and_semantic_failure_precedence
             );
             assert!(!workspace.join(".loom/marker.json").exists());
         }
+        if !grouped {
+            for code in [78, 124, 127, 137] {
+                for json in [
+                    r#"{"pass":"#,
+                    r#"{"pass":true,"evidence":"complete"}"#,
+                    r#"{"pass":false,"evidence":"actual assertion"}"#,
+                ] {
+                    std::fs::write(
+                        workspace.join("probe.sh"),
+                        format!("printf '%s\\n' '{json}'\nexit {code}\n"),
+                    )
+                    .unwrap();
+                    let output = Command::new(loom_bin())
+                        .arg("--workspace")
+                        .arg(workspace)
+                        .args(["gate", "verify", "--tree"])
+                        .env_remove("LOOM_INSIDE")
+                        .output()
+                        .unwrap();
+                    assert_eq!(
+                        output.status.code(),
+                        Some(if json.contains("\"pass\":false") {
+                            1
+                        } else {
+                            code
+                        }),
+                        "json={json}, code={code}: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+            }
+        }
         std::fs::write(workspace.join("probe.sh"), "kill -TERM $$\n").unwrap();
         let signaled = Command::new(loom_bin())
             .arg("--workspace")

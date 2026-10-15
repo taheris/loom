@@ -285,8 +285,8 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
         "bead's file must land on the integration branch after merge-back",
     );
     assert!(
-        !slot.worktree.path.exists(),
-        "worktree must be removed after clean merge-back",
+        slot.worktree.path.exists(),
+        "source must remain until trusted verification and publication",
     );
     let branches = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;
     assert!(
@@ -379,8 +379,8 @@ async fn parallel_merge_back() -> Result<()> {
             "{file} should be merged into the integration branch",
         );
         assert!(
-            !slot.worktree.path.exists(),
-            "worktree {:?} should be removed after merge",
+            slot.worktree.path.exists(),
+            "source {:?} must remain until trusted verification and publication",
             slot.worktree.path,
         );
         let branches = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;

@@ -839,14 +839,17 @@ fn interpret_fallback_output(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
-    let reported = parse_verdict_optional(command, &stdout)?;
+    let reported = parse_verdict_optional(command, &stdout);
     if let Some(code) = infrastructure_exit_code(output)
         && !reported
             .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
             .is_some_and(|verdict| verdict.outcome() == Verdict::Fail)
     {
         return Err(infrastructure_error(command, output, code));
     }
+    let reported = reported?;
     if let Some(targets) = test_targets.filter(|_| !skipped) {
         let filtered_nextest_skips = crate::runner::RunnerKind::classify(command)
             == crate::runner::RunnerKind::CargoNextest

@@ -309,7 +309,18 @@ where
         bead: &BeadId,
         detail: String,
     ) -> Result<(), LoopError> {
-        self.bd.update(bead, UpdateOpts { status: Some(loom_driver::bd::Status::Open), remove_labels: vec!["loom:infra".into()], append_notes: Some(format!("Required verifier rejected the preserved candidate; implementation repair resumes automatically: {detail}")), ..UpdateOpts::default() }).await?;
+        let source = self.bd.show(bead).await?;
+        if verification_has_independent_hold(&source)
+            || held(
+                &self.bd,
+                &DecisionWaitJournal::new(&self.workspace),
+                &source,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+        self.bd.update(bead, UpdateOpts { if_status: Some(source.status), status: Some(loom_driver::bd::Status::Open), remove_labels: vec!["loom:infra".into()], append_notes: Some(format!("Required verifier rejected the preserved candidate; implementation repair resumes automatically: {detail}")), ..UpdateOpts::default() }).await?;
         self.emit_to_log(DriverKind::BdStateTransition, "semantic verifier rejection returned to implementation repair", serde_json::json!({"bead_id":bead, "status":"open", "source_route":"verification-source-repair"}));
         Ok(())
     }
@@ -324,6 +335,20 @@ where
         self.verification_resume = None;
         self.verification_restore_status = None;
         self.prepare_emit_state(&bead.id);
+        let current_bead = self.bd.show(&bead.id).await?;
+        if verification_has_independent_hold(&current_bead)
+            || held(
+                &self.bd,
+                &DecisionWaitJournal::new(&self.workspace),
+                &current_bead,
+            )
+            .await?
+        {
+            return Ok(AgentOutcome::Blocked {
+                reason: "independent hold preserves verification candidate".into(),
+            });
+        }
+        let bead = &current_bead;
         let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
         association.validate_verification(&record)?;
         let path = self.workspace.join(".loom/beads").join(bead.id.as_str());
@@ -392,11 +417,11 @@ where
         self.git
             .preserve_verification_candidate(&bead.id, &candidate)
             .await?;
-        record.base = base;
+        record.base = base.clone();
         record.candidate = candidate.clone();
         association.append_verification(&record)?;
         self.git.ff_merge_integration(&branch).await?;
-        self.pre_integration_tip = (candidate != current).then_some(current);
+        self.pre_integration_tip = Some(base);
         self.current_worktree_path = Some(path);
         self.verification_restore_status = bead
             .labels
@@ -441,8 +466,10 @@ where
             if !self.verification_attempted.contains(&record.bead)
                 && !self.infra_queue.iter().any(|bead| bead.id == record.bead)
             {
-                self.infra_queue
-                    .push_back(self.bd.show(&record.bead).await?);
+                let source = self.bd.show(&record.bead).await?;
+                if !verification_has_independent_hold(&source) {
+                    self.infra_queue.push_back(source);
+                }
             }
         }
         self.infra_queue_loaded = true;
@@ -658,6 +685,14 @@ where
         }
         self.load_infra_queue().await?;
         while let Some(bead) = self.infra_queue.pop_front() {
+            if bead
+                .labels
+                .iter()
+                .any(|label| label.is_blocked() || label.is_clarify() || label.is_deferred())
+                || bead.status == loom_driver::bd::Status::Deferred
+            {
+                continue;
+            }
             if deferred.iter().any(|id| id == &bead.id) {
                 continue;
             }
@@ -1185,10 +1220,15 @@ where
             .verification_continuations()?
             .into_iter()
             .find(|record| &record.bead == bead)
-            && record.parked_status.is_none()
         {
-            record.parked_status = Some(self.bd.show(bead).await?.status);
-            association.append_verification(&record)?;
+            let source = self.bd.show(bead).await?;
+            if verification_has_independent_hold(&source) {
+                return Ok(());
+            }
+            if record.parked_status.is_none() {
+                record.parked_status = Some(source.status);
+                association.append_verification(&record)?;
+            }
         }
         let mut metadata = vec![
             ("loom.infra.cause".to_string(), diagnostic.cause.clone()),
@@ -1363,6 +1403,20 @@ where
             });
         }
 
+        if continuation.is_some() {
+            let source = self.bd.show(bead).await?;
+            if verification_has_independent_hold(&source)
+                || held(
+                    &self.bd,
+                    &DecisionWaitJournal::new(&self.workspace),
+                    &source,
+                )
+                .await?
+            {
+                self.rollback_if_bead_advanced_integration().await?;
+                return Ok(PerBeadGateOutcome::Infrastructure { detail: "Independent hold preserves verified candidate without publication or source-state changes".into() });
+            }
+        }
         if let Some(status) = self.verification_restore_status.take() {
             if DecisionWaitJournal::new(&self.workspace).has_pending_for(bead)? {
                 return Err(LoopError::ReviewHandoff {
@@ -1868,6 +1922,40 @@ fn allocate_review_log_path(workspace: &Path) -> (PathBuf, std::time::SystemTime
         path = phase_log_path(&logs_root, "review", phase_when);
     }
     (path, phase_when)
+}
+
+pub(super) fn verification_has_independent_hold(bead: &Bead) -> bool {
+    use loom_driver::bd::Status;
+    if bead
+        .labels
+        .iter()
+        .any(|label| label.is_blocked() || label.is_clarify() || label.is_deferred())
+        || matches!(
+            bead.status,
+            Status::Deferred | Status::Pinned | Status::Tombstone
+        )
+    {
+        return true;
+    }
+    let infra = bead.labels.iter().any(loom_driver::bd::Label::is_infra);
+    if !infra {
+        return bead.status == Status::Blocked;
+    }
+    bead.status != Status::Blocked
+        || bead
+            .metadata
+            .get("loom.infra.phase")
+            .and_then(serde_json::Value::as_str)
+            != Some("loop")
+        || !matches!(
+            bead.metadata
+                .get("loom.infra.cause")
+                .and_then(serde_json::Value::as_str),
+            Some(
+                super::runner::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE
+                    | "verification-continuation-unavailable"
+            )
+        )
 }
 
 fn bead_has_parked_state(bead: &Bead) -> bool {
@@ -5374,7 +5462,7 @@ mod tests {
         )
         .expect("verifier");
         let closed = br#"[{"id":"lm-vresume","title":"completed source","description":"","status":"closed","priority":2,"issue_type":"task","labels":["spec:gate"]}]"#;
-        let parked = br#"[{"id":"lm-vresume","title":"completed source","description":"","status":"blocked","priority":2,"issue_type":"task","labels":["spec:gate","loom:infra"]}]"#;
+        let parked = br#"[{"id":"lm-vresume","title":"completed source","description":"","status":"blocked","priority":2,"issue_type":"task","labels":["spec:gate","loom:infra"],"metadata":{"loom.infra.phase":"loop","loom.infra.cause":"verification-capability-unavailable"}}]"#;
         let manifest = write_manifest(dir.path());
         let mut first = ProductionAgentLoopController::new(
             BdClient::with_runner(ScriptedBd::new([
@@ -5464,6 +5552,8 @@ mod tests {
             ok_stdout(b"[]"),
             ok_stdout(b"[]"),
             ok_stdout(parked),
+            ok_stdout(parked),
+            ok_stdout(parked),
             ok_stdout(b""),
         ]);
         let calls = scripted.calls_handle();
@@ -5543,9 +5633,28 @@ mod tests {
             manifest: Arc::clone(&resumed.manifest),
         };
         drop(resumed);
+        for label in ["loom:blocked", "loom:clarify", "loom:deferred"] {
+            let mut source: Vec<Bead> = serde_json::from_slice(closed).expect("source");
+            source[0]
+                .labels
+                .push(loom_driver::bd::Label::new(label).expect("hold label"));
+            let held_source = serde_json::to_vec(&source).expect("held source");
+            let (ids, work) = super::super::schedule::resume_verification_candidates(
+                &request,
+                BdClient::with_runner(ScriptedBd::new([ok_stdout(&held_source)])),
+            )
+            .await
+            .expect("independent hold remains untouched");
+            assert!(ids.is_empty());
+            assert!(!work);
+        }
         let (ids, work) = super::super::schedule::resume_verification_candidates(
             &request,
-            BdClient::with_runner(ScriptedBd::new([ok_stdout(closed)])),
+            BdClient::with_runner(ScriptedBd::new([
+                ok_stdout(closed),
+                ok_stdout(closed),
+                ok_stdout(closed),
+            ])),
         )
         .await
         .expect("parallel verifier-only restart");
@@ -5557,6 +5666,135 @@ mod tests {
             candidate
         );
         assert!(!integration.join(".loom/marker.json").exists());
+    }
+
+    #[tokio::test]
+    async fn restarted_integrated_candidate_rolls_back_on_rejection_and_exhaustion() {
+        for code in [1, 78, 0] {
+            let dir = tempfile::tempdir().expect("fixture");
+            let workspace = dir.path().join("workspace");
+            let git = git_workspace(&workspace);
+            let integration = git.loom_workspace();
+            let base = loom_driver::git::sync_head_commit_sha(&integration).expect("base");
+            for index in 0..3 {
+                std::fs::write(
+                    integration.join("candidate.txt"),
+                    format!("candidate {index}\n"),
+                )
+                .expect("source");
+                loom_driver::git::commit_all_in(&integration, "candidate").expect("commit");
+            }
+            let candidate =
+                loom_driver::git::sync_head_commit_sha(&integration).expect("candidate");
+            let id = BeadId::new("lm-vreject").expect("id");
+            let label = SpecLabel::new("gate").expect("label");
+            let source = git
+                .create_worktree(&label, &id)
+                .await
+                .expect("source clone");
+            git.preserve_verification_candidate(&id, &candidate)
+                .await
+                .expect("pin");
+            let association =
+                loom_driver::workspace::Association::resolve(&workspace).expect("authority");
+            let mut record = association
+                .begin_verification(id, label.clone(), None, base.clone(), candidate.clone())
+                .expect("continuation");
+            let mut bead: Bead = serde_json::from_value(
+                serde_json::json!({"id":"lm-vreject","title":"completed source","status":"closed"}),
+            )
+            .expect("bead");
+            if code == 0 {
+                record.parked_status = Some(loom_driver::bd::Status::Closed);
+                association
+                    .append_verification(&record)
+                    .expect("owned parking");
+                bead.status = loom_driver::bd::Status::Blocked;
+                bead.labels
+                    .push(loom_driver::bd::Label::new("loom:infra").expect("infra"));
+                bead.metadata
+                    .insert("loom.infra.phase".into(), "loop".into());
+                bead.metadata.insert(
+                    "loom.infra.cause".into(),
+                    "verification-capability-unavailable".into(),
+                );
+            }
+            let observed = serde_json::to_vec(&vec![&bead]).expect("observation");
+            let mut held_source = bead.clone();
+            held_source
+                .labels
+                .push(loom_driver::bd::Label::new("loom:clarify").expect("human hold"));
+            let held_observation = serde_json::to_vec(&vec![held_source]).expect("later hold");
+            let scripted = ScriptedBd::new([ok_stdout(&observed), ok_stdout(&held_observation)]);
+            let calls = scripted.calls_handle();
+            let policy = loom_driver::git::RepoGitPolicy::resolve(
+                &workspace,
+                "unused-wrix".into(),
+                loom_driver::git::KeyMode::Host,
+            )
+            .expect("fixture policy");
+            let git = GitClient::open(&workspace)
+                .expect("repository")
+                .with_repo_git_policy(policy);
+            let verifier = dir.path().join("verifier.sh");
+            loom_test_support::write_executable_bash_script(&verifier, &format!("exit {code}\n"))
+                .expect("verifier");
+            let mut resumed = ProductionAgentLoopController::new(
+                BdClient::with_runner(scripted),
+                label,
+                verifier,
+                workspace,
+                git,
+                write_manifest(dir.path()),
+                None,
+                ProfileName::new("base").expect("profile"),
+                |_cfg: SpawnConfig, _id: BeadId| async move { panic!("source must never redispatch") },
+            );
+            assert_eq!(
+                resumed
+                    .resume_verification(&bead, record)
+                    .await
+                    .expect("restart"),
+                AgentOutcome::Success
+            );
+            assert_eq!(
+                loom_driver::git::sync_head_commit_sha(&integration).expect("still integrated"),
+                candidate
+            );
+            let outcome = resumed
+                .exec_per_bead_gate(&bead.id)
+                .await
+                .expect("required rejection");
+            assert!(if code != 1 {
+                matches!(outcome, PerBeadGateOutcome::Infrastructure { .. })
+            } else {
+                matches!(outcome, PerBeadGateOutcome::Recovery { .. })
+            });
+            assert_eq!(
+                loom_driver::git::sync_head_commit_sha(&integration)
+                    .expect("exact recorded rollback"),
+                base
+            );
+            assert_eq!(
+                loom_driver::git::sync_head_commit_sha(&source.path).expect("source retained"),
+                candidate
+            );
+            assert_eq!(
+                association
+                    .verification_continuations()
+                    .expect("retained attribution")
+                    .len(),
+                usize::from(code != 1)
+            );
+            assert!(
+                !calls
+                    .lock()
+                    .expect("calls")
+                    .iter()
+                    .any(|args| args.iter().any(|arg| arg == "update")),
+                "human source state is never rewritten"
+            );
+        }
     }
 
     /// A non-zero `loom gate verify --diff` against the integrated tree is

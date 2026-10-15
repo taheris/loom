@@ -22,7 +22,7 @@ use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
 use loom_driver::git::{GitClient, KeyMode, RepoGitPolicy};
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::{LockGuard, LockManager};
-use loom_driver::logging::LogSink;
+use loom_driver::logging::{LogSink, sweep_retention_at};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::CacheDb;
 use loom_gate::integrity::runner_owns_target;
@@ -3064,7 +3064,11 @@ fn run_loop_cmd(
     render_flags: RenderFlags,
 ) -> anyhow::Result<LoopOutcome> {
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
-    // Routine execution retains evidence; disposal requires separate authority.
+    sweep_retention_at(
+        &workspace.join(".loom/logs"),
+        config.logs.retention_days,
+        SystemClock::new().wall_now(),
+    );
     // Resolve the per-phase backend up front so an unknown backend name in
     // the config (or via `--agent` — clap covers the latter) fails before
     // any work begins. The resolution itself is the wiring; the dispatch
@@ -3520,8 +3524,7 @@ fn prepare_loop_root(
 
     loom_driver::workspace::Association::resolve(workspace)?.recheck()?;
 
-    // A native closed status is not trusted cleanup admission. Retain historical
-    // source clones and their evidence across startup until disposal is admitted.
+    // Native closure is not cleanup admission; retain source until disposal is admitted.
     Ok(())
 }
 

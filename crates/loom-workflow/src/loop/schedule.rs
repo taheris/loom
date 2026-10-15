@@ -61,12 +61,13 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
             continue;
         }
         let bead = bd.show(&record.bead).await?;
-        if super::decision_wait::held(
-            &bd,
-            &super::decision_wait::DecisionWaitJournal::new(&request.workspace),
-            &bead,
-        )
-        .await?
+        if super::production::verification_has_independent_hold(&bead)
+            || super::decision_wait::held(
+                &bd,
+                &super::decision_wait::DecisionWaitJournal::new(&request.workspace),
+                &bead,
+            )
+            .await?
         {
             continue;
         }
@@ -100,6 +101,10 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
     let mut work = false;
     for (bead, record) in sources {
         let outcome = controller.resume_verification(&bead, record).await?;
+        if matches!(outcome, AgentOutcome::Blocked { .. }) {
+            completed.insert(bead.id);
+            continue;
+        }
         work = true;
         if outcome == AgentOutcome::Success {
             match controller.exec_per_bead_gate(&bead.id).await? {
