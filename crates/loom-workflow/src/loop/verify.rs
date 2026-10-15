@@ -145,7 +145,6 @@ pub(super) async fn execute_gate(
             return Ok(execution);
         }
         tracing::warn!(attempt, max_attempts, exit_code = execution.code, log = %path.display(), "retrying verifier infrastructure without source redispatch or semantic retry");
-        clock.sleep(std::time::Duration::from_secs(1)).await;
     }
     Err(LoopError::Bug {
         context: "nonempty verification attempt budget exhausted without an observation".into(),

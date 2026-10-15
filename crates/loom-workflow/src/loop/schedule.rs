@@ -16,6 +16,7 @@ use loom_driver::git::{GitClient, RepoGitPolicy};
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 
 /// Resolved invocation inputs, independent of rendering and backend implementation.
+#[derive(Clone)]
 pub struct Request {
     pub workspace: PathBuf,
     pub label: SpecLabel,
@@ -40,9 +41,17 @@ pub(super) const fn handoff_commands<'a>(
     MoleculePushGateCommands::new(agent, loom, wrix).with_manifest(manifest)
 }
 
+#[derive(Default)]
+pub(super) struct VerificationRecovery {
+    attempts: HashMap<BeadId, u32>,
+    finished: HashSet<BeadId>,
+    repairs: HashSet<BeadId>,
+}
+
 pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRunner>(
     request: &Request,
     bd: BdClient<R>,
+    recovery: &mut VerificationRecovery,
 ) -> Result<(HashSet<BeadId>, bool), LoopError> {
     use super::runner::AgentLoopController as _;
     let association = loom_driver::workspace::Association::resolve(&request.workspace)?;
@@ -54,23 +63,20 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
     .with_repo_git_policy(request.repo_git_policy.clone());
     let mut sources = Vec::new();
     for record in association.verification_continuations()? {
+        if recovery.finished.contains(&record.bead) {
+            continue;
+        }
         if record.label != request.label {
             continue;
         }
         if record.root != request.ready_parent {
             continue;
         }
-        let bead = bd.show(&record.bead).await?;
-        if super::production::verification_has_independent_hold(&bead)
-            || super::decision_wait::held(
-                &bd,
-                &super::decision_wait::DecisionWaitJournal::new(&request.workspace),
-                &bead,
-            )
-            .await?
-        {
+        let Some(bead) =
+            super::production::verification_source(&bd, &request.workspace, &record.bead).await?
+        else {
             continue;
-        }
+        };
         sources.push((bead, record));
     }
     let profile =
@@ -95,11 +101,11 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
             )
         },
     )
-    .with_loom_config(request.loom.clone())
-    .with_verification_attempts(request.infra_policy.max_attempts);
+    .with_loom_config(request.loom.clone());
     let mut completed = HashSet::new();
     let mut work = false;
-    for (bead, record) in sources {
+    sources.sort_by_key(|(bead, _)| recovery.attempts.get(&bead.id).copied().unwrap_or(0));
+    for (bead, record) in sources.into_iter().take(1) {
         let outcome = controller.resume_verification(&bead, record).await?;
         if matches!(outcome, AgentOutcome::Blocked { .. }) {
             completed.insert(bead.id);
@@ -112,21 +118,31 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
                     completed.insert(bead.id);
                 }
                 super::runner::PerBeadGateOutcome::Infrastructure { detail } => {
-                    controller
-                        .apply_infra(
-                            &bead.id,
-                            &InfraDiagnostic::static_diagnostic(
-                                super::runner::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE,
-                                detail,
-                            ),
-                        )
-                        .await?;
-                    completed.insert(bead.id);
+                    let attempt = recovery.attempts.entry(bead.id.clone()).or_default();
+                    *attempt += 1;
+                    if *attempt >= request.infra_policy.max_attempts.max(1) {
+                        controller
+                            .apply_infra(
+                                &bead.id,
+                                &InfraDiagnostic::retryable(
+                                    super::runner::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE,
+                                    "infra-verification",
+                                    detail,
+                                    *attempt,
+                                    request.infra_policy.max_attempts.max(1),
+                                    false,
+                                ),
+                            )
+                            .await?;
+                        completed.insert(bead.id);
+                    }
                 }
                 super::runner::PerBeadGateOutcome::Recovery { detail } => {
                     controller
                         .reopen_after_verification_failure(&bead.id, detail)
                         .await?;
+                    recovery.finished.insert(bead.id.clone());
+                    recovery.repairs.insert(bead.id);
                 }
                 super::runner::PerBeadGateOutcome::StructuralViolation { detail } => {
                     controller
@@ -148,6 +164,7 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
             completed.insert(bead.id);
         }
     }
+    recovery.finished.extend(completed.iter().cloned());
     Ok((completed, work))
 }
 
@@ -176,8 +193,8 @@ where
     S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
     F: std::future::Future<Output = AgentOutcome> + Send + 'static,
 {
-    let (recovered_ids, recovery_work) =
-        resume_verification_candidates(&request, BdClient::new()).await?;
+    let recovery_request = request.clone();
+    let mut recovery = VerificationRecovery::default();
     let Request {
         workspace,
         label,
@@ -205,13 +222,13 @@ where
     let mut infra_budget = ParallelInfraBudget::new(infra_policy);
     let mut infra_retry_queue: VecDeque<Bead> = VecDeque::new();
     let mut infra_queue_loaded = false;
-    let mut finished_ids = recovered_ids;
+    let mut finished_ids = HashSet::new();
     let mut processed = 0_u32;
     let mut waiting = 0_u32;
     let mut clarified = 0_u32;
     let mut blocked = 0_u32;
     let mut outer_iterations = 0_u32;
-    let mut work_since_gate = recovery_work;
+    let mut work_since_gate = false;
     let mut last_gate: Option<GateOutcome> = None;
 
     let gate = 'outer: loop {
@@ -219,10 +236,18 @@ where
             break GateOutcome::Fail(loom_gate::GateFail::stalled(outer_iterations));
         }
         loop {
-            let deferred_ids = infra_retry_queue
+            let mut deferred_ids = infra_retry_queue
                 .iter()
                 .map(|bead| bead.id.clone())
                 .collect::<Vec<_>>();
+            let association = loom_driver::workspace::Association::resolve(&workspace)?;
+            let pending_verification = association
+                .verification_continuations()?
+                .into_iter()
+                .filter(|record| record.label == label && record.root == ready_parent)
+                .map(|record| record.bead)
+                .collect::<HashSet<_>>();
+            deferred_ids.extend(pending_verification.iter().cloned());
             let mut batch_beads = parallel_ready_batch(
                 &bd,
                 &workspace,
@@ -245,6 +270,7 @@ where
                         break;
                     };
                     if finished_ids.contains(&bead.id)
+                        || pending_verification.contains(&bead.id)
                         || super::decision_wait::held(
                             &bd,
                             &super::DecisionWaitJournal::new(&workspace),
@@ -258,6 +284,20 @@ where
                 }
             }
             if batch_beads.is_empty() {
+                let (recovered, attempted) = resume_verification_candidates(
+                    &recovery_request,
+                    BdClient::new(),
+                    &mut recovery,
+                )
+                .await?;
+                finished_ids.extend(recovered);
+                for repaired in recovery.repairs.drain() {
+                    finished_ids.remove(&repaired);
+                }
+                work_since_gate |= attempted;
+                if attempted {
+                    continue;
+                }
                 break;
             }
 

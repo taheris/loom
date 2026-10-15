@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 use super::{ProfileError, ProfileImageManifest};
-use crate::clock::{Clock, SystemClock};
+use crate::clock::SystemClock;
 use crate::config::LoomConfig;
 use crate::git::{GitClient, RepoGitPolicy, SignatureCheck};
 use crate::workspace::Association;
@@ -156,9 +156,6 @@ pub async fn bootstrap_loop(
             Ok(_) | Err(_) => {
                 tracing::warn!(attempt, max_attempts, log = %log.display(), "profile realization unavailable; no verification coverage admitted");
             }
-        }
-        if attempt < max_attempts {
-            clock.sleep(std::time::Duration::from_secs(1)).await;
         }
     }
     configured.ok_or(ProvisionError::Unavailable { log })

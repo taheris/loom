@@ -72,6 +72,7 @@ struct BeadRunState {
 enum RetryableInfraClass {
     Preflight,
     Interrupted,
+    Verification,
 }
 
 impl RetryableInfraClass {
@@ -79,6 +80,7 @@ impl RetryableInfraClass {
         match self {
             Self::Preflight => INFRA_PREFLIGHT_CAUSE,
             Self::Interrupted => INFRA_INTERRUPTED_CAUSE,
+            Self::Verification => VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE,
         }
     }
 
@@ -90,6 +92,7 @@ impl RetryableInfraClass {
         match self {
             Self::Preflight => "infra-preflight",
             Self::Interrupted => "infra-interrupted",
+            Self::Verification => "infra-verification",
         }
     }
 }
@@ -648,12 +651,14 @@ async fn process_one_bead<C: AgentLoopController>(
             AgentOutcome::Success => match controller.exec_per_bead_gate(&bead.id).await? {
                 PerBeadGateOutcome::Clean => return Ok(terminal(BeadResult::Done)),
                 PerBeadGateOutcome::Infrastructure { detail } => {
-                    return Ok(terminal(BeadResult::Infra {
-                        diagnostic: InfraDiagnostic::static_diagnostic(
-                            VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE,
-                            detail,
-                        ),
-                    }));
+                    return Ok(handle_retryable_infra(
+                        controller,
+                        bead,
+                        state,
+                        infra_policy,
+                        RetryableInfraClass::Verification,
+                        detail,
+                    ));
                 }
                 PerBeadGateOutcome::StructuralViolation { detail } => {
                     return Ok(terminal(BeadResult::Blocked {
@@ -1656,7 +1661,13 @@ mod tests {
             .push_back(PerBeadGateOutcome::Infrastructure {
                 detail: "required isolated verifier exhausted its infrastructure attempts".into(),
             });
-        let outcome = run_loop(&mut controller, RetryPolicy { max_retries: 0 }, 10).await?;
+        let outcome = run_loop_with_infra_policy(
+            &mut controller,
+            RetryPolicy { max_retries: 0 },
+            InfraRetryPolicy { max_attempts: 1 },
+            10,
+        )
+        .await?;
         assert_eq!(controller.run_calls.len(), 2);
         assert!(
             controller
@@ -1813,6 +1824,60 @@ mod tests {
             ); 0]
         );
         assert_eq!(summary.beads_processed, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verification_infrastructure_round_robin_preserves_source_retry_budget()
+    -> Result<(), LoopError> {
+        for exhausted in [false, true] {
+            let mut c = FakeController::default();
+            c.ready_queue.push_back(bead("lm-a", &[]));
+            c.ready_queue.push_back(bead("lm-b", &[]));
+            c.agent_outcomes.extend([
+                AgentOutcome::Success,
+                AgentOutcome::Success,
+                AgentOutcome::Success,
+            ]);
+            c.per_bead_gate_outcomes
+                .push_back(PerBeadGateOutcome::Infrastructure {
+                    detail: "executor unavailable".into(),
+                });
+            c.per_bead_gate_outcomes
+                .push_back(PerBeadGateOutcome::Clean);
+            c.per_bead_gate_outcomes.push_back(if exhausted {
+                PerBeadGateOutcome::Infrastructure {
+                    detail: "still unavailable".into(),
+                }
+            } else {
+                PerBeadGateOutcome::Clean
+            });
+            let summary = run_loop_with_infra_policy(
+                &mut c,
+                RetryPolicy { max_retries: 0 },
+                InfraRetryPolicy { max_attempts: 2 },
+                10,
+            )
+            .await?;
+            assert_eq!(
+                c.run_calls
+                    .iter()
+                    .map(|(id, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                ["lm-a", "lm-b", "lm-a"]
+            );
+            assert!(c.run_calls.iter().all(|(_, previous)| previous.is_none()));
+            assert_eq!(c.blocked, Vec::new());
+            assert_eq!(c.clarified, Vec::new());
+            assert_eq!(c.infra.len(), usize::from(exhausted));
+            assert_eq!(summary.beads_blocked, u32::from(exhausted));
+            if exhausted {
+                assert_eq!(
+                    c.infra[0].1.cause,
+                    VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE
+                );
+            }
+        }
         Ok(())
     }
 

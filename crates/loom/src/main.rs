@@ -3456,7 +3456,6 @@ fn run_sequential_loop_root(
         .with_agent_override(agent_override)
         .with_wrix_bin(wrix_bin)
         .with_loom_config(loom_cfg_for_run)
-        .with_verification_attempts(infra_policy.max_attempts)
         .with_skills_config(skills_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
         if let Some(bead) = fixed_bead {
@@ -3501,6 +3500,7 @@ fn prepare_loop_root(
         )?;
         let ff_workspace = workspace.to_path_buf();
         runtime.block_on(async move {
+            ff_git.recover_publication_rebase().await?;
             let result = ff_git.fast_forward_integration_to_origin().await;
             if matches!(&result, Err(loom_driver::git::GitError::IntegrationDiverged { .. }))
                 && ff_git.has_pending_verification_tip().await? {

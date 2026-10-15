@@ -54,6 +54,7 @@ if [[ "${5:-}" == --interrupt-once ]]; then
     verifier_hold="$verifier_git/smoke-verifier-hold"
     verifier_entered="$verifier_git/smoke-verifier-entered"
     printf 'hold\n' > "$verifier_hold"
+    printf 'outage\n' > "$verifier_git/smoke-verifier-unavailable"
     verifier_log="$WORKSPACE/.loom/smoke-verifier-interrupted-driver.log"
     LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
         "$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID" > "$verifier_log" 2>&1 &
@@ -98,6 +99,49 @@ if [[ "${5:-}" == --interrupt-once ]]; then
         exit 1
     fi
     log 'interrupted driver during real verification; restarting its persisted candidate'
+    outage_log="$WORKSPACE/.loom/smoke-verifier-exhausted-driver.log"
+    if LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
+        timeout --kill-after=10s 120s "$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID" > "$outage_log" 2>&1; then
+        outage_rc=0
+    else
+        outage_rc=$?
+    fi
+    if [[ "$outage_rc" != 0 && "$outage_rc" != 1 ]]; then
+        cat "$outage_log" >&2
+        log 'verifier outage did not finish within its attempt budget'
+        exit 1
+    fi
+    grep -F 'blocked 1' "$outage_log"
+    bd show "$BEAD_ID" --json | jq -e \
+        'if type == "array" then .[0] else . end | .status == "blocked" and (.labels | index("loom:infra") != null)' >/dev/null
+    jq -se '[.[] | select(.state == "unavailable" and .coverage_admitted == false)] | length == 3' \
+        "$WORKSPACE/.loom/integration/.loom/logs/gate/verification-attempts.jsonl" >/dev/null
+    blocker=$(bd create --title 'Isolated prerequisite during verifier outage' --type task --silent)
+    bd dep add "$BEAD_ID" "$blocker"
+    dependency_log="$WORKSPACE/.loom/smoke-dependency-held-driver.log"
+    if LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
+        timeout --kill-after=10s 120s "$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID" > "$dependency_log" 2>&1; then
+        dependency_rc=0
+    else
+        dependency_rc=$?
+    fi
+    if [[ "$dependency_rc" != 0 && "$dependency_rc" != 1 ]]; then
+        cat "$dependency_log" >&2
+        log 'dependency-held recovery did not finish within its budget'
+        exit 1
+    fi
+    grep -F 'blocked 1' "$dependency_log"
+    if grep -Fq 'dispatching agent against per-bead workspace' "$dependency_log"; then
+        log 'dependency hold redispatched completed source'
+        exit 1
+    fi
+    [[ "$(git -C "$WORKSPACE/.loom/beads/$BEAD_ID" rev-parse HEAD)" == "$source_head" ]]
+    [[ "$(git -C "$WORKSPACE" ls-remote origin refs/heads/main | cut -f1)" != "$source_head" ]]
+    bd show "$BEAD_ID" --json | jq -e --arg blocker "$blocker" \
+        'if type == "array" then .[0] else . end | .dependencies | any(.id == $blocker and .status == "open" and .dependency_type == "blocks")' >/dev/null
+    bd close "$blocker" --reason 'The isolated fixture completed its prerequisite automatically'
+    rm "$verifier_git/smoke-verifier-unavailable"
+    log 'native-prerequisite-hold-survived-verifier-restart-without-publication'
 fi
 
 set +e

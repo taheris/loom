@@ -160,7 +160,6 @@ where
     /// (`specs/harness.md` § Verdict Gate — `post-integrate-fail`).
     pre_integration_tip: Option<GitOid>,
     verification_attempted: HashSet<BeadId>,
-    verification_max_attempts: u32,
     verification_resume: Option<loom_driver::workspace::VerificationContinuation>,
     verification_restore_status: Option<loom_driver::bd::Status>,
     /// Attempt number rendered into the current bead's prompt and copied
@@ -221,7 +220,6 @@ where
             skills_cfg: SkillsConfig::default(),
             pre_integration_tip: None,
             verification_attempted: HashSet::new(),
-            verification_max_attempts: 3,
             verification_resume: None,
             verification_restore_status: None,
             current_attempt: 0,
@@ -297,29 +295,14 @@ where
         self.lock.take();
     }
 
-    /// Keep verifier retries within the existing trusted invocation's infrastructure budget.
-    #[must_use]
-    pub const fn with_verification_attempts(mut self, attempts: u32) -> Self {
-        self.verification_max_attempts = if attempts == 0 { 1 } else { attempts };
-        self
-    }
-
     pub(super) async fn reopen_after_verification_failure(
         &mut self,
         bead: &BeadId,
         detail: String,
     ) -> Result<(), LoopError> {
-        let source = self.bd.show(bead).await?;
-        if verification_has_independent_hold(&source)
-            || held(
-                &self.bd,
-                &DecisionWaitJournal::new(&self.workspace),
-                &source,
-            )
-            .await?
-        {
+        let Some(source) = verification_source(&self.bd, &self.workspace, bead).await? else {
             return Ok(());
-        }
+        };
         self.bd.update(bead, UpdateOpts { if_status: Some(source.status), status: Some(loom_driver::bd::Status::Open), remove_labels: vec!["loom:infra".into()], append_notes: Some(format!("Required verifier rejected the preserved candidate; implementation repair resumes automatically: {detail}")), ..UpdateOpts::default() }).await?;
         self.emit_to_log(DriverKind::BdStateTransition, "semantic verifier rejection returned to implementation repair", serde_json::json!({"bead_id":bead, "status":"open", "source_route":"verification-source-repair"}));
         Ok(())
@@ -335,19 +318,10 @@ where
         self.verification_resume = None;
         self.verification_restore_status = None;
         self.prepare_emit_state(&bead.id);
-        let current_bead = self.bd.show(&bead.id).await?;
-        if verification_has_independent_hold(&current_bead)
-            || held(
-                &self.bd,
-                &DecisionWaitJournal::new(&self.workspace),
-                &current_bead,
-            )
-            .await?
-        {
-            return Ok(AgentOutcome::Blocked {
-                reason: "independent hold preserves verification candidate".into(),
-            });
-        }
+        let Some(current_bead) = verification_source(&self.bd, &self.workspace, &bead.id).await?
+        else {
+            return Ok(AgentOutcome::Blocked { reason: "current native prerequisites or independent holds preserve verification candidate".into() });
+        };
         let bead = &current_bead;
         let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
         association.validate_verification(&record)?;
@@ -403,10 +377,16 @@ where
             current.clone()
         };
         let rollback = if candidate == current && record.candidate == current {
-            record.base.clone()
+            record.rollback.clone().unwrap_or_else(|| current.clone())
         } else {
             current.clone()
         };
+        if !GitClient::open(&gate_workspace)?
+            .is_ancestor_of_head(rollback.as_str())
+            .await?
+        {
+            return Ok(AgentOutcome::StaticInfra { cause: WORKSPACE_RECOVERY_FAILED_CAUSE.into(), error: "verification rollback no longer belongs to current integration; all work preserved".into() });
+        }
         if let Some(outcome) = self
             .verify_or_block(
                 &bead.id,
@@ -422,6 +402,7 @@ where
         self.git
             .preserve_verification_candidate(&bead.id, &candidate)
             .await?;
+        record.rollback = Some(rollback.clone());
         record.base = base.clone();
         record.candidate = candidate.clone();
         association.append_verification(&record)?;
@@ -470,11 +451,10 @@ where
             }
             if !self.verification_attempted.contains(&record.bead)
                 && !self.infra_queue.iter().any(|bead| bead.id == record.bead)
+                && let Some(source) =
+                    verification_source(&self.bd, &self.workspace, &record.bead).await?
             {
-                let source = self.bd.show(&record.bead).await?;
-                if !verification_has_independent_hold(&source) {
-                    self.infra_queue.push_back(source);
-                }
+                self.infra_queue.push_back(source);
             }
         }
         self.infra_queue_loaded = true;
@@ -1188,6 +1168,17 @@ where
         error: &str,
     ) -> Result<(), LoopError> {
         let notes = diagnostic_notes(cause, error);
+        let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
+        if association
+            .verification_continuations()?
+            .iter()
+            .any(|record| &record.bead == bead)
+            && verification_source(&self.bd, &self.workspace, bead)
+                .await?
+                .is_none()
+        {
+            return Ok(());
+        }
         self.bd
             .update(
                 bead,
@@ -1226,10 +1217,9 @@ where
             .into_iter()
             .find(|record| &record.bead == bead)
         {
-            let source = self.bd.show(bead).await?;
-            if verification_has_independent_hold(&source) {
+            let Some(source) = verification_source(&self.bd, &self.workspace, bead).await? else {
                 return Ok(());
-            }
+            };
             if record.parked_status.is_none() {
                 record.parked_status = Some(source.status);
                 association.append_verification(&record)?;
@@ -1329,7 +1319,7 @@ where
             &gate_workspace,
             &SystemClock::new(),
             self.loom_cfg.git_hook_timeout(),
-            self.verification_max_attempts,
+            1,
         )
         .await?;
         let verify_code = verify_output.code;
@@ -1408,19 +1398,13 @@ where
             });
         }
 
-        if continuation.is_some() {
-            let source = self.bd.show(bead).await?;
-            if verification_has_independent_hold(&source)
-                || held(
-                    &self.bd,
-                    &DecisionWaitJournal::new(&self.workspace),
-                    &source,
-                )
+        if continuation.is_some()
+            && verification_source(&self.bd, &self.workspace, bead)
                 .await?
-            {
-                self.rollback_if_bead_advanced_integration().await?;
-                return Ok(PerBeadGateOutcome::Infrastructure { detail: "Independent hold preserves verified candidate without publication or source-state changes".into() });
-            }
+                .is_none()
+        {
+            self.rollback_if_bead_advanced_integration().await?;
+            return Ok(PerBeadGateOutcome::Infrastructure { detail: "Current native prerequisites or independent holds preserve verified candidate without publication or source-state changes".into() });
         }
         if let Some(status) = self.verification_restore_status.take() {
             if DecisionWaitJournal::new(&self.workspace).has_pending_for(bead)? {
@@ -1558,6 +1542,29 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         });
     }
 
+    git.recover_publication_rebase().await?;
+    let journal = workspace.join(".git/loom-verification-continuations");
+    if journal.try_exists()? {
+        let association = loom_driver::workspace::Association::resolve(workspace)?;
+        for record in association.verification_continuations()? {
+            if GitClient::open(git.loom_workspace())?
+                .is_ancestor_of_head(record.candidate.as_str())
+                .await?
+                && verification_source(bd, workspace, &record.bead)
+                    .await?
+                    .is_none_or(|source| source.status != loom_driver::bd::Status::Closed)
+            {
+                return Ok(MoleculeGateHandoff {
+                    evidence: HandoffEvidence {
+                        molecule_state: MoleculeState::Unresolved,
+                        ..HandoffEvidence::default()
+                    },
+                    review_concern: None,
+                    mint_summary: None,
+                });
+            }
+        }
+    }
     let actual = git.prepare_actual_push_range().await?;
     let gate_workspace = git.loom_workspace();
     let diff_range = actual.range.clone();
@@ -1927,6 +1934,26 @@ fn allocate_review_log_path(workspace: &Path) -> (PathBuf, std::time::SystemTime
         path = phase_log_path(&logs_root, "review", phase_when);
     }
     (path, phase_when)
+}
+
+pub(super) async fn verification_source<R: CommandRunner>(
+    bd: &BdClient<R>,
+    workspace: &Path,
+    id: &BeadId,
+) -> Result<Option<Bead>, LoopError> {
+    let (source, dependencies) = bd.show_with_dependencies(id).await?;
+    if source.id != *id {
+        return Err(LoopError::Bug {
+            context: "native verification response identifies a different bead".into(),
+        });
+    }
+    if verification_has_independent_hold(&source)
+        || !dependencies.active_blockers().is_empty()
+        || held(bd, &DecisionWaitJournal::new(workspace), &source).await?
+    {
+        return Ok(None);
+    }
+    Ok(Some(source))
 }
 
 pub(super) fn verification_has_independent_hold(bead: &Bead) -> bool {
@@ -5403,7 +5430,7 @@ mod tests {
             integration.join(".loom/logs/gate/verification-attempts.jsonl"),
         )
         .expect("durable attempts");
-        assert_eq!(attempts.lines().count(), 3);
+        assert_eq!(attempts.lines().count(), 1);
         for row in attempts.lines() {
             let row: serde_json::Value = serde_json::from_str(row).expect("observation");
             assert_eq!(row["head"], head.as_str());
@@ -5690,6 +5717,7 @@ mod tests {
             let (ids, work) = super::super::schedule::resume_verification_candidates(
                 &request,
                 BdClient::with_runner(ScriptedBd::new([ok_stdout(&held_source)])),
+                &mut super::super::schedule::VerificationRecovery::default(),
             )
             .await
             .expect("independent hold remains untouched");
@@ -5703,6 +5731,7 @@ mod tests {
                 ok_stdout(closed),
                 ok_stdout(closed),
             ])),
+            &mut super::super::schedule::VerificationRecovery::default(),
         )
         .await
         .expect("parallel verifier-only restart");
@@ -5866,6 +5895,36 @@ mod tests {
                 );
                 if independent {
                     assert!(integration.join("independent.txt").exists());
+                }
+                if code == 78 {
+                    for _ in 0..2 {
+                        let next = association
+                            .verification_continuations()
+                            .expect("continuation")
+                            .into_iter()
+                            .find(|record| record.bead == bead.id)
+                            .expect("owned continuation");
+                        resumed.bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(&observed)]));
+                        assert_eq!(
+                            resumed
+                                .resume_verification(&bead, next)
+                                .await
+                                .expect("repeat restart"),
+                            AgentOutcome::Success
+                        );
+                        assert!(matches!(
+                            resumed
+                                .exec_per_bead_gate(&bead.id)
+                                .await
+                                .expect("repeat outage"),
+                            PerBeadGateOutcome::Infrastructure { .. }
+                        ));
+                        assert_eq!(
+                            loom_driver::git::sync_head_commit_sha(&integration)
+                                .expect("repeat rollback"),
+                            expected_rollback
+                        );
+                    }
                 }
                 assert_eq!(
                     loom_driver::git::sync_head_commit_sha(&source.path).expect("source retained"),

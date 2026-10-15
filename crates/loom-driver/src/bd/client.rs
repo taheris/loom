@@ -67,6 +67,23 @@ impl<R: CommandRunner> BdClient<R> {
         self.show_selector(id.as_str()).await
     }
 
+    /// Read source state and native prerequisites from one authoritative observation.
+    ///
+    /// # Errors
+    /// Returns native command, decoding, or missing-source errors.
+    pub async fn show_with_dependencies(
+        &self,
+        id: &BeadId,
+    ) -> Result<(Bead, DependencySnapshot), BdError> {
+        let out = self.invoke(args(["show", id.as_str(), "--json"])).await?;
+        let mut beads: Vec<Bead> = decode(&out.stdout, &out.args)?;
+        let mut snapshots: Vec<DependencySnapshot> = decode(&out.stdout, &out.args)?;
+        if beads.is_empty() || snapshots.is_empty() {
+            return Err(BdError::ShowEmpty);
+        }
+        Ok((beads.remove(0), snapshots.remove(0)))
+    }
+
     /// `bd show <selector> --json` → first row.
     ///
     /// `bd` accepts abbreviated ids (for example `abcd.1` for

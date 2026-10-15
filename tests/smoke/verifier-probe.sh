@@ -16,4 +16,8 @@ if [[ -f "$git_dir/smoke-verifier-hold" ]]; then
         exit 124
     fi
 fi
+if [[ -f "$git_dir/smoke-verifier-unavailable" ]]; then
+    printf 'isolated fixture verifier unavailable; required coverage remains pending\n' >&2
+    exit 78
+fi
 test -f loom-smoke-result.txt

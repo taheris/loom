@@ -2742,3 +2742,156 @@ async fn bead_clone_branches_off_published_head_not_stale_base() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn publication_rebase_recovery_preserves_source_and_replays_unfinished_transaction()
+-> Result<()> {
+    for interrupted in 0..4 {
+        let repo = init_repo()?;
+        let mut client = GitClient::open(repo.path())?;
+        client.set_prek_hooks_path_override(fake_prek_hooks(repo.path())?);
+        let integration = loom_path(repo.path());
+        let base = loom_driver::git::sync_head_commit_sha(&integration)?;
+        std::fs::write(integration.join("candidate.txt"), "completed source\n")?;
+        loom_driver::git::commit_all_in(&integration, "completed candidate")?;
+        let candidate = loom_driver::git::sync_head_commit_sha(&integration)?;
+        let label = SpecLabel::new("gate")?;
+        let association = loom_driver::workspace::Association::resolve(repo.path())?;
+        let mut sources = Vec::new();
+        for name in ["lm-puba", "lm-pubb"] {
+            let id = BeadId::new(name)?;
+            sources.push(client.create_worktree(&label, &id).await?);
+            client
+                .preserve_verification_candidate(&id, &candidate)
+                .await?;
+            association.begin_verification(
+                id,
+                label.clone(),
+                None,
+                base.clone(),
+                candidate.clone(),
+            )?;
+        }
+        std::fs::write(
+            repo.path().join("remote.txt"),
+            "independent published work\n",
+        )?;
+        loom_driver::git::commit_all_in(repo.path(), "independent remote work")?;
+        git(repo.path(), &["push", "origin", "main"])?;
+        let onto = loom_driver::git::sync_head_commit_sha(repo.path())?;
+        if interrupted != 0 {
+            for mut record in association.verification_continuations()? {
+                record.publication_rebase = Some(loom_driver::workspace::PublicationRebase {
+                    before: candidate.clone(),
+                    onto: onto.clone(),
+                    after: None,
+                });
+                association.append_verification(&record)?;
+            }
+            git(&integration, &["fetch", "origin", "main"])?;
+            if interrupted == 3 {
+                let status = git_command()
+                    .arg("-C")
+                    .arg(&integration)
+                    .args(["rebase", "--exec", "exit 78", "origin/main"])
+                    .status()?;
+                assert!(!status.success());
+            } else {
+                git(&integration, &["rebase", "origin/main"])?;
+            }
+            let rewritten = loom_driver::git::sync_head_commit_sha(&integration)?;
+            if interrupted == 2 {
+                let mut record = association.verification_continuations()?.remove(0);
+                client
+                    .preserve_verification_candidate(&record.bead, &rewritten)
+                    .await?;
+                record.base = onto.clone();
+                record.rollback = Some(onto.clone());
+                record.candidate = rewritten.clone();
+                record.publication_rebase.as_mut().context("intent")?.after =
+                    Some(rewritten.clone());
+                association.append_verification(&record)?;
+            }
+            client.recover_publication_rebase().await?;
+            assert_eq!(
+                loom_driver::git::sync_head_commit_sha(&integration)?,
+                if interrupted == 2 {
+                    rewritten.clone()
+                } else {
+                    candidate.clone()
+                }
+            );
+            if interrupted != 2 {
+                assert_eq!(
+                    loom_driver::git::sync_rev_parse(
+                        &integration,
+                        &format!("refs/loom/recovery/publication-{candidate}-{rewritten}")
+                    )?,
+                    rewritten
+                );
+            }
+            assert!(client.has_pending_verification_tip().await?);
+        }
+        let actual = client.prepare_actual_push_range().await?;
+        let after = loom_driver::git::sync_head_commit_sha(&integration)?;
+        assert_ne!(after, candidate);
+        assert_eq!(actual.range, format!("{onto}..{after}"));
+        assert!(integration.join("remote.txt").exists());
+        for record in association.verification_continuations()? {
+            assert_eq!(record.candidate, after);
+            assert_eq!(record.base, onto);
+            assert_eq!(record.rollback, Some(onto.clone()));
+            assert_eq!(
+                record
+                    .publication_rebase
+                    .as_ref()
+                    .and_then(|intent| intent.after.as_ref()),
+                Some(&after)
+            );
+        }
+        for source in sources {
+            assert_eq!(
+                loom_driver::git::sync_head_commit_sha(&source.path)?,
+                candidate
+            );
+        }
+        assert!(client.has_pending_verification_tip().await?);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_rebase_recovery_preserves_unattributed_independent_commit() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let integration = loom_path(repo.path());
+    let base = loom_driver::git::sync_head_commit_sha(&integration)?;
+    std::fs::write(integration.join("candidate.txt"), "completed\n")?;
+    loom_driver::git::commit_all_in(&integration, "candidate")?;
+    let candidate = loom_driver::git::sync_head_commit_sha(&integration)?;
+    let id = BeadId::new("lm-unattributed")?;
+    let label = SpecLabel::new("gate")?;
+    client.create_worktree(&label, &id).await?;
+    client
+        .preserve_verification_candidate(&id, &candidate)
+        .await?;
+    let association = loom_driver::workspace::Association::resolve(repo.path())?;
+    let mut record =
+        association.begin_verification(id, label, None, base.clone(), candidate.clone())?;
+    record.publication_rebase = Some(loom_driver::workspace::PublicationRebase {
+        before: candidate,
+        onto: base,
+        after: None,
+    });
+    association.append_verification(&record)?;
+    std::fs::write(integration.join("independent.txt"), "retain\n")?;
+    loom_driver::git::commit_all_in(&integration, "independent operator work")?;
+    let independent = loom_driver::git::sync_head_commit_sha(&integration)?;
+    assert!(client.recover_publication_rebase().await.is_err());
+    assert_eq!(
+        loom_driver::git::sync_head_commit_sha(&integration)?,
+        independent
+    );
+    assert!(integration.join("independent.txt").exists());
+    Ok(())
+}

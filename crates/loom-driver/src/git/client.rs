@@ -1056,6 +1056,7 @@ impl GitClient {
     ///
     /// Returns an error when repository inspection, Git execution, or output decoding fails.
     pub async fn prepare_actual_push_range(&self) -> Result<ActualPushRange, GitError> {
+        self.recover_publication_rebase().await?;
         self.validate_loom_hooks_path_configured().await?;
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
@@ -1067,6 +1068,60 @@ impl GitClient {
             None,
         )
         .await?;
+        let before = self.rev_parse_in_loom("HEAD").await?;
+        let onto = self.rev_parse_in_loom(&remote_ref).await?;
+        let mut cohort = Vec::new();
+        let journal = self.workdir.join(".git/loom-verification-continuations");
+        let association = if journal.try_exists()? {
+            Some(
+                crate::workspace::Association::resolve(&self.workdir)
+                    .map_err(std::io::Error::other)?,
+            )
+        } else {
+            None
+        };
+        if let Some(association) = &association {
+            let integration = GitClient::open(&workdir)?;
+            if !integration.is_ancestor_of_head(onto.as_str()).await? {
+                let common = run_git_raw(
+                    &workdir,
+                    self.clock.as_ref(),
+                    ["merge-base", before.as_str(), onto.as_str()],
+                    None,
+                )
+                .await?;
+                if !common.status.success() {
+                    return Err(cli_error(&common));
+                }
+                let common = GitOid::new(String::from_utf8(common.stdout)?.trim())?;
+                for mut record in association
+                    .verification_continuations()
+                    .map_err(std::io::Error::other)?
+                {
+                    if !integration
+                        .is_ancestor_of_head(record.candidate.as_str())
+                        .await?
+                    {
+                        continue;
+                    }
+                    association
+                        .validate_verification(&record)
+                        .map_err(std::io::Error::other)?;
+                    self.preserve_verification_candidate(&record.bead, &before)
+                        .await?;
+                    record.base = common.clone();
+                    record.publication_rebase = Some(crate::workspace::PublicationRebase {
+                        before: before.clone(),
+                        onto: onto.clone(),
+                        after: None,
+                    });
+                    association
+                        .append_verification(&record)
+                        .map_err(std::io::Error::other)?;
+                    cohort.push(record);
+                }
+            }
+        }
         let rebase_output =
             run_git_index_mut(&workdir, self.clock.as_ref(), ["rebase", &remote_ref], None).await?;
         if !rebase_output.status.success() {
@@ -1075,6 +1130,12 @@ impl GitClient {
         }
         let from_oid = self.rev_parse_in_loom(&remote_ref).await?;
         let to_oid = self.rev_parse_in_loom("HEAD").await?;
+        if let Some(association) = &association {
+            for record in cohort {
+                self.finish_publication_rebase_record(association, record, &to_oid, &from_oid)
+                    .await?;
+            }
+        }
         let tree_oid = self.rev_parse_in_loom("HEAD^{tree}").await?;
         Ok(ActualPushRange {
             range: format!("{from_oid}..{to_oid}"),
@@ -1818,6 +1879,192 @@ impl GitClient {
         Ok(reference)
     }
 
+    /// Recover an interrupted, driver-owned publication rebase without admitting coverage.
+    ///
+    /// # Errors
+    /// Changed source identities, dirty checkouts and unrelated Git history remain preserved.
+    pub async fn recover_publication_rebase(&self) -> Result<(), GitError> {
+        let journal = self.workdir.join(".git/loom-verification-continuations");
+        if !journal.try_exists()? {
+            return Ok(());
+        }
+        let association =
+            crate::workspace::Association::resolve(&self.workdir).map_err(std::io::Error::other)?;
+        let records = association
+            .verification_continuations()
+            .map_err(std::io::Error::other)?;
+        let integration = self.loom_workspace();
+        for record in &records {
+            let Some(intent) = &record.publication_rebase else {
+                continue;
+            };
+            if intent.after.is_some() {
+                continue;
+            }
+            association
+                .validate_verification(record)
+                .map_err(std::io::Error::other)?;
+            let pin = format!("refs/loom/verification/{}/{}", record.bead, intent.before);
+            if sync_rev_parse(&integration, &pin)? != intent.before {
+                return Err(GitError::GitCli {
+                    status: 1,
+                    stderr: "publication rebase source pin changed".into(),
+                });
+            }
+            // A completed peer event survives interruption between cohort journal appends.
+            if let Some(after) = records.iter().find_map(|peer| {
+                let witness = peer.publication_rebase.as_ref()?;
+                (witness.before == intent.before && witness.onto == intent.onto)
+                    .then_some(witness.after.as_ref())
+                    .flatten()
+                    .map(|after| (peer, after))
+            }) {
+                association
+                    .validate_verification(after.0)
+                    .map_err(std::io::Error::other)?;
+                let pin = format!("refs/loom/verification/{}/{}", after.0.bead, after.1);
+                if sync_rev_parse(&integration, &pin)? != *after.1 {
+                    return Err(GitError::GitCli {
+                        status: 1,
+                        stderr: "publication rebase completion pin changed".into(),
+                    });
+                }
+                if GitClient::open(&integration)?
+                    .is_ancestor_of_head(after.1.as_str())
+                    .await?
+                {
+                    self.finish_publication_rebase_record(
+                        &association,
+                        record.clone(),
+                        after.1,
+                        &intent.onto,
+                    )
+                    .await?;
+                    continue;
+                }
+            }
+            let rebase = integration.join(".git/rebase-merge");
+            if rebase.try_exists()? {
+                let before = std::fs::read_to_string(rebase.join("orig-head"))?;
+                let onto = std::fs::read_to_string(rebase.join("onto"))?;
+                let branch = std::fs::read_to_string(rebase.join("head-name"))?;
+                if before.trim() != intent.before.as_str()
+                    || onto.trim() != intent.onto.as_str()
+                    || branch.trim() != format!("refs/heads/{}", self.integration_branch)
+                {
+                    return Err(GitError::GitCli {
+                        status: 1,
+                        stderr: "interrupted rebase belongs to different work; preserved".into(),
+                    });
+                }
+                let partial = sync_head_commit_sha(&integration)?;
+                self.create_verification_ref(
+                    &format!("refs/loom/recovery/publication-{}-{partial}", intent.before),
+                    &partial,
+                )
+                .await?;
+                run_git(
+                    &integration,
+                    self.clock.as_ref(),
+                    ["rebase", "--abort"],
+                    None,
+                )
+                .await?;
+            }
+            let head = sync_head_commit_sha(&integration)?;
+            if head == intent.before || records.iter().any(|known| known.candidate == head) {
+                continue;
+            }
+            if !self
+                .status_porcelain_at(&integration)
+                .await?
+                .trim()
+                .is_empty()
+            {
+                return Err(GitError::GitCli {
+                    status: 1,
+                    stderr: "publication recovery found dirty integration; preserved".into(),
+                });
+            }
+            let reference = format!("refs/heads/{}", self.integration_branch);
+            let previous = sync_rev_parse(&integration, &format!("{reference}@{{1}}"))?;
+            let event = run_git_raw(
+                &integration,
+                self.clock.as_ref(),
+                ["reflog", "show", "-1", "--format=%gs", &reference],
+                None,
+            )
+            .await?;
+            if !event.status.success() {
+                return Err(cli_error(&event));
+            }
+            let expected = format!("rebase (finish): {reference} onto {}", intent.onto);
+            if previous != intent.before
+                || String::from_utf8(event.stdout)?.trim() != expected
+                || sync_rev_parse(&integration, &reference)? != head
+            {
+                return Err(GitError::GitCli { status: 1, stderr: "publication recovery cannot attribute changed integration; all history preserved".into() });
+            }
+            // The reflog identifies only our interrupted Git transaction, never driver provenance
+            // or coverage. Keep every rewritten commit, then replay ordinary verification.
+            self.create_verification_ref(
+                &format!("refs/loom/recovery/publication-{}-{head}", intent.before),
+                &head,
+            )
+            .await?;
+            let accepted = run_git_raw(
+                &integration,
+                self.clock.as_ref(),
+                [
+                    "merge-base",
+                    "--is-ancestor",
+                    head.as_str(),
+                    &format!("refs/remotes/origin/{}", self.integration_branch),
+                ],
+                None,
+            )
+            .await?;
+            if accepted.status.success() {
+                self.finish_publication_rebase_record(
+                    &association,
+                    record.clone(),
+                    &head,
+                    &intent.onto,
+                )
+                .await?;
+            } else if accepted.status.code() == Some(1) {
+                self.reset_integration_to(intent.before.as_str()).await?;
+            } else {
+                return Err(cli_error(&accepted));
+            }
+        }
+        Ok(())
+    }
+
+    async fn finish_publication_rebase_record(
+        &self,
+        association: &crate::workspace::Association,
+        mut record: crate::workspace::VerificationContinuation,
+        after: &GitOid,
+        onto: &GitOid,
+    ) -> Result<(), GitError> {
+        association
+            .validate_verification(&record)
+            .map_err(std::io::Error::other)?;
+        self.preserve_verification_candidate(&record.bead, after)
+            .await?;
+        record.base = onto.clone();
+        record.rollback = Some(onto.clone());
+        record.candidate = after.clone();
+        if let Some(intent) = &mut record.publication_rebase {
+            intent.after = Some(after.clone());
+        }
+        association
+            .append_verification(&record)
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
     /// Retain an unpublished integration tip owned by a protected verification continuation.
     ///
     /// This permits restart to reach the ordinary verifier; it admits no coverage and
@@ -1839,13 +2086,6 @@ impl GitClient {
         }
         let head = self.integration_commit_sha().await?;
         if sync_head_commit_sha(&integration)? != head {
-            return Ok(false);
-        }
-        let origin = format!("refs/remotes/origin/{}", self.integration_branch);
-        if !GitClient::open(&integration)?
-            .is_ancestor_of_head(&origin)
-            .await?
-        {
             return Ok(false);
         }
         for record in association

@@ -25,6 +25,14 @@ enum Phase {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PublicationRebase {
+    pub before: GitOid,
+    pub onto: GitOid,
+    pub after: Option<GitOid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerificationContinuation {
     pub bead: BeadId,
     pub label: SpecLabel,
@@ -32,6 +40,10 @@ pub struct VerificationContinuation {
     pub base: GitOid,
     pub candidate: GitOid,
     pub parked_status: Option<Status>,
+    #[serde(default)]
+    pub rollback: Option<GitOid>,
+    #[serde(default)]
+    pub publication_rebase: Option<PublicationRebase>,
     source_head: GitOid,
     source_tree: GitOid,
     directory: Identity,
@@ -60,6 +72,8 @@ impl Association {
             bead,
             label,
             root,
+            rollback: Some(base.clone()),
+            publication_rebase: None,
             base,
             candidate,
             parked_status: None,
