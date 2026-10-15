@@ -24,6 +24,9 @@ _:
       wrixLib,
       wrixLinuxPkgs,
       profileManifest,
+      imageLoom,
+      nativeCargo,
+      rustProfile,
       ...
     }:
     let
@@ -277,6 +280,58 @@ _:
       };
 
       nativePreflightEntry = profileManifest.manifest.rust.direct;
+      missingClippy = wrixLinuxPkgs.lib.setPrio (-20) (
+        wrixLinuxPkgs.writeShellScriptBin "cargo" ''
+          set -euo pipefail
+          if [[ "''${1:-}" == clippy ]]; then
+            printf 'fixture Clippy executable unavailable\n' >&2
+            exit 127
+          fi
+          exec ${nativeCargo}/bin/cargo "$@"
+        ''
+      );
+      missingClippyManifest = (import ../lib.nix).mkProfileManifest {
+        inherit pkgs wrixLib nativeCargo;
+        imagePkgs = wrixLinuxPkgs;
+        loomBin = imageLoom.bin;
+        profiles.rust = rustProfile;
+        runtimes.direct.agentPkg = imageLoom.bin;
+        extraPackages = [ missingClippy ];
+      };
+      missingClippyEntry = missingClippyManifest.manifest.rust.direct;
+      missingClippyProfile =
+        pkgs.runCommand "loom-native-missing-clippy-profile.json"
+          {
+            nativeBuildInputs = [ pkgs.jq ];
+          }
+          ''
+            jq '.security.runtime_secrets = {} |
+                .services.beads.enable = false |
+                .services.nix_cache.enable = false |
+                .profile.mounts = [] |
+                del(.profile.env.LOOM_NATIVE_PREFLIGHT)' \
+              ${missingClippyEntry.profile_config} > "$out"
+          '';
+      missingClippyDescriptor = pkgs.writeText "loom-native-missing-clippy-manifest.json" (
+        builtins.toJSON {
+          rust.direct = missingClippyEntry // {
+            profile_config = "${missingClippyProfile}";
+          };
+        }
+      );
+      nativePreflightDriver = loom.craneLib.mkCargoDerivation {
+        pname = "loom-native-preflight-driver";
+        version = "0.1.0";
+        src = loom.stagedSrc;
+        inherit (loom) cargoArtifacts;
+        nativeBuildInputs = [ pkgs.git ];
+        LOOM_TEST_NATIVE_MANIFEST = missingClippyDescriptor;
+        buildPhaseCargoCommand = "cargo build --release -p loom-workflow --example native-worker-preflight";
+        installPhaseCommand = ''
+          install -Dm755 target/release/examples/native-worker-preflight "$out/bin/native-worker-preflight"
+        '';
+        doCheck = false;
+      };
       nativePreflightProfile =
         pkgs.runCommand "native-preflight-fixture-profile.json" { nativeBuildInputs = [ pkgs.jq ]; }
           ''
@@ -300,6 +355,8 @@ _:
         ++ optionals isLinux [ pkgs.podman ];
         text = ''
           unset WRIX_UNSAFE_PODMAN_SOCKET WRIX_NETWORK WRIX_NETWORK_ALLOWLIST
+          unset WRIX_SIGNING_KEY WRIX_DEPLOY_KEY WRIX_PI_AUTH_FILE
+          unset ANTHROPIC_API_KEY OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN
           fixture=$(mktemp -d)
           trap 'rm -rf "$fixture"' EXIT
           mkdir -p "$fixture/src" "$fixture/.cargo" "$fixture/scripts"
@@ -331,6 +388,13 @@ _:
           fi
           grep -F 'project metadata unavailable; source repair remains enabled' "$fixture/unavailable.log"
           grep -F 'source-feedback tools available; required verification remains pending' "$fixture/unavailable.log"
+          mkdir -m 700 "$fixture/driver-home"
+          HOME="$fixture/driver-home" \
+            XDG_STATE_HOME="$fixture/driver-home/.local/state" \
+            XDG_CONFIG_HOME="$fixture/driver-home/.config" \
+            XDG_CACHE_HOME="$fixture/driver-home/.cache" \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+            timeout --kill-after=10s 600s ${nativePreflightDriver}/bin/native-worker-preflight
           printf 'native-preflight-actual-worker-ok\n'
         '';
       };

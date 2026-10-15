@@ -240,6 +240,7 @@ in
         inherit
           debugSandbox
           imagePiCodingAgent
+          imageLoom
           imageTreefmtWrapper
           loom
           loomBin
