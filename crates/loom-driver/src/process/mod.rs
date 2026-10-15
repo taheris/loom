@@ -101,6 +101,23 @@ impl OwnedChild {
         Ok(status)
     }
 
+    /// Observe launcher exit within a fixed budget after its protocol stream closes.
+    ///
+    /// A missing status remains unavailable; dropping this owner still terminates its group.
+    ///
+    /// # Errors
+    /// Returns a process-wait error.
+    pub async fn wait_bounded(
+        &mut self,
+        clock: &dyn Clock,
+        budget: Duration,
+    ) -> io::Result<Option<std::process::ExitStatus>> {
+        tokio::select! {
+            status = self.wait() => status.map(Some),
+            () = clock.sleep(budget) => Ok(None),
+        }
+    }
+
     /// Check for launcher exit without retaining a reaped process-group identity.
     ///
     /// # Errors
@@ -406,6 +423,26 @@ fi
             clock.sleep(Duration::from_secs(20)).await;
             startup_complete();
             clock.sleep(Duration::from_secs(4)).await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn bounded_exit_observation_retains_cancellation_without_status() {
+        bounded(async {
+            let fixture = Fixture::new().await;
+            let mut command = fixture.command();
+            let mut child = super::OwnedChild::spawn(&mut command).expect("spawn fixture");
+            let peers = fixture.ready(2).await;
+            fixture.clock.expire();
+            let status = child
+                .wait_bounded(fixture.clock.as_ref(), Duration::from_secs(60))
+                .await
+                .expect("observe exit");
+            assert_eq!(status, None);
+            assert_eq!(child.try_wait().expect("live launcher status"), None);
+            child.terminate().await.expect("terminate retained group");
+            fixture.assert_stopped(peers).await;
         })
         .await;
     }

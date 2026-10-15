@@ -1004,6 +1004,10 @@ letting the entrypoint run the wrong runtime.
 - A preflight-reserved exit after canonical agent output remains an interrupted
   session. [test](native_preflight_exit_after_agent_output_is_interruption)
 
+- A bounded wait without an exit status retains process-group cancellation
+  ownership and cannot establish successful execution.
+  [test](bounded_exit_observation_retains_cancellation_without_status)
+
 ### Compaction recovery
 
 - Interactive `loom plan` shell-outs for Claude and Pi, plus Claude-backed

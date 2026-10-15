@@ -322,12 +322,9 @@ async fn startup_failure(
     if !closed {
         return error;
     }
-    let status = tokio::select! {
-        status = child.wait() => status,
-        () = clock.sleep(Duration::from_secs(5)) => return error,
-    };
+    let status = child.wait_bounded(clock, Duration::from_secs(5)).await;
     match status {
-        Ok(status) if !status.success() => {
+        Ok(Some(status)) if !status.success() => {
             let code = status.code();
             #[cfg(unix)]
             let code = {

@@ -340,6 +340,12 @@ mod tests {
     use super::*;
     use loom_driver::agent::AgentBackend;
 
+    async fn run_prepared_backend<B: AgentBackend>(
+        spawn: &SpawnConfig,
+    ) -> super::super::SessionResult {
+        crate::agent::run_agent_classified::<B>(spawn, None, None, None, None).await
+    }
+
     #[tokio::test]
     async fn native_worker_preparation_probes_before_agent_and_routes_missing_capability() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -403,14 +409,20 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
         }))
         .unwrap();
         let profile = ProfileName::base();
-        for (capability, stall) in [
-            (None, false),
-            (Some(NativePreflight::Rust), false),
-            (Some(NativePreflight::Rust), true),
-        ] {
+        for (runtime, capability, stall) in
+            [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct]
+                .into_iter()
+                .flat_map(|runtime| {
+                    [
+                        (runtime, None, false),
+                        (runtime, Some(NativePreflight::Rust), false),
+                        (runtime, Some(NativePreflight::Rust), true),
+                    ]
+                })
+        {
             let manifest_path = dir.path().join("images.json");
             std::fs::write(&manifest_path, serde_json::to_vec(&serde_json::json!({
-                "base": {"pi": {"ref":"fixture", "source":"/fixture/image", "source_kind":"nix-descriptor",
+                "base": {(runtime.to_string()): {"ref":"fixture", "source":"/fixture/image", "source_kind":"nix-descriptor",
                     "launcher":launcher, "profile_config":profile_config, "native_preflight":capability}}
             })).unwrap()).unwrap();
             let manifest = ProfileImageManifest::from_path(&manifest_path).unwrap();
@@ -421,7 +433,7 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
                 manifest: &manifest,
                 cli_profile: None,
                 phase_default: &profile,
-                runtime: AgentRuntime::Pi,
+                runtime,
                 label: &label,
                 style_rules: "docs/style-rules.md",
                 loom: &LoomTopConfig::default(),
@@ -458,14 +470,17 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
             let Preparation::Ready(worker) = prepared else {
                 panic!("provisioned worker rejected")
             };
-            let result = crate::agent::run_agent_classified::<loom_agent::pi::backend::PiBackend>(
-                &worker.spawn,
-                None,
-                None,
-                None,
-                None,
-            )
-            .await;
+            let result = match runtime {
+                AgentRuntime::Pi => {
+                    run_prepared_backend::<loom_agent::PiBackend>(&worker.spawn).await
+                }
+                AgentRuntime::Claude => {
+                    run_prepared_backend::<loom_agent::ClaudeBackend>(&worker.spawn).await
+                }
+                AgentRuntime::Direct => {
+                    run_prepared_backend::<loom_agent::DirectBackend>(&worker.spawn).await
+                }
+            };
             if stall {
                 assert!(
                     matches!(&result, super::super::SessionResult::PreflightFailed { error }

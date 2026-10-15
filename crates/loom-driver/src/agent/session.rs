@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 
+use crate::clock::SystemClock;
 use crate::process::OwnedChild;
+use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::process::ChildStdin;
 
@@ -80,8 +82,24 @@ impl AgentSession<Idle> {
     /// Returns an error when agent I/O, protocol parsing, or session validation fails.
     pub async fn prompt(mut self, msg: &str) -> Result<AgentSession<Active>, ProtocolError> {
         let line = self.parser.encode_prompt(msg)?;
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await?;
+        let write = async {
+            self.stdin.write_all(line.as_bytes()).await?;
+            self.stdin.flush().await
+        }
+        .await;
+        if let Err(error) = write {
+            if error.kind() == std::io::ErrorKind::BrokenPipe
+                && let Some(status) = self
+                    .child
+                    .wait_bounded(&SystemClock::new(), Duration::from_secs(5))
+                    .await?
+                && !status.success()
+                && let Some(code) = process_exit_code(status)
+            {
+                return Err(ProtocolError::ProcessExit(code));
+            }
+            return Err(error.into());
+        }
         Ok(AgentSession {
             child: self.child,
             stdin: self.stdin,
@@ -119,7 +137,10 @@ impl AgentSession<Active> {
             let line_owned = if let Some(line) = self.reader.next_line().await? {
                 line.to_owned()
             } else {
-                if let Some(status) = self.child.try_wait()?
+                if let Some(status) = self
+                    .child
+                    .wait_bounded(&SystemClock::new(), Duration::from_secs(5))
+                    .await?
                     && !status.success()
                 {
                     if let Some(code) = process_exit_code(status) {
