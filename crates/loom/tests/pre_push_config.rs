@@ -182,6 +182,31 @@ fn marker_free_hook_rejects_absent_required_tool_before_skip_wrapper() {
     );
 }
 
+#[test]
+fn configured_native_wrapper_initializes_patches_before_cargo() {
+    let fixture = Fixture::new();
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../bin/loom");
+    std::fs::copy(source, fixture.workspace.join("bin/loom")).expect("configured wrapper");
+    std::fs::write(
+        fixture.workspace.join("scripts/configure-cargo-patches.sh"),
+        "set -euo pipefail\nprintf 'initialized\\n' > .patches-ready\n",
+    )
+    .expect("external patch initializer");
+    loom_test_support::write_executable_bash_script(fixture.tools.join("cargo"),
+        "set -euo pipefail\n[[ \"$(cat .patches-ready)\" == initialized ]]\n[[ \"$1\" == run && \"$2\" == --bin && \"$3\" == loom ]]\nprintf 'cargo-after-patches\\n'\n"
+    ).expect("external Cargo");
+    let output = fixture
+        .recording_command("bash")
+        .args(["bin/loom", "--help"])
+        .output()
+        .expect("configured native startup");
+    assert_success(&output, "configured native wrapper");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("startup output"),
+        "cargo-after-patches\n"
+    );
+}
+
 fn git(workspace: &Path, args: &[&str]) {
     let output = git_command()
         .arg("-C")

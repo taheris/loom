@@ -992,10 +992,10 @@ letting the entrypoint run the wrong runtime.
   constitute execution evidence.
   [test](native_worker_preparation_probes_before_agent_and_routes_missing_capability)
 
+<!-- prettier-ignore -->
 - The fixed isolated Rust image actually initializes native patches and probes
   its tools/private store before launching its agent entrypoint. Availability is
-  source feedback, never required-coverage admission. [system](nix run
-  .#test-native-preflight)
+  source feedback, never required-coverage admission. [system](nix run .#test-native-preflight)
 
 - Missing tools or unsafe executor state exits 78 before canonical agent output
   and routes to `verification-capability-unavailable`.

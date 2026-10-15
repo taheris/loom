@@ -3024,7 +3024,6 @@ fn run_loop_cmd(
     host_key: bool,
     render_flags: RenderFlags,
 ) -> anyhow::Result<LoopOutcome> {
-    let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     sweep_retention_at(
         &workspace.join(".loom/logs"),
@@ -3046,6 +3045,13 @@ fn run_loop_cmd(
     let repo_git_policy = prepare_wrix_git_policy(&workspace.join(".loom/integration"), host_key)?;
 
     let runtime = command_runtime()?;
+    let manifest = Arc::new(
+        runtime.block_on(loom_driver::profile_manifest::bootstrap_loop(
+            workspace,
+            &config,
+            repo_git_policy.clone(),
+        ))?,
+    );
     let roots = runtime.block_on(async {
         let bd = BdClient::new();
         resolve_loop_work_roots(&bd, work_roots).await

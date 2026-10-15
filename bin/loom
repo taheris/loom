@@ -26,4 +26,5 @@ if sccache_bin="$(command -v sccache)"; then
 fi
 
 scrub_git_local_env
+bash "$top_level/scripts/configure-cargo-patches.sh"
 exec cargo run --bin loom --manifest-path "$top_level/Cargo.toml" -- "$@"

@@ -1071,7 +1071,8 @@ where
             &self.bd,
             &self.label,
             self.handoff_molecule.as_ref(),
-            MoleculePushGateCommands::new(self.agent_override, &self.loom_bin, &self.wrix_bin),
+            MoleculePushGateCommands::new(self.agent_override, &self.loom_bin, &self.wrix_bin)
+                .with_manifest(&self.manifest),
             &self.workspace,
             &self.git,
         )
@@ -1235,6 +1236,7 @@ pub struct MoleculePushGateCommands<'a> {
     review_agent: Option<AgentRuntime>,
     loom_bin: &'a Path,
     wrix_bin: &'a Path,
+    manifest: Option<&'a ProfileImageManifest>,
 }
 
 impl<'a> MoleculePushGateCommands<'a> {
@@ -1247,7 +1249,14 @@ impl<'a> MoleculePushGateCommands<'a> {
             review_agent,
             loom_bin,
             wrix_bin,
+            manifest: None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_manifest(mut self, manifest: &'a ProfileImageManifest) -> Self {
+        self.manifest = Some(manifest);
+        self
     }
 }
 
@@ -1348,6 +1357,9 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
     let mut review_command = Command::new(commands.loom_bin);
+    if let Some(manifest) = commands.manifest {
+        manifest.configure_driver(&mut review_command);
+    }
     review_command
         .current_dir(&gate_workspace)
         .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())

@@ -571,6 +571,22 @@ for worker feedback.
 
 ### Bead Dispatch
 
+<!-- prettier-ignore -->
+- Missing or legacy native profiles are provisioned automatically from the
+  registered operator's clean, signature-verified published Git source through
+  its fixed profile factory. Cold starts and legacy manifests recover without
+  changing selection or granting coverage. Missing/corrupt authority is neither
+  reconstructed nor bypassed. [system](nix run .#test-profile-bootstrap)
+
+- Provisioned profile inputs survive trusted driver subprocesses, including
+  the review handoff. [test](provisioned_profile_inputs_survive_actual_driver_subprocess_environment)
+
+- Profile factory output must be complete and identify an immutable store
+  manifest. [test](factory_output_rejects_partial_results_and_mutable_manifests)
+
+- The configured native startup wrapper initializes pinned Cargo patches before
+  invoking Cargo. [test](configured_native_wrapper_initializes_patches_before_cargo)
+
 - A declared legacy native profile is upgraded from the installed driver's
   explicit pinned closure without introducing profiles or runtimes. Explicit
   native overrides remain selected; readiness still grants no required coverage.

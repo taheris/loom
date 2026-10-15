@@ -27,6 +27,7 @@ _:
       imageLoom,
       nativeCargo,
       rustProfile,
+      sandbox,
       ...
     }:
     let
@@ -77,6 +78,29 @@ _:
         runtimeInputs = testRuntimeInputs;
         runtimeEnv.LOOM_CARGO_PATCHES = loom.cargoConfig;
         text = builtins.readFile ../../scripts/required-test.sh;
+      };
+
+      profileBootstrapApp = pkgs.writeShellApplication {
+        name = "test-profile-bootstrap";
+        runtimeInputs = [
+          pkgs.git
+          pkgs.nix
+          pkgs.jq
+          pkgs.openssh
+          pkgs.coreutils
+          pkgs.beads
+        ];
+        runtimeEnv.WRIX_PREK_HOOKS = wrixLib.prekHooks;
+        runtimeEnv.LOOM_WRIX_BIN = "${sandbox.package}/bin/wrix";
+        text = ''
+          if [[ "$#" != 0 ]]; then
+            printf 'this fixed fixture accepts no arguments\n' >&2
+            exit 64
+          fi
+          exec ${pkgs.bash}/bin/bash ${../../tests/sandbox/profile-bootstrap.sh} \
+            ${loom.bin}/bin/loom ${sandbox.package}/bin/wrix ${profileManifest} \
+            ${pkgs.bash} ${pkgs.coreutils} ${pkgs.stdenv.hostPlatform.system}
+        '';
       };
 
       fuzzApp = pkgs.writeShellApplication {
@@ -403,6 +427,10 @@ _:
       packages.smoke-runtime = smokeRuntime;
 
       apps = {
+        test-profile-bootstrap = {
+          type = "app";
+          program = "${profileBootstrapApp}/bin/test-profile-bootstrap";
+        };
         test = {
           type = "app";
           program = "${testApp}/bin/test";

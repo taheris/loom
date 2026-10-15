@@ -236,12 +236,15 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         Ok(spawn) => spawn,
         Err(error) => return profile_rejection(error, manifest).map(Preparation::Rejected),
     };
-    if tracked_files
-        .iter()
-        .any(|path| path == Path::new("Cargo.toml"))
+    let native_feedback =
+        manifest.lookup(&profile, runtime)?.native_preflight == Some(NativePreflight::Rust);
+    if native_feedback
+        || (profile.as_str() == "rust"
+            && tracked_files
+                .iter()
+                .any(|path| path == Path::new("Cargo.toml")))
     {
-        let entry = manifest.lookup(&profile, runtime)?;
-        if entry.native_preflight != Some(NativePreflight::Rust) {
+        if !native_feedback {
             return Ok(Preparation::Rejected(AgentOutcome::StaticInfra {
                 cause: super::runner::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE.to_owned(),
                 error: format!(
@@ -408,21 +411,22 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
             "id": "lm-nworker", "title": "native worker", "status": "open"
         }))
         .unwrap();
-        let profile = ProfileName::base();
-        for (runtime, capability, stall) in
+        for (runtime, capability, stall, native_profile) in
             [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct]
                 .into_iter()
                 .flat_map(|runtime| {
                     [
-                        (runtime, None, false),
-                        (runtime, Some(NativePreflight::Rust), false),
-                        (runtime, Some(NativePreflight::Rust), true),
+                        (runtime, None, false, true),
+                        (runtime, Some(NativePreflight::Rust), false, true),
+                        (runtime, Some(NativePreflight::Rust), true, true),
+                        (runtime, None, false, false),
                     ]
                 })
         {
+            let profile = ProfileName::new(if native_profile { "rust" } else { "base" }).unwrap();
             let manifest_path = dir.path().join("images.json");
             std::fs::write(&manifest_path, serde_json::to_vec(&serde_json::json!({
-                "base": {(runtime.to_string()): {"ref":"fixture", "source":"/fixture/image", "source_kind":"nix-descriptor",
+                (profile.to_string()): {(runtime.to_string()): {"ref":"fixture", "source":"/fixture/image", "source_kind":"nix-descriptor",
                     "launcher":launcher, "profile_config":profile_config, "native_preflight":capability}}
             })).unwrap()).unwrap();
             let manifest = ProfileImageManifest::from_path(&manifest_path).unwrap();
@@ -460,7 +464,7 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
             })
             .await
             .unwrap();
-            if capability.is_none() {
+            if capability.is_none() && native_profile {
                 assert!(
                     matches!(prepared, Preparation::Rejected(AgentOutcome::StaticInfra { cause, .. })
                     if cause == super::super::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE)
@@ -470,6 +474,16 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
             let Preparation::Ready(worker) = prepared else {
                 panic!("provisioned worker rejected")
             };
+            if !native_profile {
+                assert!(
+                    !worker
+                        .spawn
+                        .env
+                        .iter()
+                        .any(|(key, _)| key == "LOOM_NATIVE_PREFLIGHT")
+                );
+                continue;
+            }
             let result = match runtime {
                 AgentRuntime::Pi => {
                     run_prepared_backend::<loom_agent::PiBackend>(&worker.spawn).await

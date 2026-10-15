@@ -63,6 +63,7 @@ pub struct ImageEntry {
 pub struct ProfileImageManifest {
     entries: BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>,
     manifest_path: PathBuf,
+    provisioned_path: Option<PathBuf>,
 }
 
 fn validate_runtime_metadata(
@@ -87,6 +88,15 @@ fn validate_runtime_metadata(
 }
 
 impl ProfileImageManifest {
+    pub(super) fn legacy_native(&self) -> bool {
+        self.entries.iter().any(|(profile, runtimes)| {
+            profile.as_str() == "rust"
+                && runtimes
+                    .values()
+                    .any(|entry| entry.native_preflight != Some(NativePreflight::Rust))
+        })
+    }
+
     /// Read the manifest path from `LOOM_PROFILES_MANIFEST` and parse it.
     ///
     /// # Errors
@@ -127,10 +137,24 @@ impl ProfileImageManifest {
                         "provisioning native feedback from the installed driver closure; required verification remains pending"
                     );
                     entry.clone_from(replacement);
+                    self.provisioned_path = Some(provisioned.manifest_path.clone());
                 }
             }
         }
         self
+    }
+
+    /// Preserve the selected immutable profile inputs across trusted driver subprocesses.
+    pub fn configure_driver(&self, command: &mut tokio::process::Command) {
+        command.env(ENV_VAR, &self.manifest_path);
+        match &self.provisioned_path {
+            Some(path) => {
+                command.env(PROVISIONED_ENV_VAR, path);
+            }
+            None => {
+                command.env_remove(PROVISIONED_ENV_VAR);
+            }
+        }
     }
 
     /// Parse a manifest from `path`. Read errors map to
@@ -154,6 +178,7 @@ impl ProfileImageManifest {
         Ok(Self {
             entries,
             manifest_path: path.to_path_buf(),
+            provisioned_path: None,
         })
     }
 
@@ -291,6 +316,41 @@ mod tests {
                 .lookup(&ProfileName::new("rust")?, AgentRuntime::Pi)?
                 .r#ref,
             "explicit"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provisioned_profile_inputs_survive_actual_driver_subprocess_environment() -> Result<()>
+    {
+        let original = tempfile::tempdir()?;
+        let installed = tempfile::tempdir()?;
+        let entry = serde_json::json!({"ref":"image", "source":"/image", "source_kind":"nix-descriptor", "launcher":"/wrix", "profile_config":"/profile"});
+        let original_path = write_manifest(
+            original.path(),
+            &serde_json::json!({"rust":{"pi":entry}}).to_string(),
+        )?;
+        let mut replacement = entry;
+        replacement["native_preflight"] = "rust".into();
+        let provisioned_path = write_manifest(
+            installed.path(),
+            &serde_json::json!({"rust":{"pi":replacement}}).to_string(),
+        )?;
+        let manifest = ProfileImageManifest::from_path(&original_path)?
+            .provision_native_from(&ProfileImageManifest::from_path(&provisioned_path)?);
+        let mut command = tokio::process::Command::new("bash");
+        command.args(["-euc", "printf '%s\\n%s\\n' \"$LOOM_PROFILES_MANIFEST\" \"$LOOM_PROVISIONED_PROFILES_MANIFEST\""]);
+        manifest.configure_driver(&mut command);
+        let output = command.output().await?;
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout)?
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                original_path.to_str().unwrap(),
+                provisioned_path.to_str().unwrap()
+            ]
         );
         Ok(())
     }

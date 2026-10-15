@@ -1226,7 +1226,9 @@ where
         // Release the work-root lock before spawning the child — `loom loop`
         // acquires the same lock and would otherwise time out behind us.
         self.lock.take();
-        let status = Command::new(&self.loom_bin)
+        let mut command = Command::new(&self.loom_bin);
+        self.manifest.configure_driver(&mut command);
+        let status = command
             .current_dir(&self.workspace)
             .arg("run")
             .arg("-s")
