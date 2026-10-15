@@ -83,6 +83,13 @@ pub(super) async fn execute_gate(
         let execution = match loom_driver::process::output(command, clock, timeout).await {
             Ok(output) => {
                 let code = output.status.code();
+                #[cfg(unix)]
+                let recorded_code = {
+                    use std::os::unix::process::ExitStatusExt as _;
+                    code.unwrap_or_else(|| 128 + output.status.signal().unwrap_or(0))
+                };
+                #[cfg(not(unix))]
+                let recorded_code = code.unwrap_or(128);
                 let state = match code {
                     Some(0) => ExecutionState::Completed,
                     Some(77 | 78) => ExecutionState::Unavailable,
@@ -91,7 +98,7 @@ pub(super) async fn execute_gate(
                     Some(_) => ExecutionState::Rejected,
                 };
                 Execution {
-                    code: code.unwrap_or(137),
+                    code: recorded_code,
                     stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
                     stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
                     state,

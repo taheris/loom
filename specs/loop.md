@@ -523,6 +523,10 @@ mutation permission.
   independently ready work without consuming semantic retries.
   [test](required_verifier_infrastructure_failure_preserves_independent_source_work)
 
+- The production post-integration gate retains its candidate and attempt history
+  after verifier infrastructure exhaustion without requesting source repair.
+  [test](production_gate_preserves_candidate_after_verifier_infrastructure_exhaustion)
+
 ### Task acceptance
 
 - The task-acceptance reference type and its metadata parser admit exactly one

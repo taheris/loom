@@ -1044,7 +1044,7 @@ where
                 UpdateOpts {
                     status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:infra".to_string()],
-                    notes: Some(diagnostic_notes(&diagnostic.cause, &diagnostic.error)),
+                    append_notes: Some(diagnostic_notes(&diagnostic.cause, &diagnostic.error)),
                     set_metadata: metadata,
                     ..UpdateOpts::default()
                 },
@@ -4683,9 +4683,8 @@ mod tests {
             "{argv:?}",
         );
         assert!(
-            argv.windows(2)
-                .any(|w| w[0] == "--notes"
-                    && w[1].starts_with("infra-preflight: podman load failed")),
+            argv.windows(2).any(|w| w[0] == "--append-notes"
+                && w[1].starts_with("infra-preflight: podman load failed")),
             "{argv:?}",
         );
     }
@@ -4958,6 +4957,55 @@ mod tests {
             .await
             .expect("exec_per_bead_gate ok");
         assert_eq!(outcome, PerBeadGateOutcome::Clean);
+    }
+
+    #[tokio::test]
+    async fn production_gate_preserves_candidate_after_verifier_infrastructure_exhaustion() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let workspace = dir.path().join("workspace");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let stub = dir.path().join("unavailable-verifier.sh");
+        loom_test_support::write_executable_bash_script(
+            &stub,
+            "set -euo pipefail\nprintf 'required isolated executor unavailable\\n' >&2\nexit 78\n",
+        )
+        .expect("external verifier");
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            SpecLabel::new("gate").expect("label"),
+            stub,
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base").expect("profile"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                panic!("verification recovery cannot dispatch source work");
+            },
+        );
+        let integration = controller.git.loom_workspace();
+        let head = loom_driver::git::sync_head_commit_sha(&integration).expect("candidate");
+        let result = controller
+            .exec_per_bead_gate(&BeadId::new("lm-vinfra").expect("id"))
+            .await
+            .expect("bounded gate");
+        assert!(matches!(result, PerBeadGateOutcome::Infrastructure { .. }));
+        assert!(controller.stashed_previous_failure.is_none());
+        assert_eq!(
+            loom_driver::git::sync_head_commit_sha(&integration).expect("preserved candidate"),
+            head
+        );
+        let attempts = std::fs::read_to_string(
+            integration.join(".loom/logs/gate/verification-attempts.jsonl"),
+        )
+        .expect("durable attempts");
+        assert_eq!(attempts.lines().count(), 3);
+        for row in attempts.lines() {
+            let row: serde_json::Value = serde_json::from_str(row).expect("observation");
+            assert_eq!(row["head"], head.as_str());
+            assert_eq!(row["coverage_admitted"], false);
+        }
     }
 
     /// A non-zero `loom gate verify --diff` against the integrated tree is

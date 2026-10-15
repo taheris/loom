@@ -609,7 +609,7 @@ fn parallel_infra_update(diagnostic: &InfraDiagnostic) -> UpdateOpts {
     UpdateOpts {
         status: Some(loom_driver::bd::Status::Blocked),
         add_labels: vec!["loom:infra".to_string()],
-        notes: Some(parallel_diagnostic_notes(
+        append_notes: Some(parallel_diagnostic_notes(
             &diagnostic.cause,
             &diagnostic.error,
         )),
@@ -730,7 +730,11 @@ mod tests {
             Some("blocked")
         );
         assert!(opts.add_labels.iter().any(|label| label == "loom:infra"));
-        assert_eq!(opts.notes.as_deref(), Some("infra-interrupted: stream eof"),);
+        assert_eq!(
+            opts.append_notes.as_deref(),
+            Some("infra-interrupted: stream eof"),
+        );
+        assert_eq!(opts.notes, None);
         assert!(opts.set_metadata.contains(&(
             "loom.infra.cause".to_string(),
             "infra-interrupted".to_string(),
