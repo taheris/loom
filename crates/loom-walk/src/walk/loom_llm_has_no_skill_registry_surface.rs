@@ -15,13 +15,13 @@ const RULE: &str = "loom_llm_has_no_skill_registry_surface — `loom-llm` expose
 const MANIFEST_REL: &str = "crates/loom-llm/Cargo.toml";
 const SRC_DIR: &str = "crates/loom-llm/src";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let mut violations = Vec::new();
 
-    check_manifest(&root, &mut violations);
-    for path in rs_files_recursive(&root.join(SRC_DIR)) {
-        let Some(file) = parse_rs(&path) else {
+    check_manifest(input, &root, &mut violations);
+    for path in rs_files_recursive(input, &root.join(SRC_DIR)) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         let rel_path = rel(&root, &path);
@@ -31,9 +31,9 @@ pub fn run(_input: &WalkInput) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-fn check_manifest(root: &std::path::Path, violations: &mut Vec<String>) {
+fn check_manifest(input: &WalkInput, root: &std::path::Path, violations: &mut Vec<String>) {
     let manifest = root.join(MANIFEST_REL);
-    let Some(body) = read_to_string(&manifest) else {
+    let Some(body) = read_to_string(input, &manifest) else {
         violations.push(format!("{MANIFEST_REL}:1 manifest not readable"));
         return;
     };
@@ -137,3 +137,10 @@ fn forbidden_surface_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.contains("skill") || lower.contains("registrar")
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_llm_has_no_skill_registry_surface");

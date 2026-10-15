@@ -9,12 +9,12 @@ use super::{Verdict, WalkInput};
 const RULE: &str =
     "single_event_channel — LogSink::emit must drive renderer + on-disk log in one call";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let sink_path = root.join("crates/loom-render/src/sink/mod.rs");
     let rel_path = rel(&root, &sink_path);
 
-    let Some(source) = read_to_string(&sink_path) else {
+    let Some(source) = read_to_string(input, &sink_path) else {
         return verdict_from(
             RULE,
             vec![format!(
@@ -100,3 +100,10 @@ fn source_slice<T: syn::spanned::Spanned>(source: &str, node: &T) -> String {
     }
     out
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("single_event_channel");

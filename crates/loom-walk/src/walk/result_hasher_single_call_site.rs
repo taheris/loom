@@ -19,20 +19,20 @@ const SYMBOL: &str = "ResultHasher";
 const CENTRAL_FINGERPRINT_CALL: &str = "ResultHasher::result_fingerprint(&output.content)";
 const OBSERVER_FANOUT_CALL: &str = ".observe_tool_result(&event_id, fingerprint)";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let src_dir = root.join(SRC_DIR);
     let mut violations = Vec::new();
 
     let mut observer_call_sites: Vec<String> = Vec::new();
-    for path in rs_files_recursive(&src_dir) {
-        let Some(body) = read_to_string(&path) else {
+    for path in rs_files_recursive(input, &src_dir) {
+        let Some(body) = read_to_string(input, &path) else {
             continue;
         };
         if !contains_identifier(&body, SYMBOL) {
             continue;
         }
-        if file_defines_type(&path, SYMBOL) || rel(&root, &path) == CONVERSATION {
+        if file_defines_type(input, &path, SYMBOL) || rel(&root, &path) == CONVERSATION {
             continue;
         }
         observer_call_sites.push(rel(&root, &path));
@@ -52,7 +52,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
     }
 
     let conversation_path = root.join(CONVERSATION);
-    let Some(conversation) = read_to_string(&conversation_path) else {
+    let Some(conversation) = read_to_string(input, &conversation_path) else {
         violations.push(format!("{CONVERSATION}:1 missing conversation live path"));
         return verdict_from(RULE, violations);
     };
@@ -126,8 +126,8 @@ const fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-fn file_defines_type(path: &Path, name: &str) -> bool {
-    let Some(file) = parse_rs(path) else {
+fn file_defines_type(input: &WalkInput, path: &Path, name: &str) -> bool {
+    let Some(file) = parse_rs(input, path) else {
         return false;
     };
     item_defines(&file.items, name)
@@ -152,3 +152,10 @@ fn item_defines(items: &[syn::Item], name: &str) -> bool {
     }
     false
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("result_hasher_single_call_site");

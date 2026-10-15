@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use super::util::{rel, verdict_from, workspace_root};
@@ -36,14 +35,14 @@ enum ListField {
     Types,
 }
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    run_for_path(&root, &root.join(".pre-commit-config.yaml"))
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    run_for_path(input, &root, &root.join(".pre-commit-config.yaml"))
 }
 
-fn run_for_path(root: &Path, path: &Path) -> Verdict {
+fn run_for_path(input: &WalkInput, root: &Path, path: &Path) -> Verdict {
     let rel_path = rel(root, path);
-    let source = match fs::read_to_string(path) {
+    let source = match input.reader().read(path) {
         Ok(source) => source,
         Err(source) => {
             return Verdict {
@@ -764,3 +763,10 @@ mod tests {
         );
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("pre_push_config_marker_wrapper_contract");

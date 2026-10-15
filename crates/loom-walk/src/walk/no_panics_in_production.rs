@@ -30,9 +30,9 @@ const EXEMPT_BINS: &[&str] = &[
     "crates/loom/src/bin/mock-loom-agent.rs",
 ];
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let scope = narrow_to_loom_files(src_files(&root), input, &root);
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let scope = narrow_to_loom_files(src_files(input, &root), input, &root);
     let mut violations = Vec::new();
     let needles: [(&str, &str); 6] = [
         (NEEDLE_UNWRAP, "unwrap"),
@@ -53,7 +53,7 @@ pub fn run(input: &WalkInput) -> Verdict {
         if rel_path == "crates/loom-walk/src/walk/no_panics_in_production.rs" {
             continue;
         }
-        let Some(body) = read_to_string(&path) else {
+        let Some(body) = read_to_string(input, &path) else {
             continue;
         };
         let mask = cfg_test_mask(&body);
@@ -148,3 +148,10 @@ fn is_attribute_line(line: &str) -> bool {
         || trimmed.starts_with(prefix_deny)
         || trimmed.starts_with(prefix_forbid)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("no_panics_in_production");

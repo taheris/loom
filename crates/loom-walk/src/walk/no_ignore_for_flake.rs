@@ -22,15 +22,15 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ),
 ];
 
-pub fn run(input: &WalkInput) -> Verdict {
-    run_with_root(input, &workspace_root())
+fn rule(input: &WalkInput) -> Verdict {
+    run_with_root(input, &workspace_root(input))
 }
 
 fn run_with_root(input: &WalkInput, root: &Path) -> Verdict {
-    let files = narrow_to_loom_files(all_rs_files(root), input, root);
+    let files = narrow_to_loom_files(all_rs_files(input, root), input, root);
     let mut violations = Vec::new();
     for path in files {
-        let Some(parsed) = parse_rs(&path) else {
+        let Some(parsed) = parse_rs(input, &path) else {
             continue;
         };
         let rel_path = rel(root, &path);
@@ -113,3 +113,10 @@ mod tests {
         Ok(())
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("no_ignore_for_flake");

@@ -12,10 +12,10 @@ const RULE: &str = "loom_gate_check_derivation_exists — nix/flake/checks.nix m
 const CHECKS_REL: &str = "nix/flake/checks.nix";
 const NEEDLE: &str = "loom gate check";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let path = root.join(CHECKS_REL);
-    let Some(body) = read_to_string(&path) else {
+    let Some(body) = read_to_string(input, &path) else {
         return Verdict {
             pass: false,
             evidence: format!("{CHECKS_REL}: file not readable\n{RULE}"),
@@ -35,3 +35,10 @@ pub fn run(_input: &WalkInput) -> Verdict {
         ),
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_gate_check_derivation_exists");

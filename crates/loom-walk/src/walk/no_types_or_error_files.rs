@@ -6,15 +6,15 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "RS-5 no central types.rs / error.rs at crate root";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let crates_dir = root.join("crates");
     let mut violations = Vec::new();
-    for crate_dir in immediate_children(&crates_dir) {
+    for crate_dir in immediate_children(input, &crates_dir) {
         let src = crate_dir.join("src");
         for forbidden in ["types.rs", "error.rs"] {
             let candidate = src.join(forbidden);
-            if candidate.is_file() {
+            if super::util::is_file(input, &candidate) {
                 violations.push(format!(
                     "{}:1 forbidden central `{}` — split into nested `<domain>/{}` modules",
                     rel(&root, &candidate),
@@ -26,3 +26,10 @@ pub fn run(_input: &WalkInput) -> Verdict {
     }
     verdict_from(RULE, violations)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("no_types_or_error_files");

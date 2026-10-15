@@ -131,11 +131,11 @@ const CONTRACTS: &[FileContract] = &[
     },
 ];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let mut violations = Vec::new();
     for contract in CONTRACTS {
-        let Some(body) = read_to_string(&root.join(contract.path)) else {
+        let Some(body) = read_to_string(input, &root.join(contract.path)) else {
             violations.push(format!("{}: file not readable", contract.path));
             continue;
         };
@@ -150,7 +150,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
     }
 
     let checks_path = "nix/flake/checks.nix";
-    match read_to_string(&root.join(checks_path)) {
+    match read_to_string(input, &root.join(checks_path)) {
         Some(body) => {
             for forbidden in ["loom-tests", "fuzz-loom", "loomTests"] {
                 if active_line_contains(&body, forbidden) {
@@ -171,3 +171,10 @@ fn active_line_contains(body: &str, needle: &str) -> bool {
         .map(str::trim_start)
         .any(|line| !line.starts_with('#') && line.contains(needle))
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("test_nix_surface_contract");

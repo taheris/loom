@@ -7,11 +7,11 @@ use super::util::{
 };
 use super::{Verdict, WalkInput};
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let mut violations = Vec::new();
-    for path in narrow_to_loom_files(src_files(&root), input, &root) {
-        let Some(file) = parse_rs(&path) else {
+    for path in narrow_to_loom_files(src_files(input, &root), input, &root) {
+        let Some(file) = parse_rs(input, &path) else {
             violations.push(format!(
                 "{}: unable to read or parse Rust source",
                 rel(&root, &path)
@@ -82,3 +82,10 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
         syn::visit::visit_item_impl(self, node);
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("no_event_sentinels");

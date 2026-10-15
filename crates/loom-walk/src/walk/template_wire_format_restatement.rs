@@ -11,8 +11,6 @@
 
 use std::path::PathBuf;
 
-use walkdir::WalkDir;
-
 use super::util::{narrow_to_loom_files, read_to_string, rel, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
@@ -26,21 +24,18 @@ const CANONICAL_PARTIAL: &str = "partial/findings_walk.md";
 
 const WIRE_TOKENS: &[&str] = &["LOOM_CONCERN:", "LOOM_FINDING:"];
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let template_root = root.join(TEMPLATE_DIR);
     let canonical = template_root.join(CANONICAL_PARTIAL);
-    let scope: Vec<PathBuf> = WalkDir::new(&template_root)
+    let scope: Vec<PathBuf> = super::util::files_recursive(input, &template_root, None)
         .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_path_buf())
         .filter(|p| p != &canonical)
         .collect();
     let scope = narrow_to_loom_files(scope, input, &root);
     let mut violations = Vec::new();
     for path in scope {
-        let Some(body) = read_to_string(&path) else {
+        let Some(body) = read_to_string(input, &path) else {
             continue;
         };
         let rel_path = rel(&root, &path);
@@ -60,3 +55,10 @@ pub fn run(input: &WalkInput) -> Verdict {
     }
     verdict_from(RULE, violations)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("template_wire_format_restatement");

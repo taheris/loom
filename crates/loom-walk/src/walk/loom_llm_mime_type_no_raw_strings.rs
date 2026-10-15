@@ -7,10 +7,10 @@ use super::{Verdict, WalkInput};
 const RULE: &str = "loom_llm_mime_type_no_raw_strings — public binary-content APIs accept MimeType, not raw String or &str MIME values";
 const SRC: &str = "crates/loom-llm/src/request.rs";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let path = root.join(SRC);
-    let Some(body) = read_to_string(&path) else {
+    let Some(body) = read_to_string(input, &path) else {
         return verdict_from(RULE, vec![format!("{SRC}:1 unable to read request model")]);
     };
 
@@ -58,3 +58,10 @@ fn public_binary_signatures(body: &str) -> Vec<(usize, String)> {
     }
     out
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_llm_mime_type_no_raw_strings");

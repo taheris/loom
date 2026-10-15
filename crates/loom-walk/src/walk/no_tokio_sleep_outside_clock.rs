@@ -5,6 +5,13 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "no_tokio_sleep_outside_clock — direct tokio sleeps require a clock implementation, paused test, or exact bounded exception";
 
-pub fn run(input: &WalkInput) -> Verdict {
+fn rule(input: &WalkInput) -> Verdict {
     clock_audit::run(input, Operation::TokioSleep, RULE)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("no_tokio_sleep_outside_clock");

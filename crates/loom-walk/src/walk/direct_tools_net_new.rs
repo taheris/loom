@@ -17,12 +17,12 @@ const RULE: &str = "direct_tools_net_new — Read/Write/Edit/Bash/Grep/Glob defi
 const TOOLS_DIR: &str = "crates/loom-agent/src/direct/tool";
 const REQUIRED: &[&str] = &["Read", "Write", "Edit", "Bash", "Grep", "Glob"];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let tools_dir = root.join(TOOLS_DIR);
     let mut violations = Vec::new();
 
-    let defined = collect_local_types(&tools_dir);
+    let defined = collect_local_types(input, &tools_dir);
     for name in REQUIRED {
         if !defined.contains(*name) {
             violations.push(format!(
@@ -34,10 +34,10 @@ pub fn run(_input: &WalkInput) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-fn collect_local_types(dir: &Path) -> HashSet<String> {
+fn collect_local_types(input: &WalkInput, dir: &Path) -> HashSet<String> {
     let mut out = HashSet::new();
-    for path in rs_files_recursive(dir) {
-        let Some(file) = parse_rs(&path) else {
+    for path in rs_files_recursive(input, dir) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         collect_from_items(&file.items, &mut out);
@@ -63,3 +63,10 @@ fn collect_from_items(items: &[syn::Item], out: &mut HashSet<String>) {
         }
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("direct_tools_net_new");

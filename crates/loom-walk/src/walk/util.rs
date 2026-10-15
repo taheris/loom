@@ -8,143 +8,101 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use syn::Attribute;
-use walkdir::WalkDir;
 
 use super::{Verdict, WalkInput};
 
-/// Locate the cargo workspace this binary was invoked against by
-/// walking up from the current directory looking for a `Cargo.toml`
-/// whose `[workspace]` table lists `crates/loom-driver` as a member.
-/// Returns the CWD itself when no marker matches — walks that scan
-/// absolute paths via `LOOM_FILES` don't depend on the result.
-pub fn workspace_root() -> PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    for ancestor in cwd.ancestors() {
-        let manifest = ancestor.join("Cargo.toml");
-        let Ok(body) = std::fs::read_to_string(&manifest) else {
-            continue;
-        };
-        if body.contains("[workspace]") && body.contains("crates/loom-driver") {
-            return ancestor.to_path_buf();
-        }
+/// Standalone discovery is isolated from captured execution.
+pub fn workspace_root(input: &WalkInput) -> PathBuf {
+    if let Some(root) = &input.root {
+        return root.clone();
     }
-    cwd
+    if input.source.is_some() {
+        return PathBuf::new();
+    }
+    super::source::workspace_root(input)
 }
 
-/// Convert the walk's input file set into a vector of absolute paths.
-/// `WalkInput::files` may contain repo-relative paths (the gate's
-/// `--files` scope produces them) — they're joined against `root` so
-/// downstream code can read them without further normalisation.
 pub fn resolve_input_files(root: &Path, input: &WalkInput) -> Option<Vec<PathBuf>> {
-    let files = input.files.as_ref()?;
-    let resolved = files
-        .iter()
-        .map(|p| {
-            if p.is_absolute() {
-                p.clone()
-            } else {
-                root.join(p)
-            }
-        })
-        .collect();
-    Some(resolved)
+    Some(
+        input
+            .files
+            .as_ref()?
+            .iter()
+            .map(|p| {
+                if p.is_absolute() {
+                    p.clone()
+                } else {
+                    root.join(p)
+                }
+            })
+            .collect(),
+    )
 }
 
-/// Production source files under `crates/*/src/**/*.rs`. The
-/// generic default when `LOOM_FILES` is unset and the walk targets
-/// production code.
-pub fn src_files(root: &Path) -> Vec<PathBuf> {
+pub fn src_files(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for crate_dir in immediate_children(&root.join("crates")) {
+    for crate_dir in immediate_children(input, &root.join("crates")) {
         let src = crate_dir.join("src");
-        if !src.is_dir() {
-            continue;
-        }
-        for entry in WalkDir::new(&src).into_iter().filter_map(Result::ok) {
-            let p = entry.path();
-            if is_rust_file(p) {
-                out.push(p.to_path_buf());
-            }
+        if is_dir(input, &src) {
+            out.extend(rs_files_recursive(input, &src));
         }
     }
     out
 }
 
-/// Test files under `crates/*/tests/**/*.rs`, excluding the
-/// `tests/fixture.rs` of `loom-walk` itself (pattern-matches its own
-/// rules under synthetic fixtures so a self-walk would yield false
-/// positives).
-pub fn test_files(root: &Path) -> Vec<PathBuf> {
+pub fn test_files(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let self_test = root.join("crates/loom-walk/tests/fixture.rs");
-    for crate_dir in immediate_children(&root.join("crates")) {
+    for crate_dir in immediate_children(input, &root.join("crates")) {
         let tests = crate_dir.join("tests");
-        if !tests.is_dir() {
-            continue;
-        }
-        for entry in WalkDir::new(&tests).into_iter().filter_map(Result::ok) {
-            let p = entry.path();
-            if is_rust_file(p) && p != self_test {
-                out.push(p.to_path_buf());
-            }
+        if is_dir(input, &tests) {
+            out.extend(rs_files_recursive_except(input, &tests, &self_test));
         }
     }
     out
 }
 
-/// Union of [`src_files`] and [`test_files`].
-pub fn all_rs_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = src_files(root);
-    out.extend(test_files(root));
+pub fn all_rs_files(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
+    let mut out = src_files(input, root);
+    out.extend(test_files(input, root));
     out
 }
 
-/// Production and test Rust files, including verifier fixtures.
-pub fn all_rs_files_including_verifiers(root: &Path) -> Vec<PathBuf> {
-    let mut out = all_rs_files(root);
+pub fn all_rs_files_including_verifiers(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
+    let mut out = all_rs_files(input, root);
     let path = root.join("crates/loom-walk/tests/fixture.rs");
-    if path.is_file() {
+    if is_file(input, &path) {
         out.push(path);
     }
     out
 }
 
-/// Take the walk's chosen scope (e.g. [`src_files`]) and narrow it to
-/// the `LOOM_FILES` set when one is present. Caller-supplied paths
-/// outside the scope are silently dropped — the gate decides what to
-/// surface; the walk only reports on its own jurisdiction.
 pub fn narrow_to_loom_files(scope: Vec<PathBuf>, input: &WalkInput, root: &Path) -> Vec<PathBuf> {
     let Some(filter) = resolve_input_files(root, input) else {
         return scope;
     };
-    let filter: HashSet<PathBuf> = filter
-        .into_iter()
-        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
-        .collect();
+    let normalize = |path: &Path| {
+        input
+            .record(path, input.reader().normalize(path))
+            .unwrap_or_else(|| path.to_path_buf())
+    };
+    let filter: HashSet<_> = filter.iter().map(|path| normalize(path)).collect();
     scope
         .into_iter()
-        .filter(|path| {
-            filter.contains(&std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
-        })
+        .filter(|path| filter.contains(&normalize(path)))
         .collect()
 }
 
-/// Eagerly read a path into a string. Returns `None` for unreadable
-/// paths so a walk can skip rather than panic on a missing file.
-pub fn read_to_string(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
+/// Errors are retained even when a rule continues after a failed read.
+pub fn read_to_string(input: &WalkInput, path: &Path) -> Option<String> {
+    input.record(path, input.reader().read(path))
 }
 
-/// Parse a Rust source file. Returns `None` on parse failures so the
-/// walk surfaces the path/line in `Verdict::evidence` rather than
-/// aborting the whole scan.
-pub fn parse_rs(path: &Path) -> Option<syn::File> {
-    let body = read_to_string(path)?;
-    syn::parse_file(&body).ok()
+pub fn parse_rs(input: &WalkInput, path: &Path) -> Option<syn::File> {
+    let body = read_to_string(input, path)?;
+    input.record(path, syn::parse_file(&body).map_err(std::io::Error::other))
 }
 
-/// Workspace-relative form of `path`. Used to keep `Verdict::evidence`
-/// portable across machines.
 pub fn rel(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -152,31 +110,55 @@ pub fn rel(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
-/// Immediate child entries of a directory, sorted lexicographically so
-/// walks emit deterministic violation orderings across runs.
-pub fn immediate_children(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            out.push(entry.path());
+pub fn immediate_children(input: &WalkInput, dir: &Path) -> Vec<PathBuf> {
+    input
+        .record(dir, input.reader().directory(dir))
+        .unwrap_or_default()
+}
+
+pub fn files_recursive(input: &WalkInput, dir: &Path, extension: Option<&str>) -> Vec<PathBuf> {
+    input
+        .record(dir, input.reader().scan(dir, extension))
+        .unwrap_or_default()
+}
+
+pub fn rs_files_recursive(input: &WalkInput, dir: &Path) -> Vec<PathBuf> {
+    files_recursive(input, dir, Some("rs"))
+}
+
+/// Exclude a namespace prefix before probing files, rather than scanning an
+/// undeclared file and dropping it after an authorization error.
+pub fn rs_files_recursive_except(input: &WalkInput, dir: &Path, excluded: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if !is_dir(input, dir) {
+        return files;
+    }
+    for path in immediate_children(input, dir) {
+        if path
+            .to_string_lossy()
+            .starts_with(excluded.to_string_lossy().as_ref())
+        {
+            continue;
+        }
+        if is_dir(input, &path) {
+            files.extend(rs_files_recursive_except(input, &path, excluded));
+        } else if path.extension().is_some_and(|ext| ext == "rs") && is_file(input, &path) {
+            files.push(path);
         }
     }
-    out.sort();
-    out
+    files
 }
 
-/// `.rs` files anywhere under `dir`.
-pub fn rs_files_recursive(dir: &Path) -> Vec<PathBuf> {
-    WalkDir::new(dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.path().is_file() && is_rust_file(e.path()))
-        .map(|e| e.path().to_path_buf())
-        .collect()
+pub fn is_file(input: &WalkInput, path: &Path) -> bool {
+    input
+        .record(path, input.reader().is_file(path))
+        .unwrap_or(false)
 }
 
-fn is_rust_file(p: &Path) -> bool {
-    p.extension().and_then(|s| s.to_str()) == Some("rs")
+pub fn is_dir(input: &WalkInput, path: &Path) -> bool {
+    input
+        .record(path, input.reader().is_dir(path))
+        .unwrap_or(false)
 }
 
 /// `true` when the trimmed line begins with a Rust comment marker.

@@ -22,12 +22,12 @@ const FORBIDDEN: &[&str] = &[
     "loom-gate",
 ];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let manifest = root.join(MANIFEST);
     let mut violations = Vec::new();
 
-    let Some(body) = read_to_string(&manifest) else {
+    let Some(body) = read_to_string(input, &manifest) else {
         violations.push("crates/loom-tune/Cargo.toml:1 manifest not readable".to_string());
         return verdict_from(RULE, violations);
     };
@@ -88,4 +88,9 @@ fn section_keys(section: &str) -> Vec<String> {
         out.push(key.to_string());
     }
     out
+}
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
 }

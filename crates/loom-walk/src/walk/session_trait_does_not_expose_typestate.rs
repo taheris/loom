@@ -18,12 +18,12 @@ const RULE: &str = "session_trait_does_not_expose_typestate — `Session` trait 
 const EVENTS_SRC: &str = "crates/loom-events/src";
 const FORBIDDEN: &[&str] = &["Idle", "Active", "AgentSession"];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let events_src = root.join(EVENTS_SRC);
     let mut violations = Vec::new();
 
-    let Some((path, item)) = find_session_trait(&events_src) else {
+    let Some((path, item)) = find_session_trait(input, &events_src) else {
         violations.push(format!(
             "{EVENTS_SRC}/lib.rs:1 `pub trait Session` not found — cannot audit its surface",
         ));
@@ -59,9 +59,12 @@ impl<'ast> Visit<'ast> for IdentCollector {
     }
 }
 
-fn find_session_trait(events_src: &Path) -> Option<(std::path::PathBuf, syn::ItemTrait)> {
-    for path in rs_files_recursive(events_src) {
-        let Some(file) = parse_rs(&path) else {
+fn find_session_trait(
+    input: &WalkInput,
+    events_src: &Path,
+) -> Option<(std::path::PathBuf, syn::ItemTrait)> {
+    for path in rs_files_recursive(input, events_src) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         if let Some(item) = find_in_items(&file.items) {
@@ -91,3 +94,10 @@ fn find_in_items(items: &[syn::Item]) -> Option<syn::ItemTrait> {
     }
     None
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("session_trait_does_not_expose_typestate");

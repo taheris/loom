@@ -16,18 +16,18 @@ const LLM_SRC: &str = "crates/loom-llm/src";
 const CRATES_DIR: &str = "crates";
 const OBSERVERS: &[&str] = &["DoomLoopObserver", "DuplicateResultObserver"];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let mut violations = Vec::new();
 
     let llm_src = root.join(LLM_SRC);
     let crates_dir = root.join(CRATES_DIR);
-    let llm_files = rs_files_recursive(&llm_src);
+    let llm_files = rs_files_recursive(input, &llm_src);
 
     for observer in OBSERVERS {
         let defined_in_llm = llm_files
             .iter()
-            .filter(|p| defines_struct(p, observer))
+            .filter(|p| defines_struct(input, p, observer))
             .map(|p| rel(&root, p))
             .next()
             .is_some();
@@ -37,12 +37,12 @@ pub fn run(_input: &WalkInput) -> Verdict {
             ));
         }
 
-        for crate_dir in crate_dirs(&crates_dir) {
+        for crate_dir in crate_dirs(input, &crates_dir) {
             if crate_dir == llm_src {
                 continue;
             }
-            for path in rs_files_recursive(&crate_dir) {
-                if defines_struct(&path, observer) {
+            for path in rs_files_recursive(input, &crate_dir) {
+                if defines_struct(input, &path, observer) {
                     violations.push(format!(
                         "{}:1 `{observer}` also defined outside loom-llm — observers must not be duplicated",
                         rel(&root, &path),
@@ -55,8 +55,8 @@ pub fn run(_input: &WalkInput) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-fn defines_struct(path: &Path, name: &str) -> bool {
-    let Some(file) = parse_rs(path) else {
+fn defines_struct(input: &WalkInput, path: &Path, name: &str) -> bool {
+    let Some(file) = parse_rs(input, path) else {
         return false;
     };
     item_defines(&file.items, name)
@@ -80,18 +80,21 @@ fn item_defines(items: &[syn::Item], name: &str) -> bool {
     false
 }
 
-fn crate_dirs(crates_dir: &Path) -> Vec<std::path::PathBuf> {
+fn crate_dirs(input: &WalkInput, crates_dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(crates_dir) else {
-        return out;
-    };
-    for entry in rd.flatten() {
-        let path = entry.path();
+    for path in super::util::immediate_children(input, crates_dir) {
         let src = path.join("src");
-        if src.is_dir() {
+        if super::util::is_dir(input, &src) {
             out.push(src);
         }
     }
     out.sort();
     out
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("observers_in_loom_llm");

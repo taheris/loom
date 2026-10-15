@@ -1,7 +1,7 @@
 //! RS-7: identifiers in `loom-events` are single-field tuple-struct newtypes.
 //! Error payloads are exempt; absent or unreadable source is not passing evidence.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use syn::Fields;
 
@@ -11,8 +11,8 @@ use super::{Verdict, WalkInput};
 const RULE: &str = "RS-7 identifiers are single-field tuple-struct newtypes";
 const DIRECTORY: &str = "crates/loom-events/src/identifier";
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     match inspect(&root, input) {
         Ok(violations) => verdict_from(RULE, violations),
         Err(error) => verdict_from(RULE, vec![format!("{DIRECTORY}: {error}")]),
@@ -20,9 +20,7 @@ pub fn run(input: &WalkInput) -> Verdict {
 }
 
 fn inspect(root: &Path, input: &WalkInput) -> Result<Vec<String>, std::io::Error> {
-    let mut paths = std::fs::read_dir(root.join(DIRECTORY))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<PathBuf>, _>>()?;
+    let mut paths = input.reader().directory(&root.join(DIRECTORY))?;
     paths.retain(|path| path.extension().is_some_and(|extension| extension == "rs"));
     paths.sort();
     if paths.is_empty() {
@@ -34,7 +32,7 @@ fn inspect(root: &Path, input: &WalkInput) -> Result<Vec<String>, std::io::Error
     let mut identifiers = 0;
     for path in narrow_to_loom_files(paths, input, root) {
         let rel_path = rel(root, &path);
-        let body = match std::fs::read_to_string(&path) {
+        let body = match input.reader().read(&path) {
             Ok(body) => body,
             Err(error) => {
                 violations.push(format!("{rel_path}: unable to read Rust source: {error}"));
@@ -69,3 +67,10 @@ fn inspect(root: &Path, input: &WalkInput) -> Result<Vec<String>, std::io::Error
     }
     Ok(violations)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("newtype_identifiers");

@@ -57,7 +57,10 @@ macro_rules! registration {
         pub(super) const NAME: &str = $target;
         const MANIFEST: &str = concat!("crates/", $package, "/Cargo.toml");
 
-        pub(super) fn inputs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        pub(super) fn inputs(
+            root: &std::path::Path,
+            _input: &$crate::walk::WalkInput,
+        ) -> Vec<std::path::PathBuf> {
             vec![root.join(MANIFEST)]
         }
 

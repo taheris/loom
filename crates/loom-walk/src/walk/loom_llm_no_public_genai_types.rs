@@ -30,12 +30,12 @@ const RULE: &str = "loom_llm_no_public_genai_types — no public Client construc
 
 const SRC_DIR: &str = "crates/loom-llm/src";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let src_dir = root.join(SRC_DIR);
     let mut violations = Vec::new();
-    for path in rs_files_recursive(&src_dir) {
-        let Some(file) = parse_rs(&path) else {
+    for path in rs_files_recursive(input, &src_dir) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         let rel_path = rel(&root, &path);
@@ -275,3 +275,10 @@ fn attrs_have_cfg_test(attrs: &[syn::Attribute]) -> bool {
         meta.path().is_ident("test")
     })
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_llm_no_public_genai_types");

@@ -20,13 +20,13 @@ const NEEDLE_COMMAND_NEW: &str = concat!("Command::new(\"", "podman\"");
 const NEEDLE_SPAWN: &str = concat!("spawn(\"", "podman\"");
 const NEEDLE_EXEC: &str = concat!("exec(\"", "podman\"");
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let scope = narrow_to_loom_files(src_files(&root), input, &root);
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let scope = narrow_to_loom_files(src_files(input, &root), input, &root);
     let mut violations = Vec::new();
     let needles = [NEEDLE_COMMAND_NEW, NEEDLE_SPAWN, NEEDLE_EXEC];
     for path in scope {
-        let Some(body) = read_to_string(&path) else {
+        let Some(body) = read_to_string(input, &path) else {
             continue;
         };
         let rel_path = rel(&root, &path);
@@ -49,3 +49,10 @@ pub fn run(input: &WalkInput) -> Verdict {
     }
     verdict_from(RULE, violations)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_does_not_invoke_podman");

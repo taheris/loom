@@ -27,15 +27,15 @@ const SRC_DIR: &str = "crates/loom-llm/src/client";
 
 const REQUIRED_SCHEMAS: &[&str] = &["Anthropic", "OpenAi", "Gemini"];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let src_dir = root.join(SRC_DIR);
 
     let mut schema_to_clients: HashMap<String, Vec<String>> = HashMap::new();
     let mut clients_without_schema_const: Vec<String> = Vec::new();
 
-    for path in rs_files_recursive(&src_dir) {
-        let Some(file) = parse_rs(&path) else {
+    for path in rs_files_recursive(input, &src_dir) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         collect_from_items(
@@ -161,3 +161,10 @@ fn schema_kind_value(expr: &syn::Expr) -> Option<String> {
     let leaf = &segments[segments.len() - 1].ident;
     Some(leaf.to_string())
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_llm_client_types_per_schema_kind");

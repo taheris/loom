@@ -110,19 +110,35 @@ fn fixture() -> TempDir {
     }
     write(
         root,
+        "crates/loom-events/src/lib.rs",
+        "pub mod identifier;\npub fn fixture() {}\n",
+    );
+    write(
+        root,
+        "crates/loom-events/src/identifier/mod.rs",
+        "pub struct FixtureId(String);\n",
+    );
+    write(
+        root,
         "crates/loom-walk/Cargo.toml",
         "[package]\nname = 'loom-walk'\nversion = '0.1.0'\nedition = '2024'\n",
     );
-    let mut modules = String::new();
-    for (target, _, source) in RULES {
-        writeln!(modules, "#[path = \"walk/{target}.rs\"] mod {target};").unwrap();
+    // Native module discovery follows the real checker modules, not a synthetic callback.
+    let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/walk");
+    for entry in std::fs::read_dir(sources).unwrap() {
+        let entry = entry.unwrap();
+        let body = std::fs::read_to_string(entry.path()).unwrap();
+        let production = body.split("\n#[cfg(test)]\n").next().unwrap();
         write(
             root,
-            &format!("crates/loom-walk/src/walk/{target}.rs"),
-            source,
+            &format!(
+                "crates/loom-walk/src/walk/{}",
+                entry.file_name().to_string_lossy()
+            ),
+            production,
         );
     }
-    write(root, "crates/loom-walk/src/lib.rs", &modules);
+    write(root, "crates/loom-walk/src/lib.rs", "pub mod walk;\n");
     write(
         root,
         "docs/README.md",
@@ -130,14 +146,159 @@ fn fixture() -> TempDir {
     );
     write(root, "specs/walks/spec.md", "# Manifest analysis\n");
     let mut criteria = String::new();
-    for (target, _, _) in RULES {
-        writeln!(criteria, "- Dependency rule [check]({target})").unwrap();
+    for walk in loom_walk::walk::REGISTRY {
+        writeln!(criteria, "- Source rule [check]({})", walk.name).unwrap();
     }
     write(
         root,
         "specs/walks/tests.md",
         &format!("# Walks\n\n## Success Criteria\n\n{criteria}"),
     );
+    native(root, "cargo", &["generate-lockfile", "--offline"]);
+    dir
+}
+
+/// Complete captured namespace derived from the actual definitions, not a copied input table.
+fn complete_fixture() -> TempDir {
+    let dir = fixture();
+    let root = dir.path();
+    let project = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap();
+    let acceptance = std::fs::read_to_string(root.join("specs/walks/tests.md")).unwrap();
+    std::fs::remove_dir_all(root.join("specs/walks")).unwrap();
+    write(root, "specs/walks.md", &acceptance);
+    let mut paths = std::collections::BTreeSet::new();
+    for walk in loom_walk::walk::REGISTRY {
+        paths.extend((walk.inputs)(
+            project,
+            &loom_walk::walk::WalkInput::for_root(project),
+        ));
+    }
+    for file in paths {
+        if !file.is_file() {
+            continue;
+        } // Declared absences stay absent.
+        let relative = file.strip_prefix(project).unwrap();
+        if relative
+            .file_name()
+            .is_some_and(|name| name == "Cargo.toml")
+        {
+            continue;
+        }
+        let dest = root.join(relative);
+        if dest.is_file() {
+            continue;
+        }
+        let body = match relative.extension().and_then(|ext| ext.to_str()) {
+            Some("rs") => "// Native fixture source.\n",
+            Some("md") => "# Fixture document\n",
+            Some("nix") if relative == Path::new("flake.nix") => "{ outputs = _: {}; }\n",
+            Some("nix") => "{}\n",
+            _ => "# Fixture resource\n",
+        };
+        write(root, &relative.to_string_lossy(), body);
+    }
+    // Each actual package definition remains native Cargo ownership, not a resource-role override.
+    for entry in std::fs::read_dir(project.join("crates")).unwrap() {
+        let package = entry.unwrap().file_name().to_string_lossy().into_owned();
+        let manifest = root.join(format!("crates/{package}/Cargo.toml"));
+        if !manifest.is_file() {
+            write(
+                root,
+                &format!("crates/{package}/Cargo.toml"),
+                &format!("[package]\nname='{package}'\nversion='0.1.0'\nedition='2024'\n"),
+            );
+        }
+        let src = root.join(format!("crates/{package}/src"));
+        let entrypoint = if package == "loom" {
+            "main.rs"
+        } else {
+            "lib.rs"
+        };
+        let mut body = std::fs::read_to_string(src.join(entrypoint)).unwrap_or_default();
+        if package == "loom" {
+            body.push_str("\nfn main() {}\n");
+        }
+        if package != "loom-walk" {
+            // Bind every synthetic source through actual native module declarations.
+            let mut files: Vec<_> = walkdir::WalkDir::new(&src)
+                .into_iter()
+                .map(Result::unwrap)
+                .filter(|entry| {
+                    entry.file_type().is_file()
+                        && entry.path().extension().is_some_and(|ext| ext == "rs")
+                        && entry.path() != src.join(entrypoint)
+                })
+                .map(walkdir::DirEntry::into_path)
+                .collect();
+            files.sort();
+            for (index, file) in files.iter().enumerate() {
+                writeln!(
+                    body,
+                    "#[path = {:?}] mod fixture_{index};",
+                    file.strip_prefix(&src).unwrap().to_string_lossy()
+                )
+                .unwrap();
+            }
+        }
+        write(root, &format!("crates/{package}/src/{entrypoint}"), &body);
+    }
+    let mut index = String::new();
+    for file in std::fs::read_dir(root.join("specs")).unwrap() {
+        let file = file.unwrap().path();
+        if file.extension().is_some_and(|ext| ext == "md") {
+            let label = file.file_stem().unwrap().to_string_lossy();
+            writeln!(index, "- [{label}](../specs/{label}.md)").unwrap();
+        }
+    }
+    write(root, "docs/README.md", &index);
+    // Non-source files here are real test fixtures, consumed by this fixture's testable target.
+    let mut manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    manifest.push_str("\n[package]\nname='rootfixture'\nversion='0.1.0'\nedition='2024'\n[lib]\npath='fixture-root.rs'\n");
+    let mut resources: Vec<_> = walkdir::WalkDir::new(root)
+        .into_iter()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_type().is_file() && !entry.path().starts_with(root.join(".git")))
+        .filter(|entry| {
+            !matches!(
+                entry.path().extension().and_then(|ext| ext.to_str()),
+                Some("rs" | "nix" | "md" | "toml" | "lock")
+            )
+        })
+        .map(walkdir::DirEntry::into_path)
+        .collect();
+    resources.sort();
+    for (index, file) in resources.iter().enumerate() {
+        writeln!(manifest, "\n[[package.metadata.loom.verify.resource]]\nname='fixture-resource-{index}'\nrole='test-fixture'\ndirectory={:?}\nconsumers=['cargo:rootfixture:lib:rootfixture']", file.strip_prefix(root).unwrap().to_string_lossy()).unwrap();
+    }
+    write(root, "Cargo.toml", &manifest);
+    let mut fixture_source = String::from("pub fn fixture() {}\n");
+    let mut fixture_modules: Vec<_> = walkdir::WalkDir::new(root)
+        .into_iter()
+        .map(Result::unwrap)
+        .filter(|entry| {
+            entry.file_type().is_file()
+                && entry.path().extension().is_some_and(|ext| ext == "rs")
+                && !entry
+                    .path()
+                    .components()
+                    .any(|part| part.as_os_str() == "src")
+                && !entry.path().starts_with(root.join(".git"))
+        })
+        .map(walkdir::DirEntry::into_path)
+        .collect();
+    fixture_modules.sort();
+    for (index, file) in fixture_modules.iter().enumerate() {
+        writeln!(
+            fixture_source,
+            "#[path = {:?}] mod fixture_{index};",
+            file.strip_prefix(root).unwrap().to_string_lossy()
+        )
+        .unwrap();
+    }
+    write(root, "fixture-root.rs", &fixture_source);
     native(root, "cargo", &["generate-lockfile", "--offline"]);
     dir
 }
@@ -199,7 +360,7 @@ fn bad_manifest_query_is_nonexecuting_and_correction_reenters_normal_admission()
     let (snapshot, inventory) = context(root);
     let registry = registry(&snapshot, &inventory, &targets);
     let query = registry.query(&targets).unwrap();
-    assert!(!query.contains("verdict"));
+    assert!(!query.contains("\"verdict\":"));
     let units = registry
         .resolve_query(&snapshot, &inventory, &query, &contracts(&targets))
         .unwrap();
@@ -247,13 +408,58 @@ fn actual_manifest_and_checker_inputs_cannot_be_removed_from_query_descriptions(
 }
 
 #[test]
-fn legacy_registration_cannot_be_promoted_from_input_metadata() {
-    let dir = fixture();
+fn every_dispatch_entry_has_an_actual_named_tracked_definition() {
+    let dir = complete_fixture();
     let (snapshot, inventory) = context(dir.path());
-    let target = name("no_event_sentinels");
-    assert!(
-        matches!(checked_definitions(&snapshot, &inventory, std::slice::from_ref(&target)), Err(Error::Missing { target: missing }) if missing == target)
-    );
+    let targets: Vec<_> = loom_walk::walk::REGISTRY
+        .iter()
+        .map(|walk| name(walk.name))
+        .collect();
+    assert_eq!(targets.len(), 65);
+    let definitions = checked_definitions(&snapshot, &inventory, &targets).unwrap();
+    let registry = Registry::new(&snapshot, definitions).unwrap();
+    let query = registry.query(&targets).unwrap();
+    assert!(!query.contains("\"verdict\":"));
+    let contracts: BTreeMap<_, _> = targets
+        .iter()
+        .map(|target| (target.clone(), path("specs/walks.md")))
+        .collect();
+    let units = registry
+        .resolve_query(&snapshot, &inventory, &query, &contracts)
+        .unwrap();
+    assert_eq!(units.len(), targets.len());
+    for unit in units {
+        let walk = loom_walk::walk::lookup(unit.target().as_str()).unwrap();
+        let standalone = (walk.run)(&loom_walk::walk::WalkInput::for_root(dir.path()));
+        match unit.run() {
+            Ok(result) => match result.outcome() {
+                Outcome::Pass => assert!(standalone.pass, "{}: {}", walk.name, standalone.evidence),
+                Outcome::Fail { detail } => {
+                    assert!(!standalone.pass, "{}: {detail}", walk.name);
+                    assert_eq!(
+                        detail.split("\nsource errors:\n").next(),
+                        standalone.evidence.split("\nsource errors:\n").next(),
+                        "{}",
+                        walk.name
+                    );
+                }
+                other => panic!("{}: unexpected {other:?}", walk.name),
+            },
+            Err(error) => {
+                // A missing fixture input is a failure in both paths, never a pass.
+                assert!(
+                    !standalone.pass,
+                    "{}: checked failed but standalone passed: {error}",
+                    walk.name
+                );
+                assert!(
+                    matches!(error, Error::Snapshot(_)),
+                    "{}: {error:?}",
+                    walk.name
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -290,4 +496,232 @@ fn checker_source_mutation_invalidates_a_previously_generated_query() {
         "pub fn altered() {}\n",
     );
     assert!(registry.query(&targets).is_err());
+}
+
+fn run_target(root: &Path, target: &str) -> Outcome {
+    let (snapshot, inventory) = context(root);
+    let targets = [name(target)];
+    let registry = registry(&snapshot, &inventory, &targets);
+    let query = registry.query(&targets).unwrap();
+    registry
+        .resolve_query(&snapshot, &inventory, &query, &contracts(&targets))
+        .unwrap()[0]
+        .run()
+        .unwrap()
+        .outcome()
+        .clone()
+}
+
+#[test]
+fn real_scan_additions_renames_and_deletions_reenter_fresh_admission() {
+    let dir = fixture();
+    let root = dir.path();
+    let target = "no_event_sentinels";
+    assert_eq!(run_target(root, target), Outcome::Pass);
+    let (snapshot, inventory) = context(root);
+    let targets = [name(target)];
+    let old_registry = registry(&snapshot, &inventory, &targets);
+    let old_query = old_registry.query(&targets).unwrap();
+    let original = std::fs::read_to_string(root.join("crates/loom-events/src/lib.rs")).unwrap();
+    write(
+        root,
+        "crates/loom-events/src/lib.rs",
+        &format!("{original}\nmod added;\n"),
+    );
+    write(
+        root,
+        "crates/loom-events/src/added.rs",
+        "fn f() { let _ = EventEnvelope::default(); }\n",
+    );
+    assert!(old_registry.query(&targets).is_err());
+    assert!(
+        old_registry
+            .resolve_query(&snapshot, &inventory, &old_query, &contracts(&targets))
+            .is_err()
+    );
+    assert!(
+        matches!(run_target(root, target), Outcome::Fail { detail } if detail.contains("sentinel constructor"))
+    );
+    std::fs::rename(
+        root.join("crates/loom-events/src/added.rs"),
+        root.join("crates/loom-events/src/renamed.rs"),
+    )
+    .unwrap();
+    write(
+        root,
+        "crates/loom-events/src/lib.rs",
+        &format!("{original}\nmod renamed;\n"),
+    );
+    assert!(matches!(run_target(root, target), Outcome::Fail { .. }));
+    let (snapshot, inventory) = context(root);
+    let registry = registry(&snapshot, &inventory, &targets);
+    let query = registry.query(&targets).unwrap();
+    assert!(query.contains("crates/loom-events/src/renamed.rs"));
+    assert!(!query.contains("crates/loom-events/src/added.rs"));
+    std::fs::remove_file(root.join("crates/loom-events/src/renamed.rs")).unwrap();
+    write(root, "crates/loom-events/src/lib.rs", &original);
+    assert!(registry.query(&targets).is_err());
+    assert_eq!(run_target(root, target), Outcome::Pass);
+}
+
+#[test]
+fn batch_attribution_rejects_omitted_file_membership_configuration_and_checker_inputs() {
+    let dir = fixture();
+    let (snapshot, inventory) = context(dir.path());
+    let targets = [name("no_event_sentinels"), name("workspace_deps_pinned")];
+    let registry = registry(&snapshot, &inventory, &targets);
+    let query = registry.query(&targets).unwrap();
+    for (target, omitted) in [
+        (
+            "no_event_sentinels",
+            "crates/loom-events/src/identifier/mod.rs",
+        ),
+        ("workspace_deps_pinned", "Cargo.toml"),
+        (
+            "no_event_sentinels",
+            "crates/loom-walk/src/walk/no_event_sentinels.rs",
+        ),
+    ] {
+        let mut document: serde_json::Value = serde_json::from_str(&query).unwrap();
+        let unit = document["units"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|unit| unit["contract"]["target"] == target)
+            .unwrap();
+        let inputs = unit["contract"]["inputs"].as_array_mut().unwrap();
+        let before = inputs.len();
+        inputs.retain(|input| input["path"] != omitted);
+        assert_eq!(before - inputs.len(), 1, "{omitted}");
+        assert!(
+            matches!(registry.resolve_query(&snapshot, &inventory, &document.to_string(), &contracts(&targets)), Err(Error::Admission { source, .. }) if matches!(*source, Error::Inconsistent { .. }))
+        );
+    }
+    // Moving a description into its sibling slot must not change target attribution.
+    let mut document: serde_json::Value = serde_json::from_str(&query).unwrap();
+    document["units"][0] = document["units"][1].clone();
+    assert!(
+        registry
+            .resolve_query(
+                &snapshot,
+                &inventory,
+                &document.to_string(),
+                &contracts(&targets)
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn raw_io_in_an_actual_checker_or_transitive_helper_blocks_registration() {
+    let dir = fixture();
+    let root = dir.path();
+    for (file, raw) in [
+        (
+            "crates/loom-walk/src/walk/no_event_sentinels.rs",
+            "fn untracked() { let _ = std::fs::read_to_string(\"secret\").ok(); }\n",
+        ),
+        (
+            "crates/loom-walk/src/walk/util.rs",
+            "use std::{fs as storage}; fn untracked() { let _ = storage::read(\"secret\"); }\n",
+        ),
+        (
+            "crates/loom-walk/src/walk/source.rs",
+            "impl Tracked<'_, '_> { fn raw() { std::fs::read(\"secret\"); } }\n",
+        ),
+    ] {
+        let good = std::fs::read_to_string(root.join(file)).unwrap();
+        write(root, file, &format!("{good}\n{raw}"));
+        let (snapshot, inventory) = context(root);
+        assert!(
+            matches!(checked_definitions(&snapshot, &inventory, &[name("no_event_sentinels")]), Err(Error::UntrackedIo { checker, .. }) if checker == path(file))
+        );
+        write(root, file, &good);
+    }
+}
+
+#[test]
+fn tracked_transitive_template_reads_and_query_omissions_use_the_real_pinning_rule() {
+    let dir = fixture();
+    let root = dir.path();
+    let acceptance = std::fs::read_to_string(root.join("specs/walks/tests.md")).unwrap();
+    std::fs::remove_dir_all(root.join("specs/walks")).unwrap();
+    write(root, "specs/walks.md", &acceptance);
+    write(
+        root,
+        "docs/README.md",
+        "- [walks](../specs/walks.md)\n- [templates](../specs/templates.md)\n",
+    );
+    write(
+        root,
+        "specs/templates.md",
+        "# Templates\n\n### Pinning Policy\n\n| Partial | `plan` |\n|---|:-:|\n| `outer.md` | ✓ |\n| `inner.md` | ✓ |\n\n## Other\n",
+    );
+    write(
+        root,
+        "crates/loom-templates/templates/plan.md",
+        "{% include \"partial/outer.md\" %}\n",
+    );
+    write(
+        root,
+        "crates/loom-templates/templates/partial/outer.md",
+        "{% include \"partial/inner.md\" %}\n",
+    );
+    write(
+        root,
+        "crates/loom-templates/templates/partial/inner.md",
+        "content\n",
+    );
+    let targets = [name("template_pinning_matrix")];
+    let contracts = BTreeMap::from([(targets[0].clone(), path("specs/walks.md"))]);
+    let (snapshot, inventory) = context(root);
+    let registry = registry(&snapshot, &inventory, &targets);
+    let query = registry.query(&targets).unwrap();
+    let units = registry
+        .resolve_query(&snapshot, &inventory, &query, &contracts)
+        .unwrap();
+    let result = units[0].run().unwrap();
+    assert_eq!(result.outcome(), &Outcome::Pass);
+    assert!(
+        (loom_walk::walk::lookup("template_pinning_matrix")
+            .unwrap()
+            .run)(&loom_walk::walk::WalkInput::for_root(root))
+        .pass
+    );
+    for relative in [
+        "specs/templates.md",
+        "crates/loom-templates/templates/partial/outer.md",
+        "crates/loom-templates/templates/partial/inner.md",
+    ] {
+        assert!(result.observations().iter().any(|observation| matches!(observation, Observation::Content { path: read, .. } if read == &path(relative))), "{relative}");
+        let mut document: serde_json::Value = serde_json::from_str(&query).unwrap();
+        document["units"][0]["contract"]["inputs"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|input| input["path"] != relative);
+        assert!(
+            registry
+                .resolve_query(&snapshot, &inventory, &document.to_string(), &contracts)
+                .is_err()
+        );
+    }
+    // The leaf loses reachability; unchanged top-level template cannot hide that mutation.
+    write(
+        root,
+        "crates/loom-templates/templates/partial/outer.md",
+        "no inner include\n",
+    );
+    assert!(registry.query(&targets).is_err());
+    let (snapshot, inventory) = context(root);
+    let registry = self::registry(&snapshot, &inventory, &targets);
+    let query = registry.query(&targets).unwrap();
+    assert!(matches!(
+        registry
+            .resolve_query(&snapshot, &inventory, &query, &contracts)
+            .unwrap()[0]
+            .run()
+            .unwrap()
+            .outcome(),
+        Outcome::Fail { .. }
+    ));
 }

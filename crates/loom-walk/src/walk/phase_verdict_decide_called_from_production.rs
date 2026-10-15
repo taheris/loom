@@ -15,12 +15,19 @@ const RULE: &str = "phase_verdict_decide_called_from_production — loop + revie
 const LOOP_PROD: &str = "crates/loom-workflow/src/loop/production.rs";
 const REVIEW_PROD: &str = "crates/loom-workflow/src/review/production.rs";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let mut violations = Vec::new();
 
-    check_decide_site(&root, LOOP_PROD, "use crate::review::", &mut violations);
     check_decide_site(
+        input,
+        &root,
+        LOOP_PROD,
+        "use crate::review::",
+        &mut violations,
+    );
+    check_decide_site(
+        input,
         &root,
         REVIEW_PROD,
         "use super::phase_verdict::",
@@ -31,13 +38,14 @@ pub fn run(_input: &WalkInput) -> Verdict {
 }
 
 fn check_decide_site(
+    input: &WalkInput,
     root: &Path,
     rel_path: &str,
     import_prefix: &str,
     violations: &mut Vec<String>,
 ) {
     let full = root.join(rel_path);
-    let Some(body) = read_to_string(&full) else {
+    let Some(body) = read_to_string(input, &full) else {
         violations.push(format!("{rel_path}:1 production source not found"));
         return;
     };
@@ -77,3 +85,10 @@ fn import_brings_in_decide(body: &str, import_prefix: &str) -> bool {
     }
     false
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("phase_verdict_decide_called_from_production");

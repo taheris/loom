@@ -9,15 +9,15 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "TST-1 shared proptest blocks use loom_test_support::proptest_config";
 
-pub fn run(input: &WalkInput) -> Verdict {
-    run_with_root(input, &workspace_root())
+fn rule(input: &WalkInput) -> Verdict {
+    run_with_root(input, &workspace_root(input))
 }
 
 fn run_with_root(input: &WalkInput, root: &Path) -> Verdict {
-    let files = narrow_to_loom_files(all_rs_files(root), input, root);
+    let files = narrow_to_loom_files(all_rs_files(input, root), input, root);
     let mut violations = Vec::new();
     for path in files {
-        let Some(parsed) = parse_rs(&path) else {
+        let Some(parsed) = parse_rs(input, &path) else {
             continue;
         };
         let mut visitor = ProptestVisitor::default();
@@ -25,7 +25,7 @@ fn run_with_root(input: &WalkInput, root: &Path) -> Verdict {
         if visitor.blocks == 0 {
             continue;
         }
-        let source = std::fs::read_to_string(&path).unwrap_or_default();
+        let source = super::util::read_to_string(input, &path).unwrap_or_default();
         let configured = source
             .matches("#![proptest_config(proptest_config())]")
             .count();
@@ -101,3 +101,10 @@ mod tests {
         Ok(())
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("shared_proptest_config");

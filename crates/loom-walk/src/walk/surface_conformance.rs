@@ -48,12 +48,12 @@ enum RemovedFlag {
     Short(char),
 }
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let Some(spec_body) = read_to_string(&locate_rel(&root, SPEC)) else {
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let Some(spec_body) = read_to_string(input, &locate_rel(input, &root, SPEC)) else {
         return verdict_from(RULE, vec![format!("{SPEC} not readable")]);
     };
-    let Some(main_body) = read_to_string(&root.join(MAIN_RS)) else {
+    let Some(main_body) = read_to_string(input, &root.join(MAIN_RS)) else {
         return verdict_from(RULE, vec![format!("{MAIN_RS} not readable")]);
     };
 
@@ -88,13 +88,13 @@ pub fn run(_input: &WalkInput) -> Verdict {
         &main_file,
         &mut violations,
     );
-    if let Some(logs) = read_to_string(&locate_rel(&root, LOGS_SPEC)) {
+    if let Some(logs) = read_to_string(input, &locate_rel(input, &root, LOGS_SPEC)) {
         check_command_flag_set(&logs, &main_file, "logs", "Logs", &mut violations);
     } else {
         violations.push(format!("{LOGS_SPEC} not readable"));
     }
     if binary_top_commands.contains("inbox") {
-        if let Some(inbox) = read_to_string(&locate_rel(&root, INBOX_SPEC)) {
+        if let Some(inbox) = read_to_string(input, &locate_rel(input, &root, INBOX_SPEC)) {
             check_inbox_surface(&inbox, &main_file, &mut violations);
         } else {
             violations.push(format!("{INBOX_SPEC} not readable"));
@@ -609,14 +609,14 @@ fn section_lines<'a>(body: &'a str, heading: &str) -> Option<Vec<&'a str>> {
 /// each ancestor when the direct join is absent. Specs live in
 /// `<repo-root>/specs/` but `workspace_root()` resolves to
 /// `<repo-root>/loom/`, so the ancestor search bridges the gap.
-fn locate_rel(workspace: &Path, rel: &str) -> PathBuf {
+fn locate_rel(input: &WalkInput, workspace: &Path, rel: &str) -> PathBuf {
     let direct = workspace.join(rel);
-    if direct.is_file() {
+    if super::util::is_file(input, &direct) {
         return direct;
     }
     for ancestor in workspace.ancestors().skip(1) {
         let candidate = ancestor.join(rel);
-        if candidate.is_file() {
+        if super::util::is_file(input, &candidate) {
             return candidate;
         }
     }
@@ -842,3 +842,10 @@ fn extract_quoted_strings(s: &str) -> Vec<String> {
     }
     out
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("surface_conformance");

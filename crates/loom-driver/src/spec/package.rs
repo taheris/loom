@@ -10,6 +10,59 @@ use thiserror::Error;
 
 use crate::identifier::SpecLabel;
 
+/// Explicit namespace/content boundary for package discovery.
+pub trait Reader {
+    /// Read one document.
+    /// # Errors
+    /// Returns content-access or decoding failures.
+    fn read(&self, path: &Path) -> std::io::Result<String>;
+    /// Enumerate immediate namespace entries.
+    /// # Errors
+    /// Returns directory-access failures, never partial entries.
+    fn directory(&self, path: &Path) -> std::io::Result<Vec<PathBuf>>;
+    /// Inspect a namespace entry without following symlinks.
+    /// # Errors
+    /// Returns missing-entry or metadata-access failures.
+    fn kind(&self, path: &Path) -> std::io::Result<Kind>;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    File,
+    Directory,
+    Other,
+}
+impl Kind {
+    const fn is_file(self) -> bool {
+        matches!(self, Self::File)
+    }
+    const fn is_dir(self) -> bool {
+        matches!(self, Self::Directory)
+    }
+}
+
+struct Disk;
+impl Reader for Disk {
+    fn read(&self, path: &Path) -> std::io::Result<String> {
+        fs::read_to_string(path)
+    }
+    fn directory(&self, path: &Path) -> std::io::Result<Vec<PathBuf>> {
+        fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect()
+    }
+    fn kind(&self, path: &Path) -> std::io::Result<Kind> {
+        let metadata = fs::symlink_metadata(path)?;
+        Ok(if metadata.is_file() {
+            Kind::File
+        } else if metadata.is_dir() {
+            Kind::Directory
+        } else {
+            Kind::Other
+        })
+    }
+}
+
 /// One complete owner with its contract and sole acceptance document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Package {
@@ -50,11 +103,19 @@ impl Package {
     /// # Errors
     /// Returns a contextual error if either document cannot be read.
     pub fn line_count(&self) -> Result<usize, Error> {
-        let contract = read(&self.contract)?.lines().count();
+        self.line_count_with(&Disk)
+    }
+
+    /// Count owner documents through an explicit captured reader.
+    ///
+    /// # Errors
+    /// Returns contextual read errors without losing source paths.
+    pub fn line_count_with(&self, reader: &dyn Reader) -> Result<usize, Error> {
+        let contract = read_with(reader, &self.contract)?.lines().count();
         if self.contract == self.acceptance {
             Ok(contract)
         } else {
-            Ok(contract + read(&self.acceptance)?.lines().count())
+            Ok(contract + read_with(reader, &self.acceptance)?.lines().count())
         }
     }
 }
@@ -103,20 +164,25 @@ pub enum Error {
 /// # Errors
 /// Rejects incomplete packages, invalid labels, mixed layouts, and unreadable directories.
 pub fn discover(specs_dir: &Path) -> Result<Vec<Package>, Error> {
+    discover_with(&Disk, specs_dir)
+}
+
+/// Discover with an explicit namespace and identical layout rules.
+///
+/// # Errors
+/// Rejects incomplete/mixed packages and reader failures.
+pub fn discover_with(reader: &dyn Reader, specs_dir: &Path) -> Result<Vec<Package>, Error> {
     let read_dir_error = |source| Error::ReadDir {
         path: specs_dir.to_path_buf(),
         source,
     };
-    let mut paths = fs::read_dir(specs_dir)
-        .map_err(read_dir_error)?
-        .map(|entry| entry.map(|entry| entry.path()).map_err(read_dir_error))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut paths = reader.directory(specs_dir).map_err(read_dir_error)?;
     paths.sort();
     let mut packages = Vec::new();
     let mut has_flat = false;
     let mut has_package = false;
     for path in paths {
-        let metadata = fs::symlink_metadata(&path).map_err(read_dir_error)?;
+        let metadata = reader.kind(&path).map_err(read_dir_error)?;
         let canonical = metadata.is_dir();
         if !canonical && path.extension().is_none_or(|ext| ext != "md") {
             continue;
@@ -133,14 +199,14 @@ pub fn discover(specs_dir: &Path) -> Result<Vec<Package>, Error> {
                     source,
                 }
             })?;
-        if canonical && is_bootstrap_support(&path)? {
+        if canonical && is_bootstrap_support(reader, &path)? {
             continue;
         }
         let (contract, acceptance) = if canonical {
             has_package = true;
             for document in ["spec.md", "tests.md"] {
                 let file = path.join(document);
-                match fs::symlink_metadata(&file) {
+                match reader.kind(&file) {
                     Ok(metadata) if metadata.is_file() => {}
                     Ok(_) => return Err(Error::Incomplete { path: file }),
                     Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
@@ -172,9 +238,9 @@ pub fn discover(specs_dir: &Path) -> Result<Vec<Package>, Error> {
     Ok(packages)
 }
 
-fn is_bootstrap_support(path: &Path) -> Result<bool, Error> {
+fn is_bootstrap_support(reader: &dyn Reader, path: &Path) -> Result<bool, Error> {
     let sibling = path.with_extension("md");
-    match fs::symlink_metadata(&sibling) {
+    match reader.kind(&sibling) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Ok(false),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -187,7 +253,7 @@ fn is_bootstrap_support(path: &Path) -> Result<bool, Error> {
     }
     for document in ["spec.md", "tests.md"] {
         let file = path.join(document);
-        match fs::symlink_metadata(&file) {
+        match reader.kind(&file) {
             Ok(_) => return Ok(false),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
             Err(source) => return Err(Error::ReadFile { path: file, source }),
@@ -265,13 +331,25 @@ pub fn parse_index(content: &str) -> Result<Vec<IndexEntry>, Error> {
 /// # Errors
 /// Rejects unindexed owners, missing indexed owners, duplicates, and path mismatches.
 pub fn discover_indexed(workspace: &Path) -> Result<Vec<Package>, Error> {
-    let packages = discover(&workspace.join("specs"))?;
-    cross_check_index(workspace, &packages)?;
+    discover_indexed_with(&Disk, workspace)
+}
+
+/// Indexed discovery without filesystem fallback.
+///
+/// # Errors
+/// Rejects the same layout/index disagreements as disk discovery.
+pub fn discover_indexed_with(reader: &dyn Reader, workspace: &Path) -> Result<Vec<Package>, Error> {
+    let packages = discover_with(reader, &workspace.join("specs"))?;
+    cross_check_index(reader, workspace, &packages)?;
     Ok(packages)
 }
 
-fn cross_check_index(workspace: &Path, packages: &[Package]) -> Result<(), Error> {
-    let entries = parse_index(&read(&workspace.join("docs/README.md"))?)?;
+fn cross_check_index(
+    reader: &dyn Reader,
+    workspace: &Path,
+    packages: &[Package],
+) -> Result<(), Error> {
+    let entries = parse_index(&read_with(reader, &workspace.join("docs/README.md"))?)?;
     for entry in &entries {
         let expected = workspace.join(&entry.contract);
         if !packages
@@ -316,7 +394,7 @@ pub fn discover_workspace(workspace: &Path) -> Result<Vec<Package>, Error> {
             .iter()
             .any(|package| package.contract != package.acceptance)
     {
-        cross_check_index(workspace, &packages)?;
+        cross_check_index(&Disk, workspace, &packages)?;
     }
     Ok(packages)
 }
@@ -331,8 +409,8 @@ pub fn document_label(path: &Path) -> Option<&str> {
     }
 }
 
-fn read(path: &Path) -> Result<String, Error> {
-    fs::read_to_string(path).map_err(|source| Error::ReadFile {
+fn read_with(reader: &dyn Reader, path: &Path) -> Result<String, Error> {
+    reader.read(path).map_err(|source| Error::ReadFile {
         path: path.to_path_buf(),
         source,
     })
@@ -503,6 +581,72 @@ mod tests {
     fn index_ignores_fenced_and_inline_examples() {
         let entries = parse_index("```md\n[alpha](../specs/wrong.md)\n```\n`[alpha](../specs/wrong.md)`\n- [alpha](../specs/alpha/spec.md)").unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn captured_package_discovery_and_budget_have_no_ambient_filesystem_dependency() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        struct Captured(BTreeMap<PathBuf, String>);
+        impl Reader for Captured {
+            fn read(&self, path: &Path) -> std::io::Result<String> {
+                self.0
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| std::io::ErrorKind::NotFound.into())
+            }
+            fn directory(&self, path: &Path) -> std::io::Result<Vec<PathBuf>> {
+                Ok(self
+                    .0
+                    .keys()
+                    .filter_map(|file| {
+                        Some(path.join(file.strip_prefix(path).ok()?.components().next()?))
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect())
+            }
+            fn kind(&self, path: &Path) -> std::io::Result<Kind> {
+                if self.0.contains_key(path) {
+                    Ok(Kind::File)
+                } else if self.0.keys().any(|file| file.starts_with(path)) {
+                    Ok(Kind::Directory)
+                } else {
+                    Err(std::io::ErrorKind::NotFound.into())
+                }
+            }
+        }
+        // No directory is materialized; every read and namespace observation is explicit.
+        let root = Path::new("unmaterialized-captured-workspace");
+        let mut source = Captured(BTreeMap::from([
+            (
+                root.join("docs/README.md"),
+                "- [alpha](../specs/alpha/spec.md)\n".into(),
+            ),
+            (root.join("specs/alpha/spec.md"), "contract\n".repeat(1_000)),
+            (
+                root.join("specs/alpha/tests.md"),
+                "acceptance\n".repeat(1_001),
+            ),
+        ]));
+        let packages = discover_indexed_with(&source, root).unwrap();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].line_count_with(&source).unwrap(), 2_001);
+        source.0.remove(&root.join("specs/alpha/tests.md"));
+        assert!(
+            matches!(discover_indexed_with(&source, root), Err(Error::Incomplete { path }) if path == root.join("specs/alpha/tests.md"))
+        );
+        source
+            .0
+            .insert(root.join("specs/alpha/tests.md"), "acceptance\n".into());
+        source.0.insert(
+            root.join("docs/README.md"),
+            "- [missing](../specs/missing/spec.md)\n".into(),
+        );
+        assert!(matches!(
+            discover_indexed_with(&source, root),
+            Err(Error::Index { .. })
+        ));
     }
 
     #[test]

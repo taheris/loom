@@ -29,16 +29,16 @@ const CANONICAL: &str = "crates/loom-protocol/src/gate.rs";
 const CANONICAL_STRUCTS: &[&str] = &["Finding", "WalkOutput"];
 const CANONICAL_ENUMS: &[&str] = &["ConcernToken", "FindingTarget", "BadWalk", "ExitSignal"];
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let scope = narrow_to_loom_files(all_rs_files(&root), input, &root);
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let scope = narrow_to_loom_files(all_rs_files(input, &root), input, &root);
     let mut violations = Vec::new();
     for path in scope {
         let rel_path = rel(&root, &path);
         if rel_path == CANONICAL {
             continue;
         }
-        let Some(file) = parse_rs(&path) else {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         let mut visitor = Visitor {
@@ -80,3 +80,10 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
         }
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("finding_no_duplicate_definitions");

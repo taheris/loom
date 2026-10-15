@@ -15,12 +15,12 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "no_hardcoded_tmp_paths — tests use tempfile::tempdir, not `/tmp/...`";
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let scope = narrow_to_loom_files(all_rs_files(&root), input, &root);
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let scope = narrow_to_loom_files(all_rs_files(input, &root), input, &root);
     let mut violations = Vec::new();
     for path in scope {
-        let Some(file) = parse_rs(&path) else {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         let rel_path = rel(&root, &path);
@@ -88,3 +88,10 @@ fn has_cfg_test(attrs: &[Attribute]) -> bool {
         list.tokens.to_string().contains("test")
     })
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("no_hardcoded_tmp_paths");

@@ -152,19 +152,19 @@ const LIBRARY_CRATES: &[&str] = &[
 
 const BINARY_CRATE: &str = "loom";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let workspace_manifest = root.join("Cargo.toml");
     let mut violations = Vec::new();
 
-    match read_to_string(&workspace_manifest) {
+    match read_to_string(input, &workspace_manifest) {
         Some(body) => check_workspace_policy(&body, &mut violations),
         None => violations.push("Cargo.toml:1 workspace manifest not readable".to_string()),
     }
 
     let crates_root = root.join("crates");
     for name in std::iter::once(&BINARY_CRATE).chain(LIBRARY_CRATES.iter()) {
-        check_member_inherits(&crates_root, name, &mut violations);
+        check_member_inherits(input, &crates_root, name, &mut violations);
     }
 
     verdict_from(RULE, violations)
@@ -267,9 +267,14 @@ fn lint_priority(value: &Value) -> Option<i64> {
         .and_then(Value::as_integer)
 }
 
-fn check_member_inherits(crates_root: &Path, name: &str, violations: &mut Vec<String>) {
+fn check_member_inherits(
+    input: &WalkInput,
+    crates_root: &Path,
+    name: &str,
+    violations: &mut Vec<String>,
+) {
     let manifest = crates_root.join(name).join("Cargo.toml");
-    let Some(body) = read_to_string(&manifest) else {
+    let Some(body) = read_to_string(input, &manifest) else {
         violations.push(format!("crates/{name}/Cargo.toml:1 manifest not readable"));
         return;
     };
@@ -284,3 +289,10 @@ fn check_member_inherits(crates_root: &Path, name: &str, violations: &mut Vec<St
         ));
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("workspace_lints");

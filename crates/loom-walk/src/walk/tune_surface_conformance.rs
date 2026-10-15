@@ -13,12 +13,12 @@ const EXPECTED_TUNE_ACTIONS: &[&str] = &["skill", "phase", "partial", "checker",
 const EXPECTED_LEVELS: &[&str] = &["fast", "run", "full"];
 const EXPECTED_PROPOSAL_FLAGS: &[&str] = &["dry-run", "seed"];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let Some(spec_body) = read_to_string(&root.join(SPEC)) else {
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let Some(spec_body) = read_to_string(input, &root.join(SPEC)) else {
         return verdict_from(RULE, vec![format!("{SPEC}:1 spec not readable")]);
     };
-    let Some(main_body) = read_to_string(&root.join(MAIN_RS)) else {
+    let Some(main_body) = read_to_string(input, &root.join(MAIN_RS)) else {
         return verdict_from(
             RULE,
             vec![format!("{MAIN_RS}:1 binary entry point not found")],
@@ -196,3 +196,10 @@ fn compare_set(
 fn expected_set(values: &[&str]) -> BTreeSet<String> {
     values.iter().map(|value| (*value).to_string()).collect()
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("tune_surface_conformance");

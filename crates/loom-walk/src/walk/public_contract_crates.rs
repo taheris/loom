@@ -4,8 +4,6 @@
 //! `loom-llm`, `loom-templates`, and `loom-skill`. The walk confirms
 //! every expected crate declares the marker and no other crate does.
 
-use std::fs;
-
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
@@ -26,14 +24,14 @@ enum PublicContractFlag {
     Value(bool),
 }
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let mut violations = Vec::new();
 
     for name in PUBLIC_CRATES {
         let manifest_rel = format!("crates/{name}/Cargo.toml");
         let manifest = root.join(&manifest_rel);
-        let Some(body) = read_to_string(&manifest) else {
+        let Some(body) = read_to_string(input, &manifest) else {
             violations.push(format!("{manifest_rel}:1 manifest not found"));
             continue;
         };
@@ -49,40 +47,28 @@ pub fn run(_input: &WalkInput) -> Verdict {
     }
 
     let crates_dir = root.join("crates");
-    match fs::read_dir(&crates_dir) {
-        Ok(entries) => {
-            for entry in entries {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(err) => {
-                        violations.push(format!("crates:1 failed to read crate entry: {err}"));
-                        continue;
-                    }
-                };
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if PUBLIC_CRATES.contains(&name.as_str()) {
-                    continue;
-                }
-                let manifest_rel = format!("crates/{name}/Cargo.toml");
-                let manifest = path.join("Cargo.toml");
-                let Some(body) = read_to_string(&manifest) else {
-                    continue;
-                };
-                if public_contract_flag(&body, &manifest_rel, &mut violations)
-                    == PublicContractFlag::Value(true)
-                {
-                    violations.push(format!(
-                        "{manifest_rel}:1 unexpected `[package.metadata.loom] public_contract = true`; expected set is {}",
-                        PUBLIC_CRATES.join(", "),
-                    ));
-                }
-            }
+    for path in super::util::immediate_children(input, &crates_dir) {
+        if !super::util::is_dir(input, &path) {
+            continue;
         }
-        Err(err) => violations.push(format!("crates:1 failed to enumerate crates: {err}")),
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        if PUBLIC_CRATES.contains(&name.as_str()) {
+            continue;
+        }
+        let manifest_rel = format!("crates/{name}/Cargo.toml");
+        let manifest = path.join("Cargo.toml");
+        let Some(body) = read_to_string(input, &manifest) else {
+            continue;
+        };
+        if public_contract_flag(&body, &manifest_rel, &mut violations)
+            == PublicContractFlag::Value(true)
+        {
+            violations.push(format!("{manifest_rel}:1 unexpected `[package.metadata.loom] public_contract = true`; expected set is {}", PUBLIC_CRATES.join(", ")));
+        }
     }
 
     verdict_from(RULE, violations)
@@ -105,3 +91,10 @@ fn public_contract_flag(
         .and_then(toml::Value::as_bool)
         .map_or(PublicContractFlag::Missing, PublicContractFlag::Value)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("public_contract_crates");

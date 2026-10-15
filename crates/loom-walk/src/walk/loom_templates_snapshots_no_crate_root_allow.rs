@@ -19,10 +19,10 @@ const TARGET: &str = "crates/loom-templates/tests/snapshots.rs";
 
 const NEEDLE: &str = concat!("#![", "allow(");
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let target = root.join(TARGET);
-    let scope: Vec<PathBuf> = if target.is_file() {
+    let scope: Vec<PathBuf> = if super::util::is_file(input, &target) {
         vec![target]
     } else {
         Vec::new()
@@ -30,7 +30,7 @@ pub fn run(input: &WalkInput) -> Verdict {
     let scope = narrow_to_loom_files(scope, input, &root);
     let mut violations = Vec::new();
     for path in scope {
-        let Some(body) = read_to_string(&path) else {
+        let Some(body) = read_to_string(input, &path) else {
             continue;
         };
         let rel_path = rel(&root, &path);
@@ -49,3 +49,10 @@ pub fn run(input: &WalkInput) -> Verdict {
     }
     verdict_from(RULE, violations)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_templates_snapshots_no_crate_root_allow");

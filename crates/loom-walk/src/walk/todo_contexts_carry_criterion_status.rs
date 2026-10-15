@@ -35,13 +35,13 @@ struct FieldInfo {
     is_vec_criterion_status: bool,
 }
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let src_dir = root.join(SRC_DIR);
     let mut found: HashMap<String, Found> = HashMap::new();
 
-    for path in rs_files_recursive(&src_dir) {
-        let Some(file) = parse_rs(&path) else {
+    for path in rs_files_recursive(input, &src_dir) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         let rel_path = rel(&root, &path);
@@ -140,3 +140,10 @@ fn is_vec_criterion_status(ty: &syn::Type) -> bool {
     };
     inner_segment.ident == "CriterionStatus"
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("todo_contexts_carry_criterion_status");

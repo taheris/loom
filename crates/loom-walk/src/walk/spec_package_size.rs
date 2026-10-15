@@ -2,17 +2,17 @@
 
 use std::path::Path;
 
-use loom_driver::spec::package::discover_indexed;
+use loom_driver::spec::package::discover_indexed_with;
 
 use super::util::{verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    check(&workspace_root())
+fn rule(input: &WalkInput) -> Verdict {
+    check(input, &workspace_root(input))
 }
 
-fn check(root: &Path) -> Verdict {
-    let packages = match discover_indexed(root) {
+fn check(input: &WalkInput, root: &Path) -> Verdict {
+    let packages = match discover_indexed_with(input, root) {
         Ok(packages) => packages,
         Err(error) => {
             return Verdict {
@@ -23,7 +23,7 @@ fn check(root: &Path) -> Verdict {
     };
     let mut violations = Vec::new();
     for package in packages {
-        match package.line_count() {
+        match package.line_count_with(input) {
             Ok(count) if count > 2_000 => violations.push(format!(
                 "{}: spec package `{}` has {count} combined Markdown lines, maximum 2000",
                 package.contract().display(),
@@ -65,13 +65,13 @@ mod tests {
             "acceptance\n".repeat(1_000),
         )
         .unwrap();
-        assert!(check(dir.path()).pass);
+        assert!(check(&WalkInput::default(), dir.path()).pass);
         std::fs::write(
             dir.path().join("specs/alpha/tests.md"),
             "acceptance\n".repeat(1_001),
         )
         .unwrap();
-        let verdict = check(dir.path());
+        let verdict = check(&WalkInput::default(), dir.path());
         assert!(!verdict.pass);
         assert!(verdict.evidence.contains("2001 combined"));
     }
@@ -79,20 +79,33 @@ mod tests {
     #[test]
     fn size_walk_fails_incomplete_or_unindexed_packages() {
         let dir = fixture();
-        assert!(!check(dir.path()).pass);
+        assert!(!check(&WalkInput::default(), dir.path()).pass);
         std::fs::write(dir.path().join("specs/alpha/spec.md"), "# Contract").unwrap();
         std::fs::write(dir.path().join("specs/alpha/tests.md"), "# Acceptance").unwrap();
-        assert!(check(dir.path()).pass);
+        assert!(check(&WalkInput::default(), dir.path()).pass);
         std::fs::write(
             dir.path().join("docs/README.md"),
             "- [beta](../specs/beta/spec.md)",
         )
         .unwrap();
-        assert!(!check(dir.path()).pass);
+        assert!(!check(&WalkInput::default(), dir.path()).pass);
     }
 
     #[test]
     fn workspace_packages_fit_budget() {
-        assert!(check(&workspace_root()).pass);
+        assert!(
+            check(
+                &WalkInput::default(),
+                &workspace_root(&WalkInput::default())
+            )
+            .pass
+        );
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("spec_package_size");

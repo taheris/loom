@@ -83,31 +83,31 @@ const REQUIRED_DERIVATIONS: &[RequiredDerivation] = &[
     },
 ];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let checks_path = root.join(CHECKS_REL);
-    let Some(checks_body) = read_to_string(&checks_path) else {
+    let Some(checks_body) = read_to_string(input, &checks_path) else {
         return Verdict {
             pass: false,
             evidence: format!("{CHECKS_REL}: file not readable\n{RULE}"),
         };
     };
     let workspace_path = root.join(WORKSPACE_REL);
-    let Some(workspace_body) = read_to_string(&workspace_path) else {
+    let Some(workspace_body) = read_to_string(input, &workspace_path) else {
         return Verdict {
             pass: false,
             evidence: format!("{WORKSPACE_REL}: file not readable\n{RULE}"),
         };
     };
     let apps_path = root.join(APPS_REL);
-    let Some(apps_body) = read_to_string(&apps_path) else {
+    let Some(apps_body) = read_to_string(input, &apps_path) else {
         return Verdict {
             pass: false,
             evidence: format!("{APPS_REL}: file not readable\n{RULE}"),
         };
     };
     let full_test_script_path = root.join(FULL_TEST_SCRIPT_REL);
-    let Some(full_test_script_body) = read_to_string(&full_test_script_path) else {
+    let Some(full_test_script_body) = read_to_string(input, &full_test_script_path) else {
         return Verdict {
             pass: false,
             evidence: format!("{FULL_TEST_SCRIPT_REL}: file not readable\n{RULE}"),
@@ -300,3 +300,10 @@ fn code_before_comment(raw: &str) -> &str {
         None => raw,
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("workspace_compile_checks_are_full_test_app_only");

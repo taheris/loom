@@ -13,8 +13,6 @@
 
 use std::path::{Path, PathBuf};
 
-use walkdir::WalkDir;
-
 use super::util::{
     is_comment, narrow_to_loom_files, read_to_string, rel, verdict_from, workspace_root,
 };
@@ -30,13 +28,13 @@ const PREFIX_USE_ROOT_INSTA: &str = concat!("use ::", "insta");
 const PREFIX_EXTERN_INSTA: &str = concat!("extern crate ", "insta");
 const NEEDLE_PATH: &str = concat!("insta", "::");
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let scope = narrow_to_loom_files(paths(&root), input, &root);
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let scope = narrow_to_loom_files(paths(input, &root), input, &root);
     let mut violations = Vec::new();
     for path in scope {
         let rel_path = rel(&root, &path);
-        let Some(body) = read_to_string(&path) else {
+        let Some(body) = read_to_string(input, &path) else {
             continue;
         };
         if is_cargo_manifest(&path) {
@@ -48,30 +46,23 @@ pub fn run(input: &WalkInput) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-pub(super) fn paths(root: &Path) -> Vec<PathBuf> {
-    let mut paths = renderer_paths(&root.join(RENDERER_DIR));
+pub(super) fn paths(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
+    let mut paths = renderer_paths(input, &root.join(RENDERER_DIR));
     let logging_test = root.join("crates/loom-driver/tests/logging.rs");
-    if logging_test.is_file() {
+    if super::util::is_file(input, &logging_test) {
         paths.push(logging_test);
     }
     paths
 }
 
-fn renderer_paths(renderer_root: &Path) -> Vec<PathBuf> {
-    if !renderer_root.is_dir() {
+fn renderer_paths(input: &WalkInput, renderer_root: &Path) -> Vec<PathBuf> {
+    if !super::util::is_dir(input, renderer_root) {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for entry in WalkDir::new(renderer_root)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        let p = entry.path();
-        if !p.is_file() {
-            continue;
-        }
-        if is_rust_file(p) || is_cargo_manifest(p) {
-            out.push(p.to_path_buf());
+    for p in super::util::files_recursive(input, renderer_root, None) {
+        if is_rust_file(&p) || is_cargo_manifest(&p) {
+            out.push(p);
         }
     }
     out.sort();
@@ -133,3 +124,10 @@ fn scan_manifest(rel_path: &str, body: &str, violations: &mut Vec<String>) {
         }
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("renderer_no_insta_dependency");

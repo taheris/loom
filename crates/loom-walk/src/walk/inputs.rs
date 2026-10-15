@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use serde::Serialize;
-use walkdir::WalkDir;
 
+use super::WalkInput;
 use super::util::{immediate_children, rel, rs_files_recursive, workspace_root};
 
 /// Invalid input queries cannot produce a partial or conservative response.
@@ -20,6 +20,8 @@ pub enum Error {
     UnknownWalk { name: String },
     /// repeated walk `{name}`
     RepeatedWalk { name: String },
+    /// input discovery failed: {detail}
+    Source { detail: String },
     /// failed to serialise walk inputs
     Serialise(#[from] serde_json::Error),
 }
@@ -56,7 +58,14 @@ pub fn render_print_inputs(names: &[String]) -> Result<String, Error> {
             return Err(Error::RepeatedWalk { name: name.clone() });
         }
     }
-    let root = workspace_root();
+    let input = WalkInput::default();
+    let root = workspace_root(&input);
+    let errors = input.errors.take();
+    if !errors.is_empty() {
+        return Err(Error::Source {
+            detail: errors.join("\n"),
+        });
+    }
     if let [only] = names {
         Ok(serde_json::to_string(&SingleDoc {
             inputs: rel_inputs(only, &root)?,
@@ -107,12 +116,21 @@ pub fn inputs_for(name: &str, root: &Path) -> Result<Vec<PathBuf>, Error> {
     let definition = super::lookup(name).ok_or_else(|| Error::UnknownWalk {
         name: name.to_owned(),
     })?;
-    Ok((definition.inputs)(root))
+    let input = WalkInput::default();
+    let paths = (definition.inputs)(root, &input);
+    let errors = input.errors.take();
+    if errors.is_empty() {
+        Ok(paths)
+    } else {
+        Err(Error::Source {
+            detail: errors.join("\n"),
+        })
+    }
 }
 
 /// A member crate's recursive `src/` tree.
-pub(super) fn crate_src(root: &Path, krate: &str) -> Vec<PathBuf> {
-    rs_files_recursive(&root.join(format!("crates/{krate}/src")))
+pub(super) fn crate_src(input: &WalkInput, root: &Path, krate: &str) -> Vec<PathBuf> {
+    rs_files_recursive(input, &root.join(format!("crates/{krate}/src")))
 }
 
 /// A member crate's manifest path.
@@ -121,29 +139,27 @@ pub(super) fn manifest(root: &Path, krate: &str) -> PathBuf {
 }
 
 /// Every file (any extension) under the loom-templates template tree.
-pub(super) fn template_files(root: &Path) -> Vec<PathBuf> {
-    files_under(&root.join("crates/loom-templates/templates"), None)
+pub(super) fn template_files(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
+    files_under(input, &root.join("crates/loom-templates/templates"), None)
 }
 
 /// Every `.md` file under the loom-templates template tree.
-pub(super) fn template_md_files(root: &Path) -> Vec<PathBuf> {
-    files_under(&root.join("crates/loom-templates/templates"), Some("md"))
+pub(super) fn template_md_files(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
+    files_under(
+        input,
+        &root.join("crates/loom-templates/templates"),
+        Some("md"),
+    )
 }
 
 /// Recursive file collection under `dir`, optionally filtered to one
 /// extension. Mirrors the `WalkDir` scopes the template walks build inline.
-fn files_under(dir: &Path, ext: Option<&str>) -> Vec<PathBuf> {
-    WalkDir::new(dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_path_buf())
-        .filter(|p| ext.is_none_or(|want| p.extension().and_then(|s| s.to_str()) == Some(want)))
-        .collect()
+fn files_under(input: &WalkInput, dir: &Path, ext: Option<&str>) -> Vec<PathBuf> {
+    super::util::files_recursive(input, dir, ext)
 }
 
-pub(super) fn crate_manifests(root: &Path) -> Vec<PathBuf> {
-    immediate_children(&root.join("crates"))
+pub(super) fn crate_manifests(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
+    immediate_children(input, &root.join("crates"))
         .into_iter()
         .map(|crate_dir| crate_dir.join("Cargo.toml"))
         .collect()
@@ -173,9 +189,11 @@ fn crate_entries(krate: &str) -> &'static [&'static str] {
 /// `no_types_or_error_files`'s scope: the forbidden `src/types.rs` and
 /// `src/error.rs` of every crate, declared by path whether or not they
 /// exist on disk so adding one re-triggers the walk.
-pub(super) fn types_error_inputs(root: &Path) -> Vec<PathBuf> {
+pub(super) fn types_error_inputs(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for crate_dir in immediate_children(&root.join("crates")) {
+    for crate_dir in immediate_children(input, &root.join("crates")) {
+        // The native package definition binds this absence-only namespace scope.
+        out.push(crate_dir.join("Cargo.toml"));
         out.push(crate_dir.join("src/types.rs"));
         out.push(crate_dir.join("src/error.rs"));
     }
@@ -194,7 +212,7 @@ mod tests {
     /// to the conservative always-run default for a walk loom owns.
     #[test]
     fn every_registered_walk_declares_nonempty_inputs() {
-        let root = workspace_root();
+        let root = workspace_root(&WalkInput::default());
         for name in names() {
             let paths = inputs_for(name, &root).unwrap();
             assert!(
@@ -206,7 +224,7 @@ mod tests {
 
     #[test]
     fn unknown_input_query_never_becomes_a_source_tree_fallback() {
-        let root = workspace_root();
+        let root = workspace_root(&WalkInput::default());
         assert!(matches!(
             inputs_for("not_registered", &root),
             Err(Error::UnknownWalk { name }) if name == "not_registered"
@@ -238,7 +256,7 @@ mod tests {
     /// gate's `--files` scope (which carries repo-relative paths).
     #[test]
     fn declared_inputs_are_repo_relative() {
-        let root = workspace_root();
+        let root = workspace_root(&WalkInput::default());
         for name in names() {
             for p in inputs_for(name, &root).unwrap() {
                 assert!(
@@ -258,7 +276,7 @@ mod tests {
     /// generic `crates/*/src/**` set — the "do not blanket-declare" rule.
     #[test]
     fn manifest_walk_reports_only_its_manifest() {
-        let root = workspace_root();
+        let root = workspace_root(&WalkInput::default());
         assert_eq!(
             inputs_for("loom_llm_deps", &root).unwrap(),
             vec![manifest(&root, "loom-llm")]
@@ -268,7 +286,7 @@ mod tests {
     /// A walk reading the pre-push hook config reports exactly that file.
     #[test]
     fn pre_push_config_walk_reports_pre_commit_config() {
-        let root = workspace_root();
+        let root = workspace_root(&WalkInput::default());
         assert_eq!(
             rel_inputs("pre_push_config_marker_wrapper_contract", &root).unwrap(),
             vec![".pre-commit-config.yaml".to_string()],
@@ -278,7 +296,7 @@ mod tests {
     /// A walk reading named spec + source files reports exactly those.
     #[test]
     fn named_file_walk_reports_those_files() {
-        let root = workspace_root();
+        let root = workspace_root(&WalkInput::default());
         let got = rel_inputs("surface_conformance", &root).unwrap();
         assert_eq!(
             got,

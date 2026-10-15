@@ -40,10 +40,10 @@ const REQUIRED: &[&str] = &[
 
 const SRC_DIR: &str = "crates/loom-llm/src";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let src_dir = root.join(SRC_DIR);
-    let defined = collect_definitions(&src_dir);
+    let defined = collect_definitions(input, &src_dir);
     let mut violations = Vec::new();
     for name in REQUIRED {
         if !defined.contains(*name) {
@@ -55,10 +55,10 @@ pub fn run(_input: &WalkInput) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-fn collect_definitions(src_dir: &Path) -> HashSet<String> {
+fn collect_definitions(input: &WalkInput, src_dir: &Path) -> HashSet<String> {
     let mut out = HashSet::new();
-    for path in rs_files_recursive(src_dir) {
-        let Some(file) = parse_rs(&path) else {
+    for path in rs_files_recursive(input, src_dir) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         collect_from_items(&file.items, &mut out);
@@ -87,3 +87,10 @@ fn collect_from_items(items: &[syn::Item], out: &mut HashSet<String>) {
         }
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_llm_no_underlying_crate_reexports");

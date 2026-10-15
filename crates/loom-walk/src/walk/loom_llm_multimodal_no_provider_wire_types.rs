@@ -21,10 +21,10 @@ const BANNED: &[&str] = &[
     "input_file",
 ];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let path = root.join(SRC);
-    let Some(body) = read_to_string(&path) else {
+    let Some(body) = read_to_string(input, &path) else {
         return verdict_from(RULE, vec![format!("{SRC}:1 unable to read request model")]);
     };
 
@@ -60,3 +60,10 @@ fn is_public_multimodal_line(line: &str) -> bool {
             || line.contains("mime_type")
             || line.contains("bytes"))
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_llm_multimodal_no_provider_wire_types");

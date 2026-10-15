@@ -19,12 +19,12 @@ const SPEC_REL: &str = "specs/templates.md";
 const TEMPLATES_REL: &str = "crates/loom-templates/templates";
 const PINNING_HEADING_PREFIX: &str = "### Pinning Policy";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let spec_path = locate_spec(&root);
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let spec_path = locate_spec(input, &root);
     let templates_dir = root.join(TEMPLATES_REL);
 
-    let matrix = match parse_pinning_matrix(&spec_path) {
+    let matrix = match parse_pinning_matrix(input, &spec_path) {
         Ok(m) => m,
         Err(e) => {
             return Verdict {
@@ -33,7 +33,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
             };
         }
     };
-    let code = match template_partials(&templates_dir) {
+    let code = match template_partials(input, &templates_dir) {
         Ok(c) => c,
         Err(e) => {
             return Verdict {
@@ -109,23 +109,23 @@ impl Cell {
     }
 }
 
-fn locate_spec(workspace: &Path) -> PathBuf {
+fn locate_spec(input: &WalkInput, workspace: &Path) -> PathBuf {
     let direct = workspace.join(SPEC_REL);
-    if direct.is_file() {
+    if super::util::is_file(input, &direct) {
         return direct;
     }
     for ancestor in workspace.ancestors().skip(1) {
         let candidate = ancestor.join(SPEC_REL);
-        if candidate.is_file() {
+        if super::util::is_file(input, &candidate) {
             return candidate;
         }
     }
     direct
 }
 
-fn parse_pinning_matrix(spec_path: &Path) -> Result<PinningMatrix, String> {
-    let body =
-        read_to_string(spec_path).ok_or_else(|| format!("spec file not found at {SPEC_REL}"))?;
+fn parse_pinning_matrix(input: &WalkInput, spec_path: &Path) -> Result<PinningMatrix, String> {
+    let body = read_to_string(input, spec_path)
+        .ok_or_else(|| format!("spec file not found at {SPEC_REL}"))?;
     let lines: Vec<&str> = body.lines().collect();
 
     let heading_idx = lines
@@ -231,26 +231,30 @@ fn strip_inline_code(s: &str) -> &str {
         .unwrap_or_else(|| s.trim())
 }
 
-fn template_partials(templates_dir: &Path) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
-    if !templates_dir.is_dir() {
+fn template_partials(
+    input: &WalkInput,
+    templates_dir: &Path,
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    if !super::util::is_dir(input, templates_dir) {
         return Err(format!("templates directory not found at {TEMPLATES_REL}"));
     }
     let partial_dir = templates_dir.join("partial");
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(templates_dir)
-        .map_err(|e| format!("failed to read {TEMPLATES_REL}: {e}"))?
-        .flatten()
-        .map(|e| e.path())
-        .collect();
+    let mut entries = input
+        .reader()
+        .directory(templates_dir)
+        .map_err(|e| format!("failed to read {TEMPLATES_REL}: {e}"))?;
     entries.sort();
     for path in entries {
-        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("md") {
+        if !super::util::is_file(input, &path)
+            || path.extension().and_then(|e| e.to_str()) != Some("md")
+        {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else {
             continue;
         };
-        let direct = read_includes(&path)?;
+        let direct = read_includes(input, &path)?;
         let mut closure: BTreeSet<String> = BTreeSet::new();
         let mut frontier: Vec<String> = direct.into_iter().collect();
         while let Some(name) = frontier.pop() {
@@ -258,8 +262,8 @@ fn template_partials(templates_dir: &Path) -> Result<BTreeMap<String, BTreeSet<S
                 continue;
             }
             let partial_path = partial_dir.join(&name);
-            if partial_path.is_file() {
-                for next in read_includes(&partial_path)? {
+            if super::util::is_file(input, &partial_path) {
+                for next in read_includes(input, &partial_path)? {
                     if !closure.contains(&next) {
                         frontier.push(next);
                     }
@@ -271,8 +275,9 @@ fn template_partials(templates_dir: &Path) -> Result<BTreeMap<String, BTreeSet<S
     Ok(out)
 }
 
-fn read_includes(path: &Path) -> Result<BTreeSet<String>, String> {
-    let body = read_to_string(path).ok_or_else(|| format!("failed to read {}", path.display()))?;
+fn read_includes(input: &WalkInput, path: &Path) -> Result<BTreeSet<String>, String> {
+    let body =
+        read_to_string(input, path).ok_or_else(|| format!("failed to read {}", path.display()))?;
     Ok(parse_includes(&body))
 }
 
@@ -299,3 +304,10 @@ fn parse_includes(body: &str) -> BTreeSet<String> {
     }
     out
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("template_pinning_matrix");

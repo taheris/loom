@@ -27,9 +27,9 @@ const ALLOWED_FILE: &str = "crates/loom/src/main.rs";
 const NEEDLE_FINDINGS: &str = concat!("mint_findings", "(");
 const NEEDLE_FINDING_WITH_OPTIONS: &str = concat!("mint_finding_with_options", "(");
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let scope = narrow_to_loom_files(src_files(&root), input, &root);
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let scope = narrow_to_loom_files(src_files(input, &root), input, &root);
     let mut violations = Vec::new();
     let needles: [(&str, &str); 2] = [
         (NEEDLE_FINDINGS, "mint_findings"),
@@ -45,7 +45,7 @@ pub fn run(input: &WalkInput) -> Verdict {
         if rel_path == "crates/loom-walk/src/walk/audit_makes_no_bd_writes_outside_mint_module.rs" {
             continue;
         }
-        let Some(body) = read_to_string(&path) else {
+        let Some(body) = read_to_string(input, &path) else {
             continue;
         };
         for (idx, line) in body.lines().enumerate() {
@@ -70,3 +70,10 @@ pub fn run(input: &WalkInput) -> Verdict {
 fn is_allowed_caller(rel_path: &str) -> bool {
     rel_path.starts_with(ALLOWED_DIR) || rel_path == ALLOWED_FILE
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("audit_makes_no_bd_writes_outside_mint_module");

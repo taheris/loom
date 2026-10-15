@@ -37,10 +37,10 @@ const REQUIRED: &[&str] = &[
 
 const SRC_DIR: &str = "crates/loom-templates/src";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let src_dir = root.join(SRC_DIR);
-    let exposed = collect_public_names(&src_dir);
+    let exposed = collect_public_names(input, &src_dir);
     let mut violations = Vec::new();
     for name in REQUIRED {
         if !exposed.contains(*name) {
@@ -52,10 +52,10 @@ pub fn run(_input: &WalkInput) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-fn collect_public_names(src_dir: &Path) -> HashSet<String> {
+fn collect_public_names(input: &WalkInput, src_dir: &Path) -> HashSet<String> {
     let mut out = HashSet::new();
-    for path in rs_files_recursive(src_dir) {
-        let Some(file) = parse_rs(&path) else {
+    for path in rs_files_recursive(input, src_dir) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         collect_from_items(&file.items, &mut out);
@@ -105,3 +105,10 @@ fn collect_from_use_tree(tree: &syn::UseTree, out: &mut HashSet<String>) {
         syn::UseTree::Glob(_) => {}
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_templates_public_types");

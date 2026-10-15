@@ -26,14 +26,14 @@ const RULE: &str = "loom_llm_client_constructors_use_newtypes — per-schema Cli
 
 const SRC_DIR: &str = "crates/loom-llm/src/client";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let src_dir = root.join(SRC_DIR);
 
     let mut violations = Vec::new();
 
-    for path in rs_files_recursive(&src_dir) {
-        let Some(file) = parse_rs(&path) else {
+    for path in rs_files_recursive(input, &src_dir) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         let rel = path
@@ -138,3 +138,10 @@ fn is_banned_credential_type(rendered: &str) -> bool {
         "String" | "&String" | "&str" | "Option<String>" | "Option<&String>" | "Option<&str>"
     )
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_llm_client_constructors_use_newtypes");

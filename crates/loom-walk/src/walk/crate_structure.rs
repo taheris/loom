@@ -78,22 +78,22 @@ const CRATES: &[CrateSpec] = &[
     },
 ];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let crates = root.join("crates");
     let mut violations = Vec::new();
 
-    check_workspace_members(&root, &mut violations);
+    check_workspace_members(input, &root, &mut violations);
     for spec in CRATES {
-        check_crate(&crates, spec, &mut violations);
+        check_crate(input, &crates, spec, &mut violations);
     }
 
     verdict_from(RULE, violations)
 }
 
-fn check_workspace_members(root: &Path, violations: &mut Vec<String>) {
+fn check_workspace_members(input: &WalkInput, root: &Path, violations: &mut Vec<String>) {
     let manifest = root.join("Cargo.toml");
-    let Some(body) = read_to_string(&manifest) else {
+    let Some(body) = read_to_string(input, &manifest) else {
         violations.push("Cargo.toml:1 workspace manifest not readable".to_string());
         return;
     };
@@ -144,14 +144,14 @@ fn expected_member_paths() -> BTreeSet<String> {
         .collect()
 }
 
-fn check_crate(crates: &Path, spec: &CrateSpec, violations: &mut Vec<String>) {
+fn check_crate(input: &WalkInput, crates: &Path, spec: &CrateSpec, violations: &mut Vec<String>) {
     let dir = crates.join(spec.name);
-    if !dir.is_dir() {
+    if !super::util::is_dir(input, &dir) {
         violations.push(format!("crates/{}:1 missing crate directory", spec.name));
         return;
     }
     let manifest = dir.join("Cargo.toml");
-    if !manifest.is_file() {
+    if !super::util::is_file(input, &manifest) {
         violations.push(format!(
             "crates/{}/Cargo.toml:1 missing manifest",
             spec.name
@@ -159,7 +159,7 @@ fn check_crate(crates: &Path, spec: &CrateSpec, violations: &mut Vec<String>) {
     }
     for entry in spec.entries {
         let entry_path = dir.join(entry);
-        if !entry_path.is_file() {
+        if !super::util::is_file(input, &entry_path) {
             violations.push(format!(
                 "crates/{}/{}:1 missing entry source",
                 spec.name, entry
@@ -167,3 +167,10 @@ fn check_crate(crates: &Path, spec: &CrateSpec, violations: &mut Vec<String>) {
         }
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("crate_structure_includes_loom_tune");

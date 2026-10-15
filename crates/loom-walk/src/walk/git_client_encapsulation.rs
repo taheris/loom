@@ -16,17 +16,17 @@ const PREFIX_USE_GIX: &str = concat!("use ", "gix");
 const PREFIX_USE_ROOT_GIX: &str = concat!("use ::", "gix");
 const PREFIX_EXTERN_GIX: &str = concat!("extern crate ", "gix");
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let allowed_prefix = Path::new("crates/loom-driver/src/git/");
-    let scope = narrow_to_loom_files(src_files(&root), input, &root);
+    let scope = narrow_to_loom_files(src_files(input, &root), input, &root);
     let mut violations = Vec::new();
     for path in scope {
         let rel_path = rel(&root, &path);
         if Path::new(&rel_path).starts_with(allowed_prefix) {
             continue;
         }
-        let Some(body) = read_to_string(&path) else {
+        let Some(body) = read_to_string(input, &path) else {
             continue;
         };
         for (lineno, line) in body.lines().enumerate() {
@@ -59,3 +59,10 @@ fn has_gix_import(line: &str) -> bool {
         || trimmed.starts_with(PREFIX_USE_ROOT_GIX)
         || trimmed.starts_with(PREFIX_EXTERN_GIX)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("git_client_encapsulation");

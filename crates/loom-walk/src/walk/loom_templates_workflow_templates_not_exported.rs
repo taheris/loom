@@ -20,19 +20,19 @@ const SRC_DIR: &str = "crates/loom-templates/src";
 
 const WORKFLOW_TEMPLATES: &[&str] = &["plan.md", "todo.md", "loop.md", "review.md", "inbox.md"];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let src_dir = root.join(SRC_DIR);
 
     let mut violations = Vec::new();
-    for path in rs_files_recursive(&src_dir) {
-        scan_file(&root, &path, &mut violations);
+    for path in rs_files_recursive(input, &src_dir) {
+        scan_file(input, &root, &path, &mut violations);
     }
     verdict_from(RULE, violations)
 }
 
-fn scan_file(root: &Path, path: &Path, violations: &mut Vec<String>) {
-    let Some(file) = parse_rs(path) else {
+fn scan_file(input: &WalkInput, root: &Path, path: &Path, violations: &mut Vec<String>) {
+    let Some(file) = parse_rs(input, path) else {
         return;
     };
     let rel = path
@@ -100,3 +100,10 @@ fn const_line(c: &syn::ItemConst) -> usize {
     use syn::spanned::Spanned;
     c.span().start().line
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_templates_workflow_templates_not_exported");

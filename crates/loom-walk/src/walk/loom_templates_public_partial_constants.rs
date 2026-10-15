@@ -20,21 +20,23 @@ const RULE: &str = "loom_templates_public_partial_constants — every templates/
 const SRC_DIR: &str = "crates/loom-templates/src";
 const PARTIAL_DIR: &str = "crates/loom-templates/templates/partial";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let partial_dir = root.join(PARTIAL_DIR);
     let src_dir = root.join(SRC_DIR);
 
-    let partials: Vec<String> = immediate_children(&partial_dir)
+    let partials: Vec<String> = immediate_children(input, &partial_dir)
         .into_iter()
-        .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("md"))
+        .filter(|p| {
+            super::util::is_file(input, p) && p.extension().and_then(|s| s.to_str()) == Some("md")
+        })
         .filter_map(|p| {
             p.file_name()
                 .and_then(|s| s.to_str())
                 .map(ToString::to_string)
         })
         .collect();
-    let exposed = collect_public_include_paths(&src_dir);
+    let exposed = collect_public_include_paths(input, &src_dir);
 
     let mut violations = Vec::new();
     for partial in &partials {
@@ -49,10 +51,10 @@ pub fn run(_input: &WalkInput) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-fn collect_public_include_paths(src_dir: &Path) -> HashSet<String> {
+fn collect_public_include_paths(input: &WalkInput, src_dir: &Path) -> HashSet<String> {
     let mut out = HashSet::new();
-    for path in rs_files_recursive(src_dir) {
-        let Some(file) = parse_rs(&path) else {
+    for path in rs_files_recursive(input, src_dir) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         collect_from_items(&file.items, &mut out);
@@ -96,3 +98,10 @@ fn include_str_arg(expr: &syn::Expr) -> Option<String> {
     }
     None
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_templates_public_partial_constants");

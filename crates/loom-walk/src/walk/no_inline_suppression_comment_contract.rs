@@ -43,15 +43,15 @@ const COMMENT_SCANNER_TOKENS: &[&str] = &[
     "trim_start_matches(\"#\")",
 ];
 
-pub fn run(input: &WalkInput) -> Verdict {
-    run_with_root(input, &workspace_root())
+fn rule(input: &WalkInput) -> Verdict {
+    run_with_root(input, &workspace_root(input))
 }
 
 fn run_with_root(input: &WalkInput, root: &Path) -> Verdict {
-    let scope = narrow_to_loom_files(contract_scope(root), input, root);
+    let scope = narrow_to_loom_files(contract_scope(input, root), input, root);
     let mut violations = Vec::new();
     for path in scope {
-        let Some(body) = read_to_string(&path) else {
+        let Some(body) = read_to_string(input, &path) else {
             continue;
         };
         let rel_path = rel(root, &path);
@@ -67,10 +67,16 @@ fn run_with_root(input: &WalkInput, root: &Path) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-pub(super) fn contract_scope(root: &Path) -> Vec<PathBuf> {
-    let mut out = rs_files_recursive(&root.join("crates/loom/src"));
-    out.extend(rs_files_recursive(&root.join("crates/loom-driver/src")));
-    out.extend(rs_files_recursive(&root.join("crates/loom-workflow/src")));
+pub(super) fn contract_scope(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
+    let mut out = rs_files_recursive(input, &root.join("crates/loom/src"));
+    out.extend(rs_files_recursive(
+        input,
+        &root.join("crates/loom-driver/src"),
+    ));
+    out.extend(rs_files_recursive(
+        input,
+        &root.join("crates/loom-workflow/src"),
+    ));
     out
 }
 
@@ -240,3 +246,10 @@ reason = "fixture"
         );
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("no_inline_suppression_comment_contract");

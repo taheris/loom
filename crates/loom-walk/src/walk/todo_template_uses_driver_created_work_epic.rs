@@ -7,9 +7,9 @@ use super::{Verdict, WalkInput};
 const RULE: &str = "todo_template_uses_driver_created_work_epic — todo.md uses the injected work_epic and does not create an epic itself";
 const TEMPLATE_REL: &str = "crates/loom-templates/templates/todo.md";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let Some(body) = read_to_string(&root.join(TEMPLATE_REL)) else {
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let Some(body) = read_to_string(input, &root.join(TEMPLATE_REL)) else {
         return Verdict {
             pass: false,
             evidence: format!("{TEMPLATE_REL}:1 template not found\n{RULE}"),
@@ -41,3 +41,10 @@ pub fn run(_input: &WalkInput) -> Verdict {
     }
     verdict_from(RULE, violations)
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("todo_template_uses_driver_created_work_epic");

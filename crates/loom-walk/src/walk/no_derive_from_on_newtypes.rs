@@ -13,12 +13,12 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "RS-8 no derive(From)/derive(Into) on tuple-struct newtypes";
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let scope = narrow_to_loom_files(src_files(&root), input, &root);
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
+    let scope = narrow_to_loom_files(src_files(input, &root), input, &root);
     let mut violations = Vec::new();
     for path in scope {
-        let Some(file) = parse_rs(&path) else {
+        let Some(file) = parse_rs(input, &path) else {
             violations.push(format!(
                 "{}: unable to read or parse Rust source",
                 rel(&root, &path)
@@ -62,3 +62,10 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
         }
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("no_derive_from_on_newtypes");

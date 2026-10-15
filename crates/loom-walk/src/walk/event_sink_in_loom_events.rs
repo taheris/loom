@@ -20,19 +20,19 @@ const RULE: &str = "event_sink_in_loom_events — `EventSink` + `SessionCommand{
 const EVENTS_CRATE: &str = "crates/loom-events/src";
 const EVENTS_LIB_REL: &str = "crates/loom-events/src/lib.rs";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let mut violations = Vec::new();
 
     let lib_path = root.join(EVENTS_LIB_REL);
-    if !trait_defined(&lib_path, "EventSink") {
+    if !trait_defined(input, &lib_path, "EventSink") {
         violations.push(format!(
             "{EVENTS_LIB_REL}:1 `pub trait EventSink` not defined — declare it in the public-contract leaf crate",
         ));
     }
 
     let crate_root = root.join(EVENTS_CRATE);
-    match locate_enum(&root, &crate_root, "SessionCommand") {
+    match locate_enum(input, &root, &crate_root, "SessionCommand") {
         None => violations.push(format!(
             "{EVENTS_LIB_REL}:1 `pub enum SessionCommand` not defined in loom-events",
         )),
@@ -61,8 +61,8 @@ pub fn run(_input: &WalkInput) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-fn trait_defined(path: &Path, name: &str) -> bool {
-    let Some(file) = parse_rs(path) else {
+fn trait_defined(input: &WalkInput, path: &Path, name: &str) -> bool {
+    let Some(file) = parse_rs(input, path) else {
         return false;
     };
     file.items.iter().any(|item| {
@@ -77,9 +77,14 @@ fn trait_defined(path: &Path, name: &str) -> bool {
 /// token.
 type EnumLocation = (String, Vec<(String, String)>, usize);
 
-fn locate_enum(root: &Path, crate_root: &Path, name: &str) -> Option<EnumLocation> {
-    for path in rs_files_recursive(crate_root) {
-        let Some(file) = parse_rs(&path) else {
+fn locate_enum(
+    input: &WalkInput,
+    root: &Path,
+    crate_root: &Path,
+    name: &str,
+) -> Option<EnumLocation> {
+    for path in rs_files_recursive(input, crate_root) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         for item in &file.items {
@@ -119,3 +124,10 @@ fn type_ident_string(ty: &syn::Type) -> String {
         _ => String::new(),
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("event_sink_in_loom_events");

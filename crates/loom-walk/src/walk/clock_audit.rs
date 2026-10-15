@@ -376,15 +376,15 @@ impl<'ast> Visit<'ast> for CallVisitor {
 }
 
 pub(super) fn run(input: &WalkInput, operation: Operation, rule: &str) -> Verdict {
-    let root = workspace_root();
-    let scope = narrow_to_loom_files(all_rs_files_including_verifiers(&root), input, &root);
+    let root = workspace_root(input);
+    let scope = narrow_to_loom_files(all_rs_files_including_verifiers(input, &root), input, &root);
     let mut boundary_hits = HashMap::<usize, usize>::new();
     let mut exception_hits = HashMap::<usize, usize>::new();
     let mut violations = Vec::new();
 
     for path in scope {
         let rel_path = rel(&root, &path);
-        let Some(file) = parse_rs(&path) else {
+        let Some(file) = parse_rs(input, &path) else {
             violations.push(format!(
                 "{rel_path}:1 clock audit could not parse Rust source"
             ));

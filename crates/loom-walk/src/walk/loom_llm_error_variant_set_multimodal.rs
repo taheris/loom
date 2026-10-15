@@ -25,10 +25,10 @@ const REQUIRED: &[&str] = &[
     "Provider",
 ];
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let path = root.join(SRC);
-    let Some(file) = parse_rs(&path) else {
+    let Some(file) = parse_rs(input, &path) else {
         return verdict_from(
             RULE,
             vec![format!(
@@ -88,3 +88,10 @@ fn find_enum<'a>(items: &'a [syn::Item], name: &str) -> Option<&'a syn::ItemEnum
 fn has_non_exhaustive(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| a.path().is_ident("non_exhaustive"))
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_llm_error_variant_set_multimodal");

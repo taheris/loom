@@ -16,10 +16,10 @@ pub(super) fn path(root: &std::path::Path) -> std::path::PathBuf {
     root.join(BACKEND_SRC)
 }
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let path = path(&root);
-    let Some(file) = parse_rs(&path) else {
+    let Some(file) = parse_rs(input, &path) else {
         return verdict_from(
             RULE,
             vec![format!(
@@ -95,3 +95,10 @@ fn find_agent_backend_trait(items: &[syn::Item]) -> Option<syn::ItemTrait> {
     }
     None
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("agent_backend_trait_contract");

@@ -51,10 +51,10 @@ const LLM_CLIENT_METHODS: &[&str] = &[
 
 const SRC_DIR: &str = "crates/loom-llm/src";
 
-pub fn run(_input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let src_dir = root.join(SRC_DIR);
-    let surface = collect_public_surface(&root, &src_dir);
+    let surface = collect_public_surface(input, &root, &src_dir);
     let mut violations = Vec::new();
     for name in REQUIRED {
         if !surface.names.contains(*name) {
@@ -106,10 +106,10 @@ struct MethodInfo {
     has_self_sized_bound: bool,
 }
 
-fn collect_public_surface(root: &Path, src_dir: &Path) -> Surface {
+fn collect_public_surface(input: &WalkInput, root: &Path, src_dir: &Path) -> Surface {
     let mut out = Surface::default();
-    for path in rs_files_recursive(src_dir) {
-        let Some(file) = parse_rs(&path) else {
+    for path in rs_files_recursive(input, src_dir) {
+        let Some(file) = parse_rs(input, &path) else {
             continue;
         };
         let rel_path = rel(root, &path);
@@ -319,3 +319,10 @@ fn collect_from_use_tree(tree: &syn::UseTree, out: &mut HashSet<String>) {
         syn::UseTree::Glob(_) => {}
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("loom_llm_public_surface");

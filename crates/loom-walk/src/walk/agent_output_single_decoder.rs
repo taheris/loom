@@ -5,40 +5,48 @@ use std::path::{Path, PathBuf};
 use syn::visit::Visit;
 use syn::{Expr, ExprCall, ExprMethodCall, Item, ItemEnum, ItemFn, Lit, Type};
 
-use super::util::{line_of, narrow_to_loom_files, rel, src_files, verdict_from, workspace_root};
+use super::util::{
+    line_of, narrow_to_loom_files, rel, rs_files_recursive, verdict_from, workspace_root,
+};
 use super::{Verdict, WalkInput};
 
 const RULE: &str = "agent_output_single_decoder — agent messages delegate to loom-protocol::output";
 const CANONICAL: &str = "crates/loom-protocol/src/output/";
 
-pub(super) fn inputs(root: &Path) -> Vec<PathBuf> {
-    src_files(root)
-        .into_iter()
-        .filter(|path| {
-            let path = rel(root, path);
-            [
-                "loom-protocol",
-                "loom-workflow",
-                "loom-gate",
-                "loom-tune",
-                "loom",
-            ]
-            .iter()
-            .any(|name| path.starts_with(&format!("crates/{name}/src/")))
-                && !path.starts_with("crates/loom/src/bin/mock-")
-        })
-        .collect()
+pub(super) fn inputs(input: &WalkInput, root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for name in [
+        "loom-protocol",
+        "loom-workflow",
+        "loom-gate",
+        "loom-tune",
+        "loom",
+    ] {
+        let directory = root.join(format!("crates/{name}/src"));
+        if name == "loom" {
+            paths.extend(super::util::rs_files_recursive_except(
+                input,
+                &directory,
+                &directory.join("bin/mock-"),
+            ));
+        } else {
+            paths.extend(rs_files_recursive(input, &directory));
+        }
+    }
+    paths
 }
 
-pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
+fn rule(input: &WalkInput) -> Verdict {
+    let root = workspace_root(input);
     let mut violations = Vec::new();
-    for path in narrow_to_loom_files(inputs(&root), input, &root) {
+    for path in narrow_to_loom_files(inputs(input, &root), input, &root) {
         let location = rel(&root, &path);
-        if location.starts_with(CANONICAL) {
+        if location.starts_with(CANONICAL) || location.starts_with("crates/loom/src/bin/mock-") {
             continue;
         }
-        let file = match std::fs::read_to_string(&path)
+        let file = match input
+            .reader()
+            .read(&path)
             .map_err(|error| error.to_string())
             .and_then(|source| syn::parse_file(&source).map_err(|error| error.to_string()))
         {
@@ -280,3 +288,10 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
         syn::visit::visit_expr_call(self, node);
     }
 }
+
+/// Standalone and checked dispatch execute the identical rule body.
+pub fn run(input: &WalkInput) -> Verdict {
+    input.finish(rule(input))
+}
+
+super::source::registration!("agent_output_single_decoder");
