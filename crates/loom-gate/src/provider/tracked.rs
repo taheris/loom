@@ -37,6 +37,19 @@ pub enum Observation {
         path: ResourcePath,
         present: bool,
     },
+    Scan {
+        prefix: Option<ResourcePath>,
+        extension: Option<String>,
+        paths: BTreeSet<ResourcePath>,
+    },
+    Directory {
+        path: Option<ResourcePath>,
+        entries: BTreeSet<ResourcePath>,
+    },
+    DirectoryExistence {
+        path: ResourcePath,
+        present: bool,
+    },
     Membership {
         subject: Name,
         paths: BTreeSet<ResourcePath>,
@@ -128,6 +141,73 @@ impl<'a> Context<'a> {
     /// Captured analysis paths, including their native definition origins.
     pub fn paths(&self) -> impl Iterator<Item = &ResourcePath> {
         self.inputs.iter().copied()
+    }
+
+    /// Enumerate matching captured files, rejecting undeclared analysis members.
+    ///
+    /// # Errors
+    /// An undeclared matching file poisons the run even if the error is ignored.
+    pub fn scan(
+        &mut self,
+        prefix: Option<&ResourcePath>,
+        extension: Option<&str>,
+    ) -> Result<BTreeSet<ResourcePath>, Error> {
+        let paths = self
+            .snapshot
+            .files()
+            .keys()
+            .filter(|path| {
+                prefix.is_none_or(|prefix| path.as_path().starts_with(prefix.as_path()))
+                    && extension.is_none_or(|extension| {
+                        path.as_path().extension().and_then(|value| value.to_str())
+                            == Some(extension)
+                    })
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        for path in &paths {
+            self.require_input(path)?;
+        }
+        self.record(Observation::Scan {
+            prefix: prefix.cloned(),
+            extension: extension.map(str::to_owned),
+            paths: paths.clone(),
+        });
+        Ok(paths)
+    }
+
+    /// Captured directory entries are membership observations, not byte-read authority.
+    pub fn directory(&mut self, path: Option<&ResourcePath>) -> BTreeSet<ResourcePath> {
+        let prefix = path.map_or_else(|| std::path::Path::new(""), ResourcePath::as_path);
+        let entries = self
+            .snapshot
+            .files()
+            .keys()
+            .filter_map(|file| {
+                let relative = file.as_path().strip_prefix(prefix).ok()?;
+                let component = relative.components().next()?;
+                ResourcePath::try_from(prefix.join(component)).ok()
+            })
+            .collect::<BTreeSet<_>>();
+        self.record(Observation::Directory {
+            path: path.cloned(),
+            entries: entries.clone(),
+        });
+        entries
+    }
+
+    /// Observe directory existence without consulting the ambient filesystem.
+    pub fn directory_exists(&mut self, path: &ResourcePath) -> bool {
+        let present = self
+            .snapshot
+            .files()
+            .keys()
+            .any(|file| file != path && file.as_path().starts_with(path.as_path()));
+        self.record(Observation::DirectoryExistence {
+            path: path.clone(),
+            present,
+        });
+        present
     }
 
     /// Read bytes only from the resolved analysis closure.
