@@ -2927,6 +2927,7 @@ dependencies = [
  "anyhow",
  "displaydoc",
  "loom-driver",
+ "loom-gate",
  "proc-macro2",
  "pulldown-cmark",
  "serde",

@@ -1,31 +1,28 @@
-//! `--print-inputs` responder — per-walk scanned file-set declaration.
-//!
-//! The gate's `builtin-loom-walk` runner declares an `inputs` query
-//! (`cargo run -p loom-walk -- {targets} --print-inputs`); this module is
-//! the answering side. For each named walk, [`inputs_for`] returns the set
-//! of files the walk reads when it runs, so the gate can scope the walk
-//! under `loom gate verify --files` (skip it when the change touches none
-//! of its inputs) and the integrity gate can hold the walk to the
-//! inputs-protocol contract.
-//!
-//! Each arm is derived from the matching `walk/<name>.rs` scan logic, not
-//! blanket-declared: a walk that reads a `Cargo.toml`, a template tree, or
-//! a single named file reports exactly those, never the generic
-//! `crates/*/src/**` set. Over-declaration is safe (the walk merely always
-//! runs); under-declaration would skip a walk whose input changed, so where
-//! a scope is a strict subset of a `util` helper the helper is reported as
-//! the conservative superset.
+//! Input-query rendering for the shared walk registry.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use displaydoc::Display;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
 
 use serde::Serialize;
 use walkdir::WalkDir;
 
-use super::util::{
-    all_rs_files, all_rs_files_including_verifiers, immediate_children, rel, rs_files_recursive,
-    src_files, workspace_root,
-};
+use super::util::{immediate_children, rel, rs_files_recursive, workspace_root};
+
+/// Invalid input queries cannot produce a partial or conservative response.
+#[derive(Debug, Display, Error)]
+pub enum Error {
+    /// input query contains no walk names
+    EmptyQuery,
+    /// unknown walk `{name}`
+    UnknownWalk { name: String },
+    /// repeated walk `{name}`
+    RepeatedWalk { name: String },
+    /// failed to serialise walk inputs
+    Serialise(#[from] serde_json::Error),
+}
 
 /// Single-walk `--print-inputs` document: `{"inputs": ["path", ...]}`. The
 /// gate's `parse_inputs_json` reads this form when one walk is queried.
@@ -42,40 +39,52 @@ struct BatchDoc {
     inputs: BTreeMap<String, Vec<String>>,
 }
 
-/// Render the `--print-inputs` response for `names`. One name emits the
-/// single-array form; several emit the batch map keyed by walk name (the
-/// runner's `{capture_1}` rendered target). Paths are repo-relative and
-/// deduplicated so they compare equal to the gate's `--files` scope.
-pub fn render_print_inputs(names: &[String]) -> Result<String, serde_json::Error> {
+/// Render single or batched input metadata with sorted repository-relative paths.
+///
+/// # Errors
+/// Rejects empty, unknown or repeated requests and serialization failures.
+pub fn render_print_inputs(names: &[String]) -> Result<String, Error> {
+    if names.is_empty() {
+        return Err(Error::EmptyQuery);
+    }
+    let mut seen = BTreeSet::new();
+    for name in names {
+        if super::lookup(name).is_none() {
+            return Err(Error::UnknownWalk { name: name.clone() });
+        }
+        if !seen.insert(name) {
+            return Err(Error::RepeatedWalk { name: name.clone() });
+        }
+    }
     let root = workspace_root();
     if let [only] = names {
-        serde_json::to_string(&SingleDoc {
-            inputs: rel_inputs(only, &root),
-        })
+        Ok(serde_json::to_string(&SingleDoc {
+            inputs: rel_inputs(only, &root)?,
+        })?)
     } else {
         let inputs = names
             .iter()
-            .map(|name| (name.clone(), rel_inputs(name, &root)))
-            .collect();
-        serde_json::to_string(&BatchDoc { inputs })
+            .map(|name| Ok((name.clone(), rel_inputs(name, &root)?)))
+            .collect::<Result<_, Error>>()?;
+        Ok(serde_json::to_string(&BatchDoc { inputs })?)
     }
 }
 
 /// One walk's scanned set as sorted, deduplicated repo-relative strings.
-fn rel_inputs(name: &str, root: &Path) -> Vec<String> {
-    let mut out: Vec<String> = inputs_for(name, root)
+fn rel_inputs(name: &str, root: &Path) -> Result<Vec<String>, Error> {
+    let mut out: Vec<String> = inputs_for(name, root)?
         .iter()
         .map(|p| rel(root, p))
         .collect();
     out.sort();
     out.dedup();
-    out
+    Ok(out)
 }
 
 /// The target v1 workspace member crates whose manifests the
 /// `workspace_edition` / `workspace_lints` walks inherit-check, mirroring
 /// `crate_structure_includes_loom_tune`'s binary + library crate set.
-const MEMBER_CRATES: &[&str] = &[
+pub(super) const MEMBER_CRATES: &[&str] = &[
     "loom",
     "loom-driver",
     "loom-events",
@@ -93,161 +102,31 @@ const MEMBER_CRATES: &[&str] = &[
     "loom-walk",
 ];
 
-/// Files this walk scans, as absolute paths under `root`. An unknown name
-/// falls back to [`src_files`] — the conservative always-run superset — so
-/// a freshly registered walk never silently declares an empty input set.
-pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
-    match name {
-        "agent_output_single_decoder" => super::agent_output_single_decoder::inputs(root),
-        // Production source + tests: `narrow_to_loom_files(all_rs_files(..))`.
-        "finding_no_duplicate_definitions"
-        | "no_hardcoded_tmp_paths"
-        | "no_ignore_for_flake"
-        | "shared_proptest_config" => all_rs_files(root),
-
-        // Clock audits parse AST calls, so verifier fixture strings are safe inputs.
-        "no_real_clock_outside_system_clock"
-        | "no_thread_sleep"
-        | "no_tokio_sleep_outside_clock"
-        | "no_tokio_timeout_outside_clock" => all_rs_files_including_verifiers(root),
-
-        // Single-crate recursive `src/` scans.
-        "loom_llm_multimodal_no_provider_wire_types"
-        | "loom_llm_no_public_genai_types"
-        | "loom_llm_no_underlying_crate_reexports"
-        | "loom_llm_public_surface"
-        | "result_hasher_single_call_site" => crate_src(root, "loom-llm"),
-        "loom_llm_client_constructors_use_newtypes" | "loom_llm_client_types_per_schema_kind" => {
-            rs_files_recursive(&root.join("crates/loom-llm/src/client"))
-        }
-        "loom_llm_has_no_skill_registry_surface" => {
-            let mut out = vec![manifest(root, "loom-llm")];
-            out.extend(crate_src(root, "loom-llm"));
-            out
-        }
-        "loom_templates_public_partial_constants"
-        | "loom_templates_public_types"
-        | "loom_templates_workflow_templates_not_exported"
-        | "todo_contexts_carry_criterion_status" => crate_src(root, "loom-templates"),
-        "session_trait_does_not_expose_typestate" | "event_sink_in_loom_events" => {
-            crate_src(root, "loom-events")
-        }
-        "direct_tools_net_new" => {
-            rs_files_recursive(&root.join("crates/loom-agent/src/direct/tool"))
-        }
-        "newtype_identifiers" => crate_src(root, "loom-events"),
-
-        // Single named source files.
-        "loom_llm_error_variant_set_multimodal" => {
-            vec![root.join("crates/loom-llm/src/client/mod.rs")]
-        }
-        "loom_llm_mime_type_no_raw_strings" => {
-            vec![root.join("crates/loom-llm/src/request.rs")]
-        }
-        "surface_conformance" => vec![
-            root.join("specs/harness.md"),
-            root.join("specs/events.md"),
-            root.join("specs/inbox.md"),
-            root.join("crates/loom/src/main.rs"),
-        ],
-        "tune_surface_conformance" => vec![
-            root.join("specs/tuning.md"),
-            root.join("crates/loom/src/main.rs"),
-        ],
-        "single_event_channel" => vec![root.join("crates/loom-render/src/sink/mod.rs")],
-        "loom_templates_snapshots_no_crate_root_allow" => {
-            vec![root.join("crates/loom-templates/tests/snapshots.rs")]
-        }
-        "loom_gate_check_derivation_exists" => vec![root.join("nix/flake/checks.nix")],
-        "workspace_compile_checks_are_full_test_app_only" => vec![
-            root.join("nix/flake/apps.nix"),
-            root.join("nix/flake/checks.nix"),
-            root.join("nix/workspace.nix"),
-            root.join("scripts/full-test.sh"),
-        ],
-        "test_nix_surface_contract" => vec![
-            root.join("flake.nix"),
-            root.join("nix/flake/apps.nix"),
-            root.join("nix/flake/checks.nix"),
-            root.join("nix/flake/lib.nix"),
-            root.join("nix/flake/tests.nix"),
-            root.join("nix/nextest-overlay.nix"),
-            root.join("scripts/full-test.sh"),
-            root.join("scripts/required-test.sh"),
-            root.join("tests/default.nix"),
-            root.join("tests/loom/default.nix"),
-            root.join("tests/run-tests.sh"),
-            root.join("tests/smoke/loop.sh"),
-        ],
-        "phase_verdict_decide_called_from_production" => vec![
-            root.join("crates/loom-workflow/src/loop/production.rs"),
-            root.join("crates/loom-workflow/src/review/production.rs"),
-        ],
-        "pre_push_config_marker_wrapper_contract" => vec![root.join(".pre-commit-config.yaml")],
-        "spec_package_size" => vec![
-            root.join("docs/README.md"),
-            root.join("specs/**"),
-            root.join("crates/loom-driver/src/spec/**"),
-            root.join("crates/loom-walk/src/walk/spec_package_size.rs"),
-        ],
-
-        // Manifest-only scans.
-        "loom_agent_deps" => vec![manifest(root, "loom-agent")],
-        "loom_llm_deps" => vec![manifest(root, "loom-llm")],
-        "loom_render_deps" => vec![manifest(root, "loom-render")],
-        "loom_skill_deps" => vec![manifest(root, "loom-skill")],
-        "loom_templates_deps" => vec![manifest(root, "loom-templates")],
-        "loom_tune_deps" => vec![manifest(root, "loom-tune")],
-        "loom_events_is_leaf" => vec![manifest(root, "loom-events")],
-        "public_contract_crates" => crate_manifests(root),
-        "workspace_deps_pinned" => vec![root.join("Cargo.toml")],
-        "workspace_edition" | "workspace_lints" => {
-            let mut out = vec![root.join("Cargo.toml")];
-            out.extend(MEMBER_CRATES.iter().map(|c| manifest(root, c)));
-            out
-        }
-
-        // Crate-structure sentinels: each member crate's manifest + entry.
-        "crate_structure_includes_loom_tune" => crate_structure_inputs(root),
-        // RS-5: forbidden central `types.rs` / `error.rs` at any crate-src root.
-        "no_types_or_error_files" => types_error_inputs(root),
-
-        "renderer_no_insta_dependency" => super::renderer_no_insta_dependency::paths(root),
-
-        // Template-tree scans.
-        "template_wire_format_restatement" => template_files(root),
-        "templates_no_removed_surface" => template_md_files(root),
-        "todo_template_uses_driver_created_work_epic" => {
-            vec![root.join("crates/loom-templates/templates/todo.md")]
-        }
-        "template_pinning_matrix" => {
-            let mut out = vec![root.join("specs/templates.md")];
-            out.extend(template_files(root));
-            out
-        }
-
-        // Unknown / newly added walk: conservative always-run superset.
-        _ => src_files(root),
-    }
+/// Obtain input metadata from the same definition used for dispatch.
+pub fn inputs_for(name: &str, root: &Path) -> Result<Vec<PathBuf>, Error> {
+    let definition = super::lookup(name).ok_or_else(|| Error::UnknownWalk {
+        name: name.to_owned(),
+    })?;
+    Ok((definition.inputs)(root))
 }
 
 /// A member crate's recursive `src/` tree.
-fn crate_src(root: &Path, krate: &str) -> Vec<PathBuf> {
+pub(super) fn crate_src(root: &Path, krate: &str) -> Vec<PathBuf> {
     rs_files_recursive(&root.join(format!("crates/{krate}/src")))
 }
 
 /// A member crate's manifest path.
-fn manifest(root: &Path, krate: &str) -> PathBuf {
+pub(super) fn manifest(root: &Path, krate: &str) -> PathBuf {
     root.join(format!("crates/{krate}/Cargo.toml"))
 }
 
 /// Every file (any extension) under the loom-templates template tree.
-fn template_files(root: &Path) -> Vec<PathBuf> {
+pub(super) fn template_files(root: &Path) -> Vec<PathBuf> {
     files_under(&root.join("crates/loom-templates/templates"), None)
 }
 
 /// Every `.md` file under the loom-templates template tree.
-fn template_md_files(root: &Path) -> Vec<PathBuf> {
+pub(super) fn template_md_files(root: &Path) -> Vec<PathBuf> {
     files_under(&root.join("crates/loom-templates/templates"), Some("md"))
 }
 
@@ -263,7 +142,7 @@ fn files_under(dir: &Path, ext: Option<&str>) -> Vec<PathBuf> {
         .collect()
 }
 
-fn crate_manifests(root: &Path) -> Vec<PathBuf> {
+pub(super) fn crate_manifests(root: &Path) -> Vec<PathBuf> {
     immediate_children(&root.join("crates"))
         .into_iter()
         .map(|crate_dir| crate_dir.join("Cargo.toml"))
@@ -272,7 +151,7 @@ fn crate_manifests(root: &Path) -> Vec<PathBuf> {
 
 /// `crate_structure_includes_loom_tune`'s scope: the root manifest,
 /// each member crate's `Cargo.toml`, and each canonical entry source.
-fn crate_structure_inputs(root: &Path) -> Vec<PathBuf> {
+pub(super) fn crate_structure_inputs(root: &Path) -> Vec<PathBuf> {
     let mut out = vec![root.join("Cargo.toml")];
     for krate in MEMBER_CRATES {
         out.push(manifest(root, krate));
@@ -294,7 +173,7 @@ fn crate_entries(krate: &str) -> &'static [&'static str] {
 /// `no_types_or_error_files`'s scope: the forbidden `src/types.rs` and
 /// `src/error.rs` of every crate, declared by path whether or not they
 /// exist on disk so adding one re-triggers the walk.
-fn types_error_inputs(root: &Path) -> Vec<PathBuf> {
+pub(super) fn types_error_inputs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for crate_dir in immediate_children(&root.join("crates")) {
         out.push(crate_dir.join("src/types.rs"));
@@ -317,12 +196,42 @@ mod tests {
     fn every_registered_walk_declares_nonempty_inputs() {
         let root = workspace_root();
         for name in names() {
-            let paths = inputs_for(name, &root);
+            let paths = inputs_for(name, &root).unwrap();
             assert!(
                 !paths.is_empty(),
                 "walk `{name}` declared an empty input set",
             );
         }
+    }
+
+    #[test]
+    fn unknown_input_query_never_becomes_a_source_tree_fallback() {
+        let root = workspace_root();
+        assert!(matches!(
+            inputs_for("not_registered", &root),
+            Err(Error::UnknownWalk { name }) if name == "not_registered"
+        ));
+    }
+
+    #[test]
+    fn mixed_input_query_rejects_unknown_sibling() {
+        assert!(matches!(
+            render_print_inputs(&["loom_llm_deps".into(), "not_registered".into()]),
+            Err(Error::UnknownWalk { name }) if name == "not_registered"
+        ));
+    }
+
+    #[test]
+    fn repeated_input_query_is_not_silently_collapsed() {
+        assert!(matches!(
+            render_print_inputs(&["loom_llm_deps".into(), "loom_llm_deps".into()]),
+            Err(Error::RepeatedWalk { name }) if name == "loom_llm_deps"
+        ));
+    }
+
+    #[test]
+    fn empty_input_query_is_rejected() {
+        assert!(matches!(render_print_inputs(&[]), Err(Error::EmptyQuery)));
     }
 
     /// Declared paths must be repo-relative so they compare equal to the
@@ -331,7 +240,7 @@ mod tests {
     fn declared_inputs_are_repo_relative() {
         let root = workspace_root();
         for name in names() {
-            for p in inputs_for(name, &root) {
+            for p in inputs_for(name, &root).unwrap() {
                 assert!(
                     p.starts_with(&root) || p.is_relative(),
                     "walk `{name}` declared non-root-relative path {p:?}",
@@ -351,7 +260,7 @@ mod tests {
     fn manifest_walk_reports_only_its_manifest() {
         let root = workspace_root();
         assert_eq!(
-            inputs_for("loom_llm_deps", &root),
+            inputs_for("loom_llm_deps", &root).unwrap(),
             vec![manifest(&root, "loom-llm")]
         );
     }
@@ -361,7 +270,7 @@ mod tests {
     fn pre_push_config_walk_reports_pre_commit_config() {
         let root = workspace_root();
         assert_eq!(
-            rel_inputs("pre_push_config_marker_wrapper_contract", &root),
+            rel_inputs("pre_push_config_marker_wrapper_contract", &root).unwrap(),
             vec![".pre-commit-config.yaml".to_string()],
         );
     }
@@ -370,7 +279,7 @@ mod tests {
     #[test]
     fn named_file_walk_reports_those_files() {
         let root = workspace_root();
-        let got = rel_inputs("surface_conformance", &root);
+        let got = rel_inputs("surface_conformance", &root).unwrap();
         assert_eq!(
             got,
             vec![

@@ -12,9 +12,13 @@ const RULE: &str =
     "agent_backend_trait_contract — AgentBackend exposes spawn and no SUPPORTS_STEERING constant";
 const BACKEND_SRC: &str = "crates/loom-driver/src/agent/backend.rs";
 
+pub(super) fn path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(BACKEND_SRC)
+}
+
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();
-    let path = root.join(BACKEND_SRC);
+    let path = path(&root);
     let Some(file) = parse_rs(&path) else {
         return verdict_from(
             RULE,

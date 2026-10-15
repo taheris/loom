@@ -67,7 +67,7 @@ fn run_with_root(input: &WalkInput, root: &Path) -> Verdict {
     verdict_from(RULE, violations)
 }
 
-fn contract_scope(root: &Path) -> Vec<PathBuf> {
+pub(super) fn contract_scope(root: &Path) -> Vec<PathBuf> {
     let mut out = rs_files_recursive(&root.join("crates/loom/src"));
     out.extend(rs_files_recursive(&root.join("crates/loom-driver/src")));
     out.extend(rs_files_recursive(&root.join("crates/loom-workflow/src")));

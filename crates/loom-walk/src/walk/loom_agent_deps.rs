@@ -6,6 +6,8 @@
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
+super::manifest::registration!("loom_agent_deps", "loom-agent");
+
 const RULE: &str =
     "loom_agent_deps — `loom-agent` depends on `loom-llm`, `loom-events`, and `loom-skill`";
 
@@ -13,7 +15,7 @@ const REQUIRED: &[&str] = &["loom-llm", "loom-events", "loom-skill"];
 
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();
-    let manifest = root.join("crates/loom-agent/Cargo.toml");
+    let manifest = root.join(MANIFEST);
     let mut violations = Vec::new();
 
     let Some(body) = read_to_string(&manifest) else {
@@ -21,7 +23,13 @@ pub fn run(_input: &WalkInput) -> Verdict {
         return verdict_from(RULE, violations);
     };
 
-    let Some(section) = section_body(&body, "[dependencies]") else {
+    analyze(&body)
+}
+
+fn analyze(body: &str) -> Verdict {
+    let mut violations = Vec::new();
+
+    let Some(section) = section_body(body, "[dependencies]") else {
         violations
             .push("crates/loom-agent/Cargo.toml:1 [dependencies] section missing".to_string());
         return verdict_from(RULE, violations);

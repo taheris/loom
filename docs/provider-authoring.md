@@ -101,6 +101,25 @@ and provider conformance must still test deliberately omitted reads.
 Observations from this example do not authorize reuse, skipped obligations or
 publication.
 
+## Loom-owned manifest producers
+
+`loom_walk::walk::checked_definitions(&snapshot, &inventory, &targets)` returns
+actual `Definition` values for the registered manifest dependency checks:
+`loom_agent_deps`, `loom_llm_deps`, `loom_render_deps`, `loom_skill_deps`,
+`loom_templates_deps`, `loom_tune_deps`, and `loom_events_is_leaf`. Pass those
+values to `Registry::new`, then use its generated query and normal resolution
+path. These callbacks read captured manifest text through `Context` and call the
+same rule function as the standalone binary. Native target ownership supplies
+the offered lint subjects; neither `LOOM_FILES` nor query JSON supplies them.
+
+Dispatch and legacy input-query metadata now share one registry. Unknown,
+repeated, and empty input queries fail rather than becoming a production-tree
+fallback or a lossy batch. Metadata for an unconverted walk is still **not** a
+checked registration: `checked_definitions` rejects it before constructing any
+requested sibling. Remaining walk conversion, narrower checker dependency
+closures, and ordinary CLI adoption are unfinished. This producer API does not
+establish inventory-wide coverage or authorize publication.
+
 ## Inventory-wide admission
 
 `Registry::resolve_query` is a target diagnostic: it resolves the requested
