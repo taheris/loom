@@ -11,9 +11,13 @@ use thiserror::Error;
 
 use super::{AgentOutcome, LoopError, SessionResult, WaitPrerequisites, classify_session};
 
+mod disposition;
 mod graph;
+pub use disposition::AdmissionTracker;
+use disposition::stage;
 mod inventory;
 mod journal;
+pub use inventory::admit_todo;
 pub use journal::DecisionWaitJournal;
 use journal::{Entry, Phase};
 
@@ -78,6 +82,9 @@ fn record(source: &Bead) -> Result<Option<Record>, DecisionWaitError> {
 }
 
 async fn root<R: CommandRunner>(bd: &BdClient<R>, source: &Bead) -> Result<BeadId, LoopError> {
+    if source.issue_type == IssueType::Epic {
+        return Ok(source.id.clone());
+    }
     if let Some(parent_id) = &source.parent {
         let parent = bd.show(parent_id).await?;
         if parent.id != *parent_id || parent.id == source.id {
@@ -93,6 +100,7 @@ async fn root<R: CommandRunner>(bd: &BdClient<R>, source: &Bead) -> Result<BeadI
 /// never establish attribution or extend the set of admitted references.
 async fn inventory<R: CommandRunner>(
     bd: &BdClient<R>,
+    journal: &DecisionWaitJournal,
     source: &Bead,
     known: &HashSet<BeadId>,
 ) -> Result<Vec<Bead>, LoopError> {
@@ -100,28 +108,38 @@ async fn inventory<R: CommandRunner>(
         .list(ListOpts {
             all: true,
             limit: Some(0),
-            parent: Some(source.id.clone()),
+            parent: None,
             issue_type: Some(IssueType::Decision),
             ..ListOpts::default()
         })
         .await?;
     let mut ids = known.clone();
-    ids.extend(candidates.into_iter().map(|bead| bead.id));
+    ids.extend(
+        candidates
+            .into_iter()
+            .filter(|bead| {
+                bead.parent.as_ref() == Some(&source.id) || graph::claims(bead, &source.id)
+            })
+            .map(|bead| bead.id),
+    );
     let mut ids: Vec<_> = ids.into_iter().collect();
     ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     let mut decisions = Vec::with_capacity(ids.len());
     let mut unreported = Vec::new();
     for id in ids {
         let decision = bd.show(&id).await?;
-        if decision.id != id
-            || decision.issue_type != IssueType::Decision
-            || decision.parent.as_ref() != Some(&source.id)
-        {
+        if decision.id != id || decision.issue_type != IssueType::Decision {
             return Err(invalid(format!(
                 "{id} is not a native decision child of {}",
                 source.id
             ))
             .into());
+        }
+        if decision.status == Status::Closed && !known.contains(&id) {
+            continue;
+        }
+        if decision.parent.as_ref() != Some(&source.id) {
+            graph::check_reuse(bd, journal, source, &decision).await?;
         }
         if decision.status != Status::Closed && !known.contains(&id) {
             unreported.push(id.to_string());
@@ -147,37 +165,6 @@ async fn inventory<R: CommandRunner>(
         .into());
     }
     Ok(decisions)
-}
-
-async fn stage<R: CommandRunner>(bd: &BdClient<R>, decisions: &[Bead]) -> Result<(), LoopError> {
-    for original in decisions
-        .iter()
-        .filter(|decision| decision.status != Status::Closed)
-    {
-        let decision = bd.show(&original.id).await?;
-        if decision.id != original.id
-            || decision.parent != original.parent
-            || decision.issue_type != IssueType::Decision
-        {
-            return Err(invalid("decision ownership changed during staging").into());
-        }
-        if matches!(decision.status, Status::Pinned | Status::Tombstone) {
-            return Err(invalid("decision status became incompatible during staging").into());
-        }
-        if decision.status == Status::Closed
-            || decision.labels.iter().any(|label| {
-                matches!(
-                    label.as_str(),
-                    "loom:clarify" | "loom:blocked" | "loom:infra"
-                )
-            })
-            || matches!(decision.status, Status::Deferred | Status::InProgress)
-        {
-            continue;
-        }
-        crate::gate_clarify::apply_guarded_decision_report(bd, decision).await?;
-    }
-    Ok(())
 }
 
 /// Shared sequential/parallel Loop dispatch boundary for decision-child waits.
@@ -269,7 +256,7 @@ async fn admit<R: CommandRunner>(
             return Err(invalid("source changed root or has an unfinished release").into());
         }
     }
-    let decisions = inventory(bd, &source, &known).await?;
+    let decisions = inventory(bd, journal, &source, &known).await?;
     let context = graph::resolve(
         bd,
         &source,
@@ -283,6 +270,17 @@ async fn admit<R: CommandRunner>(
         .filter(|decision| decision.status != Status::Closed)
         .map(|decision| decision.id.clone())
         .collect::<Vec<_>>();
+    for decision in decisions.iter().filter(|decision| {
+        decision.status != Status::Closed && decision.parent.as_ref() != Some(source_id)
+    }) {
+        if !bd
+            .blocking_dependents(&decision.id)
+            .await?
+            .contains(source_id)
+        {
+            return Err(invalid("reused decision does not affect waiting producer").into());
+        }
+    }
     if active.is_empty() {
         return Ok(None);
     }
@@ -312,7 +310,7 @@ async fn admit<R: CommandRunner>(
     // Journal intent must survive a crash before projection or queue staging.
     journal.save(&entry)?;
     project(bd, journal, &source, &mut entry).await?;
-    stage(bd, &decisions).await?;
+    stage(bd, journal, source_id, &decisions).await?;
     Ok(Some(DecisionHold { active }))
 }
 
@@ -362,7 +360,7 @@ pub(super) async fn held<R: CommandRunner>(
         return Ok(true);
     }
     let known = entry.record.decisions.iter().cloned().collect();
-    let decisions = inventory(bd, &source, &known).await?;
+    let decisions = inventory(bd, journal, &source, &known).await?;
     let context = graph::resolve(
         bd,
         &source,
@@ -383,7 +381,7 @@ pub(super) async fn held<R: CommandRunner>(
             return Err(invalid("decision became unresolved during release").into());
         }
         project(bd, journal, &source, &mut entry).await?;
-        stage(bd, &decisions).await?;
+        stage(bd, journal, &source.id, &decisions).await?;
         return Ok(true);
     }
     let projected = record(&source)?;

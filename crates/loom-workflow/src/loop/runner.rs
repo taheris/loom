@@ -143,6 +143,17 @@ struct LoopProgress {
 /// every marker into `done` and silently masks `LOOM_BLOCKED` /
 /// `LOOM_CLARIFY` self-reports — the bug that motivated this trait shape.
 pub trait AgentLoopController: Send {
+    /// Begin fresh invocation-local decision accounting.
+    fn start_invocation(&mut self) {}
+
+    /// Distinct unresolved decision identities admitted by this invocation.
+    ///
+    /// # Errors
+    /// A poisoned accounting lock is retained as a visible workflow failure.
+    fn admitted_decisions(&self) -> Result<std::collections::HashSet<BeadId>, LoopError> {
+        Ok(std::collections::HashSet::new())
+    }
+
     /// Pull the next ready bead. `deferred` contains bead ids already parked
     /// in the in-memory infra retry queue for this loop invocation.
     /// Returns `None` when no non-deferred ready work is available.
@@ -422,6 +433,7 @@ pub async fn run_loop_with_infra_policy<C: AgentLoopController>(
     infra_policy: InfraRetryPolicy,
     max_iterations: u32,
 ) -> Result<LoopOutcome, LoopError> {
+    controller.start_invocation();
     let mut progress = LoopProgress::default();
     let mut bead_states: HashMap<BeadId, BeadRunState> = HashMap::new();
     let mut infra_retry_queue: VecDeque<Bead> = VecDeque::new();
@@ -570,6 +582,9 @@ pub async fn run_loop_with_infra_policy<C: AgentLoopController>(
         }
         progress.outer_iterations += 1;
     }
+    progress.beads_clarified = progress
+        .beads_clarified
+        .saturating_add(u32::try_from(controller.admitted_decisions()?.len()).unwrap_or(u32::MAX));
     Ok(finalize(progress, stalled_at_max_iterations))
 }
 

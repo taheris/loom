@@ -153,6 +153,7 @@ where
     /// post-session merge/push/cleanup window. Reset at the start of
     /// each `run_bead` call.
     current_emit: Option<BeadEmit>,
+    admissions: super::AdmissionTracker,
     /// Integration tip the current bead's ff-merge advanced past, captured
     /// in `run_bead` only when the merge actually moved the integration
     /// branch. `exec_per_bead_gate`'s audit-fail rollback consumes it: a
@@ -217,6 +218,7 @@ where
             stashed_review_concern: None,
             logs_root: None,
             current_emit: None,
+            admissions: super::AdmissionTracker::default(),
             loom_cfg: LoomTopConfig::default(),
             retry_policy: super::RetryPolicy::default(),
             skills_cfg: SkillsConfig::default(),
@@ -311,6 +313,15 @@ where
         let Some(source) = verification_source(&self.bd, &self.workspace, bead).await? else {
             return Ok(false);
         };
+        if held(
+            &self.bd,
+            &DecisionWaitJournal::new(&self.workspace).with_admissions(self.admissions.clone()),
+            &source,
+        )
+        .await?
+        {
+            return Ok(false);
+        }
         let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
         if let Some(record) = association
             .verification_continuations()?
@@ -386,6 +397,17 @@ where
         else {
             return Ok(AgentOutcome::Blocked { reason: "current native prerequisites or independent holds preserve verification candidate".into() });
         };
+        if held(
+            &self.bd,
+            &DecisionWaitJournal::new(&self.workspace).with_admissions(self.admissions.clone()),
+            &current_bead,
+        )
+        .await?
+        {
+            return Ok(AgentOutcome::Blocked {
+                reason: "independent hold preserves verification candidate".into(),
+            });
+        }
         let bead = &current_bead;
         let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
         association.validate_verification(&record)?;
@@ -661,6 +683,7 @@ where
 {
     async fn next_ready_bead(&mut self, deferred: &[BeadId]) -> Result<Option<Bead>, LoopError> {
         DecisionWaitJournal::new(&self.workspace)
+            .with_admissions(self.admissions.clone())
             .recover_inventory(&self.bd, self.ready_parent.as_ref(), &self.label)
             .await?;
         if let Some(queue) = self.fixed_queue.as_mut() {
@@ -671,7 +694,14 @@ where
                 ) {
                     continue;
                 }
-                if !held(&self.bd, &DecisionWaitJournal::new(&self.workspace), &bead).await? {
+                if !held(
+                    &self.bd,
+                    &DecisionWaitJournal::new(&self.workspace)
+                        .with_admissions(self.admissions.clone()),
+                    &bead,
+                )
+                .await?
+                {
                     return Ok(Some(bead));
                 }
             }
@@ -734,7 +764,13 @@ where
                 );
                 continue;
             }
-            if held(&self.bd, &DecisionWaitJournal::new(&self.workspace), &bead).await? {
+            if held(
+                &self.bd,
+                &DecisionWaitJournal::new(&self.workspace).with_admissions(self.admissions.clone()),
+                &bead,
+            )
+            .await?
+            {
                 continue;
             }
             return Ok(Some(bead));
@@ -763,12 +799,26 @@ where
                 );
                 continue;
             }
-            if held(&self.bd, &DecisionWaitJournal::new(&self.workspace), &bead).await? {
+            if held(
+                &self.bd,
+                &DecisionWaitJournal::new(&self.workspace).with_admissions(self.admissions.clone()),
+                &bead,
+            )
+            .await?
+            {
                 continue;
             }
             return Ok(Some(bead));
         }
         Ok(None)
+    }
+
+    fn start_invocation(&mut self) {
+        self.admissions = super::AdmissionTracker::default();
+    }
+
+    fn admitted_decisions(&self) -> Result<std::collections::HashSet<BeadId>, LoopError> {
+        self.admissions.ids()
     }
 
     async fn run_bead(
@@ -950,7 +1000,7 @@ where
 
         let outcome = reconcile_session(
             &self.bd,
-            &DecisionWaitJournal::new(&self.workspace),
+            &DecisionWaitJournal::new(&self.workspace).with_admissions(self.admissions.clone()),
             bead,
             session,
             marker.as_ref(),
@@ -2663,6 +2713,7 @@ pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
+    mod decision_inventory;
     use super::super::runner::MISSING_AGENT_BINARY_CAUSE;
     use super::*;
     use crate::r#loop::INVALID_SPAWN_CONFIG_CAUSE;

@@ -31,6 +31,13 @@ pub struct TodoSession {
 /// (the binary's `dispatch` function owns that) while letting tests substitute
 /// fakes for the bd/state/git surface.
 pub trait TodoController: Send {
+    /// Retain untrusted record identities for contextual reconciliation.
+    fn report_decisions(
+        &mut self,
+        _decisions: std::collections::HashSet<loom_driver::identifier::BeadId>,
+    ) {
+    }
+
     /// Open the per-session scratch dir and compute the spawn config for
     /// the upcoming todo session — resolve the tier decision, render the
     /// prompt, build the env allowlist, and pin the scratch dir into the
@@ -95,10 +102,41 @@ where
             >,
         >,
 {
+    run_with_records(controller, |config| async {
+        let (outcome, marker, success) = spawn(config).await?;
+        Ok((outcome, marker, success, std::collections::HashSet::new()))
+    })
+    .await
+}
+
+/// Drive a Todo session while preserving every decoded decision record.
+///
+/// # Errors
+/// Propagates preparation, transport and contextual reconciliation failures.
+pub async fn run_with_records<C, S, F>(
+    controller: &mut C,
+    spawn: S,
+) -> Result<TodoSummary, TodoError>
+where
+    C: TodoController + ?Sized,
+    S: FnOnce(SpawnConfig) -> F,
+    F: std::future::Future<
+            Output = Result<
+                (
+                    SessionOutcome,
+                    Option<ExitSignal>,
+                    Option<TodoSuccess>,
+                    std::collections::HashSet<loom_driver::identifier::BeadId>,
+                ),
+                ProtocolError,
+            >,
+        >,
+{
     let TodoSession { config, scratch } = controller.build_session().await?;
     let result = spawn(config).await;
     drop(scratch);
-    let (outcome, marker, todo_success) = result?;
+    let (outcome, marker, todo_success, decisions) = result?;
+    controller.report_decisions(decisions);
     let record = controller
         .record_outcome(&outcome, marker.as_ref(), todo_success.as_ref())
         .await?;

@@ -324,6 +324,11 @@ cursor advancement.
 
 ### Decision scheduling
 
+- Todo inventory admission rejects omitted dedicated decisions before sibling
+  queue effects, admits valid and brief-repair children under the pending epic,
+  and leaves the epic itself outside the human queue.
+  [test](native_todo_inventory_rejects_omission_then_stages_only_dedicated_decisions)
+
 - Todo waiting preserves the pending inactive work epic, fixed batch identity,
   drafts, decision state, notes, and cursors without partial finalization or
   retry-budget consumption.

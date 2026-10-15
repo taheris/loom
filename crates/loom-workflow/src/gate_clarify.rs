@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, UpdateOpts};
 use loom_driver::identifier::BeadId;
 use loom_events::{DriverEventPayload, DriverKind};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::inbox::{Brief, BriefError, parse_options, parse_options_in};
 
@@ -21,7 +21,7 @@ use crate::inbox::{Brief, BriefError, parse_options, parse_options_in};
 pub const CLARIFY_WITHOUT_OPTIONS_CAUSE: &str = "clarify-without-options";
 
 /// Production route that requested clarify validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClarifySourceRoute {
     LoopMarker,
     TodoMarker,
@@ -39,7 +39,7 @@ impl ClarifySourceRoute {
 }
 
 /// Result of parsing the target's notes and description as an Options block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OptionsParseResult {
     WellFormed,
@@ -55,7 +55,7 @@ pub struct ClarifyRouteContext {
 }
 
 /// Outcome of [`apply_clarify_or_blocked`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClarifyApplyOutcome {
     /// The target bead carried a well-formed options block; `loom:clarify`
     /// was applied per the existing direct-emit path.
@@ -67,7 +67,8 @@ pub enum ClarifyApplyOutcome {
 }
 
 /// Applied clarify decision plus the evidence needed for route events.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClarifyApplyReport {
     pub outcome: ClarifyApplyOutcome,
     pub options_parse_result: OptionsParseResult,
@@ -208,6 +209,30 @@ pub(crate) async fn apply_guarded_decision_report<R: CommandRunner>(
     snapshot: Bead,
 ) -> Result<ClarifyApplyReport, BdError> {
     apply_snapshot_report(bd, snapshot, None, true).await
+}
+
+pub(crate) fn inspect_decision(snapshot: &Bead) -> ClarifyApplyReport {
+    let mut evidence = snapshot.notes.clone().unwrap_or_default();
+    if !evidence.is_empty() {
+        evidence.push('\n');
+    }
+    evidence.push_str(&snapshot.description);
+    let diagnostic = parse_options_in(snapshot.notes.as_deref(), &snapshot.description).err();
+    ClarifyApplyReport {
+        outcome: if diagnostic.is_some() {
+            ClarifyApplyOutcome::BlockedClarifyWithoutOptions
+        } else {
+            ClarifyApplyOutcome::Clarify
+        },
+        options_parse_result: if diagnostic.is_some() {
+            OptionsParseResult::MissingOrMalformed
+        } else {
+            OptionsParseResult::WellFormed
+        },
+        options_diagnostic: diagnostic,
+        evidence_hash: evidence_hash(&evidence),
+        evidence_excerpt: evidence_excerpt(&evidence),
+    }
 }
 
 async fn apply_snapshot_report<R: CommandRunner>(

@@ -16,6 +16,14 @@ mod native {
         root: PathBuf,
     }
 
+    impl IsolatedBeads {
+        pub fn attach(root: &Path) -> Self {
+            Self {
+                root: root.to_path_buf(),
+            }
+        }
+    }
+
     impl CommandRunner for IsolatedBeads {
         async fn run(&self, args: Vec<OsString>, timeout: Duration) -> Result<RunOutput, BdError> {
             let mut command = Command::new("bd");

@@ -23,6 +23,7 @@ struct Candidate {
 #[serde(deny_unknown_fields)]
 struct Decision {
     id: BeadId,
+    producer: BeadId,
     candidate: Option<Candidate>,
     affected_work: Vec<BeadId>,
 }
@@ -32,12 +33,22 @@ struct Decision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Context {
+    producer: BeadId,
+    producer_type: IssueType,
     decisions: Vec<Decision>,
 }
 
 impl Context {
-    pub(super) fn matches_inventory(&self, ids: &[BeadId]) -> bool {
-        self.decisions.len() == ids.len()
+    pub(super) fn discovery_parent(&self, id: &BeadId) -> Option<&BeadId> {
+        self.decisions
+            .iter()
+            .find(|decision| decision.id == *id)
+            .map(|decision| &decision.producer)
+    }
+
+    pub(super) fn matches_inventory(&self, producer: &BeadId, ids: &[BeadId]) -> bool {
+        self.producer == *producer
+            && self.decisions.len() == ids.len()
             && self
                 .decisions
                 .iter()
@@ -46,8 +57,63 @@ impl Context {
     }
 }
 
-fn candidate(
+pub(super) fn claims(decision: &Bead, producer: &BeadId) -> bool {
+    let Some(value) = decision.metadata.get(CANDIDATE_KEY) else {
+        return false;
+    };
+    let decoded = match value {
+        serde_json::Value::String(raw) => match serde_json::from_str::<serde_json::Value>(raw) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::debug!(%error, decision = %decision.id, "foreign malformed candidate has no attributable producer");
+                return false;
+            }
+        },
+        value => value.clone(),
+    };
+    decoded.get("producer").and_then(serde_json::Value::as_str) == Some(producer.as_str())
+}
+
+pub(super) async fn check_reuse<R: CommandRunner>(
+    bd: &BdClient<R>,
+    journal: &super::DecisionWaitJournal,
     source: &Bead,
+    decision: &Bead,
+) -> Result<(), LoopError> {
+    let incompatible = |detail: &str| invalid(format!("decision {}: {detail}", decision.id));
+    let producer = decision
+        .parent
+        .as_ref()
+        .ok_or_else(|| incompatible("reused decision has no discovery parent"))?;
+    let entry = journal
+        .load(producer)?
+        .ok_or_else(|| incompatible("foreign decision lacks prior canonical admission"))?;
+    let owner = bd.show(producer).await?;
+    let root = super::root(bd, source).await?;
+    if entry.record.root != root
+        || super::root(bd, &owner).await? != root
+        || !entry.record.decisions.contains(&decision.id)
+        || !journal.has_disposition(producer, &decision.id)?
+    {
+        return Err(incompatible("foreign decision lacks compatible checked disposition").into());
+    }
+    let context = entry
+        .context
+        .as_ref()
+        .ok_or_else(|| incompatible("reused decision lacks checked graph context"))?;
+    resolve(
+        bd,
+        &owner,
+        &root,
+        std::slice::from_ref(decision),
+        Some(context),
+    )
+    .await?;
+    Ok(())
+}
+
+fn candidate(
+    producer: &BeadId,
     root: &BeadId,
     decision: &Bead,
 ) -> Result<Option<Candidate>, LoopError> {
@@ -84,7 +150,7 @@ fn candidate(
     })?;
     let unique: HashSet<_> = proposal.affected_work.iter().collect();
     if proposal.version != 1
-        || proposal.producer != source.id
+        || proposal.producer != *producer
         || proposal.root != *root
         || unique.len() != proposal.affected_work.len()
     {
@@ -104,13 +170,13 @@ async fn check_affected_work<R: CommandRunner>(
     bd: &BdClient<R>,
     root: &BeadId,
     id: &BeadId,
+    source: &Bead,
 ) -> Result<(), LoopError> {
     let work = bd.show(id).await?;
     if work.id != *id
-        || matches!(
-            work.issue_type,
-            IssueType::Epic | IssueType::Molecule | IssueType::Decision
-        )
+        || matches!(work.issue_type, IssueType::Molecule | IssueType::Decision)
+        || (work.issue_type == IssueType::Epic
+            && (source.id != *root || source.issue_type != IssueType::Epic || work.id != *root))
         || matches!(work.status, Status::Pinned | Status::Tombstone)
     {
         return Err(invalid(format!("decision affects incompatible work {id}")).into());
@@ -149,9 +215,18 @@ pub(super) async fn resolve<R: CommandRunner>(
     decisions: &[Bead],
     previous: Option<&Context>,
 ) -> Result<Context, LoopError> {
+    if previous
+        .is_some_and(|old| old.producer != source.id || old.producer_type != source.issue_type)
+    {
+        return Err(invalid("decision producer identity or kind changed").into());
+    }
     let mut checked = Vec::with_capacity(decisions.len());
     for decision in decisions {
-        let proposal = candidate(source, root, decision)?;
+        let producer = decision
+            .parent
+            .as_ref()
+            .ok_or_else(|| invalid("decision lacks native discovery parent"))?;
+        let proposal = candidate(producer, root, decision)?;
         let mut affected_work = bd.blocking_dependents(&decision.id).await?;
         let unique: HashSet<_> = affected_work.iter().collect();
         if unique.len() != affected_work.len() {
@@ -163,7 +238,7 @@ pub(super) async fn resolve<R: CommandRunner>(
         }
         affected_work.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         for id in &affected_work {
-            check_affected_work(bd, root, id).await?;
+            check_affected_work(bd, root, id, source).await?;
         }
         if let Some(proposal) = &proposal {
             let mut declared = proposal.affected_work.clone();
@@ -178,6 +253,7 @@ pub(super) async fn resolve<R: CommandRunner>(
         }
         let current = Decision {
             id: decision.id.clone(),
+            producer: producer.clone(),
             candidate: proposal,
             affected_work,
         };
@@ -193,5 +269,9 @@ pub(super) async fn resolve<R: CommandRunner>(
         }
         checked.push(current);
     }
-    Ok(Context { decisions: checked })
+    Ok(Context {
+        producer: source.id.clone(),
+        producer_type: source.issue_type,
+        decisions: checked,
+    })
 }

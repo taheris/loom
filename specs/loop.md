@@ -899,7 +899,7 @@ mutation permission.
   `clarify-without-options` breadcrumb on the defective decision, and pair its
   label/status mutation with `DriverKind::BdStateTransition`; they do not mutate
   the source into a duplicate human-queue item.
-  [test?](decision_brief_downgrade_emits_events_on_defective_decision_only)
+  [test](native_decision_dispositions_replay_without_duplicate_effects_or_events)
 
 - The decoded `Retry.reason` produces `agent-retry` recovery and
   `PreviousFailure::AgentRetry { reason }`, consuming one existing retry slot;
@@ -1158,6 +1158,37 @@ mutation permission.
   [test?](epic_auto_close_runs_only_after_initial_git_and_beads_publication)
 
 ### Decision scheduling
+
+- Durable per-decision plans precede queue effects; replay preserves native
+  snapshots and exact routing events, including interrupted JSONL appends.
+  [test](native_decision_dispositions_replay_without_duplicate_effects_or_events)
+
+- Interrupted staging and partial JSONL writes recover the original checked
+  native postimage and exact event suffix without duplicate mutations.
+  [test](native_restart_recovers_planned_postimage_and_partial_event_delivery)
+
+- Corrupt brief dispositions fail visibly and remain retained without queue
+  rewrites or replacement authority.
+  [test](native_corrupt_brief_disposition_is_retained_and_rejected_without_queue_writes)
+
+- Completed inventory admission with a lost canonical disposition rejects
+  publication and recovery without reconstructing authority from native queues.
+  [test](native_admitted_disposition_loss_is_not_reconstructed_from_projection)
+
+- A compatible producer may reuse an exact, canonically admitted decision with
+  the same checked native root/graph, without requeueing it or losing its closed
+  human answer. Distinct invocation accounting counts the shared identity once.
+  [test](native_compatible_producer_reuses_exact_decision_and_preserves_closed_answer)
+
+- Misparented candidates claiming the current producer cannot hide outside its
+  direct-child query; failed admission names the candidate before sibling queue
+  effects.
+  [test](native_misparented_candidate_claim_cannot_hide_from_producer_inventory)
+
+- The sequential production controller admits five dedicated decisions from an
+  independently completed Noop source, counting one processed and five clarified
+  despite repeated records. A fresh invocation does not inherit that count.
+  [test](native_controller_counts_one_noop_source_and_five_distinct_decisions)
 
 - Loop discovery-child holds preserve IDs/parentage and native guards, keep
   producers open, exclude held sources/raw decisions from implementation

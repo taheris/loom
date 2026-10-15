@@ -30,7 +30,17 @@ pub struct OptionEntry {
 }
 
 /// A bounded diagnostic for an absent, ambiguous, or malformed decision brief.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, displaydoc::Display)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    thiserror::Error,
+    displaydoc::Display,
+)]
 pub enum Error {
     /// missing active Options brief
     Missing,

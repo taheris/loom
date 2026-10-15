@@ -51,7 +51,10 @@ mod waiting;
 pub mod worker;
 
 pub use context::{LoopContextInputs, build_loop_context, render_loop_prompt};
-pub use decision_wait::{DecisionHold, DecisionWaitError, DecisionWaitJournal, reconcile_session};
+pub(crate) use decision_wait::admit_todo;
+pub use decision_wait::{
+    AdmissionTracker, DecisionHold, DecisionWaitError, DecisionWaitJournal, reconcile_session,
+};
 pub use driver_emit::BeadEmit;
 pub use error::LoopError;
 pub use loom_gate::{

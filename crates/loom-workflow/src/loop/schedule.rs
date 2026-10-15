@@ -276,6 +276,7 @@ where
     let mut processed = 0_u32;
     let mut waiting = 0_u32;
     let mut clarified = 0_u32;
+    let admissions = super::AdmissionTracker::default();
     let mut blocked = 0_u32;
     let mut outer_iterations = 0_u32;
     let mut work_since_gate = false;
@@ -303,6 +304,10 @@ where
                 .map(|record| record.bead)
                 .collect::<HashSet<_>>();
             deferred_ids.extend(pending_verification.iter().cloned());
+            super::DecisionWaitJournal::new(&workspace)
+                .with_admissions(admissions.clone())
+                .recover_inventory(&bd, ready_parent.as_ref(), &label)
+                .await?;
             let mut batch_beads = parallel_ready_batch(
                 &bd,
                 &workspace,
@@ -328,7 +333,8 @@ where
                         || pending_verification.contains(&bead.id)
                         || super::decision_wait::held(
                             &bd,
-                            &super::DecisionWaitJournal::new(&workspace),
+                            &super::DecisionWaitJournal::new(&workspace)
+                                .with_admissions(admissions.clone()),
                             &bead,
                         )
                         .await?
@@ -362,13 +368,17 @@ where
                 .map(|bead| (bead.id.clone(), bead.clone()))
                 .collect::<HashMap<_, _>>();
             let spawn = Arc::clone(&spawn);
+            let batch_admissions = admissions.clone();
             let outcome = super::parallel::run_parallel_batch_for_root(
                 &git,
                 &label,
                 batch_beads,
                 Some(&logs_root),
                 ready_parent.as_ref(),
-                move |slot| spawn(slot),
+                move |mut slot| {
+                    slot.admissions = batch_admissions.clone();
+                    spawn(slot)
+                },
             )
             .await?;
 
@@ -648,7 +658,8 @@ where
     Ok(LoopOutcome {
         beads_processed: processed,
         beads_waiting: waiting,
-        beads_clarified: clarified,
+        beads_clarified: clarified
+            .saturating_add(u32::try_from(admissions.ids()?.len()).unwrap_or(u32::MAX)),
         beads_blocked: blocked,
         outer_iterations,
         gate,

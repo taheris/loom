@@ -49,7 +49,8 @@ use loom_workflow::review::{
 };
 use loom_workflow::run_agent_classified;
 use loom_workflow::todo::{
-    ExitSignal, ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
+    ExitSignal, ProductionTodoController, TodoError, parse_exit_signal,
+    run_with_records as run_todo_workflow,
 };
 use loom_workflow::{DefaultObserverChain, init, logs_cmd, plan, spec, status, use_spec};
 
@@ -3778,7 +3779,8 @@ async fn dispatch_for_slot(
         loom_workflow::agent::admit_session_output(result, &output, output::Phase::Loop);
     Ok(loom_workflow::r#loop::reconcile_session(
         &BdClient::new(),
-        &loom_workflow::r#loop::DecisionWaitJournal::new(loom_workspace),
+        &loom_workflow::r#loop::DecisionWaitJournal::new(loom_workspace)
+            .with_admissions(slot.admissions.clone()),
         &slot.bead,
         result,
         marker.as_ref(),
@@ -5185,11 +5187,12 @@ fn run_todo(
                 let decoded = output::decode(&output, output::Phase::Todo)
                     .map_err(|failure| ProtocolError::Io(std::io::Error::other(failure)))?;
                 let terminal = decoded.terminal().message.clone();
+                let decisions = decoded.context().decisions();
                 let todo_success = match &terminal {
                     output::Message::Todo(success) => Some(success.clone()),
                     _ => None,
                 };
-                Ok((outcome, Some(terminal), todo_success))
+                Ok((outcome, Some(terminal), todo_success, decisions))
             }
         })
         .await

@@ -32,7 +32,7 @@ mod cases {
                 .context
                 .as_ref()
                 .unwrap()
-                .matches_inventory(&entry.record.decisions)
+                .matches_inventory(&entry.record.source, &entry.record.decisions)
         );
         let graph: serde_json::Value = serde_json::to_value(entry.context.unwrap()).unwrap();
         assert_eq!(

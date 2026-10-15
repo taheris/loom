@@ -141,9 +141,12 @@ mod cases {
             })
             .unwrap();
         assert!(f.journal().has_pending_for(&f.root).unwrap());
-        stage(&f.bd, &[f.bd.show(&f.decisions[0]).await.unwrap()])
-            .await
-            .unwrap();
+        crate::gate_clarify::apply_guarded_decision_report(
+            &f.bd,
+            f.bd.show(&f.decisions[0]).await.unwrap(),
+        )
+        .await
+        .unwrap();
         let first = f.bd.show(&f.decisions[0]).await.unwrap();
         assert!(!held(&f.bd, &f.journal(), &f.source).await.unwrap());
         assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), first);

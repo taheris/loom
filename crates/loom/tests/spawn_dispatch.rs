@@ -1951,6 +1951,11 @@ fn install_bd_bead_stub(dir: &Path, bead_json: &str) -> PathBuf {
     let parent_json = serde_json::json!([{
         "id": parent, "title": "work root", "status": "open", "issue_type": "epic"
     }]);
+    let todo_fixture = beads.is_empty()
+        || beads
+            .first()
+            .is_some_and(|bead| bead.issue_type == loom_driver::bd::IssueType::Epic);
+    let todo_json = serde_json::json!([{"id":"lm-work","title":"pending Todo batch","status":"open","issue_type":"epic","labels":["loom:todo"]}]);
     let bin_dir = dir.join("bd-bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let bd = bin_dir.join("bd");
@@ -1979,6 +1984,10 @@ __BD_CLOSED_JSON__\n\
          fi\n\
          if [[ \"${{1:-}}\" == 'list' && \" $* \" == *' --type=decision '* ]]; then\n\
              printf '[]\\n'\n\
+             exit 0\n\
+         fi\n\
+         if [[ \"${{1:-}}\" == 'show' && \"${{2:-}}\" == 'lm-work' && '{todo_fixture}' == 'true' ]]; then\n\
+             printf '%s\\n' '{todo_json}'\n\
              exit 0\n\
          fi\n\
          if [[ \"${{1:-}}\" == 'show' && -n '{parent}' && \"${{2:-}}\" == '{parent}' ]]; then\n\

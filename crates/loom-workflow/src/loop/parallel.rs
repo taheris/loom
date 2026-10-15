@@ -31,6 +31,7 @@ pub struct WorktreeBead {
     pub previous_failure: Option<loom_templates::run::PreviousFailure>,
     pub attempt: u32,
     pub workspace_recovery: Option<loom_templates::run::WorkspaceRecovery>,
+    pub admissions: super::AdmissionTracker,
 }
 
 /// One slot's state after the concurrent spawn phase finishes — before the
@@ -346,6 +347,7 @@ pub async fn create_worktrees(
             previous_failure,
             attempt,
             workspace_recovery: preparation.recovery,
+            admissions: super::AdmissionTracker::default(),
         });
     }
     Ok(out)
@@ -380,6 +382,7 @@ where
                 previous_failure: slot.previous_failure,
                 attempt: slot.attempt,
                 workspace_recovery: slot.workspace_recovery,
+                admissions: slot.admissions,
             })
             .await;
             BatchSlot {
@@ -901,6 +904,7 @@ mod tests {
             workspace_recovery: None,
             previous_failure: None,
             attempt: 0,
+            admissions: super::super::AdmissionTracker::default(),
             bead: fake_bead(id),
             worktree: CreatedWorktree {
                 path: PathBuf::from(format!(".loom/beads/{id}")),

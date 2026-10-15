@@ -1,5 +1,7 @@
 use super::*;
 
+#[cfg(test)]
+mod disposition;
 mod graph;
 mod inventory;
 mod recovery;

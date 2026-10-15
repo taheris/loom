@@ -16,6 +16,8 @@ use thiserror::Error;
 )]
 #[derive(Debug, Display, Error)]
 pub enum TodoError {
+    /// native decision admission failed
+    DecisionAdmission(#[source] Box<crate::r#loop::LoopError>),
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running
     InvariantViolation { label: String, ids: String },
 
@@ -62,7 +64,7 @@ pub enum TodoError {
     /// todo success was observed before deterministic preflight completed
     TodoSuccessWithoutPreflight,
 
-    /// `loom todo` success must be `LOOM_TODO: <json>`; generic LOOM_COMPLETE/LOOM_NOOP and loop-only LOOM_WAITING are wrong-phase markers
+    /// `loom todo` success must be `LOOM_TODO: <json>`; generic LOOM_COMPLETE/LOOM_NOOP are wrong-phase markers
     GenericTodoMarker,
 
     /// LOOM_TODO validation failed: {detail}

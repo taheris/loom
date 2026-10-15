@@ -44,9 +44,23 @@ pub(super) struct Entry {
 
 /// Not cache state: never reconstructed from worker-writable metadata. The
 /// driver workspace is not the independent clone mounted into a worker.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DecisionWaitJournal {
-    directory: PathBuf,
+    pub(super) directory: PathBuf,
+    pub(super) clock: std::sync::Arc<dyn loom_driver::clock::Clock>,
+    pub(super) admissions: super::AdmissionTracker,
+    pub(super) source_route: crate::gate_clarify::ClarifySourceRoute,
+}
+
+impl std::fmt::Debug for DecisionWaitJournal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DecisionWaitJournal")
+            .field("directory", &self.directory)
+            .field("admissions", &self.admissions)
+            .field("source_route", &self.source_route)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DecisionWaitJournal {
@@ -54,7 +68,57 @@ impl DecisionWaitJournal {
     pub fn new(workspace: &Path) -> Self {
         Self {
             directory: workspace.join(".loom/decision-waits"),
+            clock: std::sync::Arc::new(loom_driver::clock::SystemClock::new()),
+            admissions: super::AdmissionTracker::default(),
+            source_route: crate::gate_clarify::ClarifySourceRoute::LoopMarker,
         }
+    }
+
+    /// Inject the trusted clock for journal locks and durable event timestamps.
+    #[must_use]
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn loom_driver::clock::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    #[must_use]
+    pub fn with_admissions(mut self, admissions: super::AdmissionTracker) -> Self {
+        self.admissions = admissions;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_source_route(
+        mut self,
+        route: crate::gate_clarify::ClarifySourceRoute,
+    ) -> Self {
+        self.source_route = route;
+        self
+    }
+
+    /// Whether this producer has a completed canonical disposition for the decision.
+    ///
+    /// # Errors
+    /// Malformed or mismatched canonical records are retained and rejected.
+    pub fn has_disposition(&self, producer: &BeadId, decision: &BeadId) -> Result<bool, LoopError> {
+        let entry = self
+            .load(producer)?
+            .ok_or_else(|| invalid("decision disposition lacks canonical inventory"))?;
+        let parent = entry
+            .context
+            .as_ref()
+            .and_then(|context| context.discovery_parent(decision))
+            .ok_or_else(|| invalid("decision disposition lacks checked discovery parent"))?;
+        super::disposition::reusable(self, producer, decision, parent)
+    }
+
+    pub(super) fn complete_dispositions(&self, entry: &Entry) -> Result<bool, LoopError> {
+        for id in &entry.record.decisions {
+            if !self.has_disposition(&entry.record.source, id)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub(super) async fn acquire(
@@ -65,7 +129,7 @@ impl DecisionWaitJournal {
         let locks =
             loom_driver::lock::LockManager::with_state_home(&self.directory, &self.directory)?;
         Ok(locks
-            .acquire_work_root_async(source, &loom_driver::clock::SystemClock::new())
+            .acquire_work_root_async(source, self.clock.as_ref())
             .await?)
     }
 
@@ -78,9 +142,14 @@ impl DecisionWaitJournal {
         label: &loom_driver::identifier::SpecLabel,
     ) -> Result<(), LoopError> {
         for entry in self.entries()?.into_iter().filter(|entry| {
-            entry.phase == Phase::InventoryPending
-                || (entry.phase == Phase::InventoryAdmitted && entry.context.is_none())
+            matches!(
+                entry.phase,
+                Phase::InventoryPending | Phase::InventoryAdmitted
+            )
         }) {
+            if root.is_some_and(|root| entry.record.root != *root && entry.record.source != *root) {
+                continue;
+            }
             let source = bd.show(&entry.record.source).await?;
             let in_scope = if let Some(root) = root {
                 entry.record.root == *root || entry.record.source == *root
@@ -93,7 +162,11 @@ impl DecisionWaitJournal {
                     .chain(&owner.labels)
                     .any(|actual| actual.as_str() == expected_label)
             };
-            if in_scope {
+            if in_scope
+                && (entry.phase == Phase::InventoryPending
+                    || entry.context.is_none()
+                    || !self.complete_dispositions(&entry)?)
+            {
                 super::held(bd, self, &source).await?;
             }
         }
@@ -151,7 +224,7 @@ impl DecisionWaitJournal {
                 if entry.phase.blocks_publication() {
                     return Ok(true);
                 }
-                super::inventory::audit(bd, &entry).await?;
+                super::inventory::audit(bd, self, &entry).await?;
             }
         }
         Ok(false)
@@ -199,10 +272,9 @@ impl DecisionWaitJournal {
             || entry.record.source != *source
             || ids.is_empty()
             || ids.len() != entry.record.decisions.len()
-            || entry
-                .context
-                .as_ref()
-                .is_some_and(|context| !context.matches_inventory(&entry.record.decisions))
+            || entry.context.as_ref().is_some_and(|context| {
+                !context.matches_inventory(&entry.record.source, &entry.record.decisions)
+            })
         {
             return Err(
                 invalid("unsupported, empty, duplicate or mismatched host attribution").into(),

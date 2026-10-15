@@ -52,6 +52,7 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     bd: Arc<BdClient<R>>,
     preflight: Option<Preflight>,
     admitted_decisions: HashSet<BeadId>,
+    reported_decisions: HashSet<BeadId>,
     loom_cfg: LoomTopConfig,
     skills_cfg: SkillsConfig,
     phase_log_root: Option<PathBuf>,
@@ -169,6 +170,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             bd,
             preflight: None,
             admitted_decisions: HashSet::new(),
+            reported_decisions: HashSet::new(),
             loom_cfg: LoomTopConfig::default(),
             skills_cfg: SkillsConfig::default(),
             phase_log_root: None,
@@ -177,10 +179,9 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         }
     }
 
-    /// Supply only contextually admitted decision/brief-repair identities for this batch.
-    /// These remain outside implementation membership after human resolution.
-    pub fn set_admitted_decisions(&mut self, decisions: impl IntoIterator<Item = BeadId>) {
-        self.admitted_decisions = decisions.into_iter().collect();
+    /// Supply untrusted reported identities; outcome recording resolves their native graph.
+    pub fn set_reported_decisions(&mut self, decisions: impl IntoIterator<Item = BeadId>) {
+        self.reported_decisions = decisions.into_iter().collect();
     }
 
     #[must_use]
@@ -1251,6 +1252,10 @@ impl<R: CommandRunner> ProductionTodoController<R> {
 }
 
 impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
+    fn report_decisions(&mut self, decisions: HashSet<BeadId>) {
+        self.reported_decisions = decisions;
+    }
+
     async fn build_session(&mut self) -> Result<TodoSession, TodoError> {
         let built_prompt = self
             .build_prompt()
@@ -1334,6 +1339,21 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         {
             return Err(TodoError::GenericTodoMarker);
         }
+        if outcome.exit_code == 0 && (marker.is_some() || todo_success.is_some()) {
+            let preflight = self
+                .preflight
+                .as_ref()
+                .ok_or(TodoError::TodoSuccessWithoutPreflight)?;
+            let epic = self.bd.show(&preflight.work_epic).await?;
+            self.admitted_decisions = crate::r#loop::admit_todo(
+                &self.bd,
+                &crate::r#loop::DecisionWaitJournal::new(&self.workspace),
+                &epic,
+                &self.reported_decisions,
+            )
+            .await
+            .map_err(decision_admission_error)?;
+        }
         if let Some(ExitSignal::Blocked(payload)) = marker {
             return self.record_blocked(payload.reason.as_str()).await;
         }
@@ -1341,6 +1361,28 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             debug!(exit_code = outcome.exit_code, marker = ?marker, "loom todo: agent exited before finalizing success");
             self.record_missing_exit_signal(outcome, marker).await?;
             return Err(TodoError::MissingExitSignal);
+        }
+        if matches!(marker, Some(ExitSignal::Waiting)) {
+            let epic = &self
+                .preflight
+                .as_ref()
+                .ok_or(TodoError::TodoSuccessWithoutPreflight)?
+                .work_epic;
+            match crate::r#loop::validate_waiting_outcome(
+                &self.bd,
+                epic,
+                crate::r#loop::AgentOutcome::WaitingRequested,
+            )
+            .await
+            .map_err(decision_admission_error)?
+            {
+                crate::r#loop::AgentOutcome::Waiting { .. } => return Ok(TodoRecord::default()),
+                other => {
+                    return Err(TodoError::TodoValidation {
+                        detail: format!("unattributed Todo wait: {other:?}"),
+                    });
+                }
+            }
         }
         let Some(success) = todo_success else {
             debug!(exit_code = outcome.exit_code, marker = ?marker, "loom todo: no success payload to finalize");
@@ -1355,6 +1397,15 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             }
         };
         self.finalize_success(success, bindings).await
+    }
+}
+
+fn decision_admission_error(error: crate::r#loop::LoopError) -> TodoError {
+    match error {
+        crate::r#loop::LoopError::DecisionWait(error) => TodoError::TodoValidation {
+            detail: error.to_string(),
+        },
+        error => TodoError::DecisionAdmission(Box::new(error)),
     }
 }
 

@@ -260,6 +260,7 @@ impl CommandRunner for StatefulRunner {
         state.calls.push(argv.clone());
         let result = match argv.first().map(String::as_str) {
             Some("list") => stateful_list(&state, &argv),
+            Some("dep") if argv.get(1).is_some_and(|arg| arg == "list") => Ok(ok("[]")),
             Some("show") => stateful_show(&state, &argv),
             Some("create") => stateful_create(&mut state, &argv),
             Some("close") => Ok(stateful_close(&mut state, &argv)),
@@ -381,10 +382,20 @@ fn stateful_update(state: &mut StatefulBd, argv: &[String]) -> RunOutput {
     let Some(bead) = argv.get(1).and_then(|id| state.beads.get_mut(id)) else {
         return failed("missing fake bead");
     };
+    if let Some(expected) = flag_value(argv, "--if-status")
+        && bead.status != expected
+    {
+        return RunOutput {
+            status: 13,
+            stdout: Vec::new(),
+            stderr: b"status precondition failed".to_vec(),
+        };
+    }
     let mut index = 2;
     while index < argv.len() {
         let value = argv.get(index + 1).cloned().unwrap_or_default();
         match argv[index].as_str() {
+            "--if-status" => {}
             "--title" => bead.title = value,
             "--status" => bead.status = value,
             "--notes" => bead.notes = Some(value),
@@ -518,6 +529,9 @@ fn preflight_responses(base: &str, head: &str) -> Vec<RunOutput> {
         closed(),
         empty_json(),
         created("lm-work"),
+        pending_todo("lm-work", head, "fixture"),
+        pending_todo("lm-work", head, "fixture"),
+        empty_json(),
     ]
 }
 
@@ -2261,6 +2275,7 @@ async fn todo_reuses_matching_pending_work_epic_else_blocks() -> Result<()> {
     let fingerprint = field(&initial_session.config.initial_prompt, "Todo fingerprint")?;
 
     let mut responses = preflight_responses(&base, &head);
+    responses.truncate(responses.len() - 3);
     responses.pop();
     responses.pop();
     responses.push(pending_todo("lm-pending", &todo_head, &fingerprint));
@@ -2274,6 +2289,7 @@ async fn todo_reuses_matching_pending_work_epic_else_blocks() -> Result<()> {
     let conflict_dir = tempfile::tempdir()?;
     let (conflict_base, conflict_head) = init_workspace(conflict_dir.path())?;
     let mut responses = preflight_responses(&conflict_base, &conflict_head);
+    responses.truncate(responses.len() - 3);
     responses.pop();
     responses.pop();
     responses.push(pending_todo(

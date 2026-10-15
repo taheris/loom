@@ -10,6 +10,33 @@ use super::{
     stage,
 };
 
+#[derive(Clone, Copy)]
+enum Producer {
+    Task,
+    Todo,
+}
+
+/// Admit Todo's reported union against its pending native work epic.
+///
+/// # Errors
+/// Rejects incomplete inventories and incompatible ownership before queue effects.
+pub async fn admit_todo<R: CommandRunner>(
+    bd: &BdClient<R>,
+    journal: &DecisionWaitJournal,
+    expected: &Bead,
+    reported: &HashSet<BeadId>,
+) -> Result<HashSet<BeadId>, LoopError> {
+    let journal = journal
+        .clone()
+        .with_source_route(crate::gate_clarify::ClarifySourceRoute::TodoMarker);
+    admit_for(bd, &journal, expected, reported, Producer::Todo).await?;
+    Ok(journal
+        .load(&expected.id)?
+        .map_or_else(HashSet::new, |entry| {
+            entry.record.decisions.into_iter().collect()
+        }))
+}
+
 /// Admit the entire contextual set before staging any sibling. Unlike a
 /// discovery-child hold, this disposition never projects a wait onto the source.
 pub(super) async fn admit<R: CommandRunner>(
@@ -18,13 +45,32 @@ pub(super) async fn admit<R: CommandRunner>(
     expected: &Bead,
     reported: &HashSet<BeadId>,
 ) -> Result<(), LoopError> {
+    admit_for(bd, journal, expected, reported, Producer::Task).await
+}
+
+async fn admit_for<R: CommandRunner>(
+    bd: &BdClient<R>,
+    journal: &DecisionWaitJournal,
+    expected: &Bead,
+    reported: &HashSet<BeadId>,
+    producer: Producer,
+) -> Result<(), LoopError> {
     let _guard = journal.acquire(&expected.id).await?;
     let source = bd.show(&expected.id).await?;
     if source.id != expected.id
         || source.parent != expected.parent
         || source.issue_type != expected.issue_type
         || !matches!(source.status, Status::Open | Status::Closed)
-        || matches!(source.issue_type, IssueType::Decision | IssueType::Epic)
+        || match producer {
+            Producer::Task => matches!(source.issue_type, IssueType::Decision | IssueType::Epic),
+            Producer::Todo => {
+                source.issue_type != IssueType::Epic
+                    || !source
+                        .labels
+                        .iter()
+                        .any(|label| label.as_str() == "loom:todo")
+            }
+        }
     {
         return Err(invalid("decision producer identity or status changed").into());
     }
@@ -35,6 +81,13 @@ pub(super) async fn admit<R: CommandRunner>(
     {
         return Err(invalid("source still has an unreconciled discovery-child hold").into());
     }
+    if let Some(previous) = &previous
+        && previous.phase == Phase::InventoryAdmitted
+        && previous.context.is_some()
+        && !journal.complete_dispositions(previous)?
+    {
+        return Err(invalid("completed inventory lost canonical decision dispositions").into());
+    }
     check_projection(&source)?;
     let current_root = root(bd, &source).await?;
     let mut known = reported.clone();
@@ -44,7 +97,7 @@ pub(super) async fn admit<R: CommandRunner>(
         }
         known.extend(previous.record.decisions.iter().cloned());
     }
-    let decisions = super::inventory(bd, &source, &known).await?;
+    let decisions = super::inventory(bd, journal, &source, &known).await?;
     let context = super::graph::resolve(
         bd,
         &source,
@@ -72,7 +125,7 @@ pub(super) async fn admit<R: CommandRunner>(
     // Durable intent precedes every queue mutation. A restarted selector must
     // finish staging rather than redispatch the producer past a partial batch.
     journal.save(&entry)?;
-    stage(bd, &decisions).await?;
+    stage(bd, journal, &entry.record.source, &decisions).await?;
     entry.phase = Phase::InventoryAdmitted;
     journal.save(&entry)
 }
@@ -81,11 +134,12 @@ pub(super) async fn admit<R: CommandRunner>(
 /// this read-only path cannot repair missing or stale admission authority.
 pub(super) async fn audit<R: CommandRunner>(
     bd: &BdClient<R>,
+    journal: &DecisionWaitJournal,
     entry: &Entry,
 ) -> Result<(), LoopError> {
     let source = bd.show(&entry.record.source).await?;
     if source.id != entry.record.source
-        || matches!(source.issue_type, IssueType::Decision | IssueType::Epic)
+        || source.issue_type == IssueType::Decision
         || root(bd, &source).await? != entry.record.root
     {
         return Err(
@@ -93,12 +147,17 @@ pub(super) async fn audit<R: CommandRunner>(
         );
     }
     check_projection(&source)?;
+    if !journal.complete_dispositions(entry)? {
+        return Err(
+            invalid("inventory admission lacks completed canonical decision dispositions").into(),
+        );
+    }
     let context = entry
         .context
         .as_ref()
         .ok_or_else(|| invalid("inventory admission needs graph recovery before publication"))?;
     let known = entry.record.decisions.iter().cloned().collect();
-    let decisions = super::inventory(bd, &source, &known).await?;
+    let decisions = super::inventory(bd, journal, &source, &known).await?;
     super::graph::resolve(bd, &source, &entry.record.root, &decisions, Some(context)).await?;
     Ok(())
 }
@@ -125,14 +184,14 @@ pub(super) async fn recover<R: CommandRunner>(
 ) -> Result<bool, LoopError> {
     let source = bd.show(&bead.id).await?;
     if source.id != bead.id
-        || matches!(source.issue_type, IssueType::Decision | IssueType::Epic)
+        || source.issue_type == IssueType::Decision
         || root(bd, &source).await? != entry.record.root
     {
         return Err(invalid("decision producer identity or work root changed on recovery").into());
     }
     check_projection(&source)?;
     let known = entry.record.decisions.iter().cloned().collect();
-    let decisions = super::inventory(bd, &source, &known).await?;
+    let decisions = super::inventory(bd, journal, &source, &known).await?;
     let context = super::graph::resolve(
         bd,
         &source,
@@ -141,12 +200,21 @@ pub(super) async fn recover<R: CommandRunner>(
         entry.context.as_ref(),
     )
     .await?;
-    if entry.context.is_none() {
+    let legacy_context = entry.context.is_none();
+    if legacy_context {
         entry.context = Some(context);
         journal.save(entry)?;
     }
-    if entry.phase == Phase::InventoryPending {
-        stage(bd, &decisions).await?;
+    if entry.phase == Phase::InventoryAdmitted
+        && !legacy_context
+        && !journal.complete_dispositions(entry)?
+    {
+        return Err(invalid("completed inventory lost canonical decision dispositions").into());
+    }
+    if entry.phase == Phase::InventoryPending || legacy_context {
+        entry.phase = Phase::InventoryPending;
+        journal.save(entry)?;
+        stage(bd, journal, &entry.record.source, &decisions).await?;
         entry.phase = Phase::InventoryAdmitted;
         journal.save(entry)?;
     }

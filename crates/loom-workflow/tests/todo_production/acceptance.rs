@@ -457,6 +457,7 @@ async fn todo_finalization_distinguishes_decisions_from_implementation_roster() 
         let mut state = fixture.runner.state.lock().map_err(|_| anyhow!("lock"))?;
         let bead = state.beads.get_mut(task).unwrap();
         bead.status = "blocked".into();
+        bead.issue_type = "decision".into();
         if task == "lm-decision" {
             bead.labels = vec!["loom:clarify".into()];
             bead.description = Some(BRIEF.into());
@@ -468,7 +469,7 @@ async fn todo_finalization_distinguishes_decisions_from_implementation_roster() 
     }
     fixture
         .controller
-        .set_admitted_decisions([BeadId::new("lm-decision")?, BeadId::new("lm-repair")?]);
+        .set_reported_decisions([BeadId::new("lm-decision")?, BeadId::new("lm-repair")?]);
     fixture.finalize().await?;
     for task in ["lm-decision", "lm-repair"] {
         assert!(
@@ -485,13 +486,21 @@ async fn todo_finalization_distinguishes_decisions_from_implementation_roster() 
 #[tokio::test]
 async fn todo_acceptance_persistence_rejects_admitted_decisions_as_assigned_tasks() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    {
+        let mut state = fixture.runner.state.lock().map_err(|_| anyhow!("lock"))?;
+        let decision = state.beads.get_mut("lm-task.1").unwrap();
+        decision.issue_type = "decision".into();
+        decision.description = Some(BRIEF.into());
+        drop(state);
+    }
     fixture
         .controller
-        .set_admitted_decisions([BeadId::new("lm-task.1")?]);
-    assert!(matches!(
-        fixture.finalize().await,
-        Err(TodoError::TodoValidation { .. })
-    ));
+        .set_reported_decisions([BeadId::new("lm-task.1")?]);
+    let result = fixture.finalize().await;
+    assert!(
+        matches!(&result, Err(TodoError::TodoValidation { .. })),
+        "{result:?}"
+    );
     fixture.assert_pending()?;
     assert!(
         !fixture
@@ -518,8 +527,17 @@ async fn todo_acceptance_persistence_keeps_resolved_decisions_out_of_implementat
         .unwrap()
         .status = "closed".into();
     fixture
+        .runner
+        .state
+        .lock()
+        .map_err(|_| anyhow!("lock"))?
+        .beads
+        .get_mut("lm-decision")
+        .unwrap()
+        .issue_type = "decision".into();
+    fixture
         .controller
-        .set_admitted_decisions([BeadId::new("lm-decision")?]);
+        .set_reported_decisions([BeadId::new("lm-decision")?]);
     fixture.finalize().await?;
     assert!(
         !fixture
