@@ -1528,9 +1528,11 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
     }
     let mut combined = run_project_hook_lane(workspace, args)?;
     let tiers = verify_tiers_for_args(workspace, args)?;
+    let mut input_resolver = preflight_gate_input_queries(workspace, args, &tiers)?;
     for &tier in &tiers {
         eprintln!("--- loom gate verify [{tier}] ---");
-        match dispatch_tier_with_readiness_tiers(workspace, args, tier, &tiers) {
+        match dispatch_tier_with_input_resolver(workspace, args, tier, &tiers, &mut input_resolver)
+        {
             Ok(0) => {}
             Ok(code) => combined = combine_verifier_codes(combined, code),
             Err(err) => {
@@ -1732,15 +1734,65 @@ fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Resu
     dispatch_tier_with_readiness_tiers(workspace, args, tier, &[tier])
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "gate dispatch diagnostics are part of the CLI stderr contract"
-)]
 fn dispatch_tier_with_readiness_tiers(
     workspace: &Path,
     args: &GateScope,
     tier: Tier,
     readiness_tiers: &[Tier],
+) -> anyhow::Result<i32> {
+    let mut input_resolver = preflight_gate_input_queries(workspace, args, readiness_tiers)?;
+    dispatch_tier_with_input_resolver(workspace, args, tier, readiness_tiers, &mut input_resolver)
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "input admission failures retain each owning annotation in normal CLI stderr"
+)]
+fn preflight_gate_input_queries(
+    workspace: &Path,
+    args: &GateScope,
+    tiers: &[Tier],
+) -> anyhow::Result<InputResolver> {
+    let parsed = loom_gate::annotation::parse(&workspace.join("specs"))?;
+    let (runners, _) = resolve_integrity_runner_context(workspace)?;
+    let mut resolver = if args.files().is_some() {
+        build_input_resolver(workspace, &runners)?
+    } else {
+        InputResolver::new(workspace.to_path_buf()).with_runners(runners)
+    };
+    let annotations: Vec<_> = parsed
+        .annotations
+        .into_iter()
+        .filter(|annotation| {
+            if let Some(target) = args.target() {
+                tiers.contains(&annotation.tier) && annotation.target == target
+            } else {
+                tiers.contains(&Tier::Check) || tiers.contains(&annotation.tier)
+            }
+        })
+        .collect();
+    let failures = loom_gate::integrity::check_inputs_protocol(&annotations, &mut resolver);
+    if !failures.is_empty() {
+        for failure in failures {
+            eprintln!("loom gate [integrity]: {failure}");
+        }
+        anyhow::bail!(
+            "provider input admission failed before verifier dispatch; correct the reported query and retry `loom gate verify`"
+        );
+    }
+    Ok(resolver)
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "gate dispatch diagnostics are part of the CLI stderr contract"
+)]
+fn dispatch_tier_with_input_resolver(
+    workspace: &Path,
+    args: &GateScope,
+    tier: Tier,
+    readiness_tiers: &[Tier],
+    input_resolver: &mut InputResolver,
 ) -> anyhow::Result<i32> {
     let specs_dir = workspace.join("specs");
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
@@ -1751,12 +1803,7 @@ fn dispatch_tier_with_readiness_tiers(
         Tier::Check | Tier::System => resolve_runner_context(workspace, tier)?.0,
         Tier::Test | Tier::Judge => Vec::new(),
     };
-    let mut input_resolver = if args.files().is_some() {
-        build_input_resolver(workspace, &runner_specs)?
-    } else {
-        InputResolver::new(workspace.to_path_buf()).with_runners(runner_specs.clone())
-    };
-    let mut selected = args.select(&candidates, &mut input_resolver);
+    let mut selected = args.select(&candidates, input_resolver);
     if matches!(tier, Tier::Check | Tier::System) && args.is_explicit_files() {
         let cmd_resolver = FsCommandResolver::new(workspace);
         selected.retain(|ann| {
@@ -1769,7 +1816,7 @@ fn dispatch_tier_with_readiness_tiers(
     if tier == Tier::Check && args.target().is_none() {
         combined = combine_verifier_codes(
             combined,
-            run_integrity_gate(workspace, args, &mut input_resolver, readiness_tiers)?,
+            run_integrity_gate(workspace, args, input_resolver, readiness_tiers)?,
         );
     }
     if selected.is_empty() {

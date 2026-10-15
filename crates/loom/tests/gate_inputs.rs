@@ -196,8 +196,9 @@ fn cli_cached_protocol_errors_remain_loud_for_each_owner() {
             );
             assert_eq!(stderr.matches("input-query errored").count(), 3, "{stderr}");
             assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-            assert_eq!(fixture.lines("executions.txt"), ["alpha", "beta"]);
-            assert_eq!(fixture.lines("batches.txt"), ["alpha beta"]);
+            assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
+            assert_eq!(fixture.lines("batches.txt"), [] as [String; 0]);
+            assert!(stderr.contains("before verifier dispatch"), "{stderr}");
         }
     }
 }
@@ -284,8 +285,73 @@ fn cli_queries_are_not_reused_by_later_gate_invocations() {
         fixture.lines("queries.txt"),
         ["--print-inputs alpha beta"; 2]
     );
-    assert_eq!(fixture.lines("executions.txt"), ["alpha", "alpha", "beta"]);
-    assert_eq!(fixture.lines("batches.txt"), ["alpha", "alpha beta"]);
+    assert_eq!(fixture.lines("executions.txt"), ["alpha"]);
+    assert_eq!(fixture.lines("batches.txt"), ["alpha"]);
+}
+
+#[test]
+fn cli_verify_rejects_invalid_later_lane_queries_before_valid_sibling_execution() {
+    for mode in ["malformed", "nonzero"] {
+        let fixture = Fixture::new();
+        let config = std::fs::read_to_string(fixture.root().join("loom.toml")).unwrap();
+        std::fs::write(
+            fixture.root().join("loom.toml"),
+            format!("{config}\n[runner.system.fixture]\nmatch = '^system:(.+)$'\ncommand = 'bash system-provider.sh {{targets}}'\ntarget = '{{capture_1}}'\njoin = ' '\nparse = 'json-lines'\ninputs = 'bash system-provider.sh {{print_inputs}} {{targets}}'\n"),
+        ).unwrap();
+        std::fs::write(
+            fixture.root().join("specs/system.md"),
+            "## Success Criteria\n\n- later lane [system](system:broken)\n",
+        )
+        .unwrap();
+        std::fs::write(fixture.root().join("system-mode.txt"), mode).unwrap();
+        std::fs::write(
+            fixture.root().join("system-provider.sh"),
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1-}" == "--print-inputs" ]]; then
+    printf '%s\n' "$*" >> "$INPUT_FIXTURE/system-queries.txt"
+    mode=$(<"$INPUT_FIXTURE/system-mode.txt")
+    case "$mode" in
+        malformed) printf '{"inputs":null}\n'; exit 0 ;;
+        nonzero) exit 7 ;;
+    esac
+    printf '{"inputs":["src/unrelated.rs"]}\n'
+else
+    printf '%s\n' "$*" >> "$INPUT_FIXTURE/system-executions.txt"
+    printf '{"target":"broken","pass":true,"evidence":"fixture ran"}\n'
+fi
+"#,
+        )
+        .unwrap();
+        let output = fixture.run_gate("verify", &["--tree"]);
+        Fixture::assert_exit(&output, 1);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("specs/system.md:3") && stderr.contains("system:broken"),
+            "{stderr}"
+        );
+        assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
+        assert_eq!(
+            fixture.lines("system-queries.txt"),
+            ["--print-inputs broken"]
+        );
+        assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
+        assert_eq!(fixture.lines("batches.txt"), [] as [String; 0]);
+        assert!(!fixture.root().join("system-executions.txt").exists());
+        std::fs::write(fixture.root().join("system-mode.txt"), "valid").unwrap();
+        Fixture::assert_success(&fixture.run_gate("verify", &["--tree"]));
+        assert_eq!(
+            fixture.lines("queries.txt"),
+            ["--print-inputs alpha beta"; 2]
+        );
+        assert_eq!(
+            fixture.lines("system-queries.txt"),
+            ["--print-inputs broken"; 2]
+        );
+        assert_eq!(fixture.lines("executions.txt"), ["alpha", "beta"]);
+        assert_eq!(fixture.lines("batches.txt"), ["alpha beta"]);
+        assert_eq!(fixture.lines("system-executions.txt"), ["broken"]);
+    }
 }
 
 #[test]
