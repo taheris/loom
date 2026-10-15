@@ -92,7 +92,7 @@ impl BatchInfraFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchResult {
     /// Agent finished cleanly and the bead branch merged into the driver
-    /// branch without conflict. The worktree has been removed.
+    /// branch without conflict. Publication still owns source cleanup.
     Merged { bead: BeadId },
 
     /// A validated dependency wait. The worktree and branch remain in place;
@@ -281,9 +281,28 @@ where
     S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
     F: std::future::Future<Output = AgentOutcome> + Send + 'static,
 {
+    run_parallel_batch_for_root(git, label, beads, logs_root, None, spawn).await
+}
+
+pub(super) async fn run_parallel_batch_for_root<S, F>(
+    git: &GitClient,
+    label: &SpecLabel,
+    beads: Vec<Bead>,
+    logs_root: Option<&Path>,
+    work_root: Option<&BeadId>,
+    spawn: S,
+) -> Result<BatchOutcome, LoopError>
+where
+    S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
+    F: std::future::Future<Output = AgentOutcome> + Send + 'static,
+{
     let slots = create_worktrees(git, label, beads).await?;
     let batch_slots = run_concurrent_spawns(slots, spawn).await;
-    merge_back_with_logs(git, batch_slots, logs_root, label).await
+    let mut results = Vec::with_capacity(batch_slots.len());
+    for slot in batch_slots {
+        results.push(merge_back_one(git, slot, logs_root, Some(label), work_root).await?);
+    }
+    Ok(BatchOutcome { results })
 }
 
 /// Step 1 of a parallel batch: create one worktree per bead.
@@ -392,7 +411,7 @@ where
 pub async fn merge_back(git: &GitClient, slots: Vec<BatchSlot>) -> Result<BatchOutcome, LoopError> {
     let mut results = Vec::with_capacity(slots.len());
     for slot in slots {
-        let result = merge_back_one(git, slot, None, None).await?;
+        let result = merge_back_one(git, slot, None, None, None).await?;
         results.push(result);
     }
     Ok(BatchOutcome { results })
@@ -417,7 +436,7 @@ pub async fn merge_back_with_logs(
 ) -> Result<BatchOutcome, LoopError> {
     let mut results = Vec::with_capacity(slots.len());
     for slot in slots {
-        let result = merge_back_one(git, slot, logs_root, Some(label)).await?;
+        let result = merge_back_one(git, slot, logs_root, Some(label), None).await?;
         results.push(result);
     }
     Ok(BatchOutcome { results })
@@ -428,6 +447,7 @@ async fn merge_back_one(
     slot: BatchSlot,
     logs_root: Option<&Path>,
     label: Option<&SpecLabel>,
+    work_root: Option<&BeadId>,
 ) -> Result<BatchResult, LoopError> {
     let BatchSlot {
         bead,
@@ -568,7 +588,7 @@ async fn merge_back_one(
                             .begin_verification(
                                 bead.id.clone(),
                                 scope,
-                                bead.parent.clone(),
+                                work_root.cloned(),
                                 base,
                                 candidate,
                             )?;

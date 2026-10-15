@@ -292,6 +292,7 @@ fn install_wrix_commit_shim(dir: &Path, mock_agent: &Path) -> PathBuf {
          printf 'implemented %s\\n' \"$bead_id\" > \"$workspace/implemented-$bead_id.txt\"\n\
          git -C \"$workspace\" add \"implemented-$bead_id.txt\"\n\
          git -C \"$workspace\" commit -q -m \"implement $bead_id\"\n\
+         if [[ \"$workspace\" == */.loom/beads/* ]]; then bd close \"$(basename \"$workspace\")\"; fi\n\
          echo '[wrix] Starting container (mock)...' >&2\n\
          exec '{bash}' \"$MOCK_AGENT\" happy-path\n",
         bash = bash.display(),
@@ -337,6 +338,7 @@ fn install_completion_publish_wrix_shim(
              git -C \"$workspace\" mv crates/loom-skill crates/renamed-loom-skill\n\
              git -C \"$workspace\" commit -q -m 'rename skill crate source'\n\
          fi\n\
+         if [[ \"$workspace\" == */.loom/beads/* ]]; then bd close \"$(basename \"$workspace\")\"; fi\n\
          echo '[wrix] Starting container (mock)...' >&2\n\
          exec '{bash}' '{mock}' happy-path\n",
         bash = bash.display(),
@@ -1882,10 +1884,13 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
     let body = format!(
         "#!{bash}\n\
          set -euo pipefail\n\
+         if [[ \"${{1:-}}\" == 'close' ]]; then touch {bin}/\"${{2:?}}.closed\"; exit 0; fi\n\
          bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"parent\":\"lm-mola\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
          bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"parent\":\"lm-molb\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
          molecule_a='{{\"id\":\"lm-mola\",\"title\":\"first molecule\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:agent\"]}}'\n\
          molecule_b='{{\"id\":\"lm-molb\",\"title\":\"second molecule\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:agent\"]}}'\n\
+         if [[ -f {bin}/lm-multia.closed ]]; then bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"status\":\"closed\",\"issue_type\":\"task\",\"parent\":\"lm-mola\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'; fi\n\
+         if [[ -f {bin}/lm-multib.closed ]]; then bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"status\":\"closed\",\"issue_type\":\"task\",\"parent\":\"lm-molb\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'; fi\n\
          if [[ \"${{1:-}}\" == 'create' ]]; then\n\
              echo 'lm-work'\n\
              exit 0\n\
@@ -1912,6 +1917,7 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
          done\n\
          exit 0\n",
         bash = bash.display(),
+        bin = format!("'{}'", bin_dir.display().to_string().replace('\'', "'\\''")),
     );
     std::fs::write(&bd, body).unwrap();
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
@@ -1929,9 +1935,20 @@ fn install_bd_bead_stub(dir: &Path, bead_json: &str) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).unwrap();
     let bd = bin_dir.join("bd");
     let bash = find_bash();
+    let mut closed: serde_json::Value = serde_json::from_str(bead_json).expect("fixture JSON");
+    for bead in closed.as_array_mut().expect("fixture rows") {
+        bead["status"] = serde_json::json!("closed");
+    }
     let body = format!(
         "#!{bash}\n\
          set -euo pipefail\n\
+         if [[ \"${{1:-}}\" == 'close' ]]; then touch {bin}/\"${{2:?}}.closed\"; exit 0; fi\n\
+         if [[ \"${{1:-}}\" == 'show' && -f {bin}/\"${{2:-}}.closed\" ]]; then\n\
+             cat <<'__BD_CLOSED_JSON__'\n\
+{closed}\n\
+__BD_CLOSED_JSON__\n\
+             exit 0\n\
+         fi\n\
          if [[ \"${{1:-}}\" == 'create' ]]; then\n\
              echo 'lm-work'\n\
              exit 0\n\
@@ -1950,13 +1967,51 @@ __BD_BEAD_JSON__\n\
          done\n\
          exit 0\n",
         bash = bash.display(),
+        bin = format!("'{}'", bin_dir.display().to_string().replace('\'', "'\\''")),
         bead = bead_json,
+        closed = closed,
     );
     std::fs::write(&bd, body).unwrap();
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
     bin_dir
+}
+
+#[test]
+fn completion_bd_adapters_expose_worker_owned_native_closure() {
+    for multi in [false, true] {
+        let dir = tempfile::tempdir().expect("fixture");
+        let (bin, id) = if multi {
+            (install_bd_multi_root_stub(dir.path()), "lm-multia")
+        } else {
+            (
+                install_bd_bead_stub(
+                    dir.path(),
+                    r#"[{"id":"lm-adapter","title":"source","status":"open"}]"#,
+                ),
+                "lm-adapter",
+            )
+        };
+        let show = || {
+            let output = Command::new(bin.join("bd"))
+                .args(["show", id, "--json"])
+                .output()
+                .expect("native show adapter");
+            assert!(output.status.success());
+            serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                .expect("native JSON projection")
+        };
+        assert_eq!(show()[0]["status"], "open");
+        let closed = Command::new(bin.join("bd"))
+            .args(["close", id])
+            .status()
+            .expect("worker close adapter");
+        assert!(closed.success());
+        let current = show();
+        assert_eq!(current[0]["id"], id);
+        assert_eq!(current[0]["status"], "closed");
+    }
 }
 
 /// The agent process receives stdin as a pipe, never a TTY. EOF on that

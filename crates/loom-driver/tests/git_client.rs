@@ -2779,6 +2779,9 @@ async fn publication_rebase_recovery_preserves_source_and_replays_unfinished_tra
         loom_driver::git::commit_all_in(repo.path(), "independent remote work")?;
         git(repo.path(), &["push", "origin", "main"])?;
         let onto = loom_driver::git::sync_head_commit_sha(repo.path())?;
+        git(&integration, &["fetch", "origin", "main"])?;
+        assert!(!client.has_pending_verification_tip().await?);
+        assert!(!client.refresh_pending_publication_rebase().await?);
         if interrupted != 0 {
             for mut record in association.verification_continuations()? {
                 record.publication_rebase = Some(loom_driver::workspace::PublicationRebase {
@@ -2821,15 +2824,30 @@ async fn publication_rebase_recovery_preserves_source_and_replays_unfinished_tra
                     "preserve uncommitted work\n"
                 );
                 std::fs::rename(&dirty, repo.path().join("retained-interrupted-work.txt"))?;
+                let tracked = integration.join("candidate.txt");
+                let original = std::fs::read(&tracked)?;
+                std::fs::write(&tracked, "uncommitted tracked resolution\n")?;
+                assert!(client.recover_publication_rebase().await.is_err());
+                assert_eq!(
+                    std::fs::read_to_string(&tracked)?,
+                    "uncommitted tracked resolution\n"
+                );
+                git(&integration, &["add", "candidate.txt"])?;
+                assert!(client.recover_publication_rebase().await.is_err());
+                assert_eq!(
+                    std::fs::read_to_string(&tracked)?,
+                    "uncommitted tracked resolution\n"
+                );
+                assert!(integration.join(".git/rebase-merge").is_dir());
+                std::fs::copy(&tracked, repo.path().join("retained-staged-resolution.txt"))?;
+                std::fs::write(&tracked, original)?;
+                git(&integration, &["add", "candidate.txt"])?;
             }
             client.recover_publication_rebase().await?;
-            assert_eq!(
-                loom_driver::git::sync_head_commit_sha(&integration)?,
-                if interrupted == 2 {
-                    rewritten.clone()
-                } else {
-                    candidate.clone()
-                }
+            assert!(
+                GitClient::open(&integration)?
+                    .is_ancestor_of_head(onto.as_str())
+                    .await?
             );
             if interrupted != 2 {
                 assert_eq!(
@@ -2865,6 +2883,15 @@ async fn publication_rebase_recovery_preserves_source_and_replays_unfinished_tra
                 candidate
             );
         }
+        std::fs::write(
+            repo.path().join("remote-again.txt"),
+            "independent next publication\n",
+        )?;
+        loom_driver::git::commit_all_in(repo.path(), "publish independent work again")?;
+        git(repo.path(), &["push", "origin", "main"])?;
+        git(&integration, &["fetch", "origin", "main"])?;
+        assert!(!client.has_pending_verification_tip().await?);
+        assert!(client.refresh_pending_publication_rebase().await?);
         assert!(client.has_pending_verification_tip().await?);
     }
     Ok(())

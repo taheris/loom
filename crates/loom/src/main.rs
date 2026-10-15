@@ -3502,6 +3502,9 @@ fn prepare_loop_root(
         runtime.block_on(async move {
             ff_git.recover_publication_rebase().await?;
             let result = ff_git.fast_forward_integration_to_origin().await;
+            if matches!(&result, Err(loom_driver::git::GitError::IntegrationDiverged { .. })) {
+                ff_git.refresh_pending_publication_rebase().await?;
+            }
             if matches!(&result, Err(loom_driver::git::GitError::IntegrationDiverged { .. }))
                 && ff_git.has_pending_verification_tip().await? {
                 tracing::info!(workspace = %ff_workspace.display(), "retained unpublished verification candidate for driver restart; no coverage admitted");

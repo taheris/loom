@@ -307,11 +307,12 @@ where
                 .map(|bead| (bead.id.clone(), bead.clone()))
                 .collect::<HashMap<_, _>>();
             let spawn = Arc::clone(&spawn);
-            let outcome = super::run_parallel_batch_with_logs(
+            let outcome = super::parallel::run_parallel_batch_for_root(
                 &git,
                 &label,
                 batch_beads,
                 Some(&logs_root),
+                ready_parent.as_ref(),
                 move |slot| spawn(slot),
             )
             .await?;

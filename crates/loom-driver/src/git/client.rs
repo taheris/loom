@@ -2013,8 +2013,7 @@ impl GitClient {
             {
                 return Err(GitError::GitCli { status: 1, stderr: "publication recovery cannot attribute changed integration; all history preserved".into() });
             }
-            // The reflog identifies only our interrupted Git transaction, never driver provenance
-            // or coverage. Keep every rewritten commit, then replay ordinary verification.
+            // The reflog attributes only the interrupted Git transaction; fresh gates still own coverage.
             self.create_verification_ref(
                 &format!("refs/loom/recovery/publication-{}-{head}", intent.before),
                 &head,
@@ -2046,7 +2045,103 @@ impl GitClient {
                 return Err(cli_error(&accepted));
             }
         }
+        let current = sync_head_commit_sha(&integration)?;
+        let pending = association
+            .verification_continuations()
+            .map_err(std::io::Error::other)?;
+        if let Some(intent) = pending
+            .iter()
+            .filter_map(|record| record.publication_rebase.as_ref())
+            .find(|intent| intent.after.is_none() && intent.before == current)
+        {
+            if !self
+                .status_porcelain_at(&integration)
+                .await?
+                .trim()
+                .is_empty()
+            {
+                return Err(GitError::GitCli {
+                    status: 1,
+                    stderr: "publication replay has uncommitted work; preserved".into(),
+                });
+            }
+            let output = run_git_index_mut(
+                &integration,
+                self.clock.as_ref(),
+                ["rebase", intent.onto.as_str()],
+                None,
+            )
+            .await?;
+            if !output.status.success() {
+                return Err(cli_error(&output));
+            }
+            let after = sync_head_commit_sha(&integration)?;
+            for record in &pending {
+                if record.publication_rebase.as_ref().is_some_and(|peer| {
+                    peer.before == intent.before && peer.onto == intent.onto && peer.after.is_none()
+                }) {
+                    self.finish_publication_rebase_record(
+                        &association,
+                        record.clone(),
+                        &after,
+                        &intent.onto,
+                    )
+                    .await?;
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Refresh only a protected publication transaction after origin advances again.
+    ///
+    /// # Errors
+    /// Rejects changed source/checkouts/pins; does not admit coverage or reconcile unrelated work.
+    pub async fn refresh_pending_publication_rebase(&self) -> Result<bool, GitError> {
+        if !self
+            .workdir
+            .join(".git/loom-verification-continuations")
+            .try_exists()?
+        {
+            return Ok(false);
+        }
+        let association =
+            crate::workspace::Association::resolve(&self.workdir).map_err(std::io::Error::other)?;
+        let integration = self.loom_workspace();
+        let head = sync_head_commit_sha(&integration)?;
+        if head != self.integration_commit_sha().await?
+            || !self
+                .status_porcelain_at(&integration)
+                .await?
+                .trim()
+                .is_empty()
+        {
+            return Ok(false);
+        }
+        for record in association
+            .verification_continuations()
+            .map_err(std::io::Error::other)?
+        {
+            if record.candidate != head || record.publication_rebase.is_none() {
+                continue;
+            }
+            association
+                .validate_verification(&record)
+                .map_err(std::io::Error::other)?;
+            let pin = format!(
+                "refs/loom/verification/{}/{}",
+                record.bead, record.candidate
+            );
+            if sync_rev_parse(&integration, &pin)? != head {
+                return Err(GitError::GitCli {
+                    status: 1,
+                    stderr: "publication refresh candidate pin changed".into(),
+                });
+            }
+            self.prepare_actual_push_range().await?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     async fn finish_publication_rebase_record(
@@ -2094,6 +2189,13 @@ impl GitClient {
         }
         let head = self.integration_commit_sha().await?;
         if sync_head_commit_sha(&integration)? != head {
+            return Ok(false);
+        }
+        let origin = format!("refs/remotes/origin/{}", self.integration_branch);
+        if !GitClient::open(&integration)?
+            .is_ancestor_of_head(&origin)
+            .await?
+        {
             return Ok(false);
         }
         for record in association

@@ -5746,6 +5746,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parallel_nested_descendant_retains_dispatch_root_for_verifier_restart() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let workspace = dir.path().join("workspace");
+        let git = git_workspace(&workspace);
+        let root = BeadId::new("lm-ancestor").expect("root");
+        let label = SpecLabel::new("gate").expect("label");
+        let source: Bead = serde_json::from_value(serde_json::json!({"id":"lm-descendant","title":"nested source","status":"closed","parent":"lm-nested","labels":["spec:gate"]})).expect("bead");
+        let outcome = super::super::parallel::run_parallel_batch_for_root(
+            &git,
+            &label,
+            vec![source.clone()],
+            None,
+            Some(&root),
+            |slot| async move {
+                std::fs::write(
+                    slot.worktree.path.join("nested.txt"),
+                    "nested implementation\n",
+                )
+                .expect("source");
+                loom_driver::git::commit_all_in(&slot.worktree.path, "implement nested source")
+                    .expect("commit");
+                AgentOutcome::Success
+            },
+        )
+        .await
+        .expect("parallel production merge");
+        assert_eq!(outcome.merged_ids(), vec![source.id.clone()]);
+        let association =
+            loom_driver::workspace::Association::resolve(&workspace).expect("authority");
+        let records = association
+            .verification_continuations()
+            .expect("continuation");
+        assert_eq!(records[0].root, Some(root.clone()));
+        let candidate =
+            loom_driver::git::sync_head_commit_sha(&workspace.join(".loom/beads/lm-descendant"))
+                .expect("source identity");
+        let verifier = dir.path().join("verifier");
+        loom_test_support::write_executable_bash_script(&verifier, "exit 0\n").expect("verifier");
+        let request = super::super::schedule::Request {
+            workspace: workspace.clone(),
+            label,
+            ready_parent: Some(root),
+            parallelism: "2".parse().expect("parallelism"),
+            agent_override: None,
+            wrix_bin: "unused-wrix".into(),
+            loom_bin: verifier,
+            loom: loom_driver::config::LoomTopConfig::default(),
+            infra_policy: super::super::InfraRetryPolicy { max_attempts: 2 },
+            max_iterations: 5,
+            repo_git_policy: loom_driver::git::RepoGitPolicy::resolve(
+                &workspace,
+                "unused-wrix".into(),
+                loom_driver::git::KeyMode::Host,
+            )
+            .expect("policy"),
+            manifest: write_manifest(dir.path()),
+        };
+        let observed = serde_json::to_vec(&vec![source.clone()]).expect("native observation");
+        let (ids, work) = super::super::schedule::resume_verification_candidates(
+            &request,
+            BdClient::with_runner(ScriptedBd::new([
+                ok_stdout(&observed),
+                ok_stdout(&observed),
+                ok_stdout(&observed),
+            ])),
+            &mut super::super::schedule::VerificationRecovery::default(),
+        )
+        .await
+        .expect("ancestor invocation resumes nested source");
+        assert!(work);
+        assert_eq!(ids, HashSet::from([source.id]));
+        assert_eq!(
+            loom_driver::git::sync_head_commit_sha(&workspace.join(".loom/beads/lm-descendant"))
+                .expect("retained source"),
+            candidate
+        );
+        assert!(
+            association
+                .verification_continuations()
+                .expect("publication remains pending")[0]
+                .awaiting_publication()
+        );
+    }
+
+    #[tokio::test]
     async fn restarted_integrated_candidate_rolls_back_on_rejection_and_exhaustion() {
         for code in [1, 78, 0] {
             for independent in [false, true] {
