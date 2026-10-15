@@ -138,6 +138,7 @@ pub struct Inventory {
     snapshot: Identity,
     subjects: BTreeMap<Name, Subject>,
     obligations: BTreeSet<Obligation>,
+    compilation: BTreeMap<ResourcePath, rust::Compilation>,
 }
 
 impl Inventory {
@@ -148,11 +149,11 @@ impl Inventory {
     pub fn discover(snapshot: &Snapshot) -> Result<Self, Error> {
         let staged = snapshot.stage()?;
         let mut subjects = BTreeMap::new();
-        rust::discover(snapshot, staged.path(), &mut subjects)?;
+        let compilation = rust::discover(snapshot, staged.path(), &mut subjects)?;
         nix::discover(snapshot, staged.path(), &mut subjects)?;
         classify_remaining(snapshot, &mut subjects)?;
         snapshot.require_current()?;
-        let inventory = Self::finish(snapshot.identity().clone(), subjects)?;
+        let inventory = Self::finish(snapshot.identity().clone(), subjects, compilation)?;
         let mut declarations = Vec::new();
         for path in contracts(snapshot)? {
             declarations.extend(
@@ -162,7 +163,21 @@ impl Inventory {
         inventory.with_policy(&declarations)
     }
 
-    fn finish(snapshot: Identity, subjects: BTreeMap<Name, Subject>) -> Result<Self, Error> {
+    fn finish(
+        snapshot: Identity,
+        subjects: BTreeMap<Name, Subject>,
+        compilation: BTreeMap<ResourcePath, rust::Compilation>,
+    ) -> Result<Self, Error> {
+        for subject in subjects
+            .values()
+            .filter(|subject| subject.role == Role::Document)
+        {
+            for path in &subject.members {
+                if !is_document(path) {
+                    return Err(Error::Unclassified { path: path.clone() });
+                }
+            }
+        }
         let obligations = subjects
             .values()
             .map(|subject| obligations_for(subject, &subjects))
@@ -174,6 +189,7 @@ impl Inventory {
             snapshot,
             subjects,
             obligations,
+            compilation,
         })
     }
 
@@ -195,6 +211,50 @@ impl Inventory {
         self.subjects
             .get(name)
             .ok_or_else(|| Error::Unknown { name: name.clone() })
+    }
+
+    /// Native production compilation subjects for the Cargo manifest owning a checker source.
+    ///
+    /// Includes normal/build workspace dependencies and compiler configuration, not unrelated
+    /// integration tests, examples, benches, or fixture resources.
+    ///
+    /// # Errors
+    /// Rejects checker paths without exactly one discovered owning Cargo manifest.
+    pub fn checker_subjects(&self, checker: &ResourcePath) -> Result<BTreeSet<Name>, Error> {
+        let owners: BTreeSet<_> = self
+            .subjects
+            .values()
+            .filter(|subject| {
+                subject.members.contains(checker)
+                    && self
+                        .compilation
+                        .get(&subject.origin)
+                        .is_some_and(|compilation| compilation.subjects.contains(&subject.name))
+            })
+            .map(|subject| subject.origin.clone())
+            .collect();
+        if owners.len() != 1 {
+            return Err(Error::Checker {
+                path: checker.clone(),
+            });
+        }
+        let compilation = owners
+            .iter()
+            .next()
+            .and_then(|origin| self.compilation.get(origin))
+            .ok_or_else(|| Error::Checker {
+                path: checker.clone(),
+            })?;
+        if let Some(path) = compilation.outside.first() {
+            return Err(Error::Outside { path: path.clone() });
+        }
+        let mut names = compilation.subjects.clone();
+        for path in &compilation.configuration {
+            let name = Name::try_from(format!("resource:{}", path.as_path().display()))?;
+            self.subject(&name)?;
+            names.insert(name);
+        }
+        Ok(names)
     }
 
     fn with_policy(&self, declarations: &[Declaration]) -> Result<Self, Error> {
@@ -252,7 +312,7 @@ impl Inventory {
                 }
             }
         }
-        Self::finish(self.snapshot.clone(), subjects)
+        Self::finish(self.snapshot.clone(), subjects, self.compilation.clone())
     }
 }
 
@@ -369,9 +429,13 @@ fn consumer_duties(
             Role::NixSource => {
                 duties.extend([(Duty::Evaluate, name.clone()), (Duty::Check, name.clone())]);
             }
+            Role::TestFixture if consumer.nix.is_some() => {
+                duties.extend([(Duty::Evaluate, name.clone()), (Duty::Check, name.clone())]);
+            }
             Role::TestFixture if consumer.testable => {
                 duties.push((Duty::Test, name.clone()));
             }
+            Role::TestFixture => duties.extend(consumer_tests(consumer, subjects)?),
             _ => {
                 return Err(Error::Responsibility {
                     name: subject.name.clone(),
@@ -393,22 +457,23 @@ fn consumer_tests(
             role: subject.role,
         });
     }
-    subject
-        .consumers
-        .iter()
-        .map(|name| {
-            let consumer = subjects
-                .get(name)
-                .ok_or_else(|| Error::Unknown { name: name.clone() })?;
-            if !consumer.testable {
-                return Err(Error::Responsibility {
-                    name: subject.name.clone(),
-                    role: subject.role,
-                });
-            }
-            Ok((Duty::Test, name.clone()))
-        })
-        .collect()
+    let mut duties = Vec::new();
+    for name in &subject.consumers {
+        let consumer = subjects
+            .get(name)
+            .ok_or_else(|| Error::Unknown { name: name.clone() })?;
+        if consumer.nix.is_some() || consumer.role == Role::NixSource {
+            duties.extend([(Duty::Evaluate, name.clone()), (Duty::Check, name.clone())]);
+        } else if consumer.testable {
+            duties.push((Duty::Test, name.clone()));
+        } else {
+            return Err(Error::Responsibility {
+                name: subject.name.clone(),
+                role: subject.role,
+            });
+        }
+    }
+    Ok(duties)
 }
 
 fn insert(subjects: &mut BTreeMap<Name, Subject>, subject: Subject) -> Result<(), Error> {
@@ -462,25 +527,29 @@ fn classify_remaining(
         .collect();
     for path in snapshot.files().keys() {
         let extension = path.as_path().extension().and_then(|ext| ext.to_str());
-        let filename = path.as_path().file_name().and_then(|name| name.to_str());
         let document = is_document(path);
-        if accounted.contains(path)
-            && (resources.contains(path) || !document || documents.contains(path))
+        let configuration = is_configuration(path);
+        if extension == Some("rs")
+            && !resources.contains(path)
+            && !subjects
+                .values()
+                .any(|subject| subject.role == Role::RustSource && subject.members.contains(path))
         {
-            if !matches!(
-                extension,
-                Some("rs" | "nix" | "md" | "txt" | "rst" | "toml" | "lock")
-            ) && !resources.contains(path)
-            {
-                return Err(Error::Unclassified { path: path.clone() });
-            }
+            return Err(Error::Orphan { path: path.clone() });
+        }
+        if accounted.contains(path)
+            && (resources.contains(path)
+                || (!document && !configuration)
+                || documents.contains(path))
+        {
             continue;
         }
-        let role = match (extension, filename) {
-            (Some("md" | "txt" | "rst"), _) | (_, Some("LICENSE")) => Role::Document,
-            (Some("toml" | "lock"), _) | (_, Some(".gitignore")) => Role::Configuration,
-            (Some("rs"), _) => return Err(Error::Orphan { path: path.clone() }),
-            _ => return Err(Error::Unclassified { path: path.clone() }),
+        let role = if document {
+            Role::Document
+        } else if configuration {
+            Role::Configuration
+        } else {
+            return Err(Error::Unclassified { path: path.clone() });
         };
         let mut subject = single(path, role, "resource")?;
         if role == Role::Configuration {
@@ -489,6 +558,23 @@ fn classify_remaining(
         insert(subjects, subject)?;
     }
     Ok(())
+}
+
+fn is_configuration(path: &ResourcePath) -> bool {
+    matches!(
+        path.as_path().extension().and_then(|ext| ext.to_str()),
+        Some("toml" | "lock" | "yaml" | "yml" | "json")
+    ) || matches!(
+        path.as_path().file_name().and_then(|name| name.to_str()),
+        Some(".gitignore" | ".envrc" | "rust-toolchain")
+    ) || (path
+        .as_path()
+        .file_name()
+        .is_some_and(|name| name == "config")
+        && path
+            .as_path()
+            .parent()
+            .is_some_and(|parent| parent.ends_with(".cargo")))
 }
 
 fn is_document(path: &ResourcePath) -> bool {
@@ -572,6 +658,8 @@ pub enum Error {
     Ambiguous { name: Name },
     /// unknown project subject `{name:?}`; correct the project reference and rerun `loom gate verify`
     Unknown { name: Name },
+    /// checker `{path:?}` has no unique native Cargo owner; attach it to one discovered Cargo target
+    Checker { path: ResourcePath },
     /// orphan Rust source `{path:?}`; attach it to a Cargo target or consuming fixture resource
     Orphan { path: ResourcePath },
     /// unsupported/unclassified subject `{path:?}`; supply a supported project resource definition and rerun `loom gate verify`

@@ -14,6 +14,9 @@ use super::{Error, Name, Role, Subject, command, insert, relative};
 struct Metadata {
     packages: Vec<Package>,
     workspace_members: BTreeSet<String>,
+    workspace_root: PathBuf,
+    #[serde(rename = "metadata")]
+    workspace_policy: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -23,6 +26,29 @@ struct Package {
     manifest_path: PathBuf,
     targets: Vec<Target>,
     metadata: serde_json::Value,
+    dependencies: Vec<Dependency>,
+}
+
+#[derive(Deserialize)]
+struct Dependency {
+    path: Option<PathBuf>,
+    kind: Option<DependencyKind>,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum DependencyKind {
+    Normal,
+    Build,
+    Dev,
+}
+
+/// Native production compilation ownership retained independently of role exceptions.
+#[derive(Debug, Clone)]
+pub(super) struct Compilation {
+    pub subjects: BTreeSet<Name>,
+    pub configuration: BTreeSet<ResourcePath>,
+    pub outside: BTreeSet<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -80,6 +106,7 @@ struct Resource {
     name: Name,
     directory: ResourcePath,
     role: Role,
+    #[serde(default)]
     consumers: BTreeSet<Name>,
     producer: Option<Name>,
 }
@@ -88,10 +115,10 @@ pub(super) fn discover(
     snapshot: &Snapshot,
     root: &Path,
     subjects: &mut BTreeMap<Name, Subject>,
-) -> Result<(), Error> {
+) -> Result<BTreeMap<ResourcePath, Compilation>, Error> {
     let manifest = ResourcePath::try_from(PathBuf::from("Cargo.toml"))?;
     if !snapshot.files().contains_key(&manifest) {
-        return Ok(());
+        return Ok(BTreeMap::new());
     }
     let metadata: Metadata = serde_json::from_slice(&command(
         root,
@@ -115,7 +142,21 @@ pub(super) fn discover(
     {
         discover_package(snapshot, root, subjects, package)?;
     }
-    Ok(())
+    let workspace_origin = relative(root, &metadata.workspace_root.join("Cargo.toml"))?;
+    let targets = subjects
+        .values()
+        .filter(|subject| subject.role == Role::RustSource)
+        .map(|subject| subject.name.clone())
+        .collect();
+    discover_resources(
+        snapshot,
+        root,
+        subjects,
+        &metadata.workspace_policy,
+        &workspace_origin,
+        &targets,
+    )?;
+    compilations(snapshot, root, &metadata)
 }
 
 fn discover_package(
@@ -128,17 +169,7 @@ fn discover_package(
     let mut targets = BTreeSet::new();
     let mut consumers = BTreeSet::new();
     for target in &package.targets {
-        let name = Name::try_from(format!(
-            "cargo:{}:{}:{}",
-            package.name,
-            target
-                .kind
-                .iter()
-                .map(Kind::as_str)
-                .collect::<Vec<_>>()
-                .join("+"),
-            target.name
-        ))?;
+        let name = target_name(package, target)?;
         let source = relative(root, &target.src_path)?;
         let mut members = BTreeSet::new();
         let directory = origin.as_path().parent().unwrap_or_else(|| Path::new(""));
@@ -201,11 +232,32 @@ fn discover_package(
             )?;
         }
     }
-    let policy: Policy = match package
-        .metadata
-        .get("loom")
-        .and_then(|loom| loom.get("verify"))
-    {
+    discover_resources(
+        snapshot,
+        root,
+        subjects,
+        &package.metadata,
+        &origin,
+        &targets,
+    )
+}
+
+fn discover_resources(
+    snapshot: &Snapshot,
+    root: &Path,
+    subjects: &mut BTreeMap<Name, Subject>,
+    metadata: &serde_json::Value,
+    origin: &ResourcePath,
+    targets: &BTreeSet<Name>,
+) -> Result<(), Error> {
+    let directory = root
+        .join(origin.as_path())
+        .parent()
+        .ok_or_else(|| Error::Outside {
+            path: origin.as_path().to_path_buf(),
+        })?
+        .to_path_buf();
+    let policy: Policy = match metadata.get("loom").and_then(|loom| loom.get("verify")) {
         Some(value) => {
             serde_json::from_value(value.clone()).map_err(|source| Error::Definition {
                 definition: origin.clone(),
@@ -237,13 +289,6 @@ fn discover_package(
                 role: resource.role,
             });
         }
-        if resource.role == Role::Document {
-            for path in &members {
-                if !super::is_document(path) {
-                    return Err(Error::Unclassified { path: path.clone() });
-                }
-            }
-        }
         insert(
             subjects,
             Subject {
@@ -259,6 +304,120 @@ fn discover_package(
         )?;
     }
     Ok(())
+}
+
+fn target_name(package: &Package, target: &Target) -> Result<Name, Error> {
+    Name::try_from(format!(
+        "cargo:{}:{}:{}",
+        package.name,
+        target
+            .kind
+            .iter()
+            .map(Kind::as_str)
+            .collect::<Vec<_>>()
+            .join("+"),
+        target.name
+    ))
+}
+
+fn production(target: &Target, owning: bool) -> bool {
+    target.kind.iter().any(|kind| match kind {
+        Kind::Lib
+        | Kind::Rlib
+        | Kind::Dylib
+        | Kind::Cdylib
+        | Kind::Staticlib
+        | Kind::ProcMacro
+        | Kind::CustomBuild => true,
+        Kind::Bin => owning,
+        Kind::Test | Kind::Example | Kind::Bench => false,
+    })
+}
+
+fn compilations(
+    snapshot: &Snapshot,
+    root: &Path,
+    metadata: &Metadata,
+) -> Result<BTreeMap<ResourcePath, Compilation>, Error> {
+    let packages: BTreeMap<_, _> = metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.contains(&package.id))
+        .map(|package| (package.manifest_path.clone(), package))
+        .collect();
+    let mut result = BTreeMap::new();
+    for package in packages.values() {
+        let mut compilation = Compilation {
+            subjects: BTreeSet::new(),
+            configuration: BTreeSet::new(),
+            outside: BTreeSet::new(),
+        };
+        let mut pending = vec![(*package, true)];
+        let mut visited = BTreeSet::new();
+        while let Some((current, owning)) = pending.pop() {
+            if !visited.insert(&current.id) {
+                continue;
+            }
+            let manifest = relative(root, &current.manifest_path)?;
+            compilation.configuration.insert(manifest);
+            for target in current
+                .targets
+                .iter()
+                .filter(|target| production(target, owning))
+            {
+                compilation.subjects.insert(target_name(current, target)?);
+            }
+            for dependency in current
+                .dependencies
+                .iter()
+                .filter(|dependency| dependency.kind != Some(DependencyKind::Dev))
+            {
+                if let Some(path) = &dependency.path {
+                    let dependency_manifest = path.join("Cargo.toml");
+                    if let Some(dependency) = packages.get(&dependency_manifest) {
+                        pending.push((dependency, false));
+                    } else {
+                        compilation.outside.insert(dependency_manifest);
+                    }
+                }
+            }
+        }
+        let manifest_directories: Vec<_> = compilation
+            .configuration
+            .iter()
+            .filter_map(|path| path.as_path().parent())
+            .collect();
+        let mut configuration = BTreeSet::new();
+        for path in snapshot.files().keys() {
+            let parent = path.as_path().parent().unwrap_or_else(|| Path::new(""));
+            let filename = path.as_path().file_name().and_then(|name| name.to_str());
+            let native = matches!(
+                filename,
+                Some(
+                    "Cargo.lock"
+                        | "rust-toolchain"
+                        | "rust-toolchain.toml"
+                        | "clippy.toml"
+                        | ".clippy.toml"
+                )
+            ) && manifest_directories
+                .iter()
+                .any(|directory| directory.starts_with(parent));
+            let cargo_config = matches!(filename, Some("config" | "config.toml"))
+                && parent.ends_with(".cargo")
+                && parent.parent().is_some_and(|base| {
+                    manifest_directories
+                        .iter()
+                        .any(|directory| directory.starts_with(base))
+                });
+            if native || cargo_config || path.as_path() == Path::new("Cargo.toml") {
+                configuration.insert(path.clone());
+            }
+        }
+        compilation.configuration.extend(configuration);
+        result.insert(relative(root, &package.manifest_path)?, compilation);
+    }
+    Ok(result)
 }
 
 fn membership(snapshot: &Snapshot, directory: &ResourcePath) -> BTreeSet<ResourcePath> {

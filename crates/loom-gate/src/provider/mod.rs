@@ -60,6 +60,7 @@ impl Responsibility {
 )]
 pub enum Origin {
     Subject(Name),
+    Compiler(Name),
     Definition(ResourcePath),
     Contract(ResourcePath),
 }
@@ -123,6 +124,22 @@ enum Execution {
 }
 
 impl Definition {
+    /// Bind an exact execution alias without replacing its checked implementation.
+    ///
+    /// # Errors
+    /// Fails if the complete original definition cannot be fingerprinted.
+    pub fn named(mut self, target: Name) -> Result<Self, Error> {
+        let definition = Digest::of(&serde_json::to_vec(&(&self.candidate, &target))?);
+        let contract = match &mut self.candidate {
+            Candidate::TrackedRust { contract, .. }
+            | Candidate::HermeticNix { contract, .. }
+            | Candidate::SupportedEffect { contract, .. } => contract,
+        };
+        contract.target = target;
+        contract.definition = definition;
+        Ok(self)
+    }
+
     /// Construct a tracked check from current project subjects, not a copied file-input table.
     ///
     /// # Errors
@@ -167,6 +184,9 @@ impl Definition {
         F: for<'a> Fn(&mut Context<'a>) -> Result<Outcome, Error> + Send + Sync + 'static,
     {
         require_context(snapshot, inventory)?;
+        if subjects.analysis.is_empty() || !subjects.responsibility.is_subset(subjects.analysis) {
+            return Err(Error::Responsibility { target });
+        }
         let callable = std::any::type_name::<F>();
         if std::mem::size_of::<F>() != 0
             || callable.contains("{{closure}}")
@@ -189,7 +209,11 @@ impl Definition {
             members.insert(name.clone(), subject.members().clone());
             add_subject_inputs(&mut inputs, subject);
         }
-        let responsibilities = responsibility(inventory, &target, subjects.responsibility, duties)?;
+        let responsibilities = if subjects.responsibility.is_empty() && duties.is_empty() {
+            BTreeSet::new()
+        } else {
+            responsibility(inventory, &target, subjects.responsibility, duties)?
+        };
         let inputs = capture_inputs(snapshot, inputs)?;
         let executable = std::env::current_exe().map_err(Error::Executable)?;
         let artifact = read_artifact(&executable)?;
@@ -198,6 +222,7 @@ impl Definition {
             &target,
             &checker,
             &responsibilities,
+            &members,
             &inputs,
             &artifact,
             &entry,
@@ -332,12 +357,26 @@ fn add_rust_inputs(
             checker: producer.clone(),
         });
     }
-    for subject in inventory
-        .subjects()
-        .values()
-        .filter(|subject| matches!(subject.role(), Role::RustSource | Role::Configuration))
-    {
-        add_subject_inputs(inputs, subject);
+    let compilation =
+        inventory
+            .checker_subjects(producer)
+            .map_err(|source| Error::Construction {
+                target: target.clone(),
+                producer: producer.clone(),
+                source: Box::new(source.into()),
+            })?;
+    for name in compilation {
+        let subject = inventory.subject(&name)?;
+        for path in subject
+            .members()
+            .iter()
+            .chain(std::iter::once(subject.origin()))
+        {
+            inputs
+                .entry(path.clone())
+                .or_default()
+                .insert(Origin::Compiler(subject.name().clone()));
+        }
     }
     inputs
         .entry(producer.clone())
@@ -765,4 +804,9 @@ pub enum Error {
     AnalysisSubject { subject: Name },
     /// tracked input `{path:?}` is not UTF-8; use the byte-read boundary
     Encoding { path: ResourcePath },
+    /// checker `{checker:?}` uses untracked operation `{operation}`; route analysis through its explicit captured source
+    UntrackedIo {
+        checker: ResourcePath,
+        operation: String,
+    },
 }
