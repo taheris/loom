@@ -2774,6 +2774,7 @@ name = "loom-gate"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "blake3",
  "displaydoc",
  "glob",
@@ -2792,6 +2793,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+ "syn 2.0.119",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2925,6 +2927,7 @@ dependencies = [
  "anyhow",
  "displaydoc",
  "loom-driver",
+ "loom-gate",
  "proc-macro2",
  "pulldown-cmark",
  "serde",

@@ -24,7 +24,7 @@
 //! The walks themselves live in `walk/<name>.rs` modules; this file owns
 //! argv parsing and exit-code translation only.
 
-mod walk;
+use loom_walk::walk;
 
 use std::io::Write as _;
 use std::process::ExitCode;
@@ -53,6 +53,11 @@ enum DispatchError {
     SerialiseVerdict {
         #[source]
         source: serde_json::Error,
+    },
+    /// failed to query walk inputs: {source}
+    QueryInputs {
+        #[source]
+        source: walk::InputError,
     },
     /// failed to write verifier output: {source}
     WriteOutput {
@@ -106,7 +111,7 @@ fn run() -> Result<bool, DispatchError> {
     }
     if print_inputs {
         let document = walk::render_print_inputs(&names)
-            .map_err(|source| DispatchError::SerialiseVerdict { source })?;
+            .map_err(|source| DispatchError::QueryInputs { source })?;
         writeln!(std::io::stdout().lock(), "{document}")
             .map_err(|source| DispatchError::WriteOutput { source })?;
         return Ok(true);

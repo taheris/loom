@@ -14,8 +14,10 @@ pub mod dispatch;
 pub mod gate_outcome;
 pub mod inputs;
 pub mod integrity;
+pub mod inventory;
 pub mod marker;
 pub mod pre_commit;
+pub mod provider;
 pub mod runner;
 pub mod scope;
 

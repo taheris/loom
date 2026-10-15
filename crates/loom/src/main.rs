@@ -40,7 +40,7 @@ use loom_workflow::inbox::{
 use loom_workflow::r#loop::{
     GateOutcome, InfraRetryPolicy, LoopOutcome, NoGateReason, Parallelism,
     ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV,
-    REVIEW_SPEC_LABEL_ENV, REVIEW_VERIFIED_LOG_ENV, RetryPolicy, SessionResult, classify_session,
+    REVIEW_SPEC_LABEL_ENV, REVIEW_VERIFIED_LOG_ENV, RetryPolicy, SessionResult,
     run_loop_with_infra_policy,
 };
 use loom_workflow::mint::{BatchOutcome, FindingStatusAction, FindingStatusRecord, MintWalker};
@@ -1359,24 +1359,19 @@ fn gate_dispatch_options(args: &GateScope) -> DispatchOptions {
     }
 }
 
-/// Construct an [`InputResolver`] rooted at `workspace`, wiring up the
-/// `cargo metadata`-backed [`CargoMetadataScope`] when the workspace
-/// manifest is reachable and `cargo` is available. Graceful degradation
-/// matters here: the bead container has no `cargo`, so
-/// `CargoMetadataScope::from_manifest` returns `Err` and we proceed
-/// with a resolver that has no `TestScope` attached — the spec-section
-/// auto-include keeps `[test]` annotations scoped to their owning spec
-/// even without the cargo graph.
-fn build_input_resolver(workspace: &Path, runners: &[RunnerSpec]) -> InputResolver {
+/// Construct the file-scope resolver without swallowing native discovery failures.
+/// A Nix-only consumer needs no Cargo scope; a present manifest requires successful
+/// native metadata discovery, not a spec-only or always-run fallback.
+fn build_input_resolver(workspace: &Path, runners: &[RunnerSpec]) -> anyhow::Result<InputResolver> {
     let resolver = InputResolver::new(workspace.to_path_buf()).with_runners(runners.to_vec());
     let manifest = workspace.join("Cargo.toml");
-    if !manifest.exists() {
-        return resolver;
+    if !manifest.try_exists()? {
+        return Ok(resolver);
     }
-    match CargoMetadataScope::from_manifest(&manifest) {
-        Ok(scope) => resolver.with_test_scope(Box::new(scope)),
-        Err(_) => resolver,
-    }
+    let scope = CargoMetadataScope::from_manifest(&manifest).with_context(|| {
+        format!("native verifier scope discovery failed for {}; repair the manifest or provision cargo and retry `loom gate verify`", manifest.display())
+    })?;
+    Ok(resolver.with_test_scope(Box::new(scope)))
 }
 
 /// Scope for annotations already retained by the CLI-level input resolver.
@@ -1533,9 +1528,11 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
     }
     let mut combined = run_project_hook_lane(workspace, args)?;
     let tiers = verify_tiers_for_args(workspace, args)?;
+    let mut input_resolver = preflight_gate_input_queries(workspace, args, &tiers)?;
     for &tier in &tiers {
         eprintln!("--- loom gate verify [{tier}] ---");
-        match dispatch_tier_with_readiness_tiers(workspace, args, tier, &tiers) {
+        match dispatch_tier_with_input_resolver(workspace, args, tier, &tiers, &mut input_resolver)
+        {
             Ok(0) => {}
             Ok(code) => combined = combine_verifier_codes(combined, code),
             Err(err) => {
@@ -1737,15 +1734,65 @@ fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Resu
     dispatch_tier_with_readiness_tiers(workspace, args, tier, &[tier])
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "gate dispatch diagnostics are part of the CLI stderr contract"
-)]
 fn dispatch_tier_with_readiness_tiers(
     workspace: &Path,
     args: &GateScope,
     tier: Tier,
     readiness_tiers: &[Tier],
+) -> anyhow::Result<i32> {
+    let mut input_resolver = preflight_gate_input_queries(workspace, args, readiness_tiers)?;
+    dispatch_tier_with_input_resolver(workspace, args, tier, readiness_tiers, &mut input_resolver)
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "input admission failures retain each owning annotation in normal CLI stderr"
+)]
+fn preflight_gate_input_queries(
+    workspace: &Path,
+    args: &GateScope,
+    tiers: &[Tier],
+) -> anyhow::Result<InputResolver> {
+    let parsed = loom_gate::annotation::parse(&workspace.join("specs"))?;
+    let (runners, _) = resolve_integrity_runner_context(workspace)?;
+    let mut resolver = if args.files().is_some() {
+        build_input_resolver(workspace, &runners)?
+    } else {
+        InputResolver::new(workspace.to_path_buf()).with_runners(runners)
+    };
+    let annotations: Vec<_> = parsed
+        .annotations
+        .into_iter()
+        .filter(|annotation| {
+            if let Some(target) = args.target() {
+                tiers.contains(&annotation.tier) && annotation.target == target
+            } else {
+                tiers.contains(&Tier::Check) || tiers.contains(&annotation.tier)
+            }
+        })
+        .collect();
+    let failures = loom_gate::integrity::check_inputs_protocol(&annotations, &mut resolver);
+    if !failures.is_empty() {
+        for failure in failures {
+            eprintln!("loom gate [integrity]: {failure}");
+        }
+        anyhow::bail!(
+            "provider input admission failed before verifier dispatch; correct the reported query and retry `loom gate verify`"
+        );
+    }
+    Ok(resolver)
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "gate dispatch diagnostics are part of the CLI stderr contract"
+)]
+fn dispatch_tier_with_input_resolver(
+    workspace: &Path,
+    args: &GateScope,
+    tier: Tier,
+    readiness_tiers: &[Tier],
+    input_resolver: &mut InputResolver,
 ) -> anyhow::Result<i32> {
     let specs_dir = workspace.join("specs");
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
@@ -1756,12 +1803,7 @@ fn dispatch_tier_with_readiness_tiers(
         Tier::Check | Tier::System => resolve_runner_context(workspace, tier)?.0,
         Tier::Test | Tier::Judge => Vec::new(),
     };
-    let mut input_resolver = if args.files().is_some() {
-        build_input_resolver(workspace, &runner_specs)
-    } else {
-        InputResolver::new(workspace.to_path_buf()).with_runners(runner_specs.clone())
-    };
-    let mut selected = args.select(&candidates, &mut input_resolver);
+    let mut selected = args.select(&candidates, input_resolver);
     if matches!(tier, Tier::Check | Tier::System) && args.is_explicit_files() {
         let cmd_resolver = FsCommandResolver::new(workspace);
         selected.retain(|ann| {
@@ -1774,7 +1816,7 @@ fn dispatch_tier_with_readiness_tiers(
     if tier == Tier::Check && args.target().is_none() {
         combined = combine_verifier_codes(
             combined,
-            run_integrity_gate(workspace, args, &mut input_resolver, readiness_tiers)?,
+            run_integrity_gate(workspace, args, input_resolver, readiness_tiers)?,
         );
     }
     if selected.is_empty() {
@@ -3675,11 +3717,14 @@ async fn dispatch_for_slot(
     drop(scratch);
     let (result, marker) =
         loom_workflow::agent::admit_session_output(result, &output, output::Phase::Loop);
-    let outcome = classify_session(result, marker.as_ref());
-    Ok(
-        loom_workflow::r#loop::validate_waiting_outcome(&BdClient::new(), &slot.bead.id, outcome)
-            .await?,
+    Ok(loom_workflow::r#loop::reconcile_session(
+        &BdClient::new(),
+        &loom_workflow::r#loop::DecisionWaitJournal::new(loom_workspace),
+        &slot.bead,
+        result,
+        marker.as_ref(),
     )
+    .await?)
 }
 
 /// Backend-agnostic dispatcher. The match is the only place in the binary
@@ -6001,7 +6046,7 @@ mod tests {
 
         let args = changed_scope(tmp.path());
         let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
-        let mut inputs = build_input_resolver(tmp.path(), &specs);
+        let mut inputs = build_input_resolver(tmp.path(), &specs).expect("native scope discovery");
         let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
             .expect("integrity gate runs");
         assert_eq!(code, 1);
@@ -6085,7 +6130,7 @@ mod tests {
             GateScopeRequest::Files(vec![PathBuf::from("src/lib.rs")]),
         );
         let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
-        let mut inputs = build_input_resolver(tmp.path(), &specs);
+        let mut inputs = build_input_resolver(tmp.path(), &specs).expect("native scope discovery");
         let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
             .expect("integrity gate runs");
         assert_eq!(
@@ -6162,10 +6207,24 @@ mod tests {
             GateScopeRequest::Files(vec![tmp.path().join("src/lib.rs")]),
         );
         let (specs, _) = resolve_integrity_runner_context(tmp.path()).unwrap();
-        let mut inputs = build_input_resolver(tmp.path(), &specs);
+        let mut inputs = build_input_resolver(tmp.path(), &specs).expect("native scope discovery");
         let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
             .expect("integrity gate runs");
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn native_scope_discovery_failure_retains_actionable_manifest_and_retry_feedback() {
+        let root = tempfile::tempdir().expect("native source fixture");
+        let manifest = root.path().join("Cargo.toml");
+        std::fs::write(&manifest, "[package]\ninvalid TOML\n").expect("malformed native manifest");
+        let Err(error) = build_input_resolver(root.path(), &[]) else {
+            panic!("malformed native metadata silently became a spec-only scope");
+        };
+        let feedback = format!("{error:#}");
+        assert!(feedback.contains(&manifest.display().to_string()));
+        assert!(feedback.contains("cargo metadata"));
+        assert!(feedback.contains("loom gate verify"));
     }
 
     fn test_scope(workspace: &Path, request: GateScopeRequest) -> GateScope {

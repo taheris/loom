@@ -38,8 +38,11 @@ briefs onto the source or work epic.
 
 {% include "partial/options_format.md" %}
 
-Only work whose acceptance genuinely requires a decision gets a prerequisite:
-`bd dep add <affected-work> <decision>`. Parentage alone is not a prerequisite.
+Only work whose acceptance genuinely requires a decision gets a prerequisite.
+For supported non-descendant prerequisites, use
+`bd dep add <affected-work> <decision>`. Never add a forbidden descendant edge,
+rename decision IDs, or bypass native ancestry/cycle guards. Parentage alone is
+not a prerequisite.
 If the source itself must wait, declare its active prerequisites, leave it open,
 then end with `LOOM_WAITING`. If a decision affects only other implementation
 work, finish independent work and use the normal `LOOM_COMPLETE` / `LOOM_NOOP`
@@ -47,6 +50,16 @@ work, finish independent work and use the normal `LOOM_COMPLETE` / `LOOM_NOOP`
 and a human answer does not automatically close implementation work.
 
 {% if self.output_phase() == loom_protocol::output::Phase::Loop %}
+For this source's own discovery-child decisions, report the complete inventory
+and use `LOOM_WAITING` with the source still `open`. Do **not** add a native
+parent-to-child blocking dependency or set the parent `blocked`: that makes
+human disposition of its children impossible. The driver validates ownership
+and current inventory, stages the decisions, and persists a separate canonical
+decision hold. Do not write driver hold metadata, labels or journal files.
+Answers release only that hold; reread the decision outcomes and perform the
+required implementation before ordinary completion. Other native dependencies
+and independent human/semantic/infra holds remain authoritative.
+
 If only other work needs the decisions and this source meets its own acceptance,
 close the source and report decisions before the normal completion terminal:
 

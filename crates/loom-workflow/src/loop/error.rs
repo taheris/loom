@@ -16,6 +16,9 @@ pub enum LoopError {
     /// agent backend protocol failure during `loom loop`
     Protocol(#[from] ProtocolError),
 
+    /// discovery-child decision wait admission or recovery failed
+    DecisionWait(#[from] super::decision_wait::DecisionWaitError),
+
     /// bd CLI failure during `loom loop`
     Bd(#[from] BdError),
 
@@ -54,6 +57,9 @@ pub enum LoopError {
 
     /// cache.db access failure during `loom loop`
     State(#[from] CacheError),
+
+    /// decision-wait journal locking failed
+    DecisionWaitLock(#[from] loom_driver::lock::LockError),
 
     /// spec → molecule resolution failed during `loom loop`
     Resolve(#[from] crate::resolve::ResolveError),

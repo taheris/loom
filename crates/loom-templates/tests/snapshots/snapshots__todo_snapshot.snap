@@ -313,8 +313,11 @@ A malformed block — or one that lives only in your prose, never
 persisted to bead state — leaves the options invisible to
 `loom inbox`'s queue and chat context.
 
-Only work whose acceptance genuinely requires a decision gets a prerequisite:
-`bd dep add <affected-work> <decision>`. Parentage alone is not a prerequisite.
+Only work whose acceptance genuinely requires a decision gets a prerequisite.
+For supported non-descendant prerequisites, use
+`bd dep add <affected-work> <decision>`. Never add a forbidden descendant edge,
+rename decision IDs, or bypass native ancestry/cycle guards. Parentage alone is
+not a prerequisite.
 If the source itself must wait, declare its active prerequisites, leave it open,
 then end with `LOOM_WAITING`. If a decision affects only other implementation
 work, finish independent work and use the normal `LOOM_COMPLETE` / `LOOM_NOOP`
@@ -367,11 +370,14 @@ worker self-reports.
 ## Dependency-Wait Marker
 
 `LOOM_WAITING` is a bare, unit terminal admitted in Loop and Todo. It pauses
-open source work only on actual work owned by another bead. Before emitting it:
+open source work on actual unresolved prerequisites. For supported native,
+non-descendant dependencies, before emitting it:
 
 1. Declare the actual blocking edge with `bd dep add <source> <blocker>`.
 2. Leave the source open; do **not** run `bd close`.
 3. Ensure at least one declared blocker is still active (not closed).
+
+Never fabricate a forbidden descendant edge or bypass native hierarchy guards.
 
 
 Here the source is the injected work epic identified in Todo Batch above. Wait only when
@@ -386,13 +392,16 @@ advance spec cursors, consume implementation notes, or activate the work epic.
 LOOM_WAITING
 ```
 
-The marker carries no JSON or prose payload: Beads prerequisites are the durable
-authority. A valid wait consumes no retry budget and adds no human-queue label
-to the source. After admission the driver records an attributed wait and parks
-eligible work visibly as `status=blocked`; it selectively releases only its own
-wait when current prerequisites resolve, never unrelated human blocking state.
-Dependency release does not close implementation work. A closed source or a
-source without an active declared prerequisite is invalid and enters recovery.
+The marker carries no JSON or prose payload. Native Beads dependencies or a
+contextually admitted Loop decision hold prove a wait; syntax alone does not.
+A valid wait consumes no retry budget and adds no human-queue label to the source.
+After admission the driver records an attributed wait; supported native waits
+may park eligible work as `status=blocked`, whereas a Loop discovery-child hold
+keeps its producer open. It selectively releases only its own wait when current
+prerequisites resolve, never unrelated human blocking state, native blockers,
+semantic/infra holds, metadata or history. Dependency/hold release does not close
+implementation work. A closed source or a source without an active declared or
+admitted prerequisite is invalid and enters recovery.
 
 ## Todo Success Marker
 

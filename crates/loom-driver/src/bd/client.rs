@@ -196,6 +196,10 @@ impl<R: CommandRunner> BdClient<R> {
             args.push("--priority".into());
             args.push(p.to_string().into());
         }
+        if let Some(status) = opts.if_status {
+            args.push("--if-status".into());
+            args.push(status.as_str().into());
+        }
         for label in opts.add_labels {
             args.push("--add-label".into());
             args.push(label.into());
@@ -274,6 +278,46 @@ impl<R: CommandRunner> BdClient<R> {
     pub async fn dep_add(&self, issue: &BeadId, depends_on: &BeadId) -> Result<(), BdError> {
         let args = args(["dep", "add", issue.as_str(), depends_on.as_str()]);
         self.invoke(args).await?;
+        Ok(())
+    }
+
+    /// Record native discovery provenance without establishing a blocking prerequisite.
+    ///
+    /// # Errors
+    ///
+    /// Returns the native command failure, including invalid references and graph refusals.
+    pub async fn discovered_from(
+        &self,
+        candidate: &BeadId,
+        producer: &BeadId,
+    ) -> Result<(), BdError> {
+        self.invoke(args([
+            "dep",
+            "add",
+            candidate.as_str(),
+            producer.as_str(),
+            "--type",
+            "discovered-from",
+        ]))
+        .await?;
+        Ok(())
+    }
+
+    /// Set an explicit native parent without changing content, outcomes, or bypassing guards.
+    ///
+    /// Callers own authorization and reconciliation of any interrupted mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the native command failure; failure does not imply earlier effects rolled back.
+    pub async fn reparent(&self, candidate: &BeadId, parent: &BeadId) -> Result<(), BdError> {
+        self.invoke(args([
+            "update",
+            candidate.as_str(),
+            "--parent",
+            parent.as_str(),
+        ]))
+        .await?;
         Ok(())
     }
 
@@ -409,6 +453,8 @@ pub struct UpdateOpts {
     pub title: Option<String>,
     pub priority: Option<Priority>,
     pub add_labels: Vec<String>,
+    /// Native compare-and-set status guard; a failed guard is never retried.
+    pub if_status: Option<Status>,
     pub remove_labels: Vec<String>,
     /// Full issue body forwarded to `bd update --description <text>`.
     pub description: Option<String>,
@@ -1405,6 +1451,65 @@ mod tests {
             !argv.contains(&"id".to_string()),
             "shell expansion occurred"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn discovery_link_forwards_native_nonblocking_relation() -> Result<()> {
+        let client = BdClient::with_runner(CapturingRunner::new([ok(b"")]));
+        client
+            .discovered_from(&BeadId::new("lm-choice")?, &BeadId::new("lm-source")?)
+            .await?;
+        assert_eq!(
+            argv_of(&client.runner, 0),
+            [
+                "dep",
+                "add",
+                "lm-choice",
+                "lm-source",
+                "--type",
+                "discovered-from"
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn discovery_link_preserves_native_reference_failure() -> Result<()> {
+        let client = BdClient::with_runner(CapturingRunner::new([fail(1, "issue not found")]));
+        let result = client
+            .discovered_from(&BeadId::new("lm-choice")?, &BeadId::new("lm-missing")?)
+            .await;
+        assert!(
+            matches!(result, Err(BdError::Cli { status: 1, stderr, .. }) if stderr == "issue not found")
+        );
+        assert_eq!(client.runner.calls.lock().unwrap().len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reparent_forwards_only_explicit_parent_update() -> Result<()> {
+        let client = BdClient::with_runner(CapturingRunner::new([ok(b"")]));
+        client
+            .reparent(&BeadId::new("lm-choice")?, &BeadId::new("lm-root")?)
+            .await?;
+        assert_eq!(
+            argv_of(&client.runner, 0),
+            ["update", "lm-choice", "--parent", "lm-root"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reparent_preserves_native_guard_failure_without_retry() -> Result<()> {
+        let client = BdClient::with_runner(CapturingRunner::new([fail(1, "scheduling cycle")]));
+        let result = client
+            .reparent(&BeadId::new("lm-choice")?, &BeadId::new("lm-root")?)
+            .await;
+        assert!(
+            matches!(result, Err(BdError::Cli { status: 1, stderr, .. }) if stderr == "scheduling cycle")
+        );
+        assert_eq!(client.runner.calls.lock().unwrap().len(), 1);
         Ok(())
     }
 

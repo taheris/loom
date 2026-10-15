@@ -220,29 +220,41 @@ Before outputting LOOM_COMPLETE, follow the **Session Protocol** in `AGENTS.md`.
 ## Dependency-Wait Marker
 
 `LOOM_WAITING` is a bare, unit terminal admitted in Loop and Todo. It pauses
-open source work only on actual work owned by another bead. Before emitting it:
+open source work on actual unresolved prerequisites. For supported native,
+non-descendant dependencies, before emitting it:
 
 1. Declare the actual blocking edge with `bd dep add <source> <blocker>`.
 2. Leave the source open; do **not** run `bd close`.
 3. Ensure at least one declared blocker is still active (not closed).
 
+Never fabricate a forbidden descendant edge or bypass native hierarchy guards.
 
-Here the source is the current bead. A valid wait preserves its workspace and
-branch and skips integration and per-bead gates. The scheduler continues other
-ready work rather than redispatching this source to rediscover its blockers.
+
+Here the source is the current bead. For its own discovery-child decisions,
+report the complete `LOOM_CLARIFY` inventory, leave the source open, and emit
+`LOOM_WAITING`. Do not add a native parent-to-child blocking edge or set the
+parent `blocked`. After contextual admission the driver owns a separate durable
+decision hold; native hold metadata is only a checked projection, not worker
+assertion authority. This keeps decision children available for human answers.
+A valid wait preserves the workspace and branch and
+skips integration and per-bead gates. The scheduler continues other ready implementation work rather
+than redispatching this source to rediscover its blockers.
 
 
 ```text loom-example
 LOOM_WAITING
 ```
 
-The marker carries no JSON or prose payload: Beads prerequisites are the durable
-authority. A valid wait consumes no retry budget and adds no human-queue label
-to the source. After admission the driver records an attributed wait and parks
-eligible work visibly as `status=blocked`; it selectively releases only its own
-wait when current prerequisites resolve, never unrelated human blocking state.
-Dependency release does not close implementation work. A closed source or a
-source without an active declared prerequisite is invalid and enters recovery.
+The marker carries no JSON or prose payload. Native Beads dependencies or a
+contextually admitted Loop decision hold prove a wait; syntax alone does not.
+A valid wait consumes no retry budget and adds no human-queue label to the source.
+After admission the driver records an attributed wait; supported native waits
+may park eligible work as `status=blocked`, whereas a Loop discovery-child hold
+keeps its producer open. It selectively releases only its own wait when current
+prerequisites resolve, never unrelated human blocking state, native blockers,
+semantic/infra holds, metadata or history. Dependency/hold release does not close
+implementation work. A closed source or a source without an active declared or
+admitted prerequisite is invalid and enters recovery.
 
 ## Progress Markers
 
@@ -346,14 +358,27 @@ A malformed block — or one that lives only in your prose, never
 persisted to bead state — leaves the options invisible to
 `loom inbox`'s queue and chat context.
 
-Only work whose acceptance genuinely requires a decision gets a prerequisite:
-`bd dep add <affected-work> <decision>`. Parentage alone is not a prerequisite.
+Only work whose acceptance genuinely requires a decision gets a prerequisite.
+For supported non-descendant prerequisites, use
+`bd dep add <affected-work> <decision>`. Never add a forbidden descendant edge,
+rename decision IDs, or bypass native ancestry/cycle guards. Parentage alone is
+not a prerequisite.
 If the source itself must wait, declare its active prerequisites, leave it open,
 then end with `LOOM_WAITING`. If a decision affects only other implementation
 work, finish independent work and use the normal `LOOM_COMPLETE` / `LOOM_NOOP`
 (Loop) or valid `LOOM_TODO` payload (Todo). A decision record is not completion,
 and a human answer does not automatically close implementation work.
 
+
+For this source's own discovery-child decisions, report the complete inventory
+and use `LOOM_WAITING` with the source still `open`. Do **not** add a native
+parent-to-child blocking dependency or set the parent `blocked`: that makes
+human disposition of its children impossible. The driver validates ownership
+and current inventory, stages the decisions, and persists a separate canonical
+decision hold. Do not write driver hold metadata, labels or journal files.
+Answers release only that hold; reread the decision outcomes and perform the
+required implementation before ordinary completion. Other native dependencies
+and independent human/semantic/infra holds remain authoritative.
 
 If only other work needs the decisions and this source meets its own acceptance,
 close the source and report decisions before the normal completion terminal:

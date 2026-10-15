@@ -7,6 +7,8 @@
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
+super::manifest::registration!("loom_render_deps", "loom-render");
+
 const RULE: &str =
     "loom_render_deps — depends on `loom-events`, never `loom-driver` / `loom-workflow`";
 
@@ -15,13 +17,19 @@ const FORBIDDEN: &[&str] = &["loom-driver", "loom-workflow"];
 
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();
-    let manifest = root.join("crates/loom-render/Cargo.toml");
+    let manifest = root.join(MANIFEST);
     let mut violations = Vec::new();
 
     let Some(body) = read_to_string(&manifest) else {
         violations.push("crates/loom-render/Cargo.toml:1 manifest not readable".to_string());
         return verdict_from(RULE, violations);
     };
+
+    analyze(&body)
+}
+
+fn analyze(body: &str) -> Verdict {
+    let mut violations = Vec::new();
 
     if !body.lines().any(|line| {
         let trimmed = line.trim_start();

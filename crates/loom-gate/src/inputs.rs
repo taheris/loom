@@ -212,6 +212,7 @@ pub struct InputResolver {
     runners: Vec<RunnerSpec>,
     print_inputs_cache: HashMap<String, Vec<PathBuf>>,
     input_query_probes: HashMap<String, InputQueryProbe>,
+    admitted_inputs: Vec<(Annotation, Vec<PathBuf>)>,
 }
 
 impl InputResolver {
@@ -226,7 +227,37 @@ impl InputResolver {
             runners: Vec::new(),
             print_inputs_cache: HashMap::new(),
             input_query_probes: HashMap::new(),
+            admitted_inputs: Vec::new(),
         }
+    }
+
+    /// Project inputs from an inventory-wide admitted plan without running queries or verifiers.
+    /// Selection is not execution authority; dispatch must recheck the plan's current context.
+    ///
+    /// # Errors
+    /// Rejects changed snapshots or checker artifacts before exposing any input projection.
+    pub fn from_plan(plan: &crate::provider::plan::Plan) -> Result<Self, crate::provider::Error> {
+        plan.require_current()?;
+        let mut resolver = Self::new(plan.snapshot().root().to_path_buf());
+        for unit in plan.units() {
+            let paths: Vec<_> = unit
+                .inputs()
+                .iter()
+                .map(|input| input.path().as_path().to_path_buf())
+                .collect();
+            for annotation in unit.annotations() {
+                resolver
+                    .admitted_inputs
+                    .push((annotation.clone(), paths.clone()));
+            }
+        }
+        Ok(resolver)
+    }
+
+    fn admitted_inputs(&self, annotation: &Annotation) -> Option<&Vec<PathBuf>> {
+        self.admitted_inputs
+            .iter()
+            .find_map(|(owner, paths)| (owner == annotation).then_some(paths))
     }
 
     /// Attach the `[check]` / `[system]` runner specs the resolver
@@ -315,6 +346,9 @@ impl InputResolver {
     /// non-zero, or returns a malformed document is
     /// [`InputQueryProbe::Errored`].
     pub fn probe_input_query(&mut self, annotation: &Annotation) -> InputQueryProbe {
+        if self.admitted_inputs(annotation).is_some() {
+            return InputQueryProbe::Honoured;
+        }
         match annotation.tier {
             Tier::Judge => self.probe_judge_query(annotation),
             Tier::Check | Tier::System => self.probe_command_query(annotation),
@@ -445,6 +479,9 @@ impl InputResolver {
     }
 
     fn collect_declared(&mut self, annotation: &Annotation) -> InputDeclaration {
+        if let Some(paths) = self.admitted_inputs(annotation) {
+            return InputDeclaration::Known(paths.clone());
+        }
         match annotation.tier {
             Tier::Test => self.declared_for_test(annotation),
             Tier::Judge => self.declared_for_judge(annotation),
@@ -589,7 +626,7 @@ impl InputResolver {
     pub fn prime_runner_inputs(&mut self, annotations: &[Annotation]) {
         let check: Vec<Annotation> = annotations
             .iter()
-            .filter(|a| a.tier == Tier::Check && !a.pending)
+            .filter(|a| a.tier == Tier::Check && !a.pending && self.admitted_inputs(a).is_none())
             .cloned()
             .collect();
         if check.is_empty() {
@@ -999,11 +1036,39 @@ fn query_inputs(mut cmd: Command, command: &str) -> Result<InputQueryDocument, S
     }
 }
 
-fn bounded_query_diagnostic(text: &str) -> String {
+pub(crate) fn bounded_query_diagnostic(text: &str) -> String {
     redact_query_diagnostic(text, std::env::vars_os())
 }
 
+pub(crate) fn bounded_query_tail_diagnostic(text: &str) -> String {
+    redact_query_tail_diagnostic(text, std::env::vars_os())
+}
+
 fn redact_query_diagnostic(
+    text: &str,
+    environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> String {
+    redact_query_text(text, environment)
+        .chars()
+        .take(1024)
+        .collect()
+}
+
+fn redact_query_tail_diagnostic(
+    text: &str,
+    environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> String {
+    redact_query_text(text, environment)
+        .chars()
+        .rev()
+        .take(1024)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn redact_query_text(
     text: &str,
     environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> String {
@@ -1021,7 +1086,7 @@ fn redact_query_diagnostic(
             redacted = redacted.replace(value, "[REDACTED]");
         }
     }
-    redacted.chars().take(1024).collect()
+    redacted
 }
 
 /// The `#fn` / `::fn` selector trailing a script-path target, or `None`
@@ -1144,6 +1209,20 @@ printf '}}\n'"#;
             redact_query_diagnostic(&text, [("API_KEY".into(), "fixture-secret".into())]);
         assert!(diagnostic.starts_with("[REDACTED]: "));
         assert!(!diagnostic.contains("fixture-secret"));
+        assert_eq!(diagnostic.chars().count(), 1024);
+    }
+
+    #[test]
+    fn discovery_diagnostic_tail_retains_cause_after_redacting_long_credentials() {
+        let secret = "秘".repeat(1100);
+        let text = format!(
+            "{}{secret}: actual-discovery-failure",
+            "progress ".repeat(200)
+        );
+        let diagnostic = redact_query_tail_diagnostic(&text, [("API_TOKEN".into(), secret.into())]);
+        assert!(diagnostic.ends_with(": actual-discovery-failure"));
+        assert!(diagnostic.contains("[REDACTED]"));
+        assert!(!diagnostic.contains('秘'));
         assert_eq!(diagnostic.chars().count(), 1024);
     }
 

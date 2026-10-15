@@ -61,3 +61,71 @@ if ! jq -e --arg bead "$bead_id" '
     jq . "$fixture/ready.json" >&2
     exit 1
 fi
+
+# Native graph guards cannot be established by a capturing command runner.
+work_root=$(jq -er '.[] | select(.labels | index("loom:active")) | .id' "$fixture/beads.json")
+producer=$(bd create --silent --type task --parent "$work_root" --title "Decision producer" --description "Independent implementation")
+choice=$(bd create --silent --type decision --status blocked --parent "$producer" --title "Decision candidate" --description "Canonical brief" --notes "Preserved human outcome")
+bd show "$choice" --json >"$fixture/choice-before.json"
+if bd dep add "$producer" "$choice" >"$fixture/descendant.stdout" 2>"$fixture/descendant.stderr"; then
+    printf 'native descendant blocker unexpectedly accepted\n' >&2
+    exit 1
+fi
+bd update "$choice" --parent "$work_root"
+bd show "$choice" --json >"$fixture/reparent-checkpoint.json"
+if ! jq -e --arg root "$work_root" --arg producer "$producer" '
+    .[0].parent == $root and
+    all(.[0].dependencies[]; .dependency_type != "parent-child" or .id != $producer)
+' "$fixture/reparent-checkpoint.json" >/dev/null; then
+    printf 'native parent update retained the old discovery hierarchy:\n' >&2
+    jq . "$fixture/reparent-checkpoint.json" >&2
+    exit 1
+fi
+if bd dep add "$choice" "$producer" --type discovered-from >"$fixture/legacy-discovery.stdout" 2>"$fixture/legacy-discovery.stderr"; then
+    printf 'native dotted-ID discovery guard unexpectedly bypassed\n' >&2
+    exit 1
+fi
+grep -q 'already a child' "$fixture/legacy-discovery.stderr"
+choice=$(bd create --silent --type decision --status blocked --title "Work-root decision" --description "Canonical brief" --notes "Preserved human outcome")
+bd show "$choice" --json >"$fixture/choice-before.json"
+bd update "$choice" --parent "$work_root"
+bd dep add "$choice" "$producer" --type discovered-from
+bd show "$choice" --json >"$fixture/choice-after.json"
+jq -e --arg root "$work_root" --arg producer "$producer" --slurpfile before "$fixture/choice-before.json" '
+    .[0] as $after | $before[0][0] as $before |
+    $after.parent == $root and
+    (["id", "title", "description", "notes", "status", "metadata"] |
+        all(. as $key | $after[$key] == $before[$key])) and
+    any($after.dependencies[]; .id == $producer and .dependency_type == "discovered-from")
+' "$fixture/choice-after.json" >/dev/null
+bd dep add "$producer" "$choice"
+if bd dep add "$choice" "$producer" >"$fixture/cycle.stdout" 2>"$fixture/cycle.stderr"; then
+    printf 'native blocking cycle unexpectedly accepted\n' >&2
+    exit 1
+fi
+proxy=$(bd create --silent --type task --parent "$producer" --title "Mixed-cycle control" --description "Native graph control")
+if bd dep add "$choice" "$proxy" >"$fixture/mixed-cycle.stdout" 2>"$fixture/mixed-cycle.stderr"; then
+    printf 'native mixed parent/blocking cycle unexpectedly accepted\n' >&2
+    exit 1
+fi
+if bd dep add "$producer" smoke-missing-reference >"$fixture/missing.stdout" 2>"$fixture/missing.stderr"; then
+    printf 'native invalid reference unexpectedly accepted\n' >&2
+    exit 1
+fi
+second_choice=$(bd create --silent --type decision --status blocked --title "Second independent decision" --description "Canonical second brief")
+bd update "$second_choice" --parent "$work_root"
+bd dep add "$second_choice" "$producer" --type discovered-from
+bd dep add "$producer" "$second_choice"
+bd close "$choice" --reason "Human intent only"
+bd ready --json >"$fixture/ready-partial.json"
+jq -e --arg producer "$producer" 'all(.[]; .id != $producer)' "$fixture/ready-partial.json" >/dev/null
+bd dep add "$choice" "$producer" --type discovered-from
+bd update "$choice" --parent "$work_root"
+bd show "$choice" --json >"$fixture/choice-replayed.json"
+jq -e '.[0].status == "closed" and .[0].notes == "Preserved human outcome"' "$fixture/choice-replayed.json" >/dev/null
+bd close "$second_choice" --reason "Second intent resolved"
+bd close "$proxy" --reason "Finish isolated guard control"
+bd show "$producer" --json >"$fixture/producer-after.json"
+jq -e '.[0].status == "open"' "$fixture/producer-after.json" >/dev/null
+bd ready --json >"$fixture/ready-after.json"
+jq -e --arg producer "$producer" 'any(.[]; .id == $producer)' "$fixture/ready-after.json" >/dev/null

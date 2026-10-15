@@ -380,11 +380,15 @@ bounded integrity remediation, then supplies one full brief per affected finding
 at cap exhaustion. Driver provenance and cause evidence remain explicit; moving
 the brief does not move writer authority or grant additional retries.
 
-Only work whose acceptance genuinely requires a decision depends on it:
+Only work whose acceptance genuinely requires a decision waits on it. For
+non-descendant prerequisites, use supported native edges:
 `bd dep add <affected-work> <decision>`. Parentage is provenance, not a
-prerequisite. A decision may block several work beads; a work bead may need
-several decisions. Do not indiscriminately block the entire source/work epic or
-create one implementation task per question.
+prerequisite. Never fabricate a forbidden descendant dependency, block a
+producer parent so its decision children become undisposable, rename existing
+IDs, or bypass native Beads ancestry/cycle guards. A decision may block several
+work beads; a work bead may need several decisions. Do not indiscriminately
+block the entire source/work epic or create one implementation task per
+question.
 
 Independently actionable work is split into schedulable beads under the existing
 work epic, with dependencies on only its actual prerequisites. Split work enters
@@ -400,8 +404,30 @@ worker completion after the work finishes. Otherwise it may complete while
 reported decisions block other work. Resolving a decision records human intent,
 not implementation completion and not automatic source closure.
 
-**Attributed scheduling state.** The driver parks eligible affected work waiting
-on admitted decision prerequisites, and a source admitted with `Waiting`, as
+**Discovery-child holds (Loop).** A producer that needs its own discovery-child
+answers leaves itself `open`, reports its complete `Clarify` inventory, and
+emits `Waiting`. Contextual admission checks every current candidate's native
+type and actual parent, against the dispatched source and work-root context. It
+persists canonical driver attribution under `.loom/decision-waits/` in the
+driver workspace, not the worker clone or disposable cache. Native
+`loom.decision_wait` metadata and `loom:decision-wait` are checked projections,
+not authority that worker assertions can create, replace or erase.
+
+The source remains natively open. Its children can be answered independently; no
+new dependency edge or reparenting is required. Sequential, fixed-task, parallel
+and infrastructure-retry selection all refresh the canonical hold before
+dispatch. Partial staging resumes from durable intent. Release requires current
+inventory/ownership and all recorded decisions closed; it removes only the exact
+owned projection, retaining canonical released history. It never closes the
+source or clears native blockers, semantic/infra labels, human status/notes, or
+unrelated metadata. Missing/conflicting projection, changed root, unreported
+discoveries, or human takeover retain the hold and fail closed. Canonical
+pending holds also prevent molecule publication after restart, even before a
+worker returns a new waiting outcome.
+
+**Attributed native scheduling state.** For supported non-descendant native
+prerequisites, the driver parks eligible affected work waiting on admitted
+decision prerequisites, and a source admitted with `Waiting`, as
 `status=blocked`. It records typed durable wait attribution in Beads metadata,
 including the work identity, phase/work-root context, and admitted prerequisite
 references. Preserve unrelated metadata. The original work does not acquire a
@@ -411,14 +437,14 @@ another running dispatch based only on a newly reported decision.
 
 **Resumption.** On Inbox chat exit, Loop/Todo startup, and scheduler refresh,
 the driver re-reads attributed work and its current dependency graph. It returns
-only matching driver-waiting work to `open` when all current prerequisites have
-resolved and no independent human, semantic, infra, or deferred hold remains.
-Other active blockers, cancelled/replaced attribution, malformed/missing
-prerequisites, or incompatible status changes prevent reopening. Human adoption
-of an independent hold cancels or replaces the wait attribution; a blocked
-status alone cannot distinguish ownership. The driver never reopens closed work,
-closes tasks on answered decisions, erases human resolutions, or restores labels
-from a generic interactive-session verdict.
+only matching natively parked driver-waiting work to `open` when all current
+prerequisites have resolved and no independent human, semantic, infra, or
+deferred hold remains. Other active blockers, cancelled/replaced attribution,
+malformed/missing prerequisites, or incompatible status changes prevent
+reopening. Human adoption of an independent hold cancels or replaces the wait
+attribution; a blocked status alone cannot distinguish ownership. The driver
+never reopens closed work, closes tasks on answered decisions, erases human
+resolutions, or restores labels from a generic interactive-session verdict.
 
 Wait admission/release is durable and idempotent. Interrupted or repeated
 processing reuses the same decisions, edges, drafts, and attributed wait without
@@ -1004,6 +1030,34 @@ mutation permission.
   [test?](epic_auto_close_runs_only_after_initial_git_and_beads_publication)
 
 ### Decision scheduling
+
+- Loop discovery-child holds preserve IDs/parentage and native guards, keep
+  producers open, exclude held sources/raw decisions from implementation
+  selection, and release only owned state while preserving other blockers.
+  [test](native_descendant_wait_preserves_guards_and_releases_only_owned_state)
+
+- Incomplete inventories and forged native hold attribution have no queue
+  effects.
+  [test](incomplete_inventory_and_forged_native_attribution_have_no_queue_effects)
+
+- Restart recovers pending hold intent without taking over human-deferred work.
+  [test](restart_recovers_intent_and_human_takeover_without_reopening)
+
+- Changed ownership and corrupt projections retain rather than release holds.
+  [test](changed_root_or_corrupt_projection_cannot_release_owned_hold)
+
+- Foreign and wrong-type references reject the complete handoff before effects.
+  [test](foreign_or_wrong_type_references_reject_whole_context_before_effects)
+
+- Canonical holds and orphaned projections prevent publication after native
+  closure.
+  [test](canonical_pending_hold_blocks_publication_even_after_native_closure)
+
+- Restart finishes partial staging without rewriting human context.
+  [test](restart_finishes_partial_staging_without_rewriting_human_context)
+
+- Restart acknowledges completed hold release without reopening work.
+  [test](restart_acknowledges_completed_release_without_reopening_work)
 
 - Driver wait release reopens only matching attributed work after all current
   prerequisites resolve; independent holds, cancelled attribution, malformed

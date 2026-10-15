@@ -1317,6 +1317,31 @@ impl GitClient {
         tracked_files_from_output(output)
     }
 
+    /// Repository-relative tracked and nonignored new paths, preserving exact names.
+    ///
+    /// # Errors
+    /// Returns Git execution or UTF-8 decoding errors rather than a partial inventory.
+    pub fn repository_files_sync(&self) -> Result<Vec<PathBuf>, GitError> {
+        let output = sync_git_raw(
+            &self.workdir,
+            &[
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ],
+        )?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        Ok(String::from_utf8(output.stdout)?
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .collect())
+    }
+
     /// `git diff HEAD -- <spec_path>` — working-tree diff for one spec file.
     /// Empty string when the file matches `HEAD`.
     ///

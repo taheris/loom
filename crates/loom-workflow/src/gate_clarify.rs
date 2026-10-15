@@ -198,6 +198,24 @@ async fn apply_report<R: CommandRunner>(
     evidence: Option<&str>,
 ) -> Result<ClarifyApplyReport, BdError> {
     let snapshot = bd.show(bead).await?;
+    apply_snapshot_report(bd, snapshot, evidence, false).await
+}
+
+/// Stage a freshly ownership-checked decision without clearing any competing
+/// label. Native status CAS protects human closure or takeover during staging.
+pub(crate) async fn apply_guarded_decision_report<R: CommandRunner>(
+    bd: &BdClient<R>,
+    snapshot: Bead,
+) -> Result<ClarifyApplyReport, BdError> {
+    apply_snapshot_report(bd, snapshot, None, true).await
+}
+
+async fn apply_snapshot_report<R: CommandRunner>(
+    bd: &BdClient<R>,
+    snapshot: Bead,
+    evidence: Option<&str>,
+    guarded: bool,
+) -> Result<ClarifyApplyReport, BdError> {
     let mut union = snapshot.notes.clone().unwrap_or_default();
     if !union.is_empty() {
         union.push('\n');
@@ -208,7 +226,14 @@ async fn apply_report<R: CommandRunner>(
             .and_then(|_| parse_options_in(snapshot.notes.as_deref(), &snapshot.description)),
         None => parse_options_in(snapshot.notes.as_deref(), &snapshot.description),
     };
-    apply_resolved_brief(bd, snapshot, resolution, evidence.unwrap_or(&union)).await
+    apply_resolved_brief(
+        bd,
+        snapshot,
+        resolution,
+        evidence.unwrap_or(&union),
+        guarded,
+    )
+    .await
 }
 
 async fn apply_resolved_brief<R: CommandRunner>(
@@ -216,6 +241,7 @@ async fn apply_resolved_brief<R: CommandRunner>(
     snapshot: Bead,
     resolution: Result<Brief, BriefError>,
     evidence: &str,
+    guarded: bool,
 ) -> Result<ClarifyApplyReport, BdError> {
     match resolution {
         Ok(_) => {
@@ -224,7 +250,12 @@ async fn apply_resolved_brief<R: CommandRunner>(
                 UpdateOpts {
                     status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:clarify".to_string()],
-                    remove_labels: vec!["loom:blocked".to_string()],
+                    if_status: guarded.then_some(snapshot.status),
+                    remove_labels: if guarded {
+                        vec![]
+                    } else {
+                        vec!["loom:blocked".to_string()]
+                    },
                     ..UpdateOpts::default()
                 },
             )
@@ -254,7 +285,12 @@ async fn apply_resolved_brief<R: CommandRunner>(
                 UpdateOpts {
                     status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:blocked".to_string()],
-                    remove_labels: vec!["loom:clarify".to_string()],
+                    if_status: guarded.then_some(snapshot.status),
+                    remove_labels: if guarded {
+                        vec![]
+                    } else {
+                        vec!["loom:clarify".to_string()]
+                    },
                     notes: Some(notes),
                     ..UpdateOpts::default()
                 },

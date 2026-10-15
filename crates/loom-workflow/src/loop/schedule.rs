@@ -101,6 +101,7 @@ where
                 .collect::<Vec<_>>();
             let mut batch_beads = parallel_ready_batch(
                 &bd,
+                &workspace,
                 &label,
                 ready_parent.as_ref(),
                 batch_limit,
@@ -119,7 +120,14 @@ where
                     let Some(bead) = infra_retry_queue.pop_front() else {
                         break;
                     };
-                    if finished_ids.contains(&bead.id) {
+                    if finished_ids.contains(&bead.id)
+                        || super::decision_wait::held(
+                            &bd,
+                            &super::DecisionWaitJournal::new(&workspace),
+                            &bead,
+                        )
+                        .await?
+                    {
                         continue;
                     }
                     batch_beads.push(bead);
@@ -475,8 +483,9 @@ impl ParallelInfraBudget {
     }
 }
 
-async fn parallel_ready_batch(
-    bd: &BdClient,
+pub(super) async fn parallel_ready_batch<R: loom_driver::bd::CommandRunner>(
+    bd: &BdClient<R>,
+    workspace: &std::path::Path,
     label: &SpecLabel,
     ready_parent: Option<&BeadId>,
     batch_limit: usize,
@@ -501,12 +510,20 @@ async fn parallel_ready_batch(
         if deferred.iter().any(|id| id == &bead.id) || finished.contains(&bead.id) {
             continue;
         }
-        if bead.issue_type == loom_driver::bd::IssueType::Epic {
+        if matches!(
+            bead.issue_type,
+            loom_driver::bd::IssueType::Epic | loom_driver::bd::IssueType::Decision
+        ) {
             tracing::info!(
                 bead = %bead.id,
                 spec = %label,
-                "loom loop: skipping epic-typed ready bead — workers dispatch leaves only",
+                "loom loop: skipping container or human decision — workers dispatch implementation only",
             );
+            continue;
+        }
+        if super::decision_wait::held(bd, &super::DecisionWaitJournal::new(workspace), &bead)
+            .await?
+        {
             continue;
         }
         out.push(bead);
@@ -532,11 +549,14 @@ async fn load_parallel_infra_queue(
         .await?;
     let mut queue = VecDeque::new();
     for bead in beads {
-        if bead.issue_type == loom_driver::bd::IssueType::Epic {
+        if matches!(
+            bead.issue_type,
+            loom_driver::bd::IssueType::Epic | loom_driver::bd::IssueType::Decision
+        ) {
             tracing::info!(
                 bead = %bead.id,
                 spec = %label,
-                "loom loop: skipping epic-typed infra bead — workers dispatch leaves only",
+                "loom loop: skipping container or human decision in infrastructure retry",
             );
             continue;
         }

@@ -34,6 +34,33 @@ use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_test_support::git_policy::Fixture as GitPolicyFixture;
 use tempfile::TempDir;
 
+#[test]
+fn repository_files_preserve_exact_tracked_and_new_names() -> Result<()> {
+    let dir = init_repo()?;
+    std::fs::write(dir.path().join("tracked space.rs"), "tracked")?;
+    git(dir.path(), &["add", "tracked space.rs"])?;
+    let new_name = "new\nquoted\"名前.rs";
+    std::fs::write(dir.path().join(new_name), "new")?;
+    let files = GitClient::open(dir.path())?.repository_files_sync()?;
+    assert!(files.contains(&PathBuf::from("tracked space.rs")));
+    assert!(files.contains(&PathBuf::from(new_name)));
+    Ok(())
+}
+
+#[test]
+fn repository_files_exclude_only_nontracked_ignored_paths() -> Result<()> {
+    let dir = init_repo()?;
+    std::fs::write(dir.path().join(".gitignore"), "ignored/\n")?;
+    std::fs::create_dir_all(dir.path().join("ignored"))?;
+    std::fs::write(dir.path().join("ignored/new.rs"), "ignored")?;
+    std::fs::write(dir.path().join("ignored/tracked.rs"), "tracked")?;
+    git(dir.path(), &["add", "--force", "ignored/tracked.rs"])?;
+    let files = GitClient::open(dir.path())?.repository_files_sync()?;
+    assert!(!files.contains(&PathBuf::from("ignored/new.rs")));
+    assert!(files.contains(&PathBuf::from("ignored/tracked.rs")));
+    Ok(())
+}
+
 fn git_command() -> Command {
     let mut command = Command::new("git");
     loom_test_support::scrub_git_local_env(&mut command);

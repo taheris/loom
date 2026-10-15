@@ -32,12 +32,14 @@
         craneLib
         stagedSrc
         ;
-      inherit (pkgs.lib)
+      inherit (inputs.nixpkgs.lib)
         assertMsg
         concatMapStringsSep
         makeBinPath
         optionalAttrs
+        systems
         ;
+      hostPlatform = systems.elaborate system;
       loomLib = import ../lib.nix;
       testsDeriv = import ../../tests/default.nix {
         inherit pkgs smokeSandbox;
@@ -45,6 +47,10 @@
       };
 
       checkSystemsMatchHost = all (check: check.system == system) (attrValues checks);
+      native-check-discovery = pkgs.writeText "native-check-discovery.json" (
+        builtins.toJSON (import ../../tests/verify/native-check-discovery.nix { lib = inputs.nixpkgs.lib; })
+      );
+
       checks-match-host-system =
         assert assertMsg checkSystemsMatchHost "checks.${system} contains a foreign-platform derivation";
         pkgs.runCommand "checks-match-host-system" { } ''
@@ -786,6 +792,7 @@
           agent-entrypoint-contract
           loom-gate-check
           nextest-filtering-syntax
+          native-check-discovery
           native-cargo-patches
           native-cargo-bootstrap
           loom-wrapper-preserves-spaced-output-path
@@ -808,7 +815,7 @@
           workspace-source-includes-nix-support
           ;
       }
-      // optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      // optionalAttrs hostPlatform.isLinux {
         inherit (testsDeriv) smoke-git-policy smoke-host-gate;
         inherit
           image-runtime-binaries-launch

@@ -10,6 +10,9 @@
 //! this module index so workflow phases can import the symbols without
 //! depending on `loom-driver` directly each time.
 
+#[cfg(test)]
+mod test_support;
+
 pub mod agent;
 mod event_log;
 pub mod gate_clarify;
