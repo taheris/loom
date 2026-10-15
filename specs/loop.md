@@ -507,6 +507,8 @@ mutation permission.
 
 - Interrupted verification reruns only the trusted verifier, retains each
   observation against the same candidate, and does not redispatch source work.
+  Completed source is pinned before integration advances; the existing driver
+  retains a protected continuation for restart and does not treat it as coverage.
   [test](interrupted_verifier_recovers_without_source_redispatch)
 
 - Permanent verifier unavailability stops at the configured infrastructure limit
@@ -528,6 +530,16 @@ mutation permission.
   [test](production_gate_preserves_candidate_after_verifier_infrastructure_exhaustion)
 - Parallel handoff passes provisioned manifest inputs to the actual review child, and a refused review cannot mint publication evidence. [test](parallel_handoff_propagates_provisioned_profiles_to_actual_review_child)
 - Real Gate CLI preserves unavailable, timeout and interruption exits through grouped and direct dispatch; semantic failure takes precedence. [test](gate_verify_retains_real_infrastructure_exits_and_semantic_failure_precedence)
+
+- Verifier exhaustion and driver restart recover the protected candidate through
+  production scheduling, preserve intervening independent commits, and never
+  redispatch completed source work.
+  [test](production_scheduler_resumes_exhausted_verification_after_restart_without_source_dispatch)
+
+- Recovery state rejects replaced source identities, missing authority and
+  corrupt retained history; worker-local copies cannot select canonical recovery
+  work.
+  [test](verification_continuation_rejects_replaced_source_missing_authority_and_corrupt_history)
 
 ### Task acceptance
 
@@ -974,8 +986,9 @@ mutation permission.
   `workspace-recovery-failed` skip transport retry and surface immediately as
   `status=blocked` + `loom:infra` with notes naming the requested value,
   declared/available set, or preserved workspace-recovery failure detail.
-  Missing or malformed `LOOM_PROFILES_MANIFEST` remains a startup/global error
-  before bead selection.
+  Malformed manifest configuration or missing/corrupt existing authority remains
+  a startup/global error. Missing manifests use the automatic published-source
+  provisioning policy in [Workspaces](workspaces.md#bead-dispatch).
   [test](static_dispatch_failures_surface_as_infra_without_retry)
 
 - A prior attempt that reached `session_complete` is not overwritten by a later

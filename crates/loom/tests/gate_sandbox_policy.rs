@@ -251,15 +251,16 @@ fn unexpected_skips_cannot_be_accepted_by_worker_policy() {
     wrong_platform["execution"]["platform"] = json!("invented-platform");
     let mut applicable = foreign("b");
     applicable["execution"]["platforms"] = json!([current_platform()]);
-    for (policy, skip) in [
-        (false, foreign("b")),
-        (true, capability("b", "arbitrary-resource")),
-        (true, undeclared),
-        (true, wrong_platform),
-        (true, applicable),
+    for (policy, skip, code) in [
+        (false, foreign("b"), 78),
+        (true, capability("b", "arbitrary-resource"), 78),
+        (true, undeclared, 1),
+        (true, wrong_platform, 1),
+        (true, applicable, 1),
         (
             true,
             json!({"target":"b","pass":false,"skipped":true,"evidence":"missing KVM"}),
+            78,
         ),
     ] {
         let dir = fixture(policy);
@@ -267,7 +268,7 @@ fn unexpected_skips_cannot_be_accepted_by_worker_policy() {
         set_record(dir.path(), "b", &skip, 77);
         assert_eq!(
             run(dir.path(), "verify", true).status.code(),
-            Some(1),
+            Some(code),
             "{skip}"
         );
         assert_eq!(rows(dir.path())["verify:b"].verdict, Verdict::Skipped);

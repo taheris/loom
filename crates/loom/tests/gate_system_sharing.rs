@@ -78,7 +78,7 @@ fn system_cli_sharing_preserves_per_criterion_reports_failures_skips_and_cache_r
         for (mode, exit, verdict) in [
             ("pass", 0, Verdict::Pass),
             ("fail", 1, Verdict::Fail),
-            ("skip", 1, Verdict::Skipped),
+            ("skip", 78, Verdict::Skipped),
         ] {
             let dir = fixture(matched);
             let output = run(dir.path(), matched, mode, &["--tree"]);

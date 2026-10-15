@@ -40,6 +40,112 @@ pub(super) const fn handoff_commands<'a>(
     MoleculePushGateCommands::new(agent, loom, wrix).with_manifest(manifest)
 }
 
+pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRunner>(
+    request: &Request,
+    bd: BdClient<R>,
+) -> Result<(HashSet<BeadId>, bool), LoopError> {
+    use super::runner::AgentLoopController as _;
+    let association = loom_driver::workspace::Association::resolve(&request.workspace)?;
+    let git = GitClient::open_with_integration_branch(
+        &request.workspace,
+        request.loom.integration_branch.clone(),
+    )?
+    .with_hook_timeout(request.loom.git_hook_timeout())
+    .with_repo_git_policy(request.repo_git_policy.clone());
+    let mut sources = Vec::new();
+    for record in association.verification_continuations()? {
+        if record.label != request.label {
+            continue;
+        }
+        if record.root != request.ready_parent {
+            continue;
+        }
+        let bead = bd.show(&record.bead).await?;
+        if super::decision_wait::held(
+            &bd,
+            &super::decision_wait::DecisionWaitJournal::new(&request.workspace),
+            &bead,
+        )
+        .await?
+        {
+            continue;
+        }
+        sources.push((bead, record));
+    }
+    let profile =
+        loom_driver::identifier::ProfileName::new("base").map_err(|error| LoopError::Bug {
+            context: error.to_string(),
+        })?;
+    let mut controller = super::production::ProductionAgentLoopController::new(
+        bd,
+        request.label.clone(),
+        request.loom_bin.clone(),
+        request.workspace.clone(),
+        git,
+        Arc::clone(&request.manifest),
+        None,
+        profile,
+        |_spawn: loom_driver::agent::SpawnConfig, _bead: BeadId| async move {
+            (
+                super::SessionResult::PreflightFailed {
+                    error: "verification continuation cannot dispatch source work".into(),
+                },
+                None,
+            )
+        },
+    )
+    .with_loom_config(request.loom.clone())
+    .with_verification_attempts(request.infra_policy.max_attempts);
+    let mut completed = HashSet::new();
+    let mut work = false;
+    for (bead, record) in sources {
+        let outcome = controller.resume_verification(&bead, record).await?;
+        work = true;
+        if outcome == AgentOutcome::Success {
+            match controller.exec_per_bead_gate(&bead.id).await? {
+                super::runner::PerBeadGateOutcome::Clean => {
+                    completed.insert(bead.id);
+                }
+                super::runner::PerBeadGateOutcome::Infrastructure { detail } => {
+                    controller
+                        .apply_infra(
+                            &bead.id,
+                            &InfraDiagnostic::static_diagnostic(
+                                super::runner::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE,
+                                detail,
+                            ),
+                        )
+                        .await?;
+                    completed.insert(bead.id);
+                }
+                super::runner::PerBeadGateOutcome::Recovery { detail } => {
+                    controller
+                        .reopen_after_verification_failure(&bead.id, detail)
+                        .await?;
+                }
+                super::runner::PerBeadGateOutcome::StructuralViolation { detail } => {
+                    controller
+                        .apply_blocked(&bead.id, "verification-structural-violation", &detail)
+                        .await?;
+                    completed.insert(bead.id);
+                }
+            }
+        } else {
+            controller
+                .apply_infra(
+                    &bead.id,
+                    &InfraDiagnostic::static_diagnostic(
+                        "verification-continuation-unavailable",
+                        format!("{outcome:?}"),
+                    ),
+                )
+                .await?;
+            completed.insert(bead.id);
+        }
+    }
+    Ok((completed, work))
+}
+
 /// `UpdateOpts` for a parallel-mode `loom:clarify` / `loom:blocked`
 /// self-report. Pairs `status=blocked` with the terminal label so
 /// `bd ready` excludes the parked bead via its native status filter
@@ -65,6 +171,8 @@ where
     S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
     F: std::future::Future<Output = AgentOutcome> + Send + 'static,
 {
+    let (recovered_ids, recovery_work) =
+        resume_verification_candidates(&request, BdClient::new()).await?;
     let Request {
         workspace,
         label,
@@ -92,13 +200,13 @@ where
     let mut infra_budget = ParallelInfraBudget::new(infra_policy);
     let mut infra_retry_queue: VecDeque<Bead> = VecDeque::new();
     let mut infra_queue_loaded = false;
-    let mut finished_ids: HashSet<BeadId> = HashSet::new();
+    let mut finished_ids = recovered_ids;
     let mut processed = 0_u32;
     let mut waiting = 0_u32;
     let mut clarified = 0_u32;
     let mut blocked = 0_u32;
     let mut outer_iterations = 0_u32;
-    let mut work_since_gate = false;
+    let mut work_since_gate = recovery_work;
     let mut last_gate: Option<GateOutcome> = None;
 
     let gate = 'outer: loop {

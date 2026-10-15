@@ -265,7 +265,7 @@ fn gate_verify_retains_real_infrastructure_exits_and_semantic_failure_precedence
         std::fs::write(workspace.join(".gitignore"), ".loom/\n").unwrap();
         std::fs::write(workspace.join("probe.sh"), "exit 0\n").unwrap();
         init_git(workspace);
-        for code in [78, 124, 130, 137, 143, 1, 0] {
+        for code in [78, 124, 127, 130, 137, 143, 1, 0] {
             std::fs::write(
                 workspace.join("probe.sh"),
                 format!("echo required-executor-observation >&2\nexit {code}\n"),

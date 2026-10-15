@@ -4,7 +4,8 @@ use std::os::fd::OwnedFd;
 use std::path::{Component, Path};
 
 use rustix::fs::{
-    AtFlags, Dir, Mode, OFlags, Stat, fchmod, fstat, mkdirat, open, openat, statat, unlinkat,
+    AtFlags, Dir, Mode, OFlags, Stat, fchmod, fstat, mkdirat, open, openat, renameat, statat,
+    unlinkat,
 };
 use rustix::io::Errno;
 use rustix::process::geteuid;
@@ -19,6 +20,20 @@ const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
 pub struct Directory(OwnedFd);
 
 impl Directory {
+    pub(crate) fn names(&self) -> io::Result<Vec<std::ffi::OsString>> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let mut names = Vec::new();
+        for entry in Dir::read_from(&self.0)? {
+            let entry = entry?;
+            names.push(std::ffi::OsStr::from_bytes(entry.file_name().to_bytes()).to_owned());
+        }
+        Ok(names)
+    }
+
+    pub(crate) fn rename_file(&self, source: &Path, destination: &Path) -> io::Result<()> {
+        renameat(&self.0, source, &self.0, destination)?;
+        Ok(())
+    }
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         if path.as_os_str().is_empty() || path.components().any(|c| c == Component::ParentDir) {
             return Err(io::Error::new(
@@ -145,6 +160,28 @@ impl Directory {
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             mode,
         )?;
+        Ok(File::from(fd))
+    }
+
+    pub(crate) fn append_private_file(&self, name: &Path) -> io::Result<File> {
+        let fd = openat(
+            &self.0,
+            name,
+            OFlags::RDWR | OFlags::APPEND | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )?;
+        let stat = fstat(&fd)?;
+        if stat.st_uid != geteuid().as_raw()
+            || stat.st_mode & 0o7777 != 0o600
+            || stat.st_nlink != 1
+            || rustix::fs::FileType::from_raw_mode(stat.st_mode)
+                != rustix::fs::FileType::RegularFile
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "driver recovery file must be private and singly linked",
+            ));
+        }
         Ok(File::from(fd))
     }
 

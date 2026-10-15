@@ -334,15 +334,20 @@ for worker feedback.
   alignment outcome, and conflict files when present
   [test](workspace_recovery_event_records_stash_and_alignment)
 
-- `loom loop` / `loom init` startup fast-forwards the loom workspace's
-  integration branch to `origin/<integration-branch>` before any bead clone is
-  materialized, so `loom/<id>` always branches off published HEAD
+- Fresh `loom loop` / `loom init` startup fast-forwards the loom workspace's
+  integration branch to `origin/<integration-branch>` before a new bead clone is
+  materialized, so fresh work branches off published HEAD
   [test](loop_start_fast_forwards_integration_to_origin_main)
 
-- When the integration branch has diverged from `origin/<integration-branch>`
-  (local commits not on origin), startup fails loud naming the divergent commits
-  instead of branching beads off the stale base
+- Unattributed local commits or remote divergence fail startup naming the
+  divergent commits instead of branching fresh work off a stale base
   [test](loop_start_fails_loud_when_integration_diverged_from_origin)
+
+- Loop restart retains a clean unpublished tip only when a protected pending
+  continuation pins that exact tip, its source checkout identity is unchanged,
+  and origin remains its ancestor. Ordinary signature verification and all
+  required gates still run; the recovery record is not accepted coverage.
+  [test](production_scheduler_resumes_exhausted_verification_after_restart_without_source_dispatch)
 
 - After the startup fast-forward, a bead clone forks from published HEAD,
   carrying commits that landed on `origin/<integration-branch>` rather than the

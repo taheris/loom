@@ -1,6 +1,8 @@
 //! Host-owned association of local checkouts with Evidence's canonical history.
 
 mod launch;
+mod verification;
+pub use verification::VerificationContinuation;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

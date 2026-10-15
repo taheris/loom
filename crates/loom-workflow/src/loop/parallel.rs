@@ -546,6 +546,33 @@ async fn merge_back_one(
                     // once per molecule by the molecule-completion push gate
                     // (`specs/harness.md` § Verdict Gate phase 5). Mirrors the
                     // serial `run_bead` integration step.
+                    let base = git.integration_commit_sha().await?;
+                    let candidate =
+                        loom_driver::git::sync_rev_parse(&git.loom_workspace(), &worktree.branch)?;
+                    if candidate != base {
+                        let scope = match label {
+                            Some(label) => label.clone(),
+                            None => SpecLabel::new(
+                                bead.labels
+                                    .iter()
+                                    .find_map(|label| label.as_str().strip_prefix("spec:"))
+                                    .unwrap_or("agent"),
+                            )
+                            .map_err(|error| LoopError::Bug {
+                                context: error.to_string(),
+                            })?,
+                        };
+                        git.preserve_verification_candidate(&bead.id, &candidate)
+                            .await?;
+                        loom_driver::workspace::Association::resolve(git.workdir())?
+                            .begin_verification(
+                                bead.id.clone(),
+                                scope,
+                                bead.parent.clone(),
+                                base,
+                                candidate,
+                            )?;
+                    }
                     git.ff_merge_integration(&worktree.branch).await?;
                     let main_sha = git.head_commit_sha().await?.to_string();
                     if let Some(e) = emit.as_mut() {
@@ -559,12 +586,11 @@ async fn merge_back_one(
                             }),
                         );
                     }
-                    git.remove_worktree(&worktree.path).await?;
                     git.delete_branch(&worktree.branch).await?;
                     if let Some(e) = emit.as_mut() {
                         e.emit(
-                            DriverKind::WorktreeCleanupOk,
-                            &format!("worktree + branch cleanup ok for bead {}", bead.id),
+                            DriverKind::VerdictGate,
+                            &format!("candidate pinned; source retained for bead {}", bead.id),
                             serde_json::json!({
                                 "bead_id": bead.id.to_string(),
                                 "branch": worktree.branch,

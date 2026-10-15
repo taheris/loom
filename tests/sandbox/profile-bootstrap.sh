@@ -54,7 +54,18 @@ git config user.email fixture@example.invalid
 printf '.loom/\n.wrix/\n.beads/\n' > .gitignore
 printf '[package]\nname="bootstrap-fixture"\nversion="0.0.0"\nedition="2024"\n' > Cargo.toml
 printf 'pub fn fixture() {}\n' > src/lib.rs
-printf 'repos: []\n' > .pre-commit-config.yaml
+cat > .pre-commit-config.yaml <<'HOOKS'
+repos:
+  - repo: local
+    hooks:
+      - id: profile-factory-fixture
+        name: profile factory fixture
+        entry: 'true'
+        language: system
+        stages: [pre-commit, pre-push]
+        always_run: true
+        pass_filenames: false
+HOOKS
 cat > loom.toml <<'CONFIG'
 [loom]
 git_hook_timeout_secs = 30
@@ -146,7 +157,7 @@ if "$loom_bin" loop lm-bootstrap-fixture > "$fixture/unpublished.log" 2>&1; then
   printf 'unpublished factory bytes were executed\n' >&2
   exit 1
 fi
-grep -F 'operator and integration must match the clean published commit' "$fixture/unpublished.log"
+grep -F 'operator must match the clean published commit' "$fixture/unpublished.log"
 [[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 3 ]]
 cp "$fixture/factory.saved" flake.nix
 
@@ -174,4 +185,16 @@ run_until_missing_tracker resumed
 [[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 6 ]]
 git merge-base --is-ancestor "$initial_head" HEAD
 git verify-commit HEAD
+git -C .loom/integration config user.name 'Profile Bootstrap Fixture'
+git -C .loom/integration config user.email bootstrap-fixture@example.invalid
+printf 'unpublished candidate must remain preserved\n' > .loom/integration/pending-candidate.txt
+git -C .loom/integration add pending-candidate.txt
+git -C .loom/integration commit -qm 'Preserve an unpublished integration candidate'
+pending_head=$(git -C .loom/integration rev-parse HEAD)
+[[ "$pending_head" != "$expected_head" ]]
+run_until_missing_tracker integration-ahead
+[[ "$(git -C .loom/integration rev-parse HEAD)" == "$pending_head" ]]
+jq -se --arg head "$expected_head" 'last | .source == $head and .exit_code == 0 and .coverage_admitted == false' \
+  .loom/logs/gate/profile-provisioning.jsonl >/dev/null
+printf 'published-profile-bootstrap-preserves-unpublished-integration-ok\n'
 printf 'published-profile-bootstrap-authority-and-skew-ok\n'

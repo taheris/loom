@@ -173,12 +173,9 @@ async fn published_source(
     let published = git
         .resolve_commit_sha(&format!("refs/remotes/origin/{}", git.integration_branch()))
         .await?;
-    if head != published
-        || git.integration_commit_sha().await? != published
-        || !git.status().await?.is_empty()
-    {
+    if head != published || !git.status().await?.is_empty() {
         return Err(ProvisionError::Source {
-            reason: "operator and integration must match the clean published commit",
+            reason: "operator must match the clean published commit",
         });
     }
     if !matches!(

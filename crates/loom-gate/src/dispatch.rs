@@ -809,7 +809,7 @@ fn run_with_fallback(
 
 fn infrastructure_exit_code(output: &Output) -> Option<i32> {
     match output.status.code() {
-        Some(code @ (78 | 124 | 128..=255)) => Some(code),
+        Some(code @ (78 | 124 | 127..=255)) => Some(code),
         #[cfg(unix)]
         None => {
             use std::os::unix::process::ExitStatusExt as _;
@@ -872,10 +872,7 @@ fn interpret_fallback_output(
     }
     if let Some(verdict) = reported {
         let mut verdict = verdict;
-        if (skipped && !verdict.skipped)
-            || (!output.status.success() && !skipped && verdict.pass)
-            || (output.status.success() && verdict.skipped)
-        {
+        if verdict.skipped != skipped || (!output.status.success() && !skipped && verdict.pass) {
             verdict.producer_error = Some(format!(
                 "producer exit {:?} contradicts JSON verdict",
                 output.status.code()

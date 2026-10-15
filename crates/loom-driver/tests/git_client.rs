@@ -1587,6 +1587,11 @@ async fn bead_workspace_reset_preserves_target_and_dotwrix() -> Result<()> {
     agent_commit(&created.path, "committed.txt", "agent commit\n", "agent")?;
     std::fs::write(created.path.join("README.md"), "mid-session edit\n")?;
     std::fs::write(created.path.join("untracked.txt"), "scratch\n")?;
+    let recovery_log = created
+        .path
+        .join(".loom/logs/recovery-operator/attempt.log");
+    std::fs::create_dir_all(recovery_log.parent().unwrap())?;
+    std::fs::write(&recovery_log, "retained recovery evidence\n")?;
     std::fs::create_dir_all(created.path.join("target/debug"))?;
     std::fs::write(
         created.path.join("target/debug/sentinel"),
@@ -1609,6 +1614,11 @@ async fn bead_workspace_reset_preserves_target_and_dotwrix() -> Result<()> {
     .to_string();
 
     client.reset_bead_clone(&created.path).await?;
+
+    assert_eq!(
+        std::fs::read_to_string(&recovery_log)?,
+        "retained recovery evidence\n"
+    );
 
     // HEAD is unchanged — `git reset --hard HEAD` does not drop commits.
     let head_after = String::from_utf8(

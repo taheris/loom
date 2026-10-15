@@ -92,7 +92,7 @@ pub(super) async fn execute_gate(
                 let recorded_code = code.unwrap_or(128);
                 let state = match code {
                     Some(0) => ExecutionState::Completed,
-                    Some(77 | 78) => ExecutionState::Unavailable,
+                    Some(77 | 78 | 127) => ExecutionState::Unavailable,
                     Some(124) => ExecutionState::TimedOut,
                     Some(128..=255) | None => ExecutionState::Interrupted,
                     Some(_) => ExecutionState::Rejected,

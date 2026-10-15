@@ -342,10 +342,13 @@ is required.
   `image_ref`, `image_source`, `image_source_kind`, and ProfileConfig
   [test](per_bead_profile_runtime_dispatch_produces_distinct_image_refs)
 
-- Loom reads `LOOM_PROFILES_MANIFEST` at startup and parses it into
-  `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>`; missing env var
-  or missing file errors before any bead spawn
-  [test](from_path_missing_file_returns_manifest_not_found)
+<!-- prettier-ignore -->
+- Loop parses the selected profile manifest before bead dispatch. Under
+  [Workspaces' bootstrap policy](workspaces.md#bead-dispatch), a missing manifest
+  is provisioned from authenticated published operator source. Malformed
+  configuration and missing or corrupt existing authority remain blocking;
+  provisioning does not authenticate required coverage.
+  [system](nix run .#test-profile-bootstrap)
 
 - A bead with `profile:X` where `X` is not in the manifest fails with a typed
   `ProfileError::UnknownProfile` naming the missing profile

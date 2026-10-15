@@ -508,7 +508,7 @@ impl GitClient {
     /// Reset a per-bead workspace's working tree to its current `HEAD` and
     /// drop everything outside the tracked content + the preserved
     /// scratch dirs. Runs `git reset --hard HEAD` followed by
-    /// `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix`.
+    /// `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix --exclude=.loom`.
     ///
     /// This is the destructive cleanup primitive. Dispatch paths that may
     /// encounter prior dirty work should call [`Self::prepare_bead_clone`]
@@ -535,6 +535,7 @@ impl GitClient {
                 "--exclude=target",
                 "--exclude=.git",
                 "--exclude=.wrix",
+                "--exclude=.loom",
             ],
             None,
         )
@@ -776,6 +777,9 @@ impl GitClient {
         bd: &BdClient<R>,
         molecule: &MoleculeId,
     ) -> Result<Vec<PathBuf>, GitError> {
+        let continuations = crate::workspace::Association::resolve(&self.workdir)
+            .and_then(|association| association.verification_continuations())
+            .map_err(std::io::Error::other)?;
         let base = self.workdir.join(WORKTREE_BASE);
         let entries = match std::fs::read_dir(&base) {
             Ok(it) => it,
@@ -828,6 +832,9 @@ impl GitClient {
                     continue;
                 }
             };
+            if continuations.iter().any(|record| record.bead == bead_id) {
+                continue;
+            }
             let bead = match bd.show(&bead_id).await {
                 Ok(b) => b,
                 Err(error) => {
@@ -1795,6 +1802,131 @@ impl GitClient {
             status: output.status.code().unwrap_or(-1),
             stderr,
         })
+    }
+
+    /// Pin a verified candidate before a reversible integration advance.
+    ///
+    /// # Errors
+    /// Returns Git errors without replacing any existing candidate history.
+    pub async fn preserve_verification_candidate(
+        &self,
+        bead: &BeadId,
+        candidate: &GitOid,
+    ) -> Result<String, GitError> {
+        let reference = format!("refs/loom/verification/{bead}/{candidate}");
+        self.create_verification_ref(&reference, candidate).await?;
+        Ok(reference)
+    }
+
+    /// Retain an unpublished integration tip owned by a protected verification continuation.
+    ///
+    /// This permits restart to reach the ordinary verifier; it admits no coverage and
+    /// never reconciles unrelated or remotely diverged local work.
+    ///
+    /// # Errors
+    /// Rejects changed authority, source identities or candidate pins.
+    pub async fn has_pending_verification_tip(&self) -> Result<bool, GitError> {
+        let association =
+            crate::workspace::Association::resolve(&self.workdir).map_err(std::io::Error::other)?;
+        let integration = self.loom_workspace();
+        if !self
+            .status_porcelain_at(&integration)
+            .await?
+            .trim()
+            .is_empty()
+        {
+            return Ok(false);
+        }
+        let head = self.integration_commit_sha().await?;
+        if sync_head_commit_sha(&integration)? != head {
+            return Ok(false);
+        }
+        let origin = format!("refs/remotes/origin/{}", self.integration_branch);
+        if !GitClient::open(&integration)?
+            .is_ancestor_of_head(&origin)
+            .await?
+        {
+            return Ok(false);
+        }
+        for record in association
+            .verification_continuations()
+            .map_err(std::io::Error::other)?
+        {
+            if record.candidate != head {
+                continue;
+            }
+            association
+                .validate_verification(&record)
+                .map_err(std::io::Error::other)?;
+            let reference = format!(
+                "refs/loom/verification/{}/{}",
+                record.bead, record.candidate
+            );
+            if sync_rev_parse(&integration, &reference)? != head {
+                return Err(GitError::GitCli { status: 1, stderr: "pending verification candidate pin changed; source and integration preserved".into() });
+            }
+            association.recheck().map_err(std::io::Error::other)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Restore only the driver's transient continuation branch; never overwrite another tip.
+    ///
+    /// # Errors
+    /// Returns a diagnostic preserving a conflicting existing branch.
+    pub async fn restore_verification_branch(
+        &self,
+        bead: &BeadId,
+        candidate: &GitOid,
+    ) -> Result<String, GitError> {
+        let branch = format!("loom/verify-{bead}-{candidate}");
+        self.create_verification_ref(&format!("refs/heads/{branch}"), candidate)
+            .await?;
+        Ok(branch)
+    }
+
+    async fn create_verification_ref(
+        &self,
+        reference: &str,
+        candidate: &GitOid,
+    ) -> Result<(), GitError> {
+        let workdir = self.loom_workspace();
+        let previous = run_git_raw(
+            &workdir,
+            self.clock.as_ref(),
+            ["rev-parse", "--verify", "--quiet", reference],
+            None,
+        )
+        .await?;
+        if previous.status.success() {
+            if String::from_utf8_lossy(&previous.stdout).trim() == candidate.as_str() {
+                return Ok(());
+            }
+            return Err(GitError::GitCli {
+                status: 1,
+                stderr: format!(
+                    "preserved verification reference changed: {reference}; existing history retained"
+                ),
+            });
+        }
+        let output = run_git_raw(
+            &workdir,
+            self.clock.as_ref(),
+            [
+                "update-ref",
+                "--no-deref",
+                reference,
+                candidate.as_str(),
+                "",
+            ],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        Ok(())
     }
 
     /// Commit SHA the integration branch currently points at, read in the

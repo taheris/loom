@@ -239,10 +239,9 @@ pub async fn prepare_with_bd<R: CommandRunner>(
     let native_feedback =
         manifest.lookup(&profile, runtime)?.native_preflight == Some(NativePreflight::Rust);
     if native_feedback
-        || (profile.as_str() == "rust"
-            && tracked_files
-                .iter()
-                .any(|path| path == Path::new("Cargo.toml")))
+        || tracked_files
+            .iter()
+            .any(|path| path == Path::new("Cargo.toml"))
     {
         if !native_feedback {
             return Ok(Preparation::Rejected(AgentOutcome::StaticInfra {
@@ -435,7 +434,7 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
                 workspace: &workspace,
                 loom_workspace: dir.path(),
                 manifest: &manifest,
-                cli_profile: None,
+                cli_profile: (!native_profile).then_some(&profile),
                 phase_default: &profile,
                 runtime,
                 label: &label,
@@ -464,7 +463,7 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
             })
             .await
             .unwrap();
-            if capability.is_none() && native_profile {
+            if capability.is_none() {
                 assert!(
                     matches!(prepared, Preparation::Rejected(AgentOutcome::StaticInfra { cause, .. })
                     if cause == super::super::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE)
@@ -474,16 +473,6 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
             let Preparation::Ready(worker) = prepared else {
                 panic!("provisioned worker rejected")
             };
-            if !native_profile {
-                assert!(
-                    !worker
-                        .spawn
-                        .env
-                        .iter()
-                        .any(|(key, _)| key == "LOOM_NATIVE_PREFLIGHT")
-                );
-                continue;
-            }
             let result = match runtime {
                 AgentRuntime::Pi => {
                     run_prepared_backend::<loom_agent::PiBackend>(&worker.spawn).await

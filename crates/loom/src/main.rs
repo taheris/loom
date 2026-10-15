@@ -22,7 +22,7 @@ use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
 use loom_driver::git::{GitClient, KeyMode, RepoGitPolicy};
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::{LockGuard, LockManager};
-use loom_driver::logging::{LogSink, sweep_retention_at};
+use loom_driver::logging::LogSink;
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::CacheDb;
 use loom_gate::integrity::runner_owns_target;
@@ -1573,7 +1573,7 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
 }
 
 fn combine_verifier_codes(left: i32, right: i32) -> i32 {
-    let infrastructure = |code| matches!(code, 77 | 78 | 124 | 128..=255);
+    let infrastructure = |code| matches!(code, 77 | 78 | 124 | 127..=255);
     if [left, right]
         .into_iter()
         .any(|code| code != 0 && !infrastructure(code))
@@ -1596,13 +1596,39 @@ const fn dispatch_error_code(error: &loom_gate::dispatch::DispatchError) -> i32 
     }
 }
 
-const fn verifier_code(verdict: &loom_gate::dispatch::VerifierVerdict) -> i32 {
-    if !verdict.accepted() {
-        1
-    } else if verdict.skipped {
-        loom_gate::dispatch::SKIP_EXIT_CODE
-    } else {
-        0
+fn verifier_code(verdict: &loom_gate::dispatch::VerifierVerdict) -> i32 {
+    if verdict.producer_error.is_some() {
+        return 1;
+    }
+    if verdict.skipped {
+        if verdict.skip_permitted {
+            return loom_gate::dispatch::SKIP_EXIT_CODE;
+        }
+        return if unavailable_prerequisite(verdict) {
+            78
+        } else {
+            1
+        };
+    }
+    i32::from(!verdict.pass)
+}
+
+fn unavailable_prerequisite(verdict: &loom_gate::dispatch::VerifierVerdict) -> bool {
+    use loom_gate::runner::result::SkipReason;
+    let Some(execution) = &verdict.execution else {
+        return verdict.skip_reason.is_none();
+    };
+    if String::from(execution.platform.clone()) != loom_gate::runner::result::current_platform() {
+        return false;
+    }
+    let applicable =
+        execution.platforms.is_empty() || execution.platforms.contains(&execution.platform);
+    match &verdict.skip_reason {
+        Some(SkipReason::ForeignPlatform { .. }) => !applicable,
+        Some(SkipReason::MissingCapability { capability, .. }) => {
+            applicable && execution.capabilities.contains(capability)
+        }
+        None => false,
     }
 }
 
@@ -3038,11 +3064,7 @@ fn run_loop_cmd(
     render_flags: RenderFlags,
 ) -> anyhow::Result<LoopOutcome> {
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
-    sweep_retention_at(
-        &workspace.join(".loom/logs"),
-        config.logs.retention_days,
-        SystemClock::new().wall_now(),
-    );
+    // Routine execution retains evidence; disposal requires separate authority.
     // Resolve the per-phase backend up front so an unknown backend name in
     // the config (or via `--agent` — clap covers the latter) fails before
     // any work begins. The resolution itself is the wiring; the dispatch
@@ -3242,7 +3264,7 @@ fn run_parallel_loop_root(
         anyhow::bail!("loom loop --parallel does not accept task bead roots");
     }
     let _guard = acquire_work_root_lock(workspace, root.id.as_str())?;
-    prepare_loop_root(runtime, workspace, root, &config.loom, startup_reconcile)?;
+    prepare_loop_root(runtime, workspace, &config.loom, startup_reconcile)?;
     let launcher_env = repo_git_policy.launcher_env();
     let request = loom_workflow::r#loop::schedule::Request {
         workspace: workspace.to_path_buf(),
@@ -3326,7 +3348,7 @@ fn run_sequential_loop_root(
     repo_git_policy: RepoGitPolicy,
 ) -> anyhow::Result<LoopOutcome> {
     let work_root_guard = acquire_work_root_lock(workspace, root.id.as_str())?;
-    prepare_loop_root(runtime, workspace, root, &config.loom, startup_reconcile)?;
+    prepare_loop_root(runtime, workspace, &config.loom, startup_reconcile)?;
 
     let label = root.label.clone();
     let fixed_bead = matches!(&root.kind, LoopWorkRootKind::Task).then(|| root.bead.clone());
@@ -3430,6 +3452,7 @@ fn run_sequential_loop_root(
         .with_agent_override(agent_override)
         .with_wrix_bin(wrix_bin)
         .with_loom_config(loom_cfg_for_run)
+        .with_verification_attempts(infra_policy.max_attempts)
         .with_skills_config(skills_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
         if let Some(bead) = fixed_bead {
@@ -3463,10 +3486,10 @@ enum StartupReconcile {
 fn prepare_loop_root(
     runtime: &tokio::runtime::Runtime,
     workspace: &Path,
-    root: &LoopWorkRoot,
     loom_cfg: &loom_driver::config::LoomTopConfig,
     startup_reconcile: StartupReconcile,
 ) -> anyhow::Result<()> {
+    loom_driver::workspace::Association::resolve(workspace)?.recheck()?;
     if matches!(startup_reconcile, StartupReconcile::FastForward) {
         let ff_git = GitClient::open_with_integration_branch(
             workspace,
@@ -3474,10 +3497,13 @@ fn prepare_loop_root(
         )?;
         let ff_workspace = workspace.to_path_buf();
         runtime.block_on(async move {
-            let outcome = ff_git
-                .fast_forward_integration_to_origin()
-                .await
-                .with_context(|| {
+            let result = ff_git.fast_forward_integration_to_origin().await;
+            if matches!(&result, Err(loom_driver::git::GitError::IntegrationDiverged { .. }))
+                && ff_git.has_pending_verification_tip().await? {
+                tracing::info!(workspace = %ff_workspace.display(), "retained unpublished verification candidate for driver restart; no coverage admitted");
+                return anyhow::Ok(());
+            }
+            let outcome = result.with_context(|| {
                     format!(
                         "loom loop startup: integration fast-forward failed in {}",
                         ff_workspace.display(),
@@ -3492,45 +3518,11 @@ fn prepare_loop_root(
         })?;
     }
 
-    loom_driver::workspace::Association::establish(workspace)?;
+    loom_driver::workspace::Association::resolve(workspace)?.recheck()?;
 
-    let Some(gc_molecule) = gc_molecule_for_root(root)? else {
-        return Ok(());
-    };
-    let gc_git = GitClient::open(workspace)?;
-    let gc_workspace = workspace.to_path_buf();
-    runtime.block_on(async move {
-        let bd = BdClient::new();
-        match gc_git.sweep_orphan_bead_clones(&bd, &gc_molecule).await {
-            Ok(removed) if !removed.is_empty() => tracing::info!(
-                count = removed.len(),
-                workspace = %gc_workspace.display(),
-                molecule = %gc_molecule.as_str(),
-                "loom loop startup: reaped closed bead workspaces",
-            ),
-            Ok(_) => {}
-            Err(error) => tracing::warn!(
-                ?error,
-                workspace = %gc_workspace.display(),
-                molecule = %gc_molecule.as_str(),
-                "loom loop startup: orphan-clone sweep failed — continuing",
-            ),
-        }
-    });
+    // A native closed status is not trusted cleanup admission. Retain historical
+    // source clones and their evidence across startup until disposal is admitted.
     Ok(())
-}
-
-fn gc_molecule_for_root(root: &LoopWorkRoot) -> anyhow::Result<Option<MoleculeId>> {
-    match &root.kind {
-        LoopWorkRootKind::Epic => Ok(Some(root.id.as_str().parse()?)),
-        LoopWorkRootKind::Task => root
-            .bead
-            .parent
-            .as_ref()
-            .map(|parent| parent.as_str().parse())
-            .transpose()
-            .map_err(Into::into),
-    }
 }
 
 fn print_sequential_loop_summary(multi_root: bool, root: &LoopWorkRoot, summary: &LoopOutcome) {

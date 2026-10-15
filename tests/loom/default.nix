@@ -207,6 +207,7 @@ let
       export LOOM_TEST_IMAGE_SOURCE_KIND=${smokeEntry.source_kind}
       export LOOM_TEST_PROFILE_CONFIG=${smokeEntry.profile_config}
       export LOOM_TEST_PRE_PUSH_CHECKS=${../../bin/pre-push-checks}
+      export LOOM_TEST_VERIFIER_PROBE=${../smoke/verifier-probe.sh}
       export LOOM_TEST_GIT_POLICY=${../smoke/seed-git-policy.sh}
       export LOOM_TEST_SEED_BEADS=${../smoke/seed-beads.sh}
       export LOOM_TEST_LOOP=${../smoke/loop.sh}

@@ -27,7 +27,7 @@ set -euo pipefail
 #   LOOM_TEST_LOOP           — script running the bead and checking its result
 #   LOOM_TEST_WAIT_DOLT      — bounded startup readiness and failure diagnostics
 #   WRIX_PREK_HOOKS          — canonical packaged wrix prek hook directory
-#   LOOM_SMOKE_KEEP          — set to 1 to preserve the temp workspace after
+#   LOOM_SMOKE_KEEP          — defaults to 1 to preserve the temp workspace after
 #                              a failed run for diagnosis
 #   LOOM_WRIX_SERVICE_BIN    — profiled wrix launcher used for service setup
 #   LOOM_WRIX_SPAWN_BIN      — raw wrix launcher used by SpawnConfig
@@ -48,7 +48,7 @@ cleanup() {
     if [[ "${DOLT_SERVICE_STARTED:-0}" == "1" && -n "${WORKSPACE:-}" && -d "$WORKSPACE" ]]; then
         (cd "$WORKSPACE" && "$LOOM_WRIX_SERVICE_BIN" service stop >/dev/null 2>&1) || true # best-effort: cleanup must not mask the test result.
     fi
-    if [[ "$ec" -ne 0 && "${LOOM_SMOKE_KEEP:-0}" == "1" ]]; then
+    if [[ "$ec" -ne 0 && "${LOOM_SMOKE_KEEP:-1}" == "1" ]]; then
         log "preserved failed workspace: $SMOKE_ROOT"
     elif [[ -n "${SMOKE_ROOT:-}" && -d "$SMOKE_ROOT" ]]; then
         rm -rf "$SMOKE_ROOT"
@@ -136,6 +136,7 @@ bash "${LOOM_TEST_GIT_POLICY:?missing smoke Git policy helper}"
 
 mkdir -p bin docs specs .loom
 cp "$LOOM_TEST_PRE_PUSH_CHECKS" bin/pre-push-checks
+cp "${LOOM_TEST_VERIFIER_PROBE:?missing fixed verifier probe}" bin/verifier-probe.sh
 chmod +x bin/pre-push-checks
 cat >specs/smoke.md <<'SPEC'
 # Smoke
@@ -166,7 +167,7 @@ cat >.gitignore <<'IGNORE'
 .wrix/
 *.gate.lock*
 IGNORE
-git add .gitignore .pre-commit-config.yaml wrix.toml bin/pre-push-checks docs/README.md specs/smoke.md
+git add .gitignore .pre-commit-config.yaml wrix.toml bin/pre-push-checks bin/verifier-probe.sh docs/README.md specs/smoke.md
 git commit -q -m "Initialize smoke workspace"
 git remote add origin "$ORIGIN"
 git push -q -u origin main

@@ -6,6 +6,7 @@ LOOM_BIN="${1:?loom binary is required}"
 WORKSPACE="${2:?workspace is required}"
 BEAD_ID="${3:?bead id is required}"
 START_TS="${4:?start timestamp is required}"
+mkdir -p "$WORKSPACE/.loom"
 
 log() {
     printf '[smoke] %s\n' "$1" >&2
@@ -48,16 +49,95 @@ if [[ "${5:-}" == --interrupt-once ]]; then
     log 'interrupted driver; restarting against the preserved worker checkout'
 fi
 
+if [[ "${5:-}" == --interrupt-once ]]; then
+    verifier_git="$WORKSPACE/.loom/integration/.git"
+    verifier_hold="$verifier_git/smoke-verifier-hold"
+    verifier_entered="$verifier_git/smoke-verifier-entered"
+    printf 'hold\n' > "$verifier_hold"
+    verifier_log="$WORKSPACE/.loom/smoke-verifier-interrupted-driver.log"
+    LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
+        "$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID" > "$verifier_log" 2>&1 &
+    verifier_driver=$!
+    for _attempt in $(seq 1 120); do
+        if [[ -f "$verifier_entered" ]]; then
+            break
+        fi
+        if ! kill -0 "$verifier_driver" 2>/dev/null; then
+            cat "$verifier_log" >&2
+            log 'driver exited before actual verifier interruption point'
+            exit 1
+        fi
+        sleep 1
+    done
+    if [[ ! -f "$verifier_entered" ]]; then
+        kill -KILL "$verifier_driver"
+        wait "$verifier_driver" || true # best-effort: preserve readiness failure during owned-child cleanup.
+        cat "$verifier_log" >&2
+        log 'actual verifier interruption readiness timed out'
+        exit 1
+    fi
+    source_head=$(git -C "$WORKSPACE/.loom/beads/$BEAD_ID" rev-parse HEAD)
+    read -r verifier_child verifier_parent < "$verifier_entered"
+    kill -KILL "$verifier_driver"
+    if wait "$verifier_driver"; then
+        log 'driver killed during verification unexpectedly succeeded'
+        exit 1
+    else
+        verifier_rc=$?
+    fi
+    [[ "$verifier_rc" == 137 ]]
+    rm "$verifier_hold"
+    for _attempt in $(seq 1 30); do
+        if ! kill -0 "$verifier_child" 2>/dev/null && ! kill -0 "$verifier_parent" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if kill -0 "$verifier_child" 2>/dev/null || kill -0 "$verifier_parent" 2>/dev/null; then
+        log 'owned verifier did not exit after bounded release; refusing concurrent restart'
+        exit 1
+    fi
+    log 'interrupted driver during real verification; restarting its persisted candidate'
+fi
+
 set +e
 LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
-timeout --kill-after=10s 600s "$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID"
+timeout --kill-after=10s 600s "$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID" > "$WORKSPACE/.loom/smoke-final-driver.log" 2>&1
 RC=$?
 set -e
-
+cat "$WORKSPACE/.loom/smoke-final-driver.log"
 if [[ "$RC" -ne 0 ]]; then
     log "loom loop $BEAD_ID failed with exit $RC"
     exit 1
 fi
+
+if [[ -n "${source_head:-}" ]]; then
+    restored_head=$(git -C "$WORKSPACE/.loom/beads/$BEAD_ID" rev-parse HEAD)
+    if [[ "$restored_head" != "$source_head" ]]; then
+        log "verification restart changed completed source: $source_head -> $restored_head"
+        exit 1
+    fi
+    if grep -Fq 'dispatching agent against per-bead workspace' "$WORKSPACE/.loom/smoke-final-driver.log"; then
+        log 'verification restart redispatched implementation'
+        exit 1
+    fi
+    events=("$WORKSPACE/.git/loom-verification-continuations/"*.json)
+    latest="${events[${#events[@]}-1]}"
+    if ! jq -e --arg bead "$BEAD_ID" '.bead == $bead and .phase == "resolved"' "$latest" >/dev/null; then
+        log 'restart did not finish its publication continuation'
+        cat "$latest" >&2
+        exit 1
+    fi
+    published_head=$(git -C "$WORKSPACE/.loom/integration" rev-parse HEAD)
+    remote_head=$(git -C "$WORKSPACE" ls-remote origin refs/heads/main | cut -f1)
+    if [[ "$published_head" != "$remote_head" ]]; then
+        log "candidate was not published: integration=$published_head origin=$remote_head"
+        exit 1
+    fi
+    log 'verifier-restart-resumed-without-source-redispatch-and-published'
+
+fi
+
 
 if ! BEAD_JSON=$(bd show "$BEAD_ID" --json) ||
     ! STATUS=$(jq -er 'if type == "array" then .[0].status else .status end' <<< "$BEAD_JSON"); then

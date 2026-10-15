@@ -3,7 +3,7 @@
 //! Worker preparation is shared with parallel scheduling through [`super::worker`].
 //! The caller supplies transport; static profile faults never fall back silently.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -159,6 +159,10 @@ where
     /// skipped rather than unwinding a prior bead's commit
     /// (`specs/harness.md` § Verdict Gate — `post-integrate-fail`).
     pre_integration_tip: Option<GitOid>,
+    verification_attempted: HashSet<BeadId>,
+    verification_max_attempts: u32,
+    verification_resume: Option<loom_driver::workspace::VerificationContinuation>,
+    verification_restore_status: Option<loom_driver::bd::Status>,
     /// Attempt number rendered into the current bead's prompt and copied
     /// into durable post-integrate gate logs.
     current_attempt: u32,
@@ -216,6 +220,10 @@ where
             loom_cfg: LoomTopConfig::default(),
             skills_cfg: SkillsConfig::default(),
             pre_integration_tip: None,
+            verification_attempted: HashSet::new(),
+            verification_max_attempts: 3,
+            verification_resume: None,
+            verification_restore_status: None,
             current_attempt: 0,
             current_worktree_path: None,
             fixed_queue: None,
@@ -289,6 +297,118 @@ where
         self.lock.take();
     }
 
+    /// Keep verifier retries within the existing trusted invocation's infrastructure budget.
+    #[must_use]
+    pub const fn with_verification_attempts(mut self, attempts: u32) -> Self {
+        self.verification_max_attempts = if attempts == 0 { 1 } else { attempts };
+        self
+    }
+
+    pub(super) async fn reopen_after_verification_failure(
+        &mut self,
+        bead: &BeadId,
+        detail: String,
+    ) -> Result<(), LoopError> {
+        self.bd.update(bead, UpdateOpts { status: Some(loom_driver::bd::Status::Open), remove_labels: vec!["loom:infra".into()], append_notes: Some(format!("Required verifier rejected the preserved candidate; implementation repair resumes automatically: {detail}")), ..UpdateOpts::default() }).await?;
+        self.emit_to_log(DriverKind::BdStateTransition, "semantic verifier rejection returned to implementation repair", serde_json::json!({"bead_id":bead, "status":"open", "source_route":"verification-source-repair"}));
+        Ok(())
+    }
+
+    pub(super) async fn resume_verification(
+        &mut self,
+        bead: &Bead,
+        mut record: loom_driver::workspace::VerificationContinuation,
+    ) -> Result<AgentOutcome, LoopError> {
+        self.current_emit = None;
+        self.pre_integration_tip = None;
+        self.verification_resume = None;
+        self.verification_restore_status = None;
+        self.prepare_emit_state(&bead.id);
+        let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
+        association.validate_verification(&record)?;
+        let path = self.workspace.join(".loom/beads").join(bead.id.as_str());
+        if !self.git.status_porcelain_at(&path).await?.trim().is_empty() {
+            return Ok(AgentOutcome::StaticInfra { cause: WORKSPACE_RECOVERY_FAILED_CAUSE.into(), error: "completed source changed during verifier recovery; preserved without source redispatch".into() });
+        }
+        let gate_workspace = self.git.loom_workspace();
+        if !self
+            .git
+            .status_porcelain_at(&gate_workspace)
+            .await?
+            .trim()
+            .is_empty()
+        {
+            return Ok(AgentOutcome::StaticInfra {
+                cause: WORKSPACE_RECOVERY_FAILED_CAUSE.into(),
+                error: "integration has unfinished work; verifier continuation retained".into(),
+            });
+        }
+        self.git.checkout_integration().await?;
+        let current = self.git.integration_commit_sha().await?;
+        if !GitClient::open(&gate_workspace)?
+            .is_ancestor_of_head(record.base.as_str())
+            .await?
+        {
+            return Ok(AgentOutcome::StaticInfra { cause: WORKSPACE_RECOVERY_FAILED_CAUSE.into(), error: "integration history no longer contains verification base; continuation retained".into() });
+        }
+        let pinned = format!("refs/loom/verification/{}/{}", bead.id, record.candidate);
+        if loom_driver::git::sync_rev_parse(&gate_workspace, &pinned)? != record.candidate {
+            return Err(LoopError::Bug {
+                context: "verification candidate pin changed; no coverage admitted".into(),
+            });
+        }
+        let branch = self
+            .git
+            .restore_verification_branch(&bead.id, &record.candidate)
+            .await?;
+        let worktree = CreatedWorktree {
+            path: path.clone(),
+            branch: branch.clone(),
+        };
+        if !matches!(
+            self.git.rebase_onto_integration(&branch).await?,
+            RebaseOutcome::Rebased
+        ) {
+            return Ok(AgentOutcome::StaticInfra { cause: WORKSPACE_RECOVERY_FAILED_CAUSE.into(), error: "verification continuation conflicts with independent integration work; both histories retained".into() });
+        }
+        let candidate = loom_driver::git::sync_rev_parse(&gate_workspace, &branch)?;
+        let base = if candidate == current {
+            record.base.clone()
+        } else {
+            current.clone()
+        };
+        if let Some(outcome) = self
+            .verify_or_block(
+                &bead.id,
+                &worktree,
+                &format!("{base}..{branch}"),
+                VerifyPass::Driver,
+            )
+            .await?
+        {
+            return Ok(outcome);
+        }
+        association.validate_verification(&record)?;
+        self.git
+            .preserve_verification_candidate(&bead.id, &candidate)
+            .await?;
+        record.base = base;
+        record.candidate = candidate.clone();
+        association.append_verification(&record)?;
+        self.git.ff_merge_integration(&branch).await?;
+        self.pre_integration_tip = (candidate != current).then_some(current);
+        self.current_worktree_path = Some(path);
+        self.verification_restore_status = bead
+            .labels
+            .iter()
+            .any(loom_driver::bd::Label::is_infra)
+            .then_some(record.parked_status)
+            .flatten();
+        self.verification_resume = Some(record);
+        self.prepare_emit_state(&bead.id);
+        Ok(AgentOutcome::Success)
+    }
+
     async fn load_infra_queue(&mut self) -> Result<(), LoopError> {
         if self.infra_queue_loaded {
             return Ok(());
@@ -306,7 +426,25 @@ where
                 ..ListOpts::default()
             })
             .await?;
-        self.infra_queue = beads.into_iter().collect();
+        self.infra_queue = beads
+            .into_iter()
+            .filter(|bead| !self.verification_attempted.contains(&bead.id))
+            .collect();
+        let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
+        for record in association.verification_continuations()? {
+            if record.label != self.label {
+                continue;
+            }
+            if record.root != self.ready_parent {
+                continue;
+            }
+            if !self.verification_attempted.contains(&record.bead)
+                && !self.infra_queue.iter().any(|bead| bead.id == record.bead)
+            {
+                self.infra_queue
+                    .push_back(self.bd.show(&record.bead).await?);
+            }
+        }
         self.infra_queue_loaded = true;
         Ok(())
     }
@@ -407,11 +545,12 @@ where
     }
 
     async fn rollback_if_bead_advanced_integration(&mut self) -> Result<bool, LoopError> {
-        let advanced = self.pre_integration_tip.take().is_some();
-        if advanced {
-            self.git.rollback_integration().await?;
+        if let Some(tip) = self.pre_integration_tip.take() {
+            self.git.reset_integration_to(tip.as_str()).await?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(advanced)
     }
 
     async fn reap_closed_worktree(&mut self, bead: &BeadId) -> Result<(), LoopError> {
@@ -548,6 +687,16 @@ where
     ) -> Result<AgentOutcome, LoopError> {
         self.current_emit = None;
         self.current_worktree_path = None;
+        self.verification_resume = None;
+        self.verification_restore_status = None;
+        let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
+        if let Some(record) = association
+            .verification_continuations()?
+            .into_iter()
+            .find(|record| record.bead == bead.id)
+        {
+            return self.resume_verification(bead, record).await;
+        }
         if bead.labels.iter().any(loom_driver::bd::Label::is_infra) {
             self.bd
                 .update(
@@ -796,6 +945,22 @@ where
                         return Ok(outcome);
                     }
                     let pre_tip = self.git.integration_commit_sha().await?;
+                    let candidate = loom_driver::git::sync_rev_parse(
+                        &self.git.loom_workspace(),
+                        &worktree.branch,
+                    )?;
+                    if candidate != pre_tip {
+                        self.git
+                            .preserve_verification_candidate(&bead.id, &candidate)
+                            .await?;
+                        association.begin_verification(
+                            bead.id.clone(),
+                            self.label.clone(),
+                            self.ready_parent.clone(),
+                            pre_tip.clone(),
+                            candidate,
+                        )?;
+                    }
                     self.git.ff_merge_integration(&worktree.branch).await?;
                     let main_sha = self.git.integration_commit_sha().await?;
                     if main_sha == pre_tip {
@@ -1015,6 +1180,16 @@ where
         bead: &BeadId,
         diagnostic: &InfraDiagnostic,
     ) -> Result<(), LoopError> {
+        let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
+        if let Some(mut record) = association
+            .verification_continuations()?
+            .into_iter()
+            .find(|record| &record.bead == bead)
+            && record.parked_status.is_none()
+        {
+            record.parked_status = Some(self.bd.show(bead).await?.status);
+            association.append_verification(&record)?;
+        }
         let mut metadata = vec![
             ("loom.infra.cause".to_string(), diagnostic.cause.clone()),
             ("loom.infra.phase".to_string(), "loop".to_string()),
@@ -1083,9 +1258,17 @@ where
 
     async fn exec_per_bead_gate(&mut self, bead: &BeadId) -> Result<PerBeadGateOutcome, LoopError> {
         self.release_handoff_lock_for_child_gate();
+        self.verification_attempted.insert(bead.clone());
+        let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
+        let continuation = association
+            .verification_continuations()?
+            .into_iter()
+            .find(|record| &record.bead == bead);
         let diff_range = self
-            .pre_integration_tip
+            .verification_resume
             .as_ref()
+            .map(|record| &record.base)
+            .or(self.pre_integration_tip.as_ref())
             .map_or_else(|| "HEAD..HEAD".to_owned(), |tip| format!("{tip}..HEAD"));
         let verify_args = vec![
             "gate".to_string(),
@@ -1094,7 +1277,6 @@ where
             diff_range.clone(),
         ];
         let gate_workspace = self.git.loom_workspace();
-        let config = LoomConfig::load(LoomConfig::resolve_path(&gate_workspace))?;
         let verify_output = super::verify::execute_gate(
             Command::new(&self.loom_bin)
                 .current_dir(&gate_workspace)
@@ -1102,7 +1284,7 @@ where
             &gate_workspace,
             &SystemClock::new(),
             self.loom_cfg.git_hook_timeout(),
-            config.loop_.infra.max_attempts,
+            self.verification_max_attempts,
         )
         .await?;
         let verify_code = verify_output.code;
@@ -1153,6 +1335,9 @@ where
             );
             let rolled_back = self.rollback_if_bead_advanced_integration().await?;
             if !infrastructure {
+                if let Some(record) = &continuation {
+                    association.finish_verification(record)?;
+                }
                 self.stashed_previous_failure = Some(PreviousFailure::PostIntegrateFail {
                     failures: vec![failure],
                     gate_log_path: gate_log_path.clone(),
@@ -1178,7 +1363,21 @@ where
             });
         }
 
-        self.reap_closed_worktree(bead).await?;
+        if let Some(status) = self.verification_restore_status.take() {
+            if DecisionWaitJournal::new(&self.workspace).has_pending_for(bead)? {
+                return Err(LoopError::ReviewHandoff {
+                    detail:
+                        "host decision hold prevents recovery-state restoration; candidate retained"
+                            .into(),
+                });
+            }
+            self.bd.update(bead, UpdateOpts { if_status: Some(loom_driver::bd::Status::Blocked), status: Some(status), remove_labels: vec!["loom:infra".into()], append_notes: Some("Trusted verification continuation completed; original source state restored without source redispatch. Publication still requires its normal gates.".into()), ..UpdateOpts::default() }).await?;
+        }
+        if let Some(record) = &continuation {
+            association.await_verification_publication(record)?;
+        } else {
+            self.reap_closed_worktree(bead).await?;
+        }
         Ok(PerBeadGateOutcome::Clean)
     }
 
@@ -1553,6 +1752,26 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
                 String::from_utf8_lossy(&beads_output.stderr),
             ),
         });
+    }
+    let association = loom_driver::workspace::Association::resolve(workspace)?;
+    let integrated = GitClient::open(&gate_workspace)?;
+    for record in association.verification_continuations()? {
+        if record.label != *label {
+            continue;
+        }
+        if record
+            .root
+            .as_ref()
+            .is_some_and(|root| root.as_str() != molecule.as_str())
+        {
+            continue;
+        }
+        if integrated
+            .is_ancestor_of_head(record.candidate.as_str())
+            .await?
+        {
+            association.finish_verification(&record)?;
+        }
     }
     Ok(MoleculeGateHandoff {
         evidence,
@@ -5097,6 +5316,247 @@ mod tests {
             assert_eq!(row["head"], head.as_str());
             assert_eq!(row["coverage_admitted"], false);
         }
+    }
+
+    #[tokio::test]
+    async fn production_scheduler_resumes_exhausted_verification_after_restart_without_source_dispatch()
+     {
+        let dir = tempfile::tempdir().expect("fixture");
+        let workspace = dir.path().join("workspace");
+        let git = git_workspace(&workspace);
+        let integration = git.loom_workspace();
+        let base = loom_driver::git::sync_head_commit_sha(&integration).expect("base");
+        for n in 0..3 {
+            std::fs::write(
+                integration.join("candidate.txt"),
+                format!("candidate {n}\n"),
+            )
+            .expect("source");
+            loom_driver::git::commit_all_in(&integration, "candidate").expect("commit");
+        }
+        let candidate = loom_driver::git::sync_head_commit_sha(&integration).expect("candidate");
+        let id = BeadId::new("lm-vresume").expect("id");
+        let label = SpecLabel::new("gate").expect("label");
+        let source = git
+            .create_worktree(&label, &id)
+            .await
+            .expect("independent source");
+        git.preserve_verification_candidate(&id, &candidate)
+            .await
+            .expect("pin");
+        let association =
+            loom_driver::workspace::Association::resolve(&workspace).expect("authority");
+        assert!(
+            !git.has_pending_verification_tip()
+                .await
+                .expect("unregistered ahead work stays rejected")
+        );
+        association
+            .begin_verification(
+                id.clone(),
+                label.clone(),
+                None,
+                base.clone(),
+                candidate.clone(),
+            )
+            .expect("driver continuation");
+        assert!(
+            git.has_pending_verification_tip()
+                .await
+                .expect("registered candidate reaches restart recovery")
+        );
+        let unavailable = dir.path().join("unavailable");
+        std::fs::write(&unavailable, "outage\n").expect("fault");
+        let stub = dir.path().join("verifier.sh");
+        loom_test_support::write_executable_bash_script(
+            &stub,
+            &format!("set -euo pipefail\nif [[ -f {unavailable:?} ]]; then exit 78; fi\nexit 0\n"),
+        )
+        .expect("verifier");
+        let closed = br#"[{"id":"lm-vresume","title":"completed source","description":"","status":"closed","priority":2,"issue_type":"task","labels":["spec:gate"]}]"#;
+        let parked = br#"[{"id":"lm-vresume","title":"completed source","description":"","status":"blocked","priority":2,"issue_type":"task","labels":["spec:gate","loom:infra"]}]"#;
+        let manifest = write_manifest(dir.path());
+        let mut first = ProductionAgentLoopController::new(
+            BdClient::with_runner(ScriptedBd::new([
+                ok_stdout(closed),
+                ok_stdout(b""),
+                ok_stdout(b"[]"),
+                ok_stdout(parked),
+            ])),
+            label.clone(),
+            stub.clone(),
+            workspace.clone(),
+            git,
+            Arc::clone(&manifest),
+            None,
+            ProfileName::new("base").expect("profile"),
+            |_cfg: SpawnConfig, _id: BeadId| async move {
+                panic!("source dispatch forbidden during verifier continuation")
+            },
+        );
+        first.pre_integration_tip = Some(base.clone());
+        first.current_worktree_path = Some(source.path.clone());
+        assert!(matches!(
+            first.exec_per_bead_gate(&id).await.expect("bounded outage"),
+            PerBeadGateOutcome::Infrastructure { .. }
+        ));
+        assert_eq!(
+            loom_driver::git::sync_head_commit_sha(&integration).expect("exact rollback"),
+            base
+        );
+        first
+            .apply_infra(
+                &id,
+                &InfraDiagnostic::static_diagnostic(
+                    super::super::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE,
+                    "outage".into(),
+                ),
+            )
+            .await
+            .expect("park verification only");
+        assert!(
+            first
+                .next_ready_bead(&[])
+                .await
+                .expect("no same-invocation retry")
+                .is_none()
+        );
+        drop(first);
+        assert_eq!(
+            association
+                .verification_continuations()
+                .expect("retained")
+                .len(),
+            1
+        );
+        std::fs::write(
+            integration.join("independent.txt"),
+            "independent accepted work\n",
+        )
+        .expect("independent source");
+        loom_driver::git::commit_all_in(&integration, "independent work")
+            .expect("independent commit");
+        std::fs::remove_file(&unavailable).expect("bounded fixture outage ends automatically");
+        let policy = loom_driver::git::RepoGitPolicy::resolve(
+            &workspace,
+            "unused-wrix".into(),
+            loom_driver::git::KeyMode::Host,
+        )
+        .expect("fixture policy");
+        let git = GitClient::open(&workspace)
+            .expect("existing repository")
+            .with_repo_git_policy(policy);
+        let sweep_script = ScriptedBd::new([]);
+        let sweep_calls = sweep_script.calls_handle();
+        let sweep_bd = BdClient::with_runner(sweep_script);
+        assert_eq!(
+            git.sweep_orphan_bead_clones(
+                &sweep_bd,
+                &MoleculeId::new("lm-vmolecule").expect("molecule")
+            )
+            .await
+            .expect("startup recovery retention"),
+            Vec::<PathBuf>::new()
+        );
+        assert!(sweep_calls.lock().expect("sweep calls").is_empty());
+        assert!(source.path.exists());
+        let scripted = ScriptedBd::new([
+            ok_stdout(b"[]"),
+            ok_stdout(b"[]"),
+            ok_stdout(parked),
+            ok_stdout(b""),
+        ]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut resumed = ProductionAgentLoopController::new(
+            bd,
+            label,
+            stub,
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base").expect("profile"),
+            |_cfg: SpawnConfig, _id: BeadId| async move {
+                panic!("restart must resume verifier, never implementation")
+            },
+        );
+        let bead = resumed
+            .next_ready_bead(&[])
+            .await
+            .expect("production scheduler")
+            .expect("pending candidate");
+        assert_eq!(bead.id, id);
+        assert_eq!(
+            resumed
+                .run_bead(&bead, None)
+                .await
+                .expect("restore candidate"),
+            AgentOutcome::Success
+        );
+        assert_eq!(
+            resumed
+                .exec_per_bead_gate(&id)
+                .await
+                .expect("verify resumed snapshot"),
+            PerBeadGateOutcome::Clean
+        );
+        let publication = association
+            .verification_continuations()
+            .expect("publication continuation remains");
+        assert_eq!(publication.len(), 1);
+        assert!(publication[0].awaiting_publication());
+        assert_eq!(
+            loom_driver::git::sync_head_commit_sha(&source.path).expect("source preserved"),
+            candidate
+        );
+        assert!(integration.join("independent.txt").exists());
+        assert!(integration.join("candidate.txt").exists());
+        assert!(source.path.exists());
+        let calls = calls.lock().expect("calls").clone();
+        assert!(
+            calls
+                .iter()
+                .any(|args| args.iter().any(|arg| arg == "--status=closed")
+                    || args
+                        .windows(2)
+                        .any(|args| args[0] == "--status" && args[1] == "closed")),
+            "original worker closure restored only after verification: {calls:?}"
+        );
+        let request = super::super::schedule::Request {
+            workspace: resumed.workspace.clone(),
+            label: resumed.label.clone(),
+            ready_parent: None,
+            parallelism: "2".parse().expect("parallelism"),
+            agent_override: None,
+            wrix_bin: resumed.wrix_bin.clone(),
+            loom_bin: resumed.loom_bin.clone(),
+            loom: resumed.loom_cfg.clone(),
+            infra_policy: super::super::InfraRetryPolicy { max_attempts: 3 },
+            max_iterations: 2,
+            repo_git_policy: loom_driver::git::RepoGitPolicy::resolve(
+                &resumed.workspace,
+                "unused-wrix".into(),
+                loom_driver::git::KeyMode::Host,
+            )
+            .expect("fixture policy"),
+            manifest: Arc::clone(&resumed.manifest),
+        };
+        drop(resumed);
+        let (ids, work) = super::super::schedule::resume_verification_candidates(
+            &request,
+            BdClient::with_runner(ScriptedBd::new([ok_stdout(closed)])),
+        )
+        .await
+        .expect("parallel verifier-only restart");
+        assert_eq!(ids, HashSet::from([id]));
+        assert!(work);
+        assert_eq!(
+            loom_driver::git::sync_head_commit_sha(&source.path)
+                .expect("source retained across both scheduler modes"),
+            candidate
+        );
+        assert!(!integration.join(".loom/marker.json").exists());
     }
 
     /// A non-zero `loom gate verify --diff` against the integrated tree is
