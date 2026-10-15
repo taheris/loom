@@ -185,6 +185,44 @@ run_until_missing_tracker resumed
 [[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 6 ]]
 git merge-base --is-ancestor "$initial_head" HEAD
 git verify-commit HEAD
+
+signature_attempts=$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)
+integration_before_signature=$(git -C .loom/integration rev-parse HEAD)
+printf '{ outputs = { self }: builtins.trace "UNAUTHENTICATED_FACTORY_EXECUTED" (throw "must not execute"); }\n' > flake.nix
+git add flake.nix
+git -c commit.gpgsign=false commit -qm 'Exercise unsigned unpublished-to-integration factory rejection'
+git push -q origin main
+unsigned_head=$(git rev-parse HEAD)
+if git -C .loom/integration cat-file -e "$unsigned_head^{commit}" 2>/dev/null; then
+  printf 'unsigned fixture must initially be absent from integration\n' >&2
+  exit 1
+fi
+if "$loom_bin" loop lm-bootstrap-fixture > "$fixture/unsigned-source.log" 2>&1; then
+  printf 'unsigned published operator factory was accepted\n' >&2
+  exit 1
+fi
+grep -F 'published factory source has no authenticated commit signature' "$fixture/unsigned-source.log"
+if grep -Fq UNAUTHENTICATED_FACTORY_EXECUTED "$fixture/unsigned-source.log"; then
+  printf 'unsigned factory executed before authentication\n' >&2
+  exit 1
+fi
+[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == "$signature_attempts" ]]
+[[ "$(git -C .loom/integration rev-parse HEAD)" == "$integration_before_signature" ]]
+cp "$fixture/factory.saved" flake.nix
+git add flake.nix
+git commit -qm 'Recover with a signed published operator factory'
+git push -q origin main
+expected_head=$(git rev-parse HEAD)
+if git -C .loom/integration cat-file -e "$expected_head^{commit}" 2>/dev/null; then
+  printf 'signed recovery must initially be absent from integration\n' >&2
+  exit 1
+fi
+run_until_missing_tracker signed-source-recovery
+[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == "$((signature_attempts + 1))" ]]
+[[ "$(git -C .loom/integration rev-parse HEAD)" == "$integration_before_signature" ]]
+git -C .loom/integration fetch -q origin main
+git -C .loom/integration merge -q --ff-only origin/main
+printf 'published-profile-bootstrap-authenticates-unfetched-source-ok\n'
 git -C .loom/integration config user.name 'Profile Bootstrap Fixture'
 git -C .loom/integration config user.email bootstrap-fixture@example.invalid
 printf 'unpublished candidate must remain preserved\n' > .loom/integration/pending-candidate.txt

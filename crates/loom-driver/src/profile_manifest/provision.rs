@@ -179,7 +179,7 @@ async fn published_source(
         });
     }
     if !matches!(
-        git.verify_commit_range(&format!("{head}^!")).await?,
+        git.verify_operator_commit(&head).await?,
         SignatureCheck::Verified
     ) {
         return Err(ProvisionError::Source {

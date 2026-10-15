@@ -1867,6 +1867,13 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
         SignatureCheck::Verified,
         "with a key present the signed bead commit must verify, not skip",
     );
+    assert!(
+        client
+            .verify_commit_range("refs/heads/missing-verification-range^!")
+            .await
+            .is_err(),
+        "failed enumeration cannot authenticate an empty range"
+    );
 
     client.remove_worktree(&created.path).await?;
     Ok(())

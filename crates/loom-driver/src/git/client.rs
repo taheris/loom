@@ -1871,19 +1871,60 @@ impl GitClient {
         Ok(false)
     }
 
-    /// Restore only the driver's transient continuation branch; never overwrite another tip.
+    /// Allocate a fresh driver continuation branch without overwriting interrupted history.
     ///
     /// # Errors
-    /// Returns a diagnostic preserving a conflicting existing branch.
+    /// Returns Git errors or bounded allocation exhaustion, preserving existing branches.
     pub async fn restore_verification_branch(
         &self,
         bead: &BeadId,
         candidate: &GitOid,
     ) -> Result<String, GitError> {
-        let branch = format!("loom/verify-{bead}-{candidate}");
-        self.create_verification_ref(&format!("refs/heads/{branch}"), candidate)
+        for attempt in 0..1024 {
+            let branch = format!("loom/verify-{bead}-{candidate}-{attempt}");
+            let reference = format!("refs/heads/{branch}");
+            let existing = run_git_raw(
+                &self.loom_workspace(),
+                self.clock.as_ref(),
+                ["rev-parse", "--verify", "--quiet", &reference],
+                None,
+            )
             .await?;
-        Ok(branch)
+            if existing.status.success() {
+                continue;
+            }
+            let created = run_git_raw(
+                &self.loom_workspace(),
+                self.clock.as_ref(),
+                [
+                    "update-ref",
+                    "--no-deref",
+                    &reference,
+                    candidate.as_str(),
+                    "",
+                ],
+                None,
+            )
+            .await?;
+            if created.status.success() {
+                return Ok(branch);
+            }
+            let collision = run_git_raw(
+                &self.loom_workspace(),
+                self.clock.as_ref(),
+                ["rev-parse", "--verify", "--quiet", &reference],
+                None,
+            )
+            .await?;
+            if !collision.status.success() {
+                return Err(cli_error(&created));
+            }
+        }
+        Err(GitError::GitCli {
+            status: 1,
+            stderr: "verification recovery branch budget exhausted; all prior branches retained"
+                .into(),
+        })
     }
 
     async fn create_verification_ref(
@@ -2118,6 +2159,9 @@ impl GitClient {
             None,
         )
         .await?;
+        if !listed.status.success() {
+            return Err(cli_error(&listed));
+        }
         let shas: Vec<String> = String::from_utf8_lossy(&listed.stdout)
             .lines()
             .map(|s| s.trim().to_owned())
@@ -2134,6 +2178,38 @@ impl GitClient {
             }
         }
         Ok(SignatureCheck::Verified)
+    }
+
+    /// Authenticate the pinned operator factory in the repository that owns its object.
+    ///
+    /// # Errors
+    /// Missing verification authority and Git execution errors remain fail-closed.
+    pub(crate) async fn verify_operator_commit(
+        &self,
+        commit: &GitOid,
+    ) -> Result<SignatureCheck, GitError> {
+        if !self.signing_verification_enabled().await? {
+            return Ok(SignatureCheck::Skipped);
+        }
+        let allowed_signers = format!(
+            "gpg.ssh.allowedSignersFile={}",
+            self.allowed_signers_path().display()
+        );
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["-c", &allowed_signers, "verify-commit", commit.as_str()],
+            None,
+        )
+        .await?;
+        if output.status.success() {
+            Ok(SignatureCheck::Verified)
+        } else {
+            Ok(SignatureCheck::Failed {
+                commit: commit.to_string(),
+                detail: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            })
+        }
     }
 
     /// Fast-forward the loom workspace's integration branch to
