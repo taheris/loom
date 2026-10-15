@@ -1957,6 +1957,14 @@ impl GitClient {
                         stderr: "interrupted rebase belongs to different work; preserved".into(),
                     });
                 }
+                if !self
+                    .status_porcelain_at(&integration)
+                    .await?
+                    .trim()
+                    .is_empty()
+                {
+                    return Err(GitError::GitCli { status: 1, stderr: "interrupted publication rebase has uncommitted work; retained without abort or reset".into() });
+                }
                 let partial = sync_head_commit_sha(&integration)?;
                 self.create_verification_ref(
                     &format!("refs/loom/recovery/publication-{}-{partial}", intent.before),

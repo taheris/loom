@@ -2812,6 +2812,16 @@ async fn publication_rebase_recovery_preserves_source_and_replays_unfinished_tra
                     Some(rewritten.clone());
                 association.append_verification(&record)?;
             }
+            if interrupted == 3 {
+                let dirty = integration.join("interrupted-uncommitted.txt");
+                std::fs::write(&dirty, "preserve uncommitted work\n")?;
+                assert!(client.recover_publication_rebase().await.is_err());
+                assert_eq!(
+                    std::fs::read_to_string(&dirty)?,
+                    "preserve uncommitted work\n"
+                );
+                std::fs::rename(&dirty, repo.path().join("retained-interrupted-work.txt"))?;
+            }
             client.recover_publication_rebase().await?;
             assert_eq!(
                 loom_driver::git::sync_head_commit_sha(&integration)?,
