@@ -47,7 +47,9 @@ async fn canonical_pending_hold_blocks_publication_even_after_native_closure() {
     f.bd.close(&f.root, Some("human closed root"))
         .await
         .unwrap();
-    let git = loom_driver::git::GitClient::open(f.dir.path()).unwrap();
+    let mut git = loom_driver::git::GitClient::open(f.dir.path()).unwrap();
+    let missing_hooks = f.dir.path().join("intentionally-missing-prek-hooks");
+    git.set_prek_hooks_path_override(missing_hooks.clone());
     let molecule = f.root.as_str().parse().unwrap();
     let never = std::path::Path::new("/must-not-launch-verification-with-a-pending-hold");
     let handoff = super::super::super::execute_molecule_push_gate(
@@ -68,8 +70,7 @@ async fn canonical_pending_hold_blocks_publication_even_after_native_closure() {
         f.journal().load(&f.source.id).unwrap().unwrap().phase,
         Phase::Active
     );
-    // Removing canonical authority exposes the native-clean molecule path,
-    // which reaches Git's independent integration-workspace guard.
+    // Released attribution must still leave the orphaned native projection fenced.
     let mut entry = f.journal().load(&f.source.id).unwrap().unwrap();
     entry.phase = Phase::Released;
     f.journal().save(&entry).unwrap();
@@ -108,11 +109,8 @@ async fn canonical_pending_hold_blocks_publication_even_after_native_closure() {
     )
     .await;
     match control {
-        Err(LoopError::Git(loom_driver::git::GitError::GitCli {
-            status: 128,
-            stderr,
-        })) => {
-            assert!(stderr.contains(".loom/integration"));
+        Err(LoopError::Git(loom_driver::git::GitError::PrekHooksMissing { path })) => {
+            assert_eq!(path, missing_hooks);
         }
         Err(error) => panic!("unexpected downstream guard: {error:?}"),
         Ok(handoff) => panic!(
