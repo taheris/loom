@@ -1003,7 +1003,35 @@ pub(crate) fn bounded_query_diagnostic(text: &str) -> String {
     redact_query_diagnostic(text, std::env::vars_os())
 }
 
+pub(crate) fn bounded_query_tail_diagnostic(text: &str) -> String {
+    redact_query_tail_diagnostic(text, std::env::vars_os())
+}
+
 fn redact_query_diagnostic(
+    text: &str,
+    environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> String {
+    redact_query_text(text, environment)
+        .chars()
+        .take(1024)
+        .collect()
+}
+
+fn redact_query_tail_diagnostic(
+    text: &str,
+    environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> String {
+    redact_query_text(text, environment)
+        .chars()
+        .rev()
+        .take(1024)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn redact_query_text(
     text: &str,
     environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> String {
@@ -1021,7 +1049,7 @@ fn redact_query_diagnostic(
             redacted = redacted.replace(value, "[REDACTED]");
         }
     }
-    redacted.chars().take(1024).collect()
+    redacted
 }
 
 /// The `#fn` / `::fn` selector trailing a script-path target, or `None`
@@ -1144,6 +1172,20 @@ printf '}}\n'"#;
             redact_query_diagnostic(&text, [("API_KEY".into(), "fixture-secret".into())]);
         assert!(diagnostic.starts_with("[REDACTED]: "));
         assert!(!diagnostic.contains("fixture-secret"));
+        assert_eq!(diagnostic.chars().count(), 1024);
+    }
+
+    #[test]
+    fn discovery_diagnostic_tail_retains_cause_after_redacting_long_credentials() {
+        let secret = "秘".repeat(1100);
+        let text = format!(
+            "{}{secret}: actual-discovery-failure",
+            "progress ".repeat(200)
+        );
+        let diagnostic = redact_query_tail_diagnostic(&text, [("API_TOKEN".into(), secret.into())]);
+        assert!(diagnostic.ends_with(": actual-discovery-failure"));
+        assert!(diagnostic.contains("[REDACTED]"));
+        assert!(!diagnostic.contains('秘'));
         assert_eq!(diagnostic.chars().count(), 1024);
     }
 

@@ -594,6 +594,20 @@ fn binary_include_captures_actual_resource_bytes_without_utf8_assumptions() {
 }
 
 #[test]
+fn raw_module_identifiers_resolve_native_filesystem_names() {
+    let dir = fixture("", "mod r#type;\nmod r#async { mod inner; }\n");
+    write(dir.path(), "src/type.rs", "pub fn value() {}\n");
+    write(dir.path(), "src/async/inner.rs", "pub fn value() {}\n");
+    let inventory = inventory(dir.path());
+    let members = inventory
+        .subject(&name("cargo:fixture:lib:fixture"))
+        .unwrap()
+        .members();
+    assert!(members.contains(&path("src/type.rs")));
+    assert!(members.contains(&path("src/async/inner.rs")));
+}
+
+#[test]
 fn ambiguous_module_layout_fails_instead_of_selecting_one_candidate() {
     let dir = fixture("", "mod child;\n");
     write(dir.path(), "src/child.rs", "pub fn value() {}\n");
@@ -601,6 +615,89 @@ fn ambiguous_module_layout_fails_instead_of_selecting_one_candidate() {
     assert!(matches!(
         Inventory::discover(&Snapshot::discover(dir.path()).unwrap()),
         Err(Error::Module { .. })
+    ));
+}
+
+#[test]
+fn manifest_relative_include_tracks_the_discovered_package_directory() {
+    let dir = fixture("", "pub fn root() {}\n");
+    let manifest = std::fs::read_to_string(dir.path().join("Cargo.toml")).unwrap();
+    write(
+        dir.path(),
+        "Cargo.toml",
+        &format!("{manifest}\n[workspace]\nmembers = ['child']\n"),
+    );
+    write(dir.path(), "README.md", "# Shared input\n");
+    write(
+        dir.path(),
+        "child/Cargo.toml",
+        "[package]\nname='child'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    write(
+        dir.path(),
+        "child/src/lib.rs",
+        "mod inline { mod nested; }\n",
+    );
+    write(
+        dir.path(),
+        "child/src/inline/nested.rs",
+        r#"pub const DOC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../README.md"));"#,
+    );
+    let lock = Command::new("cargo")
+        .args(["generate-lockfile", "--offline"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        lock.status.success(),
+        "{}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    assert!(
+        inventory(dir.path())
+            .subject(&name("cargo:child:lib:child"))
+            .unwrap()
+            .members()
+            .contains(&path("README.md"))
+    );
+}
+
+#[test]
+fn nested_static_concat_include_collects_root_package_source() {
+    let dir = fixture(
+        "",
+        r#"include!(concat!(concat!(env!("CARGO_MANIFEST_DIR")), "/src/", "generated.rs"));"#,
+    );
+    write(dir.path(), "src/generated.rs", "pub fn generated() {}\n");
+    assert!(
+        inventory(dir.path())
+            .subject(&name("cargo:fixture:lib:fixture"))
+            .unwrap()
+            .members()
+            .contains(&path("src/generated.rs"))
+    );
+}
+
+#[test]
+fn include_discovery_rejects_ambient_environment_membership() {
+    let dir = fixture(
+        "",
+        r#"pub const DOC: &str = include_str!(concat!(env!("CARGO_HOME"), "/README.md"));"#,
+    );
+    assert!(
+        matches!(Inventory::discover(&Snapshot::discover(dir.path()).unwrap()), Err(Error::Syntax { source, .. }) if source.to_string().contains("ambient variables cannot establish tracked membership"))
+    );
+}
+
+#[test]
+fn manifest_relative_include_cannot_escape_the_snapshot() {
+    let dir = fixture(
+        "",
+        r#"pub const DOC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../outside.md"));"#,
+    );
+    assert!(matches!(
+        Inventory::discover(&Snapshot::discover(dir.path()).unwrap()),
+        Err(Error::Outside { .. })
     ));
 }
 

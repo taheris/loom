@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
+use syn::ext::IdentExt as _;
 use syn::{Expr, Item, Lit, Meta};
 
 use super::snapshot::{ResourcePath, Snapshot};
@@ -140,7 +141,8 @@ fn discover_package(
         ))?;
         let source = relative(root, &target.src_path)?;
         let mut members = BTreeSet::new();
-        collect(snapshot, &source, true, &mut members)?;
+        let directory = origin.as_path().parent().unwrap_or_else(|| Path::new(""));
+        collect(snapshot, &source, directory, true, &mut members)?;
         targets.insert(name.clone());
         if target.test {
             consumers.insert(name.clone());
@@ -271,6 +273,7 @@ fn membership(snapshot: &Snapshot, directory: &ResourcePath) -> BTreeSet<Resourc
 fn collect(
     snapshot: &Snapshot,
     path: &ResourcePath,
+    manifest_directory: &Path,
     root: bool,
     members: &mut BTreeSet<ResourcePath>,
 ) -> Result<(), Error> {
@@ -292,8 +295,16 @@ fn collect(
     } else {
         parent.join(path.as_path().file_stem().unwrap_or_default())
     };
-    collect_items(snapshot, &file.items, parent, &module_directory, members)?;
+    collect_items(
+        snapshot,
+        &file.items,
+        parent,
+        &module_directory,
+        manifest_directory,
+        members,
+    )?;
     let mut includes = Includes {
+        manifest_directory,
         paths: Vec::new(),
         error: None,
     };
@@ -305,9 +316,13 @@ fn collect(
         });
     }
     for (include, source) in includes.paths {
-        let include = normalize(&parent.join(include))?;
+        let include = match include.base {
+            IncludeBase::Source => parent.join(include.value),
+            IncludeBase::Manifest => PathBuf::from(include.value),
+        };
+        let include = normalize(&include)?;
         if source {
-            collect(snapshot, &include, false, members)?;
+            collect(snapshot, &include, manifest_directory, false, members)?;
         } else {
             if !snapshot.files().contains_key(&include) {
                 return Err(super::snapshot::Error::Missing { path: include }.into());
@@ -318,21 +333,95 @@ fn collect(
     Ok(())
 }
 
-struct Includes {
-    paths: Vec<(String, bool)>,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IncludeBase {
+    Source,
+    Manifest,
+}
+
+struct IncludePath {
+    value: String,
+    base: IncludeBase,
+}
+
+fn include_path(expression: &Expr, manifest_directory: &Path) -> Result<IncludePath, syn::Error> {
+    match expression {
+        Expr::Lit(value) => match &value.lit {
+            Lit::Str(value) => Ok(IncludePath {
+                value: value.value(),
+                base: IncludeBase::Source,
+            }),
+            _ => Err(syn::Error::new_spanned(
+                expression,
+                "include path must be a string",
+            )),
+        },
+        Expr::Macro(value) if value.mac.path.is_ident("env") => {
+            let variable = syn::parse2::<syn::LitStr>(value.mac.tokens.clone())?;
+            if variable.value() != "CARGO_MANIFEST_DIR" {
+                return Err(syn::Error::new_spanned(
+                    expression,
+                    "include environment must be the discovered CARGO_MANIFEST_DIR; ambient variables cannot establish tracked membership",
+                ));
+            }
+            let directory = manifest_directory.to_str().ok_or_else(|| {
+                syn::Error::new_spanned(expression, "Cargo manifest directory is not UTF-8")
+            })?;
+            Ok(IncludePath {
+                value: directory.to_owned(),
+                base: IncludeBase::Manifest,
+            })
+        }
+        Expr::Macro(value) if value.mac.path.is_ident("concat") => {
+            use syn::parse::Parser as _;
+            let arguments = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+                .parse2(value.mac.tokens.clone())?;
+            let mut result = IncludePath {
+                value: String::new(),
+                base: IncludeBase::Source,
+            };
+            for argument in arguments {
+                let part = include_path(&argument, manifest_directory)?;
+                if part.base == IncludeBase::Manifest {
+                    if result.base == IncludeBase::Manifest || !result.value.is_empty() {
+                        return Err(syn::Error::new_spanned(
+                            expression,
+                            "CARGO_MANIFEST_DIR must begin the include path",
+                        ));
+                    }
+                    result.base = IncludeBase::Manifest;
+                }
+                result.value.push_str(&part.value);
+            }
+            // The discovered root package directory is the empty relative path.
+            if result.base == IncludeBase::Manifest && manifest_directory.as_os_str().is_empty() {
+                result.value = result.value.trim_start_matches('/').to_owned();
+            }
+            Ok(result)
+        }
+        _ => Err(syn::Error::new_spanned(
+            expression,
+            "include path requires string literals, concat!, or the discovered CARGO_MANIFEST_DIR",
+        )),
+    }
+}
+
+struct Includes<'a> {
+    manifest_directory: &'a Path,
+    paths: Vec<(IncludePath, bool)>,
     error: Option<syn::Error>,
 }
 
-impl<'ast> syn::visit::Visit<'ast> for Includes {
+impl<'ast> syn::visit::Visit<'ast> for Includes<'_> {
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
         if node.path.is_ident("include")
             || node.path.is_ident("include_str")
             || node.path.is_ident("include_bytes")
         {
-            match syn::parse2::<syn::LitStr>(node.tokens.clone()) {
-                Ok(path) => self
-                    .paths
-                    .push((path.value(), node.path.is_ident("include"))),
+            match syn::parse2::<Expr>(node.tokens.clone())
+                .and_then(|expression| include_path(&expression, self.manifest_directory))
+            {
+                Ok(path) => self.paths.push((path, node.path.is_ident("include"))),
                 Err(error) => self.error = Some(error),
             }
         } else {
@@ -363,17 +452,19 @@ fn collect_items(
     items: &[Item],
     file_directory: &Path,
     module_directory: &Path,
+    manifest_directory: &Path,
     members: &mut BTreeSet<ResourcePath>,
 ) -> Result<(), Error> {
     for item in items {
         let Item::Mod(module) = item else { continue };
         if let Some((_, items)) = &module.content {
-            let inline_directory = module_directory.join(module.ident.to_string());
+            let inline_directory = module_directory.join(module.ident.unraw().to_string());
             collect_items(
                 snapshot,
                 items,
                 &inline_directory,
                 &inline_directory,
+                manifest_directory,
                 members,
             )?;
             continue;
@@ -394,9 +485,9 @@ fn collect_items(
         let path = if let Some(explicit) = explicit {
             file_directory.join(explicit)
         } else {
-            let plain = module_directory.join(format!("{}.rs", module.ident));
+            let plain = module_directory.join(format!("{}.rs", module.ident.unraw()));
             let nested = module_directory
-                .join(module.ident.to_string())
+                .join(module.ident.unraw().to_string())
                 .join("mod.rs");
             let plain_path = ResourcePath::try_from(plain.clone())?;
             let nested_path = ResourcePath::try_from(nested.clone())?;
@@ -409,7 +500,13 @@ fn collect_items(
                 _ => nested,
             }
         };
-        collect(snapshot, &normalize(&path)?, false, members)?;
+        collect(
+            snapshot,
+            &normalize(&path)?,
+            manifest_directory,
+            false,
+            members,
+        )?;
     }
     Ok(())
 }

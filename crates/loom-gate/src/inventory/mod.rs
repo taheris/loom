@@ -516,9 +516,13 @@ fn command(root: &Path, program: Tool, args: &[&str]) -> Result<Vec<u8>, Error> 
     if !output.status.success() {
         return Err(Error::Discovery {
             program,
-            detail: crate::inputs::bounded_query_diagnostic(&String::from_utf8_lossy(
-                &output.stderr,
-            )),
+            detail: format!(
+                "{}: {}",
+                output.status,
+                crate::inputs::bounded_query_tail_diagnostic(&String::from_utf8_lossy(
+                    &output.stderr
+                ))
+            ),
         });
     }
     Ok(output.stdout)
