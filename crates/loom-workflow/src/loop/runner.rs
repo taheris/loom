@@ -372,6 +372,8 @@ pub enum PerBeadGateOutcome {
     /// routes to [`BeadResult::Blocked`] with the `retry-exhausted`
     /// cause.
     Recovery { detail: String },
+    /// Required verification exhausted its infrastructure budget; source work remains preserved.
+    Infrastructure { detail: String },
 }
 
 /// Run the per-bead loop with the default infra budget.
@@ -645,6 +647,14 @@ async fn process_one_bead<C: AgentLoopController>(
             }
             AgentOutcome::Success => match controller.exec_per_bead_gate(&bead.id).await? {
                 PerBeadGateOutcome::Clean => return Ok(terminal(BeadResult::Done)),
+                PerBeadGateOutcome::Infrastructure { detail } => {
+                    return Ok(terminal(BeadResult::Infra {
+                        diagnostic: InfraDiagnostic::static_diagnostic(
+                            VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE,
+                            detail,
+                        ),
+                    }));
+                }
                 PerBeadGateOutcome::StructuralViolation { detail } => {
                     return Ok(terminal(BeadResult::Blocked {
                         cause: MINT_STRUCTURAL_VIOLATION_CAUSE.to_string(),
@@ -1628,6 +1638,39 @@ mod tests {
             VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE
         );
         assert_eq!(controller.infra[0].1.infra_class, "static");
+        assert_eq!(outcome.beads_processed, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn required_verifier_infrastructure_failure_preserves_independent_source_work()
+    -> Result<(), LoopError> {
+        let mut controller = FakeController::default();
+        controller.ready_queue.push_back(bead("lm-infra", &[]));
+        controller.ready_queue.push_back(bead("lm-next", &[]));
+        controller
+            .agent_outcomes
+            .extend([AgentOutcome::Success, AgentOutcome::Success]);
+        controller
+            .per_bead_gate_outcomes
+            .push_back(PerBeadGateOutcome::Infrastructure {
+                detail: "required isolated verifier exhausted its infrastructure attempts".into(),
+            });
+        let outcome = run_loop(&mut controller, RetryPolicy { max_retries: 0 }, 10).await?;
+        assert_eq!(controller.run_calls.len(), 2);
+        assert!(
+            controller
+                .run_calls
+                .iter()
+                .all(|(_, previous)| previous.is_none())
+        );
+        assert_eq!(controller.infra.len(), 1);
+        assert_eq!(
+            controller.infra[0].1.cause,
+            VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE
+        );
+        assert_eq!(controller.blocked, Vec::new());
+        assert_eq!(controller.clarified, Vec::new());
         assert_eq!(outcome.beads_processed, 2);
         Ok(())
     }

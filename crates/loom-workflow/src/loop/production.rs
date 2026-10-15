@@ -1093,12 +1093,18 @@ where
             diff_range.clone(),
         ];
         let gate_workspace = self.git.loom_workspace();
-        let verify_output = Command::new(&self.loom_bin)
-            .current_dir(&gate_workspace)
-            .args(&verify_args)
-            .output()
-            .await?;
-        let verify_code = verify_output.status.code().unwrap_or(1);
+        let config = LoomConfig::load(LoomConfig::resolve_path(&gate_workspace))?;
+        let verify_output = super::verify::execute_gate(
+            Command::new(&self.loom_bin)
+                .current_dir(&gate_workspace)
+                .args(&verify_args),
+            &gate_workspace,
+            &SystemClock::new(),
+            self.loom_cfg.git_hook_timeout(),
+            config.loop_.infra.max_attempts,
+        )
+        .await?;
+        let verify_code = verify_output.code;
         info!(
             bead = %bead,
             spec = %self.label.as_str(),
@@ -1106,8 +1112,9 @@ where
             "loom loop: per-bead gate — loom gate verify --diff finished",
         );
         if verify_code != 0 {
-            let stderr_tail = String::from_utf8_lossy(&verify_output.stderr).to_string();
-            let stdout_tail = String::from_utf8_lossy(&verify_output.stdout).to_string();
+            let infrastructure = verify_output.infrastructure();
+            let stderr_tail = verify_output.stderr;
+            let stdout_tail = verify_output.stdout;
             let failure = VerifierFailure::new(
                 format!("loom gate verify --diff {diff_range}"),
                 verify_code,
@@ -1144,10 +1151,12 @@ where
                  gate log: {gate_log}\nstdout:\n{stdout_tail}\nstderr:\n{stderr_tail}",
             );
             let rolled_back = self.rollback_if_bead_advanced_integration().await?;
-            self.stashed_previous_failure = Some(PreviousFailure::PostIntegrateFail {
-                failures: vec![failure],
-                gate_log_path: gate_log_path.clone(),
-            });
+            if !infrastructure {
+                self.stashed_previous_failure = Some(PreviousFailure::PostIntegrateFail {
+                    failures: vec![failure],
+                    gate_log_path: gate_log_path.clone(),
+                });
+            }
             self.emit_to_log(
                 DriverKind::VerdictGate,
                 &format!(
@@ -1161,7 +1170,11 @@ where
                     "gate_log_path": gate_log,
                 }),
             );
-            return Ok(PerBeadGateOutcome::Recovery { detail });
+            return Ok(if infrastructure {
+                PerBeadGateOutcome::Infrastructure { detail }
+            } else {
+                PerBeadGateOutcome::Recovery { detail }
+            });
         }
 
         self.reap_closed_worktree(bead).await?;

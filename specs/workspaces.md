@@ -571,6 +571,14 @@ for worker feedback.
 
 ### Bead Dispatch
 
+- A declared legacy native profile is upgraded from the installed driver's
+  explicit pinned closure without introducing profiles or runtimes. Explicit
+  native overrides remain selected; readiness still grants no required coverage.
+  [test](installed_native_closure_repairs_legacy_metadata_without_changing_selection)
+
+- Installed native provisioning preserves an explicitly selected native image.
+  [test](installed_closure_does_not_replace_an_explicit_native_profile)
+
 - Rust implementation work requires a provisioned `native_preflight = "rust"`
   profile. The existing driver derives this from the current tracked Cargo
   project before starting its agent. The pinned image initializes native Cargo

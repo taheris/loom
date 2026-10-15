@@ -505,6 +505,24 @@ mutation permission.
   not prevent independently ready work from continuing.
   [test](native_capability_gap_continues_independent_work_without_semantic_retry)
 
+- Interrupted verification reruns only the trusted verifier, retains each
+  observation against the same candidate, and does not redispatch source work.
+  [test](interrupted_verifier_recovers_without_source_redispatch)
+
+- Permanent verifier unavailability stops at the configured infrastructure limit
+  without authenticating coverage.
+  [test](unavailable_verifier_exhausts_only_its_infrastructure_budget)
+
+- A failing system assertion does not enter infrastructure recovery.
+  [test](semantic_system_failure_is_never_retried_as_infrastructure)
+
+- A verifier deadline terminates and reaps its owned process before returning
+  unavailable coverage. [test](verifier_deadline_terminates_and_reaps_the_running_process)
+
+- Exhausted verification infrastructure preserves source work and continues
+  independently ready work without consuming semantic retries.
+  [test](required_verifier_infrastructure_failure_preserves_independent_source_work)
+
 ### Task acceptance
 
 - The task-acceptance reference type and its metadata parser admit exactly one

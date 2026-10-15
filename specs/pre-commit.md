@@ -404,6 +404,10 @@ declared as such.
   worker feedback skips remain available without becoming host coverage, and
   otherwise admissible evidence remains reusable. [system?](nix run .#test-quint -- publication-coverage)
 
+- A marker-free publication hook rejects an absent required tool before an
+  exit-zero skip wrapper can execute.
+  [test](marker_free_hook_rejects_absent_required_tool_before_skip_wrapper)
+
 The marker schema and diagnostic CLI outcomes are owned and verified by
 [Gate — Marker](gate.md#marker). This section verifies only pre-push
 consumption.

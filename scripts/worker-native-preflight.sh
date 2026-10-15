@@ -63,8 +63,12 @@ probe_tools() (
   fi
   printf '[package]\nname="loom-executor-probe"\nversion="0.0.0"\nedition="2024"\n' > Cargo.toml
   mkdir src
-  printf 'pub fn probe() {}\n' > src/lib.rs
+  printf '#[test]\nfn executor_runs_native_test() { assert!(std::path::Path::new("Cargo.toml").is_file()); }\n' > src/lib.rs
   timeout --kill-after=5s 180s cargo metadata --offline --no-deps --format-version=1 >/dev/null
+  timeout --kill-after=5s 30s cargo build --offline
+  timeout --kill-after=5s 30s cargo clippy --offline -- -D warnings
+  timeout --kill-after=5s 30s cargo clippy --offline --all-targets -- -D warnings
+  timeout --kill-after=5s 30s cargo nextest run --offline
 )
 
 main() {

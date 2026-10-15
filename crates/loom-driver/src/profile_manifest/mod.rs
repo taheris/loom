@@ -12,4 +12,6 @@ mod error;
 mod manifest;
 
 pub use error::ProfileError;
-pub use manifest::{ENV_VAR, ImageEntry, NativePreflight, ProfileImageManifest};
+pub use manifest::{
+    ENV_VAR, ImageEntry, NativePreflight, PROVISIONED_ENV_VAR, ProfileImageManifest,
+};

@@ -208,6 +208,7 @@ in
         makeWrapper ${loomBuild.bin}/bin/loom "$out/bin/loom" \
           --prefix PATH : ${wrixLauncher}/bin:${launcherRuntimePath} \
           --set-default LOOM_WRIX_BIN ${wrixLauncher}/bin/wrix \
+          --set LOOM_PROVISIONED_PROFILES_MANIFEST ${profileManifest} \
           --set-default LOOM_PROFILES_MANIFEST ${profileManifest}
       '';
 }

@@ -43,6 +43,7 @@ _:
 
       commonEnv = {
         LOOM_PROFILES_MANIFEST = profileManifest;
+        LOOM_PROVISIONED_PROFILES_MANIFEST = profileManifest;
         LOOM_WRIX_BIN = "${sandbox.package}/bin/wrix";
       };
     in

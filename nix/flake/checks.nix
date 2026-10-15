@@ -711,6 +711,8 @@
         text = ''
           if [[ "''${1:-}" == --launch-inputs ]]; then
             printf 'git=%s\nraw=%s\n' "''${LOOM_WRIX_BIN:-}" "''${LOOM_WRIX_SPAWN_BIN:-}"
+          elif [[ "''${1:-}" == --provisioned-inputs ]]; then
+            printf '%s\n' "''${LOOM_PROVISIONED_PROFILES_MANIFEST:-}"
           else
             printf 'loom 0.0.0\n'
           fi
@@ -763,6 +765,8 @@
           ''
             set -euo pipefail
             unset LOOM_WRIX_BIN LOOM_WRIX_SPAWN_BIN
+            export LOOM_PROVISIONED_PROFILES_MANIFEST=/stale/operator/environment.json
+            [[ "$(${fakeLoomWrix}/bin/loom --provisioned-inputs)" == ${fakeProfileManifest} ]]
             expected=$(printf 'git=%s\nraw=\n' ${fakeProfiledWrix}/bin/wrix)
             [[ "$(${fakeLoomWrix}/bin/loom --launch-inputs)" == "$expected" ]]
             export LOOM_WRIX_SPAWN_BIN=${fakeUnprofiledWrix}/bin/wrix

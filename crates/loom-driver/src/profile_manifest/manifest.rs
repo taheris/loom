@@ -13,6 +13,9 @@ use super::error::ProfileError;
 /// time.
 pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 
+/// Driver-package-owned profile closure used to upgrade legacy native feedback images.
+pub const PROVISIONED_ENV_VAR: &str = "LOOM_PROVISIONED_PROFILES_MANIFEST";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NativePreflight {
@@ -91,7 +94,43 @@ impl ProfileImageManifest {
     /// Returns an error when the profile manifest cannot be read, parsed, or validated.
     pub fn from_env() -> Result<Self, ProfileError> {
         let raw = std::env::var_os(ENV_VAR).ok_or(ProfileError::ManifestEnvUnset)?;
-        Self::from_path(Path::new(&raw))
+        let manifest = Self::from_path(Path::new(&raw))?;
+        match std::env::var_os(PROVISIONED_ENV_VAR) {
+            Some(path) => Ok(manifest.provision_native_from(&Self::from_path(Path::new(&path))?)),
+            None => Ok(manifest),
+        }
+    }
+
+    /// Upgrade declared legacy native entries from the installed driver's explicit closure.
+    ///
+    /// Profile and runtime selection remain unchanged. This provisions feedback tools;
+    /// it does not establish required verification or authorize candidate execution.
+    #[must_use]
+    pub fn provision_native_from(mut self, provisioned: &Self) -> Self {
+        for (profile, runtimes) in &mut self.entries {
+            for (runtime, entry) in runtimes {
+                if entry.native_preflight.is_some() {
+                    continue;
+                }
+                let Some(replacement) = provisioned
+                    .entries
+                    .get(profile)
+                    .and_then(|r| r.get(runtime))
+                else {
+                    continue;
+                };
+                if replacement.native_preflight == Some(NativePreflight::Rust) {
+                    tracing::info!(
+                        %profile, %runtime,
+                        previous_manifest = %self.manifest_path.display(),
+                        provisioned_manifest = %provisioned.manifest_path.display(),
+                        "provisioning native feedback from the installed driver closure; required verification remains pending"
+                    );
+                    entry.clone_from(replacement);
+                }
+            }
+        }
+        self
     }
 
     /// Parse a manifest from `path`. Read errors map to
@@ -185,6 +224,75 @@ mod tests {
         let path = dir.join("profile-images.json");
         std::fs::write(&path, body)?;
         Ok(path)
+    }
+
+    #[test]
+    fn installed_native_closure_repairs_legacy_metadata_without_changing_selection() -> Result<()> {
+        let legacy = tempfile::tempdir()?;
+        let installed = tempfile::tempdir()?;
+        let entry = serde_json::json!({
+            "ref":"legacy", "source":"/old-image", "source_kind":"nix-descriptor",
+            "launcher":"/old-wrix", "profile_config":"/old-profile"
+        });
+        let mut replacement = entry.clone();
+        replacement["ref"] = "provisioned".into();
+        replacement["source"] = "/nix/store/pinned-image".into();
+        replacement["native_preflight"] = "rust".into();
+        let original = ProfileImageManifest::from_path(&write_manifest(
+            legacy.path(),
+            &serde_json::json!({"rust":{"pi":entry},"base":{"pi":entry}}).to_string(),
+        )?)?;
+        let provisioned = ProfileImageManifest::from_path(&write_manifest(installed.path(),
+            &serde_json::json!({"rust":{"pi":replacement,"direct":replacement},"python":{"pi":replacement}}).to_string())?)?;
+        let repaired = original.provision_native_from(&provisioned);
+        let rust = ProfileName::new("rust")?;
+        assert_eq!(
+            repaired.lookup(&rust, AgentRuntime::Pi)?.source,
+            Path::new("/nix/store/pinned-image")
+        );
+        assert_eq!(
+            repaired
+                .lookup(&ProfileName::new("base")?, AgentRuntime::Pi)?
+                .r#ref,
+            "legacy"
+        );
+        assert!(matches!(
+            repaired.lookup(&rust, AgentRuntime::Direct),
+            Err(ProfileError::UnknownRuntimeForProfile { .. })
+        ));
+        assert!(matches!(
+            repaired.lookup(&ProfileName::new("python")?, AgentRuntime::Pi),
+            Err(ProfileError::UnknownProfile { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn installed_closure_does_not_replace_an_explicit_native_profile() -> Result<()> {
+        let original = tempfile::tempdir()?;
+        let installed = tempfile::tempdir()?;
+        let entry = serde_json::json!({
+            "ref":"explicit", "source":"/explicit-image", "source_kind":"nix-descriptor",
+            "launcher":"/wrix", "profile_config":"/profile", "native_preflight":"rust"
+        });
+        let mut replacement = entry.clone();
+        replacement["ref"] = "installed".into();
+        let original = ProfileImageManifest::from_path(&write_manifest(
+            original.path(),
+            &serde_json::json!({"rust":{"pi":entry}}).to_string(),
+        )?)?;
+        let installed = ProfileImageManifest::from_path(&write_manifest(
+            installed.path(),
+            &serde_json::json!({"rust":{"pi":replacement}}).to_string(),
+        )?)?;
+        assert_eq!(
+            original
+                .provision_native_from(&installed)
+                .lookup(&ProfileName::new("rust")?, AgentRuntime::Pi)?
+                .r#ref,
+            "explicit"
+        );
+        Ok(())
     }
 
     #[test]

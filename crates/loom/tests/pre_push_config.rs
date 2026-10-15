@@ -150,6 +150,38 @@ fn install_recording_command(tools: &Path, name: &str) {
         .expect("write recording command");
 }
 
+#[test]
+fn marker_free_hook_rejects_absent_required_tool_before_skip_wrapper() {
+    let fixture = Fixture::new();
+    let mut command = fixture.recording_command("bash");
+    let output = command
+        .args([
+            "bin/pre-push-checks",
+            "--hook-id",
+            "required-tool",
+            "--hook-entry",
+            "skip-if-missing loom-fixture-tool-not-installed -- true",
+            "--",
+            "skip-if-missing",
+            "loom-fixture-tool-not-installed",
+            "--",
+            "true",
+        ])
+        .output()
+        .expect("execute actual hook wrapper");
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("coverage remains pending"));
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log).expect("invocation log"),
+        ""
+    );
+}
+
 fn git(workspace: &Path, args: &[&str]) {
     let output = git_command()
         .arg("-C")
