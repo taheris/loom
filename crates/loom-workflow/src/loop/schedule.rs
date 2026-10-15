@@ -106,6 +106,25 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
     let mut work = false;
     sources.sort_by_key(|(bead, _)| recovery.attempts.get(&bead.id).copied().unwrap_or(0));
     for (bead, record) in sources.into_iter().take(1) {
+        if record.needs_source_repair() {
+            let reopened = controller
+                .reopen_after_verification_failure(
+                    &bead.id,
+                    record
+                        .repair_detail
+                        .clone()
+                        .unwrap_or_else(|| "required verifier rejected the candidate".into()),
+                )
+                .await?;
+            if !reopened {
+                completed.insert(bead.id);
+                continue;
+            }
+            recovery.finished.insert(bead.id.clone());
+            recovery.repairs.insert(bead.id);
+            work = true;
+            continue;
+        }
         let outcome = controller.resume_verification(&bead, record).await?;
         if matches!(outcome, AgentOutcome::Blocked { .. }) {
             completed.insert(bead.id);
@@ -244,7 +263,11 @@ where
             let pending_verification = association
                 .verification_continuations()?
                 .into_iter()
-                .filter(|record| record.label == label && record.root == ready_parent)
+                .filter(|record| {
+                    record.label == label
+                        && record.root == ready_parent
+                        && !record.needs_source_repair()
+                })
                 .map(|record| record.bead)
                 .collect::<HashSet<_>>();
             deferred_ids.extend(pending_verification.iter().cloned());

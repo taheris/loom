@@ -2344,6 +2344,44 @@ impl GitClient {
         Ok(GitOid::new(raw.trim())?)
     }
 
+    /// Keep a reversible verifier rollback from removing already published integration history.
+    ///
+    /// # Errors
+    /// Returns unavailable/invalid Git history without changing the checkout.
+    pub async fn bounded_verification_rollback(
+        &self,
+        proposed: &GitOid,
+    ) -> Result<GitOid, GitError> {
+        let integration = self.loom_workspace();
+        let remote = format!("refs/remotes/origin/{}", self.integration_branch);
+        let origin = sync_rev_parse(&integration, &remote)?;
+        if !GitClient::open(&integration)?
+            .is_ancestor_of_head(origin.as_str())
+            .await?
+        {
+            return Ok(proposed.clone());
+        }
+        let result = run_git_raw(
+            &integration,
+            self.clock.as_ref(),
+            [
+                "merge-base",
+                "--is-ancestor",
+                proposed.as_str(),
+                origin.as_str(),
+            ],
+            None,
+        )
+        .await?;
+        if result.status.success() {
+            Ok(origin)
+        } else if result.status.code() == Some(1) {
+            Ok(proposed.clone())
+        } else {
+            Err(cli_error(&result))
+        }
+    }
+
     /// Reset the integration branch to an exact commit in the loom workspace.
     ///
     /// # Errors

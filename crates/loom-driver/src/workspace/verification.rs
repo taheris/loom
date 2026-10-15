@@ -1,5 +1,5 @@
 //! Driver recovery state beneath the existing protected operator Git directory.
-//! These records select verification work; they never authenticate coverage.
+//! These records retain unfinished driver work; they never authenticate coverage.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -20,6 +20,7 @@ const LOG: &str = "loom-verification-continuations";
 enum Phase {
     Verify,
     Publication,
+    Repair,
     Resolved,
 }
 
@@ -40,6 +41,10 @@ pub struct VerificationContinuation {
     pub base: GitOid,
     pub candidate: GitOid,
     pub parked_status: Option<Status>,
+    #[serde(default)]
+    pub repair_detail: Option<String>,
+    #[serde(default)]
+    pub parked_cause: Option<String>,
     #[serde(default)]
     pub rollback: Option<GitOid>,
     #[serde(default)]
@@ -77,6 +82,8 @@ impl Association {
             base,
             candidate,
             parked_status: None,
+            repair_detail: None,
+            parked_cause: None,
             source_head: sync_head_commit_sha(&path).map_err(std::io::Error::other)?,
             source_tree: head_tree_oid_sync(&path).map_err(std::io::Error::other)?,
             directory: Identity::from_stat(&directory.stat()?),
@@ -174,6 +181,46 @@ impl Association {
         self.append_verification(&record)
     }
 
+    /// Retain rejected implementation work until a fresh source candidate supersedes it.
+    ///
+    /// # Errors
+    /// Returns authority/history failures without discarding the source or its recovery intent.
+    pub fn await_verification_repair(
+        &self,
+        record: &VerificationContinuation,
+        detail: String,
+    ) -> Result<(), Error> {
+        let mut record = record.clone();
+        record.phase = Phase::Repair;
+        record.repair_detail = Some(detail);
+        self.append_verification(&record)
+    }
+
+    /// Require the original repair checkout while allowing its worker to edit source.
+    ///
+    /// # Errors
+    /// Rejects replacement of the retained checkout or its Git directory.
+    pub fn validate_verification_checkout(
+        &self,
+        record: &VerificationContinuation,
+    ) -> Result<(), Error> {
+        self.recheck()?;
+        let path = self
+            .operator()
+            .join(".loom/beads")
+            .join(record.bead.as_str());
+        let directory = Directory::open(&path)?;
+        let git = directory.child(Path::new(".git"))?;
+        if Identity::from_stat(&directory.stat()?) != record.directory
+            || Identity::from_stat(&git.stat()?) != record.git
+        {
+            return Err(Error::Association {
+                reason: "source repair checkout identity changed; retained without dispatch",
+            });
+        }
+        self.recheck()
+    }
+
     /// Require the same independent source checkout and immutable completed source.
     ///
     /// # Errors
@@ -210,6 +257,11 @@ impl Association {
 }
 
 impl VerificationContinuation {
+    #[must_use]
+    pub const fn needs_source_repair(&self) -> bool {
+        matches!(self.phase, Phase::Repair)
+    }
+
     #[must_use]
     pub const fn awaiting_publication(&self) -> bool {
         matches!(self.phase, Phase::Publication)

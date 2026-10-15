@@ -19,7 +19,8 @@ mod tests {
                 .args(["--sandbox", "--dolt-auto-commit", "off"])
                 .args(args)
                 .current_dir(&self.root)
-                .env("HOME", self.root.join("home"));
+                .env("HOME", self.root.join("home"))
+                .env("GOMAXPROCS", "2");
             for (name, _) in std::env::vars_os() {
                 if name.to_string_lossy().starts_with("BEADS_") {
                     command.env_remove(name);

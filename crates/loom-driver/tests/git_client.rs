@@ -2932,3 +2932,30 @@ async fn publication_rebase_recovery_preserves_unattributed_independent_commit()
     assert!(integration.join("independent.txt").exists());
     Ok(())
 }
+
+#[tokio::test]
+async fn verifier_rollback_preserves_published_history_after_publication_interruption() -> Result<()>
+{
+    let repo = init_repo()?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_prek_hooks_path_override(fake_prek_hooks(repo.path())?);
+    let integration = loom_path(repo.path());
+    let old = loom_driver::git::sync_head_commit_sha(&integration)?;
+    std::fs::write(integration.join("published.txt"), "published candidate\n")?;
+    loom_driver::git::commit_all_in(&integration, "publish candidate")?;
+    client.push_once().await?;
+    let published = loom_driver::git::sync_head_commit_sha(&integration)?;
+    assert_eq!(client.bounded_verification_rollback(&old).await?, published);
+    std::fs::write(
+        integration.join("pending.txt"),
+        "next unpublished candidate\n",
+    )?;
+    loom_driver::git::commit_all_in(&integration, "next candidate")?;
+    let pending = loom_driver::git::sync_head_commit_sha(&integration)?;
+    assert_eq!(client.bounded_verification_rollback(&old).await?, published);
+    assert_eq!(
+        loom_driver::git::sync_head_commit_sha(&integration)?,
+        pending
+    );
+    Ok(())
+}

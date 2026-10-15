@@ -145,6 +145,9 @@ in
       };
       smokeMockPi = wrixLinuxPkgs.writeShellScriptBin "pi" ''
         set -euo pipefail
+        if [[ "''${LOOM_SMOKE_INTERRUPT_ONCE:-0}" == 1 ]]; then
+          exec ${wrixLinuxPkgs.bash}/bin/bash ${../../tests/smoke/interruption-pi.sh} "$@"
+        fi
         export MOCK_PI_SCENARIO=happy-path
         export LOOM_SMOKE_WORKER=1
         exec ${wrixLinuxPkgs.bash}/bin/bash ${../../tests/mock-pi/pi.sh} "$@"
