@@ -989,7 +989,13 @@ letting the entrypoint run the wrong runtime.
 - `LOOM_NATIVE_PREFLIGHT=rust` is an internal driver-owned request for the
   pinned image's native source-feedback preflight before the agent starts. The
   matching manifest `native_preflight` is checked at preparation and does not
-  constitute execution evidence. [system](nix run .#test-native-preflight)
+  constitute execution evidence.
+  [test](native_worker_preparation_probes_before_agent_and_routes_missing_capability)
+
+- The fixed isolated Rust image actually initializes native patches and probes
+  its tools/private store before launching its agent entrypoint. Availability is
+  source feedback, never required-coverage admission. [system](nix run
+  .#test-native-preflight)
 
 - Missing tools or unsafe executor state exits 78 before canonical agent output
   and routes to `verification-capability-unavailable`.

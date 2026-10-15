@@ -285,13 +285,17 @@ async fn spawn_with_handshake_inner(
             .stderr
             .take()
             .ok_or_else(|| ProtocolError::Io(io::Error::other("pi child stderr not piped")))?;
-        wait_for_wrix_container_start(stderr, clock).await?;
+        if let Err(error) = wait_for_wrix_container_start(stderr, clock).await {
+            return Err(startup_failure(&mut child, error, clock).await);
+        }
     }
 
     let mut writer = BufWriter::new(stdin);
     let mut reader = JsonlReader::new(stdout);
 
-    run_probe(&mut writer, &mut reader, handshake_timeout, clock).await?;
+    if let Err(error) = run_probe(&mut writer, &mut reader, handshake_timeout, clock).await {
+        return Err(startup_failure(&mut child, error, clock).await);
+    }
 
     if let Some(model) = model {
         run_set_model(&mut writer, &mut reader, model, handshake_timeout, clock).await?;
@@ -303,6 +307,38 @@ async fn spawn_with_handshake_inner(
 
     let parser = PiParser::with_agent_end_mode(agent_end_mode);
     Ok(AgentSession::new(child, writer, reader, Box::new(parser)))
+}
+
+async fn startup_failure(
+    child: &mut loom_driver::process::OwnedChild,
+    error: ProtocolError,
+    clock: &dyn Clock,
+) -> ProtocolError {
+    let closed = match &error {
+        ProtocolError::UnexpectedEof => true,
+        ProtocolError::Io(error) => error.kind() == io::ErrorKind::BrokenPipe,
+        _ => false,
+    };
+    if !closed {
+        return error;
+    }
+    let status = tokio::select! {
+        status = child.wait() => status,
+        () = clock.sleep(Duration::from_secs(5)) => return error,
+    };
+    match status {
+        Ok(status) if !status.success() => {
+            let code = status.code();
+            #[cfg(unix)]
+            let code = {
+                use std::os::unix::process::ExitStatusExt as _;
+                code.or_else(|| status.signal().map(|signal| 128 + signal))
+            };
+            code.map_or(error, ProtocolError::ProcessExit)
+        }
+        Ok(_) => error,
+        Err(error) => ProtocolError::Io(error),
+    }
 }
 
 /// Wait for wrix to finish image materialization/staging and start the

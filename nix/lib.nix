@@ -50,6 +50,7 @@ in
     }:
     let
       inherit (pkgs.lib) optionalAttrs;
+      inherit (imagePkgs.lib) escapeShellArg hiPrio;
 
       mkSandboxForRuntime =
         profileName: profile: runtime: runtimeConfig:
@@ -76,21 +77,24 @@ in
                 direct = loomBin;
               }
               .${runtime};
-          checkedAgent = imagePkgs.lib.hiPrio (
+          checkedAgent = hiPrio (
             imagePkgs.writeShellScriptBin program ''
               set -euo pipefail
               if [[ "''${LOOM_NATIVE_PREFLIGHT:-}" == rust ]]; then
                 if ${imagePkgs.coreutils}/bin/timeout --kill-after=5s 365s \
                   ${imagePkgs.bash}/bin/bash ${../scripts/worker-native-preflight.sh} \
-                  ${imagePkgs.lib.escapeShellArg patchConfig} \
-                  ${imagePkgs.lib.escapeShellArg parserVersion} \
-                  ${imagePkgs.lib.escapeShellArg parserChecksum} \
+                  ${escapeShellArg patchConfig} \
+                  ${escapeShellArg parserVersion} \
+                  ${escapeShellArg parserChecksum} \
                   ${../scripts/configure-cargo-patches.sh}; then
                   :
                 else
                   status=$?
                   printf 'loom-native-preflight: executor preparation failed (exit %s); required verification remains unavailable\n' "$status" >&2
-                  exit 78
+                  case "$status" in
+                    124|137) exit "$status" ;;
+                    *) exit 78 ;;
+                  esac
                 fi
               fi
               exec ${originalAgent}/bin/${program} "$@"

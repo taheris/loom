@@ -28,6 +28,7 @@ _:
     }:
     let
       inherit (pkgs.stdenv.hostPlatform) isLinux;
+      inherit (pkgs.lib) optionals;
 
       testsDeriv = import ../../tests/default.nix {
         inherit
@@ -199,7 +200,7 @@ _:
           pkgs.jq
           pkgs.gnugrep
         ]
-        ++ pkgs.lib.optionals isLinux [ pkgs.podman ];
+        ++ optionals isLinux [ pkgs.podman ];
         text = ''
           unset WRIX_UNSAFE_PODMAN_SOCKET WRIX_NETWORK WRIX_NETWORK_ALLOWLIST
           fixture=$(mktemp -d)
@@ -296,7 +297,7 @@ _:
           pkgs.coreutils
           pkgs.gnugrep
         ]
-        ++ pkgs.lib.optionals isLinux [ pkgs.podman ];
+        ++ optionals isLinux [ pkgs.podman ];
         text = ''
           unset WRIX_UNSAFE_PODMAN_SOCKET WRIX_NETWORK WRIX_NETWORK_ALLOWLIST
           fixture=$(mktemp -d)
@@ -320,24 +321,16 @@ _:
           [[ -s "$fixture/.cargo/nix-patches.toml" ]]
           mkdir "$fixture/unavailable"
           git -C "$fixture/unavailable" init -q
-          if timeout --kill-after=10s 400s ${nativePreflightEntry.launcher} \
+          printf 'broken manifest awaiting source repair\n' > "$fixture/unavailable/Cargo.toml"
+          if ! timeout --kill-after=10s 400s ${nativePreflightEntry.launcher} \
             --profile-config ${nativePreflightProfile} run --no-git-deploy --no-git-sign "$fixture/unavailable" -- --help \
             > "$fixture/unavailable.log" 2>&1; then
-            printf 'native preflight accepted an unavailable Cargo project\n' >&2
-            exit 1
-          else
-            status=$?
-          fi
-          if [[ "$status" != 78 ]]; then
             cat "$fixture/unavailable.log" >&2
-            printf 'native preflight returned %s instead of infrastructure exit 78\n' "$status" >&2
+            printf 'native preflight blocked the agent from repairing its source\n' >&2
             exit 1
           fi
-          grep -F 'executor preparation failed' "$fixture/unavailable.log"
-          if grep -F 'source-feedback tools available' "$fixture/unavailable.log"; then
-            printf 'failed native preflight claimed source-feedback availability\n' >&2
-            exit 1
-          fi
+          grep -F 'project metadata unavailable; source repair remains enabled' "$fixture/unavailable.log"
+          grep -F 'source-feedback tools available; required verification remains pending' "$fixture/unavailable.log"
           printf 'native-preflight-actual-worker-ok\n'
         '';
       };

@@ -341,6 +341,148 @@ mod tests {
     use loom_driver::agent::AgentBackend;
 
     #[tokio::test]
+    async fn native_worker_preparation_probes_before_agent_and_routes_missing_capability() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let git = loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();
+        let bead_id = loom_driver::identifier::BeadId::new("lm-nworker").unwrap();
+        let label = SpecLabel::new("harness").unwrap();
+        let workspace = git.create_worktree(&label, &bead_id).await.unwrap().path;
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "broken Cargo project awaiting source repair\n",
+        )
+        .unwrap();
+        let bead_git = GitClient::open(&workspace).unwrap();
+        bead_git
+            .commit_all_allow_empty("Prepare tracked Rust repair fixture")
+            .await
+            .unwrap();
+        let bead_base = bead_git.head_commit_sha().await.unwrap();
+        let profile_config = dir.path().join("profile.json");
+        std::fs::write(&profile_config, r#"{"profile":{"mounts":[]}}"#).unwrap();
+        let preflight = dir.path().join("preflight.sh");
+        std::fs::write(
+            &preflight,
+            include_str!("../../../../scripts/worker-native-preflight.sh"),
+        )
+        .unwrap();
+        let empty_path = dir.path().join("empty-path");
+        std::fs::create_dir(&empty_path).unwrap();
+        let bash = Command::new("bash")
+            .args(["-c", "printf '%s' \"$BASH\""])
+            .output()
+            .unwrap();
+        assert!(bash.status.success());
+        let bash = String::from_utf8(bash.stdout).unwrap();
+        let launcher = dir.path().join("wrix");
+        std::fs::write(&launcher, format!("#!{bash}\n{}", r#"set -euo pipefail
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --spawn-config) config="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if ! jq -e '.env | any(. == ["LOOM_NATIVE_PREFLIGHT", "rust"])' "$config" >/dev/null; then
+  jq '.env' "$config" >&2
+  exit 1
+fi
+printf '%s\n' '[wrix] Starting container' >&2
+IFS= read -r _
+if [[ "$LOOM_PREFLIGHT_STALL" == 1 ]]; then
+  exec timeout --kill-after=0.1s 0.1s sleep 30
+fi
+export PATH="$LOOM_PREFLIGHT_EMPTY_PATH"
+exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- "$LOOM_PREFLIGHT_SCRIPT"
+"#)).unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let bead: Bead = serde_json::from_value(serde_json::json!({
+            "id": "lm-nworker", "title": "native worker", "status": "open"
+        }))
+        .unwrap();
+        let profile = ProfileName::base();
+        for (capability, stall) in [
+            (None, false),
+            (Some(NativePreflight::Rust), false),
+            (Some(NativePreflight::Rust), true),
+        ] {
+            let manifest_path = dir.path().join("images.json");
+            std::fs::write(&manifest_path, serde_json::to_vec(&serde_json::json!({
+                "base": {"pi": {"ref":"fixture", "source":"/fixture/image", "source_kind":"nix-descriptor",
+                    "launcher":launcher, "profile_config":profile_config, "native_preflight":capability}}
+            })).unwrap()).unwrap();
+            let manifest = ProfileImageManifest::from_path(&manifest_path).unwrap();
+            let prepared = prepare(Request {
+                bead: &bead,
+                workspace: &workspace,
+                loom_workspace: dir.path(),
+                manifest: &manifest,
+                cli_profile: None,
+                phase_default: &profile,
+                runtime: AgentRuntime::Pi,
+                label: &label,
+                style_rules: "docs/style-rules.md",
+                loom: &LoomTopConfig::default(),
+                skills: &SkillsConfig::default(),
+                launcher_env: vec![
+                    (
+                        "LOOM_PREFLIGHT_STALL".into(),
+                        if stall { "1" } else { "0" }.into(),
+                    ),
+                    (
+                        "LOOM_PREFLIGHT_SCRIPT".into(),
+                        preflight.display().to_string(),
+                    ),
+                    (
+                        "LOOM_PREFLIGHT_EMPTY_PATH".into(),
+                        empty_path.display().to_string(),
+                    ),
+                    ("LOOM_PREFLIGHT_BASH".into(), bash.clone()),
+                ],
+                previous_failure: None,
+                bead_base: bead_base.clone(),
+                workspace_recovery: None,
+                attempt: 1,
+            })
+            .await
+            .unwrap();
+            if capability.is_none() {
+                assert!(
+                    matches!(prepared, Preparation::Rejected(AgentOutcome::StaticInfra { cause, .. })
+                    if cause == super::super::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE)
+                );
+                continue;
+            }
+            let Preparation::Ready(worker) = prepared else {
+                panic!("provisioned worker rejected")
+            };
+            let result = crate::agent::run_agent_classified::<loom_agent::pi::backend::PiBackend>(
+                &worker.spawn,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+            if stall {
+                assert!(
+                    matches!(&result, super::super::SessionResult::PreflightFailed { error }
+                    if error.contains("124")),
+                    "{result:?}"
+                );
+                continue;
+            }
+            assert!(
+                matches!(&result, super::super::SessionResult::StaticInfra { cause, error }
+                if cause == super::super::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE && error.contains("78")),
+                "{result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn shared_worker_preparation_threads_context_and_owns_scratch_for_every_backend() {
         let dir = tempfile::tempdir().unwrap();
         let git = loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();

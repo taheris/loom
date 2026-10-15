@@ -472,7 +472,7 @@ mutation permission.
 <!-- prettier-ignore -->
 - The signed host-Gate fixture executes a real failing required system test,
   refuses its hooks without publication, and verifies recovery after correction.
-  [check](nix build --no-link .#checks.x86_64-linux.smoke-host-gate)
+  [system](nix build --no-link .#checks.x86_64-linux.smoke-host-gate)
 
 - A native preflight capability gap is attributed to
   `verification-capability-unavailable`, consumes no semantic retry, and does
