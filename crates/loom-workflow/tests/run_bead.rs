@@ -395,7 +395,7 @@ async fn bead_workspace_survives_retry_until_close() -> Result<()> {
 }
 
 #[tokio::test]
-async fn bead_workspace_reaped_on_bd_close() -> Result<()> {
+async fn closed_bead_workspace_retained_until_publication() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let bead = fake_bead("lm-reapclosed");
     let worktree = workspace.join(".loom/beads/lm-reapclosed");
@@ -447,8 +447,8 @@ async fn bead_workspace_reaped_on_bd_close() -> Result<()> {
     controller.exec_per_bead_gate(&bead.id).await?;
     assert!(runner.closed.load(Ordering::SeqCst));
     assert!(
-        !worktree.exists(),
-        "the clean post-session lifecycle point must reap a closed bead workspace"
+        worktree.exists(),
+        "source closure and a per-bead gate do not authorize cleanup before publication"
     );
     Ok(())
 }
