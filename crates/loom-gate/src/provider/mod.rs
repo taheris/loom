@@ -14,7 +14,7 @@ use displaydoc::Display;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::inventory::snapshot::{Identity, ResourcePath, Snapshot};
+use crate::inventory::snapshot::{ResourcePath, Snapshot};
 use crate::inventory::{Duty, Inventory, Name, Obligation, Role};
 use tracked::{Check, Context, Observed, Outcome};
 pub use wire::{Candidate, Capability, Digest, Discovery, Effect, Mapping};
@@ -325,7 +325,7 @@ fn capture_inputs(
 
 /// The registry owns actual definitions; query JSON cannot add registrations.
 pub struct Registry {
-    snapshot: Identity,
+    snapshot: Snapshot,
     definitions: BTreeMap<Name, Definition>,
 }
 
@@ -348,7 +348,7 @@ impl Registry {
             }
         }
         Ok(Self {
-            snapshot: snapshot.identity().clone(),
+            snapshot: snapshot.clone(),
             definitions: checked,
         })
     }
@@ -356,8 +356,9 @@ impl Registry {
     /// Generate a single or batched typed description from the registered execution definition.
     ///
     /// # Errors
-    /// Unknown or repeated requests fail; no target is omitted from a successful response.
+    /// Unknown, repeated or stale requests fail; no target is omitted from a successful response.
     pub fn query(&self, targets: &[Name]) -> Result<String, Error> {
+        self.snapshot.require_current()?;
         let mut seen = BTreeSet::new();
         let mut units = Vec::new();
         for target in targets {
@@ -366,8 +367,11 @@ impl Registry {
                     target: target.clone(),
                 });
             }
-            units.push(self.definition(target)?.description());
+            let definition = self.definition(target)?;
+            definition.require_current()?;
+            units.push(definition.description());
         }
+        self.snapshot.require_current()?;
         Ok(serde_json::to_string(&wire::Query { units })?)
     }
 
@@ -427,7 +431,9 @@ impl Registry {
     ) -> Result<Unit, Error> {
         require_context(snapshot, inventory)?;
         let target = candidate.target();
-        if &self.snapshot != snapshot.identity() || candidate.snapshot() != snapshot.identity() {
+        if self.snapshot.identity() != snapshot.identity()
+            || candidate.snapshot() != snapshot.identity()
+        {
             return Err(Error::Context {
                 target: target.clone(),
             });

@@ -22,6 +22,8 @@ mod identity;
 mod nix;
 #[path = "provider/plan.rs"]
 mod plan;
+#[path = "provider/query.rs"]
+mod query;
 
 fn name(value: &str) -> Name {
     value.to_owned().try_into().unwrap()
