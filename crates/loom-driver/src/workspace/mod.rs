@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use displaydoc::Display;
-use rustix::fs::{Mode, Stat};
+use rustix::fs::{Dev, Mode, Stat};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -33,7 +33,7 @@ pub enum Error {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Identity {
-    device: u64,
+    device: Dev,
     inode: u64,
 }
 
@@ -322,6 +322,26 @@ mod tests {
             config.profile_config = Some(self.profile.clone());
             config.scratch_dir = scratch.path().to_path_buf();
             config
+        }
+    }
+
+    #[test]
+    fn identity_round_trips_native_device_and_inode_values() {
+        let root = tempfile::tempdir().unwrap();
+        let mut stat = Directory::open(root.path()).unwrap().stat().unwrap();
+        for device in [Dev::MIN, 1, Dev::MAX] {
+            for inode in [0, 1, u64::MAX] {
+                stat.st_dev = device;
+                stat.st_ino = inode;
+                let identity = Identity::from_stat(&stat);
+                assert_eq!(identity.device, device);
+                assert_eq!(identity.inode, inode);
+                let bytes = serde_json::to_vec(&identity).unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<Identity>(&bytes).unwrap(),
+                    identity
+                );
+            }
         }
     }
 
