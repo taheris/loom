@@ -276,7 +276,7 @@ fn unexpected_skips_cannot_be_accepted_by_worker_policy() {
 
 #[test]
 fn failure_skip_batches_preserve_failures_even_when_producer_exits_77() {
-    for code in [1, 77] {
+    for code in [1, 77, 78, 124, 137] {
         let dir = fixture(true);
         set_record(dir.path(), "a", &record("a", "failed"), 1);
         set_record(dir.path(), "b", &foreign("b"), 77);

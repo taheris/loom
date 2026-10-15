@@ -3822,6 +3822,69 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn parallel_handoff_propagates_provisioned_profiles_to_actual_review_child() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let original = write_manifest(dir.path());
+        let mut entries: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(original.manifest_path()).expect("manifest"))
+                .expect("json");
+        for entry in entries["base"]
+            .as_object_mut()
+            .expect("runtimes")
+            .values_mut()
+        {
+            entry["native_preflight"] = "rust".into();
+        }
+        let installed_path = dir.path().join("installed.json");
+        std::fs::write(&installed_path, serde_json::to_vec(&entries).expect("json"))
+            .expect("installed");
+        let manifest = (*original).clone().provision_native_from(
+            &ProfileImageManifest::from_path(&installed_path).expect("installed manifest"),
+        );
+        let workspace = dir.path().join("workspace");
+        let git = git_workspace(&workspace);
+        let marker = dir.path().join("review-environment-observed");
+        let stub = dir.path().join("review-child.sh");
+        loom_test_support::write_executable_bash_script(&stub, &format!(
+            "set -euo pipefail\n[[ \"$LOOM_PROFILES_MANIFEST\" == {original:?} ]]\n[[ \"$LOOM_PROVISIONED_PROFILES_MANIFEST\" == {installed_path:?} ]]\ntest -r \"$LOOM_PROFILES_MANIFEST\"\ntest -r \"$LOOM_PROVISIONED_PROFILES_MANIFEST\"\nprintf 'observed\\n' > {marker:?}\nexit 1\n",
+            original = original.manifest_path(),
+        )).expect("external child");
+        let bd = BdClient::with_runner(molecule_lookup_script(
+            dir.path(),
+            "alpha",
+            "lm-mol1",
+            "deadbeef",
+        ));
+        let handoff = execute_molecule_push_gate(
+            &bd,
+            &SpecLabel::new("alpha").expect("label"),
+            None,
+            super::super::schedule::handoff_commands(
+                None,
+                &stub,
+                Path::new("unused-wrix"),
+                &manifest,
+            ),
+            &workspace,
+            &git,
+        )
+        .await
+        .expect("typed review failure");
+        assert_eq!(
+            std::fs::read_to_string(marker).expect("review child observed both inputs"),
+            "observed\n"
+        );
+        assert!(
+            handoff
+                .evidence
+                .gate_runs
+                .iter()
+                .any(|run| run.phase == GatePhase::Review && run.status != GateRunStatus::Success)
+        );
+        assert!(!git.loom_workspace().join(".loom/marker.json").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn exec_review_child_failure_returns_incomplete_typed_evidence() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -4976,6 +5039,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("fixture");
         let workspace = dir.path().join("workspace");
         let git = git_workspace(&workspace);
+        let integration = git.loom_workspace();
+        let base = loom_driver::git::sync_head_commit_sha(&integration).expect("base");
+        std::fs::write(integration.join("candidate.txt"), "retained candidate\n").expect("source");
+        loom_driver::git::commit_all_in(&integration, "candidate").expect("candidate commit");
+        let bead = BeadId::new("lm-vinfra").expect("id");
+        let candidate = git
+            .create_worktree(&SpecLabel::new("gate").expect("label"), &bead)
+            .await
+            .expect("independent source clone");
         let manifest = write_manifest(dir.path());
         let stub = dir.path().join("unavailable-verifier.sh");
         loom_test_support::write_executable_bash_script(
@@ -4996,18 +5068,25 @@ mod tests {
                 panic!("verification recovery cannot dispatch source work");
             },
         );
-        let integration = controller.git.loom_workspace();
+        controller.pre_integration_tip = Some(base.clone());
+        controller.current_worktree_path = Some(candidate.path.clone());
         let head = loom_driver::git::sync_head_commit_sha(&integration).expect("candidate");
         let result = controller
-            .exec_per_bead_gate(&BeadId::new("lm-vinfra").expect("id"))
+            .exec_per_bead_gate(&bead)
             .await
             .expect("bounded gate");
         assert!(matches!(result, PerBeadGateOutcome::Infrastructure { .. }));
         assert!(controller.stashed_previous_failure.is_none());
         assert_eq!(
-            loom_driver::git::sync_head_commit_sha(&integration).expect("preserved candidate"),
+            loom_driver::git::sync_head_commit_sha(&candidate.path)
+                .expect("preserved source candidate"),
             head
         );
+        assert_eq!(
+            loom_driver::git::sync_head_commit_sha(&integration).expect("integration rollback"),
+            base
+        );
+        assert!(candidate.path.join("candidate.txt").exists());
         let attempts = std::fs::read_to_string(
             integration.join(".loom/logs/gate/verification-attempts.jsonl"),
         )

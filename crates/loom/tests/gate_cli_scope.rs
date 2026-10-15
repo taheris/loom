@@ -243,3 +243,77 @@ fn verify_tier_policy_is_scope_derived_without_env_override() {
         "tree scope must run [system] despite LOOM_VERIFY_TIERS: {stderr}",
     );
 }
+
+#[test]
+fn gate_verify_retains_real_infrastructure_exits_and_semantic_failure_precedence() {
+    for grouped in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        std::fs::create_dir(workspace.join("specs")).unwrap();
+        let target = if grouped { "probe" } else { "bash probe.sh" };
+        std::fs::write(
+            workspace.join("specs/probe.md"),
+            format!("## Success Criteria\n\n- Executor [check]({target})\n"),
+        )
+        .unwrap();
+        let config = if grouped {
+            "[runner.check.probe]\nmatch = '^probe$'\ncommand = 'bash probe.sh'\nparse = 'exit-code'\n"
+        } else {
+            ""
+        };
+        std::fs::write(workspace.join("loom.toml"), config).unwrap();
+        std::fs::write(workspace.join(".gitignore"), ".loom/\n").unwrap();
+        std::fs::write(workspace.join("probe.sh"), "exit 0\n").unwrap();
+        init_git(workspace);
+        for code in [78, 124, 130, 137, 143, 1, 0] {
+            std::fs::write(
+                workspace.join("probe.sh"),
+                format!("echo required-executor-observation >&2\nexit {code}\n"),
+            )
+            .unwrap();
+            let output = Command::new(loom_bin())
+                .arg("--workspace")
+                .arg(workspace)
+                .args(["gate", "verify", "--tree"])
+                .env_remove("LOOM_INSIDE")
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(code),
+                "grouped={grouped}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!workspace.join(".loom/marker.json").exists());
+        }
+        std::fs::write(workspace.join("probe.sh"), "kill -TERM $$\n").unwrap();
+        let signaled = Command::new(loom_bin())
+            .arg("--workspace")
+            .arg(workspace)
+            .args(["gate", "verify", "--tree"])
+            .env_remove("LOOM_INSIDE")
+            .output()
+            .unwrap();
+        assert_eq!(signaled.status.code(), Some(143));
+        std::fs::write(workspace.join("probe.sh"), "exit 78\n").unwrap();
+        std::fs::write(workspace.join("fail.sh"), "exit 1\n").unwrap();
+        std::fs::write(
+            workspace.join("specs/failure.md"),
+            "## Success Criteria\n\n- Semantic failure [check](bash fail.sh)\n",
+        )
+        .unwrap();
+        let output = Command::new(loom_bin())
+            .arg("--workspace")
+            .arg(workspace)
+            .args(["gate", "verify", "--tree"])
+            .env_remove("LOOM_INSIDE")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "semantic failure must dominate infrastructure: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

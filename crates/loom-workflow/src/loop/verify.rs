@@ -94,7 +94,7 @@ pub(super) async fn execute_gate(
                     Some(0) => ExecutionState::Completed,
                     Some(77 | 78) => ExecutionState::Unavailable,
                     Some(124) => ExecutionState::TimedOut,
-                    Some(137) | None => ExecutionState::Interrupted,
+                    Some(128..=255) | None => ExecutionState::Interrupted,
                     Some(_) => ExecutionState::Rejected,
                 };
                 Execution {

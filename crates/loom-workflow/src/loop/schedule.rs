@@ -28,6 +28,16 @@ pub struct Request {
     pub infra_policy: InfraRetryPolicy,
     pub max_iterations: u32,
     pub repo_git_policy: RepoGitPolicy,
+    pub manifest: Arc<loom_driver::profile_manifest::ProfileImageManifest>,
+}
+
+pub(super) const fn handoff_commands<'a>(
+    agent: Option<AgentKind>,
+    loom: &'a Path,
+    wrix: &'a Path,
+    manifest: &'a loom_driver::profile_manifest::ProfileImageManifest,
+) -> MoleculePushGateCommands<'a> {
+    MoleculePushGateCommands::new(agent, loom, wrix).with_manifest(manifest)
 }
 
 /// `UpdateOpts` for a parallel-mode `loom:clarify` / `loom:blocked`
@@ -67,6 +77,7 @@ where
         infra_policy,
         max_iterations,
         repo_git_policy,
+        manifest,
     } = request;
     let spawn = Arc::new(spawn);
     let bd = BdClient::new();
@@ -409,7 +420,7 @@ where
             &bd,
             &label,
             molecule.as_ref(),
-            MoleculePushGateCommands::new(agent_override, &loom_bin, &wrix_bin),
+            handoff_commands(agent_override, &loom_bin, &wrix_bin, &manifest),
             &workspace,
             &git,
         )

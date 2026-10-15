@@ -698,7 +698,8 @@ fn dispatch_outcome_to_failures(
 /// `source_spec`-derived bonding still resolves to a real spec.
 fn dispatch_error_annotation(err: &loom_gate::DispatchError) -> Annotation {
     let target = match err {
-        loom_gate::DispatchError::Spawn { command, .. }
+        loom_gate::DispatchError::Infrastructure { command, .. }
+        | loom_gate::DispatchError::Spawn { command, .. }
         | loom_gate::DispatchError::MalformedVerdict { command, .. }
         | loom_gate::DispatchError::InvalidVerdict { command, .. } => command.clone(),
         loom_gate::DispatchError::MissingFromBatchOutput { target, .. } => target.clone(),

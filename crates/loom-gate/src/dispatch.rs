@@ -151,6 +151,12 @@ pub const SKIP_EXIT_CODE: i32 = 77;
 /// to a specific annotation source line.
 #[derive(Debug, Display, Error)]
 pub enum DispatchError {
+    /// verifier `{command}` infrastructure exited {code}; required coverage remains pending: {evidence}
+    Infrastructure {
+        command: String,
+        code: i32,
+        evidence: String,
+    },
     /// annotation target was empty for tier [{tier}]
     EmptyTarget { tier: Tier },
     /// failed to spawn verifier `{command}`: {source}
@@ -630,6 +636,15 @@ fn interpret_group_output(
     command: &str,
     output: &Output,
 ) -> Vec<Result<DispatchOutcome, DispatchError>> {
+    if let Some(code) = infrastructure_exit_code(output)
+        && matches!(group.spec.parse, BuiltinParser::ExitCode)
+    {
+        return group
+            .matched
+            .iter()
+            .map(|_| Err(infrastructure_error(command, output, code)))
+            .collect();
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
@@ -665,6 +680,13 @@ fn interpret_group_output(
         match parse_runner_output(group.spec.parse, &stdout, &stderr, output.status.success()) {
             Ok(parsed) => parsed,
             Err(source) => {
+                if let Some(code) = infrastructure_exit_code(output) {
+                    return group
+                        .matched
+                        .iter()
+                        .map(|_| Err(infrastructure_error(command, output, code)))
+                        .collect();
+                }
                 return group
                     .matched
                     .iter()
@@ -701,6 +723,13 @@ fn interpret_group_output(
     let has_failure = parsed
         .values()
         .any(|verdict| verdict.outcome == Verdict::Fail);
+    if !has_failure && let Some(code) = infrastructure_exit_code(output) {
+        return group
+            .matched
+            .iter()
+            .map(|_| Err(infrastructure_error(command, output, code)))
+            .collect();
+    }
     let has_skip = parsed
         .values()
         .any(|verdict| verdict.outcome == Verdict::Skipped);
@@ -778,6 +807,30 @@ fn run_with_fallback(
     interpret_fallback_output(command, test_targets, &output)
 }
 
+fn infrastructure_exit_code(output: &Output) -> Option<i32> {
+    match output.status.code() {
+        Some(code @ (78 | 124 | 128..=255)) => Some(code),
+        #[cfg(unix)]
+        None => {
+            use std::os::unix::process::ExitStatusExt as _;
+            output.status.signal().map(|signal| 128 + signal)
+        }
+        _ => None,
+    }
+}
+
+fn infrastructure_error(command: &str, output: &Output, code: i32) -> DispatchError {
+    DispatchError::Infrastructure {
+        command: command.to_string(),
+        code,
+        evidence: format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    }
+}
+
 fn interpret_fallback_output(
     command: &str,
     test_targets: Option<&[&str]>,
@@ -787,6 +840,13 @@ fn interpret_fallback_output(
     let stderr = String::from_utf8_lossy(&output.stderr);
     let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
     let reported = parse_verdict_optional(command, &stdout)?;
+    if let Some(code) = infrastructure_exit_code(output)
+        && !reported
+            .as_ref()
+            .is_some_and(|verdict| verdict.outcome() == Verdict::Fail)
+    {
+        return Err(infrastructure_error(command, output, code));
+    }
     if let Some(targets) = test_targets.filter(|_| !skipped) {
         let filtered_nextest_skips = crate::runner::RunnerKind::classify(command)
             == crate::runner::RunnerKind::CargoNextest

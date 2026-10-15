@@ -1537,7 +1537,11 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
             Ok(code) => combined = combine_verifier_codes(combined, code),
             Err(err) => {
                 eprintln!("loom gate verify [{tier}]: {err:#}");
-                combined = 1;
+                combined = combine_verifier_codes(
+                    combined,
+                    err.downcast_ref::<loom_gate::dispatch::DispatchError>()
+                        .map_or(1, dispatch_error_code),
+                );
             }
         }
     }
@@ -1569,17 +1573,26 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
 }
 
 fn combine_verifier_codes(left: i32, right: i32) -> i32 {
+    let infrastructure = |code| matches!(code, 77 | 78 | 124 | 128..=255);
     if [left, right]
         .into_iter()
-        .any(|code| code != 0 && code != loom_gate::dispatch::SKIP_EXIT_CODE)
+        .any(|code| code != 0 && !infrastructure(code))
     {
         1
-    } else if left == loom_gate::dispatch::SKIP_EXIT_CODE
-        || right == loom_gate::dispatch::SKIP_EXIT_CODE
-    {
-        loom_gate::dispatch::SKIP_EXIT_CODE
+    } else if left != 0 && left != loom_gate::dispatch::SKIP_EXIT_CODE {
+        left
+    } else if right != 0 {
+        right
     } else {
-        0
+        left
+    }
+}
+
+const fn dispatch_error_code(error: &loom_gate::dispatch::DispatchError) -> i32 {
+    match error {
+        loom_gate::dispatch::DispatchError::Infrastructure { code, .. } => *code,
+        loom_gate::dispatch::DispatchError::Spawn { .. } => 78,
+        _ => 1,
     }
 }
 
@@ -1890,7 +1903,7 @@ fn dispatch_tier_with_input_resolver(
                     }
                     Err(err) => {
                         eprintln!("loom gate [test]: {err:#}");
-                        combined = 1;
+                        combined = combine_verifier_codes(combined, dispatch_error_code(&err));
                     }
                 }
             }
@@ -2074,7 +2087,7 @@ fn run_check_with_progress(
                 for line in format!("{err:#}").lines().take(5) {
                     let _ = writeln!(stderr, "  {line}");
                 }
-                combined = 1;
+                combined = combine_verifier_codes(combined, dispatch_error_code(&err));
             }
         }
     }
@@ -2166,7 +2179,7 @@ fn run_system_with_progress(
                     for line in format!("{err:#}").lines().take(5) {
                         let _ = writeln!(stderr, "  {line}");
                     }
-                    combined = 1;
+                    combined = combine_verifier_codes(combined, dispatch_error_code(&err));
                 }
             }
         }
@@ -3245,6 +3258,7 @@ fn run_parallel_loop_root(
         },
         max_iterations: config.loop_.max_iterations,
         repo_git_policy,
+        manifest: Arc::clone(&manifest),
     };
     let config = Arc::new(config.clone());
     let workspace = workspace.to_path_buf();
