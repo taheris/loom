@@ -99,12 +99,18 @@
         config = loom.cargoConfig;
         toolchain = loom.toolchain;
       };
-      bootstrapConfig = (pkgs.writeText "bootstrap-cargo-patches.toml" "paths = []\n").overrideAttrs {
-        passthru = {
-          nextestVersion = "0.23.0";
-          nextestChecksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        };
-      };
+      bootstrapConfig =
+        (pkgs.writeText "bootstrap-cargo-patches.toml" ''
+          paths = []
+          [env]
+          LOOM_PREK_BIN = { value = "${import ../prek.nix { inherit pkgs; }}/bin/prek", force = true }
+        '').overrideAttrs
+          {
+            passthru = {
+              nextestVersion = "0.23.0";
+              nextestChecksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            };
+          };
       bootstrapCargo = import ../native-cargo.nix {
         inherit pkgs;
         config = bootstrapConfig;

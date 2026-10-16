@@ -2834,6 +2834,8 @@ const TEST_PRE_COMMIT_CONFIG: &str = r"repos:
   - repo: local
     hooks:
       - id: pre-push
+        name: Fixture pre-push
+        language: system
         entry: bin/pre-push-checks --hook-id pre-push --hook-entry 'true' -- true
         stages: [pre-push]
 ";

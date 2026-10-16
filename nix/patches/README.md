@@ -1,5 +1,18 @@
 # Dependency patches
 
+## Hook termination status
+
+`prek-hook-status.patch` retains native Unix hook signals as `128 + signal`
+instead of collapsing them to semantic exit 1. Batched hook execution keeps
+completed semantic failures dominant over infrastructure failures. Gate uses
+this pinned runner through the same generated Cargo configuration as the parser
+patch, and Nix builds embed the identical runner path. Ambient `PREK_QUIET` is
+removed for the Gate-owned invocation so exit reports remain available. Actual
+SIGTERM/SIGKILL hooks, explicit infrastructure exits, mixed semantic failures,
+and quiet environments are exercised by `gate_cli_scope` against real prek.
+
+Remove the runner patch after an upstream release preserves these outcomes.
+
 ## Standalone nextest filterset parsing
 
 `nextest-filtering-parse.patch` makes `ParsedExpr::parse` return upstream

@@ -142,10 +142,19 @@ fn post_integration_verify_runs_project_precommit_and_affected_check_test() {
     .expect("write runner config");
     write_executable(
         &workspace.join("bin/prek"),
+        &loom_test_support::bash_script("exit 1\n"),
+    );
+    write_executable(
+        &workspace.join("project-hook.sh"),
         &loom_test_support::bash_script(
-            "set -euo pipefail\nprintf 'prek %s\n' \"$*\" >> \"$ORDER_LOG\"\n",
+            "set -euo pipefail\nprintf 'prek hook %s\n' \"$*\" >> \"$ORDER_LOG\"\n",
         ),
     );
+    std::fs::write(
+        workspace.join(".pre-commit-config.yaml"),
+        "repos:\n  - repo: local\n    hooks:\n      - id: ordered-hook\n        name: Ordered hook\n        language: system\n        entry: bash project-hook.sh\n",
+    )
+    .unwrap();
     init_git(workspace);
     std::fs::write(
         workspace.join("src/lib.rs"),
@@ -186,9 +195,9 @@ fn post_integration_verify_runs_project_precommit_and_affected_check_test() {
     let first = lines.next().unwrap_or_default();
     let second = lines.next().unwrap_or_default();
     let third = lines.next().unwrap_or_default();
-    assert!(
-        first.starts_with("prek run --hook-stage pre-commit --from-ref "),
-        "first lane must be concrete prek pre-commit: {log}",
+    assert_eq!(
+        first, "prek hook src/lib.rs",
+        "real hook must run first against the exact diff: {log}"
     );
     assert_eq!(second, "check", "check lane must follow prek: {log}");
     assert_eq!(
@@ -409,6 +418,7 @@ fn real_hook_gate(
         .arg("--workspace")
         .arg(workspace)
         .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
+        .env("PREK_QUIET", "2")
         .output()
         .unwrap();
     for index in 0..hook_bodies.len() {
@@ -422,9 +432,15 @@ fn real_hook_gate(
 
 #[test]
 fn real_prek_infrastructure_exits_survive_gate_aggregation_without_skip_credit() {
-    for code in [77, 78, 124, 127] {
-        let body = format!("exit {code}");
-        let (_fixture, output) = real_hook_gate(&[&body], false);
+    for (body, code) in [
+        ("exit 77", 77),
+        ("exit 78", 78),
+        ("exit 124", 124),
+        ("exit 127", 127),
+        ("kill -TERM $$", 143),
+        ("kill -KILL $$", 137),
+    ] {
+        let (_fixture, output) = real_hook_gate(&[body], false);
         assert_eq!(
             output.status.code(),
             Some(if code == 77 { 78 } else { code }),
@@ -438,20 +454,22 @@ fn real_prek_infrastructure_exits_survive_gate_aggregation_without_skip_credit()
 
 #[test]
 fn real_prek_semantic_rejection_dominates_hook_and_annotation_infrastructure() {
-    for reverse in [false, true] {
-        let hooks = if reverse {
-            ["exit 1", "exit 78"]
-        } else {
-            ["exit 78", "exit 1"]
-        };
-        let (_fixture, output) = real_hook_gate(&hooks, false);
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "stdout={}\nstderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    for infrastructure in ["exit 78", "kill -TERM $$", "kill -KILL $$"] {
+        for reverse in [false, true] {
+            let hooks = if reverse {
+                ["exit 1", infrastructure]
+            } else {
+                [infrastructure, "exit 1"]
+            };
+            let (_fixture, output) = real_hook_gate(&hooks, false);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "stdout={}\nstderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
     let (_fixture, output) = real_hook_gate(&["exit 78"], true);
     assert_eq!(output.status.code(), Some(1));
@@ -498,10 +516,10 @@ fn real_prek_source_modification_remains_semantic_repair() {
 }
 
 #[test]
-fn missing_prek_runner_is_infrastructure_without_required_coverage() {
-    let (fixture, _) = real_hook_gate(&["exit 0"], false);
+fn pinned_prek_runner_preserves_infrastructure_without_ambient_prek() {
+    let (fixture, _) = real_hook_gate(&["exit 78"], false);
     let tools = tempfile::tempdir().unwrap();
-    for name in ["git", "bash"] {
+    for name in ["git", "bash", "mkdir"] {
         let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap())
             .map(|directory| directory.join(name))
             .find(|candidate| candidate.is_file())
@@ -514,6 +532,7 @@ fn missing_prek_runner_is_infrastructure_without_required_coverage() {
         .arg(fixture.path())
         .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
         .env("PATH", tools.path())
+        .env("PREK_QUIET", "2")
         .output()
         .unwrap();
     assert_eq!(
@@ -523,5 +542,5 @@ fn missing_prek_runner_is_infrastructure_without_required_coverage() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("prek infrastructure unavailable"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("- exit code: 78"));
 }

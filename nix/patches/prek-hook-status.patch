@@ -1,0 +1,42 @@
+diff --git a/crates/prek/src/process.rs b/crates/prek/src/process.rs
+--- a/crates/prek/src/process.rs
++++ b/crates/prek/src/process.rs
+@@ -146,6 +146,15 @@ pub(crate) struct MergedOutput {
+
+ impl From<MergedOutput> for HookRunOutput {
+     fn from(output: MergedOutput) -> Self {
+-        Self::new(output.status.code().unwrap_or(1), output.bytes)
++        let code = output.status.code().unwrap_or_else(|| {
++            #[cfg(unix)]
++            {
++                use std::os::unix::process::ExitStatusExt;
++                128 + output.status.signal().unwrap_or(0)
++            }
++            #[cfg(not(unix))]
++            { 78 }
++        });
++        Self::new(code, output.bytes)
+     }
+ }
+diff --git a/crates/prek/src/run.rs b/crates/prek/src/run.rs
+--- a/crates/prek/src/run.rs
++++ b/crates/prek/src/run.rs
+@@ -250,7 +250,17 @@ impl HookRunOutput {
+     }
+
+     fn append(&mut self, output: Self) {
+-        self.exit_code |= output.exit_code;
++        let infrastructure = |code| matches!(code, 77 | 78 | 124 | 127..=255);
++        self.exit_code = match (self.exit_code, output.exit_code) {
++            (0, code) | (code, 0) => code,
++            (left, right) if infrastructure(left) && !infrastructure(right) => right,
++            (left, right) if !infrastructure(left) && infrastructure(right) => left,
++            (left, right) if infrastructure(left) && infrastructure(right) => {
++                // Distinct unavailable statuses still mean unavailable execution.
++                if left == right { left } else { 78 }
++            }
++            (left, right) => left | right,
++        };
+         self.output.extend(output.output);
+     }
+ }

@@ -1745,8 +1745,9 @@ fn run_project_hook_lane(workspace: &Path, args: &GateScope) -> anyhow::Result<i
         return Ok(0);
     };
     let (from_ref, to_ref) = concrete_diff_refs(workspace, range)?;
-    let output = match std::process::Command::new("prek")
+    let output = match std::process::Command::new(env!("LOOM_PREK_BIN"))
         .current_dir(workspace)
+        .env_remove("PREK_QUIET")
         .env("LOOM_PARENT_DIFF_GATE", "1")
         .args([
             "run",

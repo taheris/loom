@@ -56,6 +56,8 @@ let
     };
   };
 
+  hookRunner = import ./prek.nix { inherit pkgs; };
+
   lockedNextest =
     lib.findFirst (package: package.name == "nextest-filtering")
       (throw "Cargo.lock does not contain nextest-filtering")
@@ -64,6 +66,9 @@ let
   cargoConfig =
     (pkgs.writeText "loom-cargo-patches.toml" ''
       paths = [ "${patchedNextest}" ]
+
+      [env]
+      LOOM_PREK_BIN = { value = "${hookRunner}/bin/prek", force = true }
     '').overrideAttrs
       {
         passthru = {
@@ -114,6 +119,7 @@ let
   bin = craneLib.buildPackage (
     commonArgs
     // {
+      LOOM_PREK_BIN = "${hookRunner}/bin/prek";
       inherit cargoArtifacts;
       doCheck = false;
     }
@@ -122,6 +128,7 @@ let
   clippy = craneLib.cargoClippy (
     commonArgs
     // {
+      LOOM_PREK_BIN = "${hookRunner}/bin/prek";
       src = stagedSrc;
       inherit cargoArtifacts;
       cargoClippyExtraArgs = "--all-targets";
@@ -131,6 +138,7 @@ let
   nextest = craneLib.cargoNextest (
     commonArgs
     // {
+      LOOM_PREK_BIN = "${hookRunner}/bin/prek";
       src = stagedSrc;
       inherit cargoArtifacts;
       nativeBuildInputs = commonArgs.nativeBuildInputs ++ [

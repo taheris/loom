@@ -49,7 +49,7 @@ cmp Cargo.lock "$fixture/original-Cargo.lock"
 export REAL_NIX="$real_nix"
 export NIX_PATCH_BUILD_RESULT="$fixture/refreshed.toml"
 export NIX_PATCH_BUILD_CALLS="$fixture/build-calls"
-printf 'paths = []\n' > "$NIX_PATCH_BUILD_RESULT"
+cp "$config" "$NIX_PATCH_BUILD_RESULT"
 printf '#!%s\n' "$(command -v bash)" > "$fixture/bin/nix"
 cat >> "$fixture/bin/nix" <<'SH'
 set -euo pipefail
