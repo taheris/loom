@@ -95,6 +95,8 @@
             set -euo pipefail
             bash ${../../tests/agent/nextest-home.sh} \
               ${pkgs.writeText "nextest-pre-unpack.sh" pkgs.cargo-nextest.preUnpack}
+            bash ${../../tests/agent/nextest-home.sh} \
+              ${pkgs.writeText "prek-pre-unpack.sh" (import ../prek.nix { inherit pkgs; }).preUnpack}
             touch "$out"
           '';
 

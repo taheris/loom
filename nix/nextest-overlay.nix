@@ -1,14 +1,13 @@
 final: prev: {
   cargo-nextest = prev.cargo-nextest.overrideAttrs (
-    old:
     {
-      patches = (old.patches or [ ]) ++ [ ./patches/nextest-capture-handoff.patch ];
-      preUnpack = ''
-        export HOME="$TMPDIR/home"
-        export CARGO_HOME="$TMPDIR/cargo-home"
-        mkdir -p "$HOME" "$CARGO_HOME"
-      ''
-      + (old.preUnpack or "");
+      patches ? [ ],
+      preUnpack ? "",
+      ...
+    }:
+    {
+      patches = patches ++ [ ./patches/nextest-capture-handoff.patch ];
+      preUnpack = (import ./cargo-home.nix) + preUnpack;
     }
     // final.lib.optionalAttrs final.stdenv.hostPlatform.isLinux {
       doCheck = true;

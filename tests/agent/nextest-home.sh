@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-hook="${1:?cargo-nextest preUnpack hook is required}"
+hook="${1:?registered Cargo builder preUnpack hook is required}"
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/source/src" "$fixture/build dir"

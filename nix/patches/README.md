@@ -32,10 +32,12 @@ creates `.global-cache` and package lock files under `$HOME/.cargo`. With Nix's
 unsandboxed default `HOME=/homeless-shelter`, that makes subsequent derivations
 fail the home-directory purity guard.
 
-The overlay sets both `HOME` and `CARGO_HOME` inside the derivation's `TMPDIR`
-before unpacking, so build hooks, the runner, and its Cargo subprocesses share
-private homes throughout the build. No purity guard or regression is disabled.
-The `nextest-cargo-home-isolation` flake check runs the actual hook with fresh
+Both the Nextest overlay and the pinned prek runner prepend the shared
+`../cargo-home.nix` hook before unpacking. It sets `HOME` and `CARGO_HOME`
+inside the derivation's `TMPDIR`, covering build hooks and Cargo subprocesses
+throughout the build while preserving upstream hooks. No purity guard or
+regression is disabled, and worker startup never deletes an occupied guard. The
+`nextest-cargo-home-isolation` flake check runs both actual hooks with fresh
 homes and real offline Cargo build/test commands, including a control that
 reproduces the cache writer in a disposable home.
 

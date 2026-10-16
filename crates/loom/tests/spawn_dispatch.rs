@@ -1972,7 +1972,7 @@ fn install_bd_bead_stub(dir: &Path, bead_json: &str) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).unwrap();
     let bd = bin_dir.join("bd");
     let bash = find_bash();
-    let mut closed: serde_json::Value = serde_json::from_str(bead_json).expect("fixture JSON");
+    let mut closed: serde_json::Value = serde_json::from_str(&bead_json).expect("fixture JSON");
     for bead in closed.as_array_mut().expect("fixture rows") {
         bead["status"] = serde_json::json!("closed");
     }
@@ -1987,7 +1987,7 @@ __BD_CLOSED_JSON__\n\
              exit 0\n\
          fi\n\
          if [[ \"${{1:-}}\" == 'create' ]]; then\n\
-             echo 'lm-work'\n\
+             if [[ \" $* \" == *loom:spec* ]]; then echo 'lm-spec'; else echo 'lm-work'; fi\n\
              exit 0\n\
          fi\n\
          if [[ \"${{1:-}}\" == 'mol' && \"${{2:-}}\" == 'progress' ]]; then\n\
@@ -2025,6 +2025,48 @@ __BD_BEAD_JSON__\n\
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
     bin_dir
+}
+
+#[test]
+fn todo_bd_adapter_preserves_pending_work_after_spec_metadata_closure() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = install_bd_bead_stub(dir.path(), "[]");
+    let create = |labels| {
+        let output = Command::new(bin.join("bd"))
+            .args([
+                "create", "--silent", "--title", "fixture", "--type", "epic", "--labels", labels,
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let spec = create("loom:spec,spec:agent");
+    let work = create("loom:todo,spec:agent");
+    assert_ne!(spec, work);
+    assert!(
+        Command::new(bin.join("bd"))
+            .args(["close", &spec])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = Command::new(bin.join("bd"))
+        .args(["show", &work, "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let rows: Vec<loom_driver::bd::Bead> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id.as_str(), work);
+    assert_eq!(rows[0].status, loom_driver::bd::Status::Open);
+    assert_eq!(rows[0].issue_type, loom_driver::bd::IssueType::Epic);
+    assert!(
+        rows[0]
+            .labels
+            .iter()
+            .any(|label| label.as_str() == "loom:todo")
+    );
 }
 
 #[test]
