@@ -710,3 +710,41 @@ fn real_prek_missing_executable_is_infrastructure_but_completed_exit_two_is_sema
     let (_fixture, output) = real_hook_gate(&["exit 2"], false);
     assert_eq!(output.status.code(), Some(2));
 }
+
+#[test]
+fn real_prek_native_invalid_source_is_semantic_after_partial_formatting() {
+    let (fixture, _) = real_hook_gate(&["exit 0"], false);
+    let workspace = fixture.path();
+    std::fs::write(workspace.join(".pre-commit-config.yaml"),
+        "repos:\n  - repo: builtin\n    hooks:\n      - id: pretty-format-json\n        args: [--autofix, a.json, b.json]\n        pass_filenames: false\n        always_run: true\n").unwrap();
+    std::fs::write(workspace.join("a.json"), "{\"x\":1}\n").unwrap();
+    std::fs::write(workspace.join("b.json"), [0xff]).unwrap();
+    assert!(
+        git_command()
+            .arg("-C")
+            .arg(workspace)
+            .args(["add", ".pre-commit-config.yaml", "a.json", "b.json"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = Command::new(loom_bin())
+        .current_dir(workspace)
+        .arg("--workspace")
+        .arg(workspace)
+        .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("a.json")).unwrap(),
+        "{\n  \"x\": 1\n}\n"
+    );
+    assert_eq!(std::fs::read(workspace.join("b.json")).unwrap(), [0xff]);
+}

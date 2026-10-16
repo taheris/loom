@@ -18,10 +18,15 @@
      }
 --- a/crates/prek/src/run.rs
 +++ b/crates/prek/src/run.rs
-@@ -246,2 +246,24 @@
+@@ -246,2 +246,29 @@
 
 +pub(crate) fn unavailable_hook_output(error: anyhow::Error) -> anyhow::Result<(i32, Vec<u8>)> {
-+    if error.chain().any(|cause| cause.is::<std::io::Error>()) {
++    if error.chain().any(|cause| {
++        matches!(
++            cause.downcast_ref::<crate::process::Error>(),
++            Some(crate::process::Error::Exec { .. } | crate::process::Error::PtySetup(_))
++        )
++    }) {
 +        Ok((78, format!("{error:#}\n").into_bytes()))
 +    } else {
 +        Err(error)
@@ -43,12 +48,12 @@
 +}
 +
  impl HookRunOutput {
-@@ -252,3 +274,3 @@
+@@ -252,3 +279,3 @@
      fn append(&mut self, output: Self) {
 -        self.exit_code |= output.exit_code;
 +        self.exit_code = combine_verification_exit(self.exit_code, output.exit_code);
          self.output.extend(output.output);
-@@ -284,3 +306,7 @@
+@@ -284,3 +311,7 @@
      let output = futures_util::stream::iter(partitions)
 -        .map(|batch| run(batch))
 +        .map(|batch| async {
@@ -57,12 +62,12 @@
 +            })
 +        })
          .buffered(concurrency)
-@@ -289,3 +315,3 @@
+@@ -289,3 +320,3 @@
              |mut combined, output| async move {
 -                combined.append(output.into());
 +                combined.append(output);
                  anyhow::Ok(combined)
-@@ -304,8 +330,8 @@
+@@ -304,8 +335,8 @@
      #[test]
 -    fn hook_run_output_append_bitwise_ors_exit_codes() {
 -        let mut output = HookRunOutput::new(1, Vec::new());
