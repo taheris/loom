@@ -23,6 +23,7 @@ use std::process::Command;
 fn init_workspace_repo(path: &Path) {
     loom_driver::git::init_test_repo_with_integration(path)
         .expect("init test repo with loom integration");
+    loom_test_support::acceptance::seed_repository(path).unwrap();
 }
 
 fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels: &[&str]) {
@@ -33,6 +34,7 @@ fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels:
     std::fs::write(bead_dir.join("status"), "open").expect("write status");
     std::fs::write(bead_dir.join("priority"), "2").expect("write priority");
     std::fs::write(bead_dir.join("issue_type"), "task").expect("write issue_type");
+    std::fs::write(bead_dir.join("metadata.json"), serde_json::json!({loom_protocol::acceptance::METADATA_KEY: loom_test_support::acceptance::metadata("harness").unwrap()}).to_string()).expect("write explicit fixture acceptance");
     let body = labels.join("\n");
     std::fs::write(bead_dir.join("labels"), body).expect("write labels");
 }

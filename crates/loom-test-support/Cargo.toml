@@ -10,6 +10,7 @@ publish.workspace = true
 # depend on this crate exclusively via `[dev-dependencies]`; production
 # code never reaches the items it exposes.
 [dependencies]
+loom-driver = { workspace = true }
 loom-events = { workspace = true }
 loom-protocol = { workspace = true }
 proptest = { workspace = true }

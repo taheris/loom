@@ -16,6 +16,8 @@ pub use crate::workspace_recovery::{RecoveryStash, WorkspaceAlignment, Workspace
 #[derive(Template)]
 #[template(path = "loop.md", escape = "none")]
 pub struct LoopContext {
+    /// Resolved instructions supplied by the driver; absent only for partial composition.
+    pub acceptance: Option<loom_protocol::acceptance::dispatch::Context>,
     pub pinned_context: String,
     pub label: SpecLabel,
     pub spec_path: String,

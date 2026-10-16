@@ -9,12 +9,7 @@ use thiserror::Error;
 
 use crate::mint::acceptance as remediation;
 
-/// Immutable dispatch acceptance; neither branch is verifier or publication evidence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Resolved {
-    Implementation(loom_protocol::acceptance::Resolved),
-    Remediation(remediation::Resolved),
-}
+pub use loom_protocol::acceptance::dispatch::Acceptance as Resolved;
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
@@ -22,6 +17,8 @@ pub enum Error {
     Bd(#[from] BdError),
     /// task {0} lacks explicit acceptance; bind criteria or admit finding goals
     Missing(loom_driver::identifier::BeadId),
+    /// {0} is not an implementation task; decisions and epics are not worker acceptance
+    NotTask(loom_driver::identifier::BeadId),
     /// task acceptance metadata is malformed; explicitly repair its purpose and references
     Metadata(#[from] serde_json::Error),
     /// implementation acceptance snapshot is invalid
@@ -41,6 +38,9 @@ pub async fn resolve<R: CommandRunner>(
     task: &Bead,
     workspace: &Path,
 ) -> Result<Resolved, Error> {
+    if task.issue_type != loom_driver::bd::IssueType::Task {
+        return Err(Error::NotTask(task.id.clone()));
+    }
     let refreshed;
     let task = if task.metadata.contains_key(remediation::FOLLOW_UP_KEY) {
         remediation::admit_proposal(bd, task, workspace).await?;

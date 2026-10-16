@@ -1,5 +1,7 @@
 //! Parsed task references and immutable snapshot-resolved acceptance.
 
+pub mod dispatch;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -247,6 +249,8 @@ pub enum ParseError {
     EmptyGoals,
     /// duplicate remediation goal reference
     DuplicateGoal,
+    /// remediation reference disagrees with its resolved finding identity
+    GoalIdentity,
     /// invalid finding hash `{value}`: expected v1: followed by twelve lowercase hex characters
     FindingHash { value: String },
     /// duplicate task reference `{reference}`

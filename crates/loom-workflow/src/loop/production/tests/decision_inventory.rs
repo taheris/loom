@@ -10,7 +10,7 @@ mod cases {
         let dir = tempfile::tempdir().unwrap();
         let bd = client(dir.path()).await;
         let git = git_workspace(dir.path());
-        seed_spec(dir.path(), "loop");
+        seed_spec(dir.path(), "harness");
         let root = bd
             .create(CreateOpts {
                 title: "work".into(),
@@ -22,6 +22,7 @@ mod cases {
         let source = bd
             .create(CreateOpts {
                 title: "source".into(),
+                metadata: Some(serde_json::json!({loom_protocol::acceptance::METADATA_KEY: loom_test_support::acceptance::metadata("harness").unwrap()}).to_string()),
                 parent: Some(root.clone()),
                 ..CreateOpts::default()
             })
@@ -39,7 +40,7 @@ mod cases {
         let agent = Arc::new(BdClient::with_runner(IsolatedBeads::attach(dir.path())));
         let manifest = write_manifest(dir.path());
         let spawn_root = root.clone();
-        let mut controller = ProductionAgentLoopController::new(bd, SpecLabel::new("loop").unwrap(),
+        let mut controller = ProductionAgentLoopController::new(bd, SpecLabel::new("harness").unwrap(),
             PathBuf::from("unused-loom"),dir.path().to_path_buf(),git,manifest,None,ProfileName::new("base").unwrap(),
             move |_, id| {
                 let agent=Arc::clone(&agent); let root=spawn_root.clone(); let affected=affected.clone();

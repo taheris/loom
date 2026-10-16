@@ -558,8 +558,7 @@ fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
     let docs_dir = workspace.join("docs");
     std::fs::create_dir_all(&spec_dir).expect("mkdir specs");
     std::fs::create_dir_all(&docs_dir).expect("mkdir docs");
-    std::fs::write(spec_dir.join(format!("{label}.md")), format!("# {label}\n"))
-        .expect("write spec");
+    loom_test_support::acceptance::write(workspace, label).expect("write fixture contract");
     std::fs::write(
         docs_dir.join("README.md"),
         format!("- [{label}](../specs/{label}.md)\n"),
@@ -604,6 +603,7 @@ fn init_workspace_repo(workspace: &Path) {
     .expect("write fixture pre-push config");
     loom_driver::git::init_test_repo_with_integration(workspace)
         .expect("init test repo with loom integration");
+    loom_test_support::acceptance::seed_repository_for(workspace, "agent").unwrap();
 }
 
 /// Install a stub `loom` shim that exits 0 for any args. Threaded via
@@ -888,6 +888,7 @@ fn wrix_spawn_config_includes_configured_sccache_mount_and_env() {
 }
 
 fn install_parallel_bd_stub(dir: &Path) -> PathBuf {
+    let metadata = serde_json::json!({loom_protocol::acceptance::METADATA_KEY: loom_test_support::acceptance::metadata("agent").unwrap()});
     let bin_dir = dir.join("bd-parallel-bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let bd = bin_dir.join("bd");
@@ -901,7 +902,9 @@ fn install_parallel_bd_stub(dir: &Path) -> PathBuf {
              exit 0\n\
          fi\n\
          if [[ \"$cmd\" == 'show' && ( \"${{2:-}}\" == 'lm-para' || \"${{2:-}}\" == 'lm-parb' ) ]]; then\n\
-             printf '[{{\"id\":\"%s\",\"title\":\"parallel bead\",\"status\":\"open\",\"issue_type\":\"task\"}}]\\n' \"$2\"\n\
+             cat <<__BD_TASK_JSON__\n\
+[{{\"id\":\"$2\",\"title\":\"parallel bead\",\"status\":\"open\",\"issue_type\":\"task\",\"metadata\":{metadata}}}]\n\
+__BD_TASK_JSON__\n\
              exit 0\n\
          fi\n\
          if [[ \"$cmd\" == 'show' ]]; then\n\
@@ -916,7 +919,7 @@ __BD_EPIC_JSON__\n\
          fi\n\
          if [[ \"$cmd\" == 'ready' ]]; then\n\
              cat <<'__BD_READY_JSON__'\n\
-[{{\"id\":\"lm-para\",\"title\":\"parallel a\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}},{{\"id\":\"lm-parb\",\"title\":\"parallel b\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}}]\n\
+[{{\"id\":\"lm-para\",\"title\":\"parallel a\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"metadata\":{metadata},\"labels\":[\"spec:agent\",\"profile:base\"]}},{{\"id\":\"lm-parb\",\"title\":\"parallel b\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"metadata\":{metadata},\"labels\":[\"spec:agent\",\"profile:base\"]}}]\n\
 __BD_READY_JSON__\n\
              exit 0\n\
          fi\n\
@@ -1885,6 +1888,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
 }
 
 fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
+    let metadata = serde_json::json!({loom_protocol::acceptance::METADATA_KEY: loom_test_support::acceptance::metadata("agent").unwrap()});
     let bin_dir = dir.join("bd-bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let bd = bin_dir.join("bd");
@@ -1893,12 +1897,12 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
         "#!{bash}\n\
          set -euo pipefail\n\
          if [[ \"${{1:-}}\" == 'close' ]]; then touch {bin}/\"${{2:?}}.closed\"; exit 0; fi\n\
-         bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"parent\":\"lm-mola\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
-         bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"parent\":\"lm-molb\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
+         bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"metadata\":{metadata},\"parent\":\"lm-mola\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
+         bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"metadata\":{metadata},\"parent\":\"lm-molb\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
          molecule_a='{{\"id\":\"lm-mola\",\"title\":\"first molecule\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:agent\"]}}'\n\
          molecule_b='{{\"id\":\"lm-molb\",\"title\":\"second molecule\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:agent\"]}}'\n\
-         if [[ -f {bin}/lm-multia.closed ]]; then bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"status\":\"closed\",\"issue_type\":\"task\",\"parent\":\"lm-mola\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'; fi\n\
-         if [[ -f {bin}/lm-multib.closed ]]; then bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"status\":\"closed\",\"issue_type\":\"task\",\"parent\":\"lm-molb\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'; fi\n\
+         if [[ -f {bin}/lm-multia.closed ]]; then bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"status\":\"closed\",\"issue_type\":\"task\",\"metadata\":{metadata},\"parent\":\"lm-mola\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'; fi\n\
+         if [[ -f {bin}/lm-multib.closed ]]; then bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"status\":\"closed\",\"issue_type\":\"task\",\"metadata\":{metadata},\"parent\":\"lm-molb\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'; fi\n\
          if [[ \"${{1:-}}\" == 'list' && \" $* \" == *' --type=decision '* ]]; then\n\
              printf '[]\\n'\n\
              exit 0\n\
@@ -1944,6 +1948,14 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
 /// `bd update`). Returns the bin directory the caller should prepend to PATH.
 fn install_bd_bead_stub(dir: &Path, bead_json: &str) -> PathBuf {
     let beads: Vec<loom_driver::bd::Bead> = serde_json::from_str(bead_json).unwrap();
+    let mut rows: Vec<serde_json::Value> = serde_json::from_str(bead_json).unwrap();
+    for (row, bead) in rows.iter_mut().zip(&beads) {
+        if bead.issue_type == loom_driver::bd::IssueType::Task {
+            row["metadata"][loom_protocol::acceptance::METADATA_KEY] =
+                loom_test_support::acceptance::metadata("agent").unwrap();
+        }
+    }
+    let bead_json = serde_json::to_string(&rows).unwrap();
     let parent = beads
         .first()
         .and_then(|bead| bead.parent.as_ref())

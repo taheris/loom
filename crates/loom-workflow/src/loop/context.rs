@@ -8,6 +8,8 @@ use loom_templates::run::{LoopContext, PreviousFailure, WorkspaceRecovery};
 /// retries the driver rebuilds with `previous_failure` set + `attempt`
 /// incremented.
 pub struct LoopContextInputs {
+    pub acceptance: loom_protocol::acceptance::dispatch::Acceptance,
+    pub acceptance_workspace: std::path::PathBuf,
     pub label: SpecLabel,
     pub spec_path: String,
     pub pinned_context: String,
@@ -43,6 +45,7 @@ pub struct LoopContextInputs {
 /// per-iteration inputs.
 pub fn build_loop_context(inputs: LoopContextInputs) -> LoopContext {
     LoopContext {
+        acceptance: Some(inputs.acceptance.context(&inputs.acceptance_workspace)),
         pinned_context: inputs.pinned_context,
         label: inputs.label,
         spec_path: inputs.spec_path,
@@ -78,7 +81,16 @@ mod tests {
     use askama::Template;
 
     fn inputs() -> LoopContextInputs {
+        let dir = tempfile::tempdir().unwrap();
+        let label = SpecLabel::new("harness").unwrap();
+        crate::test_support::acceptance::write_contract(
+            dir.path(),
+            &label,
+            "Worker context preserves its dispatched instructions through retries.",
+        );
         LoopContextInputs {
+            acceptance: crate::test_support::acceptance::resolved(dir.path(), &label),
+            acceptance_workspace: dir.path().to_path_buf(),
             label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".into(),
             pinned_context: "PIN".into(),

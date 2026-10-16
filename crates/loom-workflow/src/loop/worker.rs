@@ -1,4 +1,5 @@
 //! Shared preparation for sequential and parallel loop workers.
+
 use std::path::Path;
 
 use loom_driver::agent::{AgentRuntime, SpawnConfig};
@@ -68,7 +69,7 @@ pub struct Request<'a> {
 pub struct Worker {
     pub spawn: SpawnConfig,
     pub scratch: ScratchSession,
-    pub acceptance: Option<super::acceptance::Resolved>,
+    pub acceptance: super::acceptance::Resolved,
 }
 
 pub enum Preparation {
@@ -142,35 +143,16 @@ pub async fn prepare_with_bd<R: CommandRunner>(
     bd: &BdClient<R>,
     request: Request<'_>,
 ) -> Result<Preparation, LoopError> {
-    let task = request.bead;
-    let has_acceptance = task
-        .metadata
-        .contains_key(loom_protocol::acceptance::METADATA_KEY)
-        || task
-            .metadata
-            .contains_key(crate::mint::acceptance::BATCH_KEY)
-        || task
-            .metadata
-            .contains_key(crate::mint::acceptance::FOLLOW_UP_KEY)
-        || task.labels.iter().any(|label| {
-            label
-                .as_str()
-                .starts_with(crate::mint::FINDING_LABEL_PREFIX)
-        });
-    let acceptance = if has_acceptance {
-        match super::acceptance::resolve(bd, task, request.workspace).await {
-            Ok(acceptance) => Some(acceptance),
-            Err(error) => {
-                return Ok(Preparation::Rejected(AgentOutcome::Blocked {
-                    reason: format!(
-                        "task acceptance rejected before spawn: {}",
-                        crate::mint::mint_error_message(&error)
-                    ),
-                }));
-            }
+    let acceptance = match super::acceptance::resolve(bd, request.bead, request.workspace).await {
+        Ok(acceptance) => acceptance,
+        Err(error) => {
+            return Ok(Preparation::Rejected(AgentOutcome::Blocked {
+                reason: format!(
+                    "task acceptance rejected before spawn: {}",
+                    crate::mint::mint_error_message(&error)
+                ),
+            }));
         }
-    } else {
-        None
     };
     let Request {
         bead,
@@ -208,6 +190,8 @@ pub async fn prepare_with_bd<R: CommandRunner>(
     )?;
     let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
     let initial_prompt = render_loop_prompt(LoopContextInputs {
+        acceptance: acceptance.clone(),
+        acceptance_workspace: workspace.to_path_buf(),
         label: label.clone(),
         spec_path: format!("specs/{label}.md"),
         pinned_context: String::new(),
@@ -428,10 +412,16 @@ export PATH="$LOOM_PREFLIGHT_EMPTY_PATH"
 exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- "$LOOM_PREFLIGHT_SCRIPT"
 "#)).unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let bead: Bead = serde_json::from_value(serde_json::json!({
+        crate::test_support::acceptance::write_contract(
+            &workspace,
+            &label,
+            "Worker reports unavailable native capabilities before starting the agent.",
+        );
+        let mut bead: Bead = serde_json::from_value(serde_json::json!({
             "id": "lm-nworker", "title": "native worker", "status": "open"
         }))
         .unwrap();
+        crate::test_support::acceptance::bind(&workspace, &label, &mut bead);
         for (runtime, capability, stall, native_profile) in
             [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct]
                 .into_iter()
@@ -545,9 +535,15 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
         )
         .unwrap();
         let manifest = ProfileImageManifest::from_path(&manifest_path).unwrap();
-        let bead: Bead = serde_json::from_value(serde_json::json!({
+        crate::test_support::acceptance::write_contract(
+            &workspace,
+            &label,
+            "Worker preserves resolved instructions, retry context and scratch ownership through compaction.",
+        );
+        let mut bead: Bead = serde_json::from_value(serde_json::json!({
             "id": "lm-worker", "title": "worker title", "description": "worker body", "status": "open"
         })).unwrap();
+        crate::test_support::acceptance::bind(&workspace, &label, &mut bead);
         let profile = ProfileName::base();
         for runtime in [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct] {
             let prepared = prepare(Request {

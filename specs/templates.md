@@ -40,6 +40,15 @@ mechanics.
 The scratch tree is removed on every session exit and recreated empty on the
 next session. It is a recovery aid, not durable workflow state.
 
+The public Loop context accepts an optional immutable
+`loom_protocol::acceptance::dispatch::Context` for partial composition.
+Production worker construction supplies it from separately resolved
+implementation criteria or native-checked remediation goals, never from metadata
+deserialization. Its source paths render relative to the worker checkout;
+retained goal text, current bindings, attribution and evidence travel in the
+saved prompt, without Templates resolving references or interpreting resolution
+as passing verification.
+
 ### Template Files
 
 [Acceptance](#success-criteria).

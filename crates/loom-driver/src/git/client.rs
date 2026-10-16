@@ -2869,6 +2869,30 @@ fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError>
     GitClient::open(path)
 }
 
+/// Commit and synchronize an explicit disposable fixture baseline before workers start.
+///
+/// # Errors
+/// Returns Git setup failures without bypassing dirty-tree checks.
+#[doc(hidden)]
+pub fn seed_test_baseline(path: &Path, paths: &[&str]) -> Result<(), GitError> {
+    let mut add = vec!["add", "--"];
+    add.extend_from_slice(paths);
+    run_test_git(path, &add)?;
+    run_test_git(
+        path,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "Bind fixture workflow acceptance",
+        ],
+    )?;
+    run_test_git(path, &["push", "-q", "origin", "HEAD"])?;
+    run_test_git(&path.join(LOOM_WORKSPACE_REL), &["pull", "-q", "--ff-only"])?;
+    Ok(())
+}
+
 /// Stage all changes in `workspace` and commit them with `msg`. Test
 /// support for exercising the loom-workspace integration line (e.g. the
 /// `post-integrate-fail` rollback) without callers outside this module

@@ -221,6 +221,18 @@ read_prompt() {
     fi
 }
 
+run_task_acceptance() {
+    handle_probe 0
+    local prompt_line
+    read_prompt prompt_line
+    if [[ "$prompt_line" != *"## Dispatch Acceptance"* || "$prompt_line" != *"Purpose: implementation"* || "$prompt_line" != *"Workers retain the dispatched acceptance"* ]]; then
+        echo "mock-pi: explicit resolved worker acceptance missing from prompt" >&2
+        exit 4
+    fi
+    emit_message_delta "LOOM_COMPLETE"
+    emit_agent_end
+}
+
 run_happy_path() {
     handle_probe 0
     local prompt_line payload bead_id
@@ -409,6 +421,9 @@ case "$MODE" in
         ;;
     set-thinking-level-reject)
         run_set_thinking_level_reject
+        ;;
+    task-acceptance)
+        run_task_acceptance
         ;;
     happy-path|happy-path-no-thinking)
         run_happy_path

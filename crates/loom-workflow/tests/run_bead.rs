@@ -83,7 +83,11 @@ fn fake_bead(id: &str) -> Bead {
         issue_type: loom_driver::bd::IssueType::Task,
         labels: vec![Label::new("profile:base").expect("valid Label")],
         parent: None,
-        metadata: std::collections::BTreeMap::default(),
+        metadata: [(
+            loom_protocol::acceptance::METADATA_KEY.to_owned(),
+            loom_test_support::acceptance::metadata("harness").unwrap(),
+        )]
+        .into(),
         notes: None,
     }
 }
@@ -101,6 +105,7 @@ fn setup() -> (
     let manifest = write_manifest(dir.path());
     let workspace = dir.path().join("ws");
     let git = init_test_repo_with_integration(&workspace).expect("init repo");
+    loom_test_support::acceptance::seed_repository(&workspace).unwrap();
     let policy = loom_driver::git::RepoGitPolicy::resolve(
         &workspace,
         "unused-wrix".into(),

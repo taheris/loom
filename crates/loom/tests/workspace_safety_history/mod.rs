@@ -26,7 +26,7 @@ impl Fixture {
         let operator = root.path().join("operator");
         let git = init_test_repo_with_integration(&operator)?;
         let association = Association::resolve(&operator)?;
-        let bead: Bead = serde_json::from_value(serde_json::json!({
+        let mut bead: Bead = serde_json::from_value(serde_json::json!({
             "id":"lm-safety", "title":"safety isolation", "description":"worker feedback", "status":"open"
         }))?;
         let label = SpecLabel::new("isolation")?;
@@ -37,6 +37,24 @@ impl Fixture {
             "# Isolation\n\n## Success Criteria\n\n- Deterministic worker feedback. [check](test -f feedback-ok)\n",
         )?;
         fs::write(worker_path.join("feedback-ok"), "available\n")?;
+        fs::create_dir_all(worker_path.join("docs"))?;
+        fs::write(
+            worker_path.join("docs/README.md"),
+            "- [isolation](../specs/isolation.md)\n",
+        )?;
+        let snapshot = loom_gate::acceptance::load(&worker_path)?;
+        let criteria = loom_protocol::acceptance::References::new(
+            snapshot
+                .obligations()
+                .map(|obligation| obligation.reference().clone())
+                .collect(),
+        )?;
+        bead.metadata.insert(
+            loom_protocol::acceptance::METADATA_KEY.to_owned(),
+            serde_json::Value::String(serde_json::to_string(
+                &loom_protocol::acceptance::Candidates::Implementation { criteria },
+            )?),
+        );
         commit_all_in(&worker_path, "Add deterministic feedback fixture")?;
         for path in ["journal.jsonl", "witnesses/object", "checkpoint.json"] {
             let path = association.history_dir().join(path);

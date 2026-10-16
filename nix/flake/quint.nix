@@ -82,11 +82,15 @@ _: {
           pkgs.coreutils
           pkgs.jq
           pkgs.git
+          pkgs.bash
+          pkgs.beads
+          pkgs.gnused
         ]
         ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.podman ];
         text = ''
           export LOOM_TODO_ACCEPTANCE_BIN=${todoAcceptance}/bin/todo-acceptance-persistence
           export LOOM_REMEDIATION_ACCEPTANCE_BIN=${remediationAcceptance}/bin/remediation-acceptance
+          export LOOM_TASK_ACCEPTANCE_BIN=${remediationAcceptance}/bin/remediation-acceptance
           export LOOM_WORKSPACE_SAFETY_BIN=${workspaceHarness}/bin/loom-workspace-safety
           export LOOM_PROFILES_MANIFEST=${profileManifest}
           export LOOM_QUINT_BIN=${harness}/bin/loom-quint
@@ -120,6 +124,24 @@ _: {
           ''
             set -euo pipefail
             bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance mint::tests::acceptance::
+            touch "$out"
+          '';
+      checks.task-acceptance-dispatch =
+        pkgs.runCommand "task-acceptance-dispatch"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.git
+              pkgs.beads
+              pkgs.gnused
+              pkgs.jq
+            ];
+          }
+          ''
+            set -euo pipefail
+            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "r#loop::worker::"
+            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "mint::acceptance::dispatch_tests::"
             touch "$out"
           '';
       checks.private-fixture-tests =

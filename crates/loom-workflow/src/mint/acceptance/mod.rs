@@ -1,5 +1,8 @@
 //! Driver-owned finding attribution, distinct from editable task-reference candidates.
 
+#[cfg(test)]
+mod dispatch_tests;
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -41,48 +44,7 @@ struct Member {
     finding: RawFinding,
 }
 
-/// Complete immutable processed-batch acceptance, not proof that every finding was fixed.
-///
-/// ```compile_fail
-/// let _: loom_workflow::mint::acceptance::Resolved = serde_json::from_str("{}").unwrap();
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resolved {
-    goals: Vec<Goal>,
-}
-
-impl Resolved {
-    pub fn goals(&self) -> &[Goal] {
-        &self.goals
-    }
-}
-
-/// Current-workspace finding and retained batch/task attribution, without publication authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Goal {
-    reference: GoalReference,
-    task: BeadId,
-    work_root: BeadId,
-    finding: Finding,
-}
-
-impl Goal {
-    pub const fn reference(&self) -> &GoalReference {
-        &self.reference
-    }
-
-    pub const fn task(&self) -> &BeadId {
-        &self.task
-    }
-
-    pub const fn work_root(&self) -> &BeadId {
-        &self.work_root
-    }
-
-    pub const fn finding(&self) -> &Finding {
-        &self.finding
-    }
-}
+pub use loom_protocol::acceptance::dispatch::{Goal, Remediation as Resolved};
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
@@ -342,14 +304,14 @@ async fn resolve_references<R: CommandRunner>(
                 "finding {reference:?} contains empty evidence"
             )));
         }
-        goals.push(Goal {
-            reference: reference.clone(),
-            task: task.id.clone(),
-            work_root: root.clone(),
+        goals.push(Goal::new(
+            reference.clone(),
+            task.id.clone(),
+            root.clone(),
             finding,
-        });
+        )?);
     }
-    Ok(Resolved { goals })
+    Ok(Resolved::new(goals)?)
 }
 
 fn same_goals(left: &GoalReferences, right: &GoalReferences) -> bool {

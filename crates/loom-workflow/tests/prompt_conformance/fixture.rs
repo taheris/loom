@@ -63,6 +63,7 @@ pub fn render(phase: Phase) -> Result<String> {
         .render()?,
         Phase::Todo => todo_context()?.render()?,
         Phase::Loop => LoopContext {
+            acceptance: None,
             pinned_context: "Read docs/README.md".into(),
             label: "example".parse()?,
             spec_path: "specs/example.md".into(),

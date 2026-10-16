@@ -15,6 +15,7 @@ use std::process::Command;
 fn init_workspace_repo(path: &Path) {
     loom_driver::git::init_test_repo_with_integration(path)
         .expect("init test repo with loom integration");
+    loom_test_support::acceptance::seed_repository(path).unwrap();
 }
 
 /// Write a stub `bd` that appends each invocation's full argv to
@@ -119,7 +120,7 @@ fn install_bd_parallel_infra_stub(dir: &Path, argv_log: &Path) -> std::path::Pat
     std::fs::create_dir_all(&bin_dir).unwrap();
     let bd = bin_dir.join("bd");
     let active = r#"[{"id":"lm-active","title":"active","status":"open","priority":2,"issue_type":"epic","labels":["loom:active","spec:agent"],"metadata":{}}]"#;
-    let ready = r#"[{"id":"lm-miss","title":"bad profile","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","profile:base"],"metadata":{}}]"#;
+    let ready = serde_json::json!([{"id":"lm-miss","title":"bad profile","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","profile:base"],"metadata":{loom_protocol::acceptance::METADATA_KEY: loom_test_support::acceptance::metadata("harness").unwrap()}}]).to_string();
     let script = format!(
         r#"#!/bin/sh
 for a in "$@"; do printf '%s\t' "$a"; done >> {log}

@@ -15,6 +15,12 @@ case "$1" in
     : "${LOOM_REMEDIATION_ACCEPTANCE_BIN:?missing provisioned remediation acceptance runner}"
     exec "$LOOM_REMEDIATION_ACCEPTANCE_BIN" mint::tests::acceptance:: --nocapture
     ;;
+  task-acceptance-dispatch)
+    : "${LOOM_TASK_ACCEPTANCE_BIN:?missing provisioned task acceptance runner}"
+    : "${LOOM_QUINT_SOURCE:?missing acceptance input bundle}"
+    bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "r#loop::worker::" --nocapture
+    exec bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "mint::acceptance::dispatch_tests::" --nocapture
+    ;;
   workspace-safety-history)
     : "${LOOM_WORKSPACE_SAFETY_BIN:?missing provisioned workspace acceptance runner}"
     if ! command -v podman >/dev/null || ! podman info >/dev/null; then

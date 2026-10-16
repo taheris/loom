@@ -388,6 +388,7 @@ fn run_context_is_publicly_constructible_from_crate_root() {
     use loom_protocol::todo::GitSha;
 
     let _ctx = LoopContext {
+        acceptance: None,
         bead_base: GitSha::new("0123456789abcdef0123456789abcdef01234567").unwrap(),
         pinned_context: String::new(),
         label: SpecLabel::new("demo").unwrap(),

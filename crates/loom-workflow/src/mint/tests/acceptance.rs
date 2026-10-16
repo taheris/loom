@@ -170,7 +170,7 @@ mod tests {
             );
             let task = fixture.mint(std::slice::from_ref(&finding)).await;
             let prepared = ready(fixture.prepare(&task).await);
-            let Some(Resolved::Remediation(acceptance)) = &prepared.acceptance else {
+            let Resolved::Remediation(acceptance) = &prepared.acceptance else {
                 panic!("wrong purpose");
             };
             assert_eq!(acceptance.goals().len(), 1);
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(task.metadata["operator.note"], "keep");
         assert_eq!(task.status, loom_driver::bd::Status::Open);
         let prepared = ready(fixture.prepare(&task).await);
-        let Some(Resolved::Remediation(acceptance)) = &prepared.acceptance else {
+        let Resolved::Remediation(acceptance) = &prepared.acceptance else {
             panic!("wrong purpose");
         };
         assert_eq!(acceptance.goals().len(), 2);
@@ -328,7 +328,7 @@ mod tests {
             .unwrap();
         let split = fixture.bd.show(&split_id).await.unwrap();
         let prepared = ready(fixture.prepare(&split).await);
-        let Some(Resolved::Remediation(resolved)) = &prepared.acceptance else {
+        let Resolved::Remediation(resolved) = &prepared.acceptance else {
             panic!("wrong purpose");
         };
         assert_eq!(resolved.goals().len(), 1);
@@ -534,7 +534,7 @@ mod tests {
             )
             .await;
         let prepared = ready(fixture.prepare(&task).await);
-        let Some(Resolved::Implementation(acceptance)) = &prepared.acceptance else {
+        let Resolved::Implementation(acceptance) = &prepared.acceptance else {
             panic!("wrong purpose");
         };
         assert_eq!(acceptance.obligations().len(), 1);

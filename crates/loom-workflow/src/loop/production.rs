@@ -2774,9 +2774,7 @@ mod tests {
     }
 
     fn seed_spec(workspace: &std::path::Path, label: &str) {
-        let path = workspace.join(format!("specs/{label}.md"));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, format!("# {label}\n")).unwrap();
+        loom_test_support::acceptance::write(workspace, label).unwrap();
     }
 
     /// Return a `ScriptedBd` that resolves one active molecule and has
@@ -3063,6 +3061,7 @@ mod tests {
     fn git_workspace(workspace: &std::path::Path) -> loom_driver::git::GitClient {
         let git =
             loom_driver::git::init_test_repo_with_integration(workspace).expect("init test repo");
+        loom_test_support::acceptance::seed_repository(workspace).unwrap();
         let policy = loom_driver::git::RepoGitPolicy::resolve(
             workspace,
             "unused-wrix".into(),
@@ -3082,7 +3081,11 @@ mod tests {
             issue_type: loom_driver::bd::IssueType::Task,
             labels: vec![Label::new("profile:base").expect("valid Label")],
             parent: None,
-            metadata: std::collections::BTreeMap::default(),
+            metadata: [(
+                loom_protocol::acceptance::METADATA_KEY.to_owned(),
+                loom_test_support::acceptance::metadata("harness").unwrap(),
+            )]
+            .into(),
             notes: None,
         }
     }
@@ -3592,7 +3595,11 @@ mod tests {
             issue_type: loom_driver::bd::IssueType::Task,
             labels: vec![Label::new("profile:base").expect("valid Label")],
             parent: None,
-            metadata: std::collections::BTreeMap::default(),
+            metadata: [(
+                loom_protocol::acceptance::METADATA_KEY.to_owned(),
+                loom_test_support::acceptance::metadata("harness").unwrap(),
+            )]
+            .into(),
             notes: None,
         };
         controller.run_bead(&bead, None).await.expect("run_bead ok");
@@ -4211,7 +4218,11 @@ mod tests {
             issue_type: loom_driver::bd::IssueType::Task,
             labels: vec![Label::new("profile:nonexistent").expect("valid Label")],
             parent: None,
-            metadata: std::collections::BTreeMap::default(),
+            metadata: [(
+                loom_protocol::acceptance::METADATA_KEY.to_owned(),
+                loom_test_support::acceptance::metadata("harness").unwrap(),
+            )]
+            .into(),
             notes: None,
         };
         let outcome = controller
@@ -4797,6 +4808,8 @@ mod tests {
                 ),
             )
             .unwrap();
+            loom_driver::git::commit_all_in(&gate_workspace, "Prepare malformed handoff fixture")
+                .unwrap();
             let mut controller = ProductionAgentLoopController::new(
                 bd,
                 SpecLabel::new("alpha").unwrap(),

@@ -15,7 +15,13 @@
 
 ## Current Spec
 
-Read: {{ spec_path }}
+Read: {{ spec_path }}{% match acceptance %}{% when Some with (resolved) %}
+
+## Dispatch Acceptance
+
+<agent-output>
+{{ resolved }}
+</agent-output>{% when None %}{% endmatch %}
 
 ## Dispatch Base
 

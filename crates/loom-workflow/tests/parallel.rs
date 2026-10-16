@@ -67,6 +67,7 @@ fn git_capture(repo: &Path, args: &[&str]) -> Result<String> {
 fn init_repo() -> Result<TempDir> {
     let dir = tempfile::tempdir()?;
     loom_driver::git::init_test_repo_with_integration(dir.path())?;
+    loom_test_support::acceptance::seed_repository(dir.path()).unwrap();
     Ok(dir)
 }
 
@@ -96,7 +97,11 @@ fn fake_bead(id: &str) -> Bead {
         issue_type: loom_driver::bd::IssueType::Task,
         labels: vec![],
         parent: None,
-        metadata: std::collections::BTreeMap::default(),
+        metadata: [(
+            loom_protocol::acceptance::METADATA_KEY.to_owned(),
+            loom_test_support::acceptance::metadata("harness").unwrap(),
+        )]
+        .into(),
         notes: None,
     }
 }

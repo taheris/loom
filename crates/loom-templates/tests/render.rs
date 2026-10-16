@@ -221,6 +221,7 @@ fn loop_render_preserves_instruction_list_structure_on_fresh_and_retry_dispatch(
         Some(PreviousFailure::from_agent_error("compile failed")),
     ] {
         let ctx = LoopContext {
+            acceptance: None,
             bead_base: git_sha(TEST_SHA),
             pinned_context: PINNED_CONTEXT_BODY.into(),
             label: SpecLabel::new("harness")?,
@@ -429,6 +430,7 @@ fn plan_renders_partials_index_anchors_and_companions() -> Result<()> {
 #[test]
 fn skill_index_partial_renders_precomputed_markdown() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("agent").unwrap(),
@@ -700,6 +702,7 @@ fn todo_template_rejects_generic_success_markers() -> Result<()> {
 #[test]
 fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -739,6 +742,7 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
 #[test]
 fn loop_template_renders_dependency_wait_marker() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("agent").unwrap(),
@@ -774,6 +778,7 @@ fn loop_template_renders_dependency_wait_marker() -> Result<()> {
 #[test]
 fn run_template_omits_attempt_line_when_zero() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -802,6 +807,7 @@ fn run_template_omits_attempt_line_when_zero() -> Result<()> {
 #[test]
 fn run_template_renders_attempt_line_on_retry() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -838,6 +844,7 @@ fn run_template_renders_attempt_line_on_retry() -> Result<()> {
 #[test]
 fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -881,6 +888,7 @@ fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
 #[test]
 fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -914,6 +922,7 @@ fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()
 #[test]
 fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -945,6 +954,7 @@ fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()
 #[test]
 fn run_template_renders_review_notes_block_when_set() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -978,6 +988,7 @@ fn run_template_renders_review_notes_block_when_set() -> Result<()> {
 #[test]
 fn loop_context_renders_workspace_recovery_without_retry_attempt() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA_3),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -1027,6 +1038,7 @@ fn loop_context_renders_workspace_recovery_without_retry_attempt() -> Result<()>
 #[test]
 fn loop_template_renders_previous_failure_before_workspace_recovery() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA_3),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -1072,6 +1084,7 @@ fn loop_template_renders_previous_failure_before_workspace_recovery() -> Result<
 #[test]
 fn workspace_recovery_summary_prompt_is_non_authoritative() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA_3),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -1924,6 +1937,7 @@ fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
 #[test]
 fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
     let run_out = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: "PIN".into(),
         label: SpecLabel::new("demo").unwrap(),
@@ -2026,6 +2040,7 @@ fn progress_markers_render_phase_specific_diff_rules() -> Result<()> {
 #[test]
 fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: "PIN".into(),
         label: SpecLabel::new("demo").unwrap(),
@@ -2080,6 +2095,7 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
 #[test]
 fn run_template_uses_injected_self_check_range_not_head_shorthand() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: "PIN".into(),
         label: SpecLabel::new("demo").unwrap(),
@@ -2129,6 +2145,7 @@ fn run_template_uses_injected_self_check_range_not_head_shorthand() -> Result<()
 #[test]
 fn run_template_requires_self_check_rerun_after_post_check_changes() -> Result<()> {
     let ctx = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: "PIN".into(),
         label: SpecLabel::new("demo").unwrap(),
@@ -2191,6 +2208,7 @@ fn contained_within_agent_output(haystack: &str, needle: &str) -> bool {
 #[test]
 fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
     let run = LoopContext {
+        acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
@@ -2249,6 +2267,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
     assert_stable(
         "run",
         LoopContext {
+            acceptance: None,
             bead_base: git_sha(TEST_SHA),
             pinned_context: PINNED_CONTEXT_BODY.to_string(),
             label: SpecLabel::new("harness").unwrap(),

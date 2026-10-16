@@ -553,6 +553,25 @@ mutation permission.
 
 ### Task acceptance
 
+- Native ordinary tasks with missing, mixed, empty, unknown or malformed
+  metadata reject before scratch allocation and preserve current human state.
+  [test](native_worker_rejects_unbound_mixed_empty_unknown_and_malformed_acceptance_before_scratch)
+
+- Explicit ordinary bindings never make decisions or epics eligible workers.
+  [test](native_worker_never_prepares_decisions_or_epics_with_ordinary_bindings)
+
+- Current bindings are resolved anew; dispatched instructions survive compaction
+  verbatim while changed wording or package labels require explicit rebinding.
+  [test](native_worker_refreshes_current_bindings_but_repin_retains_dispatched_acceptance)
+
+- Native mint repair goals retain attribution and evidence through preparation
+  and compaction when the actual ordinary acceptance is malformed.
+  [test](native_minted_repair_goals_render_attribution_and_survive_compaction_without_ordinary_acceptance)
+
+- A controlled external agent receives resolved instructions only after native
+  explicit binding; its completion proposal does not change source disposition.
+  [test](native_worker_acceptance_reaches_controlled_external_agent_only_after_explicit_binding)
+
 - The task-acceptance reference type and its metadata parser admit exactly one
   nonempty criterion-reference or remediation-reference variant. Mixed, empty,
   malformed, and unknown variants fail ingestion; parsed candidates cannot stand
