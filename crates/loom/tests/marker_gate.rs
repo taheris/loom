@@ -4,8 +4,8 @@
 //! responsibility per `specs/harness.md` § Verdict gate).
 //!
 //! Drives `loom loop <bead-id>` against a Rust mock agent that emits the
-//! marker through the pi-mono protocol, with `bd-shim` standing in for
-//! the live beads socket. A prior bug collapsed every clean-exit
+//! marker through the pi-mono protocol. Legacy cases use `bd-shim`; native
+//! dependency waiting uses isolated real Beads. A prior bug collapsed every clean-exit
 //! session to `AgentOutcome::Success → bd close`, ignoring markers; the
 //! unit tests on `phase_verdict::decide` passed throughout because they
 //! never exercised `loom loop`'s actual marker-routing wiring.
@@ -15,6 +15,9 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[path = "marker_gate/native_wait.rs"]
+mod native_wait;
 
 /// Initialize a real git repo at `path` plus the loom-owned integration
 /// workspace at `.loom/integration/` so `loom loop`'s per-bead
@@ -37,14 +40,6 @@ fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels:
     std::fs::write(bead_dir.join("metadata.json"), serde_json::json!({loom_protocol::acceptance::METADATA_KEY: loom_test_support::acceptance::metadata("harness").unwrap()}).to_string()).expect("write explicit fixture acceptance");
     let body = labels.join("\n");
     std::fs::write(bead_dir.join("labels"), body).expect("write labels");
-}
-
-fn seed_dependency(state_dir: &Path, issue: &str, blocker: &str) {
-    std::fs::write(
-        state_dir.join(issue).join("dependencies"),
-        format!("{blocker}\n"),
-    )
-    .expect("write dependency");
 }
 
 fn install_bd_shim(dir: &Path) -> PathBuf {
@@ -278,63 +273,8 @@ fn loom_loop_rejects_bare_clarify_before_contextual_decision_admission() {
 }
 
 #[test]
-fn waiting_marker_preserves_open_bead_without_labels_or_integration() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    init_workspace_repo(workspace);
-    let state_dir = workspace.join("bd-state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    seed_bead(
-        &state_dir,
-        "lm-waiting",
-        "wait for generated protocol",
-        "The implementation depends on the blocker.",
-        &["spec:agent", "profile:base"],
-    );
-    seed_bead(
-        &state_dir,
-        "lm-blocker",
-        "generate protocol",
-        "Generate the protocol before the dependent resumes.",
-        &["spec:agent", "profile:base"],
-    );
-    seed_dependency(&state_dir, "lm-waiting", "lm-blocker");
-    let bin_dir = install_bd_shim(workspace);
-    let manifest = write_minimal_manifest(workspace);
-
-    let output = run_loom_loop_bead(
-        workspace,
-        &bin_dir,
-        &state_dir,
-        &manifest,
-        "waiting-marker",
-        "lm-waiting",
-    );
-    let log = read_invocation_log(&state_dir);
-
-    assert!(
-        output.status.success(),
-        "stdout={}\nstderr={}\nbd-shim log:\n{log}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert_eq!(read_field(&state_dir, "lm-waiting", "status"), "open");
-    assert!(
-        read_labels(&state_dir, "lm-waiting")
-            .iter()
-            .all(|label| !label.starts_with("loom:")),
-        "valid waits must not add workflow parking labels: {log}",
-    );
-    assert!(!driver_closed_bead(&log, "lm-waiting"), "{log}");
-    assert!(
-        workspace.join(".loom/beads/lm-waiting").exists(),
-        "valid waits preserve the bead workspace",
-    );
-    assert!(
-        !log.lines()
-            .any(|line| line.starts_with("update lm-waiting")),
-        "valid waits must not mutate bead status or labels: {log}",
-    );
+fn waiting_marker_parks_owned_native_wait_without_queue_labels_or_integration() {
+    native_wait::assert_native_wait_parking();
 }
 
 #[test]

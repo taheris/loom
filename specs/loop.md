@@ -953,6 +953,11 @@ mutation permission.
   queue labels.
   [test](attributed_dependency_waits_park_without_integration_or_retry)
 
+- The per-bead CLI admits a native wait through real isolated Beads, retaining
+  its clone and integration tip while recording guarded native parking without
+  semantic queue labels or driver-side source closure.
+  [test](waiting_marker_parks_owned_native_wait_without_queue_labels_or_integration)
+
 - Native dependency waits retain canonical driver attribution separately from
   their worker-visible metadata projection, release only after all current
   prerequisites resolve, and preserve unrelated labels, notes, and metadata.
