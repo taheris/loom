@@ -553,6 +553,15 @@ mutation permission.
 
 ### Task acceptance
 
+- Native ordinary split children reject before preparation until explicitly
+  bound to current criteria, preserving closed source history.
+  [test](native_ordinary_split_requires_explicit_current_references_before_worker_preparation)
+
+- Native partial remediation follow-ups persist only their checked remaining
+  subset through Rust before worker preparation, preserving human metadata,
+  original goal attribution and immutable dispatched context.
+  [test](native_partial_remediation_split_persists_checked_subset_then_prepares_frozen_worker_context)
+
 - Native ordinary tasks with missing, mixed, empty, unknown or malformed
   metadata reject before scratch allocation and preserve current human state.
   [test](native_worker_rejects_unbound_mixed_empty_unknown_and_malformed_acceptance_before_scratch)

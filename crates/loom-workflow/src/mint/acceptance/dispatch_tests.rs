@@ -338,6 +338,193 @@ mod cases {
     }
 
     #[tokio::test]
+    async fn native_ordinary_split_requires_explicit_current_references_before_worker_preparation()
+    {
+        let mut fixture = Fixture::new().await;
+        fixture.bind().await;
+        let source = fixture.task.clone();
+        fixture
+            .bd
+            .update(
+                &source.id,
+                UpdateOpts {
+                    status: Some(loom_driver::bd::Status::Closed),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await
+            .unwrap();
+        let id = fixture
+            .bd
+            .create(CreateOpts {
+                title: "Remaining ordinary split work".into(),
+                parent: Some(source.id.clone()),
+                ..CreateOpts::default()
+            })
+            .await
+            .unwrap();
+        fixture.task = fixture.bd.show(&id).await.unwrap();
+        fixture.rejected().await;
+        fixture.bind().await;
+        let worker = ready(fixture.prepare().await);
+        assert!(
+            worker
+                .spawn
+                .initial_prompt
+                .contains("Purpose: implementation")
+        );
+        assert!(worker.spawn.initial_prompt.contains(REQUIREMENT));
+        let preserved = fixture.bd.show(&source.id).await.unwrap();
+        assert_eq!(preserved.status, loom_driver::bd::Status::Closed);
+        assert_eq!(preserved.metadata, source.metadata);
+    }
+
+    #[tokio::test]
+    async fn native_partial_remediation_split_persists_checked_subset_then_prepares_frozen_worker_context()
+     {
+        let mut fixture = Fixture::new().await;
+        std::fs::write(
+            fixture.workspace.join("specs/harness.md"),
+            format!("# Harness\n\n## Success Criteria\n\n- {REQUIREMENT}\n"),
+        )
+        .unwrap();
+        let repair_file = fixture.workspace.join("partly-fixed.rs");
+        std::fs::write(&repair_file, "fixture repair target").unwrap();
+        fixture
+            .bd
+            .create(CreateOpts {
+                title: "Active native split root".into(),
+                issue_type: Some(loom_driver::bd::IssueType::Epic),
+                labels: vec!["loom:active".into(), "spec:harness".into()],
+                ..CreateOpts::default()
+            })
+            .await
+            .unwrap();
+        let remaining = loom_protocol::gate::RawFinding {
+            token: loom_protocol::gate::ConcernToken::SpecConventionsViolation,
+            route: loom_protocol::gate::FindingRoute::Deferred,
+            bonds: vec![fixture.label.clone()],
+            target: loom_protocol::gate::FindingTarget::Criterion {
+                spec: fixture.label.clone(),
+                anchor: loom_protocol::criterion::CriterionId::for_spec_text(
+                    &fixture.label,
+                    REQUIREMENT,
+                )
+                .to_string(),
+            },
+            evidence: "Remaining missing annotation must survive partial progress.".into(),
+        }
+        .resolve(
+            loom_protocol::gate::DispatchScope::Tree,
+            &crate::review::WorkspaceFindingValidator::new(&fixture.workspace),
+        )
+        .unwrap();
+        let repaired = loom_protocol::gate::RawFinding {
+            token: loom_protocol::gate::ConcernToken::MockDiscipline,
+            route: loom_protocol::gate::FindingRoute::Deferred,
+            bonds: vec![fixture.label.clone()],
+            target: loom_protocol::gate::FindingTarget::TestPath {
+                path: "partly-fixed.rs".into(),
+            },
+            evidence: "ALREADY_PROCESSED_FINDING_NOT_ASSIGNED_TO_SPLIT".into(),
+        }
+        .resolve(
+            loom_protocol::gate::DispatchScope::Tree,
+            &crate::review::WorkspaceFindingValidator::new(&fixture.workspace),
+        )
+        .unwrap();
+        let summary = crate::mint::mint_findings(
+            &fixture.bd,
+            &[remaining.clone(), repaired],
+            "native-split-fixture",
+        )
+        .await;
+        assert_eq!(summary.minted, 1, "{summary:?}");
+        let crate::mint::BatchOutcome::Minted { bead_id, .. } = &summary.batches[0] else {
+            panic!("native split source was not minted")
+        };
+        let source = fixture.bd.show(bead_id).await.unwrap();
+        let Candidates::Remediation { goals: original } =
+            Candidates::from_metadata(&source.metadata[METADATA_KEY]).unwrap()
+        else {
+            panic!("source lost remediation purpose")
+        };
+        assert_eq!(original.as_slice().len(), 2);
+        let subset = loom_protocol::acceptance::GoalReferences::new(
+            original
+                .as_slice()
+                .iter()
+                .filter(|reference| reference.finding_hash.as_str() == remaining.hash())
+                .cloned()
+                .collect(),
+        )
+        .unwrap();
+        std::fs::remove_file(repair_file).unwrap();
+        fixture
+            .bd
+            .update(
+                &source.id,
+                UpdateOpts {
+                    status: Some(loom_driver::bd::Status::Closed),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await
+            .unwrap();
+        let id = fixture.bd.create(CreateOpts {
+            title: "Remaining native remediation split".into(), parent: source.parent.clone(),
+            metadata: Some(serde_json::json!({ crate::mint::acceptance::FOLLOW_UP_KEY: serde_json::to_string(&crate::mint::acceptance::FollowUp { source: source.id.clone(), goals: subset.clone() }).unwrap(), "operator.note": "preserve human intent" }).to_string()),
+            ..CreateOpts::default()
+        }).await.unwrap();
+        fixture.task = fixture.bd.show(&id).await.unwrap();
+        assert!(!fixture.task.metadata.contains_key(METADATA_KEY));
+        let worker = ready(fixture.prepare().await);
+        let crate::r#loop::acceptance::Resolved::Remediation(resolved) = &worker.acceptance else {
+            panic!("split changed purpose")
+        };
+        assert_eq!(resolved.goals().len(), 1);
+        assert_eq!(resolved.goals()[0].finding(), &remaining);
+        assert!(worker.spawn.initial_prompt.contains(remaining.evidence()));
+        assert!(
+            !worker
+                .spawn
+                .initial_prompt
+                .contains("ALREADY_PROCESSED_FINDING_NOT_ASSIGNED_TO_SPLIT")
+        );
+        let prompt = worker.spawn.initial_prompt.clone();
+        let snapshot = worker.scratch.path().join("context/harness/acceptance.md");
+        let frozen = std::fs::read_to_string(&snapshot).unwrap();
+        std::fs::write(
+            fixture.workspace.join("specs/harness.md"),
+            "Changed source after split dispatch.",
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), frozen);
+        let repin = loom_agent::pi::backend::PiBackend::compaction_repin(&worker.spawn)
+            .unwrap()
+            .unwrap();
+        assert!(repin.contains(&prompt));
+        assert!(!repin.contains("Changed source after split dispatch"));
+        let admitted = fixture.bd.show(&id).await.unwrap();
+        assert_eq!(admitted.metadata["operator.note"], "preserve human intent");
+        assert!(
+            !admitted
+                .metadata
+                .contains_key(crate::mint::acceptance::FOLLOW_UP_KEY)
+        );
+        assert_eq!(
+            Candidates::from_metadata(&admitted.metadata[METADATA_KEY]).unwrap(),
+            Candidates::Remediation { goals: subset }
+        );
+        let preserved = fixture.bd.show(&source.id).await.unwrap();
+        assert_eq!(preserved.status, loom_driver::bd::Status::Closed);
+        assert_eq!(
+            Candidates::from_metadata(&preserved.metadata[METADATA_KEY]).unwrap(),
+            Candidates::Remediation { goals: original }
+        );
+    }
+
+    #[tokio::test]
     async fn worker_context_consumes_resolved_acceptance() {
         let mut fixture = Fixture::new().await;
         fixture.bind().await;
