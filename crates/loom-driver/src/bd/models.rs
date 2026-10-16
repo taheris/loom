@@ -24,6 +24,12 @@ impl DependencySnapshot {
         self.status == Status::Open
     }
 
+    /// Current native status, independent of the dependency collection.
+    #[must_use]
+    pub const fn status(&self) -> Status {
+        self.status
+    }
+
     /// Stable status label for invalid-wait diagnostics.
     #[must_use]
     pub const fn status_label(&self) -> &'static str {

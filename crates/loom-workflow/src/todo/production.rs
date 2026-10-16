@@ -304,6 +304,10 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     }
 
     async fn preflight(&self) -> Result<Option<Preflight>, TodoError> {
+        crate::r#loop::DecisionWaitJournal::new(&self.workspace)
+            .refresh_native_waits(&self.bd, None, None)
+            .await
+            .map_err(decision_admission_error)?;
         let indexed = parse_spec_index(&self.workspace)?;
         let mut changed = Vec::new();
         for spec in &indexed {
@@ -1379,13 +1383,15 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
                 .as_ref()
                 .ok_or(TodoError::TodoSuccessWithoutPreflight)?
                 .work_epic;
-            match crate::r#loop::validate_waiting_outcome(
-                &self.bd,
-                epic,
-                crate::r#loop::AgentOutcome::WaitingRequested,
-            )
-            .await
-            .map_err(decision_admission_error)?
+            let source = self.bd.show(epic).await?;
+            match crate::r#loop::DecisionWaitJournal::new(&self.workspace)
+                .reconcile_native_wait(
+                    &self.bd,
+                    &source,
+                    crate::r#loop::AgentOutcome::WaitingRequested,
+                )
+                .await
+                .map_err(decision_admission_error)?
             {
                 crate::r#loop::AgentOutcome::Waiting { .. } => return Ok(TodoRecord::default()),
                 other => {

@@ -44,6 +44,12 @@ pub(super) struct Context {
 }
 
 impl Context {
+    pub(super) fn affected_work(&self) -> impl Iterator<Item = &BeadId> {
+        self.decisions
+            .iter()
+            .flat_map(|decision| &decision.affected_work)
+    }
+
     pub(super) fn discovery_parent(&self, id: &BeadId) -> Option<&BeadId> {
         self.decisions
             .iter()

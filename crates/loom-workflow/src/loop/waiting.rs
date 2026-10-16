@@ -21,6 +21,10 @@ impl ActiveBlockers {
         Self { first, rest }
     }
 
+    pub(crate) fn ids(&self) -> impl Iterator<Item = &BeadId> {
+        std::iter::once(&self.first).chain(&self.rest)
+    }
+
     /// Number of active blockers proving this wait.
     #[must_use]
     pub const fn count(&self) -> usize {
@@ -65,9 +69,12 @@ pub async fn validate_waiting_outcome<R: CommandRunner>(
     }
 
     let snapshot = bd.dependency_snapshot(bead).await?;
-    if !snapshot.is_open() {
+    if !matches!(
+        snapshot.status(),
+        loom_driver::bd::Status::Open | loom_driver::bd::Status::InProgress
+    ) {
         return Ok(invalid_waiting(&format!(
-            "bead {bead} has status {}, expected open",
+            "bead {bead} has status {}, expected open or in_progress",
             snapshot.status_label(),
         )));
     }

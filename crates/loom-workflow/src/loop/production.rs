@@ -2714,6 +2714,7 @@ pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     mod decision_inventory;
+    mod native_waits;
     use super::super::runner::MISSING_AGENT_BINARY_CAUSE;
     use super::*;
     use crate::r#loop::INVALID_SPAWN_CONFIG_CAUSE;

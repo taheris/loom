@@ -147,6 +147,15 @@ mod cases {
     async fn native_compatible_producer_reuses_exact_decision_and_preserves_closed_answer() {
         let f = Fixture::new().await;
         f.bd.dep_add(&f.sibling, &f.decisions[0]).await.unwrap();
+        f.bd.update(
+            &f.sibling,
+            UpdateOpts {
+                status: Some(Status::InProgress),
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .unwrap();
         let tracker = AdmissionTracker::default();
         let journal = f.journal().with_admissions(tracker.clone());
         reconcile_session(&f.bd, &journal, &f.source, session(&f.decisions), None)

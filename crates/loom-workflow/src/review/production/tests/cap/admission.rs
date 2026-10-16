@@ -179,6 +179,16 @@ mod tests {
             .into_iter()
             .find(|bead| bead.issue_type == IssueType::Task)
             .unwrap();
+        f.bd.update(
+            &task.id,
+            UpdateOpts {
+                status: Some(loom_driver::bd::Status::InProgress),
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        let task = f.bd.show(&task.id).await.unwrap();
         f.escalate(1).await.unwrap();
         let decision = children(&f.bd, &f.root)
             .await
@@ -311,6 +321,16 @@ mod tests {
             .into_iter()
             .find(|bead| bead.issue_type == IssueType::Task)
             .unwrap();
+        f.bd.update(
+            &source.id,
+            UpdateOpts {
+                status: Some(loom_driver::bd::Status::InProgress),
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        let source = f.bd.show(&source.id).await.unwrap();
         f.escalate(1).await.unwrap();
         let decision = children(&f.bd, &f.root)
             .await

@@ -141,6 +141,7 @@ impl DecisionWaitJournal {
         root: Option<&BeadId>,
         label: &loom_driver::identifier::SpecLabel,
     ) -> Result<(), LoopError> {
+        self.refresh_native_waits(bd, root, Some(label)).await?;
         for entry in self.entries()?.into_iter().filter(|entry| {
             matches!(
                 entry.phase,
@@ -162,11 +163,7 @@ impl DecisionWaitJournal {
                     .chain(&owner.labels)
                     .any(|actual| actual.as_str() == expected_label)
             };
-            if in_scope
-                && (entry.phase == Phase::InventoryPending
-                    || entry.context.is_none()
-                    || !self.complete_dispositions(&entry)?)
-            {
+            if in_scope {
                 super::held(bd, self, &source).await?;
             }
         }
@@ -174,10 +171,11 @@ impl DecisionWaitJournal {
     }
 
     pub(crate) fn has_pending_for(&self, root: &BeadId) -> Result<bool, LoopError> {
-        Ok(self.entries()?.iter().any(|entry| {
-            entry.phase.blocks_publication()
-                && (entry.record.root == *root || entry.record.source == *root)
-        }))
+        Ok(self.native_pending_for(root)?
+            || self.entries()?.iter().any(|entry| {
+                entry.phase.blocks_publication()
+                    && (entry.record.root == *root || entry.record.source == *root)
+            }))
     }
 
     /// Protect both original attribution and current native membership: moving
@@ -187,9 +185,8 @@ impl DecisionWaitJournal {
         bd: &BdClient<R>,
         root: &BeadId,
     ) -> Result<bool, LoopError> {
-        if self.has_pending_for(root)? {
-            return Ok(true);
-        }
+        let native_blocked = self.native_blocks_scope(bd, root).await?;
+        let mut blocked = self.has_pending_for(root)? || native_blocked;
         for entry in self
             .entries()?
             .into_iter()
@@ -222,12 +219,13 @@ impl DecisionWaitJournal {
             }
             if in_scope {
                 if entry.phase.blocks_publication() {
-                    return Ok(true);
+                    blocked = true;
+                } else {
+                    super::inventory::audit(bd, self, &entry).await?;
                 }
-                super::inventory::audit(bd, self, &entry).await?;
             }
         }
-        Ok(false)
+        Ok(blocked)
     }
 
     fn entries(&self) -> Result<Vec<Entry>, LoopError> {
@@ -255,7 +253,7 @@ impl DecisionWaitJournal {
         Ok(entries)
     }
 
-    fn path(&self, source: &BeadId) -> PathBuf {
+    pub(super) fn path(&self, source: &BeadId) -> PathBuf {
         let hash = blake3::hash(source.as_str().as_bytes()).to_hex();
         self.directory.join(format!("{hash}.json"))
     }

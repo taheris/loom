@@ -17,6 +17,7 @@ pub use disposition::AdmissionTracker;
 use disposition::stage;
 mod inventory;
 mod journal;
+mod native;
 pub use inventory::{admit_integrity, admit_todo};
 pub use journal::DecisionWaitJournal;
 use journal::{Entry, Phase};
@@ -213,7 +214,7 @@ pub async fn reconcile_session<R: CommandRunner>(
         Ok(Some(hold)) => Ok(AgentOutcome::Waiting {
             blockers: WaitPrerequisites::Decisions(hold),
         }),
-        Ok(None) => super::validate_waiting_outcome(bd, source_id, outcome).await,
+        Ok(None) => journal.reconcile_native_wait(bd, expected, outcome).await,
         Err(LoopError::DecisionWait(error)) => Ok(AgentOutcome::Failure {
             error: error.to_string(),
         }),
@@ -231,7 +232,7 @@ async fn admit<R: CommandRunner>(
     let _guard = journal.acquire(source_id).await?;
     let source = bd.show(source_id).await?;
     if source.id != *source_id
-        || source.status != Status::Open
+        || !matches!(source.status, Status::Open | Status::InProgress)
         || source.parent != expected.parent
         || source.issue_type != expected.issue_type
         || matches!(source.issue_type, IssueType::Decision | IssueType::Epic)
@@ -335,6 +336,9 @@ pub(super) async fn held<R: CommandRunner>(
     journal: &DecisionWaitJournal,
     bead: &Bead,
 ) -> Result<bool, LoopError> {
+    if journal.native_held(bd, bead).await? {
+        return Ok(true);
+    }
     let _guard = journal.acquire(&bead.id).await?;
     let Some(mut entry) = journal.load(&bead.id)? else {
         if bead.labels.iter().any(|label| label.as_str() == HOLD_LABEL) {
@@ -360,7 +364,7 @@ pub(super) async fn held<R: CommandRunner>(
     if source.id != bead.id || entry.record.root != root(bd, &source).await? {
         return Err(invalid("source identity or work root changed while held").into());
     }
-    if source.status != Status::Open
+    if !matches!(source.status, Status::Open | Status::InProgress)
         || source.labels.iter().any(|label| {
             matches!(
                 label.as_str(),
@@ -411,7 +415,7 @@ pub(super) async fn held<R: CommandRunner>(
     bd.update(
         &source.id,
         UpdateOpts {
-            if_status: Some(Status::Open),
+            if_status: Some(source.status),
             remove_labels: vec![HOLD_LABEL.into()],
             unset_metadata: vec![HOLD_KEY.into()],
             ..UpdateOpts::default()
@@ -447,7 +451,7 @@ async fn project<R: CommandRunner>(
     bd.update(
         &source.id,
         UpdateOpts {
-            if_status: Some(Status::Open),
+            if_status: Some(source.status),
             add_labels: vec![HOLD_LABEL.into()],
             set_metadata: vec![(
                 HOLD_KEY.into(),

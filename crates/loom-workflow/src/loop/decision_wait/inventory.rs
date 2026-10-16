@@ -93,7 +93,10 @@ async fn admit_for<R: CommandRunner>(
     if source.id != expected.id
         || source.parent != expected.parent
         || source.issue_type != expected.issue_type
-        || !matches!(source.status, Status::Open | Status::Closed)
+        || !matches!(
+            source.status,
+            Status::Open | Status::InProgress | Status::Closed
+        )
         || match producer {
             Producer::Task => matches!(source.issue_type, IssueType::Decision | IssueType::Epic),
             Producer::Integrity { .. } => {
@@ -187,7 +190,8 @@ async fn admit_for<R: CommandRunner>(
     journal.save(&entry)?;
     stage(bd, journal, &entry.record.source, &decisions).await?;
     entry.phase = Phase::InventoryAdmitted;
-    journal.save(&entry)
+    journal.save(&entry)?;
+    journal.park_native_affected(bd, &entry, &decisions).await
 }
 
 /// Publication reads the current inventory and compares the recorded graph;
@@ -278,7 +282,6 @@ pub(super) async fn recover<R: CommandRunner>(
         entry.phase = Phase::InventoryAdmitted;
         journal.save(entry)?;
     }
-    // Native prerequisites and independent holds remain the scheduler's job.
-    // Reporting decisions alone never establishes a wait for this producer.
+    journal.park_native_affected(bd, entry, &decisions).await?;
     Ok(false)
 }

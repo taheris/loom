@@ -951,7 +951,22 @@ mutation permission.
   attribution and an active prerequisite, preserving its workspace/branch
   without integration, per-bead gate, retry consumption, or semantic/clarify/infra
   queue labels.
-  [test?](attributed_dependency_waits_park_without_integration_or_retry)
+  [test](attributed_dependency_waits_park_without_integration_or_retry)
+
+- Native dependency waits retain canonical driver attribution separately from
+  their worker-visible metadata projection, release only after all current
+  prerequisites resolve, and preserve unrelated labels, notes, and metadata.
+  [test](native_attributed_wait_parks_and_releases_without_queue_labels)
+
+- Interrupted native wait admission and release recover from lost native
+  acknowledgements without duplicate items or generic reopening.
+  [test](native_wait_restart_recovers_projection_and_release_after_lost_ack)
+
+- Removing an unresolved admitted prerequisite cannot authorize release.
+  [test](native_wait_removed_unresolved_prerequisite_cannot_authorize_release)
+
+- Human closure after resolution is preserved rather than reopened.
+  [test](native_wait_preserves_human_closed_source_after_prerequisites_resolve)
 
 - `LOOM_WAITING` without an active declared blocker is invalid, routes through
   visible recovery as `invalid-waiting`, and never silently parks the bead
@@ -959,7 +974,7 @@ mutation permission.
 
 - Parallel loop handling preserves the same waiting semantics: the waiting
   slot's workspace remains, its branch is not merged, and sibling ready work
-  continues [test?](parallel_attributed_wait_preserves_workspace_and_ready_siblings)
+  continues [test](parallel_attributed_wait_preserves_workspace_and_ready_siblings)
 
 - Completion cannot bypass an active prerequisite for the source's own
   acceptance even if the agent closed the bead; reported decisions affecting
@@ -1280,12 +1295,20 @@ mutation permission.
 - Driver wait release reopens only matching attributed work after all current
   prerequisites resolve; independent holds, cancelled attribution, malformed
   state, other blockers, and closed work are preserved.
-  [test?](decision_wait_resumption_preserves_human_holds_and_closed_work)
+  [test](native_wait_release_preserves_human_takeover_and_unrelated_metadata)
 
 - Repeated or interrupted admission/resumption reuses durable decision and wait
   state without duplicate queue items, lost drafts, overwritten unrelated
   metadata, or retry-budget consumption; ambiguous ownership fails visibly.
-  [test?](decision_wait_admission_and_resumption_are_restart_safe)
+  [test](native_wait_restart_recovers_projection_and_release_after_lost_ack)
+
+- A released native wait can admit a new current prerequisite in a subsequent
+  dispatch without inheriting stale ownership.
+  [test](released_native_wait_can_admit_a_new_current_prerequisite)
+
+- Moving natively parked work cannot evade the publication barrier or authorize
+  release; canonical ownership is retained and the mismatch fails visibly.
+  [test](moved_native_wait_cannot_evade_publication_or_release)
 
 <!-- prettier-ignore -->
 - Actual Beads dependency/ready selection and production Loop/Todo/Inbox paths

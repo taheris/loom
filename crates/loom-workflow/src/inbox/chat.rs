@@ -121,6 +121,8 @@ pub enum ChatError {
     CaptureSettings(#[from] serde_json::Error),
     /// tune proposal apply failed
     Apply(#[from] ApplyError),
+    /// attributed scheduling wait reconciliation failed
+    Wait(#[from] Box<crate::r#loop::LoopError>),
     /// no inbox item at index {index} ({total} outstanding)
     IndexOutOfRange { index: u32, total: u32 },
     /// no inbox item with bead id {id}
@@ -277,6 +279,15 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
         }
     };
     drop(scratch);
+    runtime
+        .block_on(
+            crate::r#loop::DecisionWaitJournal::new(workspace).refresh_native_waits(
+                &BdClient::new(),
+                None,
+                None,
+            ),
+        )
+        .map_err(|error| ChatError::Wait(Box::new(error)))?;
 
     let marker = parse_terminal_marker(&stdout)?;
     ensure_integration_clean_after_chat(workspace)?;
