@@ -332,23 +332,29 @@ mod tests {
             .await
             .unwrap();
         f.escalate(1).await.unwrap();
-        let session = || crate::r#loop::SessionResult::Decoded {
+        let session = |terminal: &str| crate::r#loop::SessionResult::Decoded {
             outcome: loom_driver::agent::SessionOutcome {
                 exit_code: 0,
                 cost_usd: None,
             },
             output: Arc::new(loom_protocol::output::decode(
                 &format!(
-                    "LOOM_CLARIFY: {{\"decisions\":[\"{}\"]}}\nLOOM_RETRY: {{\"reason\":\"retain unresolved prerequisite\"}}",
+                    "LOOM_CLARIFY: {{\"decisions\":[\"{}\"]}}\n{terminal}",
                     decision.id
                 ),
                 loom_protocol::output::Phase::Loop,
             )),
         };
         assert!(matches!(
-            crate::r#loop::reconcile_session(&f.bd, &f.journal(), &source, session(), None)
-                .await
-                .unwrap(),
+            crate::r#loop::reconcile_session(
+                &f.bd,
+                &f.journal(),
+                &source,
+                session("LOOM_RETRY: {\"reason\":\"retain unresolved prerequisite\"}"),
+                None,
+            )
+            .await
+            .unwrap(),
             crate::r#loop::AgentOutcome::Retry { .. }
         ));
         let followup =
@@ -383,35 +389,101 @@ mod tests {
             &f.bd.show(&followup).await.unwrap(),
             &crate::mint::acceptance::FollowUp {
                 source: source.id.clone(),
-                goals: loom_protocol::acceptance::GoalReferences::new(vec![reference]).unwrap(),
+                goals: loom_protocol::acceptance::GoalReferences::new(vec![reference.clone()])
+                    .unwrap(),
             },
             f.directory.path(),
         )
         .await
         .unwrap();
         f.bd.dep_add(&followup, &decision.id).await.unwrap();
-        f.bd.update(&decision.id, proposal(&[source.id.clone(), followup]))
-            .await
-            .unwrap();
+        f.bd.update(
+            &decision.id,
+            proposal(&[source.id.clone(), followup.clone()]),
+        )
+        .await
+        .unwrap();
         let before = canonical_files(&f.directory.path().join(".loom"));
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.is_err());
+        assert!(matches!(
+            crate::r#loop::reconcile_session(
+                &f.bd,
+                &f.journal(),
+                &source,
+                session("LOOM_WAITING"),
+                None,
+            )
+            .await
+            .unwrap(),
+            crate::r#loop::AgentOutcome::Failure { .. }
+        ));
         assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
         f.escalate(2).await.unwrap();
         let before = canonical_files(&f.directory.path().join(".loom"));
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.is_err());
         assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
         assert!(matches!(
-            crate::r#loop::reconcile_session(&f.bd, &f.journal(), &source, session(), None)
-                .await
-                .unwrap(),
-            crate::r#loop::AgentOutcome::Retry { .. }
+            crate::r#loop::reconcile_session(
+                &f.bd,
+                &f.journal(),
+                &source,
+                session("LOOM_WAITING"),
+                None,
+            )
+            .await
+            .unwrap(),
+            crate::r#loop::AgentOutcome::Waiting { .. }
         ));
-        assert!(!f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
+        assert!(f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
         assert_eq!(f.bd.show(&source.id).await.unwrap().status, source.status);
         assert_eq!(
             f.bd.show(&decision.id).await.unwrap().status,
             decision.status
         );
+        let continuation =
+            f.bd.create(CreateOpts {
+                title: "later bound follow-up".into(),
+                parent: Some(f.root.clone()),
+                ..CreateOpts::default()
+            })
+            .await
+            .unwrap();
+        crate::mint::acceptance::admit_follow_up(
+            &f.bd,
+            &f.bd.show(&continuation).await.unwrap(),
+            &crate::mint::acceptance::FollowUp {
+                source: source.id.clone(),
+                goals: loom_protocol::acceptance::GoalReferences::new(vec![reference]).unwrap(),
+            },
+            f.directory.path(),
+        )
+        .await
+        .unwrap();
+        f.bd.dep_add(&continuation, &decision.id).await.unwrap();
+        f.bd.update(
+            &decision.id,
+            proposal(&[source.id.clone(), followup, continuation]),
+        )
+        .await
+        .unwrap();
+        f.escalate(2).await.unwrap();
+        let held_source = f.bd.show(&source.id).await.unwrap();
+        let before = canonical_files(&f.directory.path().join(".loom"));
+        assert!(matches!(
+            crate::r#loop::reconcile_session(
+                &f.bd,
+                &f.journal(),
+                &source,
+                session("LOOM_WAITING"),
+                None,
+            )
+            .await
+            .unwrap(),
+            crate::r#loop::AgentOutcome::Failure { .. }
+        ));
+        assert!(f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
+        assert_eq!(f.bd.show(&source.id).await.unwrap(), held_source);
+        assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
     }
 
     struct LostAcknowledgement {

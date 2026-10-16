@@ -259,14 +259,23 @@ async fn admit<R: CommandRunner>(
         }
     }
     let decisions = inventory(bd, journal, &source, &known).await?;
-    let context = graph::resolve(
-        bd,
-        &source,
-        &current_root,
-        &decisions,
-        previous.as_ref().and_then(|entry| entry.context.as_ref()),
-    )
-    .await?;
+    let previous_context = previous.as_ref().and_then(|entry| entry.context.as_ref());
+    let context = if previous
+        .as_ref()
+        .is_some_and(|entry| entry.phase.holds_source())
+    {
+        graph::resolve(bd, &source, &current_root, &decisions, previous_context).await?
+    } else {
+        graph::readmit_reuse(
+            bd,
+            journal,
+            &source,
+            &current_root,
+            &decisions,
+            previous_context,
+        )
+        .await?
+    };
     let active = decisions
         .iter()
         .filter(|decision| decision.status != Status::Closed)

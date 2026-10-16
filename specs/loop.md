@@ -1212,8 +1212,10 @@ mutation permission.
   [test](integrity_driver_rechecks_persisted_goal_identity_before_publication)
 
 - An affected source consumes a producer-admitted additive extension only by a
-  fresh complete handoff. Read-only publication refuses its stale graph seal
-  before and after producer admission until that explicit readmission succeeds.
+  fresh complete handoff, including explicit `Waiting` from an inventory-only
+  disposition. Read-only publication refuses its stale graph seal before and
+  after producer admission until that explicit readmission succeeds. An active
+  hold cannot consume later graph additions, even after producer admission.
   [test](integrity_extension_requires_explicit_reusable_source_readmission)
 
 - Durable per-decision plans precede queue effects; replay preserves native
