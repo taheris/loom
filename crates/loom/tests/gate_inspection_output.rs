@@ -116,6 +116,7 @@ where
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", manifest)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("BD_STATE_DIR", &state_dir)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")

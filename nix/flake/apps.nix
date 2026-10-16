@@ -59,6 +59,7 @@ _:
       smokeApp = if isLinux then smokePreflight else smokeRuntime;
 
       testRuntimeInputs = [
+        pkgs.coreutils
         pkgs.cargo-nextest
         pkgs.git
         pkgs.nix

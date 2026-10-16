@@ -78,6 +78,7 @@ fn run_gate_mint_tree_subprocess(workspace: &Path) -> (std::process::Output, Pat
         .args(["gate", "mint", "--tree"])
         .env("PATH", pinned_path(&bin_dir))
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("BD_STATE_DIR", &state_dir)
         .env("LOOM_BIN", loom_bin)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))

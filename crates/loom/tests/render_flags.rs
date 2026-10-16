@@ -115,6 +115,7 @@ fn run_loom_with_flags(
         .env("LOOM_TEST_AGENT_MODE", "complete-marker")
         .env("LOOM_BIN", loom_gate_stub)
         .env("LOOM_PROFILES_MANIFEST", manifest)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("BD_STATE_DIR", state_dir)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container

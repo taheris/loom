@@ -346,6 +346,7 @@ max_changed_files = 2
             .env("BD_STATE_DIR", &self.state)
             .env("BD_CREATE_ID", "lm-replay.1")
             .env("LOOM_PROFILES_MANIFEST", &self.manifest)
+            .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
             .env("XDG_STATE_HOME", self.state.join("state-home"))
             .env("LOOM_TEST_REPLAY_WORKSPACE", &self.workspace)
             .env("LOOM_TEST_REPLAY_HANG", self.hang.to_string())

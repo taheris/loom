@@ -528,6 +528,102 @@ fn required_suite_keeps_full_nextest_and_system_coverage_without_lint_repetition
 }
 
 #[test]
+fn required_suite_retains_real_nextest_failures_despite_quiet_settings() {
+    let fixture = Fixture::new();
+    install_recording_command(&fixture.tools, "nix");
+    std::fs::remove_file(fixture.tools.join("cargo")).expect("use real Cargo and Nextest");
+    std::fs::create_dir(fixture.workspace.join("src")).expect("create Rust fixture");
+    std::fs::write(
+        fixture.workspace.join("Cargo.toml"),
+        "[package]\nname = \"required-suite-negative-control\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[workspace]\n",
+    )
+    .expect("write Cargo manifest");
+    std::fs::write(
+        fixture.workspace.join("src/lib.rs"),
+        r#"#[test]
+fn retained_failure_control() {
+    println!("retained stdout control");
+    eprintln!("retained stderr control");
+    assert_eq!(1, 2, "intentional required-suite failure");
+}
+"#,
+    )
+    .expect("write failing native test");
+
+    for _ in 0..2 {
+        let output = fixture
+            .recording_command("bash")
+            .arg("scripts/required-test.sh")
+            .env("NEXTEST_FAILURE_OUTPUT", "never")
+            .env("NEXTEST_STATUS_LEVEL", "none")
+            .env("NEXTEST_FINAL_STATUS_LEVEL", "none")
+            .env("NEXTEST_SHOW_PROGRESS", "only")
+            .output()
+            .expect("execute required suite with real failing Nextest");
+        assert_eq!(output.status.code(), Some(100), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for marker in [
+            "retained_failure_control",
+            "retained stdout control",
+            "retained stderr control",
+        ] {
+            assert!(stdout.contains(marker), "{stdout}");
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("runner=100, recorder=0"), "{stderr}");
+        let calls = std::fs::read_to_string(&fixture.log).expect("tool invocations");
+        assert!(
+            !calls.contains("loom"),
+            "failed Nextest must stop system dispatch"
+        );
+    }
+    let runs: Vec<_> = std::fs::read_dir(fixture.workspace.join(".loom/logs"))
+        .expect("retained runs")
+        .map(|entry| entry.expect("run directory").path())
+        .collect();
+    assert_eq!(
+        runs.len(),
+        2,
+        "a retry must not overwrite the previous failure"
+    );
+    for run in runs {
+        let transcript = std::fs::read_to_string(run.join("nextest.log"))
+            .expect("read durable Nextest transcript");
+        for marker in [
+            "retained_failure_control",
+            "retained stdout control",
+            "retained stderr control",
+        ] {
+            assert!(transcript.contains(marker), "{transcript}");
+        }
+    }
+}
+
+#[test]
+fn required_suite_fails_closed_when_nextest_transcript_cannot_be_recorded() {
+    let fixture = Fixture::new();
+    install_recording_command(&fixture.tools, "nix");
+    loom_test_support::write_executable_bash_script(
+        fixture.tools.join("tee"),
+        "set -euo pipefail\nprintf 'recorder failure control\\n' >&2\nexit 1\n",
+    )
+    .expect("write failing external recorder");
+    let output = fixture
+        .recording_command("bash")
+        .arg("scripts/required-test.sh")
+        .output()
+        .expect("execute required suite");
+    assert_eq!(output.status.code(), Some(78), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("runner=0, recorder=1"), "{stderr}");
+    let calls = std::fs::read_to_string(&fixture.log).expect("tool invocations");
+    assert!(
+        !calls.contains("loom"),
+        "missing transcript must stop system dispatch"
+    );
+}
+
+#[test]
 fn pre_push_config_runs_verify_diff_for_pushed_range() {
     let fixture = Fixture::new();
     let pushed_base = fixture.head();

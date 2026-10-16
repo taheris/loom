@@ -519,6 +519,7 @@ fn chat_command(env: &ChatRun, mode: &str, args: &[&str], extra_env: &[(&str, &s
         .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("WRIX_STUB_MODE", mode)
         .env("LOOM_PROFILES_MANIFEST", &env.manifest)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("BD_STATE_DIR", &env.state_dir)
         .env("XDG_STATE_HOME", env.workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")

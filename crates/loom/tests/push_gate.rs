@@ -132,6 +132,7 @@ mod tests {
                 .env("LOOM_TEST_PREK_LOG", self.home.join("prek.log"))
                 .env("LOOM_TEST_AGENT_MODE", mode)
                 .env("LOOM_PROFILES_MANIFEST", self.home.join("profiles.json"))
+                .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
                 .env("BD_STATE_DIR", &self.state)
                 .env("XDG_STATE_HOME", self.home.join("user-state"))
                 .env("GIT_TRACE2_EVENT", self.home.join("git.jsonl"))

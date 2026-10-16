@@ -484,6 +484,7 @@ fn drive_loom_todo_pi_with_spawn_bin_and_manifest_launcher(
         .env("LOOM_WRIX_BIN", wrix_bin)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the todo dispatch path under test.
@@ -1118,6 +1119,7 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
         // typed review evidence; this test asserts run-phase log writes.
         .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the run dispatch path under test.
@@ -1293,6 +1295,7 @@ fn completed_bead_with_renamed_builtin_source_reaches_publication() {
         .env("LOOM_WRIX_BIN", &wrix)
         .env("LOOM_WRIX_SPAWN_BIN", &wrix)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
         .output()
@@ -1415,6 +1418,7 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
         .output()
@@ -1614,6 +1618,7 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
         .output()
@@ -1786,6 +1791,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env("HOME", &home)
         .env_remove("GIT_SSH_COMMAND")
@@ -2025,6 +2031,47 @@ __BD_BEAD_JSON__\n\
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
     bin_dir
+}
+
+#[test]
+fn todo_spawn_fixture_ignores_inherited_native_profile_provisioning() {
+    let dir = tempfile::tempdir().unwrap();
+    let launcher = dir.path().join("ambient-wrix");
+    let called = dir.path().join("ambient-called");
+    loom_test_support::write_executable_bash_script(
+        &launcher,
+        "set -euo pipefail\ntouch \"$AMBIENT_LAUNCHER_CALLED\"\nprintf 'unexpected ambient launcher\\n' >&2\nexit 79\n",
+    )
+    .unwrap();
+    let manifest = dir.path().join("provisioned.json");
+    loom_test_support::profile_manifest::write(
+        &manifest,
+        serde_json::json!({"rust": {"pi": {
+            "ref": "localhost/ambient-native:test",
+            "source": dir.path().join("ambient.tar"),
+            "source_kind": "nix-descriptor",
+            "native_preflight": "rust"
+        }}})
+        .to_string(),
+        &launcher,
+    )
+    .unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "wrix_spawn_invocation_records_correct_argv",
+            "--nocapture",
+        ])
+        .env("LOOM_PROVISIONED_PROFILES_MANIFEST", manifest)
+        .env("AMBIENT_LAUNCHER_CALLED", &called)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    assert!(
+        !called.exists(),
+        "a mock fixture must not invoke an ambient native launcher"
+    );
 }
 
 #[test]
@@ -2378,6 +2425,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("RUST_LOG", "loom_agent=warn")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
@@ -2471,6 +2519,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_HANDSHAKE_TIMEOUT_MS", "500")
         .env("RUST_LOG", "loom_agent=warn")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
@@ -2563,6 +2612,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_STALL_WARN_MS", "300")
         .env("LOOM_TEST_STALL_READY", &session_ready)
         .env("RUST_LOG", "loom_workflow=warn")
