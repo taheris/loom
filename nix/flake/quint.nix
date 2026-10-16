@@ -8,7 +8,7 @@ _: {
     }:
     let
       tools =
-        assert pkgs.quint.version == "0.32.0";
+        assert pkgs.quint.version == "0.33.0";
         pkgs.quint;
       harness = loom.craneLib.buildPackage {
         pname = "loom-quint-acceptance";

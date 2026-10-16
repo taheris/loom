@@ -7,6 +7,8 @@ smoke_spec=$(realpath "${2:?smoke spec path is required}")
 export LOOM_TEST_ACCEPTANCE_HELPER="${3:?fixed smoke acceptance helper is required}"
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
+install -m 0444 "$smoke_spec" "$fixture/source-spec.md"
+smoke_spec="$fixture/source-spec.md"
 export HOME="$fixture/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 export GIT_CONFIG_GLOBAL=/dev/null
@@ -19,7 +21,14 @@ git init -q -b main
 git config user.name "Smoke Fixture"
 git config user.email smoke@example.com
 mkdir -p specs docs
-cp "$smoke_spec" specs/smoke.md
+install_smoke_spec() {
+    install -m 0644 "$smoke_spec" specs/smoke.md
+    if [[ "$(find specs/smoke.md -perm -0200 -print)" != specs/smoke.md ]]; then
+        printf 'mutable smoke spec lacks owner-write permission\n' >&2
+        exit 1
+    fi
+}
+install_smoke_spec
 printf '# Docs\n\n- [smoke](../specs/smoke.md)\n' >docs/README.md
 git add specs docs
 git commit -q -m "Initialize fixture"
@@ -85,7 +94,7 @@ if "$LOOM_TEST_ACCEPTANCE_HELPER" --validate-task <"$fixture/task.json" >"$fixtu
     exit 1
 fi
 grep -F 'ordinary task references no longer resolve' "$fixture/stale.log"
-cp "$smoke_spec" specs/smoke.md
+install_smoke_spec
 "$LOOM_TEST_ACCEPTANCE_HELPER" --validate-task <"$fixture/task.json"
 
 # Native graph guards cannot be established by a capturing command runner.

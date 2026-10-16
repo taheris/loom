@@ -1,7 +1,7 @@
 # Quint acceptance harness
 
-`nix run .#test-quint -- provisioning-and-batching` provisions Quint 0.32.0, its
-Rust evaluator 0.6.0, Apalache 0.56.1 (including its solver), and Java from the
+`nix run .#test-quint -- provisioning-and-batching` provisions Quint 0.33.0, its
+Rust evaluator 0.7.0, Apalache 0.62.1 (including its solver), and Java from the
 existing `flake.lock`. Cargo pins upstream Quint Connect and its macros to 0.1.2
 through `Cargo.lock`. No tool is installed during a campaign. The Nix package's
 immutable `QUINT_HOME` contains the evaluator and solver distribution; missing
@@ -73,12 +73,12 @@ invalidate identity. No successful evidence is imported into Gate by this app.
 
 Connect 0.1.2 exposes `Driver`, `State`, `Step`, and `runner::run_test` with
 `RunConfig`. Its ITF file replay and `Step` constructors are private. Also,
-`TestConfig` does not pass `--mbt`: with Quint 0.32.0 its test traces omit
-`mbt::actionTaken` and `mbt::nondetPicks`, so Connect rejects them. This
-unsupported integration is not replaced by a bespoke ITF decoder. Checked-in
-named replay actions use the compatible `RunConfig` route instead. `bridge.qnt`
-retains a Quint test witness for inspecting this upstream limitation, but it is
-not counted as implementation conformance.
+`TestConfig` does not pass `--mbt`: the earlier Quint 0.32.0 compatibility probe
+omitted `mbt::actionTaken` and `mbt::nondetPicks`, so Connect rejected those
+test traces. This unsupported integration is not replaced by a bespoke ITF
+decoder. Checked-in named replay actions use the compatible `RunConfig` route
+instead. `bridge.qnt` retains a Quint test witness for inspecting this upstream
+limitation, but it is not counted as implementation conformance.
 
 `nix build .#checks.x86_64-linux.quint-harness` tests provisioning and batching
 against the real tools and exercises invalid models, divergence, unsupported

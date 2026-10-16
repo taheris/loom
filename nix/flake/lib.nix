@@ -156,7 +156,7 @@ in
       # The same file + hash pin the toolchain for the wrix sandbox
       # profile, the loom workspace build, and the devshell.
       rustToolchainFile = ../../rust-toolchain.toml;
-      rustToolchainSha256 = "sha256-zm3dyIY2T414ZRR3EhLOvptzG6gta4WZUcawzMUWtqI=";
+      rustToolchainSha256 = "sha256-+xUr6Al1wZSqX8aEsq7DpuFOK4Ve/i+qTl+K5uWQ9GM=";
 
       rustToolchain = inputs'.fenix.packages.fromToolchainFile {
         file = rustToolchainFile;

@@ -481,6 +481,8 @@
             nativeBuildInputs = [
               pkgs.bash
               pkgs.beads
+              pkgs.coreutils
+              pkgs.findutils
               pkgs.git
               pkgs.jq
             ];

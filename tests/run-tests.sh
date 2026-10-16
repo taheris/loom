@@ -138,7 +138,7 @@ mkdir -p bin docs specs .loom
 cp "$LOOM_TEST_PRE_PUSH_CHECKS" bin/pre-push-checks
 cp "${LOOM_TEST_VERIFIER_PROBE:?missing fixed verifier probe}" bin/verifier-probe.sh
 chmod +x bin/pre-push-checks
-cp "${LOOM_TEST_SMOKE_SPEC:?missing indexed smoke acceptance}" specs/smoke.md
+install -m 0644 "${LOOM_TEST_SMOKE_SPEC:?missing indexed smoke acceptance}" specs/smoke.md
 cat >docs/README.md <<'DOCS'
 # Loom Docs
 

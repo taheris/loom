@@ -44,6 +44,19 @@ test_fail_closed() {
   must_fail 'unknown scenario' "$BASH" "$script" unknown
   must_fail 'not implemented' "$BASH" "$script" model
   must_fail 'missing provisioned tool' env PATH="$tmp/empty" "$BASH" "$script" provisioning-and-batching
+  mkdir -p "$tmp/old-tool"
+  write_script "$tmp/old-tool/quint" <<'SH'
+set -euo pipefail
+printf '0.32.0\n'
+SH
+  must_fail 'incompatible Quint version' env PATH="$tmp/old-tool:$PATH" "$BASH" "$script" provisioning-and-batching
+  export LOOM_QUINT_STALE_RECEIPT="$tmp/stale-receipt.json"
+  jq -s '.[0] | .checker = "Quint 0.32.0 / Connect 0.1.2 / Rust evaluator 0.6.0 / Apalache 0.56.1"' "$tmp/receipts" >"$LOOM_QUINT_STALE_RECEIPT"
+  write_script "$tmp/stale-runner" <<'SH'
+set -euo pipefail
+if [[ "$1" == budget ]]; then echo 1; else cat "$LOOM_QUINT_STALE_RECEIPT"; fi
+SH
+  must_fail 'missing or incomplete bounded receipt' env LOOM_QUINT_BIN="$tmp/stale-runner" "$BASH" "$script" provisioning-and-batching
   write_script "$tmp/failed-runner" <<'SH'
 set -euo pipefail
 if [[ "$1" == budget ]]; then echo 1; else exit 1; fi

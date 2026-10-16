@@ -78,11 +78,11 @@ for tool in quint timeout jq; do
     exit 1
   fi
 done
-if [[ "$(quint --version)" != 0.32.0 ]]; then
-  printf 'test-quint: incompatible Quint version (required 0.32.0)\n' >&2
+if [[ "$(quint --version)" != 0.33.0 ]]; then
+  printf 'test-quint: incompatible Quint version (required 0.33.0)\n' >&2
   exit 1
 fi
-if [[ ! -x "$LOOM_QUINT_BIN" || ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.6.0/quint_evaluator" || ! -f "$LOOM_QUINT_PACKAGE/share/quint/apalache-dist-0.56.1/apalache/lib/apalache.jar" ]]; then
+if [[ ! -x "$LOOM_QUINT_BIN" || ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.0/quint_evaluator" || ! -f "$LOOM_QUINT_PACKAGE/share/quint/apalache-dist-0.62.1/apalache/lib/apalache.jar" ]]; then
   printf 'test-quint: incomplete tool/solver provisioning\n' >&2
   exit 1
 fi
@@ -103,6 +103,7 @@ for campaign in "${campaigns[@]}"; do
   if ! jq -e '
     . as $r |
     ($r.assurance == "bounded simulation and bridge conformance, not whole-gate proof") and
+    ($r.checker == "Quint 0.33.0 / Connect 0.1.2 / Rust evaluator 0.7.0 / Apalache 0.62.1") and
     ($r.identity | test("^[0-9a-f]{64}$")) and
     ($r.plan.seeds | length > 0) and
     ($r.batches | length) == ($r.plan.seeds | length) and

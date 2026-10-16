@@ -108,10 +108,10 @@ impl Plan {
     pub fn shipped(mode: Mode) -> Result<Self, Error> {
         let definition: Definition = serde_json::from_str(DEFINITION)?;
         if definition.version != 1
-            || definition.quint != "0.32.0"
+            || definition.quint != "0.33.0"
             || definition.connect != "0.1.2"
-            || definition.evaluator != "0.6.0"
-            || definition.apalache != "0.56.1"
+            || definition.evaluator != "0.7.0"
+            || definition.apalache != "0.62.1"
             || definition.property != "safety"
         {
             return Err(Error::Unsupported);
@@ -295,7 +295,7 @@ enum Assurance {
 
 #[derive(Serialize)]
 enum Checker {
-    #[serde(rename = "Quint 0.32.0 / Connect 0.1.2 / Rust evaluator 0.6.0 / Apalache 0.56.1")]
+    #[serde(rename = "Quint 0.33.0 / Connect 0.1.2 / Rust evaluator 0.7.0 / Apalache 0.62.1")]
     Pinned,
 }
 
