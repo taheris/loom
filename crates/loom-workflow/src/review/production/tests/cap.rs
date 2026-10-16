@@ -192,6 +192,7 @@ mod tests {
         );
         assert_eq!(build_queue(&all, None, None, true).len(), 5);
         for decision in &decisions {
+            assert_eq!(decision.issue_type, IssueType::Decision);
             let brief = parse_options_in(decision.notes.as_deref(), &decision.description).unwrap();
             let expected = if decision.description.contains("unneeded-pending-marker")
                 || decision.description.contains("inputs-protocol-error")
@@ -341,6 +342,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integrity_cap_refuses_nondecision_provenance_without_replacing_identity() {
+        for issue_type in [IssueType::Task, IssueType::Bug] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let bd = isolated_client(root).await;
+            let parent = bd
+                .create(CreateOpts {
+                    title: "cap root".into(),
+                    issue_type: Some(IssueType::Epic),
+                    ..CreateOpts::default()
+                })
+                .await
+                .unwrap();
+            std::fs::create_dir(root.join("specs")).unwrap();
+            std::fs::write(root.join("specs/gate.md"), "# Gate\n## Success Criteria\n- first [check](missing-one)\n- second [check](missing-two)\n").unwrap();
+            let validator = WorkspaceFindingValidator::new(root);
+            let findings = ["missing-one", "missing-two"].map(|target| {
+                IntegrityFinding::UnresolvedAnnotation {
+                    spec: "specs/gate.md".into(),
+                    line: 3,
+                    tier: Tier::Check,
+                    target: target.into(),
+                }
+            });
+            let finding = findings[0]
+                .to_raw_finding()
+                .unwrap()
+                .resolve(DispatchScope::PushGate, &validator)
+                .unwrap();
+            let record = serde_json::json!({
+                "work_root": parent,
+                "finding": finding.clone().into_raw(),
+                "disposition": "candidate"
+            });
+            let legacy = bd
+                .create(CreateOpts {
+                    title: "persisted mislabeled cap candidate".into(),
+                    issue_type: Some(issue_type),
+                    status: Some(Status::Blocked),
+                    parent: Some(parent.clone()),
+                    notes: Some("Human context must survive failed admission".into()),
+                    labels: vec![format!("decision:integrity:{}", finding.hash())],
+                    metadata: Some(
+                        serde_json::json!({
+                            "loom.integrity_decision": serde_json::to_string(&record).unwrap()
+                        })
+                        .to_string(),
+                    ),
+                    ..CreateOpts::default()
+                })
+                .await
+                .unwrap();
+            let before = children(&bd, &parent).await;
+            let epic_before = bd.show(&parent).await.unwrap();
+            let error = crate::mint::integrity::escalate(&bd, &parent, &findings, &validator)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(legacy.as_str()), "{error}");
+            assert!(
+                error.to_string().contains("identity-preserving repair"),
+                "{error}"
+            );
+            assert_eq!(children(&bd, &parent).await, before);
+            assert_eq!(bd.show(&parent).await.unwrap(), epic_before);
+        }
+    }
+
+    #[tokio::test]
     async fn integrity_cap_refuses_duplicate_decisions_before_new_queue_effects() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -370,6 +439,7 @@ mod tests {
         let existing = bd.show(&existing.id).await.unwrap();
         let duplicate = bd
             .create(CreateOpts {
+                issue_type: Some(IssueType::Decision),
                 title: "duplicate indexed decision".into(),
                 status: Some(Status::Blocked),
                 parent: Some(parent.clone()),

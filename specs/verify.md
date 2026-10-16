@@ -495,6 +495,11 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   automatic finding completion, renewed automatic iteration budget, or push.
   [test](integrity_cap_decisions_preserve_full_options_and_partial_resolution)
 
+- Integrity-cap provenance on a non-decision issue is not decision authority.
+  Admission rejects the batch before new queue effects and preserves existing
+  IDs, parentage, human context and root state for explicit repair.
+  [test](integrity_cap_refuses_nondecision_provenance_without_replacing_identity)
+
 <!-- prettier-ignore -->
 - Production readiness probes use the shared admitted planner for scope,
   requested tier/lane, stage, batching/sharing, and bounded execution. Missing prospective targets

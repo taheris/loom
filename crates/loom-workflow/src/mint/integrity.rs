@@ -61,6 +61,12 @@ fn check_record(
     finding: &Finding,
     validator: &(impl FindingValidator + Sync + ?Sized),
 ) -> Result<Record, Error> {
+    if bead.issue_type != IssueType::Decision {
+        return Err(Error::Graph(format!(
+            "integrity candidate {} has type {}; explicit identity-preserving repair is required",
+            bead.id, bead.issue_type
+        )));
+    }
     let value = bead
         .metadata
         .get(RECORD_KEY)
@@ -184,6 +190,7 @@ pub async fn escalate<R: CommandRunner>(
                 default_profile_for_spec(&finding.bonds()[0])
             ));
             bd.create(CreateOpts {
+                issue_type: Some(IssueType::Decision),
                 status: Some(Status::Blocked),
                 title: format!("Decide integrity repair: {}", finding.id()),
                 description: format!(
