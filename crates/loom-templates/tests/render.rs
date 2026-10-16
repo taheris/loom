@@ -97,6 +97,7 @@ fn workspace_recovery(alignment: WorkspaceAlignment) -> WorkspaceRecovery {
 )]
 fn todo_context(notes: Vec<String>, criterion_status: Vec<CriterionStatus>) -> TodoContext {
     TodoContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         spec_index: "# Loom Docs\n| Spec | Purpose |".to_string(),
         changed_specs: vec![TodoChangedSpec {
@@ -154,6 +155,7 @@ fn todo_dossier_render_keeps_roster_and_resumption_without_inlining_evidence() -
 )]
 fn plan_ctx() -> PlanContext {
     PlanContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         anchor_labels: vec![SpecLabel::new("harness").unwrap()],
         spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
@@ -221,6 +223,7 @@ fn loop_render_preserves_instruction_list_structure_on_fresh_and_retry_dispatch(
         Some(PreviousFailure::from_agent_error("compile failed")),
     ] {
         let ctx = LoopContext {
+            package_context: None,
             acceptance: None,
             bead_base: git_sha(TEST_SHA),
             pinned_context: PINNED_CONTEXT_BODY.into(),
@@ -310,6 +313,7 @@ fn shared_options_partial_preserves_call_site_list_nesting() -> Result<()> {
 #[test]
 fn review_options_contract_remains_nested_under_clarify_guidance() -> Result<()> {
     let out = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.into(),
         label: SpecLabel::new("example")?,
         spec_path: "specs/example.md".into(),
@@ -430,6 +434,7 @@ fn plan_renders_partials_index_anchors_and_companions() -> Result<()> {
 #[test]
 fn skill_index_partial_renders_precomputed_markdown() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -702,6 +707,7 @@ fn todo_template_rejects_generic_success_markers() -> Result<()> {
 #[test]
 fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -742,6 +748,7 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
 #[test]
 fn loop_template_renders_dependency_wait_marker() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -778,6 +785,7 @@ fn loop_template_renders_dependency_wait_marker() -> Result<()> {
 #[test]
 fn run_template_omits_attempt_line_when_zero() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -807,6 +815,7 @@ fn run_template_omits_attempt_line_when_zero() -> Result<()> {
 #[test]
 fn run_template_renders_attempt_line_on_retry() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -844,6 +853,7 @@ fn run_template_renders_attempt_line_on_retry() -> Result<()> {
 #[test]
 fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -888,6 +898,7 @@ fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
 #[test]
 fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -922,6 +933,7 @@ fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()
 #[test]
 fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -954,6 +966,7 @@ fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()
 #[test]
 fn run_template_renders_review_notes_block_when_set() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -988,6 +1001,7 @@ fn run_template_renders_review_notes_block_when_set() -> Result<()> {
 #[test]
 fn loop_context_renders_workspace_recovery_without_retry_attempt() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA_3),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -1038,6 +1052,7 @@ fn loop_context_renders_workspace_recovery_without_retry_attempt() -> Result<()>
 #[test]
 fn loop_template_renders_previous_failure_before_workspace_recovery() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA_3),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -1084,6 +1099,7 @@ fn loop_template_renders_previous_failure_before_workspace_recovery() -> Result<
 #[test]
 fn workspace_recovery_summary_prompt_is_non_authoritative() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA_3),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -1183,6 +1199,7 @@ fn review_renders_review_context_fields() -> Result<()> {
     let judge_body = "judge_live_path_coverage_signature() { :; }\n";
 
     let ctx = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -1234,6 +1251,7 @@ fn review_renders_review_context_fields() -> Result<()> {
 #[test]
 fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Result<()> {
     let ctx = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -1289,6 +1307,7 @@ fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Res
 #[test]
 fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Result<()> {
     let ctx = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -1345,6 +1364,7 @@ fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Re
 #[test]
 fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
     let ctx = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -1410,6 +1430,7 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
 #[test]
 fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Result<()> {
     let ctx = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -1457,6 +1478,7 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
 #[test]
 fn review_renders_options_format_contract_embedded_in_evidence() -> Result<()> {
     let ctx = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -1520,6 +1542,7 @@ fn review_renders_options_format_contract_embedded_in_evidence() -> Result<()> {
 #[test]
 fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> Result<()> {
     let ctx = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("alpha").unwrap(),
         spec_path: "specs/alpha.md".to_string(),
@@ -1617,6 +1640,7 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
 #[test]
 fn review_self_report_markers_do_not_authorize_bd_writes() -> Result<()> {
     let ctx = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("alpha").unwrap(),
         spec_path: "specs/alpha.md".to_string(),
@@ -1937,6 +1961,7 @@ fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
 #[test]
 fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
     let run_out = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: "PIN".into(),
@@ -1960,6 +1985,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
     let todo_out = todo_context(vec![], vec![]).render()?;
 
     let review_out = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -1997,6 +2023,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
 #[test]
 fn progress_markers_render_phase_specific_diff_rules() -> Result<()> {
     let review_out = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness").unwrap(),
         spec_path: "specs/harness.md".to_string(),
@@ -2040,6 +2067,7 @@ fn progress_markers_render_phase_specific_diff_rules() -> Result<()> {
 #[test]
 fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: "PIN".into(),
@@ -2095,6 +2123,7 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
 #[test]
 fn run_template_uses_injected_self_check_range_not_head_shorthand() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: "PIN".into(),
@@ -2145,6 +2174,7 @@ fn run_template_uses_injected_self_check_range_not_head_shorthand() -> Result<()
 #[test]
 fn run_template_requires_self_check_rerun_after_post_check_changes() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: "PIN".into(),
@@ -2208,6 +2238,7 @@ fn contained_within_agent_output(haystack: &str, needle: &str) -> bool {
 #[test]
 fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
     let run = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -2267,6 +2298,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
     assert_stable(
         "run",
         LoopContext {
+            package_context: None,
             acceptance: None,
             bead_base: git_sha(TEST_SHA),
             pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -2291,6 +2323,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
     assert_stable(
         "review",
         ReviewContext {
+            package_context: None,
             pinned_context: PINNED_CONTEXT_BODY.to_string(),
             label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".to_string(),

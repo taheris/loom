@@ -14,6 +14,8 @@ use crate::spec::{SpecError, target_file_path};
 /// Inputs for [`build_review_context`]. Constructed once per `loom review`
 /// invocation; the reviewer only runs once per molecule per gate pass.
 pub struct ReviewContextInputs {
+    /// Immutable driver-selected package snapshot; None supports partial composition only.
+    pub package_context: Option<loom_protocol::context::Context>,
     pub label: SpecLabel,
     pub spec_path: String,
     pub pinned_context: String,
@@ -42,6 +44,7 @@ pub struct ReviewContextInputs {
 /// Render the typed [`ReviewContext`] used by the `review.md` Askama template.
 pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
     ReviewContext {
+        package_context: inputs.package_context,
         pinned_context: inputs.pinned_context,
         label: inputs.label,
         spec_path: inputs.spec_path,
@@ -265,6 +268,7 @@ mod tests {
 
     fn inputs() -> ReviewContextInputs {
         ReviewContextInputs {
+            package_context: None,
             label: SpecLabel::new("harness").unwrap(),
             spec_path: "specs/harness.md".into(),
             pinned_context: "PIN".into(),

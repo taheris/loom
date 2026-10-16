@@ -12,6 +12,8 @@ use loom_driver::state::CacheError;
 /// Failures raised by [`super::run`] and the helpers it composes.
 #[derive(Debug, Display, Error)]
 pub enum PlanError {
+    /// package context could not be captured or delivered
+    Context(#[from] loom_driver::spec::context::Error),
     /// invalid plan anchor label `{label}`: expected lowercase ASCII kebab-case
     InvalidAnchorLabel { label: String },
 

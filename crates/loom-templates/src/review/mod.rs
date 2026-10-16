@@ -49,6 +49,8 @@ impl ReviewLane {
 #[derive(Template)]
 #[template(path = "review.md", escape = "none")]
 pub struct ReviewContext {
+    /// Immutable driver-selected package snapshot; None supports partial composition only.
+    pub package_context: Option<loom_protocol::context::Context>,
     pub pinned_context: String,
     pub label: SpecLabel,
     pub spec_path: String,

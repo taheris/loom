@@ -11,6 +11,8 @@
 //! depending on `loom-driver` directly each time.
 
 #[cfg(test)]
+mod phase_context_tests;
+#[cfg(test)]
 mod test_support;
 
 pub mod agent;

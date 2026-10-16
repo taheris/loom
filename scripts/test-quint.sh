@@ -15,6 +15,13 @@ case "$1" in
     : "${LOOM_REMEDIATION_ACCEPTANCE_BIN:?missing provisioned remediation acceptance runner}"
     exec "$LOOM_REMEDIATION_ACCEPTANCE_BIN" mint::tests::acceptance:: --nocapture
     ;;
+  phase-context)
+    : "${LOOM_TASK_ACCEPTANCE_BIN:?missing provisioned context acceptance runner}"
+    : "${LOOM_QUINT_SOURCE:?missing context acceptance input bundle}"
+    bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "phase_context_tests::" --nocapture
+    bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "todo::dossier::tests::" --nocapture
+    exec bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "mint::acceptance::dispatch_tests::" --nocapture
+    ;;
   task-acceptance-dispatch)
     : "${LOOM_TASK_ACCEPTANCE_BIN:?missing provisioned task acceptance runner}"
     : "${LOOM_QUINT_SOURCE:?missing acceptance input bundle}"

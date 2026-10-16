@@ -382,7 +382,16 @@ where
                 .and_then(|m| m.base_commit),
             None => None,
         };
-        let spec_path_rel = format!("specs/{}.md", self.label.as_str());
+        let package_context = loom_driver::spec::context::load(
+            &self.workspace,
+            loom_protocol::context::Purpose::Review,
+            loom_driver::spec::context::Selection::All,
+        )
+        .map_err(|error| WalkError::Rubric(format!("{error:?}")))?;
+        let spec_path_rel = package_context
+            .contract_path(&self.label)
+            .ok_or_else(|| WalkError::Rubric(format!("no package context for {}", self.label)))?
+            .to_owned();
         let (test_sources, judge_rubrics) = load_review_sources_for_lane(
             &self.workspace,
             &self.workspace.join(&spec_path_rel),
@@ -395,6 +404,7 @@ where
             .to_string_lossy()
             .into_owned();
         let ctx = ReviewContext {
+            package_context: Some(package_context),
             pinned_context: tree_mint_scope_pin(),
             default_profile: default_profile_for_spec(&self.label),
             label: self.label.clone(),

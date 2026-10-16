@@ -16,6 +16,8 @@ use thiserror::Error;
 )]
 #[derive(Debug, Display, Error)]
 pub enum TodoError {
+    /// package context could not be captured or delivered
+    Context(#[from] loom_driver::spec::context::Error),
     /// native decision admission failed
     DecisionAdmission(#[source] Box<crate::r#loop::LoopError>),
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running

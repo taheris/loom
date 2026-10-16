@@ -338,6 +338,7 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
 #[test]
 fn plan_context_is_publicly_constructible_from_crate_root() {
     let _ctx = PlanContext {
+        package_context: None,
         pinned_context: String::new(),
         anchor_labels: vec![loom_events::identifier::SpecLabel::new("demo").unwrap()],
         spec_index: String::new(),
@@ -354,6 +355,7 @@ fn todo_context_is_publicly_constructible_from_crate_root() {
     use loom_protocol::todo::{GitSha, TodoFingerprint};
 
     let _ctx = TodoContext {
+        package_context: None,
         pinned_context: String::new(),
         spec_index: String::new(),
         changed_specs: vec![TodoChangedSpec {
@@ -388,6 +390,7 @@ fn run_context_is_publicly_constructible_from_crate_root() {
     use loom_protocol::todo::GitSha;
 
     let _ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: GitSha::new("0123456789abcdef0123456789abcdef01234567").unwrap(),
         pinned_context: String::new(),

@@ -1,6 +1,9 @@
 # Specification Interview
 
-{{ self.output_contract() }}
+{{ self.output_contract() }}{% match package_context %}{% when Some with (context) %}
+
+{{ context }}
+{% when None %}{% endmatch %}
 
 You are conducting a specification interview. Your goal is to clarify the user's intent and edit the spec/index markdown plus implementation notes needed for downstream `loom todo`.
 

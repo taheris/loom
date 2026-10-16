@@ -172,6 +172,28 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         workspace_recovery,
         attempt,
     } = request;
+    let labels = match &acceptance {
+        super::acceptance::Resolved::Implementation(resolved) => resolved
+            .obligations()
+            .iter()
+            .map(|obligation| obligation.reference().spec_label().clone())
+            .collect::<std::collections::HashSet<_>>(),
+        super::acceptance::Resolved::Remediation(resolved) => resolved
+            .goals()
+            .iter()
+            .flat_map(|goal| goal.finding().bonds().iter().cloned())
+            .collect(),
+    }
+    .into_iter()
+    .collect::<Vec<_>>();
+    let package_context = loom_driver::spec::context::load(
+        workspace,
+        loom_protocol::context::Purpose::Implementation,
+        loom_driver::spec::context::Selection::Labels(&labels),
+    )?;
+    let spec_path = package_context
+        .contract_path(label)
+        .map_or_else(|| format!("specs/{label}.md"), str::to_owned);
     let association = loom_driver::workspace::Association::resolve(loom_workspace)?;
     let key = resolve_scratch_key(Phase::Loop, std::slice::from_ref(label), Some(&bead.id));
     let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key);
@@ -189,11 +211,17 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         skills,
     )?;
     let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
+    let package_context = package_context.with_snapshot_root(
+        container_workspace_path(workspace, &scratch_dir.join("context"))
+            .to_string_lossy()
+            .into_owned(),
+    );
     let initial_prompt = render_loop_prompt(LoopContextInputs {
+        package_context: Some(package_context.clone()),
         acceptance: acceptance.clone(),
         acceptance_workspace: workspace.to_path_buf(),
         label: label.clone(),
-        spec_path: format!("specs/{label}.md"),
+        spec_path,
         pinned_context: String::new(),
         companion_paths: vec![],
         molecule_id: None,
@@ -216,6 +244,7 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         &initial_prompt,
         &format!("loom loop @ {}", bead.id),
     )?;
+    loom_driver::spec::context::write(&package_context, scratch.path())?;
     let mut mounts: Vec<_> = dolt_socket_mount(loom_workspace).into_iter().collect();
     if let Some(cache) = &loom.sccache_dir {
         association.admit_mount(&loom_driver::agent::MountSpec {

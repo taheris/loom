@@ -1,6 +1,9 @@
 # Post-Epic Review
 
-{{ self.output_contract() }}
+{{ self.output_contract() }}{% match package_context %}{% when Some with (context) %}
+
+{{ context }}
+{% when None %}{% endmatch %}
 
 You are an **independent reviewer** assessing the completed deliverable for spec
 **{{ label }}**: spec compliance, code quality, test adequacy, coherence, and any

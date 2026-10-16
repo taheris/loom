@@ -14,6 +14,7 @@ pub const FINGERPRINT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 pub fn todo_context() -> Result<TodoContext> {
     Ok(TodoContext {
+        package_context: None,
         pinned_context: "Read docs/README.md".into(),
         spec_index: "Example and sibling contracts".into(),
         changed_specs: vec![TodoChangedSpec {
@@ -52,6 +53,7 @@ pub fn todo_context() -> Result<TodoContext> {
 pub fn render(phase: Phase) -> Result<String> {
     Ok(match phase {
         Phase::Plan => PlanContext {
+            package_context: None,
             pinned_context: "Read docs/README.md".into(),
             anchor_labels: vec!["example".parse()?],
             spec_index: "Example contract".into(),
@@ -63,6 +65,7 @@ pub fn render(phase: Phase) -> Result<String> {
         .render()?,
         Phase::Todo => todo_context()?.render()?,
         Phase::Loop => LoopContext {
+            package_context: None,
             acceptance: None,
             pinned_context: "Read docs/README.md".into(),
             label: "example".parse()?,
@@ -83,6 +86,7 @@ pub fn render(phase: Phase) -> Result<String> {
         }
         .render()?,
         Phase::Review => ReviewContext {
+            package_context: None,
             pinned_context: "Read docs/README.md".into(),
             label: "example".parse()?,
             spec_path: "specs/example.md".into(),

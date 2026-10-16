@@ -49,6 +49,23 @@ retained goal text, current bindings, attribution and evidence travel in the
 saved prompt, without Templates resolving references or interpreting resolution
 as passing verification.
 
+`package_context: Option<loom_protocol::context::Context>` is shared by the
+public Plan, Todo, Loop and Review contexts and their workflow builder inputs.
+`None` supports partial composition; production dispatch captures package
+contracts and acceptance documents before rendering. Driver discovery owns the
+roster; Templates renders captured bytes without filesystem reads or reference
+resolution. Planning and worker sessions retain retrievable acceptance snapshots
+inside their private scratch session. Todo stores contracts and acceptance in
+bounded dossier pages, leaving its complete roster in the entry prompt. Review
+supplies applicable contracts/invariants and acceptance alongside its existing
+scope, diff and deterministic evidence. Supporting model bodies are not pinned.
+
+Historical `CriterionStatus` observations remain distinct from current coverage.
+The current producer does not yet supply Evidence admission; prompts and dossier
+indexes explicitly report that unavailability, never infer a pass from `Current`
+or zero commit distance. This does not satisfy the separate current-coverage
+projection producer contract.
+
 ### Template Files
 
 [Acceptance](#success-criteria).
@@ -289,40 +306,42 @@ bound to a typed field on the relevant context struct. `String`-typed values
 arriving from beads or config flow through the parse-don't-validate boundary
 defined in [Harness](harness.md#parse-dont-validate).
 
-| Variable               | Type                           | Used By                                                                            |
-| ---------------------- | ------------------------------ | ---------------------------------------------------------------------------------- |
-| `pinned_context`       | `String`                       | all                                                                                |
-| `style_rules`          | `String`                       | `loop`, `review`                                                                   |
-| `spec_conventions`     | `String`                       | `plan`                                                                             |
-| `anchor_labels`        | `Vec<SpecLabel>`               | `plan`                                                                             |
-| `spec_index`           | `String`                       | `plan`, `todo`                                                                     |
-| `label`                | `SpecLabel`                    | `loop`, `review`                                                                   |
-| `spec_path`            | `String`                       | `loop`, `review`                                                                   |
-| `changed_specs`        | `Vec<TodoChangedSpec>`         | `todo`                                                                             |
-| `work_epic`            | `BeadId`                       | `todo`                                                                             |
-| `todo_head`            | `GitSha`                       | `todo`                                                                             |
-| `todo_fingerprint`     | `TodoFingerprint`              | `todo`                                                                             |
-| `spec_epics`           | `Vec<SpecEpicContext>`         | `todo`                                                                             |
-| `companion_paths`      | `Vec<String>`                  | `plan`, `todo`, `loop`, `review`, `inbox`                                          |
-| `skill_index`          | `SkillIndexMarkdown`           | all agent-bearing templates                                                        |
-| `implementation_notes` | `Vec<SpecImplementationNotes>` | `todo`                                                                             |
-| `criterion_status`     | `Vec<CriterionStatus>`         | `todo` (see [Specs — Criterion-Status Surface](specs.md#criterion-status-surface)) |
-| `inbox_items`          | `Vec<InboxItem>`               | `inbox`                                                                            |
-| `molecule_id`          | `Option<MoleculeId>`           | `loop`, `review`                                                                   |
-| `issue_id`             | `Option<BeadId>`               | `loop`                                                                             |
-| `title`                | `Option<String>`               | `loop`                                                                             |
-| `description`          | `Option<String>`               | `loop`                                                                             |
-| `previous_failure`     | `Option<PreviousFailure>`      | `loop` (retry only; typed enum — see _Typed `PreviousFailure`_ below)              |
-| `workspace_recovery`   | `Option<WorkspaceRecovery>`    | `loop` (dirty-workspace preservation only; see _Workspace-Recovery Surface_ below) |
-| `review_notes`         | `Option<String>`               | `loop`                                                                             |
-| `attempt`              | `u32`                          | `loop`                                                                             |
-| `beads_summary`        | `Option<String>`               | `review`                                                                           |
-| `base_commit`          | `Option<String>`               | `review`                                                                           |
-| `test_sources`         | `Vec<ReviewSource>`            | `review`                                                                           |
-| `judge_rubrics`        | `Vec<ReviewSource>`            | `review`                                                                           |
-| `lane`                 | `ReviewLane`                   | `review`                                                                           |
-| `default_profile`      | `ProfileName`                  | `review` (driver mint metadata; not rendered)                                      |
-| `scratchpad_path`      | `String`                       | all                                                                                |
+| Variable               | Type                                                   | Used By                                                                            |
+| ---------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `package_context`      | `Option<loom_protocol::context::Context>`              | `plan`, `todo`, `loop`, `review`                                                   |
+| `acceptance`           | `Option<loom_protocol::acceptance::dispatch::Context>` | `loop`; immutable resolved worker instructions                                     |
+| `pinned_context`       | `String`                                               | all                                                                                |
+| `style_rules`          | `String`                                               | `loop`, `review`                                                                   |
+| `spec_conventions`     | `String`                                               | `plan`                                                                             |
+| `anchor_labels`        | `Vec<SpecLabel>`                                       | `plan`                                                                             |
+| `spec_index`           | `String`                                               | `plan`, `todo`                                                                     |
+| `label`                | `SpecLabel`                                            | `loop`, `review`                                                                   |
+| `spec_path`            | `String`                                               | `loop`, `review`                                                                   |
+| `changed_specs`        | `Vec<TodoChangedSpec>`                                 | `todo`                                                                             |
+| `work_epic`            | `BeadId`                                               | `todo`                                                                             |
+| `todo_head`            | `GitSha`                                               | `todo`                                                                             |
+| `todo_fingerprint`     | `TodoFingerprint`                                      | `todo`                                                                             |
+| `spec_epics`           | `Vec<SpecEpicContext>`                                 | `todo`                                                                             |
+| `companion_paths`      | `Vec<String>`                                          | `plan`, `todo`, `loop`, `review`, `inbox`                                          |
+| `skill_index`          | `SkillIndexMarkdown`                                   | all agent-bearing templates                                                        |
+| `implementation_notes` | `Vec<SpecImplementationNotes>`                         | `todo`                                                                             |
+| `criterion_status`     | `Vec<CriterionStatus>`                                 | `todo` (see [Specs — Criterion-Status Surface](specs.md#criterion-status-surface)) |
+| `inbox_items`          | `Vec<InboxItem>`                                       | `inbox`                                                                            |
+| `molecule_id`          | `Option<MoleculeId>`                                   | `loop`, `review`                                                                   |
+| `issue_id`             | `Option<BeadId>`                                       | `loop`                                                                             |
+| `title`                | `Option<String>`                                       | `loop`                                                                             |
+| `description`          | `Option<String>`                                       | `loop`                                                                             |
+| `previous_failure`     | `Option<PreviousFailure>`                              | `loop` (retry only; typed enum — see _Typed `PreviousFailure`_ below)              |
+| `workspace_recovery`   | `Option<WorkspaceRecovery>`                            | `loop` (dirty-workspace preservation only; see _Workspace-Recovery Surface_ below) |
+| `review_notes`         | `Option<String>`                                       | `loop`                                                                             |
+| `attempt`              | `u32`                                                  | `loop`                                                                             |
+| `beads_summary`        | `Option<String>`                                       | `review`                                                                           |
+| `base_commit`          | `Option<String>`                                       | `review`                                                                           |
+| `test_sources`         | `Vec<ReviewSource>`                                    | `review`                                                                           |
+| `judge_rubrics`        | `Vec<ReviewSource>`                                    | `review`                                                                           |
+| `lane`                 | `ReviewLane`                                           | `review`                                                                           |
+| `default_profile`      | `ProfileName`                                          | `review` (driver mint metadata; not rendered)                                      |
+| `scratchpad_path`      | `String`                                               | all                                                                                |
 
 The newtypes (`SpecLabel`, `MoleculeId`, `BeadId`, `ProfileName`, `GitSha`,
 `TodoFingerprint`, `CriterionId`) are architecture-bearing parse-boundary types.
@@ -749,25 +768,25 @@ bundled documents in front of the agent with zero configuration.
   cached passes upgraded to authority. Workers receive applicable acceptance
   obligations explicitly; review receives applicable invariants, criteria, and
   evidence. Uncertain context selection broadens context rather than omitting
-  obligations. [test?](quint_phase_context_preserves_applicable_obligations)
+  obligations. [test](quint_phase_context_preserves_applicable_obligations)
 
 - Compaction recovery restores the dispatched contract and resolved acceptance
   context, including the task purpose, criterion identities/text/bindings or
   resolved remediation goals and attribution, without requiring rediscovery or
   reinterpreting references against a different snapshot.
-  [test?](quint_context_selection_survives_compaction)
+  [test](quint_context_selection_survives_compaction)
 
 - Worker context construction consumes Loop's resolved acceptance form and
   renders assigned criteria with identity/text/bindings or remediation goals
   with finding attribution, targets, evidence, and processed-batch acceptance.
   It neither reparses references nor invents criterion IDs for broken acceptance
   or treats resolution as a verifier pass.
-  [test?](worker_context_consumes_resolved_acceptance)
+  [test](worker_context_consumes_resolved_acceptance)
 
 - Context selection avoids unconditional pinning of every package's full
   acceptance document and model; task-relevant obligations are not optional
   supporting reads.
-  [test?](quint_progressive_disclosure_separates_obligations_from_support)
+  [test](quint_progressive_disclosure_separates_obligations_from_support)
 
 <!-- prettier-ignore -->
 - `style_rules.md` partial renders the `style_rules` variable [check](grep -q '{{ style_rules' crates/loom-templates/templates/partial/style_rules.md)

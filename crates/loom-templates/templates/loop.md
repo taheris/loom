@@ -1,6 +1,9 @@
 # Implementation Step
 
-{{ self.output_contract() }}
+{{ self.output_contract() }}{% match package_context %}{% when Some with (context) %}
+
+{{ context }}
+{% when None %}{% endmatch %}
 
 {% include "partial/context_pinning.md" %}
 

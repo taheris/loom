@@ -9,6 +9,8 @@ use crate::criterion_status::CriterionStatus;
 #[derive(Template)]
 #[template(path = "todo.md", escape = "none")]
 pub struct TodoContext {
+    /// Immutable driver-selected package snapshot; None supports partial composition only.
+    pub package_context: Option<loom_protocol::context::Context>,
     pub pinned_context: String,
     pub spec_index: String,
     pub changed_specs: Vec<TodoChangedSpec>,
@@ -90,6 +92,7 @@ mod tests {
 
     fn ctx_with_notes(notes: Vec<String>) -> TodoContext {
         TodoContext {
+            package_context: None,
             pinned_context: PINNED.to_string(),
             spec_index: "| Spec | Beads |\n|---|---|".to_string(),
             changed_specs: vec![TodoChangedSpec {

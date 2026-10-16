@@ -8,6 +8,8 @@ use loom_templates::run::{LoopContext, PreviousFailure, WorkspaceRecovery};
 /// retries the driver rebuilds with `previous_failure` set + `attempt`
 /// incremented.
 pub struct LoopContextInputs {
+    /// Immutable driver-selected package snapshot; None supports partial composition only.
+    pub package_context: Option<loom_protocol::context::Context>,
     pub acceptance: loom_protocol::acceptance::dispatch::Acceptance,
     pub acceptance_workspace: std::path::PathBuf,
     pub label: SpecLabel,
@@ -45,6 +47,7 @@ pub struct LoopContextInputs {
 /// per-iteration inputs.
 pub fn build_loop_context(inputs: LoopContextInputs) -> LoopContext {
     LoopContext {
+        package_context: inputs.package_context,
         acceptance: Some(inputs.acceptance.context(&inputs.acceptance_workspace)),
         pinned_context: inputs.pinned_context,
         label: inputs.label,
@@ -89,6 +92,7 @@ mod tests {
             "Worker context preserves its dispatched instructions through retries.",
         );
         LoopContextInputs {
+            package_context: None,
             acceptance: crate::test_support::acceptance::resolved(dir.path(), &label),
             acceptance_workspace: dir.path().to_path_buf(),
             label: SpecLabel::new("harness").unwrap(),

@@ -67,6 +67,7 @@ fn planning_package_probes_are_structurally_valid_without_claiming_semantic_cove
         );
 
         let prompt = render_prompt(PlanPromptInputs {
+            package_context: None,
             anchor_labels: vec![SpecLabel::new("queue")?],
             pinned_context: "Planning probe".into(),
             spec_index: index.into(),

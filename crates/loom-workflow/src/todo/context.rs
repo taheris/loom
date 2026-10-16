@@ -10,6 +10,8 @@ use serde::Serialize;
 
 /// Inputs the unified todo template needs from deterministic preflight.
 pub struct TemplateBaseFields {
+    /// Immutable driver-selected package snapshot; None supports partial composition only.
+    pub package_context: Option<loom_protocol::context::Context>,
     pub pinned_context: String,
     pub spec_index: String,
     pub changed_specs: Vec<TodoChangedSpec>,
@@ -40,6 +42,7 @@ pub fn build_template_context(
     criterion_status: Vec<CriterionStatus>,
 ) -> TodoContext {
     TodoContext {
+        package_context: base.package_context,
         pinned_context: base.pinned_context,
         spec_index: base.spec_index,
         changed_specs: base.changed_specs,
@@ -181,6 +184,7 @@ mod tests {
         }];
         let todo_fingerprint = todo_fingerprint(&todo_head, SHA, &fingerprint_input);
         TemplateBaseFields {
+            package_context: None,
             pinned_context: "PIN".to_string(),
             spec_index: "INDEX".to_string(),
             changed_specs,

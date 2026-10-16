@@ -20,7 +20,7 @@ impl Dossier {
     pub fn build(context: &TodoContext) -> Result<Self, TodoError> {
         let mut dossier = Self {
             manifest: format!(
-                "# Todo evidence\n\nWork epic: {}\nHead: {}\nFingerprint: {}\n\nPages below are complete, ordered UTF-8 slices. Concatenate a section's pages in order to reconstruct its exact content. A page can continue a long row or line. All paths are relative to this index. Read criterion and note sections for every owner; consult diffs selectively. Missing cache observations are not proof of missing implementation.\n\n",
+                "# Todo evidence\n\nWork epic: {}\nHead: {}\nFingerprint: {}\n\nPages below are complete, ordered UTF-8 slices. Concatenate a section's pages in order to reconstruct its exact content. A page can continue a long row or line. All paths are relative to this index. Read contract, acceptance, criterion and note sections for every owner; consult diffs selectively. Historical observations are not current coverage admission; missing current coverage projection and unresolved blockers remain explicit uncertainty. Missing cache observations are not proof of missing implementation.\n\n",
                 context.work_epic, context.todo_head, context.todo_fingerprint
             ),
             pages: Vec::new(),
@@ -31,6 +31,17 @@ impl Dossier {
                 "## {}\n\nContract: `{}`\nAcceptance: `{}`\nTracked input scope: `{}` (models and supporting files load on demand).\n\n",
                 spec.label, spec.spec_path, spec.acceptance_path, spec.input_scope
             )?;
+            if let Some(package) = context.package_context.as_ref().and_then(|context| {
+                context
+                    .packages()
+                    .iter()
+                    .find(|package| package.label == spec.label)
+            }) {
+                dossier.section(spec.label.as_str(), "contract", &package.contract.body)?;
+                if package.acceptance.path != package.contract.path {
+                    dossier.section(spec.label.as_str(), "acceptance", &package.acceptance.body)?;
+                }
+            }
             let rows = context
                 .criterion_status
                 .iter()
@@ -150,6 +161,43 @@ mod tests {
         let pages = chunks(&body);
         assert!(pages.iter().all(|page| page.lines().count() <= PAGE_LINES));
         assert_eq!(pages.concat(), body);
+    }
+
+    #[test]
+    fn contract_pages_preserve_captured_documents_without_unbounded_entry_repin() {
+        let mut dossier = Dossier {
+            manifest: String::new(),
+            pages: vec![],
+        };
+        let contract = format!(
+            "Invariant: preserve human intent.\n{}",
+            "contract detail λ\n".repeat(4000)
+        );
+        dossier.section("alpha", "contract", &contract).unwrap();
+        assert!(dossier.manifest.len() < PROMPT_BYTES);
+        assert!(!dossier.manifest.contains("contract detail"));
+        assert!(
+            dossier
+                .pages
+                .iter()
+                .all(|(_, body)| body.len() <= PAGE_BYTES)
+        );
+        assert_eq!(
+            dossier
+                .pages
+                .iter()
+                .map(|(_, body)| body.as_str())
+                .collect::<String>(),
+            contract
+        );
+        let dir = tempfile::tempdir().unwrap();
+        dossier.write(dir.path()).unwrap();
+        for (path, body) in &dossier.pages {
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("evidence").join(path)).unwrap(),
+                *body
+            );
+        }
     }
 
     #[test]

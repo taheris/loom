@@ -126,6 +126,25 @@ _: {
             bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance mint::tests::acceptance::
             touch "$out"
           '';
+      checks.phase-context =
+        pkgs.runCommand "phase-context"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.git
+              pkgs.beads
+              pkgs.gnused
+              pkgs.jq
+            ];
+          }
+          ''
+            set -euo pipefail
+            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "phase_context_tests::"
+            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "todo::dossier::tests::"
+            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "mint::acceptance::dispatch_tests::"
+            touch "$out"
+          '';
       checks.task-acceptance-dispatch =
         pkgs.runCommand "task-acceptance-dispatch"
           {

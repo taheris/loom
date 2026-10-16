@@ -13,6 +13,8 @@ use loom_driver::state::CacheError;
 /// Errors raised by the `loom loop` driver.
 #[derive(Debug, Display, Error)]
 pub enum LoopError {
+    /// package context could not be captured or delivered
+    Context(#[from] loom_driver::spec::context::Error),
     /// agent backend protocol failure during `loom loop`
     Protocol(#[from] ProtocolError),
 

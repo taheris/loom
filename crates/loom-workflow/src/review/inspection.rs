@@ -13,6 +13,7 @@ use super::context::load_review_sources_for_annotations;
 use super::error::ReviewError;
 
 pub(super) struct Materials {
+    pub package_context: loom_protocol::context::Context,
     pub test_sources: Vec<ReviewSource>,
     pub judge_rubrics: Vec<ReviewSource>,
     pub contract_paths: Vec<String>,
@@ -101,12 +102,73 @@ fn load_inventory(
             "\nIntent/context bead: `{bead}`. Metadata only: it does not narrow the inspection scope or authorize state transitions."
         );
     }
+    let selected_labels = packages
+        .iter()
+        .filter(|package| {
+            target.is_none()
+                || annotations
+                    .iter()
+                    .any(|annotation| annotation.source_spec == package.acceptance())
+        })
+        .map(|package| package.label().clone())
+        .collect::<Vec<_>>();
+    let mut package_context = loom_driver::spec::context::capture(
+        workspace,
+        &packages,
+        loom_protocol::context::Purpose::Review,
+        loom_driver::spec::context::Selection::Labels(&selected_labels),
+    )?;
+    if target.is_some() {
+        let mut selected_packages = package_context.packages().to_vec();
+        for package in &mut selected_packages {
+            let mut selected = String::from(
+                "Selected judge criteria only (not the complete acceptance document):\n",
+            );
+            for criterion in parsed.criteria.iter().filter(|criterion| {
+                annotations.iter().any(|annotation| {
+                    (annotation.source_spec.as_path(), annotation.criterion_line)
+                        == (criterion.source_spec.as_path(), criterion.line)
+                }) && display_path(workspace, &criterion.source_spec) == package.acceptance.path
+            }) {
+                selected.push_str(&criterion.text);
+                selected.push('\n');
+            }
+            if package.contract.path == package.acceptance.path {
+                package.contract.body = without_acceptance_section(&package.contract.body);
+                package.contract.body.push('\n');
+                package.contract.body.push_str(&selected);
+            }
+            package.acceptance.body = selected;
+        }
+        package_context = loom_protocol::context::Context::new(
+            loom_protocol::context::Purpose::Review,
+            selected_packages,
+            Vec::new(),
+        );
+    }
     Ok(Materials {
+        package_context,
         test_sources,
         judge_rubrics,
         contract_paths,
         pinned_context,
     })
+}
+
+fn without_acceptance_section(body: &str) -> String {
+    let Some(events) = loom_driver::markdown::section_events(
+        body,
+        loom_driver::markdown::HeadingLevel::H2,
+        |heading| heading.eq_ignore_ascii_case("success criteria"),
+    ) else {
+        return body.to_owned();
+    };
+    let start = events.iter().map(|(_, range)| range.start).min();
+    let end = events.iter().map(|(_, range)| range.end).max();
+    match (start, end) {
+        (Some(start), Some(end)) => format!("{}{}", &body[..start], &body[end..]),
+        _ => body.to_owned(),
+    }
 }
 
 fn scope_pin(workspace: &Path, scope: &Resolved) -> String {

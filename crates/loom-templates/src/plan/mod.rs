@@ -7,6 +7,8 @@ use crate::SkillIndexMarkdown;
 #[derive(Template)]
 #[template(path = "plan.md", escape = "none")]
 pub struct PlanContext {
+    /// Immutable driver-selected package snapshot; None supports partial composition only.
+    pub package_context: Option<loom_protocol::context::Context>,
     pub pinned_context: String,
     pub anchor_labels: Vec<SpecLabel>,
     pub spec_index: String,

@@ -1,6 +1,9 @@
 # Todo Decomposition
 
-{{ self.output_contract() }}
+{{ self.output_contract() }}{% if self.dossier_manifest().is_none() %}{% match package_context %}{% when Some with (context) %}
+
+{{ context }}
+{% when None %}{% endmatch %}{% endif %}
 
 You are decomposing the driver-injected changed-spec roster into bead work. The driver has already created or reused the `loom:todo` work epic for this batch; do not create a molecule epic yourself.
 
@@ -88,7 +91,7 @@ The following implementation notes were captured during planning. **Every note b
 
 ## Criterion Status
 
-The status cache below shows the latest cached verifier verdict for each Success-Criteria bullet in scope. Use these typed rows to distinguish criteria already covered by fresh positive evidence from stale, missing, failed, or skipped evidence.
+The rows below are historical observations of the latest cached verifier verdict, not current coverage admission. `Current` means the cached annotation matches; it does not establish current policy, trust, retained-history or blocker admission, even at zero commit distance. No current coverage projection was supplied to this dispatch: coverage is unavailable, not passing. Inspect implementation and verifier bodies; preserve uncertainty and unresolved blockers.
 
 {% if criterion_status.is_empty() %}_No parsed criterion-status rows were injected. Treat this as a preflight problem, not as evidence of no work._
 {% else %}{% for row in criterion_status %}

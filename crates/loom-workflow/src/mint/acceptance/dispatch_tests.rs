@@ -242,6 +242,10 @@ mod cases {
     #[tokio::test]
     async fn native_minted_repair_goals_render_attribution_and_survive_compaction_without_ordinary_acceptance()
      {
+        assert_minted_repair_context().await;
+    }
+
+    async fn assert_minted_repair_context() {
         let mut fixture = Fixture::new().await;
         std::fs::write(
             fixture.workspace.join("specs/harness.md"),
@@ -298,6 +302,11 @@ mod cases {
         assert_eq!(resolved.goals()[0].work_root(), &root);
         assert_eq!(resolved.goals()[0].finding(), &finding);
         let prompt = worker.spawn.initial_prompt.clone();
+        assert!(prompt.contains("Applicable Package Snapshot"));
+        let frozen =
+            std::fs::read_to_string(worker.scratch.path().join("context/harness/acceptance.md"))
+                .unwrap();
+        assert!(frozen.contains(REQUIREMENT));
         for expected in [
             "Purpose: remediation",
             fixture.task.id.as_str(),
@@ -318,9 +327,46 @@ mod cases {
         assert!(repin.contains(&prompt));
         assert!(!repin.contains("Later workspace wording"));
         assert_eq!(
+            std::fs::read_to_string(worker.scratch.path().join("context/harness/acceptance.md"))
+                .unwrap(),
+            frozen
+        );
+        assert_eq!(
             fixture.bd.show(&fixture.task.id).await.unwrap(),
             fixture.task
         );
+    }
+
+    #[tokio::test]
+    async fn worker_context_consumes_resolved_acceptance() {
+        let mut fixture = Fixture::new().await;
+        fixture.bind().await;
+        let spec = fixture.workspace.join("specs/harness.md");
+        let body = std::fs::read_to_string(&spec).unwrap();
+        std::fs::write(
+            &spec,
+            format!("{body}\nInvariant: dispatched human intent is immutable.\n"),
+        )
+        .unwrap();
+        let worker = ready(fixture.prepare().await);
+        let prompt = worker.spawn.initial_prompt.clone();
+        assert!(prompt.contains("Invariant: dispatched human intent is immutable."));
+        assert!(prompt.contains("Assigned worker goals remain mandatory"));
+        assert!(prompt.contains("Purpose: implementation"));
+        let snapshot = worker.scratch.path().join("context/harness/acceptance.md");
+        let frozen = std::fs::read_to_string(&snapshot).unwrap();
+        std::fs::write(&spec, "Later source must not rewrite dispatched intent.").unwrap();
+        assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), frozen);
+        let repin = loom_agent::pi::backend::PiBackend::compaction_repin(&worker.spawn)
+            .unwrap()
+            .unwrap();
+        assert!(repin.contains(&prompt));
+        assert!(!repin.contains("Later source must not rewrite"));
+        assert_eq!(
+            fixture.bd.show(&fixture.task.id).await.unwrap(),
+            fixture.task
+        );
+        assert_minted_repair_context().await;
     }
 
     #[tokio::test]

@@ -712,7 +712,18 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let skill_session = skill_plan.materialize(preview.path(), &self.workspace)?;
         let spec_index = std::fs::read_to_string(self.workspace.join("docs/README.md"))?;
         let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path);
+        let labels = preflight
+            .changed_specs
+            .iter()
+            .map(|spec| spec.label.clone())
+            .collect::<Vec<_>>();
+        let package_context = loom_driver::spec::context::load(
+            &self.workspace,
+            loom_protocol::context::Purpose::Decomposition,
+            loom_driver::spec::context::Selection::Labels(&labels),
+        )?;
         let base = TemplateBaseFields {
+            package_context: Some(package_context),
             pinned_context: String::new(),
             spec_index,
             changed_specs,

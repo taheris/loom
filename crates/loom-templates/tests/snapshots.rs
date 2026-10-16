@@ -86,6 +86,7 @@ fn workspace_recovery(alignment: WorkspaceAlignment) -> WorkspaceRecovery {
 )]
 fn todo_ctx() -> Result<TodoContext> {
     Ok(TodoContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
             .to_string(),
@@ -183,6 +184,7 @@ fn ann(tier: AnnotationTier, target: &str) -> CriterionAnnotation {
 
 fn plan_snapshot() -> Result<()> {
     let ctx = PlanContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         anchor_labels: vec![SpecLabel::new("harness")?, SpecLabel::new("future-spec")?],
         spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
@@ -206,6 +208,7 @@ fn todo_snapshot() -> Result<()> {
 
 fn run_snapshot() -> Result<()> {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -279,6 +282,7 @@ fn recovery_display_snapshots() {
 #[test]
 fn run_snapshot_no_failure() {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -303,6 +307,7 @@ fn run_snapshot_no_failure() {
 #[test]
 fn run_snapshot_workspace_recovery() {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA_3),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -334,6 +339,7 @@ fn run_snapshot_workspace_recovery() {
 #[test]
 fn run_snapshot_driver_notice() {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -364,6 +370,7 @@ fn run_snapshot_driver_notice() {
 #[test]
 fn run_snapshot_verify_failures() {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -394,6 +401,7 @@ fn run_snapshot_verify_failures() {
 #[test]
 fn run_snapshot_review_concern() {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -437,6 +445,7 @@ fn run_snapshot_review_concern() {
 #[test]
 fn run_snapshot_build_failure() {
     let ctx = LoopContext {
+        package_context: None,
         acceptance: None,
         bead_base: git_sha(TEST_SHA),
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -463,6 +472,7 @@ fn run_snapshot_build_failure() {
 
 fn review_snapshot() -> Result<()> {
     let ctx = ReviewContext {
+        package_context: None,
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness")?,
         spec_path: "specs/harness.md".to_string(),

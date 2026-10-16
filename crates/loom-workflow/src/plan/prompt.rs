@@ -8,6 +8,8 @@ use loom_driver::identifier::SpecLabel;
 
 /// Inputs threaded into the unified plan context struct.
 pub struct PlanPromptInputs {
+    /// Immutable driver-selected package snapshot; None supports partial composition only.
+    pub package_context: Option<loom_protocol::context::Context>,
     pub anchor_labels: Vec<SpecLabel>,
     pub pinned_context: String,
     pub spec_index: String,
@@ -30,6 +32,7 @@ pub struct PlanPromptInputs {
 /// Returns an error when workflow setup, execution, or state validation fails.
 pub fn render_prompt(inputs: PlanPromptInputs) -> Result<String, PlanError> {
     Ok(PlanContext {
+        package_context: inputs.package_context,
         pinned_context: inputs.pinned_context,
         anchor_labels: inputs.anchor_labels,
         spec_index: inputs.spec_index,
@@ -47,6 +50,7 @@ mod tests {
 
     fn inputs() -> PlanPromptInputs {
         PlanPromptInputs {
+            package_context: None,
             anchor_labels: vec![
                 SpecLabel::new("harness").unwrap(),
                 SpecLabel::new("future-spec").unwrap(),
@@ -73,6 +77,7 @@ mod tests {
     #[test]
     fn plan_renders_empty_anchor_roster() {
         let body = render_prompt(PlanPromptInputs {
+            package_context: None,
             anchor_labels: Vec::new(),
             pinned_context: "PIN".into(),
             spec_index: "INDEX".into(),

@@ -18,6 +18,8 @@ use crate::spec::SpecError;
 )]
 #[derive(Debug, Display, Error)]
 pub enum ReviewError {
+    /// package context could not be captured or delivered
+    Context(#[from] loom_driver::spec::context::Error),
     /// agent backend protocol failure during `loom review`
     Protocol(#[from] ProtocolError),
 

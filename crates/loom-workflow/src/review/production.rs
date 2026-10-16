@@ -589,6 +589,7 @@ where
         let skill_session = skill_plan.materialize(scratch_dir, &self.workspace)?;
         let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path);
         let ctx = ReviewContext {
+            package_context: Some(materials.package_context),
             pinned_context: materials.pinned_context,
             default_profile: default_profile_for_spec(&self.label),
             label: self.label.clone(),

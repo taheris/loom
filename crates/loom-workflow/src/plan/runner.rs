@@ -100,7 +100,23 @@ pub fn run_with_timeout(
     )?;
     let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
     let prompt_scratchpad_path = container_workspace_path(workspace, &scratchpad_path);
+    let package_selection = if anchor_labels.is_empty() {
+        loom_driver::spec::context::Selection::All
+    } else {
+        loom_driver::spec::context::Selection::Labels(&anchor_labels)
+    };
+    let package_context = loom_driver::spec::context::load(
+        workspace,
+        loom_protocol::context::Purpose::Planning,
+        package_selection,
+    )?
+    .with_snapshot_root(
+        container_workspace_path(workspace, &scratch_dir.join("context"))
+            .to_string_lossy()
+            .into_owned(),
+    );
     let prompt_body = render_prompt(PlanPromptInputs {
+        package_context: Some(package_context.clone()),
         anchor_labels: anchor_labels.clone(),
         pinned_context,
         spec_index,
@@ -113,6 +129,7 @@ pub fn run_with_timeout(
     let banner = format!("loom plan @ {key}");
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)
         .map_err(|source| PlanError::Spawn { source })?;
+    loom_driver::spec::context::write(&package_context, scratch.path())?;
     let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
 
     let bin = loom_driver::wrix::resolve_launcher(&image.launcher, opts.wrix_bin.as_deref());

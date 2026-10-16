@@ -267,6 +267,20 @@ fn is_bootstrap_support(reader: &dyn Reader, path: &Path) -> Result<bool, Error>
 /// # Errors
 /// Rejects duplicate labels, malformed labels, and label/path disagreement.
 pub fn parse_index(content: &str) -> Result<Vec<IndexEntry>, Error> {
+    let entries = parse_index_entries(content)?;
+    if entries.is_empty() {
+        return Err(Error::Index {
+            detail: "no specs indexed in docs/README.md".into(),
+        });
+    }
+    Ok(entries)
+}
+
+/// Parse declarations while allowing an empty new-project planning index.
+///
+/// # Errors
+/// Rejects duplicate labels, malformed labels, and label/path disagreement.
+pub fn parse_index_entries(content: &str) -> Result<Vec<IndexEntry>, Error> {
     let mut entries = Vec::new();
     let mut labels = HashSet::new();
     let mut link: Option<(String, String)> = None;
@@ -317,11 +331,6 @@ pub fn parse_index(content: &str) -> Result<Vec<IndexEntry>, Error> {
             }
             _ => {}
         }
-    }
-    if entries.is_empty() {
-        return Err(Error::Index {
-            detail: "no specs indexed in docs/README.md".into(),
-        });
     }
     Ok(entries)
 }

@@ -1564,7 +1564,8 @@ mod tests {
                 | ReviewError::UnknownJudgeTarget(_)
                 | ReviewError::Resolve(_)
                 | ReviewError::Git(_)
-                | ReviewError::Skill(_) => {}
+                | ReviewError::Skill(_)
+                | ReviewError::Context(_) => {}
             }
         }
         let _ = variant_set_excludes_concern_without_bead_deltas;
