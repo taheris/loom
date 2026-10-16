@@ -970,6 +970,10 @@ mutation permission.
 - Removing an unresolved admitted prerequisite cannot authorize release.
   [test](native_wait_removed_unresolved_prerequisite_cannot_authorize_release)
 
+- Observed late prerequisites remain durably attributed across restart; removing
+  their native edges while unresolved cannot authorize release.
+  [test](native_wait_restart_retains_late_unresolved_prerequisites)
+
 - Human closure after resolution is preserved rather than reopened.
   [test](native_wait_preserves_human_closed_source_after_prerequisites_resolve)
 

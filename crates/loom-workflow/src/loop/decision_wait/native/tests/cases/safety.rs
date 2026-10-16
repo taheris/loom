@@ -54,6 +54,53 @@ mod cases {
     }
 
     #[tokio::test]
+    async fn native_wait_restart_retains_late_unresolved_prerequisites() {
+        let f = Fixture::new().await;
+        f.admit().await;
+        let late =
+            f.bd.create(CreateOpts {
+                title: "late prerequisite".into(),
+                parent: Some(f.root.clone()),
+                ..CreateOpts::default()
+            })
+            .await
+            .unwrap();
+        f.bd.dep_add(&f.source.id, &late).await.unwrap();
+        f.refresh().await;
+        let parked = f.bd.show(&f.source.id).await.unwrap();
+        let output = IsolatedBeads::attach(f.directory.path())
+            .run(
+                ["dep", "remove", f.source.id.as_str(), late.as_str()]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert!(
+            output.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for blocker in &f.blockers {
+            f.close(blocker).await;
+        }
+        let restarted = DecisionWaitJournal::new(f.directory.path());
+        assert!(
+            restarted
+                .refresh_native_waits(&f.bd, Some(&f.root), None)
+                .await
+                .is_err()
+        );
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), parked);
+        assert!(restarted.blocks_scope(&f.bd, &f.root).await.unwrap());
+        f.close(&late).await;
+        f.refresh().await;
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
+    }
+
+    #[tokio::test]
     async fn native_wait_preserves_human_closed_source_after_prerequisites_resolve() {
         let f = Fixture::new().await;
         f.admit().await;

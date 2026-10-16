@@ -37,6 +37,8 @@ enum Phase {
 struct Entry {
     record: Record,
     phase: Phase,
+    #[serde(default)]
+    additional_blockers: Vec<BeadId>,
 }
 
 fn independent(source: &Bead) -> bool {
@@ -96,10 +98,13 @@ impl DecisionWaitJournal {
         };
         let entry: Entry = serde_json::from_slice(&bytes).map_err(DecisionWaitError::from)?;
         let unique: HashSet<_> = entry.record.blockers.iter().collect();
+        let additional: HashSet<_> = entry.additional_blockers.iter().collect();
         if entry.record.version != 1
             || entry.record.source != *id
             || unique.is_empty()
             || unique.len() != entry.record.blockers.len()
+            || additional.len() != entry.additional_blockers.len()
+            || !unique.is_disjoint(&additional)
             || !matches!(
                 entry.record.initial_status,
                 Status::Open | Status::InProgress
@@ -187,6 +192,7 @@ impl DecisionWaitJournal {
                 blockers: ids,
             },
             phase: Phase::ProjectionPending,
+            additional_blockers: Vec::new(),
         };
         journal.save_native(&entry)?;
         journal.reconcile_native(bd, &source, &mut entry).await?;
@@ -197,20 +203,37 @@ impl DecisionWaitJournal {
     }
 
     async fn current_native_blockers<R: CommandRunner>(
+        &self,
         bd: &BdClient<R>,
-        entry: &Entry,
+        entry: &mut Entry,
     ) -> Result<Vec<BeadId>, LoopError> {
         let current = bd
             .dependency_snapshot(&entry.record.source)
             .await?
             .active_blockers();
-        for id in &entry.record.blockers {
+        for id in entry
+            .record
+            .blockers
+            .iter()
+            .chain(&entry.additional_blockers)
+        {
             let prerequisite = bd.show(id).await?;
             if prerequisite.id != *id
                 || (prerequisite.status != Status::Closed && !current.contains(id))
             {
                 return Err(invalid("native wait lost an unresolved admitted prerequisite").into());
             }
+        }
+        let added: Vec<_> = current
+            .iter()
+            .filter(|id| {
+                !entry.record.blockers.contains(id) && !entry.additional_blockers.contains(id)
+            })
+            .cloned()
+            .collect();
+        if !added.is_empty() {
+            entry.additional_blockers.extend(added);
+            self.save_native(entry)?;
         }
         Ok(current)
     }
@@ -272,7 +295,7 @@ impl DecisionWaitJournal {
             && source.status == entry.record.initial_status
             && projection.is_none()
         {
-            if Self::current_native_blockers(bd, entry).await?.is_empty() {
+            if self.current_native_blockers(bd, entry).await?.is_empty() {
                 entry.phase = Phase::Released;
                 self.save_native(entry)?;
                 return Ok(false);
@@ -299,7 +322,7 @@ impl DecisionWaitJournal {
             self.save_native(entry)?;
             return Ok(true);
         }
-        if !Self::current_native_blockers(bd, entry).await?.is_empty() {
+        if !self.current_native_blockers(bd, entry).await?.is_empty() {
             if entry.phase == Phase::ReleasePending {
                 return Err(invalid("new native prerequisite appeared during release").into());
             }
