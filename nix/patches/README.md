@@ -18,6 +18,13 @@ configuration can still run provisioning commands. Their diff-hook verification
 returns infrastructure exit 78 until current Cargo initialization supplies the
 pinned runner; they cannot silently fall back to an ambient runner.
 
+The standalone and required test apps also export the immutable runner path
+explicitly for native Cargo compilation, just as the packaged builds do. A
+missing optional Cargo include must not leave their CLI binaries unpinned.
+`test-app-hook-runner` exercises both app constructors with real Cargo, Clippy
+and Nextest, an absent optional include, and absent/conflicting ambient pins.
+Only the unrelated Nix/system stages use fixture tools in that focused check.
+
 Remove the runner patch after an upstream release preserves these outcomes.
 
 ## Nextest capture handoff and Cargo home

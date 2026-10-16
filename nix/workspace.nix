@@ -164,6 +164,7 @@ in
     nextest
     cargoArtifacts
     cargoConfig
+    hookRunner
     craneLib
     stagedSrc
     ;

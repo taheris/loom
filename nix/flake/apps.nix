@@ -67,19 +67,53 @@ _:
         loom.toolchain
       ];
 
-      testApp = pkgs.writeShellApplication {
+      mkTestApp =
+        {
+          name,
+          text,
+          runtimeInputs ? testRuntimeInputs,
+        }:
+        pkgs.writeShellApplication {
+          inherit name text runtimeInputs;
+          runtimeEnv = {
+            LOOM_CARGO_PATCHES = loom.cargoConfig;
+            LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
+          };
+        };
+
+      testAppConfig = {
         name = "test";
-        runtimeInputs = testRuntimeInputs;
-        runtimeEnv.LOOM_CARGO_PATCHES = loom.cargoConfig;
         text = builtins.readFile ../../scripts/full-test.sh;
       };
-
-      requiredTestApp = pkgs.writeShellApplication {
+      requiredTestAppConfig = {
         name = "test-required";
-        runtimeInputs = testRuntimeInputs;
-        runtimeEnv.LOOM_CARGO_PATCHES = loom.cargoConfig;
         text = builtins.readFile ../../scripts/required-test.sh;
       };
+      testApp = mkTestApp testAppConfig;
+      requiredTestApp = mkTestApp requiredTestAppConfig;
+
+      fixtureNix = pkgs.writeShellScriptBin "nix" ''
+        case "$*" in
+          "fmt -- --fail-on-change" | "build" | "flake check --no-warn-dirty") exit 0 ;;
+          *) exit 64 ;;
+        esac
+      '';
+      fixtureLoom = pkgs.writeShellScriptBin "loom" ''
+        [[ "$*" == "gate system --tree" ]]
+      '';
+      fixtureRuntimeInputs = [
+        pkgs.coreutils
+        pkgs.cargo-nextest
+        pkgs.git
+        pkgs.stdenv.cc
+        fixtureNix
+        fixtureLoom
+        loom.toolchain
+      ];
+      fixtureTestApp = mkTestApp (testAppConfig // { runtimeInputs = fixtureRuntimeInputs; });
+      fixtureRequiredTestApp = mkTestApp (
+        requiredTestAppConfig // { runtimeInputs = fixtureRuntimeInputs; }
+      );
 
       profileBootstrapApp = pkgs.writeShellApplication {
         name = "test-profile-bootstrap";
@@ -426,6 +460,22 @@ _:
     in
     {
       packages.smoke-runtime = smokeRuntime;
+
+      checks.test-app-hook-runner =
+        pkgs.runCommand "test-app-hook-runner"
+          {
+            nativeBuildInputs = [
+              pkgs.git
+              pkgs.coreutils
+            ];
+          }
+          ''
+            bash ${../../tests/agent/test-app-hook-runner.sh} \
+              ${fixtureRequiredTestApp}/bin/test-required \
+              ${fixtureTestApp}/bin/test \
+              ${loom.hookRunner}/bin/prek
+            touch "$out"
+          '';
 
       apps = {
         test-profile-bootstrap = {
