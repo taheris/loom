@@ -43,8 +43,8 @@ pub(super) const fn handoff_commands<'a>(
 
 #[derive(Default)]
 pub(super) struct VerificationRecovery {
-    attempts: HashMap<BeadId, u32>,
-    finished: HashSet<BeadId>,
+    attempts: HashMap<(BeadId, loom_driver::git::GitOid), u32>,
+    finished: HashMap<BeadId, loom_driver::git::GitOid>,
     repairs: HashSet<BeadId>,
 }
 
@@ -63,7 +63,7 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
     .with_repo_git_policy(request.repo_git_policy.clone());
     let mut sources = Vec::new();
     for record in association.verification_continuations()? {
-        if recovery.finished.contains(&record.bead) {
+        if recovery.finished.get(&record.bead) == Some(&record.candidate) {
             continue;
         }
         if record.label != request.label {
@@ -102,10 +102,21 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
         },
     )
     .with_loom_config(request.loom.clone());
+    let candidates = sources
+        .iter()
+        .map(|(bead, record)| (bead.id.clone(), record.candidate.clone()))
+        .collect::<HashMap<_, _>>();
     let mut completed = HashSet::new();
     let mut work = false;
-    sources.sort_by_key(|(bead, _)| recovery.attempts.get(&bead.id).copied().unwrap_or(0));
+    sources.sort_by_key(|(bead, record)| {
+        recovery
+            .attempts
+            .get(&(bead.id.clone(), record.candidate.clone()))
+            .copied()
+            .unwrap_or(0)
+    });
     for (bead, record) in sources.into_iter().take(1) {
+        let candidate = record.candidate.clone();
         if record.needs_source_repair() {
             let reopened = controller
                 .reopen_after_verification_failure(
@@ -120,7 +131,7 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
                 completed.insert(bead.id);
                 continue;
             }
-            recovery.finished.insert(bead.id.clone());
+            recovery.finished.insert(bead.id.clone(), candidate);
             recovery.repairs.insert(bead.id);
             work = true;
             continue;
@@ -137,7 +148,10 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
                     completed.insert(bead.id);
                 }
                 super::runner::PerBeadGateOutcome::Infrastructure { detail } => {
-                    let attempt = recovery.attempts.entry(bead.id.clone()).or_default();
+                    let attempt = recovery
+                        .attempts
+                        .entry((bead.id.clone(), candidate))
+                        .or_default();
                     *attempt += 1;
                     if *attempt >= request.infra_policy.max_attempts.max(1) {
                         controller
@@ -160,7 +174,7 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
                     controller
                         .reopen_after_verification_failure(&bead.id, detail)
                         .await?;
-                    recovery.finished.insert(bead.id.clone());
+                    recovery.finished.insert(bead.id.clone(), candidate);
                     recovery.repairs.insert(bead.id);
                 }
                 super::runner::PerBeadGateOutcome::StructuralViolation { detail } => {
@@ -183,7 +197,13 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
             completed.insert(bead.id);
         }
     }
-    recovery.finished.extend(completed.iter().cloned());
+    recovery
+        .finished
+        .extend(completed.iter().filter_map(|bead| {
+            candidates
+                .get(bead)
+                .map(|candidate| (bead.clone(), candidate.clone()))
+        }));
     Ok((completed, work))
 }
 

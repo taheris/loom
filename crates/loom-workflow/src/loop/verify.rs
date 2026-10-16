@@ -68,7 +68,7 @@ pub(super) async fn execute_gate(
         Vec::new()
     };
     let config_digest = blake3::hash(&config).to_hex().to_string();
-    let path = workspace.join(".loom/logs/gate/verification-attempts.jsonl");
+    let path = workspace.join(".loom/diagnostics/verification-attempts.jsonl");
     let parent = path.parent().ok_or_else(|| LoopError::Bug {
         context: "verification log has no parent".into(),
     })?;
@@ -271,11 +271,71 @@ mod execution_tests {
     }
 
     fn observations(workspace: &Path) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(workspace.join(".loom/logs/gate/verification-attempts.jsonl"))
+        std::fs::read_to_string(workspace.join(".loom/diagnostics/verification-attempts.jsonl"))
             .expect("retained attempts")
             .lines()
             .map(|line| serde_json::from_str(line).expect("observation JSON"))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn verifier_diagnostics_preserve_default_event_log_selection_and_replay() {
+        let (_root, workspace, mut command) =
+            fixture("set -euo pipefail\nprintf 'executor unavailable\\n' >&2\nexit 78\n");
+        let execution = execute_gate(
+            &mut command,
+            &workspace,
+            &SystemClock::new(),
+            Duration::from_secs(30),
+            1,
+        )
+        .await
+        .expect("observed infrastructure failure");
+        assert!(execution.infrastructure());
+        let diagnostics = observations(&workspace);
+        assert_eq!(diagnostics[0]["coverage_admitted"], false);
+        let logs = workspace.join(".loom/logs");
+        let event_log = logs.join("agent/lm-replay-session.jsonl");
+        std::fs::create_dir_all(event_log.parent().expect("parent")).expect("logs");
+        std::fs::write(&event_log, "{\"kind\":\"turn_end\",\"session_id\":\"sess-logs\",\"bead_id\":\"lm-replay\",\"molecule_id\":null,\"iteration\":0,\"source\":\"agent\",\"ts_ms\":0,\"seq\":0}\n").expect("canonical event");
+        std::fs::File::options()
+            .write(true)
+            .open(&event_log)
+            .expect("event")
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .expect("older event log");
+        // Previously written journals remain intact and cannot eclipse a real event log.
+        std::fs::create_dir_all(logs.join("gate")).expect("legacy directory");
+        for name in ["verification-attempts.jsonl", "profile-provisioning.jsonl"] {
+            std::fs::write(
+                logs.join("gate").join(name),
+                serde_json::to_string(&diagnostics[0]).expect("observation"),
+            )
+            .expect("legacy journal");
+        }
+        let selected = crate::logs_cmd::select_log(&logs, crate::logs_cmd::LogsOpts::default())
+            .expect("event selection");
+        assert_eq!(selected, event_log);
+        crate::logs_cmd::replay(
+            crate::logs_cmd::ReplayOpts {
+                path: &selected,
+                bead_id: BeadId::new("lm-replay").expect("bead"),
+                mode: crate::logs_cmd::ReplayMode::Render(loom_render::RenderMode::Plain),
+                follow: false,
+                follow_poll: None,
+                follow_max_polls: None,
+            },
+            Box::new(std::io::sink()),
+            std::sync::Arc::new(loom_driver::clock::MockClock::new()),
+        )
+        .await
+        .expect("production diagnostic does not break event replay");
+        assert!(
+            workspace
+                .join(".loom/diagnostics/verification-attempts.jsonl")
+                .exists()
+        );
+        assert!(logs.join("gate/profile-provisioning.jsonl").exists());
     }
 
     #[tokio::test]

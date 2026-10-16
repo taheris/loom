@@ -96,6 +96,15 @@ pub fn select_log(logs_root: &Path, opts: LogsOpts<'_>) -> Result<PathBuf, LogsE
             if path.extension().and_then(|e| e.to_str()) != Some(LOG_EXTENSION) {
                 continue;
             }
+            // Retain legacy process journals on disk without treating their records as events.
+            if spec_path.file_name().and_then(|name| name.to_str()) == Some("gate")
+                && matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("verification-attempts.jsonl" | "profile-provisioning.jsonl")
+                )
+            {
+                continue;
+            }
             if let Some(prefix) = &bead_filter
                 && !file_stem_belongs_to(&path, prefix)
             {

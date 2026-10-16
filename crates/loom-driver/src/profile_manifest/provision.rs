@@ -85,7 +85,7 @@ pub async fn bootstrap_loop(
     let clock = SystemClock::new();
     let log = association
         .operator()
-        .join(".loom/logs/gate/profile-provisioning.jsonl");
+        .join(".loom/diagnostics/profile-provisioning.jsonl");
     if let Some(parent) = log.parent() {
         std::fs::create_dir_all(parent)?;
     }

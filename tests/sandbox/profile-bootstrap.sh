@@ -117,8 +117,8 @@ run_until_missing_tracker() {
   fi
   if ! grep -F "\`bd\` exited with status" "$fixture/$name.log"; then
     cat "$fixture/$name.log" >&2
-    if [[ -f .loom/logs/gate/profile-provisioning.jsonl ]]; then
-      cat .loom/logs/gate/profile-provisioning.jsonl >&2
+    if [[ -f .loom/diagnostics/profile-provisioning.jsonl ]]; then
+      cat .loom/diagnostics/profile-provisioning.jsonl >&2
     fi
     exit 1
   fi
@@ -126,11 +126,11 @@ run_until_missing_tracker() {
 
 run_until_missing_tracker cold
 jq -e --arg head "$expected_head" '.source == $head and .exit_code == 0 and .coverage_admitted == false' \
-  .loom/logs/gate/profile-provisioning.jsonl >/dev/null
+  .loom/diagnostics/profile-provisioning.jsonl >/dev/null
 jq 'with_entries(.value |= with_entries(.value |= del(.native_preflight)))' "$manifest" > "$fixture/legacy.json"
 export LOOM_PROFILES_MANIFEST="$fixture/legacy.json"
 run_until_missing_tracker legacy
-[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 2 ]]
+[[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 2 ]]
 
 registry=$(jq -r .registry .git/loom-workspace.json)
 mv "$registry/association.json" "$registry/association.json.saved"
@@ -139,17 +139,17 @@ if "$loom_bin" loop lm-bootstrap-fixture > "$fixture/missing-authority.log" 2>&1
   exit 1
 fi
 [[ ! -e "$registry/association.json" ]]
-[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 2 ]]
+[[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 2 ]]
 printf '{}\n' > "$registry/association.json"
 if "$loom_bin" loop lm-bootstrap-fixture > "$fixture/corrupt-authority.log" 2>&1; then
   printf 'corrupt fixture authority was reconstructed or bypassed\n' >&2
   exit 1
 fi
 [[ "$(cat "$registry/association.json")" == '{}' ]]
-[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 2 ]]
+[[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 2 ]]
 mv "$registry/association.json.saved" "$registry/association.json"
 run_until_missing_tracker recovered
-[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 3 ]]
+[[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 3 ]]
 [[ "$(git rev-parse HEAD)" == "$expected_head" ]]
 
 printf '\n# unadmitted fixture edit\n' >> flake.nix
@@ -158,7 +158,7 @@ if "$loom_bin" loop lm-bootstrap-fixture > "$fixture/unpublished.log" 2>&1; then
   exit 1
 fi
 grep -F 'operator must match the clean published commit' "$fixture/unpublished.log"
-[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 3 ]]
+[[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 3 ]]
 cp "$fixture/factory.saved" flake.nix
 
 printf '{ outputs = { self }: throw "isolated factory unavailable"; }\n' > flake.nix
@@ -171,8 +171,8 @@ expected_head=$(git rev-parse HEAD)
 run_until_missing_tracker exhausted
 jq -se --arg head "$expected_head" \
   '[.[] | select(.source == $head)] | length == 2 and all(.[]; .exit_code != 0 and .coverage_admitted == false)' \
-  .loom/logs/gate/profile-provisioning.jsonl >/dev/null
-[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 5 ]]
+  .loom/diagnostics/profile-provisioning.jsonl >/dev/null
+[[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 5 ]]
 
 cp "$fixture/factory.saved" flake.nix
 git add flake.nix
@@ -182,11 +182,11 @@ git -C .loom/integration fetch -q origin main
 git -C .loom/integration merge -q --ff-only origin/main
 expected_head=$(git rev-parse HEAD)
 run_until_missing_tracker resumed
-[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == 6 ]]
+[[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 6 ]]
 git merge-base --is-ancestor "$initial_head" HEAD
 git verify-commit HEAD
 
-signature_attempts=$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)
+signature_attempts=$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)
 integration_before_signature=$(git -C .loom/integration rev-parse HEAD)
 printf '{ outputs = { self }: builtins.trace "UNAUTHENTICATED_FACTORY_EXECUTED" (throw "must not execute"); }\n' > flake.nix
 git add flake.nix
@@ -206,7 +206,7 @@ if grep -Fq UNAUTHENTICATED_FACTORY_EXECUTED "$fixture/unsigned-source.log"; the
   printf 'unsigned factory executed before authentication\n' >&2
   exit 1
 fi
-[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == "$signature_attempts" ]]
+[[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == "$signature_attempts" ]]
 [[ "$(git -C .loom/integration rev-parse HEAD)" == "$integration_before_signature" ]]
 cp "$fixture/factory.saved" flake.nix
 git add flake.nix
@@ -218,7 +218,7 @@ if git -C .loom/integration cat-file -e "$expected_head^{commit}" 2>/dev/null; t
   exit 1
 fi
 run_until_missing_tracker signed-source-recovery
-[[ "$(wc -l < .loom/logs/gate/profile-provisioning.jsonl)" == "$((signature_attempts + 1))" ]]
+[[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == "$((signature_attempts + 1))" ]]
 [[ "$(git -C .loom/integration rev-parse HEAD)" == "$integration_before_signature" ]]
 git -C .loom/integration fetch -q origin main
 git -C .loom/integration merge -q --ff-only origin/main
@@ -233,6 +233,6 @@ pending_head=$(git -C .loom/integration rev-parse HEAD)
 run_until_missing_tracker integration-ahead
 [[ "$(git -C .loom/integration rev-parse HEAD)" == "$pending_head" ]]
 jq -se --arg head "$expected_head" 'last | .source == $head and .exit_code == 0 and .coverage_admitted == false' \
-  .loom/logs/gate/profile-provisioning.jsonl >/dev/null
+  .loom/diagnostics/profile-provisioning.jsonl >/dev/null
 printf 'published-profile-bootstrap-preserves-unpublished-integration-ok\n'
 printf 'published-profile-bootstrap-authority-and-skew-ok\n'

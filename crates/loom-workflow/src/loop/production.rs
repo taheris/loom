@@ -5599,7 +5599,7 @@ mod tests {
         );
         assert!(candidate.path.join("candidate.txt").exists());
         let attempts = std::fs::read_to_string(
-            integration.join(".loom/logs/gate/verification-attempts.jsonl"),
+            integration.join(".loom/diagnostics/verification-attempts.jsonl"),
         )
         .expect("durable attempts");
         assert_eq!(attempts.lines().count(), 1);
@@ -5915,6 +5915,129 @@ mod tests {
             candidate
         );
         assert!(!integration.join(".loom/marker.json").exists());
+    }
+
+    #[tokio::test]
+    async fn parallel_repaired_candidates_repeat_required_verification_before_publication() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let workspace = dir.path().join("workspace");
+        let git = git_workspace(&workspace);
+        let integration = git.loom_workspace();
+        let label = SpecLabel::new("gate").expect("label");
+        let mut source = bead("lm-reverified");
+        source.status = loom_driver::bd::Status::Closed;
+        let observed = serde_json::to_vec(&vec![source.clone()]).expect("native closed source");
+        let verifier = dir.path().join("verifier");
+        loom_test_support::write_executable_bash_script(&verifier, "set -euo pipefail\nprintf 'executed\\n' >> .loom/verifier-executions\n[[ -f accepted.txt ]]\n").expect("verifier");
+        let request = super::super::schedule::Request {
+            workspace: workspace.clone(),
+            label: label.clone(),
+            ready_parent: None,
+            parallelism: "2".parse().expect("parallelism"),
+            agent_override: None,
+            wrix_bin: "unused-wrix".into(),
+            loom_bin: verifier,
+            loom: loom_driver::config::LoomTopConfig::default(),
+            infra_policy: super::super::InfraRetryPolicy { max_attempts: 2 },
+            max_iterations: 5,
+            repo_git_policy: loom_driver::git::RepoGitPolicy::resolve(
+                &workspace,
+                "unused-wrix".into(),
+                loom_driver::git::KeyMode::Host,
+            )
+            .expect("policy"),
+            manifest: write_manifest(dir.path()),
+        };
+        let association =
+            loom_driver::workspace::Association::resolve(&workspace).expect("authority");
+        let mut recovery = super::super::schedule::VerificationRecovery::default();
+        let mut rejected = Vec::new();
+        for round in 0..3 {
+            let batch = super::super::parallel::run_parallel_batch_for_root(
+                &git,
+                &label,
+                vec![source.clone()],
+                None,
+                None,
+                move |slot| async move {
+                    std::fs::write(
+                        slot.worktree.path.join("implementation.txt"),
+                        format!("repair {round}\n"),
+                    )
+                    .expect("source");
+                    if round == 2 {
+                        std::fs::write(slot.worktree.path.join("accepted.txt"), "corrected\n")
+                            .expect("fixed source");
+                    }
+                    loom_driver::git::commit_all_in(&slot.worktree.path, "repair source candidate")
+                        .expect("commit");
+                    AgentOutcome::Success
+                },
+            )
+            .await
+            .expect("real source merge");
+            assert_eq!(batch.merged_ids(), vec![source.id.clone()]);
+            let candidate =
+                loom_driver::git::sync_head_commit_sha(&integration).expect("candidate");
+            let responses = if round < 2 {
+                vec![
+                    ok_stdout(&observed),
+                    ok_stdout(&observed),
+                    ok_stdout(&observed),
+                    ok_stdout(b""),
+                ]
+            } else {
+                vec![
+                    ok_stdout(&observed),
+                    ok_stdout(&observed),
+                    ok_stdout(&observed),
+                ]
+            };
+            let (completed, worked) = super::super::schedule::resume_verification_candidates(
+                &request,
+                BdClient::with_runner(ScriptedBd::new(responses)),
+                &mut recovery,
+            )
+            .await
+            .expect("required verifier after each source merge");
+            assert!(
+                worked,
+                "replacement source must never inherit an old candidate's exclusion"
+            );
+            let records = association.verification_continuations().expect("pending");
+            if round < 2 {
+                assert!(completed.is_empty());
+                assert!(records[0].needs_source_repair());
+                assert!(
+                    records[0]
+                        .repair_detail
+                        .as_ref()
+                        .expect("feedback")
+                        .contains("exited 1")
+                );
+                rejected.push(candidate);
+            } else {
+                assert_eq!(completed, HashSet::from([source.id.clone()]));
+                assert!(records[0].awaiting_publication());
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(integration.join(".loom/verifier-executions"))
+                .expect("executions")
+                .lines()
+                .count(),
+            3
+        );
+        for candidate in rejected {
+            assert_eq!(
+                loom_driver::git::sync_rev_parse(
+                    &integration,
+                    &format!("refs/loom/verification/{}/{candidate}", source.id)
+                )
+                .expect("rejected history retained"),
+                candidate
+            );
+        }
     }
 
     #[tokio::test]

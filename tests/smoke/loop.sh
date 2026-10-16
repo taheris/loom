@@ -115,7 +115,7 @@ if [[ "${5:-}" == --interrupt-once ]]; then
     bd show "$BEAD_ID" --json | jq -e \
         'if type == "array" then .[0] else . end | .status == "blocked" and (.labels | index("loom:infra") != null)' >/dev/null
     jq -se '[.[] | select(.state == "unavailable" and .coverage_admitted == false)] | length == 3' \
-        "$WORKSPACE/.loom/integration/.loom/logs/gate/verification-attempts.jsonl" >/dev/null
+        "$WORKSPACE/.loom/integration/.loom/diagnostics/verification-attempts.jsonl" >/dev/null
     blocker=$(bd create --title 'Isolated prerequisite during verifier outage' --type task --silent)
     bd dep add "$BEAD_ID" "$blocker"
     dependency_log="$WORKSPACE/.loom/smoke-dependency-held-driver.log"
