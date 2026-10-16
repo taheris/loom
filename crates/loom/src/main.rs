@@ -1745,7 +1745,14 @@ fn run_project_hook_lane(workspace: &Path, args: &GateScope) -> anyhow::Result<i
         return Ok(0);
     };
     let (from_ref, to_ref) = concrete_diff_refs(workspace, range)?;
-    let output = match std::process::Command::new(env!("LOOM_PREK_BIN"))
+    let Some(hook_runner) = option_env!("LOOM_PREK_BIN") else {
+        writeln!(
+            std::io::stderr(),
+            "loom gate: pinned hook runner unavailable; initialize Cargo patches before verification; no required coverage admitted"
+        )?;
+        return Ok(78);
+    };
+    let output = match std::process::Command::new(hook_runner)
         .current_dir(workspace)
         .env_remove("PREK_QUIET")
         .env("LOOM_PARENT_DIFF_GATE", "1")

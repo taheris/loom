@@ -10,6 +10,10 @@ patch, and Nix builds embed the identical runner path. Ambient `PREK_QUIET` is
 removed for the Gate-owned invocation so exit reports remain available. Actual
 SIGTERM/SIGKILL hooks, explicit infrastructure exits, mixed semantic failures,
 and quiet environments are exercised by `gate_cli_scope` against real prek.
+Bootstrap builds made with an older image's Cargo configuration can still run
+provisioning commands. Their diff-hook verification returns infrastructure exit
+78 until current Cargo initialization supplies the pinned runner; they cannot
+silently fall back to an ambient runner.
 
 Remove the runner patch after an upstream release preserves these outcomes.
 
