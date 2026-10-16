@@ -89,6 +89,15 @@ fi
 [[ "$(<"$fixture/ambiguous.log")" == *'Cargo.lock must contain exactly one nextest-filtering package'* ]]
 [[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
 
+printf 'paths = []\n' > "$fixture/legacy-config.toml"
+cp "$NIX_PATCH_BUILD_CALLS" "$fixture/build-calls-before-legacy"
+if bash scripts/configure-cargo-patches.sh "$fixture/legacy-config.toml" "$version" "$checksum" > "$fixture/legacy-ambiguous.log" 2>&1; then
+    printf 'Legacy Cargo configuration bypassed ambiguous patch identity\n' >&2
+    exit 1
+fi
+[[ "$(<"$fixture/legacy-ambiguous.log")" == *'Cargo.lock must contain exactly one nextest-filtering package'* ]]
+cmp "$NIX_PATCH_BUILD_CALLS" "$fixture/build-calls-before-legacy"
+
 cd "$fixture"
 [[ "$("$cargo_bin" build --locked)" == $'build\n--locked' ]]
 [[ ! -e .cargo/nix-patches.toml ]]
