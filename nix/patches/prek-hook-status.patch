@@ -18,8 +18,16 @@
      }
 --- a/crates/prek/src/run.rs
 +++ b/crates/prek/src/run.rs
-@@ -246,2 +246,16 @@
+@@ -246,2 +246,24 @@
 
++pub(crate) fn unavailable_hook_output(error: anyhow::Error) -> anyhow::Result<(i32, Vec<u8>)> {
++    if error.chain().any(|cause| cause.is::<std::io::Error>()) {
++        Ok((78, format!("{error:#}\n").into_bytes()))
++    } else {
++        Err(error)
++    }
++}
++
 +pub(crate) fn combine_verification_exit(left: i32, right: i32) -> i32 {
 +    let normalize = |code| if code == 77 { 78 } else { code };
 +    let infrastructure = |code| matches!(code, 78 | 124 | 127..=255);
@@ -35,12 +43,26 @@
 +}
 +
  impl HookRunOutput {
-@@ -252,3 +266,3 @@
+@@ -252,3 +274,3 @@
      fn append(&mut self, output: Self) {
 -        self.exit_code |= output.exit_code;
 +        self.exit_code = combine_verification_exit(self.exit_code, output.exit_code);
          self.output.extend(output.output);
-@@ -304,8 +318,8 @@
+@@ -284,3 +306,7 @@
+     let output = futures_util::stream::iter(partitions)
+-        .map(|batch| run(batch))
++        .map(|batch| async {
++            run(batch).await.map(Into::into).or_else(|error| {
++                unavailable_hook_output(error).map(|(code, output)| HookRunOutput::new(code, output))
++            })
++        })
+         .buffered(concurrency)
+@@ -289,3 +315,3 @@
+             |mut combined, output| async move {
+-                combined.append(output.into());
++                combined.append(output);
+                 anyhow::Ok(combined)
+@@ -304,8 +330,8 @@
      #[test]
 -    fn hook_run_output_append_bitwise_ors_exit_codes() {
 -        let mut output = HookRunOutput::new(1, Vec::new());
@@ -83,3 +105,12 @@
 +            let code = if self.verification_exit == 0 { 1 } else { self.verification_exit };
 +            Ok(ExitStatus::from(u8::try_from(code).unwrap_or(78)))
          } else {
+@@ -1620,3 +1632,7 @@
+         }
+-        .with_context(|| format!("Failed to run hook `{installed_hook}`"))?
++        .with_context(|| format!("Failed to run hook `{installed_hook}`"))
++        .or_else(|error| {
++            crate::run::unavailable_hook_output(error)
++                .map(|(code, output)| hooks::HookOutput::unchanged(code, output))
++        })?
+     };

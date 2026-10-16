@@ -647,3 +647,66 @@ fn pinned_prek_runner_preserves_infrastructure_without_ambient_prek() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("- exit code: 78"));
 }
+
+#[test]
+fn real_prek_missing_executable_is_infrastructure_but_completed_exit_two_is_semantic() {
+    for bodies in [
+        vec!["exit 0"],
+        vec!["exit 1", "exit 0"],
+        vec!["exit 0", "exit 1"],
+    ] {
+        let (fixture, _) = real_hook_gate(&bodies, false);
+        let workspace = fixture.path();
+        let config_path = workspace.join(".pre-commit-config.yaml");
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        let missing = usize::from(bodies[0] != "exit 0");
+        std::fs::write(
+            &config_path,
+            config.replace(
+                &format!("entry: bash hook-{missing}.sh"),
+                "entry: loom-test-unavailable-hook-executable",
+            ),
+        )
+        .unwrap();
+        assert!(
+            git_command()
+                .arg("-C")
+                .arg(workspace)
+                .args(["add", ".pre-commit-config.yaml"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        for index in 0..bodies.len() {
+            std::fs::remove_file(workspace.join(format!(".loom/hook-{index}-ran"))).unwrap();
+        }
+        let output = Command::new(loom_bin())
+            .current_dir(workspace)
+            .arg("--workspace")
+            .arg(workspace)
+            .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if bodies.len() == 1 { 78 } else { 1 }),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!workspace.join(format!(".loom/hook-{missing}-ran")).exists());
+        if bodies.len() > 1 {
+            assert!(
+                workspace
+                    .join(format!(".loom/hook-{}-ran", 1 - missing))
+                    .exists()
+            );
+        }
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("loom-test-unavailable-hook-executable")
+        );
+    }
+    let (_fixture, output) = real_hook_gate(&["exit 2"], false);
+    assert_eq!(output.status.code(), Some(2));
+}
