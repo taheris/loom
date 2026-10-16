@@ -17,7 +17,11 @@ pub struct Digest(blake3::Hash);
 
 impl Digest {
     pub(super) fn of(bytes: &[u8]) -> Self {
-        Self(blake3::hash(bytes))
+        Self::from_hash(blake3::hash(bytes))
+    }
+
+    pub(super) const fn from_hash(hash: blake3::Hash) -> Self {
+        Self(hash)
     }
 }
 

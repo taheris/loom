@@ -1,5 +1,6 @@
 //! Checked definitions produce descriptions; only current-context resolution produces units.
 
+mod artifact;
 pub mod effect;
 pub mod nix;
 pub mod plan;
@@ -605,12 +606,7 @@ impl Registry {
 }
 
 fn read_artifact(path: &std::path::Path) -> Result<Digest, Error> {
-    Ok(Digest::of(&std::fs::read(path).map_err(|source| {
-        Error::Artifact {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?))
+    artifact::read(path)
 }
 
 fn require_context(snapshot: &Snapshot, inventory: &Inventory) -> Result<(), Error> {

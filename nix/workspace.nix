@@ -48,7 +48,10 @@ let
 
   commonArgs = {
     src = cleanedSrc;
-    cargoLock = "${src}/Cargo.lock";
+    cargoLock = builtins.path {
+      path = "${src}/Cargo.lock";
+      name = "Cargo.lock";
+    };
     nativeBuildInputs = [ pkgs.git ];
     meta = {
       description = "Rust workflow orchestrator";
@@ -109,11 +112,20 @@ let
       chmod -R u+w $out
     ''
     + concatStringsSep "\n" (
-      mapAttrsToList (rel: abs: ''
-        mkdir -p "$(dirname "$out/${rel}")"
-        rm -rf "$out/${rel}"
-        cp -r ${abs} "$out/${rel}"
-      '') extraSrcs
+      mapAttrsToList (
+        rel: path:
+        let
+          isolated = builtins.path {
+            inherit path;
+            name = builtins.baseNameOf rel;
+          };
+        in
+        ''
+          mkdir -p "$(dirname "$out/${rel}")"
+          rm -rf "$out/${rel}"
+          cp -r ${isolated} "$out/${rel}"
+        ''
+      ) extraSrcs
     )
   );
 

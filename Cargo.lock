@@ -2791,6 +2791,7 @@ dependencies = [
  "regex",
  "roxmltree",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "shlex",

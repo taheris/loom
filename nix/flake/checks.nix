@@ -58,6 +58,12 @@
           touch "$out"
         '';
 
+      workspace-build-identity = import ../tests/workspace-identity.nix {
+        inherit pkgs loom;
+        inherit (inputs) crane fenix;
+        src = ../..;
+      };
+
       workspace-source-includes-git-policy-scripts =
         pkgs.runCommand "workspace-source-includes-git-policy-scripts" { }
           ''
@@ -843,6 +849,7 @@
           test-sandbox-rejects-incomplete-checks
           test-sandbox-skips-oci-permission-denied
           test-sandbox-skips-unsupported-runtime
+          workspace-build-identity
           workspace-source-includes-git-policy-scripts
           workspace-source-includes-nix-support
           ;
