@@ -4,16 +4,19 @@
 
 `prek-hook-status.patch` retains native Unix hook signals as `128 + signal`
 instead of collapsing them to semantic exit 1. Batched hook execution keeps
-completed semantic failures dominant over infrastructure failures. Gate uses
-this pinned runner through the same generated Cargo configuration as the parser
-patch, and Nix builds embed the identical runner path. Ambient `PREK_QUIET` is
-removed for the Gate-owned invocation so exit reports remain available. Actual
-SIGTERM/SIGKILL hooks, explicit infrastructure exits, mixed semantic failures,
-and quiet environments are exercised by `gate_cli_scope` against real prek.
-Bootstrap builds made with an older image's Cargo configuration can still run
-provisioning commands. Their diff-hook verification returns infrastructure exit
-78 until current Cargo initialization supplies the pinned runner; they cannot
-silently fall back to an ambient runner.
+completed semantic failures dominant over infrastructure failures, normalizing
+combined semantic failures to exit 1 instead of bitwise-ORing them into reserved
+infrastructure statuses. The runner propagates its native aggregate exit status
+across projects and hook groups; Gate never derives outcomes from display text.
+Gate uses this pinned runner through the same generated Cargo configuration as
+the parser patch, and Nix builds embed the identical runner path. Ambient
+`PREK_QUIET` is removed for the Gate-owned invocation so exit reports remain
+available. Actual SIGTERM/SIGKILL hooks, explicit infrastructure exits, mixed
+semantic failures, and quiet environments are exercised by `gate_cli_scope`
+against real prek. Bootstrap builds made with an older image's Cargo
+configuration can still run provisioning commands. Their diff-hook verification
+returns infrastructure exit 78 until current Cargo initialization supplies the
+pinned runner; they cannot silently fall back to an ambient runner.
 
 Remove the runner patch after an upstream release preserves these outcomes.
 

@@ -364,6 +364,15 @@ fn real_hook_gate(
     hook_bodies: &[&str],
     semantic_check: bool,
 ) -> (tempfile::TempDir, std::process::Output) {
+    real_hook_gate_with_setup(hook_bodies, semantic_check, |_| {}, &[])
+}
+
+fn real_hook_gate_with_setup(
+    hook_bodies: &[&str],
+    semantic_check: bool,
+    prepare: impl FnOnce(&Path),
+    changes: &[(&str, &str)],
+) -> (tempfile::TempDir, std::process::Output) {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     std::fs::create_dir(workspace.join("specs")).unwrap();
@@ -393,13 +402,17 @@ fn real_hook_gate(
         writeln!(config, "      - id: actual-{index}\n        name: Actual {index}\n        entry: bash hook-{index}.sh\n        language: system\n        always_run: true\n        pass_filenames: false").unwrap();
     }
     std::fs::write(workspace.join(".pre-commit-config.yaml"), config).unwrap();
+    prepare(workspace);
     init_git(workspace);
     std::fs::write(workspace.join("tracked.txt"), "changed\n").unwrap();
+    for (path, content) in changes {
+        std::fs::write(workspace.join(path), content).unwrap();
+    }
     assert!(
         git_command()
             .arg("-C")
             .arg(workspace)
-            .args(["add", "tracked.txt"])
+            .args(["add", "."])
             .status()
             .unwrap()
             .success()
@@ -441,14 +454,17 @@ fn real_prek_infrastructure_exits_survive_gate_aggregation_without_skip_credit()
         ("kill -KILL $$", 137),
     ] {
         let (_fixture, output) = real_hook_gate(&[body], false);
+        let expected = if code == 77 { 78 } else { code };
         assert_eq!(
             output.status.code(),
-            Some(if code == 77 { 78 } else { code }),
+            Some(expected),
             "stdout={}\nstderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("- exit code: {code}")));
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("- exit code: {expected}"))
+        );
     }
 }
 
@@ -513,6 +529,93 @@ fn real_prek_source_modification_remains_semantic_repair() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("- files were modified by this hook"));
+    let (_fixture, grouped) =
+        real_hook_gate(&["printf 'formatted\\n' > tracked.txt", "exit 78"], false);
+    assert_eq!(grouped.status.code(), Some(1));
+}
+
+#[test]
+fn real_prek_nested_project_infrastructure_uses_native_status() {
+    let (fixture, output) = real_hook_gate_with_setup(
+        &["exit 0"],
+        false,
+        |workspace| {
+            let child = workspace.join("child");
+            std::fs::create_dir(&child).unwrap();
+            std::fs::write(child.join("tracked.txt"), "initial\n").unwrap();
+            std::fs::write(child.join(".pre-commit-config.yaml"), "repos:\n  - repo: local\n    hooks:\n      - id: nested\n        name: Nested hook\n        language: system\n        entry: bash hook.sh\n        always_run: true\n        pass_filenames: false\n").unwrap();
+            write_executable(
+                &child.join("hook.sh"),
+                &loom_test_support::bash_script(
+                    "mkdir -p .loom\nprintf 'executed\\n' > .loom/nested-ran\nexit 78\n",
+                ),
+            );
+        },
+        &[("child/tracked.txt", "changed\n")],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("  - exit code: 78"));
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("child/.loom/nested-ran")).unwrap(),
+        "executed\n"
+    );
+}
+
+#[test]
+fn real_prek_group_modification_dominates_earlier_infrastructure() {
+    let (_fixture, output) = real_hook_gate_with_setup(
+        &["exit 78", "printf 'formatted\\n' > tracked.txt", "exit 0"],
+        false,
+        |workspace| {
+            let path = workspace.join(".pre-commit-config.yaml");
+            let config = std::fs::read_to_string(&path).unwrap();
+            let config = config
+                .replace(
+                    "      - id: actual-1\n",
+                    "      - id: actual-1\n        priority: 1\n",
+                )
+                .replace(
+                    "      - id: actual-2\n",
+                    "      - id: actual-2\n        priority: 1\n",
+                );
+            std::fs::write(path, config).unwrap();
+        },
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Files were modified by following hooks")
+    );
+}
+
+#[test]
+fn real_prek_semantic_filename_batches_cannot_form_infrastructure_exit() {
+    let (fixture, output) = real_hook_gate_with_setup(
+        &[
+            "printf '%s\\n' \"$1\" >> .loom/batches-ran\ncase \"$1\" in a) exit 64 ;; b) exit 13 ;; *) exit 0 ;; esac",
+        ],
+        false,
+        |workspace| {
+            for name in ["a", "b"] {
+                std::fs::write(workspace.join(name), "initial\n").unwrap();
+            }
+            let path = workspace.join(".pre-commit-config.yaml");
+            let config = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("pass_filenames: false", "pass_filenames: 1");
+            std::fs::write(path, config).unwrap();
+        },
+        &[("a", "changed\n"), ("b", "changed\n")],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let batches = std::fs::read_to_string(fixture.path().join(".loom/batches-ran")).unwrap();
+    assert!(batches.lines().any(|name| name == "a") && batches.lines().any(|name| name == "b"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("- exit code: 1"));
 }
 
 #[test]

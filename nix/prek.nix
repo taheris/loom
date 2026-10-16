@@ -1,5 +1,11 @@
 { pkgs }:
 
-pkgs.prek.overrideAttrs (previous: {
-  patches = (previous.patches or [ ]) ++ [ ./patches/prek-hook-status.patch ];
-})
+pkgs.prek.overrideAttrs (
+  {
+    patches ? [ ],
+    ...
+  }:
+  {
+    patches = patches ++ [ ./patches/prek-hook-status.patch ];
+  }
+)

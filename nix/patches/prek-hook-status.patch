@@ -1,9 +1,6 @@
-diff --git a/crates/prek/src/process.rs b/crates/prek/src/process.rs
 --- a/crates/prek/src/process.rs
 +++ b/crates/prek/src/process.rs
-@@ -146,6 +146,15 @@ pub(crate) struct MergedOutput {
-
- impl From<MergedOutput> for HookRunOutput {
+@@ -148,3 +148,14 @@
      fn from(output: MergedOutput) -> Self {
 -        Self::new(output.status.code().unwrap_or(1), output.bytes)
 +        let code = output.status.code().unwrap_or_else(|| {
@@ -13,30 +10,76 @@ diff --git a/crates/prek/src/process.rs b/crates/prek/src/process.rs
 +                128 + output.status.signal().unwrap_or(0)
 +            }
 +            #[cfg(not(unix))]
-+            { 78 }
++            {
++                78
++            }
 +        });
 +        Self::new(code, output.bytes)
      }
- }
-diff --git a/crates/prek/src/run.rs b/crates/prek/src/run.rs
 --- a/crates/prek/src/run.rs
 +++ b/crates/prek/src/run.rs
-@@ -250,7 +250,17 @@ impl HookRunOutput {
-     }
+@@ -246,2 +246,16 @@
 
++pub(crate) fn combine_verification_exit(left: i32, right: i32) -> i32 {
++    let normalize = |code| if code == 77 { 78 } else { code };
++    let infrastructure = |code| matches!(code, 78 | 124 | 127..=255);
++    match (normalize(left), normalize(right)) {
++        (0, code) | (code, 0) => code,
++        (left, right) if infrastructure(left) && !infrastructure(right) => right,
++        (left, right) if !infrastructure(left) && infrastructure(right) => left,
++        (left, right) if infrastructure(left) && infrastructure(right) => {
++            if left == right { left } else { 78 }
++        }
++        _ => 1,
++    }
++}
++
+ impl HookRunOutput {
+@@ -252,3 +266,3 @@
      fn append(&mut self, output: Self) {
 -        self.exit_code |= output.exit_code;
-+        let infrastructure = |code| matches!(code, 77 | 78 | 124 | 127..=255);
-+        self.exit_code = match (self.exit_code, output.exit_code) {
-+            (0, code) | (code, 0) => code,
-+            (left, right) if infrastructure(left) && !infrastructure(right) => right,
-+            (left, right) if !infrastructure(left) && infrastructure(right) => left,
-+            (left, right) if infrastructure(left) && infrastructure(right) => {
-+                // Distinct unavailable statuses still mean unavailable execution.
-+                if left == right { left } else { 78 }
-+            }
-+            (left, right) => left | right,
-+        };
++        self.exit_code = combine_verification_exit(self.exit_code, output.exit_code);
          self.output.extend(output.output);
+@@ -304,8 +318,8 @@
+     #[test]
+-    fn hook_run_output_append_bitwise_ors_exit_codes() {
+-        let mut output = HookRunOutput::new(1, Vec::new());
+-
+-        output.append(HookRunOutput::new(3, Vec::new()));
+-
+-        assert_eq!(output.exit_code, 3);
++    fn hook_run_output_semantic_batches_cannot_form_infrastructure() {
++        let mut output = HookRunOutput::new(64, Vec::new());
++
++        output.append(HookRunOutput::new(13, Vec::new()));
++
++        assert_eq!(output.exit_code, 1);
      }
+--- a/crates/prek/src/cli/run/run.rs
++++ b/crates/prek/src/cli/run/run.rs
+@@ -767,2 +767,3 @@
+     modified_files: bool,
++    verification_exit: i32,
  }
+@@ -791,2 +792,3 @@
+             modified_files: false,
++            verification_exit: 0,
+         }
+@@ -1004,2 +1006,11 @@
+         self.modified_files |= group.modification.is_some();
++        if group.modification.is_some() {
++            self.verification_exit = crate::run::combine_verification_exit(self.verification_exit, 1);
++        }
++        for result in &group.results {
++            if result.status.is_failure() {
++                let code = if result.exit_status == 0 { 1 } else { result.exit_status };
++                self.verification_exit = crate::run::combine_verification_exit(self.verification_exit, code);
++            }
++        }
+
+@@ -1224,3 +1235,4 @@
+         if self.failed {
+-            Ok(ExitStatus::Failure)
++            let code = if self.verification_exit == 0 { 1 } else { self.verification_exit };
++            Ok(ExitStatus::from(u8::try_from(code).unwrap_or(78)))
+         } else {
