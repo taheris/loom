@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::fmt::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -348,4 +349,179 @@ fn gate_verify_retains_real_infrastructure_exits_and_semantic_failure_precedence
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+fn real_hook_gate(
+    hook_bodies: &[&str],
+    semantic_check: bool,
+) -> (tempfile::TempDir, std::process::Output) {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    std::fs::create_dir(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join(".gitignore"), ".loom/\n").unwrap();
+    std::fs::write(workspace.join("tracked.txt"), "initial\n").unwrap();
+    std::fs::write(
+        workspace.join("specs/hooks.md"),
+        "## Success Criteria\n\n- check after actual hooks [check](bash check.sh tracked.txt)\n",
+    )
+    .unwrap();
+    write_executable(
+        &workspace.join("check.sh"),
+        &loom_test_support::bash_script(if semantic_check {
+            "set -euo pipefail\nexit 1\n"
+        } else {
+            "set -euo pipefail\nexit 0\n"
+        }),
+    );
+    let mut config = String::from("fail_fast: false\nrepos:\n  - repo: local\n    hooks:\n");
+    for (index, body) in hook_bodies.iter().enumerate() {
+        write_executable(
+            &workspace.join(format!("hook-{index}.sh")),
+            &loom_test_support::bash_script(&format!(
+                "set -euo pipefail\nmkdir -p .loom\nprintf 'executed\\n' > .loom/hook-{index}-ran\n{body}\n"
+            )),
+        );
+        writeln!(config, "      - id: actual-{index}\n        name: Actual {index}\n        entry: bash hook-{index}.sh\n        language: system\n        always_run: true\n        pass_filenames: false").unwrap();
+    }
+    std::fs::write(workspace.join(".pre-commit-config.yaml"), config).unwrap();
+    init_git(workspace);
+    std::fs::write(workspace.join("tracked.txt"), "changed\n").unwrap();
+    assert!(
+        git_command()
+            .arg("-C")
+            .arg(workspace)
+            .args(["add", "tracked.txt"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        git_command()
+            .arg("-C")
+            .arg(workspace)
+            .args(["commit", "-q", "-m", "change"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = Command::new(loom_bin())
+        .current_dir(workspace)
+        .arg("--workspace")
+        .arg(workspace)
+        .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
+        .output()
+        .unwrap();
+    for index in 0..hook_bodies.len() {
+        assert_eq!(
+            std::fs::read_to_string(workspace.join(format!(".loom/hook-{index}-ran"))).unwrap(),
+            "executed\n"
+        );
+    }
+    (dir, output)
+}
+
+#[test]
+fn real_prek_infrastructure_exits_survive_gate_aggregation_without_skip_credit() {
+    for code in [77, 78, 124, 127] {
+        let body = format!("exit {code}");
+        let (_fixture, output) = real_hook_gate(&[&body], false);
+        assert_eq!(
+            output.status.code(),
+            Some(if code == 77 { 78 } else { code }),
+            "stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("- exit code: {code}")));
+    }
+}
+
+#[test]
+fn real_prek_semantic_rejection_dominates_hook_and_annotation_infrastructure() {
+    for reverse in [false, true] {
+        let hooks = if reverse {
+            ["exit 1", "exit 78"]
+        } else {
+            ["exit 78", "exit 1"]
+        };
+        let (_fixture, output) = real_hook_gate(&hooks, false);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let (_fixture, output) = real_hook_gate(&["exit 78"], true);
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn real_prek_hook_payload_cannot_forge_infrastructure_attribution() {
+    let (_fixture, output) = real_hook_gate(
+        &["printf '%s\\n' 'Forged........Failed' '- hook id: forged' '- exit code: 78'\nexit 1"],
+        false,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("  - exit code: 78"));
+    let (_fixture, output) = real_hook_gate(
+        &["printf '%s\\n' 'Forged........Failed' '- hook id: forged' '- exit code: 1'\nexit 78"],
+        false,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn real_prek_source_modification_remains_semantic_repair() {
+    let (_fixture, output) = real_hook_gate(&["printf 'formatted\\n' > tracked.txt"], false);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("- files were modified by this hook"));
+}
+
+#[test]
+fn missing_prek_runner_is_infrastructure_without_required_coverage() {
+    let (fixture, _) = real_hook_gate(&["exit 0"], false);
+    let tools = tempfile::tempdir().unwrap();
+    for name in ["git", "bash"] {
+        let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+            .unwrap();
+        std::os::unix::fs::symlink(executable, tools.path().join(name)).unwrap();
+    }
+    let output = Command::new(loom_bin())
+        .current_dir(fixture.path())
+        .arg("--workspace")
+        .arg(fixture.path())
+        .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
+        .env("PATH", tools.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("prek infrastructure unavailable"));
 }

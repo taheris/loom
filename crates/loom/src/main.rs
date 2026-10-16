@@ -1658,12 +1658,94 @@ fn nested_diff_gate_skip(args: &GateScope) -> bool {
     std::env::var_os("LOOM_PARENT_DIFF_GATE").is_some() && args.is_explicit_files()
 }
 
+#[derive(Default)]
+struct FailedProjectHook {
+    identified: bool,
+    exit_code: Option<i32>,
+    modified_files: bool,
+}
+
+fn project_hook_exit_code(output: &std::process::Output) -> i32 {
+    let aggregate = output.status.code().unwrap_or_else(|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt as _;
+            128 + output.status.signal().unwrap_or(0)
+        }
+        #[cfg(not(unix))]
+        {
+            78
+        }
+    });
+    if aggregate != 1 {
+        return aggregate;
+    }
+    let mut failures = Vec::<FailedProjectHook>::new();
+    let mut current = None;
+    let mut failed_header = false;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.contains("...")
+            && ["Failed", "Passed", "Skipped"]
+                .iter()
+                .any(|status| line.ends_with(status))
+        {
+            current = None;
+            failed_header = line.ends_with("Failed");
+        }
+        // Prek indents every hook-output line; only its unindented report owns attribution.
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        if let Some(id) = line.strip_prefix("- hook id: ") {
+            current = None;
+            if failed_header {
+                failures.push(FailedProjectHook {
+                    identified: !id.is_empty(),
+                    ..FailedProjectHook::default()
+                });
+                current = Some(failures.len() - 1);
+            }
+        } else if let Some(index) = current {
+            let report = &mut failures[index];
+            if let Some(code) = line.strip_prefix("- exit code: ") {
+                if let Ok(code) = code.parse() {
+                    report.exit_code =
+                        Some(combine_verifier_codes(report.exit_code.unwrap_or(0), code));
+                }
+            } else if line == "- files were modified by this hook" {
+                report.modified_files = true;
+            }
+        }
+    }
+    if failures.is_empty() {
+        return aggregate;
+    }
+    let mut combined = 0;
+    for report in failures {
+        let code = if report.modified_files {
+            1
+        } else if report.identified {
+            report.exit_code.map_or(78, |code| match code {
+                0 => 1,
+                77 => 78,
+                _ => code,
+            })
+        } else {
+            78
+        };
+        // A completed semantic rejection dominates unavailable or incomplete hook reports.
+        combined = combine_verifier_codes(combined, code);
+    }
+    if combined == 0 { aggregate } else { combined }
+}
+
 fn run_project_hook_lane(workspace: &Path, args: &GateScope) -> anyhow::Result<i32> {
+    use std::io::Write as _;
     let Some(range) = args.diff() else {
         return Ok(0);
     };
     let (from_ref, to_ref) = concrete_diff_refs(workspace, range)?;
-    let status = std::process::Command::new("prek")
+    let output = match std::process::Command::new("prek")
         .current_dir(workspace)
         .env("LOOM_PARENT_DIFF_GATE", "1")
         .args([
@@ -1674,10 +1756,25 @@ fn run_project_hook_lane(workspace: &Path, args: &GateScope) -> anyhow::Result<i
             &from_ref,
             "--to-ref",
             &to_ref,
+            "--color",
+            "never",
+            "--no-progress",
+            "--no-hide-status",
         ])
-        .status()
-        .with_context(|| "run prek pre-commit lane for loom gate verify --diff")?;
-    Ok(status.code().unwrap_or(1))
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            writeln!(
+                std::io::stderr(),
+                "loom gate: prek infrastructure unavailable: {error}; no required coverage admitted"
+            )?;
+            return Ok(78);
+        }
+    };
+    std::io::stdout().write_all(&output.stdout)?;
+    std::io::stderr().write_all(&output.stderr)?;
+    Ok(project_hook_exit_code(&output))
 }
 
 fn concrete_diff_refs(workspace: &Path, range: &str) -> anyhow::Result<(String, String)> {
