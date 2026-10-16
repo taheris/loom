@@ -12,6 +12,13 @@ log() {
     printf '[smoke] %s\n' "$1" >&2
 }
 
+log_task_state() {
+    # Native task notes retain pre-spawn rejection reasons omitted by the loop summary.
+    if ! (cd "$WORKSPACE" && bd show "$BEAD_ID" --json) >&2; then
+        log 'could not read retained smoke task diagnostics'
+    fi
+}
+
 if [[ "${5:-}" == --interrupt-once ]]; then
     first_log="$WORKSPACE/.loom/smoke-interrupted-driver.log"
     LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
@@ -23,6 +30,7 @@ if [[ "${5:-}" == --interrupt-once ]]; then
         fi
         if ! kill -0 "$first_pid" 2>/dev/null; then
             cat "$first_log" >&2
+            log_task_state
             log 'driver exited before interruption readiness'
             exit 1
         fi
@@ -65,6 +73,7 @@ if [[ "${5:-}" == --interrupt-once ]]; then
         fi
         if ! kill -0 "$verifier_driver" 2>/dev/null; then
             cat "$verifier_log" >&2
+            log_task_state
             log 'driver exited before actual verifier interruption point'
             exit 1
         fi

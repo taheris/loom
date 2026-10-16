@@ -251,10 +251,6 @@ run_happy_path() {
         fi
         printf 'implemented by mock pi\n' > loom-smoke-result.txt
         git add loom-smoke-result.txt
-        if [[ -f bin/verifier-probe.sh ]]; then
-            printf '\n## Success Criteria\n\n- Implemented result survives actual verifier restart. [check](bash bin/verifier-probe.sh)\n' >> specs/smoke.md
-            git add specs/smoke.md
-        fi
         git commit -q -m "Implement smoke bead"
         bd close "$bead_id" >/dev/null
     fi

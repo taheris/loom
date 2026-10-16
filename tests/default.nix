@@ -35,6 +35,7 @@ in
   inherit (loomDeriv)
     loom-smoke
     loomTests
+    smokeAcceptance
     test-app-ignores-host-git-signing
     ;
 }

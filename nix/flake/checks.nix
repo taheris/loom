@@ -481,7 +481,10 @@
           }
           ''
             set -euo pipefail
-            bash ${../../tests/smoke/seed-beads-test.sh} ${../../tests/smoke/seed-beads.sh}
+            bash ${../../tests/smoke/seed-beads-test.sh} \
+              ${../../tests/smoke/seed-beads.sh} \
+              ${../../tests/smoke/spec.md} \
+              ${testsDeriv.smokeAcceptance}/bin/smoke-task-acceptance
             touch "$out"
           '';
 

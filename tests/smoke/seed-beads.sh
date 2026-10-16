@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+acceptance_helper="${LOOM_TEST_ACCEPTANCE_HELPER:?missing fixed smoke acceptance helper}"
+acceptance_metadata=$("$acceptance_helper")
 base_commit=$(git rev-parse HEAD)
 spec_epic_id=$(bd create "smoke spec" \
     --description "container smoke spec metadata" \
@@ -17,9 +19,12 @@ molecule_id=$(bd create "smoke molecule" \
     --metadata "{\"loom.base_commit\":\"$base_commit\"}" \
     --silent)
 
-bd create "smoke happy-path" \
+task_id=$(bd create "smoke happy-path" \
     --description "container smoke: pi happy-path" \
     --type=task --priority=2 \
     --labels="spec:smoke,profile:base" \
     --parent="$molecule_id" --no-inherit-labels \
-    --silent
+    --metadata="$acceptance_metadata" \
+    --silent)
+bd show "$task_id" --json | "$acceptance_helper" --validate-task
+printf '%s\n' "$task_id"

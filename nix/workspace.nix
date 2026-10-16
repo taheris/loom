@@ -89,6 +89,7 @@ let
     "tests/mock-claude" = "${src}/tests/mock-claude";
     "tests/inbox-bridge" = "${src}/tests/inbox-bridge";
     "tests/loom" = "${src}/tests/loom";
+    "tests/smoke" = "${src}/tests/smoke";
     "tests/default.nix" = "${src}/tests/default.nix";
     "tests/run-tests.sh" = "${src}/tests/run-tests.sh";
     "tests/judges" = "${src}/tests/judges";

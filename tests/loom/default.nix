@@ -155,6 +155,18 @@ let
     touch "$out"
   '';
 
+  smokeAcceptance = craneLib.mkCargoDerivation {
+    pname = "loom-smoke-task-acceptance";
+    version = "0.1.0";
+    src = stagedSrc;
+    inherit cargoArtifacts;
+    buildPhaseCargoCommand = "cargo build --release -p loom-workflow --example smoke-task-acceptance";
+    installPhaseCommand = ''
+      install -Dm755 target/release/examples/smoke-task-acceptance "$out/bin/smoke-task-acceptance"
+    '';
+    doCheck = false;
+  };
+
   smokeEntry = smokeProfileManifest.passthru.manifest.base.pi;
 
   smokeGitInputs = [
@@ -210,6 +222,8 @@ let
       export LOOM_TEST_VERIFIER_PROBE=${../smoke/verifier-probe.sh}
       export LOOM_TEST_GIT_POLICY=${../smoke/seed-git-policy.sh}
       export LOOM_TEST_SEED_BEADS=${../smoke/seed-beads.sh}
+      export LOOM_TEST_SMOKE_SPEC=${../smoke/spec.md}
+      export LOOM_TEST_ACCEPTANCE_HELPER=${smokeAcceptance}/bin/smoke-task-acceptance
       export LOOM_TEST_LOOP=${../smoke/loop.sh}
       export LOOM_TEST_WAIT_DOLT=${../smoke/wait-dolt.sh}
       export WRIX_PREK_HOOKS=${smokePrekHooks}
@@ -233,7 +247,7 @@ let
   };
 in
 {
-  inherit loomTests test-app-ignores-host-git-signing;
+  inherit loomTests test-app-ignores-host-git-signing smokeAcceptance;
 }
 // optionalAttrs isLinux {
   loom-smoke = smokeApp;

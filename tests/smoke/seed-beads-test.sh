@@ -3,6 +3,8 @@ set -euo pipefail
 
 # Real bd is required to check metadata, label inheritance, and worker readiness.
 seed_script=$(realpath "${1:?seed script path is required}")
+smoke_spec=$(realpath "${2:?smoke spec path is required}")
+export LOOM_TEST_ACCEPTANCE_HELPER="${3:?fixed smoke acceptance helper is required}"
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 export HOME="$fixture/home"
@@ -16,13 +18,18 @@ cd "$fixture/workspace"
 git init -q -b main
 git config user.name "Smoke Fixture"
 git config user.email smoke@example.com
-git commit --allow-empty -q -m "Initialize fixture"
+mkdir -p specs docs
+cp "$smoke_spec" specs/smoke.md
+printf '# Docs\n\n- [smoke](../specs/smoke.md)\n' >docs/README.md
+git add specs docs
+git commit -q -m "Initialize fixture"
 bd init --prefix=smoke --skip-hooks --skip-agents --non-interactive >/dev/null
 
 bead_id=$(bash "$seed_script")
 head=$(git rev-parse HEAD)
 bd list --all --limit 0 --json >"$fixture/beads.json"
-if ! jq -e --arg bead "$bead_id" --arg head "$head" '
+"$LOOM_TEST_ACCEPTANCE_HELPER" >"$fixture/acceptance.json"
+if ! jq -e --arg bead "$bead_id" --arg head "$head" --slurpfile acceptance "$fixture/acceptance.json" '
     [.[] | select(.labels | index("loom:spec"))] as $specs |
     [.[] | select(.labels | index("loom:active"))] as $work |
     [.[] | select(.id == $bead)] as $tasks |
@@ -40,6 +47,7 @@ if ! jq -e --arg bead "$bead_id" --arg head "$head" '
     $work[0].metadata["loom.base_commit"] == $head and
     ($work[0].labels | index("loom:spec")) == null and
     ($work[0].labels | index("spec:smoke")) != null and
+    $tasks[0].metadata["loom.acceptance"] == $acceptance[0]["loom.acceptance"] and
     $tasks[0].issue_type == "task" and
     $tasks[0].status == "open" and
     $tasks[0].parent == $work[0].id and
@@ -61,6 +69,24 @@ if ! jq -e --arg bead "$bead_id" '
     jq . "$fixture/ready.json" >&2
     exit 1
 fi
+
+# Validate real task JSON through the same acceptance resolver used before spawn.
+bd show "$bead_id" --json >"$fixture/task.json"
+"$LOOM_TEST_ACCEPTANCE_HELPER" --validate-task <"$fixture/task.json"
+jq '.[0].metadata |= del(.["loom.acceptance"])' "$fixture/task.json" >"$fixture/unbound.json"
+if "$LOOM_TEST_ACCEPTANCE_HELPER" --validate-task <"$fixture/unbound.json" >"$fixture/unbound.log" 2>&1; then
+    printf 'unbound smoke task unexpectedly accepted\n' >&2
+    exit 1
+fi
+grep -F 'smoke task lacks acceptance' "$fixture/unbound.log"
+printf '\n## Success Criteria\n\n- A changed requirement. [check](true)\n' >specs/smoke.md
+if "$LOOM_TEST_ACCEPTANCE_HELPER" --validate-task <"$fixture/task.json" >"$fixture/stale.log" 2>&1; then
+    printf 'stale smoke task unexpectedly accepted\n' >&2
+    exit 1
+fi
+grep -F 'ordinary task references no longer resolve' "$fixture/stale.log"
+cp "$smoke_spec" specs/smoke.md
+"$LOOM_TEST_ACCEPTANCE_HELPER" --validate-task <"$fixture/task.json"
 
 # Native graph guards cannot be established by a capturing command runner.
 work_root=$(jq -er '.[] | select(.labels | index("loom:active")) | .id' "$fixture/beads.json")

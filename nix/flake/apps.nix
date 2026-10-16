@@ -32,7 +32,7 @@ _:
     }:
     let
       inherit (pkgs.stdenv.hostPlatform) isLinux;
-      inherit (pkgs.lib) optionals;
+      inherit (pkgs.lib) optionals optionalAttrs;
 
       testsDeriv = import ../../tests/default.nix {
         inherit
@@ -461,21 +461,52 @@ _:
     {
       packages.smoke-runtime = smokeRuntime;
 
-      checks.test-app-hook-runner =
-        pkgs.runCommand "test-app-hook-runner"
-          {
-            nativeBuildInputs = [
-              pkgs.git
-              pkgs.coreutils
-            ];
-          }
-          ''
-            bash ${../../tests/agent/test-app-hook-runner.sh} \
-              ${fixtureRequiredTestApp}/bin/test-required \
-              ${fixtureTestApp}/bin/test \
-              ${loom.hookRunner}/bin/prek
-            touch "$out"
-          '';
+      checks = {
+        test-app-hook-runner =
+          pkgs.runCommand "test-app-hook-runner"
+            {
+              nativeBuildInputs = [
+                pkgs.git
+                pkgs.coreutils
+              ];
+            }
+            ''
+              bash ${../../tests/agent/test-app-hook-runner.sh} \
+                ${fixtureRequiredTestApp}/bin/test-required \
+                ${fixtureTestApp}/bin/test \
+                ${loom.hookRunner}/bin/prek
+              touch "$out"
+            '';
+      }
+      // optionalAttrs isLinux {
+        native-worker-preparation =
+          pkgs.runCommand "native-worker-preparation"
+            {
+              nativeBuildInputs = [
+                pkgs.git
+                pkgs.gnugrep
+              ];
+            }
+            ''
+              # Linux-only: do not place authority beneath an unsandboxed daemon's
+              # possibly writable /nix/var/nix. Keep the production ancestor guard.
+              fixture=$(mktemp -d /tmp/loom-native-preparation.XXXXXXXX)
+              trap 'rm -rf "$fixture"' EXIT
+              export TMPDIR="$fixture" HOME="$fixture/home"
+              export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+              mkdir -p "$HOME"
+              ${nativePreflightDriver}/bin/native-worker-preflight --prepare-only
+              mkdir -m 0777 "$fixture/untrusted"
+              if TMPDIR="$fixture/untrusted" \
+                ${nativePreflightDriver}/bin/native-worker-preflight --prepare-only \
+                > "$fixture/untrusted.log" 2>&1; then
+                printf 'worker preparation accepted an unsafe authority ancestor\n' >&2
+                exit 1
+              fi
+              grep -F 'runtime ancestor is writable by another user' "$fixture/untrusted.log"
+              touch "$out"
+            '';
+      };
 
       apps = {
         test-profile-bootstrap = {

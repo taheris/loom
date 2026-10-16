@@ -37,5 +37,9 @@ loom-test-support = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 
+[[example]]
+name = "native-worker-preflight"
+test = true
+
 [lints]
 workspace = true
