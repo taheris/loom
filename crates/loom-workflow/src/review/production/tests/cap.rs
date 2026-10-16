@@ -1,4 +1,7 @@
 #[cfg(test)]
+mod admission;
+
+#[cfg(test)]
 mod tests {
     use std::ffi::OsString;
 
@@ -8,8 +11,8 @@ mod tests {
     use super::super::*;
 
     #[derive(Clone)]
-    struct IsolatedBeads {
-        root: PathBuf,
+    pub(super) struct IsolatedBeads {
+        pub(super) root: PathBuf,
     }
 
     impl CommandRunner for IsolatedBeads {
@@ -37,7 +40,7 @@ mod tests {
         }
     }
 
-    async fn children(bd: &BdClient<IsolatedBeads>, parent: &BeadId) -> Vec<Bead> {
+    pub(super) async fn children(bd: &BdClient<IsolatedBeads>, parent: &BeadId) -> Vec<Bead> {
         bd.list(ListOpts {
             all: true,
             limit: Some(0),
@@ -48,7 +51,7 @@ mod tests {
         .expect("children")
     }
 
-    async fn isolated_client(root: &Path) -> BdClient<IsolatedBeads> {
+    pub(super) async fn isolated_client(root: &Path) -> BdClient<IsolatedBeads> {
         std::fs::create_dir(root.join("home")).unwrap();
         loom_driver::git::initialize_snapshot(root, &SystemClock::new())
             .await
@@ -191,7 +194,9 @@ mod tests {
             "each affected identity gets its own decision"
         );
         assert_eq!(build_queue(&all, None, None, true).len(), 5);
+        let journal = crate::r#loop::DecisionWaitJournal::new(root);
         for decision in &decisions {
+            assert!(journal.has_disposition(&parent, &decision.id).unwrap());
             assert_eq!(decision.issue_type, IssueType::Decision);
             let brief = parse_options_in(decision.notes.as_deref(), &decision.description).unwrap();
             let expected = if decision.description.contains("unneeded-pending-marker")
@@ -257,7 +262,57 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            let decision_bead = controller.bd.show(decision).await.unwrap();
+            let encoded = decision_bead.metadata["loom.integrity_decision"]
+                .as_str()
+                .unwrap();
+            let record: serde_json::Value = serde_json::from_str(encoded).unwrap();
+            let raw: loom_protocol::gate::RawFinding =
+                serde_json::from_value(record["finding"].clone()).unwrap();
+            let finding = raw.resolve(DispatchScope::PushGate, &validator).unwrap();
+            let (batch, reference) = remediation
+                .iter()
+                .find_map(|task| {
+                    let candidate = loom_protocol::acceptance::Candidates::from_metadata(
+                        task.metadata.get(loom_protocol::acceptance::METADATA_KEY)?,
+                    )
+                    .unwrap();
+                    let loom_protocol::acceptance::Candidates::Remediation { goals } = candidate
+                    else {
+                        return None;
+                    };
+                    goals
+                        .as_slice()
+                        .iter()
+                        .find(|reference| reference.finding_hash.as_str() == finding.hash())
+                        .map(|reference| (task.id.clone(), reference.clone()))
+                })
+                .unwrap();
+            crate::mint::acceptance::admit_follow_up(
+                &controller.bd,
+                &controller.bd.show(&id).await.unwrap(),
+                &crate::mint::acceptance::FollowUp {
+                    source: batch,
+                    goals: loom_protocol::acceptance::GoalReferences::new(vec![reference]).unwrap(),
+                },
+                root,
+            )
+            .await
+            .unwrap();
             controller.bd.dep_add(&id, decision).await.unwrap();
+            controller
+                .bd
+                .update(
+                    decision,
+                    UpdateOpts {
+                        set_metadata: vec![("loom.decision_candidate".into(), serde_json::json!({
+                    "version": 1, "producer": parent, "root": parent, "affected_work": [id]
+                }).to_string())],
+                        ..UpdateOpts::default()
+                    },
+                )
+                .await
+                .unwrap();
             assert!(matches!(
                 validate_waiting_outcome(&controller.bd, &id, AgentOutcome::WaitingRequested)
                     .await
@@ -265,6 +320,10 @@ mod tests {
                 AgentOutcome::Waiting { .. }
             ));
             work.push(id);
+        }
+        let mut bound_remediation = Vec::new();
+        for bead in &remediation {
+            bound_remediation.push(controller.bd.show(&bead.id).await.unwrap());
         }
         controller
             .bd
@@ -307,7 +366,7 @@ mod tests {
             controller.bd.show(&second).await.unwrap().status,
             Status::Blocked
         );
-        for bead in remediation {
+        for bead in bound_remediation {
             assert_eq!(
                 controller.bd.show(&bead.id).await.unwrap(),
                 bead,
@@ -396,9 +455,16 @@ mod tests {
                 .unwrap();
             let before = children(&bd, &parent).await;
             let epic_before = bd.show(&parent).await.unwrap();
-            let error = crate::mint::integrity::escalate(&bd, &parent, &findings, &validator)
-                .await
-                .unwrap_err();
+            let error = crate::mint::integrity::escalate(
+                &bd,
+                &crate::r#loop::DecisionWaitJournal::new(root),
+                &parent,
+                &findings,
+                &validator,
+                root,
+            )
+            .await
+            .unwrap_err();
             assert!(error.to_string().contains(legacy.as_str()), "{error}");
             assert!(
                 error.to_string().contains("identity-preserving repair"),
@@ -432,9 +498,16 @@ mod tests {
                 tier: Tier::Check,
                 target: target.into(),
             });
-        crate::mint::integrity::escalate(&bd, &parent, &findings[..1], &validator)
-            .await
-            .unwrap();
+        crate::mint::integrity::escalate(
+            &bd,
+            &crate::r#loop::DecisionWaitJournal::new(root),
+            &parent,
+            &findings[..1],
+            &validator,
+            root,
+        )
+        .await
+        .unwrap();
         let existing = children(&bd, &parent).await.remove(0);
         let existing = bd.show(&existing.id).await.unwrap();
         let duplicate = bd
@@ -451,9 +524,16 @@ mod tests {
             .await
             .unwrap();
         let before = children(&bd, &parent).await;
-        let error = crate::mint::integrity::escalate(&bd, &parent, &findings, &validator)
-            .await
-            .unwrap_err();
+        let error = crate::mint::integrity::escalate(
+            &bd,
+            &crate::r#loop::DecisionWaitJournal::new(root),
+            &parent,
+            &findings,
+            &validator,
+            root,
+        )
+        .await
+        .unwrap_err();
         assert!(error.to_string().contains("multiple decisions"));
         assert!(error.to_string().contains(existing.id.as_str()));
         assert!(error.to_string().contains(duplicate.as_str()));

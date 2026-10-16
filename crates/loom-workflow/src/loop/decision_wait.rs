@@ -17,7 +17,7 @@ pub use disposition::AdmissionTracker;
 use disposition::stage;
 mod inventory;
 mod journal;
-pub use inventory::admit_todo;
+pub use inventory::{admit_integrity, admit_todo};
 pub use journal::DecisionWaitJournal;
 use journal::{Entry, Phase};
 
@@ -31,6 +31,8 @@ pub enum DecisionWaitError {
     State(String),
     /// malformed decision-wait attribution
     Record(#[from] serde_json::Error),
+    /// affected-work acceptance could not be independently resolved
+    Acceptance(#[from] super::acceptance::Error),
 }
 
 /// Nonempty unresolved decisions checked against current native ownership.

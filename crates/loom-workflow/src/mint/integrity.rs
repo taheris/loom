@@ -4,10 +4,9 @@ use std::collections::BTreeMap;
 
 use displaydoc::Display;
 use loom_driver::bd::{
-    BdClient, BdError, Bead, CommandRunner, CreateOpts, IssueType, ListOpts, Status, UpdateOpts,
+    BdClient, BdError, Bead, CommandRunner, CreateOpts, IssueType, ListOpts, Status,
 };
 use loom_driver::identifier::BeadId;
-use loom_events::DriverEventPayload;
 use loom_gate::IntegrityFinding;
 use loom_protocol::gate::{
     DispatchScope, Finding, FindingParseError, FindingValidator, RawFinding,
@@ -15,9 +14,7 @@ use loom_protocol::gate::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::gate_clarify::{
-    ClarifyApplyOutcome, ClarifyRouteContext, ClarifySourceRoute, apply_clarify_or_blocked_report,
-};
+use crate::r#loop::{DecisionWaitJournal, admit_integrity};
 use crate::review::default_profile_for_spec;
 
 const RECORD_KEY: &str = "loom.integrity_decision";
@@ -33,6 +30,8 @@ pub enum Error {
     Record(#[from] serde_json::Error),
     /// integrity decision graph is invalid: {0}
     Graph(String),
+    /// canonical contextual decision admission failed
+    Admission(#[from] crate::r#loop::LoopError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,16 +81,7 @@ fn check_record(
         .finding
         .clone()
         .resolve(DispatchScope::PushGate, validator)?;
-    if bead.parent.as_ref() != Some(parent)
-        || record.work_root != *parent
-        || recorded.id() != finding.id()
-        || (record.disposition == Disposition::Candidate
-            && (bead.status != Status::Blocked
-                || bead
-                    .labels
-                    .iter()
-                    .any(|label| matches!(label.as_str(), "loom:blocked" | "loom:infra"))))
-    {
+    if bead.parent.as_ref() != Some(parent) || record.work_root != *parent || recorded != *finding {
         return Err(Error::Graph(format!(
             "decision {} has incompatible finding/root/disposition",
             bead.id
@@ -108,10 +98,12 @@ fn check_record(
 /// reject admission; successfully staged candidates survive partial I/O failure.
 pub async fn escalate<R: CommandRunner>(
     bd: &BdClient<R>,
+    journal: &DecisionWaitJournal,
     parent: &BeadId,
     findings: &[IntegrityFinding],
     validator: &(impl FindingValidator + Sync + ?Sized),
-) -> Result<Vec<DriverEventPayload>, Error> {
+    workspace: &std::path::Path,
+) -> Result<(), Error> {
     let mut resolved = BTreeMap::new();
     for integrity in findings
         .iter()
@@ -131,7 +123,7 @@ pub async fn escalate<R: CommandRunner>(
         }
     }
     if resolved.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let epic = bd.show(parent).await?;
     if epic.issue_type != IssueType::Epic || epic.status == Status::Closed {
@@ -200,7 +192,13 @@ pub async fn escalate<R: CommandRunner>(
                 ),
                 parent: Some(parent.clone()),
                 metadata: Some(
-                    serde_json::json!({ RECORD_KEY: serde_json::to_string(&record)? }).to_string(),
+                    serde_json::json!({
+                        RECORD_KEY: serde_json::to_string(&record)?,
+                        "loom.decision_candidate": serde_json::to_string(&serde_json::json!({
+                            "version": 1, "producer": parent, "root": parent, "affected_work": []
+                        }))?
+                    })
+                    .to_string(),
                 ),
                 labels,
                 ..CreateOpts::default()
@@ -209,38 +207,9 @@ pub async fn escalate<R: CommandRunner>(
         };
         staged.push((id, finding));
     }
-    let mut admitted = Vec::new();
-    for (id, finding) in staged {
-        let snapshot = bd.show(&id).await?;
-        let record = check_record(&snapshot, parent, &finding, validator)?;
-        admitted.push((snapshot, record));
+    for (id, finding) in &staged {
+        check_record(&bd.show(id).await?, parent, finding, validator)?;
     }
-    let mut events = Vec::new();
-    for (snapshot, mut record) in admitted {
-        if snapshot.status == Status::Closed || record.disposition != Disposition::Candidate {
-            continue;
-        }
-        let report = apply_clarify_or_blocked_report(bd, &snapshot.id).await?;
-        record.disposition = match report.outcome {
-            ClarifyApplyOutcome::Clarify => Disposition::Clarify,
-            ClarifyApplyOutcome::BlockedClarifyWithoutOptions => Disposition::BriefRepair,
-        };
-        bd.update(
-            &snapshot.id,
-            UpdateOpts {
-                set_metadata: vec![(RECORD_KEY.into(), serde_json::to_string(&record)?)],
-                ..UpdateOpts::default()
-            },
-        )
-        .await?;
-        events.extend(report.routing_events(
-            &snapshot.id,
-            &ClarifyRouteContext {
-                source_route: ClarifySourceRoute::ReviewVerdict,
-                identity: "integrity-cap".into(),
-                gate_log_path: None,
-            },
-        ));
-    }
-    Ok(events)
+    admit_integrity(bd, journal, &epic, &staged, workspace).await?;
+    Ok(())
 }

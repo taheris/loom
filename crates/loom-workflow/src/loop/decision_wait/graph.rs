@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{LoopError, invalid};
 
+mod integrity;
+pub(super) use integrity::resolve as resolve_integrity;
+
 pub(super) const CANDIDATE_KEY: &str = "loom.decision_candidate";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +39,8 @@ pub(super) struct Context {
     producer: BeadId,
     producer_type: IssueType,
     decisions: Vec<Decision>,
+    #[serde(default)]
+    integrity: Option<integrity::Context>,
 }
 
 impl Context {
@@ -48,6 +53,9 @@ impl Context {
 
     pub(super) fn matches_inventory(&self, producer: &BeadId, ids: &[BeadId]) -> bool {
         self.producer == *producer
+            && self.integrity.as_ref().is_none_or(|context| {
+                self.producer_type == IssueType::Epic && context.matches(&self.decisions)
+            })
             && self.decisions.len() == ids.len()
             && self
                 .decisions
@@ -206,6 +214,68 @@ async fn check_affected_work<R: CommandRunner>(
     }
 }
 
+/// A new handoff may consume an exact additive graph already admitted by its
+/// integrity producer. Read-only publication and recovery never upgrade seals.
+pub(super) async fn readmit_reuse<R: CommandRunner>(
+    bd: &BdClient<R>,
+    journal: &super::DecisionWaitJournal,
+    source: &Bead,
+    root: &BeadId,
+    decisions: &[Bead],
+    previous: Option<&Context>,
+) -> Result<Context, LoopError> {
+    let current = resolve(bd, source, root, decisions, None).await?;
+    let Some(previous) = previous else {
+        return Ok(current);
+    };
+    if previous.producer != current.producer
+        || previous.producer_type != current.producer_type
+        || previous.integrity.is_some()
+    {
+        return Err(invalid("decision producer identity or kind changed").into());
+    }
+    for decision in &current.decisions {
+        let Some(old) = previous.decisions.iter().find(|old| old.id == decision.id) else {
+            continue;
+        };
+        if old == decision {
+            continue;
+        }
+        if decision.producer == source.id || !integrity::additive(old, decision) {
+            return Err(invalid(format!(
+                "decision {} changed an unapproved graph",
+                decision.id
+            ))
+            .into());
+        }
+        let native = decisions
+            .iter()
+            .find(|native| native.id == decision.id)
+            .ok_or_else(|| invalid("reused decision disappeared from checked inventory"))?;
+        check_reuse(bd, journal, source, native).await?;
+        let owner = journal
+            .load(&decision.producer)?
+            .ok_or_else(|| invalid("reused decision lost canonical producer admission"))?;
+        let context = owner
+            .context
+            .as_ref()
+            .ok_or_else(|| invalid("reused decision lost canonical graph context"))?;
+        if !context
+            .integrity
+            .as_ref()
+            .is_some_and(|proof| proof.covers(&decision.id))
+            || !context.decisions.contains(decision)
+        {
+            return Err(invalid(format!(
+                "decision {} lacks an admitted integrity extension",
+                decision.id
+            ))
+            .into());
+        }
+    }
+    Ok(current)
+}
+
 /// Validate every current affected-work edge before the first queue mutation.
 /// Previously admitted decisions may be reused only with the recorded graph.
 pub(super) async fn resolve<R: CommandRunner>(
@@ -219,6 +289,9 @@ pub(super) async fn resolve<R: CommandRunner>(
         .is_some_and(|old| old.producer != source.id || old.producer_type != source.issue_type)
     {
         return Err(invalid("decision producer identity or kind changed").into());
+    }
+    if let Some(context) = previous.and_then(|context| context.integrity.as_ref()) {
+        context.recheck(bd, root).await?;
     }
     let mut checked = Vec::with_capacity(decisions.len());
     for decision in decisions {
@@ -273,5 +346,6 @@ pub(super) async fn resolve<R: CommandRunner>(
         producer: source.id.clone(),
         producer_type: source.issue_type,
         decisions: checked,
+        integrity: previous.and_then(|context| context.integrity.clone()),
     })
 }

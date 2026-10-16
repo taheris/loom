@@ -11,9 +11,42 @@ use super::{
 };
 
 #[derive(Clone, Copy)]
-enum Producer {
+enum Producer<'a> {
     Task,
     Todo,
+    Integrity {
+        findings: &'a [(BeadId, loom_protocol::gate::Finding)],
+        workspace: &'a std::path::Path,
+    },
+}
+
+/// Admit a driver-resolved integrity batch through the canonical inventory lifecycle.
+/// Native affected-work extensions require freshly resolved matching finding goals.
+///
+/// # Errors
+/// Rejects omissions, changed provenance and incompatible acceptance before queue effects.
+pub async fn admit_integrity<R: CommandRunner>(
+    bd: &BdClient<R>,
+    journal: &DecisionWaitJournal,
+    expected: &Bead,
+    findings: &[(BeadId, loom_protocol::gate::Finding)],
+    workspace: &std::path::Path,
+) -> Result<(), LoopError> {
+    let reported = findings.iter().map(|(id, _)| id.clone()).collect();
+    let journal = journal
+        .clone()
+        .with_source_route(crate::gate_clarify::ClarifySourceRoute::ReviewVerdict);
+    admit_for(
+        bd,
+        &journal,
+        expected,
+        &reported,
+        Producer::Integrity {
+            findings,
+            workspace,
+        },
+    )
+    .await
 }
 
 /// Admit Todo's reported union against its pending native work epic.
@@ -53,7 +86,7 @@ async fn admit_for<R: CommandRunner>(
     journal: &DecisionWaitJournal,
     expected: &Bead,
     reported: &HashSet<BeadId>,
-    producer: Producer,
+    producer: Producer<'_>,
 ) -> Result<(), LoopError> {
     let _guard = journal.acquire(&expected.id).await?;
     let source = bd.show(&expected.id).await?;
@@ -63,6 +96,9 @@ async fn admit_for<R: CommandRunner>(
         || !matches!(source.status, Status::Open | Status::Closed)
         || match producer {
             Producer::Task => matches!(source.issue_type, IssueType::Decision | IssueType::Epic),
+            Producer::Integrity { .. } => {
+                source.issue_type != IssueType::Epic || source.status != Status::Open
+            }
             Producer::Todo => {
                 source.issue_type != IssueType::Epic
                     || !source
@@ -98,14 +134,38 @@ async fn admit_for<R: CommandRunner>(
         known.extend(previous.record.decisions.iter().cloned());
     }
     let decisions = super::inventory(bd, journal, &source, &known).await?;
-    let context = super::graph::resolve(
-        bd,
-        &source,
-        &current_root,
-        &decisions,
-        previous.as_ref().and_then(|entry| entry.context.as_ref()),
-    )
-    .await?;
+    let previous_context = previous.as_ref().and_then(|entry| entry.context.as_ref());
+    let context = match producer {
+        Producer::Integrity {
+            findings,
+            workspace,
+        } => {
+            super::graph::resolve_integrity(
+                bd,
+                &source,
+                &current_root,
+                &decisions,
+                previous_context,
+                findings,
+                workspace,
+            )
+            .await?
+        }
+        Producer::Task => {
+            super::graph::readmit_reuse(
+                bd,
+                journal,
+                &source,
+                &current_root,
+                &decisions,
+                previous_context,
+            )
+            .await?
+        }
+        Producer::Todo => {
+            super::graph::resolve(bd, &source, &current_root, &decisions, previous_context).await?
+        }
+    };
     if decisions.is_empty() {
         return Ok(());
     }

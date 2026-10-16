@@ -1071,11 +1071,15 @@ where
             .ok_or_else(|| ReviewError::NoActiveMolecule(self.label.to_string()))?;
         let parent = BeadId::new(molecule.as_str()).map_err(BdError::CreateInvalidId)?;
         let validator = WorkspaceFindingValidator::new(&self.workspace);
-        for event in
-            crate::mint::integrity::escalate(&self.bd, &parent, findings, &validator).await?
-        {
-            self.emit_driver_event(event.driver_kind, &event.summary, event.payload);
-        }
+        crate::mint::integrity::escalate(
+            &self.bd,
+            &crate::r#loop::DecisionWaitJournal::new(&self.workspace),
+            &parent,
+            findings,
+            &validator,
+            &self.workspace,
+        )
+        .await?;
         Ok(())
     }
 

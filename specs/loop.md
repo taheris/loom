@@ -337,10 +337,16 @@ distinct `affected_work` ID array. That array equals the current supported
 native blocking dependents, not an invented parent-to-discovery-child
 prerequisite. The driver checks the complete graph before staging any sibling
 and records it in canonical attribution; later reuse requires the same candidate
-and native edges. Unlabelled blocked candidates without provenance fail
-admission. Legacy native discovery-child holds retain their existing IDs,
-parentage and journals; missing legacy graph context is checked from current
-native state during recovery, never reconstructed from worker hold assertions.
+and native edges. Integrity's explicit additive admission may seal a new graph
+only after each proposed affected task independently resolves the exact finding
+under the same work root. It retains those resolved goal identities and rechecks
+them at replay/publication; an earlier disposition does not authorize the new
+edges. Changed identity, removed edges, unmatched goals and incomplete proposals
+still fail before queue effects. Unlabelled blocked candidates without
+provenance fail admission. Legacy native discovery-child holds retain their
+existing IDs, parentage and journals; missing legacy graph context is checked
+from current native state during recovery, never reconstructed from worker hold
+assertions.
 
 **Admission.** Aggregate the complete reported set and resolve every ID's
 purpose, parent/work-root context, and actual affected-work graph before new
@@ -1186,6 +1192,29 @@ mutation permission.
   [test?](epic_auto_close_runs_only_after_initial_git_and_beads_publication)
 
 ### Decision scheduling
+
+- Driver integrity escalation uses the canonical inventory, brief dispositions
+  and routing events; replay preserves exact native identities and event bytes.
+  [test](integrity_driver_replay_preserves_canonical_dispositions_and_events)
+
+- A lost acknowledgement after an actual native queue mutation recovers through
+  the same durable plan without rewriting the source or duplicating decisions.
+  [test](integrity_driver_recovers_lost_native_acknowledgement_without_source_rewrite)
+
+- Integrity graph additions require independently resolved matching finding-goal
+  acceptance. Missing or malformed acceptance rejects the whole handoff before
+  queueing new siblings, retaining staged candidates for repair.
+  [test](integrity_driver_rejects_unresolved_extension_before_new_queue_effects)
+
+- Persisted extension proofs retain exact goal/source identities; changed task
+  purpose or finding evidence rejects replay and read-only publication admission
+  without reconstructing authority or rewriting human state.
+  [test](integrity_driver_rechecks_persisted_goal_identity_before_publication)
+
+- An affected source consumes a producer-admitted additive extension only by a
+  fresh complete handoff. Read-only publication refuses its stale graph seal
+  before and after producer admission until that explicit readmission succeeds.
+  [test](integrity_extension_requires_explicit_reusable_source_readmission)
 
 - Durable per-decision plans precede queue effects; replay preserves native
   snapshots and exact routing events, including interrupted JSONL appends.
