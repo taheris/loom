@@ -6063,6 +6063,9 @@ mod tests {
                             );
                         }
 
+                        if round == 1 {
+                            return AgentOutcome::Noop;
+                        }
                         std::fs::write(
                             slot.worktree.path.join("implementation.txt"),
                             format!("repair {round}\n"),
