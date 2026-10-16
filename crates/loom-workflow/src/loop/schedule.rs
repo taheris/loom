@@ -27,6 +27,7 @@ pub struct Request {
     pub loom_bin: PathBuf,
     pub loom: LoomTopConfig,
     pub infra_policy: InfraRetryPolicy,
+    pub retry_policy: super::RetryPolicy,
     pub max_iterations: u32,
     pub repo_git_policy: RepoGitPolicy,
     pub manifest: Arc<loom_driver::profile_manifest::ProfileImageManifest>,
@@ -101,7 +102,8 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
             )
         },
     )
-    .with_loom_config(request.loom.clone());
+    .with_loom_config(request.loom.clone())
+    .with_retry_policy(request.retry_policy);
     let candidates = sources
         .iter()
         .map(|(bead, record)| (bead.id.clone(), record.candidate.clone()))
@@ -171,11 +173,15 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
                     }
                 }
                 super::runner::PerBeadGateOutcome::Recovery { detail } => {
-                    controller
+                    let reopened = controller
                         .reopen_after_verification_failure(&bead.id, detail)
                         .await?;
                     recovery.finished.insert(bead.id.clone(), candidate);
-                    recovery.repairs.insert(bead.id);
+                    if reopened {
+                        recovery.repairs.insert(bead.id);
+                    } else {
+                        completed.insert(bead.id);
+                    }
                 }
                 super::runner::PerBeadGateOutcome::StructuralViolation { detail } => {
                     controller
@@ -244,6 +250,7 @@ where
         loom_bin,
         loom,
         infra_policy,
+        retry_policy,
         max_iterations,
         repo_git_policy,
         manifest,
@@ -286,7 +293,8 @@ where
                 .filter(|record| {
                     record.label == label
                         && record.root == ready_parent
-                        && !record.needs_source_repair()
+                        && (!record.needs_source_repair()
+                            || record.semantic_failures > retry_policy.max_retries)
                 })
                 .map(|record| record.bead)
                 .collect::<HashSet<_>>();

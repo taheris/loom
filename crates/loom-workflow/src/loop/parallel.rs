@@ -28,6 +28,8 @@ pub struct WorktreeBead {
     pub bead: Bead,
     pub worktree: CreatedWorktree,
     pub bead_base: GitOid,
+    pub previous_failure: Option<loom_templates::run::PreviousFailure>,
+    pub attempt: u32,
     pub workspace_recovery: Option<loom_templates::run::WorkspaceRecovery>,
 }
 
@@ -325,10 +327,24 @@ pub async fn create_worktrees(
         let wt = git.create_worktree(label, &bead.id).await?;
         let preparation = super::worker::prepare_workspace(git, &bead, &wt.path).await?;
         info!(bead = %bead.id, path = %wt.path.display(), branch = %wt.branch, "worktree created");
+        let repair = loom_driver::workspace::Association::resolve(git.workdir())?
+            .verification_continuations()?
+            .into_iter()
+            .find(|record| record.bead == bead.id && record.needs_source_repair());
+        let (previous_failure, attempt) = if let Some(record) = repair {
+            loom_driver::workspace::Association::resolve(git.workdir())?
+                .validate_verification_checkout(&record)?;
+            let failure = super::worker::verification_failure(&record);
+            (failure, record.semantic_failures)
+        } else {
+            (None, 0)
+        };
         out.push(WorktreeBead {
             bead,
             worktree: wt,
             bead_base: preparation.bead_base,
+            previous_failure,
+            attempt,
             workspace_recovery: preparation.recovery,
         });
     }
@@ -361,6 +377,8 @@ where
                 bead: bead.clone(),
                 worktree: worktree.clone(),
                 bead_base: slot.bead_base,
+                previous_failure: slot.previous_failure,
+                attempt: slot.attempt,
                 workspace_recovery: slot.workspace_recovery,
             })
             .await;
@@ -881,6 +899,8 @@ mod tests {
         WorktreeBead {
             bead_base: GitOid::new("0123456789abcdef0123456789abcdef01234567").unwrap(),
             workspace_recovery: None,
+            previous_failure: None,
+            attempt: 0,
             bead: fake_bead(id),
             worktree: CreatedWorktree {
                 path: PathBuf::from(format!(".loom/beads/{id}")),

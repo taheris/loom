@@ -32,6 +32,16 @@ pub struct PublicationRebase {
     pub after: Option<GitOid>,
 }
 
+/// Observed post-integration failure retained for the next source-repair prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerificationFailure {
+    pub target: String,
+    pub exit_code: i32,
+    pub output: String,
+    pub log_path: std::path::PathBuf,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerificationContinuation {
@@ -43,6 +53,10 @@ pub struct VerificationContinuation {
     pub parked_status: Option<Status>,
     #[serde(default)]
     pub repair_detail: Option<String>,
+    #[serde(default)]
+    pub repair_failure: Option<VerificationFailure>,
+    #[serde(default)]
+    pub semantic_failures: u32,
     #[serde(default)]
     pub parked_cause: Option<String>,
     #[serde(default)]
@@ -73,6 +87,11 @@ impl Association {
         let path = self.operator().join(".loom/beads").join(bead.as_str());
         let directory = Directory::open(&path)?;
         let git = directory.child(Path::new(".git"))?;
+        let semantic_failures = self
+            .verification_continuations()?
+            .into_iter()
+            .find(|record| record.bead == bead)
+            .map_or(0, |record| record.semantic_failures);
         let record = VerificationContinuation {
             bead,
             label,
@@ -83,6 +102,8 @@ impl Association {
             candidate,
             parked_status: None,
             repair_detail: None,
+            repair_failure: None,
+            semantic_failures,
             parked_cause: None,
             source_head: sync_head_commit_sha(&path).map_err(std::io::Error::other)?,
             source_tree: head_tree_oid_sync(&path).map_err(std::io::Error::other)?,
@@ -189,8 +210,16 @@ impl Association {
         &self,
         record: &VerificationContinuation,
         detail: String,
+        failure: Option<VerificationFailure>,
     ) -> Result<(), Error> {
         let mut record = record.clone();
+        if !record.needs_source_repair() {
+            record.semantic_failures =
+                record.semantic_failures.checked_add(1).ok_or_else(|| {
+                    std::io::Error::other("semantic verification failure count exhausted")
+                })?;
+        }
+        record.repair_failure = failure;
         record.phase = Phase::Repair;
         record.repair_detail = Some(detail);
         self.append_verification(&record)

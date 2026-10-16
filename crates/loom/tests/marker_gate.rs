@@ -349,6 +349,11 @@ fn waiting_marker_without_blocker_is_recovery_not_silent_parking() {
         "No dependency was declared.",
         &["spec:agent", "profile:base"],
     );
+    std::fs::write(
+        state_dir.join("lm-badwait/notes"),
+        "retained earlier evidence",
+    )
+    .unwrap();
     let bin_dir = install_bd_shim(workspace);
     let manifest = write_minimal_manifest(workspace);
 
@@ -378,6 +383,10 @@ fn waiting_marker_without_blocker_is_recovery_not_silent_parking() {
     assert!(
         read_field(&state_dir, "lm-badwait", "notes").contains("invalid-waiting"),
         "invalid wait evidence must be durable: {log}",
+    );
+    assert!(
+        read_field(&state_dir, "lm-badwait", "notes").starts_with("retained earlier evidence\n"),
+        "prior notes must survive appended recovery diagnostics: {log}"
     );
     assert!(!driver_closed_bead(&log, "lm-badwait"), "{log}");
 }

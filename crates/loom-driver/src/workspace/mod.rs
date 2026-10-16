@@ -2,7 +2,7 @@
 
 mod launch;
 mod verification;
-pub use verification::{PublicationRebase, VerificationContinuation};
+pub use verification::{PublicationRebase, VerificationContinuation, VerificationFailure};
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

@@ -22,6 +22,28 @@ use super::{
 use crate::skill::SkillPlan;
 use crate::spawn::container_workspace_path;
 
+pub(super) fn verification_failure(
+    record: &loom_driver::workspace::VerificationContinuation,
+) -> Option<PreviousFailure> {
+    record
+        .repair_failure
+        .as_ref()
+        .map(|failure| PreviousFailure::PostIntegrateFail {
+            failures: vec![loom_templates::previous_failure::VerifierFailure::new(
+                failure.target.clone(),
+                failure.exit_code,
+                failure.output.clone(),
+            )],
+            gate_log_path: failure.log_path.clone(),
+        })
+        .or_else(|| {
+            record
+                .repair_detail
+                .clone()
+                .map(PreviousFailure::from_agent_error)
+        })
+}
+
 /// Inputs common to every worker, independent of the scheduling mode.
 pub struct Request<'a> {
     pub bead: &'a Bead,

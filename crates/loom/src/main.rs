@@ -3279,6 +3279,9 @@ fn run_parallel_loop_root(
         wrix_bin,
         loom_bin: current_loom_bin()?,
         loom: config.loom.clone(),
+        retry_policy: RetryPolicy {
+            max_retries: config.loop_.max_retries,
+        },
         infra_policy: InfraRetryPolicy {
             max_attempts: config.loop_.infra.max_attempts,
         },
@@ -3456,6 +3459,7 @@ fn run_sequential_loop_root(
         .with_agent_override(agent_override)
         .with_wrix_bin(wrix_bin)
         .with_loom_config(loom_cfg_for_run)
+        .with_retry_policy(retry_policy)
         .with_skills_config(skills_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
         if let Some(bead) = fixed_bead {
@@ -3680,10 +3684,10 @@ async fn dispatch_for_slot(
         loom: loom_cfg,
         skills: skills_cfg,
         launcher_env,
-        previous_failure: None,
+        previous_failure: slot.previous_failure,
         bead_base: slot.bead_base,
         workspace_recovery: slot.workspace_recovery,
-        attempt: 0,
+        attempt: slot.attempt,
     })
     .await?
     {

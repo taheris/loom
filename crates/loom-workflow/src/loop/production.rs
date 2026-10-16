@@ -145,6 +145,7 @@ where
     /// cache mount + env. `LoomTopConfig::default()` is harmless — both
     /// sccache fields are `None`/`/sccache` so no mount is emitted.
     loom_cfg: LoomTopConfig,
+    retry_policy: super::RetryPolicy,
     skills_cfg: SkillsConfig,
     /// State for the bead currently being processed by `run_bead`. The
     /// envelope builder is shared across every driver event emitted
@@ -217,6 +218,7 @@ where
             logs_root: None,
             current_emit: None,
             loom_cfg: LoomTopConfig::default(),
+            retry_policy: super::RetryPolicy::default(),
             skills_cfg: SkillsConfig::default(),
             pre_integration_tip: None,
             verification_attempted: HashSet::new(),
@@ -267,6 +269,12 @@ where
     }
 
     #[must_use]
+    pub const fn with_retry_policy(mut self, policy: super::RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+
+    #[must_use]
     pub fn with_skills_config(mut self, cfg: SkillsConfig) -> Self {
         self.skills_cfg = cfg;
         self
@@ -310,6 +318,10 @@ where
             .find(|record| &record.bead == bead && record.needs_source_repair())
         {
             association.validate_verification_checkout(&record)?;
+            if record.semantic_failures > self.retry_policy.max_retries {
+                self.apply_blocked(bead, super::runner::RETRY_EXHAUSTED_CAUSE, &format!("{} semantic verification failures exhausted max_retries={}; rejected source and failure evidence remain retained: {detail}", record.semantic_failures, self.retry_policy.max_retries)).await?;
+                return Ok(false);
+            }
             let pin = format!(
                 "refs/loom/verification/{}/{}",
                 record.bead, record.candidate
@@ -792,12 +804,17 @@ where
                     .await?
                 {
                     return Ok(AgentOutcome::Blocked {
-                        reason: "independent hold retains rejected source work".into(),
+                        reason: "source repair is held or its semantic retry budget is exhausted; rejected work remains retained".into(),
                     });
                 }
                 source.status = loom_driver::bd::Status::Open;
                 source.labels.retain(|label| !label.is_infra());
                 repaired_source = Some(source);
+                self.stashed_previous_failure = super::worker::verification_failure(&record)
+                    .or_else(|| self.stashed_previous_failure.take());
+                self.current_attempt = self
+                    .current_attempt
+                    .max(record.semantic_failures.saturating_sub(1));
                 previous_failure = previous_failure.or(Some(detail));
             } else {
                 return self.resume_verification(bead, record).await;
@@ -1272,7 +1289,7 @@ where
                 UpdateOpts {
                     status: Some(loom_driver::bd::Status::Blocked),
                     add_labels: vec!["loom:blocked".to_string()],
-                    notes: Some(notes),
+                    append_notes: Some(notes),
                     ..UpdateOpts::default()
                 },
             )
@@ -1457,7 +1474,16 @@ where
                  gate log: {gate_log}\nstdout:\n{stdout_tail}\nstderr:\n{stderr_tail}",
             );
             if !infrastructure && let Some(record) = &continuation {
-                association.await_verification_repair(record, detail.clone())?;
+                association.await_verification_repair(
+                    record,
+                    detail.clone(),
+                    Some(loom_driver::workspace::VerificationFailure {
+                        target: failure.target.clone(),
+                        exit_code: failure.exit_code,
+                        output: format!("{stdout_tail}\n{stderr_tail}"),
+                        log_path: gate_log_path.clone(),
+                    }),
+                )?;
             }
             let rolled_back = self.rollback_if_bead_advanced_integration().await?;
             if !infrastructure {
@@ -5869,6 +5895,7 @@ mod tests {
             wrix_bin: resumed.wrix_bin.clone(),
             loom_bin: resumed.loom_bin.clone(),
             loom: resumed.loom_cfg.clone(),
+            retry_policy: super::super::RetryPolicy::default(),
             infra_policy: super::super::InfraRetryPolicy { max_attempts: 3 },
             max_iterations: 2,
             repo_git_policy: loom_driver::git::RepoGitPolicy::resolve(
@@ -5919,6 +5946,17 @@ mod tests {
 
     #[tokio::test]
     async fn parallel_repaired_candidates_repeat_required_verification_before_publication() {
+        parallel_repair_campaign(true, 2).await;
+    }
+
+    #[tokio::test]
+    async fn parallel_semantic_repair_budget_survives_restart_and_retains_rejected_history() {
+        for budget in [0, 2] {
+            parallel_repair_campaign(false, budget).await;
+        }
+    }
+
+    async fn parallel_repair_campaign(accept_final: bool, max_retries: u32) {
         let dir = tempfile::tempdir().expect("fixture");
         let workspace = dir.path().join("workspace");
         let git = git_workspace(&workspace);
@@ -5928,7 +5966,7 @@ mod tests {
         source.status = loom_driver::bd::Status::Closed;
         let observed = serde_json::to_vec(&vec![source.clone()]).expect("native closed source");
         let verifier = dir.path().join("verifier");
-        loom_test_support::write_executable_bash_script(&verifier, "set -euo pipefail\nprintf 'executed\\n' >> .loom/verifier-executions\n[[ -f accepted.txt ]]\n").expect("verifier");
+        loom_test_support::write_executable_bash_script(&verifier, "set -euo pipefail\nprintf 'executed\\n' >> .loom/verifier-executions\nif [[ ! -f accepted.txt ]]; then printf 'required system assertion failed\\n' >&2; exit 1; fi\n").expect("verifier");
         let request = super::super::schedule::Request {
             workspace: workspace.clone(),
             label: label.clone(),
@@ -5938,6 +5976,7 @@ mod tests {
             wrix_bin: "unused-wrix".into(),
             loom_bin: verifier,
             loom: loom_driver::config::LoomTopConfig::default(),
+            retry_policy: super::super::RetryPolicy { max_retries },
             infra_policy: super::super::InfraRetryPolicy { max_attempts: 2 },
             max_iterations: 5,
             repo_git_policy: loom_driver::git::RepoGitPolicy::resolve(
@@ -5952,26 +5991,94 @@ mod tests {
             loom_driver::workspace::Association::resolve(&workspace).expect("authority");
         let mut recovery = super::super::schedule::VerificationRecovery::default();
         let mut rejected = Vec::new();
-        for round in 0..3 {
+        for round in 0..=max_retries {
+            let manifest = Arc::clone(&request.manifest);
+            let operator = workspace.clone();
+            let worker_label = label.clone();
             let batch = super::super::parallel::run_parallel_batch_for_root(
                 &git,
                 &label,
                 vec![source.clone()],
                 None,
                 None,
-                move |slot| async move {
-                    std::fs::write(
-                        slot.worktree.path.join("implementation.txt"),
-                        format!("repair {round}\n"),
-                    )
-                    .expect("source");
-                    if round == 2 {
-                        std::fs::write(slot.worktree.path.join("accepted.txt"), "corrected\n")
-                            .expect("fixed source");
-                    }
-                    loom_driver::git::commit_all_in(&slot.worktree.path, "repair source candidate")
+                move |slot| {
+                    let manifest = Arc::clone(&manifest);
+                    let operator = operator.clone();
+                    let worker_label = worker_label.clone();
+                    async move {
+                        assert_eq!(slot.attempt, round);
+                        if round == 0 {
+                            assert!(slot.previous_failure.is_none());
+                        } else {
+                            let Some(PreviousFailure::PostIntegrateFail {
+                                failures,
+                                gate_log_path,
+                            }) = &slot.previous_failure
+                            else {
+                                panic!("typed integration failure missing");
+                            };
+                            assert!(failures[0].target.starts_with("loom gate verify --diff "));
+                            assert_eq!(failures[0].exit_code, 1);
+                            assert!(
+                                failures[0]
+                                    .stderr_tail
+                                    .contains("required system assertion failed")
+                            );
+                            assert!(gate_log_path.exists());
+                            let prepared =
+                                super::super::worker::prepare(super::super::worker::Request {
+                                    bead: &slot.bead,
+                                    workspace: &slot.worktree.path,
+                                    loom_workspace: &operator,
+                                    manifest: &manifest,
+                                    cli_profile: None,
+                                    phase_default: &ProfileName::base(),
+                                    runtime: AgentRuntime::Pi,
+                                    label: &worker_label,
+                                    style_rules: "docs/style-rules.md",
+                                    loom: &LoomTopConfig::default(),
+                                    skills: &SkillsConfig::default(),
+                                    launcher_env: vec![],
+                                    previous_failure: slot.previous_failure.clone(),
+                                    bead_base: slot.bead_base.clone(),
+                                    workspace_recovery: slot.workspace_recovery.clone(),
+                                    attempt: slot.attempt,
+                                })
+                                .await
+                                .expect("real repair prompt preparation");
+                            let super::super::worker::Preparation::Ready(worker) = prepared else {
+                                panic!("repair prompt rejected");
+                            };
+                            assert!(
+                                worker
+                                    .spawn
+                                    .initial_prompt
+                                    .contains("required system assertion failed")
+                            );
+                            assert!(
+                                worker
+                                    .spawn
+                                    .initial_prompt
+                                    .contains(&gate_log_path.display().to_string())
+                            );
+                        }
+
+                        std::fs::write(
+                            slot.worktree.path.join("implementation.txt"),
+                            format!("repair {round}\n"),
+                        )
+                        .expect("source");
+                        if accept_final && round == max_retries {
+                            std::fs::write(slot.worktree.path.join("accepted.txt"), "corrected\n")
+                                .expect("fixed source");
+                        }
+                        loom_driver::git::commit_all_in(
+                            &slot.worktree.path,
+                            "repair source candidate",
+                        )
                         .expect("commit");
-                    AgentOutcome::Success
+                        AgentOutcome::Success
+                    }
                 },
             )
             .await
@@ -5979,7 +6086,15 @@ mod tests {
             assert_eq!(batch.merged_ids(), vec![source.id.clone()]);
             let candidate =
                 loom_driver::git::sync_head_commit_sha(&integration).expect("candidate");
-            let responses = if round < 2 {
+            let responses = if !accept_final && round == max_retries {
+                vec![
+                    ok_stdout(&observed),
+                    ok_stdout(&observed),
+                    ok_stdout(&observed),
+                    ok_stdout(&observed),
+                    ok_stdout(b""),
+                ]
+            } else if round < max_retries {
                 vec![
                     ok_stdout(&observed),
                     ok_stdout(&observed),
@@ -5993,9 +6108,11 @@ mod tests {
                     ok_stdout(&observed),
                 ]
             };
+            let runner = ScriptedBd::new(responses);
+            let calls = runner.calls_handle();
             let (completed, worked) = super::super::schedule::resume_verification_candidates(
                 &request,
-                BdClient::with_runner(ScriptedBd::new(responses)),
+                BdClient::with_runner(runner),
                 &mut recovery,
             )
             .await
@@ -6005,8 +6122,20 @@ mod tests {
                 "replacement source must never inherit an old candidate's exclusion"
             );
             let records = association.verification_continuations().expect("pending");
-            if round < 2 {
-                assert!(completed.is_empty());
+            if round < max_retries || !accept_final {
+                if round < max_retries {
+                    assert!(completed.is_empty());
+                } else {
+                    assert_eq!(completed, HashSet::from([source.id.clone()]));
+                    assert!(calls.lock().expect("native calls").iter().any(|args| {
+                        args.windows(2).any(|pair| {
+                            pair[0] == "--append-notes"
+                                && pair[1].to_string_lossy().contains("retry-exhausted")
+                        })
+                    }));
+                }
+                assert_eq!(records[0].semantic_failures, round + 1);
+
                 assert!(records[0].needs_source_repair());
                 assert!(
                     records[0]
@@ -6026,8 +6155,55 @@ mod tests {
                 .expect("executions")
                 .lines()
                 .count(),
-            3
+            usize::try_from(max_retries + 1).expect("small fixture budget")
         );
+        if !accept_final {
+            let mut blocked = source.clone();
+            blocked.status = loom_driver::bd::Status::Blocked;
+            blocked
+                .labels
+                .push(loom_driver::bd::Label::new("loom:blocked").expect("label"));
+            let blocked = serde_json::to_vec(&vec![blocked]).expect("native blocked source");
+            let (completed, work) = super::super::schedule::resume_verification_candidates(
+                &request,
+                BdClient::with_runner(ScriptedBd::new([ok_stdout(&blocked)])),
+                &mut super::super::schedule::VerificationRecovery::default(),
+            )
+            .await
+            .expect("restart preserves exhausted source");
+            assert!(completed.is_empty());
+            assert!(!work);
+            assert!(
+                association.verification_continuations().expect("retained")[0]
+                    .needs_source_repair()
+            );
+            // A crash before the native blocked update cannot reset the durable semantic budget.
+            let mut open = source.clone();
+            open.status = loom_driver::bd::Status::Open;
+            let open = serde_json::to_vec(&vec![open]).expect("native open source");
+            let runner = ScriptedBd::new([
+                ok_stdout(&open),
+                ok_stdout(&open),
+                ok_stdout(&open),
+                ok_stdout(b""),
+            ]);
+            let calls = runner.calls_handle();
+            let (completed, work) = super::super::schedule::resume_verification_candidates(
+                &request,
+                BdClient::with_runner(runner),
+                &mut super::super::schedule::VerificationRecovery::default(),
+            )
+            .await
+            .expect("restart before native parking update");
+            assert_eq!(completed, HashSet::from([source.id.clone()]));
+            assert!(!work);
+            assert!(calls.lock().expect("calls").iter().any(|args| {
+                args.windows(2).any(|pair| {
+                    pair[0] == "--append-notes"
+                        && pair[1].to_string_lossy().contains("retry-exhausted")
+                })
+            }));
+        }
         for candidate in rejected {
             assert_eq!(
                 loom_driver::git::sync_rev_parse(
@@ -6088,6 +6264,7 @@ mod tests {
             wrix_bin: "unused-wrix".into(),
             loom_bin: verifier,
             loom: loom_driver::config::LoomTopConfig::default(),
+            retry_policy: super::super::RetryPolicy::default(),
             infra_policy: super::super::InfraRetryPolicy { max_attempts: 2 },
             max_iterations: 5,
             repo_git_policy: loom_driver::git::RepoGitPolicy::resolve(
@@ -6335,7 +6512,11 @@ mod tests {
                 move |cfg: SpawnConfig, _id: BeadId| {
                     let captured = Arc::clone(&captured);
                     async move {
-                        assert!(cfg.initial_prompt.contains("exited 1"));
+                        assert!(
+                            cfg.initial_prompt
+                                .contains("post-integration verify failed")
+                        );
+                        assert!(cfg.initial_prompt.contains("loom gate verify --diff"));
                         captured.store(true, std::sync::atomic::Ordering::SeqCst);
                         (
                             SessionResult::PreflightFailed {
@@ -6479,7 +6660,7 @@ mod tests {
                 .expect("continuation");
             if repair {
                 association
-                    .await_verification_repair(&record, "executed semantic rejection".into())
+                    .await_verification_repair(&record, "executed semantic rejection".into(), None)
                     .expect("durable repair");
             }
             git.reset_integration_to(base.as_str())
