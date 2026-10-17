@@ -15,8 +15,10 @@ export XDG_STATE_HOME="$work/state"
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
-cat > "$work/wrix" <<'WRIX'
-#!/usr/bin/env bash
+# Generated scripts are not covered by Nix's patchShebangs phase. In particular,
+# /usr/bin/env does not exist in the build sandbox used by this check.
+printf '#!%s\n' "$(command -v bash)" > "$work/wrix"
+cat >> "$work/wrix" <<'WRIX'
 set -euo pipefail
 [[ "$#" == 5 && "$1" == --profile-config && "$3" == spawn && "$4" == --spawn-config ]]
 profile="$2"
@@ -64,6 +66,8 @@ case "$profile" in
 esac
 WRIX
 chmod +x "$work/wrix"
+IFS= read -r mock_shebang < "$work/wrix"
+[[ "$mock_shebang" == "#!$(command -v bash)" ]]
 
 run_case() {
   local mode="$1"
