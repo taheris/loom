@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trap 'printf "sandbox-nix-probe-failed line=%s exit=%s\n" "$LINENO" "$?" >&2' ERR
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"

@@ -353,6 +353,63 @@
         inherit pkgs profileManifest;
       };
 
+      transportHarnessProfile = pkgs.writeText "transport-harness-profile.json" (
+        builtins.toJSON {
+          schema = 1;
+          system = "test";
+          profile = {
+            name = "transport-harness";
+            env = { };
+            mounts = [ ];
+            writable_dirs = [ ];
+            network_allowlist = [ ];
+          };
+          image = {
+            ref = "wrix-transport:test";
+            source = "/nix/store/transport-harness-fixture";
+            source_kind = if pkgs.stdenv.hostPlatform.isDarwin then "docker-archive" else "nix-descriptor";
+            digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+          };
+          agent.kind = "direct";
+          resources = {
+            cpus = null;
+            memory_mb = 4096;
+            pids_limit = 4096;
+          };
+          security = {
+            deploy_key = null;
+            runtime_secrets = { };
+          };
+          network = {
+            default_mode = "limit";
+            ipv6 = "disabled";
+          };
+          services = {
+            beads.enable = false;
+            nix_cache.enable = false;
+          };
+          features.mcp_runtime = false;
+        }
+      );
+      worker-transport-harness =
+        pkgs.runCommand "worker-transport-harness"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.findutils
+              pkgs.jq
+              pkgs.gnugrep
+            ];
+          }
+          ''
+            set -euo pipefail
+            bash ${../../tests/sandbox/worker-transport-test.sh} \
+              ${../../tests/sandbox/worker-transport.sh} \
+              ${sandbox.launcher}/bin/wrix ${transportHarnessProfile}
+            touch "$out"
+          '';
+
       agent-entrypoint-contract =
         pkgs.runCommand "agent-entrypoint-contract"
           {
@@ -873,6 +930,7 @@
           worker-native-preflight
           worker-nix-state-permissions
           worker-private-nix-api
+          worker-transport-harness
           native-factory-private-nix
           smoke-beads-fixture
           smoke-preflight-skips-runtime-build

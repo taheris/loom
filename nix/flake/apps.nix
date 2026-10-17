@@ -185,6 +185,14 @@ _:
         wrixLinuxPkgs.writeShellScriptBin "loom-direct-runner" ''
           set -euo pipefail
           ${setup}
+          printf 'sandbox-nix-transport-probe-started\n'
+          if [[ "''${1:-}" == --guard-fixture && "$#" == 1 ]]; then
+            [[ -f /fixture-guard/sentinel ]]
+            ln -s /fixture-guard /homeless-shelter
+          elif [[ "$#" != 0 ]]; then
+            printf 'invalid transport probe arguments\n' >&2
+            exit 1
+          fi
           bash ${../../tests/sandbox/nix.sh}
           exec bash ${../../tests/sandbox/transport.sh}
         '';
@@ -264,77 +272,9 @@ _:
         ]
         ++ optionals isLinux [ pkgs.podman ];
         text = ''
-          unset WRIX_UNSAFE_PODMAN_SOCKET WRIX_NETWORK WRIX_NETWORK_ALLOWLIST
-          fixture=$(mktemp -d)
-          trap 'rm -rf "$fixture"' EXIT
-          timeout --kill-after=10s 600s ${transportSandbox.launcher}/bin/wrix \
-            --profile-config ${transportProfile} run \
-            --no-git-deploy --no-git-sign "$fixture"
-
-          if ! timeout --kill-after=10s 600s ${transientSandbox.launcher}/bin/wrix \
-            --profile-config ${transientProfile} run --no-git-deploy --no-git-sign "$fixture" \
-            > "$fixture/transient.log" 2>&1; then
-            cat "$fixture/transient.log" >&2
-            exit 1
-          fi
-          grep -F 'fixture transient transfer failure' "$fixture/transient.log"
-          grep -F 'sandbox-nix-transport-attempt-failed attempt=1 exit=1' "$fixture/transient.log"
-          grep -F 'sandbox-nix-transport-preflight-ok' "$fixture/transient.log"
-
-          if timeout --kill-after=10s 600s ${outageSandbox.launcher}/bin/wrix \
-            --profile-config ${outageProfile} run --no-git-deploy --no-git-sign "$fixture" \
-            > "$fixture/outage.log" 2>&1; then
-            printf 'transport accepted an unavailable upstream\n' >&2
-            exit 1
-          else
-            status=$?
-          fi
-          if [[ "$status" != 1 ]]; then
-            cat "$fixture/outage.log" >&2
-            printf 'unavailable-input fixture returned %s\n' "$status" >&2
-            exit 1
-          fi
-          grep -F 'fixture upstream unavailable' "$fixture/outage.log"
-          grep -F 'sandbox-nix-transport-attempt-failed attempt=3 exit=1' "$fixture/outage.log"
-
-          if timeout --kill-after=10s 600s ${stalledSandbox.launcher}/bin/wrix \
-            --profile-config ${stalledProfile} run --no-git-deploy --no-git-sign "$fixture" \
-            > "$fixture/stalled.log" 2>&1; then
-            printf 'transport accepted an interrupted transfer\n' >&2
-            exit 1
-          else
-            status=$?
-          fi
-          if [[ "$status" != 124 ]]; then
-            cat "$fixture/stalled.log" >&2
-            printf 'interrupted-transfer fixture returned %s\n' "$status" >&2
-            exit 1
-          fi
-          grep -F 'fixture transfer stalled' "$fixture/stalled.log"
-          grep -F 'sandbox-nix-transport-attempt-failed attempt=3 exit=124' "$fixture/stalled.log"
-
-          mkdir -m 700 "$fixture/guard"
-          printf 'preserved guard fixture\n' > "$fixture/guard/sentinel"
-          jq --arg guard "$fixture/guard" \
-            '.profile.mounts += [{source: $guard, dest: "/homeless-shelter", mode: "ro", optional: false}]' \
-            ${transportProfile} > "$fixture/guard-profile.json"
-          if timeout --kill-after=10s 600s ${transportSandbox.launcher}/bin/wrix \
-            --profile-config "$fixture/guard-profile.json" run --no-git-deploy --no-git-sign "$fixture" \
-            > "$fixture/guard.log" 2>&1; then
-            printf 'transport accepted an occupied purity guard\n' >&2
-            exit 1
-          else
-            status=$?
-          fi
-          if [[ "$status" != 1 ]]; then
-            cat "$fixture/guard.log" >&2
-            printf 'occupied-guard fixture returned %s\n' "$status" >&2
-            exit 1
-          fi
-          cat "$fixture/guard.log"
-          grep -F 'worker-profile purity guard is occupied' "$fixture/guard.log"
-          [[ "$(cat "$fixture/guard/sentinel")" == 'preserved guard fixture' ]]
-          printf 'sandbox-nix-transport-failure-paths-ok\n'
+          exec ${pkgs.bash}/bin/bash ${../../tests/sandbox/worker-transport.sh} \
+            ${transportSandbox.launcher}/bin/wrix \
+            ${transportProfile} ${transientProfile} ${outageProfile} ${stalledProfile}
         '';
       };
 
