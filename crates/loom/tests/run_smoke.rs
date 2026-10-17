@@ -197,12 +197,14 @@ fn all_non_loop_wrix_launch_surfaces_preflight_repository_policy() {
     let workspace = dir.path();
     init_workspace_repo(workspace);
 
-    let deploy_key = workspace.join("repo-key");
-    let signing_key = workspace.join("repo-key-signing");
+    // Launcher inputs are external test infrastructure, not project subjects.
+    let runtime = tempfile::tempdir().unwrap();
+    let deploy_key = runtime.path().join("repo-key");
+    let signing_key = runtime.path().join("repo-key-signing");
     std::fs::write(&deploy_key, "deploy").unwrap();
     std::fs::write(&signing_key, "signing").unwrap();
-    let log = workspace.join("policy.log");
-    let wrix = workspace.join("wrix-policy");
+    let log = runtime.path().join("policy.log");
+    let wrix = runtime.path().join("wrix-policy");
     std::fs::write(
         &wrix,
         loom_test_support::bash_script(&format!(
@@ -229,7 +231,7 @@ chmod +x .git/wrix/git-ssh
     )
     .unwrap();
     std::fs::set_permissions(&wrix, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let missing_manifest = workspace.join("missing-profile-images.json");
+    let missing_manifest = runtime.path().join("missing-profile-images.json");
     let commands: &[&[&str]] = &[
         &["plan"],
         &["todo"],

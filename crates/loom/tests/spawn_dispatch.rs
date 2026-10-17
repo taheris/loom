@@ -1675,6 +1675,8 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
+    // Launcher, keys and image fixtures are not repository verification subjects.
+    let runtime = tempfile::tempdir().unwrap();
 
     // build_review_prompt loads `[verify]`/`[judge]` sources from
     // specs/<label>.md; seed an empty Success Criteria section so the
@@ -1682,8 +1684,8 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
     std::fs::write(workspace.join("specs/agent.md"), "## Success Criteria\n\n").unwrap();
 
-    let manifest_path = workspace.join("profile-images.json");
-    let image_source = workspace.join("base.tar");
+    let manifest_path = runtime.path().join("profile-images.json");
+    let image_source = runtime.path().join("base.tar");
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
@@ -1698,7 +1700,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     )
     .unwrap();
 
-    let shim_dir = workspace.join("shim");
+    let shim_dir = runtime.path().join("shim");
     std::fs::create_dir_all(&shim_dir).unwrap();
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
@@ -1713,7 +1715,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     );
     let policy_shim = install_policy_aware_wrix_shim(&shim_dir, &shim);
 
-    let home = workspace.join("home");
+    let home = runtime.path().join("home");
     let deploy_key_dir = home.join(".ssh/deploy_keys");
     std::fs::create_dir_all(&deploy_key_dir).unwrap();
     let host = "testhost";
@@ -1757,7 +1759,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     // `loom:clarify` on the post-snapshot bead → ReviewVerdict::PushBlocked →
     // ReviewResult::PushBlocked, no push gates fire.
     let bead_json = r#"[{"id":"lm-reviewtest","title":"review gate epic","description":"","status":"open","priority":2,"issue_type":"epic","labels":["spec:agent","loom:active","loom:clarify"]}]"#;
-    let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
+    let bd_bin_dir = install_bd_bead_stub(runtime.path(), bead_json);
     let hostname = bd_bin_dir.join("hostname");
     std::fs::write(
         &hostname,
@@ -1792,7 +1794,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
-        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env("XDG_STATE_HOME", runtime.path().join("state"))
         .env("HOME", &home)
         .env_remove("GIT_SSH_COMMAND")
         .env_remove("GIT_SSH")

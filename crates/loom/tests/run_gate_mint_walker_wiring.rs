@@ -62,12 +62,15 @@ fn pinned_path(bin_dir: &Path) -> std::ffi::OsString {
 /// and an empty profile manifest. Returns the
 /// subprocess output and the bd-shim invocation log path so callers can
 /// inspect both.
-fn run_gate_mint_tree_subprocess(workspace: &Path) -> (std::process::Output, PathBuf) {
-    let bin_dir = install_bd_shim(workspace);
-    let state_dir = workspace.join("bd-state");
+fn run_gate_mint_tree_subprocess(
+    workspace: &Path,
+    runtime: &Path,
+) -> (std::process::Output, PathBuf) {
+    let bin_dir = install_bd_shim(runtime);
+    let state_dir = runtime.join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir bd-state");
 
-    let manifest_path = workspace.join("profile-images.json");
+    let manifest_path = runtime.join("profile-images.json");
     std::fs::write(&manifest_path, "{}").expect("write empty manifest");
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
@@ -81,7 +84,7 @@ fn run_gate_mint_tree_subprocess(workspace: &Path) -> (std::process::Output, Pat
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("BD_STATE_DIR", &state_dir)
         .env("LOOM_BIN", loom_bin)
-        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env("XDG_STATE_HOME", runtime.join("state"))
         .env_remove("LOOM_INSIDE")
         .output()
         .expect("spawn loom");
@@ -106,7 +109,8 @@ fn git_init_workspace(workspace: &Path) {
     run(&["config", "user.name", "Test"]);
     run(&["config", "commit.gpgsign", "false"]);
     std::fs::write(workspace.join("README.md"), "fixture\n").expect("write README");
-    run(&["add", "README.md"]);
+    std::fs::write(workspace.join(".gitignore"), "/.loom/\n").expect("ignore tool runtime state");
+    run(&["add", "README.md", ".gitignore"]);
     run(&["commit", "-q", "-m", "init"]);
 }
 
@@ -214,9 +218,12 @@ fn record_deferred_batch(workspace: &Path, state_dir: &Path, binary: PathBuf) {
     std::fs::write(state_dir.join(".invocations.log"), "").unwrap();
 }
 
-fn run_gate_mint_molecule_subprocess(workspace: &Path) -> (std::process::Output, PathBuf) {
-    let bin_dir = install_bd_shim(workspace);
-    let state_dir = workspace.join("bd-state");
+fn run_gate_mint_molecule_subprocess(
+    workspace: &Path,
+    runtime: &Path,
+) -> (std::process::Output, PathBuf) {
+    let bin_dir = install_bd_shim(runtime);
+    let state_dir = runtime.join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir bd-state");
     write_bead(&state_dir, "lm-mol", "open", "epic", &["spec:walker-pin"]);
     record_deferred_batch(workspace, &state_dir, bin_dir.join("bd"));
@@ -229,7 +236,7 @@ fn run_gate_mint_molecule_subprocess(workspace: &Path) -> (std::process::Output,
         .args(["gate", "mint", "-m", "lm-mol"])
         .env("PATH", pinned_path(&bin_dir))
         .env("BD_STATE_DIR", &state_dir)
-        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env("XDG_STATE_HOME", runtime.join("state"))
         .env_remove("LOOM_INSIDE")
         .output()
         .expect("spawn loom");
@@ -246,7 +253,8 @@ fn run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion()
     git_init_workspace(workspace);
     write_fixture_spec(workspace);
 
-    let (output, log_path) = run_gate_mint_tree_subprocess(workspace);
+    let runtime = tempfile::tempdir().expect("tree runtime");
+    let (output, log_path) = run_gate_mint_tree_subprocess(workspace, runtime.path());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let log = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -276,8 +284,9 @@ fn run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion()
     let molecule_workspace = tempfile::tempdir().expect("molecule tempdir");
     git_init_workspace(molecule_workspace.path());
     write_fixture_spec(molecule_workspace.path());
+    let molecule_runtime = tempfile::tempdir().expect("molecule runtime");
     let (molecule_output, molecule_log_path) =
-        run_gate_mint_molecule_subprocess(molecule_workspace.path());
+        run_gate_mint_molecule_subprocess(molecule_workspace.path(), molecule_runtime.path());
     let molecule_stdout = String::from_utf8_lossy(&molecule_output.stdout);
     let molecule_stderr = String::from_utf8_lossy(&molecule_output.stderr);
     let molecule_log = std::fs::read_to_string(&molecule_log_path).unwrap_or_default();

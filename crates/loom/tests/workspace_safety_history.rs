@@ -39,17 +39,30 @@ async fn deterministic_feedback_in_an_isolated_worker_does_not_write_shared_auth
     let _worker = fixture
         .prepare(&manifest, &LoomTopConfig::default())
         .await?;
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_loom"))
-        .arg("--workspace")
-        .arg(&fixture.worker_path)
-        .args(["gate", "verify", "--target", "test -f feedback-ok"])
-        .env("LOOM_INSIDE", "1")
-        .output()?;
+    let verify = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_loom"))
+            .arg("--workspace")
+            .arg(&fixture.worker_path)
+            .args(["gate", "verify", "--target", "test -f feedback-ok"])
+            .env("LOOM_INSIDE", "1")
+            .output()
+    };
+    let output = verify()?;
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    fixture.check_host_surfaces()?;
+    // Exercise the accepted feedback binding again, not a cached passing result.
+    // Neither failure nor recovery may write the canonical host authorities.
+    std::fs::remove_file(fixture.worker_path.join("feedback-ok"))?;
+    let rejected = verify()?;
+    assert!(!rejected.status.success(), "{rejected:?}");
+    fixture.check_host_surfaces()?;
+    std::fs::write(fixture.worker_path.join("feedback-ok"), "available\n")?;
+    let recovered = verify()?;
+    assert!(recovered.status.success(), "{recovered:?}");
     fixture.check_host_surfaces()?;
     Ok(())
 }
