@@ -334,20 +334,18 @@
             touch "$out"
           '';
 
-      worker-nix-state-permissions =
-        pkgs.runCommand "worker-nix-state-permissions"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.python3
-            ];
-          }
-          ''
-            set -euo pipefail
-            python3 ${../../tests/sandbox/nix-state-permissions.py} ${patchedWrixSrc}
-            touch "$out"
-          '';
+      # Wrix owns provisioning and execution; exercise its invariant directly.
+      privateNixChecks = import "${inputs.wrix}/tests/sandbox/private-nix.nix" {
+        inherit pkgs;
+        linuxPkgs = wrixLinuxPkgs;
+        wrix = wrixLib;
+        profileSandboxes = profileManifest.sandboxes;
+      };
+      worker-nix-state-permissions = privateNixChecks.private-nix-state-preservation;
+      worker-private-nix-api = privateNixChecks.private-nix-api;
+      native-factory-private-nix = import ../../tests/sandbox/native-factory-private-nix.nix {
+        inherit pkgs profileManifest;
+      };
 
       agent-entrypoint-contract =
         pkgs.runCommand "agent-entrypoint-contract"
@@ -868,6 +866,8 @@
           known-hosts-preserves-store
           worker-native-preflight
           worker-nix-state-permissions
+          worker-private-nix-api
+          native-factory-private-nix
           smoke-beads-fixture
           smoke-preflight-skips-runtime-build
           test-app-ignores-host-git-signing

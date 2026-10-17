@@ -130,7 +130,6 @@ in
           ../patches/wrix-claude-permission-prompt.patch
           ../patches/wrix-git-helper-bash.patch
           ../patches/wrix-known-hosts-store.patch
-          ../patches/wrix-nix-state-ancestors.patch
         ];
       };
       wrixLib = import "${patchedWrixSrc}/lib" {

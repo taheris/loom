@@ -26,10 +26,10 @@
         "rust-analyzer-src": "rust-analyzer-src"
       },
       "locked": {
-        "lastModified": 1791899674,
-        "narHash": "sha256-oNKkrIt4ZDapeLTGaeU1URTmk7x90mcH+8vrDwUq5Pg=",
+        "lastModified": 1792148656,
+        "narHash": "sha256-bZlZdPkXbPdTz9gUJRyDanGuvXpxvE7hhJC+M1nOEn0=",
         "ref": "main",
-        "rev": "04b421dace0f5bf18d3ca363e95e59395d4cc680",
+        "rev": "cd2704cee3dc20ceb397562930e310af5f86aede",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/nix-community/fenix.git"
@@ -66,10 +66,10 @@
     "loom-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1792009059,
-        "narHash": "sha256-mnWkAxxC/aQDTFjJayU45B2lW2dHqAchRoBmGE1IaMg=",
+        "lastModified": 1792156359,
+        "narHash": "sha256-EXf1HG/iK2q3ZYmBkMBfcERkO151sfSqcudA/QcCids=",
         "ref": "main",
-        "rev": "ddd53f04fdce3c978ff5c5b93b6d9cfdd78dae5d",
+        "rev": "e353e043c427d07dd5ed9de1f330bd53109b82d3",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/loom.git"
@@ -117,11 +117,11 @@
     "rust-analyzer-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1791835614,
-        "narHash": "sha256-CMXY9x3W43sVW8G7IhXAi3vNqkbWwbsxtKldef8Jar0=",
+        "lastModified": 1792086358,
+        "narHash": "sha256-OAXtlM95Nr/RKpqOgq4rhkxtQKt8yxgqbVRxZ2o/UHE=",
         "owner": "rust-lang",
         "repo": "rust-analyzer",
-        "rev": "dd5ed69d4b5b26fe7f91013b1d02608cd37ae199",
+        "rev": "71fbb7faf489656947a03566b32556d93c312c36",
         "type": "github"
       },
       "original": {
@@ -190,10 +190,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1792150503,
-        "narHash": "sha256-6CQpx1TuS9rHmANqIAaXeX74lfJFCSbhFWzm3lYtFQQ=",
+        "lastModified": 1792239065,
+        "narHash": "sha256-Wb0HLbK7b/XE71sutOnQa8zzbOBOUD3StFJagLeQRk0=",
         "ref": "main",
-        "rev": "58265af931b66c7f5c703038b59bc007c3eb659a",
+        "rev": "cda8ba7a4f818041c97c136fd559d4b6819e72e9",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrix.git"

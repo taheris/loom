@@ -101,21 +101,24 @@ in
             ''
           );
         in
-        wrixLib.mkSandbox (
-          {
-            profile = workerProfile (
-              profile
-              // optionalAttrs (profileName == "rust" && nativeCargo != null) {
-                packages = [ nativeCargo ] ++ profile.packages;
-              }
-            );
-            agent = runtime;
-            packages = [ loomBin ] ++ extraPackages;
-          }
-          // optionalAttrs (nativePreflight || agentPkgOverride != null) {
-            agentPkg = if nativePreflight then checkedAgent else agentPkgOverride;
-          }
-        );
+        if nativePreflight && (wrixLib.capabilities.privateNix or null) != 1 then
+          throw "Loom Rust profiles require Wrix private Nix v1; update Wrix and regenerate the profile manifest"
+        else
+          wrixLib.mkSandbox (
+            {
+              profile = workerProfile (
+                profile
+                // optionalAttrs (profileName == "rust" && nativeCargo != null) {
+                  packages = [ nativeCargo ] ++ profile.packages;
+                }
+              );
+              agent = runtime;
+              packages = [ loomBin ] ++ extraPackages;
+            }
+            // optionalAttrs (nativePreflight || agentPkgOverride != null) {
+              agentPkg = if nativePreflight then checkedAgent else agentPkgOverride;
+            }
+          );
 
       sandboxes = mapAttrs (
         profileName: profile:
