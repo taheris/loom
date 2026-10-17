@@ -334,8 +334,14 @@
             touch "$out"
           '';
 
-      # Wrix owns provisioning and execution; exercise its invariant directly.
-      privateNixChecks = import "${inputs.wrix}/tests/sandbox/private-nix.nix" {
+      # Test-only portability fix: build sandboxes need not contain /nix/var/nix.
+      # Keep production Wrix sources and image provisioning completely unchanged.
+      privateNixTestSrc = pkgs.applyPatches {
+        name = "wrix-private-nix-tests";
+        src = inputs.wrix;
+        patches = [ ../patches/wrix-private-nix-test-portability.patch ];
+      };
+      privateNixChecks = import "${privateNixTestSrc}/tests/sandbox/private-nix.nix" {
         inherit pkgs;
         linuxPkgs = wrixLinuxPkgs;
         wrix = wrixLib;
