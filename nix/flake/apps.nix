@@ -490,21 +490,26 @@ _:
             ''
               # Linux-only: do not place authority beneath an unsandboxed daemon's
               # possibly writable /nix/var/nix. Keep the production ancestor guard.
+              # Exercise the group-writable builder default even in a root worker.
+              umask 0002
               fixture=$(mktemp -d /tmp/loom-native-preparation.XXXXXXXX)
               trap 'rm -rf "$fixture"' EXIT
               export TMPDIR="$fixture" HOME="$fixture/home"
               export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-              mkdir -p "$HOME"
-              ${nativePreflightDriver}/bin/native-worker-preflight --prepare-only
+              mkdir -m 0700 "$HOME"
+              prepare_private() (
+                umask 0077
+                ${nativePreflightDriver}/bin/native-worker-preflight --prepare-only
+              )
+              prepare_private
               mkdir -m 0777 "$fixture/untrusted"
-              if TMPDIR="$fixture/untrusted" \
-                ${nativePreflightDriver}/bin/native-worker-preflight --prepare-only \
+              if TMPDIR="$fixture/untrusted" prepare_private \
                 > "$fixture/untrusted.log" 2>&1; then
                 printf 'worker preparation accepted an unsafe authority ancestor\n' >&2
                 exit 1
               fi
               grep -F 'runtime ancestor is writable by another user' "$fixture/untrusted.log"
-              touch "$out"
+              install -m 0644 /dev/null "$out"
             '';
       };
 
