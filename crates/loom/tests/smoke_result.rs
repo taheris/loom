@@ -1,9 +1,10 @@
-//! Execute the smoke result stage in Bash: pipefail and subprocess exit status
-//! are the boundary under test; only loom, bd, and the clock are fixtures.
+//! Smoke stages retain real failure, selection and verifier subprocess behavior.
 
+use std::path::Path;
 use std::process::{Command, Output};
 
 use anyhow::Context;
+use loom_gate::InputResolver;
 
 const CLOSED: &str = r#"[{"id":"smoke-test.1","title":"Smoke","status":"closed"}]"#;
 
@@ -150,4 +151,117 @@ fn smoke_status_fixture_matches_bd_response_contract() {
     let object = serde_json::to_string(&beads[0]).unwrap();
     let output = run_smoke_loop(0, &object, 0, 0).unwrap();
     assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn smoke_result_change_selects_the_shipped_verifier_without_selecting_unrelated_files() {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::create_dir(fixture.path().join("bin")).unwrap();
+    std::fs::write(
+        fixture.path().join("bin/verifier-probe.sh"),
+        include_str!("../../../tests/smoke/verifier-probe.sh"),
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.path().join("loom-smoke-result.txt"),
+        "implemented\n",
+    )
+    .unwrap();
+    let parsed = loom_gate::annotation::parse_content(
+        Path::new("specs/smoke.md"),
+        include_str!("../../../tests/smoke/spec.md"),
+    )
+    .unwrap();
+    assert_eq!(parsed.annotations.len(), 1);
+    let mut resolver = InputResolver::new(fixture.path().to_path_buf());
+    let selected = loom_gate::inputs::filter_by_files(
+        &parsed.annotations,
+        &["loom-smoke-result.txt".into()],
+        &mut resolver,
+    );
+    assert_eq!(
+        selected.len(),
+        1,
+        "the actual worker result must reach the verifier"
+    );
+    let unrelated = loom_gate::inputs::filter_by_files(
+        &parsed.annotations,
+        &["unrelated.txt".into()],
+        &mut resolver,
+    );
+    assert!(
+        unrelated.is_empty(),
+        "do not replace the dependency with always-run coverage"
+    );
+    let git = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(fixture.path())
+        .output()
+        .unwrap();
+    assert!(git.status.success(), "{git:?}");
+    std::fs::create_dir(fixture.path().join("specs")).unwrap();
+    std::fs::write(
+        fixture.path().join("specs/smoke.md"),
+        include_str!("../../../tests/smoke/spec.md"),
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.path().join(".git/smoke-verifier-unavailable"),
+        "outage\n",
+    )
+    .unwrap();
+    let actual = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .arg("--workspace")
+        .arg(fixture.path())
+        .args(["gate", "check", "--files", "loom-smoke-result.txt"])
+        .current_dir(fixture.path())
+        .output()
+        .unwrap();
+    assert_eq!(actual.status.code(), Some(78), "{actual:?}");
+}
+
+#[test]
+fn shipped_smoke_probe_checks_its_result_argument_and_preserves_unavailable() {
+    let fixture = tempfile::tempdir().unwrap();
+    let git = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(fixture.path())
+        .output()
+        .unwrap();
+    assert!(git.status.success(), "{git:?}");
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/smoke/verifier-probe.sh"
+    );
+    let run = || {
+        Command::new(loom_test_support::bash_path())
+            .args([script, "loom-smoke-result.txt"])
+            .current_dir(fixture.path())
+            .output()
+            .unwrap()
+    };
+    assert!(!run().status.success(), "missing result cannot pass");
+    std::fs::write(
+        fixture.path().join("loom-smoke-result.txt"),
+        "implemented\n",
+    )
+    .unwrap();
+    assert!(run().status.success());
+    let wrong = Command::new(loom_test_support::bash_path())
+        .args([script, "unrelated.txt"])
+        .current_dir(fixture.path())
+        .output()
+        .unwrap();
+    assert_eq!(wrong.status.code(), Some(64));
+    std::fs::write(
+        fixture.path().join(".git/smoke-verifier-unavailable"),
+        "outage\n",
+    )
+    .unwrap();
+    assert_eq!(run().status.code(), Some(78));
+    std::fs::remove_file(fixture.path().join(".git/smoke-verifier-unavailable")).unwrap();
+    assert!(
+        run().status.success(),
+        "restored verification must execute freshly"
+    );
 }

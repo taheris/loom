@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ $# != 1 || "$1" != loom-smoke-result.txt ]]; then
+    printf 'the fixed smoke result file argument is required\n' >&2
+    exit 64
+fi
+
 git_dir=$(git rev-parse --absolute-git-dir)
 if [[ -f "$git_dir/smoke-verifier-hold" ]]; then
     printf '%s %s\n' "$$" "$PPID" > "$git_dir/smoke-verifier-entered.pending"
@@ -20,4 +25,4 @@ if [[ -f "$git_dir/smoke-verifier-unavailable" ]]; then
     printf 'isolated fixture verifier unavailable; required coverage remains pending\n' >&2
     exit 78
 fi
-test -f loom-smoke-result.txt
+test -f "$1"
