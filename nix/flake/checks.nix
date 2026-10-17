@@ -106,6 +106,24 @@
             touch "$out"
           '';
 
+      artifact-storage-fixture =
+        pkgs.runCommand "artifact-storage-fixture"
+          {
+            nativeBuildInputs = [
+              bin
+              loom.toolchain
+              pkgs.coreutils
+              pkgs.git
+              pkgs.python3
+              pkgs.sccache
+              pkgs.stdenv.cc
+            ];
+          }
+          ''
+            bash ${../../tests/agent/artifact-storage-gate.sh} \
+              ${bin}/bin/loom ${../../tests/agent/artifact-storage.py} "$out"
+          '';
+
       nextest-filtering-syntax = craneLib.mkCargoDerivation {
         pname = "nextest-filtering-syntax";
         version = "0.0.0";
@@ -829,6 +847,7 @@
       checks = {
         inherit
           agent-entrypoint-contract
+          artifact-storage-fixture
           loom-gate-check
           nextest-filtering-syntax
           native-check-discovery

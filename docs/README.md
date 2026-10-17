@@ -18,6 +18,12 @@ Ownership boundaries do not require new crates or commands.
 - [`tuning.md`](tuning.md) — Loom tuning handbook: SkillOpt adaptation,
   behavioral checker model, `loom-case` syntax, and consumer tuning guidance.
 
+## Engineering Investigations
+
+- [Generated Rust artifact storage](artifact-storage-investigation.md) —
+  measured accounting, isolated Cargo/cache experiments and proposed bounded
+  retention; not a deployed cleanup policy or disposal authority.
+
 ## Specs
 
 | Spec                                 | Code                                                                                                       | Epic      | Purpose                                                                                                                     |
