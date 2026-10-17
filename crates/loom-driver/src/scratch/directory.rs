@@ -46,9 +46,17 @@ impl Directory {
         }
         let path = std::path::absolute(path)?;
         let mut dir = Self(open("/", DIRECTORY_FLAGS, Mode::empty())?);
+        let mut ancestor = std::path::PathBuf::from("/");
         for component in path.components() {
             if let Component::Normal(name) = component {
-                dir = dir.child(Path::new(name))?;
+                ancestor.push(name);
+                dir = dir.child(Path::new(name)).map_err(|error| {
+                    if error.raw_os_error().is_some() {
+                        error
+                    } else {
+                        io::Error::new(error.kind(), format!("{}: {error}", ancestor.display()))
+                    }
+                })?;
             }
         }
         Ok(dir)
@@ -63,9 +71,17 @@ impl Directory {
             ));
         }
         let mut dir = Self(open("/", DIRECTORY_FLAGS, Mode::empty())?);
+        let mut ancestor = std::path::PathBuf::from("/");
         for component in path.components() {
             if let Component::Normal(name) = component {
-                dir = dir.ensure_child(Path::new(name))?;
+                ancestor.push(name);
+                dir = dir.ensure_child(Path::new(name)).map_err(|error| {
+                    if error.raw_os_error().is_some() {
+                        error
+                    } else {
+                        io::Error::new(error.kind(), format!("{}: {error}", ancestor.display()))
+                    }
+                })?;
             }
         }
         Ok(dir)
@@ -110,7 +126,12 @@ impl Directory {
         if !trusted_owner || (stat.st_mode & 0o022 != 0 && !sticky) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "runtime ancestor is writable by another user",
+                format!(
+                    "runtime ancestor is writable by another user (owner={}, effective_uid={}, mode={:04o})",
+                    stat.st_uid,
+                    geteuid().as_raw(),
+                    stat.st_mode & 0o7777,
+                ),
             ));
         }
         Ok(child)
@@ -231,4 +252,42 @@ fn clear(dir: &OwnedFd) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use anyhow::Context as _;
+
+    use super::*;
+
+    #[test]
+    fn unsafe_ancestor_feedback_identifies_path_owner_and_mode_without_weakening_guard()
+    -> anyhow::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let unsafe_dir = fixture.path().join("unsafe-ancestor");
+        std::fs::create_dir(&unsafe_dir)?;
+        std::fs::set_permissions(&unsafe_dir, std::fs::Permissions::from_mode(0o777))?;
+        for open in [Directory::open, Directory::ensure] {
+            let error = open(&unsafe_dir)
+                .err()
+                .context("unsafe ancestor was accepted")?;
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            let message = error.to_string();
+            assert!(
+                message.contains(&unsafe_dir.display().to_string()),
+                "{message}"
+            );
+            assert!(message.contains("owner="), "{message}");
+            assert!(message.contains("effective_uid="), "{message}");
+            assert!(message.contains("mode=0777"), "{message}");
+        }
+        let missing = Directory::open(&fixture.path().join("missing"))
+            .err()
+            .context("missing directory was accepted")?;
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert_eq!(missing.raw_os_error(), Some(Errno::NOENT.raw_os_error()));
+        Ok(())
+    }
 }

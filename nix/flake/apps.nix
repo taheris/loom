@@ -488,11 +488,16 @@ _:
               ];
             }
             ''
-              # Linux-only: do not place authority beneath an unsandboxed daemon's
-              # possibly writable /nix/var/nix. Keep the production ancestor guard.
+              # A sandbox's /tmp can have an unmapped owner. Its /build is
+              # build-user owned. Outside a sandbox, avoid writable /nix/var/nix
+              # build ancestors and use the host's trusted sticky /tmp instead.
+              fixture_parent=/tmp
+              case "$NIX_BUILD_TOP" in
+                /build | /build/*) fixture_parent="$NIX_BUILD_TOP" ;;
+              esac
               # Exercise the group-writable builder default even in a root worker.
               umask 0002
-              fixture=$(mktemp -d /tmp/loom-native-preparation.XXXXXXXX)
+              fixture=$(mktemp -d "$fixture_parent/loom-native-preparation.XXXXXXXX")
               trap 'rm -rf "$fixture"' EXIT
               export TMPDIR="$fixture" HOME="$fixture/home"
               export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
