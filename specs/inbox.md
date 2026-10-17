@@ -93,9 +93,10 @@ decisions follow
 [Loop's batch admission](loop.md#decision-batches-and-attributed-waits);
 review-origin decisions follow Findings' existing scoped materialization. Staged
 candidates are not queue items; malformed briefs appear as blocked repair items
-on the defective decision, not on its discovering source. Discovery parentage
-does not imply an execution prerequisite, and implementation beads waiting on
-decisions do not become duplicate human-queue items.
+on the defective decision, not on its discovering source. Work-root ownership
+and separate discovery-producer provenance does not imply an execution
+prerequisite, and implementation beads waiting on decisions do not become
+duplicate human-queue items.
 
 All admitted currently discovered decisions are available in one chat queue,
 subject to the user's explicit filters. The human may resolve them

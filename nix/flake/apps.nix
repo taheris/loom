@@ -91,6 +91,22 @@ _:
       };
       testApp = mkTestApp testAppConfig;
       requiredTestApp = mkTestApp requiredTestAppConfig;
+      decisionAdmissionApp = mkTestApp {
+        name = "test-decision-admission";
+        runtimeInputs = [
+          pkgs.coreutils
+          pkgs.cargo-nextest
+          pkgs.git
+          pkgs.nix
+          loom.toolchain
+          pkgs.beads
+        ];
+        text = ''
+          bash scripts/configure-cargo-patches.sh
+          cargo nextest run -p loom-workflow --no-fail-fast \
+            -E 'test(decision_wait) | test(native_controller_counts_one_noop_source_and_five_distinct_decisions) | test(integrity_extension_requires_explicit_reusable_source_readmission)'
+        '';
+      };
 
       fixtureNix = pkgs.writeShellScriptBin "nix" ''
         case "$*" in
@@ -467,6 +483,10 @@ _:
           type = "app";
           program = "${testApp}/bin/test";
           meta.description = "Full required suite: flake check, clippy, full nextest, and system/container verifiers";
+        };
+        test-decision-admission = {
+          type = "app";
+          program = "${decisionAdmissionApp}/bin/test-decision-admission";
         };
         test-required = {
           type = "app";

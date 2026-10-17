@@ -6,13 +6,14 @@ use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, Status};
 use loom_driver::identifier::BeadId;
 
 use super::{
-    DecisionWaitJournal, Entry, HOLD_KEY, HOLD_LABEL, LoopError, Phase, Record, invalid, root,
-    stage,
+    DecisionWaitJournal, Entry, HOLD_KEY, HOLD_LABEL, LoopError, Phase, Record, disposition::stage,
+    invalid, root,
 };
 
 #[derive(Clone, Copy)]
 enum Producer<'a> {
     Task,
+    Waiting,
     Todo,
     Integrity {
         findings: &'a [(BeadId, loom_protocol::gate::Finding)],
@@ -81,6 +82,15 @@ pub(super) async fn admit<R: CommandRunner>(
     admit_for(bd, journal, expected, reported, Producer::Task).await
 }
 
+pub(super) async fn admit_waiting<R: CommandRunner>(
+    bd: &BdClient<R>,
+    journal: &DecisionWaitJournal,
+    expected: &Bead,
+    reported: &HashSet<BeadId>,
+) -> Result<(), LoopError> {
+    admit_for(bd, journal, expected, reported, Producer::Waiting).await
+}
+
 async fn admit_for<R: CommandRunner>(
     bd: &BdClient<R>,
     journal: &DecisionWaitJournal,
@@ -88,17 +98,20 @@ async fn admit_for<R: CommandRunner>(
     reported: &HashSet<BeadId>,
     producer: Producer<'_>,
 ) -> Result<(), LoopError> {
+    super::migration::recover(bd, journal).await?;
     let _guard = journal.acquire(&expected.id).await?;
     let source = bd.show(&expected.id).await?;
     if source.id != expected.id
         || source.parent != expected.parent
         || source.issue_type != expected.issue_type
-        || !matches!(
+        || !(matches!(
             source.status,
             Status::Open | Status::InProgress | Status::Closed
-        )
+        ) || (matches!(producer, Producer::Waiting) && source.status == Status::Blocked))
         || match producer {
-            Producer::Task => matches!(source.issue_type, IssueType::Decision | IssueType::Epic),
+            Producer::Task | Producer::Waiting => {
+                matches!(source.issue_type, IssueType::Decision | IssueType::Epic)
+            }
             Producer::Integrity { .. } => {
                 source.issue_type != IssueType::Epic || source.status != Status::Open
             }
@@ -114,11 +127,31 @@ async fn admit_for<R: CommandRunner>(
         return Err(invalid("decision producer identity or status changed").into());
     }
     let previous = journal.load(&source.id)?;
-    if previous
+    let legacy_wait = previous
         .as_ref()
-        .is_some_and(|entry| entry.phase.holds_source())
-    {
-        return Err(invalid("source still has an unreconciled discovery-child hold").into());
+        .is_some_and(|entry| entry.phase.holds_source());
+    if legacy_wait {
+        let entry = previous
+            .as_ref()
+            .ok_or_else(|| invalid("legacy hold disappeared"))?;
+        let projected = super::record(&source)?;
+        let labelled = source
+            .labels
+            .iter()
+            .any(|label| label.as_str() == HOLD_LABEL);
+        let absent_pending = projected.is_none()
+            && !labelled
+            && matches!(
+                entry.phase,
+                Phase::ProjectionPending | Phase::ReleasePending
+            );
+        if !absent_pending && (projected.as_ref() != Some(&entry.record) || !labelled) {
+            return Err(
+                invalid("legacy hold projection conflicts with canonical attribution").into(),
+            );
+        }
+    } else {
+        check_projection(&source)?;
     }
     if let Some(previous) = &previous
         && previous.phase == Phase::InventoryAdmitted
@@ -127,7 +160,6 @@ async fn admit_for<R: CommandRunner>(
     {
         return Err(invalid("completed inventory lost canonical decision dispositions").into());
     }
-    check_projection(&source)?;
     let current_root = root(bd, &source).await?;
     let mut known = reported.clone();
     if let Some(previous) = &previous {
@@ -154,7 +186,14 @@ async fn admit_for<R: CommandRunner>(
             )
             .await?
         }
-        Producer::Task => {
+        Producer::Task | Producer::Waiting
+            if legacy_wait
+                || (source.status == Status::Blocked
+                    && previous.as_ref().is_some_and(|entry| entry.native_wait)) =>
+        {
+            super::graph::resolve(bd, &source, &current_root, &decisions, previous_context).await?
+        }
+        Producer::Task | Producer::Waiting => {
             super::graph::readmit_reuse(
                 bd,
                 journal,
@@ -175,18 +214,55 @@ async fn admit_for<R: CommandRunner>(
     let mut entry = Entry {
         record: Record {
             version: 1,
-            source: source.id,
-            root: current_root,
+            source: source.id.clone(),
+            root: current_root.clone(),
             decisions: decisions
                 .iter()
                 .map(|decision| decision.id.clone())
                 .collect(),
         },
         phase: Phase::InventoryPending,
+        native_wait: legacy_wait || matches!(producer, Producer::Waiting),
         context: Some(context),
     };
     // Durable intent precedes every queue mutation. A restarted selector must
     // finish staging rather than redispatch the producer past a partial batch.
+    // Keep legacy hold authority until its exact projection is removed. The
+    // migration plans themselves durably block selection during this interval.
+    if !legacy_wait {
+        journal.save(&entry)?;
+    }
+    let decisions = super::migration::apply(
+        bd,
+        journal,
+        &source,
+        &current_root,
+        &decisions,
+        legacy_wait || matches!(producer, Producer::Waiting),
+    )
+    .await?;
+    let mut context = entry
+        .context
+        .take()
+        .ok_or_else(|| invalid("missing admission graph"))?;
+    context.apply_migrations(journal)?;
+    entry.context =
+        Some(super::graph::resolve(bd, &source, &current_root, &decisions, Some(&context)).await?);
+    if legacy_wait {
+        entry.phase = Phase::ReleasePending;
+        journal.save(&entry)?;
+        bd.update(
+            &source.id,
+            loom_driver::bd::UpdateOpts {
+                if_status: Some(source.status),
+                remove_labels: vec![HOLD_LABEL.into()],
+                unset_metadata: vec![HOLD_KEY.into()],
+                ..loom_driver::bd::UpdateOpts::default()
+            },
+        )
+        .await?;
+    }
+    entry.phase = Phase::InventoryPending;
     journal.save(&entry)?;
     stage(bd, journal, &entry.record.source, &decisions).await?;
     entry.phase = Phase::InventoryAdmitted;
@@ -256,6 +332,26 @@ pub(super) async fn recover<R: CommandRunner>(
     check_projection(&source)?;
     let known = entry.record.decisions.iter().cloned().collect();
     let decisions = super::inventory(bd, journal, &source, &known).await?;
+    super::graph::resolve(
+        bd,
+        &source,
+        &entry.record.root,
+        &decisions,
+        entry.context.as_ref(),
+    )
+    .await?;
+    let decisions = super::migration::apply(
+        bd,
+        journal,
+        &source,
+        &entry.record.root,
+        &decisions,
+        entry.native_wait,
+    )
+    .await?;
+    if let Some(context) = &mut entry.context {
+        context.apply_migrations(journal)?;
+    }
     let context = super::graph::resolve(
         bd,
         &source,
@@ -266,6 +362,10 @@ pub(super) async fn recover<R: CommandRunner>(
     .await?;
     let legacy_context = entry.context.is_none();
     if legacy_context {
+        entry.record.decisions = decisions
+            .iter()
+            .map(|decision| decision.id.clone())
+            .collect();
         entry.context = Some(context);
         journal.save(entry)?;
     }

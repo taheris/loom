@@ -141,11 +141,14 @@ clarify-route finding, not direct decision-bead creation or `Clarify` records.
 Todo/Loop `Clarify` records report decisions independently of the emitter's
 terminal outcome. Multiple records aggregate by exact `BeadId` set union,
 including repeated references within a record. A repeated ID identifies one
-decision, not another queue item. Every reference remains subject to contextual
-admission; nonexistent, malformed, ambiguous, or out-of-scope references are
-errors, never silently discarded. Reporting all currently discovered unresolved
-decisions is an agent obligation; the decoder does not prove that the agent has
-discovered every possible ambiguity.
+decision, not another queue item. Distinct IDs from the same producer must all
+survive aggregation. Decisions are parented under the owning work root, with
+separate producer provenance and genuine native affected-work prerequisites;
+workers never reparent legacy decisions. Every reference remains subject to
+contextual admission; nonexistent, malformed, ambiguous, or out-of-scope
+references are errors, never silently discarded. Reporting all currently
+discovered unresolved decisions is an agent obligation; the decoder does not
+prove that the agent has discovered every possible ambiguity.
 
 Parentage records discovery provenance. Actual dependency edges determine which
 work waits. Reporting a decision does not inherently block its emitter, and

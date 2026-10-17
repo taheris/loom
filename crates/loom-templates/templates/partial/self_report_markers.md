@@ -17,7 +17,7 @@ LOOM_WAITING
 ```
 
 Each decision has one dedicated bead with one canonical Options brief. Parent it
-directly under the discovering task (Loop) or injected work epic (Todo); do not
+directly under the owning work root, not the discovering task; do not
 put unrelated briefs on the source or label the source `loom:clarify`. Create
 new candidates with `status=blocked`, without `loom:clarify`, `loom:blocked`, or
 `loom:infra` queue labels. Persist producer/source and work-root provenance
@@ -36,20 +36,19 @@ outcome remains independent. Workers own the brief, ordinary bead creation,
 labels, descriptions and proposed affected-work edges; do not copy Options
 briefs onto the source or work epic.
 
-{% if self.output_phase() == loom_protocol::output::Phase::Loop %}
-For each new blocked Loop candidate, persist `loom.decision_candidate` metadata
+For each new blocked candidate, persist `loom.decision_candidate` metadata
 as a JSON string with exactly these fields:
 `{"version":1,"producer":"<source-id>","root":"<work-root-id>","affected_work":["<affected-work-id>"]}`.
 Use actual IDs from this dispatch, not these placeholders. `affected_work` is the
 complete distinct set of work beads that depend on this decision through
-supported native blocking edges; it may be empty. Do not include the discovery-child producer merely
-because it requests its own driver hold: that is **not** a native blocking edge.
+supported native blocking edges; it may be empty. Include the discovering task
+when its acceptance requires this answer, and declare that actual native edge.
 The driver independently reads native edges, checks work-root membership and
 binds this proposal to the admitted inventory. A changed or uncertain graph
-cannot reuse an old disposition. Legacy discovery children retain their native
-IDs and parentage; worker metadata never replaces driver attribution.
+cannot reuse an old disposition. Only the driver may migrate legacy discovery
+children to the work root, preserving IDs, briefs, outcomes and producer identity.
+Workers must not reparent existing decisions or write driver wait attribution.
 
-{% endif -%}
 {% include "partial/options_format.md" %}
 
 Only work whose acceptance genuinely requires a decision gets a prerequisite.
@@ -64,15 +63,12 @@ work, finish independent work and use the normal `LOOM_COMPLETE` / `LOOM_NOOP`
 and a human answer does not automatically close implementation work.
 
 {% if self.output_phase() == loom_protocol::output::Phase::Loop %}
-For this source's own discovery-child decisions, report the complete inventory
-and use `LOOM_WAITING` with the source still `open`. Do **not** add a native
-parent-to-child blocking dependency or set the parent `blocked`: that makes
-human disposition of its children impossible. The driver validates ownership
-and current inventory, stages the decisions, and persists a separate canonical
-decision hold. Do not write driver hold metadata, labels or journal files.
-Answers release only that hold; reread the decision outcomes and perform the
-required implementation before ordinary completion. Other native dependencies
-and independent human/semantic/infra holds remain authoritative.
+For the source's own questions, use work-root decision siblings and declare
+`bd dep add <source> <decision>` before reporting the complete inventory and
+`LOOM_WAITING`. Do not write driver wait metadata, labels or journal files.
+The driver admits a native prerequisite wait. Answers release only the matching
+driver-owned scheduling state; reread outcomes and perform the implementation
+before ordinary completion. Independent human/semantic/infra holds remain intact.
 
 If only other work needs the decisions and this source meets its own acceptance,
 close the source and report decisions before the normal completion terminal:

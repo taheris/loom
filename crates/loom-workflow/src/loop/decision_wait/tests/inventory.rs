@@ -138,6 +138,7 @@ mod cases {
                 },
                 phase: Phase::InventoryPending,
                 context: None,
+                native_wait: false,
             })
             .unwrap();
         assert!(f.journal().has_pending_for(&f.root).unwrap());
@@ -149,7 +150,11 @@ mod cases {
         .unwrap();
         let first = f.bd.show(&f.decisions[0]).await.unwrap();
         assert!(!held(&f.bd, &f.journal(), &f.source).await.unwrap());
-        assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), first);
+        let migrated = f.bd.show(&f.decisions[0]).await.unwrap();
+        assert_eq!(migrated.description, first.description);
+        assert_eq!(migrated.notes, first.notes);
+        assert_eq!(migrated.labels, first.labels);
+        assert_eq!(migrated.parent.as_ref(), Some(&f.root));
         assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
         assert_eq!(
             f.journal().load(&f.source.id).unwrap().unwrap().phase,
@@ -166,7 +171,7 @@ mod cases {
     }
 
     #[tokio::test]
-    async fn independent_inventory_can_become_an_explicit_discovery_child_hold() {
+    async fn independent_inventory_cannot_substitute_a_hold_for_native_prerequisites() {
         let f = Fixture::new().await;
         reconcile_session(
             &f.bd,
@@ -177,22 +182,18 @@ mod cases {
         )
         .await
         .unwrap();
-        assert!(matches!(f.admit().await, AgentOutcome::Waiting { .. }));
-        assert!(f.journal().has_pending_for(&f.root).unwrap());
-        let before = f.bd.show(&f.source.id).await.unwrap();
-        assert!(matches!(
-            reconcile_session(
-                &f.bd,
-                &f.journal(),
-                &f.source,
-                session(&f.decisions, "LOOM_COMPLETE"),
-                None
-            )
-            .await
-            .unwrap(),
-            AgentOutcome::Failure { .. }
-        ));
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), before);
+        assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
+        assert!(!f.journal().has_pending_for(&f.root).unwrap());
+        let source = f.bd.show(&f.source.id).await.unwrap();
+        assert_eq!(source.status, Status::Open);
+        assert!(!source.metadata.contains_key(HOLD_KEY));
+        assert_eq!(
+            f.bd.dependency_snapshot(&source.id)
+                .await
+                .unwrap()
+                .active_blockers(),
+            [] as [BeadId; 0]
+        );
     }
 
     async fn closed_with_late_discovery() -> Fixture {
@@ -258,6 +259,7 @@ mod cases {
                 },
                 phase: Phase::InventoryPending,
                 context: None,
+                native_wait: false,
             })
             .unwrap();
         let before = f.bd.show(&f.source.id).await.unwrap();

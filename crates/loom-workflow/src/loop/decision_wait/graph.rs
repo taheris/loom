@@ -6,7 +6,7 @@ use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, Status};
 use loom_driver::identifier::BeadId;
 use serde::{Deserialize, Serialize};
 
-use super::{LoopError, invalid};
+use super::{DecisionWaitError, LoopError, invalid};
 
 mod integrity;
 pub(super) use integrity::resolve as resolve_integrity;
@@ -15,11 +15,11 @@ pub(super) const CANDIDATE_KEY: &str = "loom.decision_candidate";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Candidate {
-    version: u8,
-    producer: BeadId,
-    root: BeadId,
-    affected_work: Vec<BeadId>,
+pub(super) struct Candidate {
+    pub version: u8,
+    pub producer: BeadId,
+    pub root: BeadId,
+    pub affected_work: Vec<BeadId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +29,8 @@ struct Decision {
     producer: BeadId,
     candidate: Option<Candidate>,
     affected_work: Vec<BeadId>,
+    #[serde(default)]
+    parent: Option<BeadId>,
 }
 
 /// Stored only in the driver journal after reading the whole native graph.
@@ -44,6 +46,32 @@ pub(super) struct Context {
 }
 
 impl Context {
+    pub(super) fn apply_migrations(
+        &mut self,
+        journal: &super::DecisionWaitJournal,
+    ) -> Result<(), LoopError> {
+        for decision in &mut self.decisions {
+            if let Some(plan) = super::migration::completed(journal, &decision.id)? {
+                if decision.producer != plan.producer {
+                    return Err(invalid("migration changed recorded producer").into());
+                }
+                if decision.candidate == plan.original_candidate
+                    && decision.affected_work == plan.original_affected
+                {
+                    decision.candidate = Some(plan.candidate.clone());
+                    decision
+                        .affected_work
+                        .clone_from(&plan.candidate.affected_work);
+                    decision.parent = Some(plan.root);
+                }
+            }
+            if decision.parent.is_none() {
+                decision.parent = Some(decision.producer.clone());
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn affected_work(&self) -> impl Iterator<Item = &BeadId> {
         self.decisions
             .iter()
@@ -54,7 +82,7 @@ impl Context {
         self.decisions
             .iter()
             .find(|decision| decision.id == *id)
-            .map(|decision| &decision.producer)
+            .map(|decision| decision.parent.as_ref().unwrap_or(&decision.producer))
     }
 
     pub(super) fn matches_inventory(&self, producer: &BeadId, ids: &[BeadId]) -> bool {
@@ -88,6 +116,24 @@ pub(super) fn claims(decision: &Bead, producer: &BeadId) -> bool {
     decoded.get("producer").and_then(serde_json::Value::as_str) == Some(producer.as_str())
 }
 
+pub(super) fn provenance(decision: &Bead, root: &BeadId) -> Result<BeadId, LoopError> {
+    let parent = decision
+        .parent
+        .as_ref()
+        .ok_or_else(|| invalid("decision lacks native parent"))?;
+    if parent != root {
+        return Ok(parent.clone());
+    }
+    let Some(value) = decision.metadata.get(CANDIDATE_KEY) else {
+        return Ok(root.clone());
+    };
+    let encoded = value
+        .as_str()
+        .ok_or_else(|| invalid("candidate provenance must be a JSON string"))?;
+    let proposal: Candidate = serde_json::from_str(encoded).map_err(DecisionWaitError::from)?;
+    Ok(proposal.producer)
+}
+
 pub(super) async fn check_reuse<R: CommandRunner>(
     bd: &BdClient<R>,
     journal: &super::DecisionWaitJournal,
@@ -95,15 +141,16 @@ pub(super) async fn check_reuse<R: CommandRunner>(
     decision: &Bead,
 ) -> Result<(), LoopError> {
     let incompatible = |detail: &str| invalid(format!("decision {}: {detail}", decision.id));
-    let producer = decision
-        .parent
-        .as_ref()
-        .ok_or_else(|| incompatible("reused decision has no discovery parent"))?;
+    let root = super::root(bd, source).await?;
+    let origin = provenance(decision, &root)?;
+    let producer = &origin;
+    if super::migration::historical(journal, decision, &root)? {
+        return Ok(());
+    }
     let entry = journal
         .load(producer)?
         .ok_or_else(|| incompatible("foreign decision lacks prior canonical admission"))?;
     let owner = bd.show(producer).await?;
-    let root = super::root(bd, source).await?;
     if entry.record.root != root
         || super::root(bd, &owner).await? != root
         || !entry.record.decisions.contains(&decision.id)
@@ -126,7 +173,7 @@ pub(super) async fn check_reuse<R: CommandRunner>(
     Ok(())
 }
 
-fn candidate(
+pub(super) fn candidate(
     producer: &BeadId,
     root: &BeadId,
     decision: &Bead,
@@ -188,6 +235,7 @@ async fn check_affected_work<R: CommandRunner>(
 ) -> Result<(), LoopError> {
     let work = bd.show(id).await?;
     if work.id != *id
+        || work.id == *root
         || matches!(work.issue_type, IssueType::Molecule | IssueType::Decision)
         || (work.issue_type == IssueType::Epic
             && (source.id != *root || source.issue_type != IssueType::Epic || work.id != *root))
@@ -301,11 +349,11 @@ pub(super) async fn resolve<R: CommandRunner>(
     }
     let mut checked = Vec::with_capacity(decisions.len());
     for decision in decisions {
-        let producer = decision
-            .parent
-            .as_ref()
-            .ok_or_else(|| invalid("decision lacks native discovery parent"))?;
-        let proposal = candidate(producer, root, decision)?;
+        let producer = provenance(decision, root)?;
+        let proposal = candidate(&producer, root, decision)?;
+        if decision.parent.as_ref() == Some(root) && proposal.is_none() && source.id != *root {
+            return Err(invalid("work-root decision lacks producer provenance").into());
+        }
         let mut affected_work = bd.blocking_dependents(&decision.id).await?;
         let unique: HashSet<_> = affected_work.iter().collect();
         if unique.len() != affected_work.len() {
@@ -332,9 +380,10 @@ pub(super) async fn resolve<R: CommandRunner>(
         }
         let current = Decision {
             id: decision.id.clone(),
-            producer: producer.clone(),
+            producer,
             candidate: proposal,
             affected_work,
+            parent: decision.parent.clone(),
         };
         if let Some(previous) =
             previous.and_then(|context| context.decisions.iter().find(|old| old.id == current.id))

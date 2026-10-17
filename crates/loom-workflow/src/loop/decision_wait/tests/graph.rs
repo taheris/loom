@@ -37,7 +37,7 @@ mod cases {
         let graph: serde_json::Value = serde_json::to_value(entry.context.unwrap()).unwrap();
         assert_eq!(
             graph["decisions"][0]["affected_work"],
-            serde_json::json!([f.sibling])
+            serde_json::json!([f.source.id, f.sibling])
         );
         assert!(
             f.bd.dependency_snapshot(&f.sibling)
@@ -46,7 +46,10 @@ mod cases {
                 .active_blockers()
                 .contains(&f.decisions[0])
         );
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
+        assert_eq!(
+            f.bd.show(&f.source.id).await.unwrap().status,
+            Status::Blocked
+        );
     }
 
     #[tokio::test]

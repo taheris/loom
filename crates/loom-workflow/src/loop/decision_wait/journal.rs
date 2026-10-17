@@ -40,6 +40,8 @@ pub(super) struct Entry {
     pub phase: Phase,
     #[serde(default)]
     pub context: Option<super::graph::Context>,
+    #[serde(default)]
+    pub native_wait: bool,
 }
 
 /// Not cache state: never reconstructed from worker-writable metadata. The
@@ -141,13 +143,13 @@ impl DecisionWaitJournal {
         root: Option<&BeadId>,
         label: &loom_driver::identifier::SpecLabel,
     ) -> Result<(), LoopError> {
+        super::migration::recover(bd, self).await?;
         self.refresh_native_waits(bd, root, Some(label)).await?;
-        for entry in self.entries()?.into_iter().filter(|entry| {
-            matches!(
-                entry.phase,
-                Phase::InventoryPending | Phase::InventoryAdmitted
-            )
-        }) {
+        for entry in self
+            .entries()?
+            .into_iter()
+            .filter(|entry| entry.phase != Phase::Released)
+        {
             if root.is_some_and(|root| entry.record.root != *root && entry.record.source != *root) {
                 continue;
             }
@@ -218,7 +220,11 @@ impl DecisionWaitJournal {
                 }
             }
             if in_scope {
-                if entry.phase.blocks_publication() {
+                if entry.phase.blocks_publication()
+                    || (entry.native_wait && self.native_pending_for(&entry.record.source)?)
+                {
+                    // A live native source wait is already a publication veto,
+                    // not permission to reseal its inventory's changed graph.
                     blocked = true;
                 } else {
                     super::inventory::audit(bd, self, &entry).await?;
@@ -264,7 +270,10 @@ impl DecisionWaitJournal {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let entry: Entry = serde_json::from_slice(&bytes).map_err(DecisionWaitError::from)?;
+        let mut entry: Entry = serde_json::from_slice(&bytes).map_err(DecisionWaitError::from)?;
+        if let Some(context) = &mut entry.context {
+            context.apply_migrations(self)?;
+        }
         let ids: HashSet<_> = entry.record.decisions.iter().collect();
         if entry.record.version != 1
             || entry.record.source != *source

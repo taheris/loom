@@ -18,12 +18,11 @@ epic; report it and finish the exact roster with Todo instead. Keep the pending
 work epic, children, fixed batch and drafts for resumption. Waiting does not
 advance spec cursors, consume implementation notes, or activate the work epic.
 {% else %}
-Here the source is the current bead. For its own discovery-child decisions,
-report the complete `LOOM_CLARIFY` inventory, leave the source open, and emit
-`LOOM_WAITING`. Do not add a native parent-to-child blocking edge or set the
-parent `blocked`. After contextual admission the driver owns a separate durable
-decision hold; native hold metadata is only a checked projection, not worker
-assertion authority. This keeps decision children available for human answers.
+Here the source is the current bead. Parent decisions under its owning work root,
+preserve the discovering producer in candidate provenance, and report the complete
+`LOOM_CLARIFY` inventory. Declare actual native prerequisites from the source to
+those decision siblings. Never substitute a nonblocking reference or driver-only
+hold for a native prerequisite. Workers must not reparent legacy decisions.
 A valid wait preserves the workspace and branch and
 skips integration and per-bead gates. The scheduler continues other ready implementation work rather
 than redispatching this source to rediscover its blockers.
@@ -33,13 +32,13 @@ than redispatching this source to rediscover its blockers.
 LOOM_WAITING
 ```
 
-The marker carries no JSON or prose payload. Native Beads dependencies or a
-contextually admitted Loop decision hold prove a wait; syntax alone does not.
+The marker carries no JSON or prose payload. Actual unresolved native Beads
+prerequisites prove a wait; syntax or nonblocking references alone do not.
 A valid wait consumes no retry budget and adds no human-queue label to the source.
 After admission the driver records an attributed wait; supported native waits
-may park eligible work as `status=blocked`, whereas a Loop discovery-child hold
-keeps its producer open. It selectively releases only its own wait when current
+park eligible work as `status=blocked`. The driver selectively releases only
+its own attributed state when current
 prerequisites resolve, never unrelated human blocking state, native blockers,
-semantic/infra holds, metadata or history. Dependency/hold release does not close
+semantic/infra holds, metadata or history. Prerequisite release does not close
 implementation work. A closed source or a source without an active declared or
 admitted prerequisite is invalid and enters recovery.

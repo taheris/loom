@@ -81,7 +81,14 @@ pub(super) fn reusable(
         Err(error) => return Err(error.into()),
     };
     receipt.validate(producer, decision)?;
-    if receipt.snapshot.parent.as_ref() != Some(parent) {
+    if receipt.snapshot.parent.as_ref() != Some(parent)
+        && !super::migration::permits_parent(
+            journal,
+            decision,
+            receipt.snapshot.parent.as_ref(),
+            Some(parent),
+        )?
+    {
         return Err(invalid("decision disposition disagrees with checked discovery parent").into());
     }
     Ok(!matches!(receipt.effect, Effect::Planned))
@@ -200,7 +207,14 @@ pub(super) async fn stage<R: CommandRunner>(
             Err(error) => return Err(error.into()),
         };
         receipt.validate(producer, &decision.id)?;
-        if receipt.snapshot.parent != decision.parent {
+        if receipt.snapshot.parent != decision.parent
+            && !super::migration::permits_parent(
+                journal,
+                &decision.id,
+                receipt.snapshot.parent.as_ref(),
+                decision.parent.as_ref(),
+            )?
+        {
             return Err(invalid("mismatched decision disposition").into());
         }
         if matches!(receipt.effect, Effect::Planned) {

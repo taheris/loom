@@ -455,7 +455,9 @@ mod tests {
             crate::r#loop::AgentOutcome::Waiting { .. }
         ));
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
-        assert_eq!(f.bd.show(&source.id).await.unwrap().status, source.status);
+        let waiting = f.bd.show(&source.id).await.unwrap();
+        assert_eq!(waiting.status, loom_driver::bd::Status::Blocked);
+        assert!(waiting.metadata.contains_key("loom.dependency_wait"));
         assert_eq!(
             f.bd.show(&decision.id).await.unwrap().status,
             decision.status

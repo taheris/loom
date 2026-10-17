@@ -319,9 +319,10 @@ Acceptance: [scheduling](#decision-scheduling),
 Workers discover and persist all currently known unresolved decisions before
 reporting them through Protocol's `Clarify` records. Each decision is a separate
 bead with one [Inbox Options brief](inbox.md#options-format-contract), directly
-parented under its discovering task or Todo work epic. Beads-allocated IDs and
-explicit relationships are authoritative; dotted ID spelling is not. Workers own
-decision content, bead creation, and proposed dependency edges.
+parented under its owning work root, with discovering producer preserved
+separately. Beads-allocated IDs and explicit relationships are authoritative;
+dotted ID spelling is not. Workers own decision content, new bead creation, and
+proposed native dependency edges, but never legacy reparenting.
 
 **Staging.** Create each new candidate with `status=blocked` and no
 `loom:clarify`, `loom:blocked`, or `loom:infra` queue label. Persist untrusted
@@ -334,19 +335,18 @@ Candidate provenance is a proposal, never trusted acceptance or wait authority.
 For a new blocked Loop candidate, `loom.decision_candidate` is a JSON string
 with exactly `version: 1`, checked `producer` and `root` bead IDs, and a
 distinct `affected_work` ID array. That array equals the current supported
-native blocking dependents, not an invented parent-to-discovery-child
-prerequisite. The driver checks the complete graph before staging any sibling
-and records it in canonical attribution; later reuse requires the same candidate
-and native edges. Integrity's explicit additive admission may seal a new graph
-only after each proposed affected task independently resolves the exact finding
-under the same work root. It retains those resolved goal identities and rechecks
-them at replay/publication; an earlier disposition does not authorize the new
-edges. Changed identity, removed edges, unmatched goals and incomplete proposals
-still fail before queue effects. Unlabelled blocked candidates without
-provenance fail admission. Legacy native discovery-child holds retain their
-existing IDs, parentage and journals; missing legacy graph context is checked
-from current native state during recovery, never reconstructed from worker hold
-assertions.
+native blocking dependents, including the discovering task when it genuinely
+requires the answer. A reference or driver-only hold is not a prerequisite. The
+driver checks the complete graph before staging any sibling and records it in
+canonical attribution; later reuse requires the same candidate and native edges.
+Integrity's explicit additive admission may seal a new graph only after each
+proposed affected task independently resolves the exact finding under the same
+work root. It retains those resolved goal identities and rechecks them at
+replay/publication; an earlier disposition does not authorize the new edges.
+Changed identity, removed edges, unmatched goals and incomplete proposals still
+fail before queue effects. Unlabelled blocked candidates without provenance fail
+admission. Legacy discovery children migrate through the driver-owned journaled
+transition below; workers cannot authorize or perform it.
 
 **Admission.** Aggregate the complete reported set and resolve every ID's
 purpose, parent/work-root context, and actual affected-work graph before new
@@ -398,13 +398,13 @@ the brief does not move writer authority or grant additional retries.
 
 Only work whose acceptance genuinely requires a decision waits on it. For
 non-descendant prerequisites, use supported native edges:
-`bd dep add <affected-work> <decision>`. Parentage is provenance, not a
-prerequisite. Never fabricate a forbidden descendant dependency, block a
-producer parent so its decision children become undisposable, rename existing
-IDs, or bypass native Beads ancestry/cycle guards. A decision may block several
-work beads; a work bead may need several decisions. Do not indiscriminately
-block the entire source/work epic or create one implementation task per
-question.
+`bd dep add <affected-work> <decision>`. Work-root parentage records ownership;
+separate producer provenance records discovery. Neither is a prerequisite. Never
+fabricate a forbidden descendant dependency, block a producer parent so its
+decision children become undisposable, rename existing IDs, or bypass native
+Beads ancestry/cycle guards. A decision may block several work beads; a work
+bead may need several decisions. Do not indiscriminately block the entire
+source/work epic or create one implementation task per question.
 
 Independently actionable work is split into schedulable beads under the existing
 work epic, with dependencies on only its actual prerequisites. Split work enters
@@ -420,26 +420,31 @@ worker completion after the work finishes. Otherwise it may complete while
 reported decisions block other work. Resolving a decision records human intent,
 not implementation completion and not automatic source closure.
 
-**Discovery-child holds (Loop).** A producer that needs its own discovery-child
-answers leaves itself `open`, reports its complete `Clarify` inventory, and
-emits `Waiting`. Contextual admission checks every current candidate's native
-type and actual parent, against the dispatched source and work-root context. It
-persists canonical driver attribution under `.loom/decision-waits/` in the
-driver workspace, not the worker clone or disposable cache. Native
-`loom.decision_wait` metadata and `loom:decision-wait` are checked projections,
-not authority that worker assertions can create, replace or erase.
+**Legacy migration and recovery (Loop).** New waits use only native
+prerequisites. Discovery-child holds are compatibility input, not a second
+scheduling representation. After validating the complete contextual inventory,
+the driver journals migration intent before native changes. It reparents each
+legacy decision to the checked work root, preserving its ID, canonical brief,
+recorded outcome, producer, and root. For a legacy producer explicitly waiting
+(or an existing attributed hold), the driver adds genuine native prerequisites
+from that producer to its decisions; unrelated existing native edges remain.
 
-The source remains natively open. Its children can be answered independently; no
-new dependency edge or reparenting is required. Sequential, fixed-task, parallel
-and infrastructure-retry selection all refresh the canonical hold before
-dispatch. Partial staging resumes from durable intent. Release requires current
-inventory/ownership and all recorded decisions closed; it removes only the exact
-owned projection, retaining canonical released history. It never closes the
-source or clears native blockers, semantic/infra labels, human status/notes, or
-unrelated metadata. Missing/conflicting projection, changed root, unreported
-discoveries, or human takeover retain the hold and fail closed. Canonical
-pending holds also prevent molecule publication after restart, even before a
-worker returns a new waiting outcome.
+Intent retains the original snapshot and affected graph. Interrupted metadata,
+reparenting, and edge writes replay idempotently before admission or selection;
+conflicting human edits or changed ownership/graphs stop recovery visibly with
+intent retained. Only an exact owned legacy hold projection may be removed.
+Canonical dispositions and their original event identity survive migration.
+Previously resolved records remain closed, preserve outcomes and historical
+briefs, and create neither a queue item nor a new active-brief requirement.
+Compatible closed contextual references from another producer in the same root
+are preserved individually, never collapsed to one reference per producer.
+
+The work root itself cannot depend on its decision child. Native ancestry and
+cycle guards remain authoritative for every affected-work edge; no proxy or
+nonblocking reference substitutes for a rejected prerequisite. Workers must not
+reparent decisions or write driver journals/projections. Migration and pending
+admission recover before dispatch; read-only publication cannot invent missing
+admission authority.
 
 **Attributed native scheduling state.** For supported non-descendant native
 prerequisites, the driver parks eligible affected work waiting on admitted
@@ -818,15 +823,15 @@ mutation permission.
   its own acceptance has no unresolved prerequisite or independent hold/cancellation.
   [test?](clarify_record_and_completion_have_independent_source_outcomes)
 
-- Shared Loop session reconciliation stages discovery-child decision records for
+- Shared Loop session reconciliation stages work-root decision records for
   both `Complete` and `Noop` without projecting a wait onto their producer.
   [test](complete_and_noop_admit_decisions_without_holding_the_producer)
 
-- Zero or partial discovery-child inventories reject positive terminal proposals
+- Zero or partial producer-attributed inventories reject positive terminal proposals
   before queue mutations and identify every omitted unresolved decision.
   [test](positive_outcomes_reject_zero_or_partial_inventory_before_queue_effects)
 
-- Native source closure cannot bypass persisted discovery-child accounting or
+- Native source closure cannot bypass persisted decision accounting or
   cause admission to reopen the source.
   [test](native_closed_producer_cannot_hide_an_unreported_candidate)
 
@@ -838,9 +843,9 @@ mutation permission.
   readiness no longer returns the closed producer.
   [test](parallel_selection_recovers_staging_for_a_closed_producer)
 
-- Inventory-only admission can become an explicit discovery-child wait, but a
-  later completion proposal cannot bypass an unreconciled canonical hold.
-  [test](independent_inventory_can_become_an_explicit_discovery_child_hold)
+- Inventory-only admission cannot substitute a driver hold for absent native
+  prerequisites; a waiting proposal without genuine edges fails visibly.
+  [test](independent_inventory_cannot_substitute_a_hold_for_native_prerequisites)
 
 - Invalid terminal framing cannot stage otherwise valid decision records.
   [test](malformed_terminal_never_stages_an_otherwise_valid_record)
@@ -870,7 +875,7 @@ mutation permission.
   [test](foreign_affected_work_rejects_batch_without_rewriting_native_edges)
 
 - A changed native affected-work graph cannot replace canonical admission or
-  release the existing discovery-child hold.
+  release the existing attributed native wait.
   [test](changed_affected_work_cannot_reuse_canonical_decision_admission)
 
 - Native reverse-edge queries include closed affected work rather than relying
@@ -920,7 +925,7 @@ mutation permission.
   reopening, new brief requirements, or loss of the recorded human outcome.
   [test?](closed_decision_reference_replay_preserves_resolution_and_queue_identity)
 
-- Inventory-admitted discovery children replay after human closure without new
+- Inventory-admitted decisions replay after human closure without new
   active briefs, reopening, or changes to their resolved snapshots.
   [test](inventory_replay_preserves_closed_resolution_without_a_new_brief)
 
@@ -1273,10 +1278,45 @@ mutation permission.
   despite repeated records. A fresh invocation does not inherit that count.
   [test](native_controller_counts_one_noop_source_and_five_distinct_decisions)
 
-- Loop discovery-child holds preserve IDs/parentage and native guards, keep
-  producers open, exclude held sources/raw decisions from implementation
-  selection, and release only owned state while preserving other blockers.
+- Legacy discovery-child migration preserves IDs and native guards, moves
+  decisions under the work root, parks producers through real prerequisites,
+  excludes waiting work/raw decisions from implementation selection, and
+  releases only owned state while preserving other blockers.
   [test](native_descendant_wait_preserves_guards_and_releases_only_owned_state)
+
+- Work-root candidate admission preserves multiple decisions from one producer,
+  waits on native prerequisites, and resumes implementation open after answers.
+  [test](work_root_candidates_wait_on_native_prerequisites_and_resume_open)
+
+- Interrupted native migration recovers the complete batch, preserving its
+  producer/root provenance, briefs and actual prerequisite waiting.
+  [test](interrupted_native_migration_recovers_without_losing_the_batch)
+
+- Lost native reparent/edge acknowledgements replay idempotently without
+  dropping a candidate or losing genuine prerequisite waiting.
+  [test](migration_replays_lost_reparent_and_prerequisite_acknowledgements)
+
+- Human edits conflicting with interrupted migration retain intent and stop
+  recovery without overwriting the edit or dispatching through the partial
+  graph.
+  [test](conflicting_human_edit_stops_interrupted_migration_without_overwrite)
+
+- An independent human hold on a legacy producer requires visible migration
+  review; the driver preserves that state and does not dispatch the producer.
+  [test](legacy_migration_requires_review_of_independent_human_state)
+
+- Legacy hold conversion preserves canonical dispositions and original routing
+  event identities while replacing its projection with native waiting.
+  [test](legacy_hold_migration_preserves_canonical_dispositions_and_event_identity)
+
+- The registered native conformance suite exercises production admission,
+  scheduling, disposition and recovery using disposable real Beads databases.
+  [system](nix run .#test-decision-admission)
+
+- Three closed contextual references from two producers retain all IDs,
+  historical briefs, recorded outcomes, producer and root through
+  migration/replay.
+  [test](closed_context_from_two_producers_preserves_all_three_native_outcomes)
 
 - Incomplete inventories and forged native hold attribution have no queue
   effects.

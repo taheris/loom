@@ -52,7 +52,7 @@ pub mod worker;
 
 pub use context::{LoopContextInputs, build_loop_context, render_loop_prompt};
 pub use decision_wait::{
-    AdmissionTracker, DecisionHold, DecisionWaitError, DecisionWaitJournal, reconcile_session,
+    AdmissionTracker, DecisionWaitError, DecisionWaitJournal, reconcile_session,
 };
 pub(crate) use decision_wait::{admit_integrity, admit_todo};
 pub use driver_emit::BeadEmit;

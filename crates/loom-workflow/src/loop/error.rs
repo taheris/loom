@@ -18,7 +18,7 @@ pub enum LoopError {
     /// agent backend protocol failure during `loom loop`
     Protocol(#[from] ProtocolError),
 
-    /// discovery-child decision wait admission or recovery failed
+    /// decision admission or recovery failed: {0}
     DecisionWait(#[from] super::decision_wait::DecisionWaitError),
 
     /// bd CLI failure during `loom loop`

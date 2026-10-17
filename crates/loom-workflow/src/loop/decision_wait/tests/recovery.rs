@@ -13,6 +13,7 @@ async fn restart_finishes_partial_staging_without_rewriting_human_context() {
         },
         phase: Phase::Active,
         context: None,
+        native_wait: false,
     };
     f.journal().save(&entry).unwrap();
     f.bd.update(
@@ -37,7 +38,11 @@ async fn restart_finishes_partial_staging_without_rewriting_human_context() {
     .unwrap();
     let first = f.bd.show(&f.decisions[0]).await.unwrap();
     assert!(held(&f.bd, &f.journal(), &f.source).await.unwrap());
-    assert_eq!(first, f.bd.show(&f.decisions[0]).await.unwrap());
+    let migrated = f.bd.show(&f.decisions[0]).await.unwrap();
+    assert_eq!(first.description, migrated.description);
+    assert_eq!(first.notes, migrated.notes);
+    assert_eq!(first.labels, migrated.labels);
+    assert_eq!(migrated.parent.as_ref(), Some(&f.root));
     let repaired = f.bd.show(&f.decisions[1]).await.unwrap();
     assert_eq!(repaired.status, Status::Blocked);
     assert!(
@@ -99,15 +104,10 @@ async fn restart_acknowledges_completed_release_without_reopening_work() {
     for id in &f.decisions {
         f.bd.close(id, Some("human answer")).await.unwrap();
     }
-    let mut entry = f.journal().load(&f.source.id).unwrap().unwrap();
-    entry.phase = Phase::ReleasePending;
-    f.journal().save(&entry).unwrap();
+    assert!(!held(&f.bd, &f.journal(), &f.source).await.unwrap());
     f.bd.update(
         &f.source.id,
         UpdateOpts {
-            if_status: Some(Status::Open),
-            remove_labels: vec![HOLD_LABEL.into()],
-            unset_metadata: vec![HOLD_KEY.into()],
             notes: Some("retained source draft".into()),
             set_metadata: vec![("operator.note".into(), "keep".into())],
             ..UpdateOpts::default()
@@ -118,8 +118,9 @@ async fn restart_acknowledges_completed_release_without_reopening_work() {
     let before = f.bd.show(&f.source.id).await.unwrap();
     assert!(!held(&f.bd, &f.journal(), &f.source).await.unwrap());
     assert_eq!(before, f.bd.show(&f.source.id).await.unwrap());
+    assert_eq!(before.status, Status::Open);
     assert_eq!(
         f.journal().load(&f.source.id).unwrap().unwrap().phase,
-        Phase::Released
+        Phase::InventoryAdmitted
     );
 }

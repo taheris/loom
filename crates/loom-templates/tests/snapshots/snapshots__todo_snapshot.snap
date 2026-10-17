@@ -260,7 +260,7 @@ LOOM_WAITING
 ```
 
 Each decision has one dedicated bead with one canonical Options brief. Parent it
-directly under the discovering task (Loop) or injected work epic (Todo); do not
+directly under the owning work root, not the discovering task; do not
 put unrelated briefs on the source or label the source `loom:clarify`. Create
 new candidates with `status=blocked`, without `loom:clarify`, `loom:blocked`, or
 `loom:infra` queue labels. Persist producer/source and work-root provenance
@@ -278,6 +278,19 @@ and downgrades defective briefs on that decision to `loom:blocked`; the source's
 outcome remains independent. Workers own the brief, ordinary bead creation,
 labels, descriptions and proposed affected-work edges; do not copy Options
 briefs onto the source or work epic.
+
+For each new blocked candidate, persist `loom.decision_candidate` metadata
+as a JSON string with exactly these fields:
+`{"version":1,"producer":"<source-id>","root":"<work-root-id>","affected_work":["<affected-work-id>"]}`.
+Use actual IDs from this dispatch, not these placeholders. `affected_work` is the
+complete distinct set of work beads that depend on this decision through
+supported native blocking edges; it may be empty. Include the discovering task
+when its acceptance requires this answer, and declare that actual native edge.
+The driver independently reads native edges, checks work-root membership and
+binds this proposal to the admitted inventory. A changed or uncertain graph
+cannot reuse an old disposition. Only the driver may migrate legacy discovery
+children to the work root, preserving IDs, briefs, outcomes and producer identity.
+Workers must not reparent existing decisions or write driver wait attribution.
 
 ```markdown
 ## Options — <one-line summary of the decision, ≤80 chars>
@@ -392,14 +405,14 @@ advance spec cursors, consume implementation notes, or activate the work epic.
 LOOM_WAITING
 ```
 
-The marker carries no JSON or prose payload. Native Beads dependencies or a
-contextually admitted Loop decision hold prove a wait; syntax alone does not.
+The marker carries no JSON or prose payload. Actual unresolved native Beads
+prerequisites prove a wait; syntax or nonblocking references alone do not.
 A valid wait consumes no retry budget and adds no human-queue label to the source.
 After admission the driver records an attributed wait; supported native waits
-may park eligible work as `status=blocked`, whereas a Loop discovery-child hold
-keeps its producer open. It selectively releases only its own wait when current
+park eligible work as `status=blocked`. The driver selectively releases only
+its own attributed state when current
 prerequisites resolve, never unrelated human blocking state, native blockers,
-semantic/infra holds, metadata or history. Dependency/hold release does not close
+semantic/infra holds, metadata or history. Prerequisite release does not close
 implementation work. A closed source or a source without an active declared or
 admitted prerequisite is invalid and enters recovery.
 

@@ -63,13 +63,7 @@ impl DecisionWaitJournal {
         outcome: super::super::AgentOutcome,
     ) -> Result<super::super::AgentOutcome, LoopError> {
         use super::super::{AgentOutcome, WaitPrerequisites};
-        let outcome = super::super::validate_waiting_outcome(bd, &expected.id, outcome).await?;
-        if !matches!(
-            outcome,
-            AgentOutcome::Waiting {
-                blockers: WaitPrerequisites::Native(_)
-            }
-        ) {
+        if outcome != AgentOutcome::WaitingRequested {
             return Ok(outcome);
         }
         match self.admit_native_wait(bd, expected).await {
@@ -77,7 +71,7 @@ impl DecisionWaitJournal {
                 blockers: WaitPrerequisites::Native(blockers),
             }),
             Err(LoopError::DecisionWait(error)) => Ok(AgentOutcome::Failure {
-                error: error.to_string(),
+                error: format!("{}: {error}", super::super::waiting::INVALID_WAITING_CAUSE),
             }),
             Err(error) => Err(error),
         }
@@ -378,7 +372,7 @@ impl DecisionWaitJournal {
         super::graph::resolve(bd, &producer, &entry.record.root, decisions, Some(context)).await?;
         let affected: HashSet<_> = context.affected_work().collect();
         for id in affected {
-            if *id == entry.record.source {
+            if *id == entry.record.source && !entry.native_wait {
                 continue;
             }
             let source = bd.show(id).await?;

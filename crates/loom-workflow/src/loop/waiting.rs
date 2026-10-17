@@ -32,11 +32,10 @@ impl ActiveBlockers {
     }
 }
 
-/// Distinct contextual proofs for scheduler-safe waits.
+/// Checked native prerequisites for scheduler-safe waits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WaitPrerequisites {
     Native(ActiveBlockers),
-    Decisions(super::DecisionHold),
 }
 
 impl WaitPrerequisites {
@@ -44,7 +43,6 @@ impl WaitPrerequisites {
     pub const fn count(&self) -> usize {
         match self {
             Self::Native(blockers) => blockers.count(),
-            Self::Decisions(hold) => hold.count(),
         }
     }
 }

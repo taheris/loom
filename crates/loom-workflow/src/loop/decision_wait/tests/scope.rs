@@ -68,7 +68,7 @@ async fn canonical_pending_hold_blocks_publication_even_after_native_closure() {
     );
     assert_eq!(
         f.journal().load(&f.source.id).unwrap().unwrap().phase,
-        Phase::Active
+        Phase::InventoryAdmitted
     );
     // Released attribution must still leave the orphaned native projection fenced.
     let mut entry = f.journal().load(&f.source.id).unwrap().unwrap();
@@ -99,6 +99,12 @@ async fn canonical_pending_hold_blocks_publication_even_after_native_closure() {
     )
     .await
     .unwrap();
+    // Native wait attribution is separate from the retired legacy hold. Only
+    // current-state reconciliation can acknowledge the human-closed source.
+    f.journal()
+        .refresh_native_waits(&f.bd, Some(&f.root), None)
+        .await
+        .unwrap();
     let control = super::super::super::execute_molecule_push_gate(
         &f.bd,
         &SpecLabel::new("loop").unwrap(),

@@ -21,7 +21,7 @@ pub enum AgentOutcome {
     /// `validate_waiting_outcome` before the scheduler sees it.
     WaitingRequested,
 
-    /// Checked native dependencies or an attributed discovery-child hold.
+    /// Checked native dependencies with driver-owned scheduling attribution.
     Waiting { blockers: WaitPrerequisites },
 
     /// Agent exited with a non-zero `SessionComplete` code or surfaced a
