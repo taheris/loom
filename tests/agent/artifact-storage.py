@@ -64,7 +64,9 @@ def source_state(project, env):
 
 def experiment(root):
     env = {
-        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("GIT_", "SCCACHE_"))
     }
     env.update(
         GIT_CONFIG_GLOBAL="/dev/null",
@@ -236,7 +238,10 @@ def experiment(root):
     report["concurrent_lock_diagnostics"] = [
         text for _, text in outcomes if "file lock" in text
     ]
+    cache_config = root / "private-sccache-config.toml"
+    cache_config.write_text("")
     cache_env = env | {
+        "SCCACHE_CONF": str(cache_config),
         "SCCACHE_DIR": str(root / "sccache"),
         "SCCACHE_CACHE_SIZE": "8K",
         "SCCACHE_IDLE_TIMEOUT": "60",
@@ -246,6 +251,13 @@ def experiment(root):
         reserve.bind(("127.0.0.1", 0))
         cache_env["SCCACHE_SERVER_PORT"] = str(reserve.getsockname()[1])
     run(["sccache", "--start-server"], root, cache_env)
+    initial = json.loads(
+        run(["sccache", "--show-stats", "--stats-format=json"], root, cache_env)[
+            0
+        ].stdout
+    )
+    assert initial["cache_location"] == f'Local disk: "{root / "sccache"}"'
+    assert initial["max_cache_size"] == 8192
     try:
         (b / "src/lib.rs").write_text(library)
         report["cached_a"], _ = build(a, targets / "cached-a", override=cache_env)

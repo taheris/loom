@@ -23,6 +23,9 @@ Ownership boundaries do not require new crates or commands.
 - [Generated Rust artifact storage](artifact-storage-investigation.md) —
   measured accounting, isolated Cargo/cache experiments and proposed bounded
   retention; not a deployed cleanup policy or disposal authority.
+- [Rust compiler-cache context](rust-compiler-cache-context.md) — measured
+  target/environment inputs, replayable cache-substitution controls and trust
+  boundaries; not a production cache-key or mount-policy change.
 
 ## Specs
 

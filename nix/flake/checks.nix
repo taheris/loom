@@ -106,19 +106,18 @@
             touch "$out"
           '';
 
+      rustFixtureInputs = [
+        bin
+        loom.toolchain
+        pkgs.coreutils
+        pkgs.git
+        pkgs.python3
+        pkgs.sccache
+        pkgs.stdenv.cc
+      ];
+
       artifact-storage-fixture =
-        pkgs.runCommand "artifact-storage-fixture"
-          {
-            nativeBuildInputs = [
-              bin
-              loom.toolchain
-              pkgs.coreutils
-              pkgs.git
-              pkgs.python3
-              pkgs.sccache
-              pkgs.stdenv.cc
-            ];
-          }
+        pkgs.runCommand "artifact-storage-fixture" { nativeBuildInputs = rustFixtureInputs; }
           ''
             bash ${../../tests/agent/artifact-storage-gate.sh} \
               ${bin}/bin/loom ${../../tests/agent/artifact-storage.py} "$out"
@@ -179,6 +178,13 @@
             bash tests/agent/native-cargo.sh ${bootstrapCargo}/bin/cargo \
               ${bootstrapConfig} ${bootstrapConfig.nextestVersion} ${bootstrapConfig.nextestChecksum}
             touch "$out"
+          '';
+
+      rust-cache-context-fixture =
+        pkgs.runCommand "rust-cache-context-fixture" { nativeBuildInputs = rustFixtureInputs; }
+          ''
+            bash ${../../tests/agent/artifact-storage-gate.sh} \
+              ${bin}/bin/loom ${../../tests/agent/rust-cache-context.py} "$out" rust-cache-context-report.json
           '';
 
       native-cargo-patches = craneLib.mkCargoDerivation {
@@ -851,6 +857,7 @@
           loom-gate-check
           nextest-filtering-syntax
           native-check-discovery
+          rust-cache-context-fixture
           nextest-cargo-home-isolation
           native-cargo-patches
           native-cargo-bootstrap
