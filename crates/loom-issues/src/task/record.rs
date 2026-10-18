@@ -3,18 +3,14 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{Priority, label::Label};
-use crate::identifier::{BeadId, MoleculeId};
+use loom_events::identifier::{BeadId, MoleculeId};
 
-/// Dependency-relevant projection of `bd show --json`.
-///
-/// The workflow uses this separate shape only when validating a dependency
-/// wait. Keeping it separate from [`Bead`] avoids burdening ordinary list
-/// responses and fixtures with nested dependency records.
+/// Task status and explicit direct dependencies from one observation.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct DependencySnapshot {
-    status: Status,
+    pub status: Status,
     #[serde(default)]
-    dependencies: Vec<Dependency>,
+    pub dependencies: Vec<Dependency>,
 }
 
 impl DependencySnapshot {
@@ -50,11 +46,11 @@ impl DependencySnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct Dependency {
-    id: BeadId,
-    status: Status,
+pub struct Dependency {
+    pub id: BeadId,
+    pub status: Status,
     #[serde(rename = "dependency_type")]
-    kind: DependencyKind,
+    pub kind: DependencyKind,
 }
 
 /// Recognized external statuses; unknown values are rejected with their wire name.
@@ -147,19 +143,19 @@ impl std::fmt::Display for IssueType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-enum DependencyKind {
+pub enum DependencyKind {
     #[serde(rename = "blocks")]
     Blocks,
     #[serde(rename = "parent-child")]
     ParentChild,
-    #[serde(other)]
-    Other,
+    #[serde(rename = "discovered-from")]
+    DiscoveredFrom,
 }
 
 /// Row from a native `dep list --direction up --type blocks` query. The
 /// filtered edge kind is still checked rather than trusting CLI filtering.
 #[derive(Debug, Deserialize)]
-pub(super) struct BlockingDependent {
+pub struct BlockingDependent {
     pub id: BeadId,
     #[serde(rename = "dependency_type")]
     _kind: BlockingKind,
@@ -171,12 +167,7 @@ enum BlockingKind {
     Blocks,
 }
 
-/// One bead as produced by `bd show --json` and `bd list --json`.
-///
-/// `bd` emits more fields than these (timestamps, owner, dependency lists);
-/// they are intentionally not modelled here. `serde` ignores unknown fields
-/// by default, so the wrapper does not break when `bd` adds new keys. Add
-/// fields when a caller needs them.
+/// Task content and tracking state; metadata does not convey workflow authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bead {
     pub id: BeadId,
@@ -190,31 +181,43 @@ pub struct Bead {
     pub issue_type: IssueType,
     #[serde(default)]
     pub labels: Vec<Label>,
-    /// Parent bead id from `bd show --json`'s `parent` field. For a bead
-    /// bonded to a molecule the parent is the molecule id; `None` means
-    /// the bead is unbonded — fix-up spawning refuses unbonded origins
-    /// per `specs/harness.md` §"Verdict gate · Fix-up beads bond to
-    /// the originating molecule".
+    /// Explicit parent identity, never inferred from identifier spelling.
     #[serde(default)]
     pub parent: Option<BeadId>,
-    /// Free-form metadata blob from `bd show --json`'s `metadata` object.
-    /// `bd list --json` omits the field; absent ⇒ empty map. Keys used by
-    /// loom include `loom.base_commit` (the molecule's diff anchor —
-    /// `specs/harness.md` § *Plan creates the molecule*).
+    /// Backend-provided metadata; absent projections contain an empty map.
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
-    /// `bd update --notes "..."` body. Used by the reviewer to carry the
-    /// `## Options` block for promoted `loom:blocked` → `loom:clarify`
-    /// beads (`specs/gate.md` § *Options Format Contract*) and by
-    /// the verdict gate to record `infra-preflight` / `infra-repeated`
-    /// causes. Absent ⇒ `None`.
+    /// Optional free-form notes.
     #[serde(default)]
     pub notes: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::IssueType;
+    use super::{IssueType, MolProgress};
+
+    #[test]
+    fn progress_parses_empty_current_step_as_absence_but_rejects_invalid_ids() {
+        for step in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!("lm-task.1"),
+        ] {
+            let progress: MolProgress = serde_json::from_value(serde_json::json!({
+                "molecule_id": "lm-group", "completed": 0, "in_progress": 0, "total": 1,
+                "current_step_id": step,
+            }))
+            .unwrap();
+            assert_eq!(progress.current_step_id.is_some(), step == "lm-task.1");
+        }
+        assert!(
+            serde_json::from_value::<MolProgress>(serde_json::json!({
+                "molecule_id": "lm-group", "completed": 0, "in_progress": 0, "total": 1,
+                "current_step_id": "invalid identity",
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn built_in_issue_types_round_trip() {
@@ -267,6 +270,18 @@ pub struct MolProgress {
     pub total: u32,
     #[serde(default)]
     pub percent: f64,
-    #[serde(default)]
-    pub current_step_id: Option<String>,
+    #[serde(default, deserialize_with = "optional_step")]
+    pub current_step_id: Option<BeadId>,
+}
+
+fn optional_step<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<BeadId>, D::Error> {
+    match Option::<String>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(value) if value.is_empty() => Ok(None),
+        Some(value) => BeadId::new(&value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
 }

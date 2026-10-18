@@ -1,13 +1,13 @@
 //! Public-contract crates carry an explicit declaration in their own
 //! manifest: `[package.metadata.loom] public_contract = true`. The
 //! target v1 public crates are `loom-events`, `loom-protocol`,
-//! `loom-llm`, `loom-templates`, and `loom-skill`. The walk confirms
+//! `loom-llm`, `loom-templates`, `loom-issues`, and `loom-skill`. The walk confirms
 //! every expected crate declares the marker and no other crate does.
 
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "public_contract_crates — exactly loom-events, loom-protocol, loom-llm, loom-templates, loom-skill declare `[package.metadata.loom] public_contract = true`";
+const RULE: &str = "public_contract_crates — exactly loom-events, loom-protocol, loom-llm, loom-templates, loom-skill, loom-issues declare `[package.metadata.loom] public_contract = true`";
 
 const PUBLIC_CRATES: &[&str] = &[
     "loom-events",
@@ -15,6 +15,7 @@ const PUBLIC_CRATES: &[&str] = &[
     "loom-llm",
     "loom-templates",
     "loom-skill",
+    "loom-issues",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,24 +1,13 @@
-//! Typed wrapper around the `bd` CLI.
-//!
-//! `BdClient` invokes `bd` via `tokio::process::Command` with each argument
-//! passed through `.arg()` — never shell interpolation — and parses
-//! `--json` output into typed Rust structs. Subprocess execution flows
-//! through the [`CommandRunner`] trait so unit tests can substitute a
-//! capturing fake without spawning a real binary.
-//!
-//! `BdError` lives in this module (NF-5: nested module structure with
-//! per-module error enums).
-
-mod client;
-mod error;
+//! Production Beads composition over the extractable tracking adapter.
 mod label;
-mod models;
-mod priority;
 mod runner;
+pub use label::LabelExt;
 
-pub use client::{BdClient, CreateOpts, ListOpts, ReadyOpts, UpdateOpts};
-pub use error::BdError;
-pub use label::{Label, ParseLabelError};
-pub use models::{Bead, DependencySnapshot, IssueType, MolProgress, Molecule, Status};
-pub use priority::{ParsePriorityError, Priority};
-pub use runner::{CommandRunner, RunOutput, TokioRunner};
+pub use loom_issues::beads::{
+    BdError, Bead, CommandRunner, CreateOpts, DependencySnapshot, IssueType, Label, ListOpts,
+    MolProgress, Molecule, ParseLabelError, ParsePriorityError, Priority, ReadyOpts, RunOutput,
+    Status, UpdateOpts,
+};
+pub use runner::TokioRunner;
+
+pub type BdClient<R = TokioRunner> = loom_issues::beads::BdClient<R>;

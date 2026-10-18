@@ -3,11 +3,14 @@ use std::io;
 use displaydoc::Display;
 use thiserror::Error;
 
-use crate::identifier::ParseBeadIdError;
+use loom_events::identifier::ParseBeadIdError;
 
 #[derive(Debug, Display, Error)]
 pub enum BdError {
-    /// failed to spawn `bd`
+    /// unsupported Beads capability: {reason}
+    Unsupported { reason: String },
+
+    /// native `bd` transport I/O failed; execution may already have started
     Spawn(#[source] io::Error),
 
     /// `bd` did not finish within the configured timeout: bd {args}
@@ -33,7 +36,7 @@ pub enum BdError {
     /// `bd show` returned no rows for the requested id(s)
     ShowEmpty,
 
-    /// `bd create --json` did not include an id
+    /// `bd create --silent` did not include an id
     CreateMissingId,
 
     /// `bd create --silent` returned a malformed bead id
@@ -41,7 +44,4 @@ pub enum BdError {
 
     /// invalid utf-8 in `bd` output
     Utf8(#[from] std::string::FromUtf8Error),
-
-    /// task panicked or was cancelled
-    JoinError(#[from] tokio::task::JoinError),
 }

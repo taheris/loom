@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, Status, UpdateOpts};
 use loom_driver::identifier::{BeadId, SpecLabel};
 use serde::{Deserialize, Serialize};

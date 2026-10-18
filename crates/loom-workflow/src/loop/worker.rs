@@ -132,7 +132,7 @@ pub async fn prepare_workspace(
 /// # Errors
 /// Returns preparation failures; static profile faults are classified rejections.
 pub async fn prepare(request: Request<'_>) -> Result<Preparation, LoopError> {
-    prepare_with_bd(&BdClient::new(), request).await
+    prepare_with_bd(&BdClient::<loom_driver::bd::TokioRunner>::new(), request).await
 }
 
 /// Prepare workers using the owning driver's Beads transport and current finding context.

@@ -11,6 +11,7 @@ url = { workspace = true }
 displaydoc = { workspace = true }
 gix = { workspace = true }
 loom-events = { workspace = true }
+loom-issues = { workspace = true }
 loom-protocol = { workspace = true }
 loom-skill = { workspace = true }
 loom-render = { workspace = true }

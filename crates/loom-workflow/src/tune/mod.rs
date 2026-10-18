@@ -307,7 +307,9 @@ impl Context {
             git_diff,
         )?;
 
-        let beads = BdClient::new().list(ListOpts::default()).await?;
+        let beads = BdClient::<loom_driver::bd::TokioRunner>::new()
+            .list(ListOpts::default())
+            .await?;
         push_text_evidence(
             &mut items,
             checker.clone(),
@@ -629,7 +631,7 @@ async fn create_proposal(
         proposal.surface,
         level_name(proposal.level)
     );
-    let bead_id = BdClient::new()
+    let bead_id = BdClient::<loom_driver::bd::TokioRunner>::new()
         .create(CreateOpts {
             title,
             description: "Tune proposal is being prepared.".to_owned(),
@@ -729,7 +731,7 @@ async fn publish_preparation_failure(
     source: &TuneError,
 ) -> Result<(), TuneError> {
     let detail = source.to_string();
-    BdClient::new()
+    BdClient::<loom_driver::bd::TokioRunner>::new()
         .update(
             bead_id,
             UpdateOpts {
@@ -2181,7 +2183,7 @@ struct BeadUpdate<'a> {
 async fn update_tune_bead(update: BeadUpdate<'_>) -> Result<(), TuneError> {
     let body = bead_body(&update);
     let metadata = tune_metadata(&update)?;
-    BdClient::new()
+    BdClient::<loom_driver::bd::TokioRunner>::new()
         .update(
             update.bead_id,
             UpdateOpts {

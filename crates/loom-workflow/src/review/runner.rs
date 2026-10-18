@@ -1,3 +1,4 @@
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{Bead, Label};
 use loom_driver::identifier::BeadId;
 use loom_events::DriverKind;

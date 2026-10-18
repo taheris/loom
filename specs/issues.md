@@ -127,7 +127,7 @@ using a database or subprocess does not itself make a test host-only.
 - The dedicated public loom-issues crate and adapters compile for an external
   fixture consumer without Loom runtime/orchestration dependencies or a Loom
   checkout; production composition selects Beads through this boundary.
-  [test?](issues_external_consumer_preserves_extraction_boundary)
+  [test](issues_external_consumer_preserves_extraction_boundary)
 
 - Both implementations round-trip identities, records, targeted field updates,
   parentage, bonds, queries, dependency graphs, readiness, progress, closure,
@@ -138,7 +138,7 @@ using a database or subprocess does not itself make a test host-only.
 - Actual adapter failures distinguish rejected/conflicting, unsupported,
   transport, and uncertain outcomes; timeout/cancellation and partial mutations
   never imply rollback or stronger atomic/revision guarantees.
-  [test?](issues_adapters_preserve_failure_and_guarantee_semantics)
+  [test](issues_adapters_preserve_failure_and_guarantee_semantics)
 
 ### Backend conformance
 

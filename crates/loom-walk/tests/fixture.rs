@@ -2630,6 +2630,7 @@ fn seed_contract_manifest(ws: &TempDir, name: &str, declare: bool) {
 #[test]
 fn public_contract_crates_pass() {
     let ws = make_workspace();
+    seed_contract_manifest(&ws, "loom-issues", true);
     seed_contract_manifest(&ws, "loom-events", true);
     seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", true);
@@ -2642,6 +2643,7 @@ fn public_contract_crates_pass() {
 #[test]
 fn public_contract_crates_fail_when_missing_marker() {
     let ws = make_workspace();
+    seed_contract_manifest(&ws, "loom-issues", true);
     seed_contract_manifest(&ws, "loom-events", true);
     seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", false);
@@ -2654,6 +2656,7 @@ fn public_contract_crates_fail_when_missing_marker() {
 #[test]
 fn public_contract_crates_fail_when_manifest_missing() {
     let ws = make_workspace();
+    seed_contract_manifest(&ws, "loom-issues", true);
     seed_contract_manifest(&ws, "loom-events", true);
     seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", true);
@@ -2665,6 +2668,7 @@ fn public_contract_crates_fail_when_manifest_missing() {
 #[test]
 fn public_contract_crates_fail_when_extra_crate_declares_marker() {
     let ws = make_workspace();
+    seed_contract_manifest(&ws, "loom-issues", true);
     seed_contract_manifest(&ws, "loom-events", true);
     seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", true);

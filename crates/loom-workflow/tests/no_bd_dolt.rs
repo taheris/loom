@@ -34,13 +34,13 @@ fn workspace_root() -> PathBuf {
 }
 
 /// `BdClient`'s typed surface lives in
-/// `crates/loom-driver/src/bd/client.rs`. The presence of a method matching
+/// `crates/loom-issues/src/beads/client.rs`. The presence of a method matching
 /// `fn dolt_push` or `fn dolt_pull` (sync OR async, with or without `pub`)
 /// would imply the workflow has a structured affordance for spawning the
 /// `bd dolt` subcommand — exactly the foothold the spec rules out.
 #[test]
 fn bd_client_exposes_no_dolt_push_or_dolt_pull_method() {
-    let path = workspace_root().join("crates/loom-driver/src/bd/client.rs");
+    let path = workspace_root().join("crates/loom-issues/src/beads/client.rs");
     let body =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
 

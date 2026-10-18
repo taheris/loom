@@ -9,6 +9,7 @@
 use displaydoc::Display;
 use thiserror::Error;
 
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{BdClient, BdError, CommandRunner, CreateOpts, ListOpts};
 use loom_driver::identifier::{BeadId, MoleculeId, ParseMoleculeIdError, SpecLabel};
 

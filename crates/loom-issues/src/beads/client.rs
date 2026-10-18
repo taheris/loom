@@ -3,35 +3,34 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::identifier::{BeadId, MoleculeId};
+use loom_events::identifier::{BeadId, MoleculeId};
 
 use super::Priority;
-use super::error::BdError;
-use super::models::{Bead, BlockingDependent, DependencySnapshot, IssueType, MolProgress, Status};
-use super::runner::{CommandRunner, RunOutput, TokioRunner, render_args};
+use super::failure::BdError;
+use super::runner::{CommandRunner, RunOutput, render_args};
+use super::{Bead, DependencySnapshot, IssueType, MolProgress, Status};
+use crate::task::BlockingDependent;
 
-/// Default subprocess timeout. Configurable per [`BdClient`] instance via
-/// [`BdClient::with_timeout`]. Matches the 60-second ceiling used by
-/// `GitClient`.
+/// Default subprocess timeout, overridable with [`BdClient::with_timeout`].
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Typed wrapper around the `bd` CLI.
-pub struct BdClient<R: CommandRunner = TokioRunner> {
+pub struct BdClient<R: CommandRunner> {
     runner: R,
     timeout: Duration,
 }
 
-impl BdClient<TokioRunner> {
+impl<R: CommandRunner + Default> BdClient<R> {
     /// Construct a client that shells out to the real `bd` binary.
     pub fn new() -> Self {
         Self {
-            runner: TokioRunner::default(),
+            runner: R::default(),
             timeout: DEFAULT_TIMEOUT,
         }
     }
 }
 
-impl Default for BdClient<TokioRunner> {
+impl<R: CommandRunner + Default> Default for BdClient<R> {
     fn default() -> Self {
         Self::new()
     }
@@ -363,9 +362,7 @@ impl<R: CommandRunner> BdClient<R> {
         Ok(())
     }
 
-    /// `bd ready --json [--limit=N] [--label=<label>] [--parent=<id>] [--exclude-label=<label>...]`
-    /// — beads ready to work (open, no active blockers). Step (1) of the
-    /// parallel batch driver: pulls up to `limit` candidates per batch.
+    /// Native readiness query with optional limits, labels and explicit parent.
     ///
     /// # Errors
     ///
@@ -410,6 +407,10 @@ impl<R: CommandRunner> BdClient<R> {
         let args = args(["mol", "progress", id.as_str(), "--json"]);
         let out = self.invoke(args).await?;
         decode(&out.stdout, &out.args)
+    }
+
+    pub(super) async fn publish(&self) -> Result<(), BdError> {
+        self.runner.publish(self.timeout).await
     }
 
     async fn invoke(&self, args: Vec<OsString>) -> Result<Invocation, BdError> {
@@ -495,7 +496,7 @@ pub struct UpdateOpts {
     pub title: Option<String>,
     pub priority: Option<Priority>,
     pub add_labels: Vec<String>,
-    /// Native compare-and-set status guard; a failed guard is never retried.
+    /// Native status predicate, not a revision guard; same-status stale writes can succeed.
     pub if_status: Option<Status>,
     pub remove_labels: Vec<String>,
     /// Full issue body forwarded to `bd update --description <text>`.
@@ -564,8 +565,8 @@ pub struct ReadyOpts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bd;
-    use crate::bd::Label;
+    use crate::beads as bd;
+    use crate::beads::Label;
     use anyhow::{Result, anyhow};
     use std::collections::VecDeque;
     use std::sync::Mutex;
@@ -890,7 +891,7 @@ mod tests {
         let client = BdClient::with_runner(runner);
         client
             .list(ListOpts {
-                statuses: vec![crate::bd::Status::Open],
+                statuses: vec![crate::beads::Status::Open],
                 label: Some("spec:harness".into()),
                 ..ListOpts::default()
             })
@@ -963,7 +964,7 @@ mod tests {
         let runner = CapturingRunner::new([ok(b"null\n")]);
         let client = BdClient::with_runner(runner);
         let beads = client.list(ListOpts::default()).await?;
-        assert_eq!(beads, [] as [bd::models::Bead; 0]);
+        assert_eq!(beads, [] as [bd::Bead; 0]);
         Ok(())
     }
 
@@ -1045,8 +1046,8 @@ mod tests {
                 status: Some(Status::Blocked),
                 title: "do thing".into(),
                 description: "why".into(),
-                issue_type: Some(crate::bd::IssueType::Task),
-                priority: Some(crate::bd::Priority::P2),
+                issue_type: Some(crate::beads::IssueType::Task),
+                priority: Some(crate::beads::Priority::P2),
                 labels: vec!["profile:rust".into()],
                 parent: Some(BeadId::new("lm-3hhwq")?),
                 metadata: None,
@@ -1078,7 +1079,7 @@ mod tests {
             .create(CreateOpts {
                 title: "loom-harness: pending decomposition".into(),
                 description: String::new(),
-                issue_type: Some(crate::bd::IssueType::Epic),
+                issue_type: Some(crate::beads::IssueType::Epic),
                 labels: vec!["spec:harness".into()],
                 metadata: Some(r#"{"loom.base_commit":"deadbeef"}"#.into()),
                 ..CreateOpts::default()
@@ -1196,7 +1197,7 @@ mod tests {
                 &BeadId::new("lm-3hhwq.5")?,
                 UpdateOpts {
                     claim: true,
-                    status: Some(crate::bd::Status::InProgress),
+                    status: Some(crate::beads::Status::InProgress),
                     title: Some("Retitle work epic".into()),
                     add_labels: vec!["urgent".into()],
                     ..UpdateOpts::default()
@@ -1423,7 +1424,7 @@ mod tests {
         let runner = CapturingRunner::new([ok(b"null\n")]);
         let client = BdClient::with_runner(runner);
         let beads = client.ready(ReadyOpts::default()).await?;
-        assert_eq!(beads, [] as [bd::models::Bead; 0]);
+        assert_eq!(beads, [] as [bd::Bead; 0]);
         Ok(())
     }
 
@@ -1660,7 +1661,10 @@ mod tests {
         assert_eq!(progress.molecule_id, MoleculeId::new("lm-3hhwq").unwrap());
         assert_eq!(progress.completed, 8);
         assert_eq!(progress.total, 19);
-        assert_eq!(progress.current_step_id.as_deref(), Some("lm-3hhwq.5"));
+        assert_eq!(
+            progress.current_step_id.as_ref().map(BeadId::as_str),
+            Some("lm-3hhwq.5")
+        );
         Ok(())
     }
 }

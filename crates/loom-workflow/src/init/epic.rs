@@ -1,5 +1,6 @@
 //! Durable spec metadata and independent work-epic discovery for cache reconstruction.
 
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{BdClient, Bead, CommandRunner, Label, ListOpts};
 use loom_driver::identifier::SpecLabel;
 use loom_driver::state::{RebuildEpic, SpecEpicRow, WorkEpicRow};

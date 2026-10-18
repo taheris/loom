@@ -26,6 +26,7 @@ pub use walk::{
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, Label, ListOpts, UpdateOpts};
 use loom_driver::config::SuppressionConfig;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};

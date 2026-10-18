@@ -16,6 +16,7 @@ use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
 use loom_driver::agent::{AgentKind, LOOM_INSIDE_ENV, ProtocolError, SessionOutcome, SpawnConfig};
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{BdClient, Bead, CommandRunner, ListOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
@@ -1035,7 +1036,7 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
     let runtime = command_runtime()?;
     let molecules = if rebuild {
         runtime.block_on(async {
-            let bd = BdClient::new();
+            let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
             init::fetch_epics(&bd).await
         })?
     } else {
@@ -2420,7 +2421,7 @@ fn run_gate_mint(
             let render_mode = default_live_render_mode();
             let renderer_id = BeadId::new("lm-gate")?;
             runtime.block_on(async move {
-                let bd = BdClient::new();
+                let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
                 let mut progress = GateMintProgress::open(
                     &logs_root,
                     &workspace,
@@ -2471,7 +2472,7 @@ fn run_gate_mint(
             let renderer_id = BeadId::new("lm-gate")?;
 
             runtime.block_on(async move {
-                let bd = BdClient::new();
+                let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
                 let scope = loom_workflow::mint::MintScope::Tree;
                 let validator = WorkspaceFindingValidator::new(&workspace_buf);
                 if labels.is_empty() {
@@ -2533,7 +2534,7 @@ fn run_gate_mint(
                     let renderer_id_for_walker = renderer_id.clone();
                     let launcher_env_for_walker = launcher_env.clone();
                     let mut walker = loom_workflow::mint::ProductionMintWalker::new(
-                        BdClient::new(),
+                        BdClient::<loom_driver::bd::TokioRunner>::new(),
                         label,
                         workspace_for_walker,
                         state_for_walker,
@@ -3130,7 +3131,7 @@ fn run_loop_cmd(
         ))?,
     );
     let roots = runtime.block_on(async {
-        let bd = BdClient::new();
+        let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
         resolve_loop_work_roots(&bd, work_roots).await
     })?;
     let multi_root = roots.len() > 1;
@@ -3429,7 +3430,7 @@ fn run_sequential_loop_root(
             .with_hook_timeout(config.loom.git_hook_timeout())
             .with_repo_git_policy(repo_git_policy);
     let outcome = runtime.block_on(async move {
-        let bd = BdClient::new();
+        let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label.clone(),
@@ -3778,7 +3779,7 @@ async fn dispatch_for_slot(
     let (result, marker) =
         loom_workflow::agent::admit_session_output(result, &output, output::Phase::Loop);
     Ok(loom_workflow::r#loop::reconcile_session(
-        &BdClient::new(),
+        &BdClient::<loom_driver::bd::TokioRunner>::new(),
         &loom_workflow::r#loop::DecisionWaitJournal::new(loom_workspace)
             .with_admissions(slot.admissions.clone()),
         &slot.bead,
@@ -4593,7 +4594,7 @@ fn run_review(
     let captured_review_stdout = Arc::new(Mutex::new(String::new()));
     let stdout_capture_for_spawn = Arc::clone(&captured_review_stdout);
     let result = runtime.block_on(async move {
-        let bd = BdClient::new();
+        let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
         let controller = ProductionReviewController::new(
             bd,
             label.clone(),
@@ -4907,7 +4908,7 @@ fn run_inbox_chat(
 fn load_inbox_beads() -> anyhow::Result<Vec<Bead>> {
     let runtime = command_runtime()?;
     Ok(runtime.block_on(async {
-        let bd = BdClient::new();
+        let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
         bd.list(ListOpts {
             statuses: vec![
                 loom_driver::bd::Status::Open,
@@ -5130,7 +5131,7 @@ fn run_todo(
         workspace,
         config.loom.integration_branch.clone(),
     )?);
-    let bd = Arc::new(BdClient::new());
+    let bd = Arc::new(BdClient::<loom_driver::bd::TokioRunner>::new());
     let runtime = command_runtime()?;
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");

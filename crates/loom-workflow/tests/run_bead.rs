@@ -199,7 +199,7 @@ async fn per_bead_profile_runtime_dispatch_produces_distinct_image_refs() -> Res
 
     let rust_observed = Arc::clone(&observed);
     let mut rust_controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -222,7 +222,7 @@ async fn per_bead_profile_runtime_dispatch_produces_distinct_image_refs() -> Res
 
     let python_observed = Arc::clone(&observed);
     let mut python_controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -286,7 +286,7 @@ async fn loom_loop_does_not_touch_operator_workspace() -> Result<()> {
     let expected_bead_workspace = workspace.join(".loom/beads/lm-isolated");
 
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -330,7 +330,7 @@ async fn bead_workspace_survives_retry_until_close() -> Result<()> {
     let first_marker = marker.clone();
 
     let mut first_invocation = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -356,7 +356,7 @@ async fn bead_workspace_survives_retry_until_close() -> Result<()> {
     let second_marker = marker.clone();
     let expected = workspace.join(".loom/beads/lm-retrypersist");
     let mut second_invocation = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         SpecLabel::new("harness").unwrap(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -480,7 +480,7 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_preserves_after_success(
     let expected_worktree_clone = expected_worktree.clone();
 
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         label.clone(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -567,7 +567,7 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
     let expected_clone = expected_worktree.clone();
 
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         label.clone(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -722,7 +722,7 @@ async fn run_bead_resets_dirty_bead_workspace_before_dispatch() -> Result<()> {
     let observed_porcelain: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let observed_clone = Arc::clone(&observed_porcelain);
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         label.clone(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -789,7 +789,7 @@ async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
     let workspace_for_closure = workspace.clone();
 
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         label.clone(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -875,7 +875,7 @@ async fn workspace_persists_on_all_failure_paths() -> Result<()> {
     let workspace_for_closure = workspace.clone();
 
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         label.clone(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -933,7 +933,7 @@ async fn bead_branch_ref_deleted_on_every_exit_path() -> Result<()> {
         let (_dir, workspace, manifest, git_client) = setup();
         let label = SpecLabel::new("harness").unwrap();
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             label.clone(),
             std::path::PathBuf::from("/loom/bin"),
             workspace.clone(),
@@ -971,7 +971,7 @@ async fn bead_branch_ref_deleted_on_every_exit_path() -> Result<()> {
         let label = SpecLabel::new("harness").unwrap();
         let workspace_for_closure = workspace.clone();
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             label.clone(),
             std::path::PathBuf::from("/loom/bin"),
             workspace.clone(),
@@ -1105,7 +1105,7 @@ async fn run_bead_emits_preserved_workspace_event_for_happy_path_in_seq_order() 
     let label_for_closure = label.clone();
 
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         label.clone(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -1168,7 +1168,7 @@ async fn run_bead_noop_empty_branch_is_done_not_zero_progress() -> Result<()> {
     let base = git_capture(&loom, &["rev-parse", "HEAD"])?;
 
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         label.clone(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -1228,7 +1228,7 @@ async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
     let workspace_for_closure = workspace.clone();
 
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         label.clone(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),
@@ -1295,7 +1295,7 @@ async fn run_bead_emits_tree_not_clean_when_porcelain_is_dirty() -> Result<()> {
     let expected_worktree = workspace.join(".loom/beads/lm-emitdirty");
 
     let mut controller = ProductionAgentLoopController::new(
-        BdClient::new(),
+        BdClient::<loom_driver::bd::TokioRunner>::new(),
         label.clone(),
         std::path::PathBuf::from("/loom/bin"),
         workspace.clone(),

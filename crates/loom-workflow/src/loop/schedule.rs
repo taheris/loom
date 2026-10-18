@@ -10,6 +10,7 @@ use super::{
 };
 use crate::gate_clarify::ClarifyApplyOutcome;
 use loom_driver::agent::AgentKind;
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{BdClient, Bead, ListOpts, UpdateOpts};
 use loom_driver::config::LoomTopConfig;
 use loom_driver::git::{GitClient, RepoGitPolicy};
@@ -260,7 +261,7 @@ where
         manifest,
     } = request;
     let spawn = Arc::new(spawn);
-    let bd = BdClient::new();
+    let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
     let git = GitClient::open_with_integration_branch(
         workspace.clone(),
         loom.integration_branch.clone(),
@@ -347,7 +348,7 @@ where
             if batch_beads.is_empty() {
                 let (recovered, attempted) = resume_verification_candidates(
                     &recovery_request,
-                    BdClient::new(),
+                    BdClient::<loom_driver::bd::TokioRunner>::new(),
                     &mut recovery,
                 )
                 .await?;

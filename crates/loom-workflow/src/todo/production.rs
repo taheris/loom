@@ -7,6 +7,7 @@ use std::time::SystemTime;
 
 use askama::Template;
 use loom_driver::agent::{AgentRuntime, SessionOutcome};
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{
     BdClient, CommandRunner, CreateOpts, Label, ListOpts, TokioRunner, UpdateOpts,
 };

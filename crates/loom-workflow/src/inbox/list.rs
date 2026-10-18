@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
 
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{Bead, Label};
 use loom_driver::identifier::{BeadId, SpecLabel};
 use loom_tune::checker::Level;

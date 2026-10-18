@@ -172,7 +172,7 @@ async fn apply_proposals_async(
         GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?
             .with_hook_timeout(config.loom.git_hook_timeout());
     ensure_integration_clean(&git).await?;
-    let bd = BdClient::new();
+    let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
     let proposals = validate_proposals(workspace, &bd, &proposal_ids).await?;
     let pre_tip = git.integration_commit_sha().await?.to_string();
     let log_path = apply_log_path(workspace)?;

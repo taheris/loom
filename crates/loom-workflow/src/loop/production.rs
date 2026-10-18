@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use loom_driver::agent::{AgentRuntime, SpawnConfig};
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{
     BdClient, Bead, CommandRunner, ListOpts, ReadyOpts, TokioRunner, UpdateOpts,
 };
@@ -3352,7 +3353,7 @@ mod tests {
         let captured_prompts = Arc::new(Mutex::new(Vec::new()));
         let captured_prompts_inner = Arc::clone(&captured_prompts);
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("templates").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
@@ -3464,7 +3465,7 @@ mod tests {
         let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));
         let captured_for_closure = Arc::clone(&captured);
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
@@ -3507,7 +3508,7 @@ mod tests {
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace.clone(),
@@ -3559,7 +3560,7 @@ mod tests {
         let prompt_seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let prompt_seen_inner = Arc::clone(&prompt_seen);
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("harness").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace.clone(),
@@ -3655,7 +3656,7 @@ mod tests {
                 }
                 let bead_base = git.integration_commit_sha().await.unwrap();
                 let mut controller = ProductionAgentLoopController::new(
-                    BdClient::new(),
+                    BdClient::<loom_driver::bd::TokioRunner>::new(),
                     label,
                     PathBuf::from("/loom/bin"),
                     workspace,
@@ -3716,7 +3717,7 @@ mod tests {
         let captured_prompt: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let captured_prompt_inner = Arc::clone(&captured_prompt);
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             label,
             PathBuf::from("/loom/bin"),
             workspace,
@@ -3801,7 +3802,7 @@ mod tests {
         let captured_prompt_inner = Arc::clone(&captured_prompt);
         let conflict_body_inner = Arc::clone(&conflict_body);
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             label,
             PathBuf::from("/loom/bin"),
             workspace,
@@ -3893,7 +3894,7 @@ mod tests {
         let logs_root_for_closure = logs_root.clone();
         let label_for_closure = label.clone();
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             label.clone(),
             PathBuf::from("/loom/bin"),
             workspace,
@@ -4019,7 +4020,7 @@ mod tests {
             "conflict setup failed: {before}"
         );
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             label,
             PathBuf::from("/loom/bin"),
             workspace,
@@ -4062,7 +4063,7 @@ mod tests {
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
@@ -4108,7 +4109,7 @@ mod tests {
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
@@ -4150,7 +4151,7 @@ mod tests {
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
@@ -4198,7 +4199,7 @@ mod tests {
         // Manifest declares only `base` — the bead asks for `nonexistent`.
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
@@ -4260,7 +4261,7 @@ mod tests {
         .expect("write manifest");
         let manifest = Arc::new(ProfileImageManifest::from_path(&path).expect("parse manifest"));
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("spec-x").unwrap(),
             PathBuf::from("/loom/bin"),
             workspace,
@@ -5541,7 +5542,7 @@ mod tests {
         .expect("write stub");
 
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("gate").unwrap(),
             stub.clone(),
             workspace.clone(),
@@ -5617,7 +5618,7 @@ mod tests {
         .expect("write stub");
 
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             label,
             stub,
             workspace,
@@ -5661,7 +5662,7 @@ mod tests {
         )
         .expect("external verifier");
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("gate").expect("label"),
             stub,
             workspace,
@@ -7038,7 +7039,7 @@ mod tests {
         .expect("write stub");
 
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("gate").unwrap(),
             stub.clone(),
             workspace.clone(),
@@ -7207,7 +7208,7 @@ mod tests {
         .expect("write stub");
 
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             label,
             stub,
             workspace,
@@ -7328,7 +7329,7 @@ mod tests {
         .expect("write stub");
 
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::new(),
+            BdClient::<loom_driver::bd::TokioRunner>::new(),
             SpecLabel::new("gate").unwrap(),
             stub.clone(),
             workspace.clone(),

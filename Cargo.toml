@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/loom",
     "crates/loom-driver",
+    "crates/loom-issues",
     "crates/loom-events",
     "crates/loom-llm",
     "crates/loom-skill",
@@ -89,6 +90,7 @@ wiremock = "0.6"
 
 # Internal crates
 loom-driver = { path = "crates/loom-driver" }
+loom-issues = { path = "crates/loom-issues" }
 loom-events = { path = "crates/loom-events" }
 loom-llm = { path = "crates/loom-llm" }
 loom-skill = { path = "crates/loom-skill" }

@@ -38,7 +38,12 @@ async fn main() -> anyhow::Result<()> {
             ),
             "smoke task requires implementation acceptance"
         );
-        loom_workflow::r#loop::acceptance::resolve(&BdClient::new(), task, &workspace).await?;
+        loom_workflow::r#loop::acceptance::resolve(
+            &BdClient::<loom_driver::bd::TokioRunner>::new(),
+            task,
+            &workspace,
+        )
+        .await?;
     } else {
         bail!("this fixed fixture accepts only --validate-task or no arguments");
     }

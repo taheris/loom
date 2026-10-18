@@ -1,5 +1,6 @@
 use loom_driver::agent::AgentRuntime;
 use loom_driver::bd::Label;
+use loom_driver::bd::LabelExt;
 use loom_driver::identifier::ProfileName;
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 

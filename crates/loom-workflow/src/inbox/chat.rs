@@ -148,7 +148,7 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
         .map_err(|e| ChatError::Config(format!("tokio runtime: {e}")))?;
     let beads = runtime
         .block_on(async {
-            let bd = BdClient::new();
+            let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
             bd.list(inbox_list_opts()).await
         })
         .map_err(|e| ChatError::BdList(e.to_string()))?;
@@ -282,7 +282,7 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
     runtime
         .block_on(
             crate::r#loop::DecisionWaitJournal::new(workspace).refresh_native_waits(
-                &BdClient::new(),
+                &BdClient::<loom_driver::bd::TokioRunner>::new(),
                 None,
                 None,
             ),
@@ -301,7 +301,7 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
 
     let beads_after = runtime
         .block_on(async {
-            let bd = BdClient::new();
+            let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
             bd.list(inbox_list_opts()).await
         })
         .map_err(|e| ChatError::BdList(e.to_string()))?;

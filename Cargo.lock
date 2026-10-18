@@ -2737,6 +2737,7 @@ dependencies = [
  "gix",
  "loom-driver",
  "loom-events",
+ "loom-issues",
  "loom-llm",
  "loom-protocol",
  "loom-render",
@@ -2802,6 +2803,21 @@ dependencies = [
  "toml",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "loom-issues"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "displaydoc",
+ "loom-events",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

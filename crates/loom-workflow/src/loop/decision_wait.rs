@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use displaydoc::Display;
+use loom_driver::bd::LabelExt;
 use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, ListOpts, Status};
 use loom_driver::identifier::BeadId;
 use loom_protocol::output::Message;
