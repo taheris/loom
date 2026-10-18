@@ -46,10 +46,10 @@ fn index_body_strategy() -> impl Strategy<Value = String> {
     prop_oneof![
         ".{0,300}",
         label_strategy().prop_map(|label| format!(
-            "| [{label}.md](../specs/{label}.md) | crate | epic | purpose |\n"
+            "| [{label}](../specs/{label}.md) | crate | epic | purpose |\n"
         )),
         label_strategy().prop_map(|label| format!(
-            "prefix garbage\n| [{label}.md](../specs/mismatched.md) | x | y | z |\n"
+            "prefix garbage\n| [{label}](../specs/mismatched.md) | x | y | z |\n"
         )),
     ]
 }
@@ -115,7 +115,8 @@ proptest! {
         let result = db.rebuild(workspace, &[]);
         match result {
             Ok(report) => prop_assert!(report.specs <= pairs.len()),
-            Err(CacheError::SpecIndexMismatch { .. }) => {}
+            Err(CacheError::SpecIndexMismatch { .. }
+                | CacheError::Package(loom_driver::spec::package::Error::Label { .. })) => {}
             Err(other) => prop_assert!(false, "unexpected rebuild error: {other:?}"),
         }
         prop_assert!(schema_intact(&db_path));

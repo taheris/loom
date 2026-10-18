@@ -42,6 +42,9 @@ pub enum CacheError {
     /// cache contained an invalid {kind} identifier `{value}`
     InvalidIdentifier { kind: &'static str, value: String },
 
+    /// cache rebuild could not discover complete spec packages
+    Package(#[source] crate::spec::package::Error),
+
     /// cache rebuild found an invalid spec index: {detail}
     SpecIndexMismatch { detail: String },
 

@@ -4,6 +4,7 @@ use rusqlite::params;
 use tracing::debug;
 
 use crate::identifier::SpecLabel;
+use crate::spec::package;
 
 use super::companions::parse_companions;
 use super::db::{CacheDb, SpecEpicRow, WorkEpicRow, drop_and_recreate};
@@ -26,10 +27,10 @@ pub struct RebuildReport {
 }
 
 impl CacheDb {
-    /// Drop all cache tables, recreate the schema, and repopulate from:
+    /// Recreate cache tables from complete spec owners and durable epic metadata.
     ///
-    /// 1. `<workspace>/specs/*.md` — one `specs` row per file (label = file
-    ///    stem; path = repo-relative POSIX).
+    /// 1. `docs/README.md` — one `specs` row per indexed package, cross-checked
+    ///    against the discovered inventory before replacing any cache rows.
     /// 2. `epics` — independent spec metadata and work-epic rows.
     /// 3. Each spec's `## Companions` section — one `companions` row per
     ///    listed path. Specs without the section contribute zero rows.
@@ -44,17 +45,8 @@ impl CacheDb {
         workspace: &Path,
         epics: &[RebuildEpic],
     ) -> Result<RebuildReport, CacheError> {
-        let specs_dir = workspace.join("specs");
-        let spec_files = collect_spec_files(&specs_dir)?;
-        let indexed_specs = collect_indexed_specs(workspace)?;
-        let spec_rows = if workspace.join("docs/README.md").try_exists()? {
-            cross_check_index_and_files(&indexed_specs, &spec_files)?
-        } else {
-            spec_files
-                .iter()
-                .map(|(label, content)| (label.clone(), default_spec_path(label), content.clone()))
-                .collect::<Vec<_>>()
-        };
+        let has_index = workspace.join("docs/README.md").try_exists()?;
+        let spec_rows = collect_spec_rows(workspace, has_index)?;
 
         let mut by_spec: std::collections::BTreeMap<&str, Vec<&str>> =
             std::collections::BTreeMap::new();
@@ -83,7 +75,7 @@ impl CacheDb {
                 ids: ids.join(", "),
             });
         }
-        if !indexed_specs.is_empty()
+        if has_index
             && let Some(label) = spec_rows
                 .iter()
                 .map(|(label, _, _)| label.as_str())
@@ -142,126 +134,33 @@ impl CacheDb {
     }
 }
 
-fn cross_check_index_and_files(
-    indexed_specs: &[(SpecLabel, String)],
-    spec_files: &[(SpecLabel, String)],
+fn collect_spec_rows(
+    workspace: &Path,
+    has_index: bool,
 ) -> Result<Vec<(SpecLabel, String, String)>, CacheError> {
-    for (label, spec_path) in indexed_specs {
-        let expected = default_spec_path(label);
-        if spec_path != &expected {
-            return Err(CacheError::SpecIndexMismatch {
-                detail: format!(
-                    "index row for `{label}` points at `{spec_path}`, expected `{expected}`"
-                ),
-            });
-        }
-        if !spec_files.iter().any(|(file_label, _)| file_label == label) {
-            return Err(CacheError::SpecIndexMismatch {
-                detail: format!("indexed spec `{label}` is missing `{spec_path}`"),
-            });
-        }
-    }
-    if let Some((label, _)) = spec_files
-        .iter()
-        .find(|(label, _)| !indexed_specs.iter().any(|(indexed, _)| indexed == label))
-    {
-        return Err(CacheError::SpecIndexMismatch {
-            detail: format!(
-                "spec file `{}` is missing from docs/README.md",
-                default_spec_path(label)
-            ),
-        });
-    }
-    let mut rows = Vec::with_capacity(indexed_specs.len());
-    for (label, spec_path) in indexed_specs {
-        if let Some((_, content)) = spec_files
-            .iter()
-            .find(|(file_label, _)| file_label == label)
-        {
-            rows.push((label.clone(), spec_path.clone(), content.clone()));
-        }
-    }
-    Ok(rows)
-}
-
-fn collect_indexed_specs(workspace: &Path) -> Result<Vec<(SpecLabel, String)>, CacheError> {
-    let index_path = workspace.join("docs/README.md");
-    if !index_path.exists() {
+    if !has_index && !workspace.join("specs").try_exists()? {
         return Ok(Vec::new());
     }
-    let content = std::fs::read_to_string(index_path)?;
-    let mut out = Vec::new();
-    for line in content.lines() {
-        let Some(start) = line.find("](../specs/") else {
-            continue;
-        };
-        let path_start = start + "](../".len();
-        let Some(rest) = line.get(path_start..) else {
-            continue;
-        };
-        let Some(end) = rest.find(')') else {
-            continue;
-        };
-        let spec_path = &rest[..end];
-        let Some(label) = spec_path
-            .strip_prefix("specs/")
-            .and_then(|path| path.strip_suffix(".md"))
-        else {
-            continue;
-        };
-        if out
-            .iter()
-            .any(|(existing, _): &(SpecLabel, String)| existing.as_str() == label)
-        {
-            return Err(CacheError::SpecIndexMismatch {
-                detail: format!("duplicate index row for spec `{label}`"),
-            });
-        }
-        let parsed = label.parse().map_err(|_| CacheError::InvalidIdentifier {
-            kind: "spec label",
-            value: label.to_string(),
-        })?;
-        out.push((parsed, spec_path.to_string()));
-    }
-    Ok(out)
-}
-
-fn collect_spec_files(specs_dir: &Path) -> Result<Vec<(SpecLabel, String)>, CacheError> {
-    if !specs_dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(specs_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let content = std::fs::read_to_string(&path)?;
-        let label = stem.parse().map_err(|_| CacheError::InvalidIdentifier {
-            kind: "spec label",
-            value: stem.to_string(),
-        })?;
-        if out
-            .iter()
-            .any(|(existing, _): &(SpecLabel, String)| existing == &label)
-        {
-            return Err(CacheError::SpecIndexMismatch {
-                detail: format!("duplicate spec file for `{label}`"),
-            });
-        }
-        out.push((label, content));
-    }
-    out.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
-    Ok(out)
-}
-
-fn default_spec_path(label: &SpecLabel) -> String {
-    format!("specs/{}.md", label.as_str())
+    let packages = package::discover_workspace(workspace).map_err(|error| match error {
+        package::Error::Index { detail } => CacheError::SpecIndexMismatch { detail },
+        source => CacheError::Package(source),
+    })?;
+    packages
+        .into_iter()
+        .map(|package| {
+            let path = package.contract().strip_prefix(workspace).map_err(|_| {
+                CacheError::SpecIndexMismatch {
+                    detail: format!(
+                        "spec contract `{}` is outside the workspace",
+                        package.contract().display()
+                    ),
+                }
+            })?;
+            Ok((
+                package.label().clone(),
+                path.to_string_lossy().into_owned(),
+                std::fs::read_to_string(package.contract())?,
+            ))
+        })
+        .collect()
 }

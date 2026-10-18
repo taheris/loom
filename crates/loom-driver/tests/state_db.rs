@@ -800,12 +800,111 @@ fn cache_rebuild_cross_checks_spec_index_and_files() -> Result<()> {
     std::fs::create_dir_all(workspace.join("specs"))?;
     std::fs::write(
         workspace.join("docs/README.md"),
-        "| [alpha.md](../specs/alpha.md) | x | lm-a | p |\n",
+        "| [alpha](../specs/alpha.md) | x | lm-a | p |\n",
     )?;
     std::fs::write(workspace.join("specs/beta.md"), "# beta\n")?;
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
     let err = db.rebuild(workspace, &[]).unwrap_err();
     assert!(matches!(err, CacheError::SpecIndexMismatch { .. }));
+    Ok(())
+}
+
+#[test]
+fn cache_rebuild_cross_checks_spec_index_and_packages() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let workspace = dir.path();
+    std::fs::create_dir_all(workspace.join("docs"))?;
+    for label in ["alpha", "beta"] {
+        let package = workspace.join("specs").join(label);
+        std::fs::create_dir_all(&package)?;
+        std::fs::write(
+            package.join("spec.md"),
+            format!("# {label}\n\n## Companions\n\n- `lib/{label}/`\n"),
+        )?;
+        std::fs::write(package.join("tests.md"), "## Success Criteria\n")?;
+        std::fs::write(package.join("support.md"), "Not an acceptance document\n")?;
+    }
+    let index = workspace.join("docs/README.md");
+    let valid = "## Specs\n\n| Spec | Purpose |\n| --- | --- |\n| [beta](../specs/beta/spec.md) | B |\n| [alpha](../specs/alpha/spec.md) | A |\n";
+    std::fs::write(&index, valid)?;
+    let db_path = workspace.join(".loom/cache.db");
+    let db = CacheDb::open(&db_path)?;
+    let epics = ["alpha", "beta"]
+        .into_iter()
+        .map(|label| {
+            Ok(RebuildEpic::Spec(SpecEpicRow {
+                spec_label: SpecLabel::new(label)?,
+                epic_id: MoleculeId::new(format!("lm-{label}"))?,
+                todo_cursor: Some("anchor".into()),
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let report = db.rebuild(workspace, &epics)?;
+    assert_eq!(report.specs, 2);
+    assert_eq!(report.spec_epics, 2);
+    assert_eq!(report.companions, 2);
+    let rows = list_table(
+        &db_path,
+        "SELECT label, spec_path FROM specs ORDER BY label",
+    )?;
+    assert_eq!(
+        rows,
+        vec![
+            vec!["alpha".to_string(), "specs/alpha/spec.md".to_string()],
+            vec!["beta".to_string(), "specs/beta/spec.md".to_string()],
+        ]
+    );
+    for invalid in [
+        "- [alpha](../specs/alpha/spec.md)\n",
+        "- [alpha](../specs/alpha/spec.md)\n- [beta](../specs/beta/spec.md)\n- [gamma](../specs/gamma/spec.md)\n",
+        "- [alpha](../specs/alpha/spec.md)\n- [beta](../specs/beta/spec.md)\n- [alpha](../specs/alpha/spec.md)\n",
+        "- [alpha](../specs/beta/spec.md)\n- [beta](../specs/beta/spec.md)\n",
+        "- [alpha](../specs/alpha.md)\n- [beta](../specs/beta/spec.md)\n",
+    ] {
+        std::fs::write(&index, invalid)?;
+        assert!(
+            matches!(
+                db.rebuild(workspace, &epics),
+                Err(CacheError::SpecIndexMismatch { .. })
+            ),
+            "{invalid}"
+        );
+        assert_eq!(
+            list_table(
+                &db_path,
+                "SELECT label, spec_path FROM specs ORDER BY label"
+            )?,
+            rows
+        );
+    }
+    std::fs::write(&index, valid)?;
+    for document in ["spec.md", "tests.md"] {
+        let path = workspace.join("specs/beta").join(document);
+        let content = std::fs::read_to_string(&path)?;
+        std::fs::remove_file(&path)?;
+        assert!(matches!(
+            db.rebuild(workspace, &epics),
+            Err(CacheError::Package(loom_driver::spec::package::Error::Incomplete { path: missing }))
+                if missing == path
+        ));
+        assert_eq!(
+            list_table(
+                &db_path,
+                "SELECT label, spec_path FROM specs ORDER BY label"
+            )?,
+            rows
+        );
+        std::fs::write(path, content)?;
+    }
+    std::fs::remove_file(index)?;
+    assert!(db.rebuild(workspace, &epics).is_err());
+    assert_eq!(
+        list_table(
+            &db_path,
+            "SELECT label, spec_path FROM specs ORDER BY label"
+        )?,
+        rows
+    );
     Ok(())
 }
 
@@ -817,7 +916,7 @@ fn cache_rebuild_requires_one_spec_epic_per_indexed_spec() -> Result<()> {
     std::fs::create_dir_all(workspace.join("specs"))?;
     std::fs::write(
         workspace.join("docs/README.md"),
-        "| [alpha.md](../specs/alpha.md) | x | lm-a | p |\n",
+        "| [alpha](../specs/alpha.md) | x | lm-a | p |\n",
     )?;
     std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n")?;
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
@@ -834,7 +933,7 @@ fn cache_db_rebuild_populates_specs_epics_and_companions() -> Result<()> {
     std::fs::create_dir_all(workspace.join("specs"))?;
     std::fs::write(
         workspace.join("docs/README.md"),
-        "| [alpha.md](../specs/alpha.md) | x | lm-a | p |\n",
+        "| [alpha](../specs/alpha.md) | x | lm-a | p |\n",
     )?;
     std::fs::write(
         workspace.join("specs/alpha.md"),

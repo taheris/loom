@@ -307,7 +307,7 @@ rather than silently detached.
 - `CacheDb::rebuild` populates `specs` from `docs/README.md`'s spec index and
   cross-checks canonical packages; unindexed/incomplete packages, missing
   indexed packages, duplicate labels, and label/path mismatches fail loud
-  [test?](cache_rebuild_cross_checks_spec_index_and_packages)
+  [test](cache_rebuild_cross_checks_spec_index_and_packages)
 
 - `criterion_status` cache rows join to current criteria by typed
   `(SpecLabel, CriterionId)`; stale annotation evidence renders as
