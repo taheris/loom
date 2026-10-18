@@ -15,7 +15,7 @@ Shared crates parse external configuration and identifiers, isolate subprocess
 access, and expose reconstructable state to workflow consumers. Related owners:
 [workspaces](workspaces.md), [specs](specs.md), [loop](loop.md),
 [todo](todo.md), [events](events.md), [templates](templates.md),
-[protocol](protocol.md).
+[protocol](protocol.md), [issues](issues.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -38,13 +38,15 @@ paths use `wrix run`, while non-TTY Pi inbox chat uses the controlled
 
 ### Crate Layout
 
-[Acceptance](#crate-layout-1).
+[Acceptance](#crate-structure).
 
 The fixed workspace separates public contracts from internal orchestration:
 
 - `loom` — CLI parsing and dispatch (internal).
-- `loom-driver` — host configuration, state, locking, Git, Beads, and session
-  support (internal).
+- `loom-driver` — host configuration, state, locking, Git, tracking-adapter
+  composition, and session support (internal).
+- `loom-issues` — backend-neutral tracking contract and Beads/lightweight
+  adapters, extraction-ready and independent of Loom runtime (public contract).
 - `loom-events` — canonical events, identifiers, `Session`, and `EventSink`
   (public contract).
 - `loom-llm` — provider-neutral LLM and conversation primitives (public
@@ -66,13 +68,16 @@ The fixed workspace separates public contracts from internal orchestration:
 
 ### Dependency Graph
 
-[Acceptance](#dependency-graph-1).
+Acceptance: [dependency direction](#dependency-graph-1) and
+[extractable tracking crate](#crate-structure).
 
 Public contracts stay at the bottom of the graph. `loom-events` is the base
 contract and imports no internal crate. `loom-protocol`, `loom-llm`, and
 `loom-skill` build only on their documented public-contract dependencies;
 `loom-templates` builds on `loom-events` and `loom-protocol`. They do not import
-runtime orchestration.
+runtime orchestration. `loom-issues` likewise imports no internal Loom crate;
+its contract and adapters remain independently consumable without a Loom
+checkout under [Issues](issues.md#architecture).
 
 `loom-render`'s dependency direction is owned by
 [Events — Crate Boundaries](events.md#crate-boundaries). `loom-agent` consumes
@@ -129,11 +134,14 @@ pinning policy, and public composition surface.
 
 [Acceptance](#beads-cli-wrapper-1).
 
-The host interacts with Beads through a typed subprocess boundary. JSON output
-is parsed into typed beads, molecules, labels, and progress; arguments are
-passed without shell interpolation; errors and timeouts remain typed. The
-workflow uses create, show, close, update, list, dependency, bond, and progress
-operations against the shared Dolt service.
+Workflow and worker tools consume [Issues](issues.md)'s typed, backend-neutral
+operations. The configured Beads adapter implements those operations through a
+typed subprocess boundary against shared Dolt. JSON output is parsed into typed
+records; arguments use no shell interpolation; errors, timeouts, unsupported
+guarantees and uncertain writes remain explicit. This subprocess adapter is not
+an argv transport abstraction exposed as workflow policy. Native
+interoperability tests remain separate from ordinary lightweight workflow
+fixtures.
 
 Beads and Git subprocess timeouts terminate and reap the direct child before
 returning. On Unix, termination includes descendants in the command's process
@@ -279,15 +287,15 @@ is required.
 - Workspace builds with `cargo build` from `loom/` root [check](cargo build --workspace)
 
 <!-- prettier-ignore -->
-- Target v1 crate set matches the fixed workspace members exactly: loom,
-  loom-driver, loom-events, loom-llm, loom-skill, loom-tune, loom-render,
-  loom-agent, loom-direct-runner, loom-gate, loom-protocol, loom-workflow,
-  loom-templates, loom-test-support, and loom-walk [check](cargo run -p loom-walk -- crate_structure_includes_loom_tune)
+- Workspace members match the crate layout, including the dedicated extractable
+  loom-issues crate and its boundary below runtime orchestration.
+  [check?](cargo run -p loom-walk -- crate_structure_includes_issues)
 
 <!-- prettier-ignore -->
-- Five public-contract crates declared in workspace manifest metadata:
-  loom-events, loom-protocol, loom-llm, loom-templates, loom-skill; no other
-  crate declares the marker [check](cargo run -p loom-walk -- public_contract_crates)
+- Public-contract metadata declares loom-events, loom-protocol, loom-llm,
+  loom-templates, loom-skill and loom-issues, without marking internal
+  runtime crates public or giving the tracking crate internal dependencies.
+  [check?](cargo run -p loom-walk -- public_contract_crates_include_issues)
 
 <!-- prettier-ignore -->
 - Workspace uses edition 2024 and resolver "3" [check](cargo run -p loom-walk -- workspace_edition)
@@ -665,9 +673,11 @@ halves of the pipeline; no per-line versioning needed.
    treating evidence-cache loss as empty safety history. There is no
    `current_spec` pointer. `loom:active` is a bd label on the default work epic
    for `loom loop`, not cache state and not a todo-discovery input.
-2. **Beads integration** — interacts with beads via the `bd` CLI (subprocess
-   calls). Bead operations: create, show, close, update, list, dep add, mol
-   bond, mol progress. CLI output parsed into typed Rust structs.
+2. **Tracking integration** — workflow, cache reconstruction and worker tools
+   compose [Issues](issues.md)'s neutral API. Beads remains the production
+   adapter; native argv/JSON and synchronization stay behind that boundary. The
+   lightweight implementation needs no native database startup. Acceptance,
+   ownership and recovery policy stay in their real workflow owners.
 
 ### Surface conformance
 
@@ -762,6 +772,9 @@ success-criteria walk did not catch.
 ## Out of Scope
 
 - **Agent backend implementations** — defined in [Agent](agent.md).
+- Work-tracker domain semantics/adapters belong to [Issues](issues.md), not a
+  concrete driver-owned bd client. Neither this composition nor a backend swap
+  grants acceptance or expanded host execution authority.
 - **Parallelism beyond clone-per-bead** — `loom loop --parallel N` dispatches
   one bead clone per bead in parallel. New parallelism strategies (cross-spec,
   distributed, scheduler-aware) are future work.

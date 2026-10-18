@@ -105,6 +105,25 @@ or seek clarification. Processing is not a claim that every finding was fixed,
 that retained safety facts were resolved, or that publication is authorized.
 [Loop](loop.md#task-acceptance-at-dispatch) owns the common dispatch boundary.
 
+Implementation workers can discover genuine defects without belonging to an
+admitted remediation batch. Their proposed finding/goal records enter the same
+contextual resolution and driver-owned attribution boundary; producer criterion
+assignments, parentage or labels cannot manufacture a finding or its provenance.
+A real resolved finding may be admitted for the existing follow-up task without
+requiring a fresh tree walk or relabelling it as discovery. Finding resolution
+still requires actual target/evidence and token/scope/bond agreement.
+
+[Loop's shared acceptance verifier and recovery](loop.md#follow-up-admission-and-acceptance-repair)
+also governs targeted repair of missing/interrupted remediation admission.
+[Inbox](inbox.md#acceptance-repair-and-execution-authority) may finalize checked
+attribution in-session after human confirmation; invalid drafts do not replace
+admitted goals. Live finding-label dedup alone is not proof of acceptance and
+must not silently strand an interrupted admission. Recovery retains the same
+task and scoped finding attribution, preserving scheduling and human holds;
+repair is not mint/promotion, execution, closure or a finding-resolution bypass.
+Persistence uses [Issues](issues.md), with finding policy above the backend
+boundary.
+
 ### Relocation and attribution
 
 [Acceptance](#relocation-and-attribution-1).
@@ -119,6 +138,24 @@ legacy alias registry.
 ## Success Criteria
 
 ### Remediation acceptance
+
+- Implementation-discovered defect follow-ups resolve real findings and persist
+  checked goal attribution for the same task without an already-admitted
+  remediation producer. Prose, labels, source criteria, unresolved targets and
+  caller validation flags cannot stand in for that admission.
+  [test?](implementation_discovered_defect_follow_up_resolves_real_finding_goals)
+
+- Actual worker-proposed remediation splits create sibling tasks through the
+  configured neutral Issues operations and retain complete resolved finding-goal
+  attribution before dispatch. Beads and lightweight workflow fixtures exercise
+  the same producer/admission path without a bd compatibility facade.
+  [test?](remediation_splits_use_neutral_tasks_and_resolved_goal_attribution)
+
+- Actual mint/follow-up/Inbox paths reconcile interrupted admission on the same
+  live task despite finding-label dedup, preserving goals, unrelated metadata,
+  status and independent holds. Repair validates current records without a new
+  tree mint, automatic promotion or claim that findings were fixed.
+  [test?](remediation_admission_repair_does_not_skip_unadmitted_live_label_match)
 
 <!-- prettier-ignore -->
 - Real minting, promotion, and remediation-split paths persist driver-resolved
@@ -352,8 +389,8 @@ legacy alias registry.
 
 - A remediation batch carrying multiple findings exposes worker discretion to
   fix all and close, fix a subset and split the remainder into sibling
-  remediation beads under the work epic via `bd create --parent=<work-epic-id>`
-  for deferred work; the bead's acceptance criterion is "agent processed the
+  remediation tasks under the work epic through configured neutral task
+  operations for deferred work; the bead's acceptance criterion is "agent processed the
   batch", not "every finding individually resolved". Human-decision reporting
   and genuine source waits follow
   [Loop's decision contract](loop.md#decision-batches-and-attributed-waits)

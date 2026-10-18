@@ -59,6 +59,59 @@ whole-scope authorization must still match the current request and state.
 Changes between validation and use invalidate affected evidence or
 authorization.
 
+#### Execution facts and current claims
+
+[Acceptance](#execution-facts-and-binding-revalidation).
+
+Every request derives current obligations, bindings and required coverage/review
+from current contracts and policy. Changed claim wording invalidates earlier
+claim approval, not necessarily an unchanged execution fact. Reuse resolves the
+current claim to targets actually covered and rechecks the current relationship;
+an identical annotation or even a fresh test pass does not prove that a verifier
+adequately checks a changed claim. Unavailable binding/coverage admission stays
+visible rather than borrowing old approval. Relocation retains the explicit
+[attribution rules](#relocated-claims).
+
+Declaration provenance and request fingerprints are not indiscriminate execution
+identity salts. Actual definition, checker/artifact, invocation, resource,
+campaign and relevant environment changes remain part of execution identity;
+real document/build consumers retain their inputs. Build artifacts and result
+facts remain separate. Reuse re-admits facts into a current request, not an old
+sealed plan or unit as authority.
+
+Local reusable executions initially come through the shared admitted Loom Gate
+verification/capture path and its runners, used by agents, integration and
+hooks. Capture retains actual outcomes, inputs and provenance in ordinary
+evidence; unobserved shell commands remain diagnostics. Caller-reported passes,
+uploaded transcripts or a new result-import shortcut cannot manufacture admitted
+local execution. Existing Nix-cache imports retain their separate admission
+rules. Equivalent eligible facts are checked before avoidable
+rebuilds/re-execution; cold, invalidated or reuse-disabled work still executes
+under normal policy.
+
+#### Agent-executed results
+
+[Acceptance](#agent-result-admission).
+
+Actual verification executed inside an agent session is eligible for later
+integration/publication coverage through this same evidence-admission boundary.
+It retains the admitted execution definition, complete manifest/observations,
+real outcome and attributable capture/provenance. A worker's prose, pass flag,
+editable acceptance metadata, successful ordinary build, permitted skip or
+feedback lifecycle success cannot substitute for those execution facts. The
+driver verifies provenance and current eligibility rather than trusting the
+agent to declare a result admitted.
+
+Crossing the worker/driver handoff alone neither invalidates an equivalent
+result nor requires a duplicate execution. Re-admit against current obligations,
+relevant integrated/rebased content and inputs, execution/environment
+assumptions, freshness, trust, retained safety history and attempt policy.
+Relevant changes or unavailable/invalid evidence require execution under the
+existing rules; unchanged independent evidence remains eligible. Publisher-host
+readiness and other live facts retain their own fresh-observation requirements.
+This grants neither automatic host coverage from a sandbox skip nor worker
+publication rights, and does not revive reuse-disabled earlier-attempt results.
+
 #### Nix-cache result admission
 
 [Acceptance](#execution-and-admissible-evidence).
@@ -388,6 +441,41 @@ unavailable required linkage as empty safety history.
   execution that actually verified the requested targets can discharge them; a
   successful build or cached status scalar cannot substitute for that evidence.
   [system?](nix run .#test-quint -- build-versus-result-cache)
+
+### Execution facts and binding revalidation
+
+- Through production admission, changed claim wording or binding context
+  requires current coverage/review validation without discarding otherwise
+  eligible unchanged execution facts. Invalid mappings and prior claim approval
+  cannot supply current coverage; real execution/build-input changes invalidate
+  dependent facts without hiding retained negative evidence.
+  [test?](changed_claims_revalidate_bindings_without_discarding_eligible_execution_facts)
+
+- Actual shared Gate capture supplies attributable executions to later agent,
+  integration and hook requests without equivalent eligible re-execution or
+  unnecessary rebuilding. Cold/missing evidence, changed inputs and freshness,
+  failure, trust and attempt restrictions retain required execution.
+  [test?](shared_gate_capture_reuses_execution_facts_across_verification_checkpoints)
+
+- Unobserved commands, submitted transcripts and caller-reported passes cannot
+  manufacture admitted local execution facts. Existing admitted Nix imports
+  remain distinct from local capture, and neither supplies old plan authority.
+  [test?](unobserved_commands_and_report_uploads_cannot_manufacture_execution_evidence)
+
+### Agent-result admission
+
+- Actual worker verification flows through production capture and driver
+  evidence admission into integration/publication without re-execution solely
+  due to handoff, for matching execution identity, environment, provenance and
+  current obligations. Worker prose/flags, builds, skips and feedback-success
+  logs cannot supply equivalent passing evidence or publication authority.
+  [test?](agent_execution_evidence_survives_handoff_only_after_driver_admission)
+
+- Relevant integration/rebase/input, trust, environment or freshness changes,
+  incomplete capture and retained safety/attempt restrictions reject affected
+  worker results while preserving independent admissible evidence; live
+  publisher-host obligations still require their own observations.
+  [test?](agent_result_reuse_rechecks_current_inputs_freshness_and_safety)
 
 ### Status cache
 

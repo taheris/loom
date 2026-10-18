@@ -173,6 +173,37 @@ this acceptance document owns Gate composition and authorization.
 - Markers predating strict producer-result policy are rejected
   [test](markers_from_before_strict_result_policy_are_rejected)
 
+### Feedback stage ordering
+
+- Composed feedback and publication verification enforce the structural-stage
+  barrier through the shared planner: blocking structural or admission errors
+  prevent later behavioral preparation/execution and cannot produce coverage for
+  work not run. The actual composition, not only hook ordering or a standalone
+  helper, enforces this boundary.
+  [test?](gate_composition_stops_behavioral_work_after_structural_failure)
+
+- Actual feedback/integration/publication composition reconstructs current
+  obligations and required review while consuming eligible execution facts
+  through Evidence, without duplicate work solely because the checkpoint
+  changed. Stale plan/claim authority is rejected; missing facts, relevant
+  changes and live-host requirements retain execution and publication
+  restrictions.
+  [test?](gate_rebuilds_current_coverage_while_reusing_eligible_execution_facts)
+
+### Agent execution and host exceptions
+
+- Actual integration/publication Gate paths consume driver-admitted matching
+  agent execution evidence without repeating a verifier solely due to handoff.
+  Changed required inputs, invalid evidence or host-readiness claims still
+  require execution; worker prose/skips cannot construct publication authority.
+  [test?](gate_admits_agent_execution_results_without_granting_worker_authority)
+
+- Driver, marker-free operator and rehearsal publication paths require affected
+  host-only obligations without launching unrelated host suites. Missing
+  required capability/evidence blocks; explicit full-tree requests retain full
+  coverage and no host probe gains execution rights from task admission.
+  [test?](gate_publication_requires_affected_not_blanket_host_checks)
+
 ### Commands surface — explicit scopes and status
 
 - `review`, `judge`, `rubric`, and `audit` inspections never publish, mint
@@ -589,6 +620,17 @@ capability is not an observed pass or publication evidence. In particular,
 publication coverage. Affectedness uses the verifier-input contract; expense
 alone does not make a selected check optional.
 
+Agent execution and the minimal host-only remainder follow
+[Tests](tests.md#agent-first-execution) and
+[Verify](verify.md#sandbox-capability-results). Host-only work is not bundled
+into routine suites: the current request selects affected host obligations, and
+explicit tree scope retains all required checks. Actual worker results may
+supply matching coverage only through
+[Evidence admission](evidence.md#agent-executed-results); neither worker
+feedback acceptance nor transfer to the driver grants authority or justifies a
+rerun by itself. These composition rules are checked by
+[agent execution and host exceptions](#agent-execution-and-host-exceptions).
+
 The composition: `loom gate audit` ≡ `loom gate verify && loom gate review` for
 the same explicit `--diff` or `--tree` scope. Both are inspection paths; `audit`
 produces no bd writes. The act path is `loom gate mint`, which walks and writes;
@@ -649,14 +691,27 @@ trust boundary is explicit.
 | **Push**                 | Fetch/rebase to `origin/<integration-branch>`, resolve the remote tip and `HEAD` to concrete OIDs, run the actual prek pre-push chain for `<remote-oid>..<head-oid>`, then `loom gate review --diff <remote-oid>..<head-oid>` | The actual push range, not merely the molecule's original base range | Highest — **blocks push**. `GateSuccess` is constructible only from matching `VerifiedScope`, `ReviewedScope`, pre-push hook coverage, current evidence/attempt admission, and clean tree/config/range fingerprints; the marker is minted from that receipt | Conformance gaps in the pushed range, project pre-push failures, integrity-gate findings in affected annotations, review concerns, dispatch errors, origin-advanced races                                                              |
 | **Standing safety net**  | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled)                                                                                                                    | Entire spec tree × entire implementation                             | Catches **verifier-input under-reporting** — any verifier a finite scope would have skipped because its derived input set was too narrow is surfaced here                                                                                                   | Cross-file incoherence finite diffs did not surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-reported input sets that are too narrow          |
 
+Composed verification follows
+[Verify's documentation selection and structural barrier](verify.md#documentation-feedback-and-structural-barrier),
+with [stage-ordering acceptance](#feedback-stage-ordering). Structural failures
+stop later behavioral preparation and execution inside the request, not only a
+subsequent hook. Precise documentation feedback does not waive affected
+publication obligations or Evidence's conditions for admitting prior results.
+Current requests derive their own obligations, bindings and review requirements;
+[reused execution facts](evidence.md#execution-facts-and-current-claims) do not
+reuse claim approval, earlier plan seals or publication authority. Feedback,
+integration and hooks share the admitted planning/capture path rather than
+independently rerunning equivalent eligible work. Missing facts and genuine
+input/freshness changes still require execution, including cold verification.
+
 The plan stage has no separate command invocation — the agent runs the rubric
 inline during the planning interview, and `loom plan` is the surface that opens
-that interview. Worker self-check is prompt-level feedback; it is not
-marker-eligible and cannot authorize a push. The driver's per-bead integration
-stage is deterministic only. Focused per-bead LLM review is not part of the
-default hot path; the worker's self-review happens inside the implementation
-session, and the authoritative LLM review runs at molecule completion over the
-actual push range.
+that interview. Worker self-check acceptance cannot authorize a push or mint a
+marker; actual captured executions may become matching unit evidence only after
+driver admission. The driver's per-bead integration stage is deterministic only.
+Focused per-bead LLM review is not part of the default hot path; the worker's
+self-review happens inside the implementation session, and the authoritative LLM
+review runs at molecule completion over the actual push range.
 
 The push stage is **non-optional and load-bearing across every execution mode of
 `loom loop`** — default active work epic, explicit bead/epic roots, and parallel

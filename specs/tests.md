@@ -14,7 +14,7 @@ suite composition; component owners retain their behavioral acceptance.
 Native, integration, and assembled-system tests cover distinct seams, using
 shared deterministic fixtures and the normal verification path. Related owners:
 [verify](verify.md), [simulation](simulation.md), [agent](agent.md),
-[harness](harness.md), [events](events.md).
+[harness](harness.md), [events](events.md), [issues](issues.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -38,6 +38,46 @@ prompt, performs no protocol turn, and makes no LLM API request.
 
 Internal per-crate file and module organization remains an implementation choice
 rather than part of this spec's contract.
+
+### Agent-first execution
+
+[Acceptance](#agent-first-test-coverage).
+
+Behavioral, integration and recovery tests run in agent sessions by default,
+including real isolated local processes/databases where those boundaries matter.
+Missing ordinary tools or unnecessary native database setup should be fixed in
+profiles/fixtures or through the typed tracking boundary, not deferred to a late
+driver handoff. Most workflow fixtures use
+[Issues — lightweight implementation](issues.md#lightweight-implementation-and-conformance)
+with real policy above it; native adapter conformance and narrow assembly checks
+remain. Ordinary workflow-policy fixtures initialize no Beads/Dolt databases or
+backend processes. The shared fixture boundary rejects accidental native setup;
+tests exercise real acceptance, scheduling and recovery rather than replacing
+those decisions with scripted results. Native conformance still exercises the
+actual adapter, including negative cases, so the guard cannot disable genuine
+backend coverage. Superseded argv-fake tests are not retained merely to preserve
+an obsolete path. An in-process test cannot prove a backend/OS/process boundary
+it omits.
+
+Only a minimal justified remainder needing capabilities that cannot safely be
+provided inside the agent sandbox is host-only. Host-only classification follows
+actual execution requirements, not an integration/system label, fixture
+convenience, or absence of installed tooling. These checks are separate from
+ordinary agent suites and run through admitted affected selection when relevant
+changes require them. They remain mandatory for affected publication; unrelated
+suites, pushes and verify cycles do not launch them merely because they exist.
+Explicit full-tree/on-demand campaigns can request broader host coverage.
+[Verify](verify.md#sandbox-capability-results) owns capability/applicability;
+[Evidence](evidence.md#agent-executed-results) admits actual worker results, not
+skips or worker prose. Driver handoff alone is not a reason to repeat valid
+executions. Sound conservative input selection and explicit full-tree requests
+retain coverage; no hand-maintained host-test inventory is required here.
+
+Focused implementation-time measurements/checks of fixture overhead and agent
+iteration speed are appropriate to this work. Expensive performance campaigns
+stay scoped/on-demand, not unconditional suite/push requirements. This defines
+no general benchmark framework, numerical speed quota or mandatory before/after
+report.
 
 ### Annotation Contract
 
@@ -472,19 +512,48 @@ in
 whose admitted definitions may require workspace compilation; it is not a
 compile-free guarantee. Measure its actual costs under
 [Pre-commit](pre-commit.md#fast-feedback-cost) rather than infer them from tier
-names or prebuilt tools. The full required suite is the `nix run .#test` app in
-`nix/flake/apps.nix`: it runs the fast flake tier, workspace clippy, full
-workspace nextest, and `loom gate system --tree`. Pre-push composes those same
-required tiers without repetition: the standalone fast and both Clippy hooks are
-followed by `nix run .#test-required`, which runs full workspace nextest and
-`loom gate system --tree`. The standalone `nix run .#test` remains complete.
-Grep-tier `[check]` annotations across specs use paths relative to the
-staged-source root (which mirrors the `loom/` workspace flattened to `$out/`
-plus host files like `lib/sandbox/linux/entrypoint.sh` mirrored under their host
-paths), so the explicit tier commands run at tree scope with no `--spec` filter.
-`loom-smoke` is exposed as `nix run .#smoke` on Linux only.
+names or prebuilt tools. The `nix run .#test` app supplies the complete ordinary
+agent-runnable suite: fast flake tier, workspace Clippy, ordinary workspace
+nextest, and agent-runnable system coverage. Host-only checks are separately
+selected, not bundled into every broad native suite. Pre-push composes ordinary
+tiers without repetition: standalone fast and both Clippy hooks are followed by
+`nix run .#test-required` for ordinary native/system coverage without repeating
+lint. The exact pushed-range Gate plan additionally requires affected host-only
+obligations, executing them only when admissible evidence cannot discharge them.
+Explicit full-tree verification remains complete, including host obligations; it
+is not the unconditional routine test-app policy. Grep-tier `[check]`
+annotations across specs use paths relative to the staged-source root (which
+mirrors the `loom/` workspace flattened to `$out/` plus host files like
+`lib/sandbox/linux/entrypoint.sh` mirrored under their host paths), so the
+explicit tier commands run at tree scope with no `--spec` filter. `loom-smoke`
+is exposed as `nix run .#smoke` on Linux only.
 
 ## Success Criteria
+
+### Agent-first test coverage
+
+- Production ordinary native/system suites are agent-runnable, use the shared
+  lightweight tracker for policy fixtures, and retain isolated native adapter
+  and real boundary tests where needed. Test setup does not require a late
+  driver handoff for ordinary tools or unnecessarily start a database.
+  [test?](agent_test_suites_exercise_real_policy_without_native_fixture_startup)
+
+- The ordinary policy-fixture boundary rejects accidental native Beads/Dolt
+  setup before initialization. Real policy cases use the lightweight backend
+  with zero native database/backend starts; separate native conformance remains
+  executable rather than being silently disabled or replaced by policy mocks.
+  [test?](ordinary_policy_fixture_guard_rejects_native_database_startup)
+
+- Actual agent suite and pre-push/verify selection exclude unrelated host-only
+  checks, require genuinely affected host coverage, and preserve explicit
+  full-tree coverage. Required capabilities, not tier names or tooling gaps,
+  justify the small host-only boundary; skips never become passes.
+  [test?](agent_suites_and_publication_select_only_required_host_checks)
+
+- Routine verification/push configuration contains no unconditional expensive
+  benchmark campaign added for test-speed work; focused fixture/iteration
+  measurements can run explicitly without weakening required behavioral tests.
+  [test?](test_speed_measurements_remain_scoped_not_routine_benchmark_gates)
 
 ### Assembled-system checks
 
@@ -572,8 +641,11 @@ paths), so the explicit tier commands run at tree scope with no `--spec` filter.
   outside the flake `checks` set [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 <!-- prettier-ignore -->
-- `nix run .#test` composes the fast flake tier, workspace Clippy, full nextest,
-  and system verifiers [check](cargo run -p loom-walk -- workspace_compile_checks_are_full_test_app_only)
+- `nix run .#test` composes the complete agent-runnable fast/Clippy/native/system
+  suite; the required pre-push app avoids lint repetition and does not bundle
+  host-only checks into ordinary suites. Affected host obligations remain in
+  the pushed-range Gate plan, with explicit broader campaigns available.
+  [check?](cargo run -p loom-walk -- agent_suite_and_affected_host_surface_contract)
 
 <!-- prettier-ignore -->
 - `nix run .#smoke` carries a concrete mock-Pi image, immutable ProfileConfig,
@@ -729,24 +801,26 @@ paths), so the explicit tier commands run at tree scope with no `--spec` filter.
    [bounded status-render regression](evidence.md#status-cache-1), measured on
    its specified 2,000-row fixtures, not end-to-end status or admission latency.
 
-3. **Isolated** — each test uses its own temp directory and beads database
-   prefix. No shared mutable state between tests.
+3. **Isolated** — each test uses isolated fixture state and a temp directory
+   where needed. Only native tracker tests initialize isolated databases;
+   ordinary workflow fixtures use the lightweight backend. No shared mutable
+   state between tests.
 4. **Parallel-safe** — unit and integration tests run in parallel under
    `cargo nextest`'s process-per-test model. Each test gets a fresh process, so
    global state (env vars, working directory, process-level locks) doesn't leak
    between tests. The container smoke (single scenario) gets its own pre-seeded
    `.beads/` snapshot in a tempdir, fully isolated from any concurrent peers
    running against the workspace.
-5. **Push-friendly full suite** — `nix flake check` runs the fast deterministic
-   derivations that stay inside the interactive push budget. The standalone
-   `nix run .#test` remains the complete suite. Pre-push runs the fast tier and
-   both Clippy configurations through independent hooks, then full workspace
-   nextest plus `[system]`/container verifiers through
-   `nix run .#test-required`, without repeating lint hooks. This repository has
-   no separate CI safety net. The container smoke remains exposed as
-   `nix run .#smoke` because it needs podman at runtime; its acceptance
-   criterion is annotated `[system](nix run .#smoke)`. Pre-push also runs clippy
-   plus targeted `loom gate verify --diff` under
+5. **Push-friendly coverage** — `nix flake check` runs the fast deterministic
+   derivations. Ordinary and pre-push apps follow
+   [Nix Integration](#nix-integration): complete agent-runnable suites without
+   unconditional host tests or repeated lint. Affected host obligations remain
+   mandatory at publication through the same Gate plan, with actual results
+   reusable only after Evidence admission. This repository has no separate CI
+   safety net. The container smoke remains exposed as `nix run .#smoke` because
+   it needs podman at runtime; its acceptance criterion is annotated
+   `[system](nix run .#smoke)`. Pre-push also runs clippy plus targeted
+   `loom gate verify --diff` under
    [Gate's deterministic verify contract](gate.md#deterministic-verify-lanes).
    Project-specific hook composition, stage budgets, and lock semantics live in
    [Pre-Commit](pre-commit.md).
@@ -856,6 +930,9 @@ paths), so the explicit tier commands run at tree scope with no `--spec` filter.
   defaults don't fit, not a per-verifier registry.
 - **`cargo fuzz` under `nix flake check`** — exposed as `nix run .#fuzz-loom`
   for on-demand or nightly runs only. proptest covers invariants in CI.
+- A general benchmark framework, compulsory before/after report, initial
+  host-test inventory, or expensive always-on benchmarking suite. Focused
+  implementation-time test-speed checks remain appropriate.
 - **Hard CI-time NFR from advisory suite timing** — the per-tier latency targets
   (Non-Functional #2) guide test design and timing review, not failure of an
   otherwise completed suite. This does not excuse execution timeouts or

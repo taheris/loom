@@ -32,12 +32,12 @@ referential integrity, not the semantic adequacy of the agent's task
 decomposition.
 
 The Rust driver owns serialization and persistence of these bindings into
-structured Beads task metadata during todo finalization. It serializes a typed
-reference payload through Serde and the existing Beads boundary, preserving
-unrelated task metadata; the agent does not issue hand-crafted metadata writes
-for these bindings. Task descriptions remain prose. Metadata stores criterion
-references, not copied requirement text, verifier commands, cached verdicts, or
-a claim that resolution has already succeeded for a future snapshot.
+structured task metadata during todo finalization. It serializes a typed
+reference payload through Serde and [Issues](issues.md), preserving unrelated
+task metadata; the agent does not issue hand-crafted metadata writes for these
+bindings. Task descriptions remain prose. Metadata stores criterion references,
+not copied requirement text, verifier commands, cached verdicts, or a claim that
+resolution has already succeeded for a future snapshot.
 
 Serde ingestion produces typed references with checked identifiers, never an
 already-resolved acceptance value supplied by external JSON. Snapshot resolution
@@ -141,8 +141,12 @@ assignments using the injected criterion identities and the shared typed todo
 handoff. It does not ask the agent to compute IDs or write binding metadata with
 `bd`. [Todo](#binding-proposal-and-persistence) owns the Rust resolution,
 serialization, and persistence boundary; the template does not maintain a
-separate Beads JSON schema. Ordinary task creation, descriptions, labels, and
-dependencies remain part of decomposition.
+separate backend JSON schema. Ordinary task creation, descriptions, labels, and
+dependencies use neutral tracking operations as part of decomposition. Separate
+discovered follow-ups enter
+[Loop's admission](loop.md#follow-up-admission-and-acceptance-repair); discovery
+outcomes and acceptance repair do not manufacture criterion coverage or replace
+the implementation-binding handoff.
 
 ### Decomposition Discipline
 
@@ -262,6 +266,12 @@ cursor advancement.
 
 ### Task acceptance
 
+- Actual Todo creation/finalization uses neutral tracking operations with both
+  Beads and lightweight implementations, retaining driver-owned binding writes,
+  exact roster/cursor/note guarantees and unrelated metadata. Separate discovery
+  or acceptance repair cannot stand in for criterion-bound implementation work.
+  [test?](todo_neutral_tracking_preserves_binding_and_finalization_boundaries)
+
 - Serde round-trips the typed criterion-reference metadata without copying
   requirement text, verifier bindings, or verdicts. Malformed identifiers fail
   ingestion; externally supplied JSON cannot construct snapshot-resolved
@@ -271,7 +281,7 @@ cursor advancement.
 <!-- prettier-ignore -->
 - The production todo finalizer resolves agent-proposed assignments against its
   preflight snapshot and accepted tasks, then serializes and writes reference
-  metadata through the Rust Beads boundary without replacing unrelated metadata.
+  metadata through the Rust tracking boundary without replacing unrelated metadata.
   Invalid assignments or binding-write failures prevent activation, cursor
   advancement, and note consumption; prose descriptions cannot substitute for
   the structured proposals. [system](nix run .#test-quint -- todo-acceptance-persistence)

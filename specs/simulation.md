@@ -172,6 +172,22 @@ executes hermetically. Controlled external processes are fixtures subject to the
 test-infrastructure rules in [Tests](tests.md); internal gate decisions are not
 model-shaped mocks.
 
+#### Work-shape conformance
+
+[Acceptance](#model-and-implementation-conformance).
+
+The reference distinguishes current claim/binding admission, execution facts and
+build artifacts under Verify/Evidence; changed prose cannot inherit claim
+approval or automatically invalidate independent execution. Production traces
+exercise structural barriers before behavioral discovery/build/dispatch,
+current-snapshot admission, shared eligible execution and real dependency
+groups. Warm reuse, cold/missing facts, genuinely affected/shared inputs and
+invalid metadata all participate: neither always-reject, always-reuse nor
+whole-suite fallback is a valid optimization. Compare actual provider/CLI launch
+events and coverage, not labels, a mocked selected plan or elapsed-time
+thresholds. Existing bounded campaigns carry these regressions without an added
+benchmark hook.
+
 #### Portable replay regressions
 
 [Acceptance](#model-and-implementation-conformance).
@@ -337,7 +353,10 @@ review; no keyword classifier or compiler can establish intent.
   task-producer/dispatch paths distinguish criterion assignments from finding
   goals, including repair of malformed acceptance. External processes may be
   controlled fixtures; internal planning, aggregation, and authorization are
-  not replaced by model-shaped mocks. [system?](nix run .#test-quint -- conformance)
+  not replaced by model-shaped mocks. Claim/binding edits, dual-role document
+  inputs, structural barriers, cold/missing facts and cross-checkpoint reuse
+  compare actual production selection, preparation and launch events while
+  preserving current coverage and authorization. [system?](nix run .#test-quint -- conformance)
 
 <!-- prettier-ignore -->
 - Conformance failures report the seed, model and input identities, trace, first
@@ -366,7 +385,8 @@ review; no keyword classifier or compiler can establish intent.
   obligations, deferral leaking to siblings sharing a verifier, untracked
   membership/absence dependencies, dropped batch results, skip-as-pass,
   absent-tool success counted as host coverage, and pending-probe admission or
-  scheduling bypasses/probes-as-passes. It also detects unnecessary unrelated
+  scheduling bypasses/probes-as-passes. It also detects owner-annotation
+  fan-out, late structural barriers, unrelated launches and duplicate eligible
   execution at the responsible model/provider/adapter/production boundary.
   [system?](nix run .#test-quint -- mutations)
 
@@ -374,7 +394,8 @@ review; no keyword classifier or compiler can establish intent.
 - **Evidence-admission mutations.** Fault injection detects weakened cache
   keys/validation, stale or resurrected passes, restored reuse after conflicting
   outcomes, builds treated as results, imports treated as fresh executions, stale
-  signer-trust decisions, and cache-source/trust changes erasing failure history.
+  signer-trust decisions, stale claim/plan authority despite valid execution
+  facts, and cache-source/trust changes erasing failure history.
   [system?](nix run .#test-quint -- mutations)
 
 <!-- prettier-ignore -->

@@ -43,11 +43,11 @@ next session. It is a recovery aid, not durable workflow state.
 The public Loop context accepts an optional immutable
 `loom_protocol::acceptance::dispatch::Context` for partial composition.
 Production worker construction supplies it from separately resolved
-implementation criteria or native-checked remediation goals, never from metadata
-deserialization. Its source paths render relative to the worker checkout;
-retained goal text, current bindings, attribution and evidence travel in the
-saved prompt, without Templates resolving references or interpreting resolution
-as passing verification.
+implementation criteria, checked remediation goals or bounded discovery
+acceptance, never from metadata deserialization. Its source paths render
+relative to the worker checkout; retained goal text, current bindings,
+attribution and evidence travel in the saved prompt, without Templates resolving
+references or interpreting resolution as passing verification.
 
 `package_context: Option<loom_protocol::context::Context>` is shared by the
 public Plan, Todo, Loop and Review contexts and their workflow builder inputs.
@@ -288,14 +288,47 @@ acceptance. Templates render the supplied form, never reinterpret malformed
 criteria as assignments or invent IDs for repair goals. They do not
 independently parse references, resolve links, or omit unresolved members.
 Compaction restores the dispatched goal set and task purpose, not references
-reinterpreted against a different snapshot. Neither resolved form establishes a
-verifier pass.
+reinterpreted against a different snapshot. Discovery renders its bounded
+question, authorized experiments, evidence requirements, execution limits and
+completion conditions from Loop's resolved context, not invented criteria or
+findings. No resolved form establishes a verifier pass.
 
 Decomposition renders both historical observations and the current coverage
 projection supplied under [Specs](specs.md#criterion-status-surface) and
 [Evidence](evidence.md#coverage-projection). It exposes blockers and uncertainty
 rather than upgrading a cached `Current` pass or zero commit distance into
 current coverage. Templates do not perform evidence admission.
+
+### Ancillary procedure disclosure
+
+[Acceptance](#ancillary-disclosure-and-discovery-rendering).
+
+Current-task acceptance and essential phase/safety instructions remain explicit
+at dispatch and after compaction. Ancillary procedures instead use
+[Skills' compact locators](skills.md#ancillary-workflow-guidance) and on-demand
+validator-matched schema/help. Follow-up authoring/preflight and Inbox repair
+need no giant startup schema or automatic intent detector. The locator and
+required version/snapshot retrieval remain usable after compaction; an
+unavailable or changed validator cannot silently masquerade as the dispatched
+version.
+
+Loop guidance distinguishes ordinary investigation within the current task,
+separate typed follow-ups and first-class discovery. Portable task operations
+replace backend-specific worker instructions under
+[Issues](issues.md#workflow-and-worker-use). Local preflight gives early
+diagnostics but cannot grant authoritative admission or host execution.
+Discovery completion teaches evidence-backed supported/unsupported/inconclusive
+outcomes and the clean-empty-diff exception, not a required implementation
+commit or feasibility pass. It follows
+[Loop's experiment-code boundary](loop.md#discovery-tasks), including ordinary
+verification for a retained nonempty diff. Missing required access remains
+unfinished.
+
+Inbox guidance makes agent-authored candidate repair and scoped checked
+finalization discoverable on demand, with confirmation of the specific change,
+actual persisted success/failure, preservation of holds and no repair DSL.
+Neither phase teaches an arbitrary host-command bridge: host/expanded-authority
+experiments require the bounded snapshot-bound human approval owned by Inbox.
 
 ### Template Variables
 
@@ -536,10 +569,11 @@ interactive session the loom binary runs with a human in the loop:
 - **Persistence destinations.** Session-bridging memory — decisions, context,
   follow-ups, anything future sessions need — goes only to the durable surface
   this phase authorizes. In `loom plan`, durable planning output goes in
-  spec/index markdown or implementation notes; plan does not write bd. In
-  `loom inbox`, bd notes/descriptions are the authorized resolution surface.
-  Claude Code's `MEMORY.md` / auto-memory system is container-local and
-  disappears with the container; treat it as working notes for the current
+  spec/index markdown or implementation notes; plan does not mutate task state.
+  In `loom inbox`, authorized task notes/descriptions and scoped checked
+  acceptance finalization are resolution surfaces, reached through neutral
+  operations. Claude Code's `MEMORY.md` / auto-memory system is container-local
+  and disappears with the container; treat it as working notes for the current
   session only, not as durable storage.
 - The "one by one" sub-mode follows
   [Plan — Interview Modes](plan.md#interview-modes), is planning-specific, and
@@ -760,6 +794,27 @@ bundled documents in front of the agent with zero configuration.
   session by directing the agent at non-existent dispatch (Invariant 3 from
   [Gate](gate.md)) [check](cargo run -p loom-walk -- templates_no_removed_surface)
 
+### Ancillary disclosure and discovery rendering
+
+- Actual Loop dispatch/render/compaction includes complete bounded discovery
+  acceptance and teaches performed-experiment/evidence completion, including the
+  empty-code-diff exception and unfinished required-access case. It permits
+  bounded probe code with ordinary diff verification, not unrelated product
+  implementation, invented criterion IDs or a positive feasibility expectation.
+  [test?](discovery_worker_prompt_renders_acceptance_and_evidence_completion)
+
+- Actual startup/re-pin contexts keep assigned acceptance and essential safety
+  explicit, while ancillary follow-up/preflight/repair procedures and schemas
+  remain on-demand. Compact locators and validator-matched retrieval survive
+  compaction without replacing obligations or silently switching schema version.
+  [test?](ancillary_procedure_locators_survive_compaction_without_schema_pinning)
+
+- Loop/Inbox rendering uses neutral task operations and distinguishes local
+  preflight from checked admission, human-confirmed in-session repair from
+  reopening, and bounded host approval from ordinary sandbox work; no marker or
+  claimed pass teaches a host-command or provenance-forging bypass.
+  [test?](workflow_prompts_teach_neutral_tasks_and_scoped_acceptance_authority)
+
 ### Pinning policy
 
 - Planning receives the package contract and can retrieve detailed criteria;
@@ -876,12 +931,12 @@ bundled documents in front of the agent with zero configuration.
 - The partial body names the picker prohibition explicitly so a grep for the
   rule succeeds (no rule-by-implication) [check](grep -qi 'option-picker\|AskUserQuestion' crates/loom-templates/templates/partial/chat_interview.md)
 
-<!-- prettier-ignore -->
-- The partial body names the persistence-destination clause distinctively so a
-  grep for the rule succeeds: interactive sessions persist cross-session memory
-  via the phase-authorized durable surface, not via Claude Code's `MEMORY.md`
-  system which is container-local; plan is explicitly barred from bd writes
-  while inbox can use bd notes [check](grep -qi 'MEMORY.md\|bd update.*--notes' crates/loom-templates/templates/partial/chat_interview.md)
+- Rendered interactive prompts direct cross-session memory to the phase-authorized
+  durable surface, not container-local `MEMORY.md`: Plan uses spec/index Markdown
+  and implementation notes without task-backend mutation; Inbox uses authorized
+  neutral task notes/fields or its scoped proposal artifacts. Backend substitution
+  neither requires native bd instructions nor grants checked-admission authority.
+  [test?](interactive_prompts_teach_neutral_phase_authorized_persistence)
 
 - `inbox.md` rendered prompt contains the chat-interview discipline clauses
   (picker prohibition + persistence destinations) sourced from the pinned
@@ -1078,9 +1133,9 @@ bundled documents in front of the agent with zero configuration.
   in [Findings — Findings and Minting](findings.md#findings-and-minting-1)
   [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/progress_markers.md")
 
-- Rendered progress-marker guidance distinguishes review `LOOM_COMPLETE` (clean
-  inspection, no diff expected) from loop `LOOM_COMPLETE` (closed bead with
-  non-empty diff) and keeps `LOOM_NOOP` loop-only
+- For non-discovery work, rendered progress-marker guidance distinguishes
+  review `LOOM_COMPLETE` (clean inspection, no diff expected) from loop
+  `LOOM_COMPLETE` (closed task with non-empty diff), keeping `LOOM_NOOP` loop-only
   [test](progress_markers_render_phase_specific_diff_rules)
 
 - Loop and Todo waiting guidance requires actual prerequisites, non-closure of
@@ -1220,10 +1275,10 @@ bundled documents in front of the agent with zero configuration.
 
 ### Loop completion self-check and self-review
 
-- `loop.md` instructs the worker to run
-  `loom gate verify --diff <bead-base>..HEAD` (or `@{u}..HEAD` only when
-  upstream is that base) before emitting `LOOM_COMPLETE`; it does not name
-  `loom gate verify --diff HEAD` as the final self-check
+- For implementation/remediation and discovery with a code diff, `loop.md`
+  instructs the worker to run `loom gate verify --diff <bead-base>..HEAD` (or
+  `@{u}..HEAD` only when upstream is that base) before emitting `LOOM_COMPLETE`;
+  it does not name `loom gate verify --diff HEAD` as the final self-check
   [test](run_template_uses_injected_self_check_range_not_head_shorthand)
 
 - `loop.md` tells the worker to rerun the self-check after any later commit or
@@ -1463,11 +1518,12 @@ bundled documents in front of the agent with zero configuration.
    **persistence-destination clause**: session-bridging memory (decisions,
    context, follow-ups) goes only to the durable surface the phase authorizes:
    `loom plan` writes spec/index markdown or implementation notes and does not
-   write bd, while `loom inbox` can use bd notes/descriptions for resolutions.
-   Claude Code's `MEMORY.md` system is container-local and disappears with the
-   container. The "one by one" sub-mode is planning-specific and lives in a
-   separate partial; the chat-discipline rules above apply to every interactive
-   session, including inbox-chat.
+   mutate task state, while `loom inbox` uses authorized neutral task writes and
+   its scoped checked acceptance operation for resolutions. Claude Code's
+   `MEMORY.md` system is container-local and disappears with the container. The
+   "one by one" sub-mode is planning-specific and lives in a separate partial;
+   the chat-discipline rules above apply to every interactive session, including
+   inbox-chat.
 4. **Criterion-status surface for decomposition.** `TodoContext` carries
    `criterion_status: Vec<CriterionStatus>` where each row exposes `spec_label`,
    typed `criterion_id`, criterion text, typed annotation, and `EvidenceState`

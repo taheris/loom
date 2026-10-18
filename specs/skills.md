@@ -304,7 +304,41 @@ Source (`builtin`, `override`, `repo`, `configured`), source hashes,
 phase/profile filters, native registration status, and override provenance are
 recorded in logs/manifests, not in the normal skill index.
 
+### Ancillary workflow guidance
+
+[Acceptance](#ancillary-guidance-delivery).
+
+Ancillary workflow procedures use compact discoverable skill/tool locators and
+on-demand retrieval rather than giant startup instructions. This applies
+generally, including neutral task operations, follow-up acceptance authoring,
+local preflight and Inbox acceptance repair. Relevant guidance must be available
+in the phases/profiles that need it; agents select/retrieve it through existing
+disclosure, not an assumed driver intent detector.
+
+Guidance points to schema/help from the locally available shared validator and
+its version. Skill prose, including tuned overrides, cannot independently define
+an acceptance schema or assert a validation/admission result. A mismatch or
+unavailable required version is diagnostic, not silent agreement. Procedure
+bodies need not be pinned;
+[Templates](templates.md#ancillary-procedure-disclosure) keeps current-task
+obligations and essential safety rules explicit and preserves the
+locator/versioned retrieval path through compaction. Reading a guide or running
+local preflight grants no host execution or acceptance authority.
+
 ## Success Criteria
+
+### Ancillary guidance delivery
+
+- Real phase/profile discovery and disclosure make ancillary task/follow-up,
+  preflight and Inbox-repair guidance retrievable on demand from compact
+  locators, without pinning full procedures into every startup prompt or
+  assuming automatic intent-triggered injection.
+  [test?](workflow_guidance_is_discoverable_on_demand_in_applicable_sessions)
+
+- Retrieved schema/help agrees with the shared local validator version;
+  unavailable/mismatched versions fail visibly and skill overrides cannot
+  redefine schema or manufacture admission/execution authority.
+  [test?](workflow_guidance_uses_validator_matched_schema_not_skill_authority)
 
 ### Acceptance
 

@@ -26,15 +26,28 @@ The pre-commit stage provides fast feedback on the staged files: native
 whitespace/conflict sanitation, formatting drift, explicit-interpreter safety
 for shell self re-exec, and affected deterministic annotation checks. The
 pre-push stage composes the fast Nix tier, Rust linting when Rust files changed,
-exact pushed-range verification, and the full required suite. The hook chain
-stops at the first failure rather than launching later verification tiers.
-Existing feedback-only capability skips remain available, while non-Nix checks
-continue. For host publication, a missing required tool blocks whenever the
-obligation lacks currently admissible coverage. A wrapper's successful
-absent-tool no-op is not execution evidence and cannot satisfy hook coverage, a
-receipt, or a marker. Apply this rule to driver publication, marker-free
-operator pushes, and host pre-push rehearsals; worker feedback never substitutes
-for host coverage.
+exact pushed-range verification, and required agent-runnable suites plus
+affected host-only coverage. The hook chain stops at the first failure rather
+than launching later verification tiers. Existing feedback-only capability skips
+remain available, while non-Nix checks continue. For host publication, a missing
+required tool blocks whenever the obligation lacks currently admissible
+coverage. A wrapper's successful absent-tool no-op is not execution evidence and
+cannot satisfy hook coverage, a receipt, or a marker. Apply this rule to driver
+publication, marker-free operator pushes, and host pre-push rehearsals. Actual
+worker executions may supply admitted equivalent coverage under
+[Evidence](evidence.md#agent-executed-results); worker acceptance with skips or
+a claimed pass cannot substitute for an executed obligation. Publication
+authority remains driver-owned.
+
+Documentation-only commits use
+[Verify's input-based feedback selection and structural barrier](verify.md#documentation-feedback-and-structural-barrier)
+through the existing hook and shared Gate path. They run required document and
+binding checks, not every behavioral verifier named by a touched spec.
+Behavioral consumers of changed Markdown still run. A blocking structural
+failure stops later behavioral discovery, compilation and execution within the
+gate invocation, not merely the next hook entry. Publication coverage and
+Evidence admission remain unchanged; neither a Markdown suffix nor a successful
+cheap check authorizes an uncovered push.
 
 Every pre-push entry is independently marker-aware. There is no standalone
 marker gate: the wrapper either proves coverage for that entry or executes it.
@@ -69,6 +82,17 @@ rebuild costs are reported separately alongside total changed-code iteration
 time, rather than hidden in a warm claim. This plan does not set a fixed
 wall-clock threshold before profiling the real consumers.
 
+Routine performance is enforced by
+[Verify's production work-shape contracts](verify.md#dependency-roles-grouping-and-cutover),
+not elapsed-time correctness gates: avoid unrelated behavioral fan-out, finish
+structural work first, and share equivalent eligible execution through the
+ordinary capture/admission path. Current claim/binding validation remains
+mandatory; reused execution facts are not reused claim approval. Normal output
+exposes actual selection/reuse or admission-failure reasons with bounded
+recovery. Timing aids diagnosis and focused profiling, not a flaky threshold or
+an added always-on benchmarking suite. This does not replace existing scoped
+pilot cost evidence with a cache-hit-only demonstration.
+
 Low latency is not permission to finish with required work outstanding.
 Spec-owned publication deferrals can postpone expensive obligations; omitted
 exceptions instead retain conservative earlier checking. Full publication and
@@ -100,16 +124,18 @@ compilation. Measure this composition under
 [fast-feedback cost](#fast-feedback-cost), including cold and rebuild costs,
 rather than imposing an unprofiled warm threshold or dropping required work.
 
-The full required suite and container smoke composition are owned by
-[Tests — Nix Integration](tests.md#nix-integration). This spec owns only their
-hook placement: full nextest and required system coverage run at pre-push rather
-than only in CI because this repository has no separate CI safety net. The
-pre-push test app does not repeat the preceding fast and Clippy hooks; the
-standalone full-suite command remains complete.
+Suite and container smoke composition are owned by
+[Tests — Nix Integration](tests.md#nix-integration). This spec owns hook
+placement: ordinary agent-runnable nextest/system coverage and affected host
+obligations remain required at pre-push, not merely in CI. Host-only checks are
+not an always-on component of the test app; the actual pushed-range plan selects
+them through admitted dependencies. The pre-push app avoids repeating preceding
+fast/Clippy hooks. Missing or invalid input contracts cannot suppress host work.
 
 Alongside the Nix check hook, pre-push runs both Clippy configurations,
-`loom gate verify --diff <push-range>`, and the required nextest/system test
-app. Prek exports the pushed endpoints as `PRE_COMMIT_FROM_REF` /
+`loom gate verify --diff <push-range>`, and the required agent-runnable
+nextest/system test app, with host coverage selected for the actual pushed
+range. Prek exports the pushed endpoints as `PRE_COMMIT_FROM_REF` /
 `PRE_COMMIT_TO_REF`; `pre-push-checks` appends that exact range to the gate hook
 instead of deriving it from the branch upstream. `loom gate verify --diff` uses
 [Gate's deterministic verify contract](gate.md#deterministic-verify-lanes) for
@@ -147,18 +173,21 @@ What this catches in-session:
   annotation failures on the final loop self-check range defined by
   [Loop — Loop completion self-check and self-review](loop.md#loop-completion-self-check-and-self-review),
   including hooks such as clippy when the project config places them in the
-  pre-commit lane. Full workspace nextest and system verification required
-  solely by publication-only obligations retain their pre-push/full-suite or
-  operator-invoked placement. Annotation applicability follows
+  pre-commit lane. Ordinary nextest/system verification required solely by
+  publication-only obligations retains pre-push or operator-invoked placement;
+  host-only obligations run only when selected by their admitted inputs/scope.
+  Annotation applicability follows
   [Gate's obligation-level rule](gate.md#deterministic-verify-lanes) through the
   existing verification path, not a blanket exclusion of shared system targets.
 
-What it does _not_ do: act as the trust source for the driver-side verdict gate.
-The agent's hook chain is **feedback only**. The driver runs its own independent
-post-integration verify and molecule push gate (per
-[Loop — Verdict Gate](loop.md#verdict-gate)) after `LOOM_COMPLETE`; the agent
-cannot mint a `MarkerProof` and cannot bypass driver verification by emitting a
-structured "I verified" report.
+The agent cannot mint `MarkerProof` or bypass driver admission by reporting "I
+verified". Actual executed hook/verifier results can supply reusable evidence
+under [Evidence](evidence.md#agent-executed-results). The driver still plans and
+admits post-integration and publication coverage for current inputs, but does
+not rerun an equivalent admitted result solely because execution crossed the
+worker handoff. Changed relevant integration inputs, environment/freshness
+requirements or invalid evidence still require execution. Feedback acceptance or
+a skipped hook is not that evidence.
 
 Worker profiles retain Nix and execute Nix-dependent hooks in their private
 single-user store. Hooks still use `skip-if-missing` for feedback environments
@@ -288,10 +317,12 @@ annotations. The implementing diff drops the `?` at the same moment it lands the
 verifier, enforced structurally by the `UnneededPendingMarker` finding.
 
 This spec therefore does **not** file-scope `nix flake check` to skip on
-spec-only pushes, **nor** add a pre-commit hook for spec syntactic checks. The
-pending-modifier mechanism solves the failure mode at the annotation layer; both
-stages of the hook chain run unchanged, against a tree where pending claims are
-declared as such.
+spec-only pushes, **nor** add a separate pre-commit path for spec syntactic
+checks. Pending annotations solve prospective-target admission, not selection or
+latency. Both hook stages remain active, with documentation feedback using the
+shared input-based selection and structural barrier above rather than fanning
+out over every annotation in a touched owner. Required publication coverage is
+neither bypassed nor replaced by the pending modifier.
 
 ## Success Criteria
 
@@ -310,9 +341,10 @@ declared as such.
 
 <!-- prettier-ignore -->
 - The configured pre-push stage starts with the fast tier, preserves Rust-file
-  selectivity, appends prek's exact pushed range, keeps the full suite
-  always-on, wraps Nix for absent-tool environments, and routes every entry
-  through matching marker metadata [check](cargo run -p loom-walk -- pre_push_config_marker_wrapper_contract)
+  selectivity, appends prek's exact pushed range, separates ordinary suites from
+  affected-only host checks, wraps Nix for absent-tool feedback environments,
+  and routes every entry through matching marker metadata.
+  [check?](cargo run -p loom-walk -- pre_push_affected_host_coverage_contract)
 
 - The pre-push gate receives prek's concrete pushed endpoints rather than a
   potentially stale branch upstream and invokes Gate's shared verification entry
@@ -322,21 +354,45 @@ declared as such.
   `LOOM_VERIFY_TIERS` override
   [test](pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers)
 
-- The pre-push stage runs the fast tier, both applicable Clippy modes, full
-  nextest and system coverage once, without repeating preceding lint hooks
-  [test](pre_push_stage_runs_each_required_verifier_once_without_repeating_lint_hooks)
+- Actual pre-push entrypoints run required ordinary tiers without repeated lint
+  and select host-only obligations for the concrete pushed range. Unrelated
+  host checks do not launch; affected host checks lacking admissible evidence
+  block if unavailable rather than silently skipping.
+  [test?](pre_push_requires_affected_host_coverage_without_blanket_host_suite)
 
 - A failed fast-tier pre-push hook prevents later Clippy, Gate, and full-suite
   verifiers from launching.
   [test](pre_push_stage_stops_after_failed_flake_check)
 
-- The required test app retains full nextest and system coverage without lint
-  repetition
-  [test](required_suite_keeps_full_nextest_and_system_coverage_without_lint_repetition)
+- The required test app retains complete ordinary agent-runnable native/system
+  coverage without lint repetition or unconditional host-only execution;
+  affected host requirements remain covered by the pushed-range plan.
+  [test?](required_agent_suite_separates_host_checks_without_losing_coverage)
 
 <!-- prettier-ignore -->
 - Nix workspace staging includes the repo-local marker-policy wrapper
   [check](grep -q '"bin/pre-push-checks"' nix/workspace.nix)
+
+### Documentation feedback and fail-fast
+
+- A documentation-only commit through the actual hook and shared Gate path
+  checks documents and bindings without preparing or running unaffected
+  behavioral tests. Changed Markdown consumers still run, and invalid input
+  contracts fail closed rather than granting a documentation exemption.
+  [test?](pre_commit_documentation_changes_use_admitted_input_selection)
+
+- Blocking structural failures in the real pre-commit composition prevent
+  expensive behavioral discovery, test-binary builds and test execution before
+  those processes start. Later unexecuted obligations receive no passing
+  evidence; corrected input reaches normal affected verification.
+  [test?](pre_commit_structural_failure_stops_before_behavioral_preparation)
+
+- Actual commit/push entrypoints use the shared current-request capture and
+  evidence path, avoiding duplicate equivalent eligible executions without
+  reducing annotation tiers or substituting a structural-only hook. Cold or
+  invalidated evidence still runs the applicable work with normal publication
+  and host-readiness requirements.
+  [test?](pre_commit_reuses_admitted_execution_without_structural_only_shortcut)
 
 ### Shell re-exec discipline
 
@@ -435,9 +491,9 @@ consumption.
 1. **Stage composition.** Pre-commit provides staged-file sanitation,
    formatting, shell self-reexec safety, and affected deterministic feedback.
    Pre-push composes the fast tier, language-selective lint, exact pushed-range
-   verification, and full-suite coverage. Each pre-push entry routes through
-   marker-aware fallthrough; the exact configuration is authoritative in
-   `.pre-commit-config.yaml`.
+   verification, ordinary agent-runnable suites and affected host-only coverage.
+   Each pre-push entry routes through marker-aware fallthrough; the exact
+   configuration is authoritative in `.pre-commit-config.yaml`.
 
 2. **Native sanitation.** Prek's built-in sanitation implementations avoid a
    non-portable Python bootstrap while preserving the required staged-file
@@ -455,7 +511,8 @@ consumption.
    placement, the assembled sandbox executes this spec's configured commit
    policy. The final self-check command and range are owned by
    [Loop — Loop completion self-check and self-review](loop.md#loop-completion-self-check-and-self-review).
-   This is feedback, not the pre-push trust source.
+   Actual results require Evidence admission; worker prose/skip acceptance is
+   not the pre-push trust source.
 
 5. **Marker handoff.** `MarkerProof` is the content-addressed trust artifact
    defined in [Gate — Marker](gate.md#marker). Mint authority lives driver-side;
@@ -477,13 +534,15 @@ consumption.
 2. **Marker-fast driver-loop pre-push.** On the driver-loop integration push,
    the marker short-circuits covered hooks so pre-push completes in
    marker-validation time for those hooks and normal runtime for any uncovered
-   hook. Operator-manual pushes pay the full hook chain, including the
-   full-suite app, accepted as the rare-case latency.
+   hook. Marker-free operator pushes run the required chain with the same
+   affected-only host selection and evidence-admission rules, not an unrelated
+   blanket host suite.
 
 3. **Forgery-resistant trust.** The bead-container agent cannot mint a
    `MarkerProof`. The driver-side verdict gate is the sole mint authority. Agent
-   self-verify is feedback only — an agent that skips hooks or fabricates a
-   "verified" claim cannot bypass driver verification.
+   self-reported success or skip acceptance is not evidence — fabricated
+   "verified" claims cannot bypass driver admission. Actual admitted agent
+   results may discharge matching obligations without redundant execution.
 
 ## Out of Scope
 
@@ -506,7 +565,7 @@ consumption.
 
 - **Full test and smoke runners.** `nix run .#test`, `nix run .#test-required`,
   and `nix run .#smoke` are owned by [Tests](tests.md); this spec only specifies
-  when the pre-push hook fires the full suite.
+  ordinary suite placement and affected host selection at pre-push.
 
 - **Binary cache for `nix flake check`.** A wrix-side binary cache (cachix /
   attic / S3 substituter) would let CI and cold operator workstations hit

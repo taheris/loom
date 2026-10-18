@@ -296,10 +296,10 @@ Required fields:
   inherited wholesale.
 - `mounts` — typed list of per-spawn bind mounts beyond `workspace`, additive to
   the resolved profile's `mounts`. Each entry carries `host_path`,
-  `container_path`, and `read_only`. Loom uses this to project the `wrix-beads`
-  dolt socket into every bead container at `/workspace/.wrix/dolt.sock`
-  (replacing the host-side hardlink shim) and the shared sccache directory at
-  the configured cache path; see
+  `container_path`, and `read_only`. With the configured Beads adapter, Loom
+  uses this to project the `wrix-beads` Dolt socket into the bead container at
+  `/workspace/.wrix/dolt.sock` (replacing the host-side hardlink shim) and the
+  shared sccache directory at the configured cache path; see
   [Workspaces — Bead Dispatch](workspaces.md#bead-dispatch). Single-file mounts
   (sockets) and directory mounts both pass through virtiofs on Linux. On Darwin
   the wrix sandbox classifier accepts directories and regular files but rejects
@@ -348,7 +348,7 @@ backend runtime (`pi`, `claude`, or `direct`) and writes the same value to
 | `CLAUDE_CODE_OAUTH_TOKEN`                           | claude backend                          | Claude authentication                                                                                                                                            |
 | `ANTHROPIC_API_KEY`                                 | pi or direct backend (Anthropic models) | LLM API key                                                                                                                                                      |
 | `TERM`                                              | always                                  | Terminal capability                                                                                                                                              |
-| `BEADS_DOLT_SERVER_SOCKET`, `BEADS_DOLT_AUTO_START` | always                                  | Beads dolt-socket path (set to the bind-mount); auto-start disabled (host owns the server)                                                                       |
+| `BEADS_DOLT_SERVER_SOCKET`, `BEADS_DOLT_AUTO_START` | Beads adapter                           | Beads dolt-socket path (set to the bind-mount); auto-start disabled (host owns the server)                                                                       |
 | `LOOM_INSIDE`                                       | always                                  | Set to `1`; trips the nested-loom guard if the agent invokes `loom` inside the container — see [Workspaces — Nested-Loom Guard](workspaces.md#nested-loom-guard) |
 
 Provider-specific API keys for the pi and direct backends (OpenAI, Google,
@@ -392,9 +392,9 @@ loom (host)                                            container
 ```
 
 The wrapper hides container construction (mounts, env allowlist, krun runtime,
-network filter, deploy key, beads dolt socket) so loom owns only JSONL framing
-and the typed `SpawnConfig` it serializes. All three backends use bidirectional
-JSONL over stdin/stdout. The Claude backend uses
+network filter, deploy key, configured tracking access) so loom owns only JSONL
+framing and the typed `SpawnConfig` it serializes. All three backends use
+bidirectional JSONL over stdin/stdout. The Claude backend uses
 `--input-format stream-json --output-format stream-json` for full bidirectional
 support.
 
@@ -985,6 +985,14 @@ conflicts with the resolved backend, Loom errors before spawn rather than
 letting the entrypoint run the wrong runtime.
 
 ## Success Criteria
+
+### Tracking-access launch boundary
+
+- Real backend launch configuration supplies tracking environment/mounts only
+  for the configured adapter, including Beads socket/auto-start settings when
+  selected and no native database dependency for lightweight test use. This
+  grants no host-command bridge or expansion of worker authority.
+  [test?](agent_launch_tracking_access_is_backend_selected_and_authority_bounded)
 
 - `LOOM_NATIVE_PREFLIGHT=rust` is an internal driver-owned request for the
   pinned image's native source-feedback preflight before the agent starts. The

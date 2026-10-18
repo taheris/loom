@@ -70,7 +70,9 @@ reference.
 tasks from every producer, not only Todo. Findings owns the distinct
 [remediation goal](findings.md#remediation-task-acceptance) used to repair
 missing or malformed acceptance; it is not an empty or fabricated criterion
-assignment, nor a fallback when an ordinary reference fails.
+assignment, nor a fallback when an ordinary reference fails. First-class
+[discovery acceptance](loop.md#discovery-tasks) is likewise a distinct bounded
+investigation, not a fabricated criterion assignment or implementation coverage.
 
 #### Dispatch resolution
 

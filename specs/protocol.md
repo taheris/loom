@@ -32,7 +32,8 @@ Decoding performs no Beads writes and grants no execution or publication
 permission. Findings still resolves `RawFinding` into immutable `Finding`; Todo
 validates its fixed preflight roster and persists accepted bindings; Loop
 reconciles worker completion and scheduling state; Inbox preserves human-owned
-resolution and separately admits tune application.
+resolution, scoped checked acceptance finalization, and separate tune
+application.
 
 This owner adds no crate or workflow CLI command. [Harness](harness.md) owns the
 leaf-crate dependency floor and wire-versioning policy.
@@ -150,12 +151,26 @@ references are errors, never silently discarded. Reporting all currently
 discovered unresolved decisions is an agent obligation; the decoder does not
 prove that the agent has discovered every possible ambiguity.
 
-Parentage records discovery provenance. Actual dependency edges determine which
-work waits. Reporting a decision does not inherently block its emitter, and
-resolving a decision does not prove implementation complete. The scheduling and
-resolution contracts live in
-[Loop](loop.md#decision-batches-and-attributed-waits) and
+Work-root parentage records ownership; separate producer provenance records
+discovery. Actual dependency edges determine which work waits. Reporting a
+decision does not inherently block its emitter, and resolving a decision does
+not prove implementation complete. The scheduling and resolution contracts live
+in [Loop](loop.md#decision-batches-and-attributed-waits) and
 [Inbox](inbox.md#decision-beads-and-resolution).
+
+## Task and tool authority boundary
+
+[Acceptance](#task-and-tool-effects).
+
+Task acceptance candidates, local preflight results, and Inbox's checked
+finalization are domain/tool operations under
+[Loop](loop.md#follow-up-admission-and-acceptance-repair) and
+[Inbox](inbox.md#acceptance-repair-and-execution-authority), not new generic
+agent-output action messages. Tool output or a validation flag cannot become
+trusted admission by appearing in stdout. `Complete` does not authorize repair,
+host execution or publication, and `Apply` remains tune-only. Discovery uses the
+existing Loop outcomes with task-specific completion reconciliation; it does not
+create a second terminal vocabulary or parse an experiment result from prose.
 
 ## Success Criteria
 
@@ -208,6 +223,14 @@ resolution contracts live in
   duplicate queue identity or silent loss of invalid references; reporting is
   independent of the emitter's final outcome.
   [test](clarify_records_aggregate_exact_decision_ids)
+
+### Task and tool effects
+
+- Production Loop/Inbox consumers keep acceptance tool results and discovery
+  completion evidence separate from agent-output decoding; tool text, claimed
+  preflight passes, chat prose, `Complete` and tune-only `Apply` cannot
+  manufacture checked admission, expanded execution authority or publication.
+  [test?](agent_output_cannot_forge_acceptance_tool_or_execution_authority)
 
 ### Consumer conformance
 

@@ -15,45 +15,150 @@ The driver resolves acceptance before dispatch, reconciles the worker outcome,
 and performs integration/publication effects only through Gate admission.
 Related owners: [workspaces](workspaces.md), [specs](specs.md), [todo](todo.md),
 [gate](gate.md), [findings](findings.md), [templates](templates.md),
-[protocol](protocol.md), [inbox](inbox.md).
+[protocol](protocol.md), [inbox](inbox.md), [issues](issues.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
 ### Task acceptance at dispatch
 
-[Acceptance](#task-acceptance).
+Acceptance: [dispatch](#task-acceptance) and
+[follow-up/discovery admission](#follow-up-and-discovery-acceptance).
 
 Every task producer uses the same driver-owned acceptance boundary. Ordinary
 implementation tasks, including manually created or split follow-ups, require
 explicit criterion assignments resolved under
 [Specs](specs.md#task-acceptance-references). Remediation tasks instead carry
-[Findings' resolved goals](findings.md#remediation-task-acceptance). The driver
-parses the task's declared purpose and references, resolves them against the
-current dispatch snapshot, and supplies the corresponding immutable acceptance
-form to Templates. Neither prose, labels, an empty default, nor external JSON
-claiming to be resolved authorizes dispatch.
+[Findings' resolved goals](findings.md#remediation-task-acceptance). Discovery
+has its own bounded investigation acceptance, not borrowed criterion IDs. The
+driver parses the task's declared purpose and references, resolves them against
+the current dispatch snapshot, and supplies the corresponding immutable
+acceptance form to Templates. Neither prose, labels, an empty default, nor
+external JSON claiming to be resolved authorizes dispatch.
 
-The persisted acceptance-reference payload is one tagged sum: either a nonempty
-set of criterion references or a nonempty set of remediation-goal references.
-Its typed shape excludes mixed purposes and empty acceptance, rather than
-allowing two independent optional fields. Parsing produces reference candidates,
-not resolved goals; a tag alone proves neither task purpose nor finding
-membership. Only the separate driver resolution constructs immutable dispatch
-acceptance. Metadata does not store copied resolved authority.
+The persisted acceptance-reference payload is one tagged sum: a nonempty set of
+criterion references, a nonempty set of remediation-goal references, or a
+bounded [discovery goal](#discovery-tasks). Its typed shape excludes mixed
+purposes and empty acceptance, rather than allowing independent optional fields.
+Parsing produces reference candidates, not resolved goals; a tag alone proves
+neither task purpose nor finding membership. Only the separate driver resolution
+constructs immutable dispatch acceptance. Metadata does not store copied
+resolved authority.
 
 Missing or invalid ordinary bindings require explicit binding or rebinding
 before spawn; they cannot silently become remediation. Missing or invalid
 remediation goals likewise block with corrective context. This permits repair of
 broken acceptance without relaxing finding resolution or ordinary task binding.
-Producer-specific handoffs use existing workflow/Beads boundaries, not a second
-queue, ad-hoc IDs, or agent-authored trusted metadata. Pending criteria remain
-assignable under Specs' existing rule. Worker terminal reconciliation,
-integration verification, and publication admission are unchanged; resolved
-goals are instructions, not passing evidence.
+Producer-specific handoffs use the shared [tracking boundary](issues.md), not a
+second queue, ad-hoc IDs, or agent-authored trusted metadata. Pending criteria
+remain assignable under Specs' existing rule. Missing/invalid acceptance on
+existing work prevents dispatch and exposes that same task with actionable Inbox
+diagnostics; no inventory sweep, automatic rebinding or kind conversion is
+required. Resolved goals are instructions, not passing evidence.
+
+### Follow-up admission and acceptance repair
+
+[Acceptance](#follow-up-and-discovery-acceptance).
+
+Investigation needed to finish the current task is ordinary work within its
+existing authority. Only genuinely separate follow-up work needs another task
+and complete acceptance. Workers author candidate acceptance through neutral
+tracking operations, with explicit source/work-root context and goal evidence.
+The driver validates that context and previously authorized work scope, resolves
+every goal, and persists checked attribution before dispatch. Parentage, prose,
+labels, producer acceptance, or a claimed validation pass cannot supply missing
+authority. Finding follow-ups use
+[Findings' admission](findings.md#remediation-task-acceptance), even when
+discovered by implementation work rather than an admitted remediation batch.
+Genuine discovery is not a fallback for malformed implementation or remediation
+bindings.
+
+Agents and driver use one task-targeted acceptance verifier with the same typed
+representation and resolution rules. Local sandbox preflight supplies actionable
+structural/reference diagnostics during authoring; it does not grant admission.
+Identical verifier version, candidate, snapshot and authorization inputs produce
+the same result. Driver admission reads current canonical state, not a worker's
+pass flag; intervening relevant changes, unavailable required context or partial
+writes can still reject a locally valid proposal. Ordinary workers need no new
+live authoritative host request/reply service. Schema/help matches the local
+validator version and is retrievable on demand under
+[Skills](skills.md#ancillary-workflow-guidance).
+
+In human-authorized
+[Inbox repair](inbox.md#acceptance-repair-and-execution-authority), the agent
+authors a candidate for the selected existing task and invokes that same
+verifier. Successful checking may finalize checked acceptance and provenance
+during chat and retire the resolved admission failure. Invalid drafts never
+replace the last admitted acceptance. There is no repair DSL, general action
+parser or mandatory manual mutating repair command. Repair neither executes the
+task nor reopens/promotes it: preserve its ID, parent, dependencies, notes,
+unrelated metadata and independent holds. Scope or authority cannot be inferred
+from a target ID alone. Confirmed success retires only that admission-owned
+failure's active Inbox diagnostic and dispatch exclusion, retaining its durable
+history. Dispatch eligibility still requires every independent condition; repair
+does not change task status or release a separate hold.
+
+Later rejection leaves the same follow-up non-dispatchable with durable,
+actionable Inbox diagnostics. It neither remints work nor automatically reruns
+or reopens the producer. A real prerequisite still follows explicit dependency
+and wait policy; an independent defective follow-up alone does not block its
+producer. Format/reference defects are not automatic permission escalations;
+capability/transport failures remain distinguishable from invalid acceptance.
+
+Creation, repair, and retry share operation identity and admission invariants.
+Editable candidates are separate from canonical driver-owned admission evidence;
+ordinary task writes, copied metadata or caller-supplied approval flags cannot
+manufacture that evidence. Durable provenance distinguishes candidates,
+completed admission and interrupted or uncertain writes. Reconcile/resume only
+the same previously authorized operation when its identity, current authority
+and safe continuation are unambiguous. Otherwise retain non-dispatchability and
+diagnostics for Inbox. Re-read/revalidate relevant concurrent changes; do not
+merge/overwrite stale candidates. Materially changed goals or authority require
+renewed human confirmation where human approval was required. Never assume a
+native multi-record transaction, same-status guard as revision CAS, or that
+every writer honors a host lock. If backend guarantees cannot establish safe
+finalization, fail closed rather than claim success or create another task.
+
+### Discovery tasks
+
+[Acceptance](#follow-up-and-discovery-acceptance).
+
+Discovery is a first-class task purpose for a bounded question whose answer is
+not yet known. Its acceptance identifies the question, authorized scope,
+experiments, required observations/evidence, execution requirements and limits,
+and completion conditions. It is neither an implementation criterion assignment
+nor a fabricated finding. Dispatch and compaction supply that complete immutable
+purpose/goal context. Discovery may author and run experiment/probe code within
+its admitted scope and existing execution authority. Implementing a product
+change or remediation beyond those experiments requires its own kind-appropriate
+acceptance; discovery alone does not resolve a human design choice or establish
+feasibility.
+
+A discovery may finish with supported, unsupported, or inconclusive results when
+its agreed experiments actually ran and required evidence is durably retained.
+The driver checks completion against those obligations, not a positive-answer
+expectation or the presence of a code diff. A completed discovery may emit
+`Complete` with a clean empty branch diff; durable experiment/result evidence is
+required instead of an implementation commit. A nonempty diff follows ordinary
+integration verification. Missing required access/capability is not an
+inconclusive completed experiment: preserve the unfinished state and independent
+hold. `Noop` cannot bypass experiment/evidence obligations. Discovery completion
+does not resolve related remediation or authorize molecule publication.
+
+Sandbox-only work within existing scope needs no human permission escalation.
+Admission cannot change execution location, mounts, credentials, networking
+access or other capabilities, or release holds. A proposed
+host/expanded-authority experiment requires
+[explicit Inbox approval](inbox.md#acceptance-repair-and-execution-authority)
+bound to its bounded plan and code/input snapshot before execution. Relevant
+changes invalidate that approval. Validation never runs submitted experiment
+code to decide whether it is safe. Reviewed fixed host tests follow
+[Verify's standing-authorization boundary](verify.md#sandbox-capability-results),
+not a worker-command escape hatch.
 
 ### Verdict Gate
 
-[Acceptance](#verdict-gate-1).
+Acceptance: [outcomes](#verdict-gate-1) and
+[discovery completion](#follow-up-and-discovery-acceptance).
 
 Worker output is untrusted until the shared [Protocol](protocol.md) decoder,
 phase admission, and mechanical reconciliation succeed. Nonterminal decision
@@ -70,21 +175,23 @@ reference/graph/inventory errors precede terminal-state reconciliation and new
 queue/wait effects under
 [batch admission](#decision-batches-and-attributed-waits).
 
-| Terminal and state                                                                                                | Result                                                                                     |
-| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| invalid protocol/phase session, decision reference graph, or candidate inventory                                  | visible protocol/recovery diagnostic; no new queue/wait effects, completion or integration |
-| `Blocked` with its checked nonblank reason                                                                        | semantic block                                                                             |
-| `Retry` with its typed reason                                                                                     | bounded worker recovery                                                                    |
-| `Waiting`, non-closed source, active declared prerequisite, no independent hold                                   | attributed dependency wait; preserve the workspace/branch and continue ready work          |
-| `Waiting` with a closed source, no active prerequisite, or incompatible hold                                      | `invalid-waiting` recovery                                                                 |
-| `Complete` or `Noop` with an independent hold or authorized cancellation                                          | refuse stale completion; preserve human state without integration or no-work acceptance    |
-| `Complete` or `Noop` with an active prerequisite for its own acceptance                                           | reject completion before integration                                                       |
-| `Complete` or `Noop` while the bead is not closed                                                                 | `incomplete-signaling` recovery                                                            |
-| `Complete` with an empty diff                                                                                     | `zero-progress` recovery                                                                   |
-| `Complete` or `Noop` with a dirty tree                                                                            | `tree-not-clean` recovery                                                                  |
-| `Noop` with a non-empty diff                                                                                      | reject the false no-work claim through bounded worker recovery                             |
-| `Complete`, own prerequisites resolved, no independent hold/cancellation, closed bead, non-empty diff, clean tree | integrate and verify                                                                       |
-| `Noop`, own prerequisites resolved, no independent hold/cancellation, closed bead, empty diff, clean tree         | intentional no-work success                                                                |
+| Terminal and state                                                                                                                                     | Result                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| invalid protocol/phase session, decision reference graph, or candidate inventory                                                                       | visible protocol/recovery diagnostic; no new queue/wait effects, completion or integration |
+| `Blocked` with its checked nonblank reason                                                                                                             | semantic block                                                                             |
+| `Retry` with its typed reason                                                                                                                          | bounded worker recovery                                                                    |
+| `Waiting`, non-closed source, active declared prerequisite, no independent hold                                                                        | attributed dependency wait; preserve the workspace/branch and continue ready work          |
+| `Waiting` with a closed source, no active prerequisite, or incompatible hold                                                                           | `invalid-waiting` recovery                                                                 |
+| `Complete` or `Noop` with an independent hold or authorized cancellation                                                                               | refuse stale completion; preserve human state without integration or no-work acceptance    |
+| `Complete` or `Noop` with an active prerequisite for its own acceptance                                                                                | reject completion before integration                                                       |
+| discovery completion without required performed experiments and durable result evidence                                                                | reject completion; unavailable required access remains unfinished                          |
+| `Complete` or `Noop` while the bead is not closed                                                                                                      | `incomplete-signaling` recovery                                                            |
+| `Complete` for non-discovery work with an empty diff                                                                                                   | `zero-progress` recovery                                                                   |
+| `Complete` or `Noop` with a dirty tree                                                                                                                 | `tree-not-clean` recovery                                                                  |
+| `Noop` with a non-empty diff                                                                                                                           | reject the false no-work claim through bounded worker recovery                             |
+| `Complete`, own prerequisites resolved, no independent hold/cancellation, closed bead, non-empty diff, clean tree                                      | integrate and verify                                                                       |
+| `Complete` discovery with admitted experiment/result evidence, resolved prerequisites, no independent hold/cancellation, closed bead, clean empty diff | completed discovery; no code integration needed                                            |
+| `Noop`, own prerequisites resolved, no independent hold/cancellation, closed bead, empty diff, clean tree                                              | intentional no-work success                                                                |
 
 `Clarify` is a decision-batch record, not a terminal or evidence that the source
 must pause. Its admission follows
@@ -298,15 +405,18 @@ the typed `previous_failure` block.
 
 [Acceptance](#worker-self-check).
 
-`loop.md`'s quality-gate block instructs the worker to finish by verifying the
-exact injected bead range, not by relying on a working-tree shorthand. The
-rendered command names `loom gate verify --diff <bead-base>..HEAD` (or
-`@{u}..HEAD` only when the upstream is the injected base), and tells the agent
-to rerun the self-check after any later commit or hook-generated file change.
-The prompt also requires a structured self-review before the final marker:
-re-read the bead's criteria, inspect the final diff, check style/spec fit, and
-either fix the issue or emit the appropriate worker self-report marker. This is
-prompt-level feedback discipline; the driver-side trust boundary remains the
+For implementation/remediation and discovery with a code diff, `loop.md`'s
+quality-gate block instructs the worker to finish by verifying the exact
+injected bead range, not by relying on a working-tree shorthand. Evidence-only
+discovery instead checks its experiment/result obligations under
+[discovery completion](#discovery-tasks). The rendered command names
+`loom gate verify --diff <bead-base>..HEAD` (or `@{u}..HEAD` only when the
+upstream is the injected base), and tells the agent to rerun the self-check
+after any later commit or hook-generated file change. The prompt also requires a
+structured self-review before the final marker: re-read the bead's criteria,
+inspect the final diff, check style/spec fit, and either fix the issue or emit
+the appropriate worker self-report marker. This is prompt-level feedback
+discipline; the driver-side trust boundary remains the
 [post-integration workflow](#worker-and-per-bead-integration-checks) and
 [Gate's push receipt](gate.md#gate-success-receipt).
 
@@ -320,7 +430,7 @@ Workers discover and persist all currently known unresolved decisions before
 reporting them through Protocol's `Clarify` records. Each decision is a separate
 bead with one [Inbox Options brief](inbox.md#options-format-contract), directly
 parented under its owning work root, with discovering producer preserved
-separately. Beads-allocated IDs and explicit relationships are authoritative;
+separately. Backend-allocated IDs and explicit relationships are authoritative;
 dotted ID spelling is not. Workers own decision content, new bead creation, and
 proposed native dependency edges, but never legacy reparenting.
 
@@ -397,22 +507,24 @@ at cap exhaustion. Driver provenance and cause evidence remain explicit; moving
 the brief does not move writer authority or grant additional retries.
 
 Only work whose acceptance genuinely requires a decision waits on it. For
-non-descendant prerequisites, use supported native edges:
-`bd dep add <affected-work> <decision>`. Work-root parentage records ownership;
-separate producer provenance records discovery. Neither is a prerequisite. Never
-fabricate a forbidden descendant dependency, block a producer parent so its
-decision children become undisposable, rename existing IDs, or bypass native
-Beads ancestry/cycle guards. A decision may block several work beads; a work
-bead may need several decisions. Do not indiscriminately block the entire
-source/work epic or create one implementation task per question.
+non-descendant prerequisites, use the neutral dependency operation (implemented
+by `bd dep add <affected-work> <decision>` in the Beads adapter). Work-root
+parentage records ownership; separate producer provenance records discovery.
+Neither is a prerequisite. Never fabricate a forbidden descendant dependency,
+block a producer parent so its decision children become undisposable, rename
+existing IDs, or bypass native Beads ancestry/cycle guards. A decision may block
+several work beads; a work bead may need several decisions. Do not
+indiscriminately block the entire source/work epic or create one implementation
+task per question.
 
 Independently actionable work is split into schedulable beads under the existing
 work epic, with dependencies on only its actual prerequisites. Split work enters
 the existing driver-owned acceptance producer/resolution/persistence boundary
 before dispatch: ordinary work has explicit criterion assignments, remediation
-retains finding-goal attribution. Prose and labels do not manufacture bindings.
-Use sibling work when nesting beneath a waiting source would inherit blockers;
-actual Beads readiness, not a model-only graph, must demonstrate independence.
+retains finding-goal attribution; discovery has its explicit bounded acceptance.
+Prose and labels do not manufacture bindings. Use sibling work when nesting
+beneath a waiting source would inherit blockers; actual Beads readiness, not a
+model-only graph, must demonstrate independence.
 
 The source remains a final acceptance/join task only when split work is required
 for its own goal; it then depends on that work and closes through ordinary
@@ -421,13 +533,14 @@ reported decisions block other work. Resolving a decision records human intent,
 not implementation completion and not automatic source closure.
 
 **Legacy migration and recovery (Loop).** New waits use only native
-prerequisites. Discovery-child holds are compatibility input, not a second
-scheduling representation. After validating the complete contextual inventory,
-the driver journals migration intent before native changes. It reparents each
-legacy decision to the checked work root, preserving its ID, canonical brief,
-recorded outcome, producer, and root. For a legacy producer explicitly waiting
-(or an existing attributed hold), the driver adds genuine native prerequisites
-from that producer to its decisions; unrelated existing native edges remain.
+prerequisites. Legacy decision-child holds concern human decisions, not bounded
+discovery tasks; they are compatibility input, not a second scheduling
+representation. After validating the complete contextual inventory, the driver
+journals migration intent before native changes. It reparents each legacy
+decision to the checked work root, preserving its ID, canonical brief, recorded
+outcome, producer, and root. For a legacy producer explicitly waiting (or an
+existing attributed hold), the driver adds genuine native prerequisites from
+that producer to its decisions; unrelated existing native edges remain.
 
 Intent retains the original snapshot and affected graph. Interrupted metadata,
 reparenting, and edge writes replay idempotently before admission or selection;
@@ -592,10 +705,10 @@ mutation permission.
   explicit binding; its completion proposal does not change source disposition.
   [test](native_worker_acceptance_reaches_controlled_external_agent_only_after_explicit_binding)
 
-- The task-acceptance reference type and its metadata parser admit exactly one
-  nonempty criterion-reference or remediation-reference variant. Mixed, empty,
-  malformed, and unknown variants fail ingestion; parsed candidates cannot stand
-  in for the separately resolved immutable dispatch value.
+- For implementation and remediation, the task-acceptance reference type and its
+  metadata parser admit the corresponding nonempty reference variant. Mixed,
+  empty, malformed, and unknown variants fail ingestion; parsed candidates
+  cannot stand in for the separately resolved immutable dispatch value.
   [test](task_acceptance_refs_are_exclusive_nonempty_variants)
 
 <!-- prettier-ignore -->
@@ -611,6 +724,67 @@ mutation permission.
   dropping them. Valid pending criteria remain assignable before their verifiers
   exist. Changing the dispatch snapshot requires fresh resolution and uses
   current bindings, not historical annotations or cached passes. [system?](nix run .#test-quint -- task-acceptance-dispatch)
+
+### Follow-up and discovery acceptance
+
+- Real worker-created follow-ups from implementation and remediation sources
+  enter shared context/scope/goal validation and driver-owned persistence before
+  dispatch. Missing, mixed, forged or stale goals fail without inheriting source
+  assignments, manufacturing findings or changing purpose to bypass rejection.
+  [test?](worker_follow_up_admission_resolves_authorized_goals_before_dispatch)
+
+- Agent local preflight and actual driver admission use the same verifier and
+  produce equal results for identical version/context/authorization inputs.
+  Changed canonical state and partial writes reject explicitly; claimed passes
+  cannot substitute for driver resolution or grant host execution.
+  [test?](acceptance_preflight_and_driver_share_resolution_without_trusting_flags)
+
+- Production discovery dispatch and compaction preserve the bounded question,
+  scope, experiments, evidence requirements, limits and completion conditions as
+  a distinct immutable acceptance variant, with no fabricated criterion/finding.
+  [test?](discovery_dispatch_preserves_complete_bounded_acceptance)
+
+- Actual discovery reconciliation accepts supported, unsupported and
+  evidence-backed inconclusive completion, including a clean empty code diff,
+  only after required experiments/evidence. Missing access, an active hold,
+  false no-work or absent results cannot become completion or feasibility.
+  [test?](discovery_completion_requires_performed_experiments_not_code_progress)
+
+- Discovery permits bounded experiment/probe code without fabricated
+  implementation assignments; a retained nonempty diff still takes ordinary
+  integration verification. Discovery purpose/completion alone does not satisfy
+  implementation/remediation acceptance. Host/expanded-authority experiments
+  still require bounded Inbox approval before execution.
+  [test?](discovery_probe_code_preserves_bounds_and_integration_requirements)
+
+- Ordinary admission exposes existing missing/broken acceptance and later
+  rejected follow-ups on the same task in Inbox without remint, migration sweep,
+  automatic producer rerun, hold release or unrelated human-state changes.
+  Genuine prerequisites retain explicit dependency/wait semantics.
+  [test?](invalid_follow_up_admission_preserves_identity_holds_and_producer)
+
+- Successful checked repair retires only the resolved admission-owned active
+  diagnostic and dispatch exclusion, retains durable history, and returns the
+  same task to eligibility only if all other conditions hold; task status and
+  independent holds are unchanged.
+  [test?](acceptance_repair_retires_only_resolved_admission_failure)
+
+- Real creation, repair and replay paths retain operation identity and durable
+  provenance across before/after-write faults, crashes, uncertain writes and
+  restart. Only unambiguous authorized continuation resumes; stale/ambiguous
+  state remains non-dispatchable for Inbox without duplicates or invented CAS.
+  [test?](acceptance_recovery_reconciles_only_same_authorized_operation)
+
+- Relevant concurrent task/goal/context changes reject stale admission, require
+  rereading/revalidation and renewed human confirmation for materially changed
+  human-approved goals/authority, without overwriting admitted acceptance.
+  [test?](acceptance_finalization_rejects_stale_candidates_and_preserves_prior_admission)
+
+- Controlled production fixtures cover an implementation-discovered cleanup
+  defect as genuine remediation and an independently access-blocked networking
+  probe as discovery: admission/repair preserves their IDs and the access hold,
+  without claiming the defect fixed or native networking feasible.
+  [test?](discovered_remediation_and_access_blocked_probe_use_distinct_acceptance)
 
 ### Workflow commands
 
@@ -796,7 +970,7 @@ mutation permission.
   receipt or marker. [system?](nix run .#test-quint -- workflow-publication-attempt)
 
 - After every per-bead `loom loop` worker phase, the verdict-gate decision table
-  classifies the terminal marker plus mechanical signals (bd-closed, diff, tree
+  classifies the terminal marker plus mechanical signals (task closure, diff, tree
   cleanliness, current prerequisites and holds/cancellation) without an LLM call.
   `Blocked` routes on its checked nonblank reason, not a semantic options
   judgment. First-match precedence handles overlapping failures, and a non-empty
@@ -808,10 +982,11 @@ mutation permission.
   `loom gate review`'s phase-end; no production site inlines ad-hoc marker →
   outcome classification (FR12) [check](cargo run -p loom-walk -- phase_verdict_decide_called_from_production)
 
-- `loom loop` never invokes `bd close` on a bead it dispatched; closure is the
-  agent's responsibility and the `bd-closed` column is observed post-hoc.
+- `loom loop` never closes a dispatched task on the agent's behalf through any
+  backend; worker closure is observed post-hoc through neutral task operations.
   Dependency release and decision reporting do not close the source on the
-  agent's behalf; verify closure ownership across all admitted terminal outcomes.
+  agent's behalf. Verify ownership across all admitted terminal outcomes with
+  Beads and lightweight workflow composition.
   [test?](loop_preserves_worker_closure_ownership_with_decision_records)
 
 - `LOOM_BLOCKED` agent marker with a non-empty reason transitions the bead to
@@ -1001,11 +1176,11 @@ mutation permission.
   show the conflict, and do not automatically reopen or redispatch the source.
   [test?](completion_rechecks_human_holds_and_cancellation_before_acceptance)
 
-- `LOOM_COMPLETE` + resolved own prerequisites + no independent hold/cancellation + bead not bd-closed → recovery
+- `LOOM_COMPLETE` + resolved own prerequisites + no independent hold/cancellation + task not closed → recovery
   with cause `incomplete-signaling`
   [test](complete_without_bd_closed_routes_to_incomplete_signaling)
 
-- `LOOM_COMPLETE` + resolved own prerequisites + no independent hold/cancellation + closed + empty diff → recovery
+- Non-discovery `LOOM_COMPLETE` + resolved own prerequisites + no independent hold/cancellation + closed + empty diff → recovery
   with cause `zero-progress`
   [test](complete_with_empty_diff_routes_to_zero_progress)
 
@@ -1172,7 +1347,8 @@ mutation permission.
   cancel)
   [test](observer_abort_routes_to_observer_abort_distinct_from_swallowed_marker)
 
-- After initial Git and Beads publication succeed, the driver closes only
+- After initial Git publication and configured-backend synchronization succeed,
+  the driver closes only
   freshly admitted ancestor epics with closed direct children and no unresolved
   known workflow completion, independent hold or cancellation. Each admitted
   close emits one `DriverKind::EpicAutoClosed` with the epic id; ambiguous
@@ -1191,13 +1367,13 @@ mutation permission.
   authority or a publication blocker.
   [test?](molecule_clean_rejects_known_unaccepted_workflow_closures)
 
-- The trusted publication controller constructs its Beads synchronization
+- With the Beads adapter, the trusted publication controller constructs its synchronization
   command as `wrix beads push`, never the removed `beads-push` helper or
   `bd dolt push`. Standalone gate review remains inspection-only under
   [Gate's command contract](gate.md#commands).
   [test](beads_push_argv_invokes_wrix_beads_push_not_bd_dolt_push)
 
-- Loop-owned molecule handoff publishes Beads through the current
+- With the Beads adapter, Loop-owned molecule handoff publishes through the current
   `wrix beads push` CLI, never the removed `beads-push` helper or `bd dolt push`
   [test](molecule_handoff_publishes_beads_through_wrix_cli)
 
@@ -1215,10 +1391,11 @@ mutation permission.
   eligible grandparent retires in the same `Clean` walk.
   [test](nested_epics_close_inside_out_in_one_pass)
 
-- Epic auto-close runs only after the initial `git push` and `wrix beads push`
-  both succeed; either initial publication failure skips the close walk. Later
-  close writes are not covered by that earlier Beads synchronization.
-  [test?](epic_auto_close_runs_only_after_initial_git_and_beads_publication)
+- Epic auto-close uses the configured backend's neutral close operation only
+  after initial Git publication and backend synchronization both succeed; either
+  failure skips the walk. Later closes are new writes, not covered by the earlier
+  synchronization. Exercise Beads and lightweight production composition.
+  [test?](epic_auto_close_runs_only_after_initial_git_and_backend_publication)
 
 ### Decision scheduling
 
@@ -1278,7 +1455,7 @@ mutation permission.
   despite repeated records. A fresh invocation does not inherit that count.
   [test](native_controller_counts_one_noop_source_and_five_distinct_decisions)
 
-- Legacy discovery-child migration preserves IDs and native guards, moves
+- Legacy decision-child migration preserves IDs and native guards, moves
   decisions under the work root, parks producers through real prerequisites,
   excludes waiting work/raw decisions from implementation selection, and
   releases only owned state while preserving other blockers.
@@ -1513,7 +1690,8 @@ mutation permission.
 [Acceptance](#verdict-gate-1).
 
 **Agent self-check before marker emit.** In `loom loop`'s bead container, the
-worker runs the injected exact self-check range before emitting `LOOM_COMPLETE`:
+worker with implementation/remediation or a discovery code diff runs the
+injected exact self-check range before emitting `LOOM_COMPLETE`:
 `loom gate verify --diff <bead-base>..HEAD` where `<bead-base>` is the resolved
 base commit the driver supplied for the bead workspace. `@{u}..HEAD` is
 acceptable only when the upstream is the intended injected base; `--diff HEAD`
@@ -1524,10 +1702,12 @@ the prompt requires the agent to rerun the self-check before final marker emit.
 The self-check uses the shared
 [deterministic verify lanes](gate.md#deterministic-verify-lanes): project
 pre-commit hooks via prek, then the affected annotation obligations for that
-stage. This is feedback for the agent, not authoritative gate evidence. The
-worker also performs prompt-level self-review before completion: re-read the
-bead criteria, inspect the diff, check style/spec fit, and fix issues or emit
-the appropriate worker self-report marker.
+stage. Actual executed results may become reusable evidence only through
+[Evidence admission](evidence.md#agent-executed-results); worker-reported
+success is not authority and handoff alone does not require rerunning valid
+results. The worker also performs prompt-level self-review before completion:
+re-read the bead criteria, inspect the diff, check style/spec fit, and fix
+issues or emit the appropriate worker self-report marker.
 
 **Driver per-bead integration.** After the bead branch rebases and fast-forwards
 into `.loom/integration`, the driver runs deterministic verification only:
@@ -1541,8 +1721,9 @@ integrated tree. It does not pass `--bead`, `--spec`, or a hidden tier override,
 and it does not run a focused LLM review by default. Any failure rolls the
 integration branch back to `<pre-integration-head>`, records the gate log path
 in `previous_failure`, and retries or reopens the same bead through the existing
-recovery policy. The worker's `bd close` is provisional until this deterministic
-integration gate passes.
+recovery policy. The worker's task closure is provisional until required
+completion/integration admission passes. Evidence-only discovery follows its
+explicit completion rule.
 
 #### Recovery
 
@@ -1675,24 +1856,26 @@ class are structurally unreachable.
 
    **Epic auto-close on Clean push.** After the `Clean` branch of the push gate
    completes (verify pass + review `LOOM_COMPLETE` + integrity clean + every
-   bead in scope `[done]`) **and both `git push` and `wrix beads push`
-   succeed**, the driver walks up from the molecule's spec beads and applies
-   [fresh ancestor admission](#completion-admission) before each close. Only
-   eligible epics with closed direct children are closed via
+   bead in scope `[done]`) **and both Git publication and configured-backend
+   synchronization succeed**, the driver walks up from the molecule's spec tasks
+   and applies [fresh ancestor admission](#completion-admission) before each
+   close. Only eligible epics with closed direct children are closed through the
+   neutral backend operation. The walk is **inside-out in one pass**: each newly
+   closed epic re-enqueues its parent for a fresh check. Eligible ancestors can
+   retire in that pass; independent holds/cancellation and unresolved or
+   ambiguous completion remain untouched, even outside the selected molecule.
+   Each close emits one `DriverKind::EpicAutoClosed` driver event carrying the
+   epic id in its payload — visible in the JSONL log alongside the push-gate
+   trace. The walk is **strictly post-push**: either initial publication failure
+   returns early through the `Clean` arm and skips the walk. Later closes are
+   new backend mutations; the preceding synchronization does not establish their
+   remote publication. With Beads, the initial operations are `git push` and
+   `wrix beads push`; the adapter maps closure to
    `bd close <epic-id> --reason="all children complete; auto-closed by review gate"`.
-   The walk is **inside-out in one pass**: each newly closed epic re-enqueues
-   its parent for a fresh check. Eligible ancestors can retire in that pass;
-   independent holds/cancellation and unresolved or ambiguous completion remain
-   untouched, even outside the selected molecule. Each close emits one
-   `DriverKind::EpicAutoClosed` driver event carrying the epic id in its payload
-   — visible in the JSONL log alongside the push- gate trace. The walk is
-   **strictly post-push**: an initial `git push` or `wrix beads push` failure
-   returns early through the `Clean` arm and skips the walk. Subsequent epic
-   close writes are new Beads mutations; the preceding synchronization does not
-   establish their remote publication. The walk does **not** fire on any
-   non-Clean verdict (`LOOM_CONCERN`, `LOOM_BLOCKED`, `verify-fail`,
-   `integrity-finding`, or any non-closed bead carrying `loom:blocked` /
-   `loom:clarify`) — those paths leave the gate before the `Clean` arm runs.
+   The walk does **not** fire on any non-Clean verdict (`LOOM_CONCERN`,
+   `LOOM_BLOCKED`, `verify-fail`, `integrity-finding`, or any non-closed bead
+   carrying `loom:blocked` / `loom:clarify`) — those paths leave the gate before
+   the `Clean` arm runs.
 
 ### Verdict-gate production wiring
 
@@ -1765,10 +1948,9 @@ a new generic reconciliation rule.
     automatic clarification. Infrastructure failures retain their separate
     budget and `loom:infra` routing.
   - Push gate logic (clean completion, fix-up beads, iteration cap)
-  - No per-bead `bd dolt push/pull` is invoked: assert `BdClient` exposes no
-    `dolt_push`/`dolt_pull` methods and the workflow paths do not spawn
-    `bd dolt …` subprocess calls (containers reach the authoritative state via
-    the bind-mounted Dolt socket)
+  - Tracking and worker tools use [Issues](issues.md)'s portable boundary. Beads
+    retains shared authoritative state without per-bead Dolt push/pull;
+    backend-specific transport is not workflow policy.
   - Parallel dispatch and integration tests execute the
     [Workspaces-owned bead lifecycle](workspaces.md#bead-dispatch) through
     public seams; production CLI coverage is used when command routing is the

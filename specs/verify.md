@@ -82,6 +82,89 @@ boundaries constrain the implementation; the
 input construction, optimization, and authorization against an independent
 reference procedure.
 
+#### Dependency roles and execution groups
+
+[Acceptance](#dependency-roles-grouping-and-cutover).
+
+Claim/binding context, execution inputs and build inputs have distinct roles.
+Current contracts, criteria and strategy require current applicability, binding
+and coverage validation; changed claims cannot inherit earlier claim approval.
+Their declaration location or provenance alone is not an execution dependency.
+[Evidence](evidence.md#execution-facts-and-current-claims) admits unchanged
+execution facts separately from current claim approval.
+
+Changing a definition's source requires reconstructing its checked meaning; it
+need not change an otherwise identical execution. Actual checker definitions,
+invocations, resources and observations remain execution inputs. Files consumed
+by an executable, generator or build remain in the corresponding closure even
+when also used as declaration context. Neither filename extensions nor origin
+labels can justify discarding such dual-role dependencies.
+
+Execution groups follow admitted targets, artifacts and supported
+module/resource boundaries, with justified shared dependencies. Owning-spec
+annotations are not a grouping or invalidation key. Shared
+compiler/library/build inputs can legitimately affect several groups; finer
+selection requires an actual supported dependency boundary, not guessed function
+impact or a smaller self-reported list. Build staging must match the admitted
+closure; broad actual staging cannot be hidden by a narrower cache key.
+
+#### Documentation feedback and structural barrier
+
+[Acceptance](#feedback-selection-and-fail-fast) and
+[current-context admission](#dependency-roles-grouping-and-cutover).
+
+Documentation-only feedback validates the changed documents, annotations and
+bindings through the shared admitted planner. A verifier's annotation appearing
+in a touched spec, moving within that spec, or belonging to its owner does not
+by itself select the verifier's behavioral execution or invalidate its result.
+Select behavioral consumers when admitted actual inputs change: Markdown read by
+a test, executable documentation, generated inputs and relevant definitions or
+configuration remain real dependencies. An extension-based exemption or an
+unverified smaller input list cannot establish that a consumer is unaffected.
+Missing or inconsistent dependency contracts remain admission failures.
+
+Admit and finish the required structural stage before later behavioral
+preparation, including expensive discovery or builds needed for later admission.
+No behavioral discovery, test compilation or execution runs speculatively beside
+it. Structural checks may build their own required artifacts. Blocking
+structural/admission failure stops later work; later admission errors stop
+remaining launches. Retain diagnostics and observations, never passing coverage
+for unexecuted work. Honest pending declarations retain their normal policy
+rather than failing merely because their implementation is prospective.
+
+A structural-stage success is not admission of undiscovered later work. Preserve
+independent inventory and complete obligation accounting; admit each later unit
+against current context before use. Earlier request seals or cached plans/units
+cannot bypass changed snapshots, inventory or authorization. Preparation and
+execution reuse the same planner and capture path across feedback, integration
+and hooks, checking eligible evidence before unnecessary builds or execution
+where the admitted facts permit it. Valid cold work still prepares and runs;
+missing contracts fail rather than broadening to the whole suite.
+
+This is stage ordering and precise selection, not a structural-only hook policy,
+new fast-mode flag, alternate launcher, caller-selected list or publication
+exemption. Publication and full-tree requests retain their applicable coverage.
+Absent/inadmissible evidence and freshness restrictions still require execution.
+Exact-target diagnostics retain their fresh, non-authorizing semantics.
+
+#### Canonical dependency resolution
+
+[Acceptance](#dependency-roles-grouping-and-cutover).
+
+CLI verification, integrity/readiness, review-context selection and workflow
+consumers use one checked dependency boundary with purpose-specific adapters,
+not parallel resolution engines or mirrored input tables. The generic
+`InputResolver` API/bridge, heuristic argv-input inference, unknown-scope
+always-run fallback and `inputs_for_test` helper/configuration promise are
+retired, not preserved behind compatibility switches or renamed facades.
+
+Required native Rust discovery, checked Rust/Nix definitions, judge collect-mode
+batching, shared spec-relative target resolution and runner-owned query
+transport remain supported through that boundary. Non-default frameworks use
+checked execution definitions, such as hermetic Nix units, not a second ad-hoc
+input helper. Obsolete API/configuration promises and superseded tests are
+removed; meaningful coverage of required behavior moves to the canonical path.
+
 #### Subject references for role exceptions
 
 [Acceptance](#planning-coverage-and-strategy).
@@ -346,10 +429,75 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   independent invalidation. [system?](nix run .#test-quint -- independent-units)
 
 <!-- prettier-ignore -->
-- An inspectable execution plan reports selection/exclusion reasons, scope and
-  dependency provenance, shared executions, reuse decisions, and unresolved
-  requirements; completed runs report observed durations and invocation counts.
+- Ordinary verification exposes a compact actual plan with selection/exclusion
+  and reuse reasons, scope/dependency provenance, shared executions and
+  unresolved requirements, with detail available on demand. Completed runs
+  report observed durations and invocation counts; failed admission is visible,
+  not represented as a successful empty plan.
   [system?](nix run .#test-quint -- explain-plan)
+
+### Feedback selection and fail-fast
+
+- Through the production planner, documentation-only feedback performs required
+  document, annotation and binding checks without compiling or executing
+  unrelated behavioral units merely because their annotations occur in touched
+  specs, including declaration moves and acceptance-prose edits.
+  [test?](documentation_feedback_does_not_fan_out_over_spec_annotations)
+
+- Actual Markdown consumers, executable documentation and generated-input
+  consumers are selected when their admitted dependencies change; incomplete or
+  inconsistent dependency descriptions fail admission rather than silently
+  excluding consumers.
+  [test?](documentation_feedback_selects_real_consumers_and_rejects_bad_inputs)
+
+- A blocking structural or admission failure in composed verification prevents
+  later expensive behavioral discovery, test builds and executions from
+  starting, including speculative parallel work. A corrected structural stage
+  reaches the same normally selected behavioral path.
+  [test?](structural_failure_prevents_behavioral_discovery_build_and_execution)
+
+- Documentation feedback does not supply publication coverage for unexecuted
+  obligations, erase required full-tree coverage, or bypass Evidence's reuse,
+  freshness and failure-history rules when fresh execution is independently
+  required.
+  [test?](documentation_feedback_preserves_publication_and_evidence_requirements)
+
+### Dependency roles, grouping and cutover
+
+- Production dependency resolution separates declaration/binding context from
+  execution/build inputs. Declaration-only edits revalidate current bindings
+  without behavioral fan-out; real and dual-role documentation consumers retain
+  their inputs and invalidate the appropriate execution or build.
+  [test?](dependency_roles_preserve_real_consumers_without_declaration_fanout)
+
+- Actual target/module groups retain complete coverage and justified shared
+  artifact/resource dependencies. Independent fixture changes select their
+  consumers; shared executable changes can correctly select multiple groups.
+  Owning annotations and guessed per-function impact cannot determine scope.
+  [test?](execution_groups_follow_admitted_artifacts_and_shared_dependencies)
+
+- Structural completion does not authorize later units from an old snapshot,
+  inventory or request seal. The production staged planner rejects changed
+  context before use and retains full independent obligation accounting.
+  [test?](staged_admission_rejects_stale_inventory_and_prior_plan_seals)
+
+- Actual CLI, integrity/readiness, review and workflow callers resolve through
+  the canonical checked boundary. Invalid/missing dependency contracts fail
+  before dependent work, without legacy heuristics or whole-suite fallback;
+  corrected definitions preserve required native and judge/query behavior.
+  [test?](gate_consumers_share_checked_dependencies_without_legacy_resolver)
+
+- The obsolete resolver/bridge and test-input helper are removed, including
+  public APIs and unsupported configuration promises, rather than deprecated or
+  retained as a parallel implementation. Required negative/capability cases
+  remain exercised through the canonical boundary.
+  [test?](retired_input_resolver_and_test_helper_are_not_public_apis)
+
+- Production planning across feedback, integration and hooks avoids duplicate
+  equivalent eligible execution and unnecessary builds when admissible facts
+  suffice. Cold/miss, genuine input changes and reuse restrictions still cause
+  required work; bounded recovery never broadens invalid metadata into a suite.
+  [test?](shared_verification_planning_avoids_duplicate_eligible_execution)
 
 ### Execution and admissible evidence
 
@@ -511,9 +659,9 @@ Gate; selecting feedback work is not redefining full-publication obligations.
 
 ### Verifier inputs
 
-- `[test]` input resolution uses an admitted native provider and includes the
-  applicable spec contract; Cargo target metadata alone is not accepted as the
-  complete execution-input closure.
+- `[test]` input resolution uses an admitted native provider with current
+  spec-contract binding admission. Cargo target metadata or the declaring file
+  alone is not accepted as the complete execution-input closure.
   [test?](test_tier_resolution_requires_provider_closure_and_spec_contract)
 
 - A `[judge]` target is located by shared selector-stripping (`#fn` / `::fn` /
@@ -814,6 +962,30 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   [system?](nix run .#test-quint -- shared-property-artifacts)
 
 ### Mechanisms
+
+- Actual planner and native/system dispatch separate agent-runnable suites from
+  justified host-only requirements. Finite/push ranges select affected host
+  checks through admitted inputs, exclude unrelated checks and retain explicit
+  full-tree coverage; invalid/unknown dependencies cannot silently omit work.
+  [test?](verification_selects_affected_host_requirements_without_blanket_suite)
+
+- Missing required host capability blocks affected publication without turning a
+  skip into a pass. Ordinary tooling gaps do not become host-only exceptions;
+  task/preflight admission cannot run arbitrary worker-proposed host code.
+  [test?](host_requirement_selection_preserves_capability_and_execution_authority)
+
+- Actual host execution admission checks the definition and submitted
+  code/inputs against trusted human-authorized standing policy, not a caller's
+  or worker-editable policy claim. Covered input changes may execute; reusing a
+  known test name/runner for an uncovered experiment, command or authority does
+  not. Missing/ambiguous authorization refuses execution pending bounded Inbox
+  review, without running submitted code during checking.
+  [test?](host_test_standing_authorization_checks_actual_behavior_and_inputs)
+
+- Production verification admits matching actual agent executions through
+  Evidence rather than repeating them solely due to handoff; changed inputs,
+  environment/freshness or invalid provenance still require execution.
+  [test?](verification_consumes_admitted_agent_results_without_handoff_rerun)
 
 - Worker acceptance with permitted capability skips cannot construct verified
   host coverage or authorize publication.
@@ -1342,11 +1514,14 @@ scripts to be executable with the loom judge-harness preamble (which supplies
 malformed inputs document is a loud finding, not a silent fallback (see
 _Inputs-protocol error_).
 
-**Spec-contract inclusion.** Applicable package contracts, owning criteria, and
-strategy participate automatically in affectedness and evidence validation.
-Changing them cannot leave old authorization intact. Their inclusion is
-additional to the verifier's own dependency closure, never a replacement for a
-missing input contract.
+**Spec-contract inclusion.** Applicable contracts, owning criteria and strategy
+always participate in current binding, coverage and required review admission;
+changing them cannot leave old claim authorization intact. Declaration context
+is not automatically an execution/build input. Semantic execution definitions
+and actual consumers retain their dependencies under
+[dependency roles](#dependency-roles-and-execution-groups). Keep source
+attribution and diagnostics without converting every declaring spec into a
+behavioral input or replacing a missing execution contract.
 
 **Strict admission.** Every executable verifier has an exact target, subject
 inventory, supported discovery contract, execution requirements, and result
@@ -1366,10 +1541,10 @@ has no corresponding file inputs; it cannot erase membership, configuration,
 tool, or contract dependencies. Pending annotations retain their separate
 pending policy rather than requiring a not-yet-existing verifier contract.
 
-**Repo-agnostic.** The `--print-inputs` convention works for any script or
-binary in any language, and the `[runner.<tier>] inputs_for_test` config knob
-handles non-default test frameworks — loom-the-library imposes no layout of its
-own.
+**Repo-agnostic.** Runner-owned queries and checked execution definitions do not
+impose a repository layout or implementation language. Non-default frameworks
+use admitted definitions, including hermetic Nix units; there is no
+`inputs_for_test` override or alternative input-resolution extension.
 
 Spec annotations stay **clean** — `[tier](target)` and nothing else. No inline
 input metadata, HTML-comment companions, or in-script `# loom-inputs:` list is
@@ -1428,11 +1603,44 @@ presence/absence checks viable without wrapping each one in a Rust walk.
 
 [Acceptance](#mechanisms).
 
-The worker-stage policy is distinct from later host testing. Workers execute
-locally in their sandbox; no SSH access, host-verifier bridge, remote per-bead
-receipts, host provisioning or live Darwin evidence is required. Required host
-testing follows [stage applicability](gate.md#deterministic-verify-lanes);
-worker acceptance never substitutes for that coverage.
+Tests follow [agent-first execution](tests.md#agent-first-execution): ordinary
+behavior, integration and recovery coverage runs inside agent sessions, with
+required ordinary tools supplied rather than deferred to a driver handoff. Only
+inherent capabilities that cannot safely be supplied there justify the minimal
+host-only remainder. No SSH access, arbitrary host-verifier bridge or live
+Darwin evidence is required from a worker lacking those capabilities.
+
+Host-only checks have admitted execution requirements and sound dependency
+boundaries. Routine agent/native suites do not bundle those checks
+unconditionally; finite verification and publication select genuinely affected
+host obligations through the same planner, with ordinary conservative selection
+and full-tree coverage retained. Unrelated changes do not run them merely
+because a suite launched. An affected required host check without admissible
+evidence must run in its authorized environment, or block publication if
+unavailable. Missing ordinary tooling, a test tier label, provider failure or a
+skip cannot justify host-only classification or removal of coverage. No separate
+copied inventory or permissive stage lane is introduced.
+
+[Evidence](evidence.md#agent-executed-results) admits actual agent-executed
+results for later obligations without rerunning solely on handoff. Worker
+acceptance with skips never supplies coverage for those skipped checks.
+Separately proposed host/expanded-authority experiments require
+[Inbox's bounded snapshot-bound approval](inbox.md#acceptance-repair-and-execution-authority)
+before execution; admitting a task or invoking preflight cannot execute
+submitted code on the host.
+
+A reviewed fixed host-test definition has standing authorization only for the
+execution behavior, capabilities and input changes covered by trusted
+human-authorized policy. A caller's approval flag, provider metadata or
+worker-editable policy claim cannot establish that authority. Standing policy
+cannot delegate arbitrary worker-selected host commands or experiments. A known
+test name or runner alone grants no authority. Before execution, check the
+actual definition and submitted code/inputs against that policy. Changed code is
+not automatically disallowed when the policy covers it; a new experiment,
+command or authority outside that scope requires Inbox review. Missing or
+ambiguous authorization blocks execution pending that review; do not run
+submitted code to establish that it is safe. Dependency affectedness selects
+obligations, not permission to execute them.
 
 A modern JSON-lines producer emits exactly one record per requested target:
 
@@ -1495,8 +1703,9 @@ structured execution metadata, reason and policy decision survive in the cache
 `evidence` JSON and `.loom/logs/gate/verifier-results.jsonl`. Worker acceptance
 writes an `accepted-with-skips` lifecycle log without hook coverage; it cannot
 construct `VerifiedScope`, validate `GateSuccess` or authorize a push marker.
-Marker schema 4 rejects older markers, and host hooks do not consume worker
-acceptance/cache as proof of passed system coverage. The synthetic native CLI
+Marker schema 4 rejects older markers. Host hooks cannot consume worker skip
+acceptance or unadmitted cache rows as passed system coverage; actual captured
+executions remain eligible through Evidence admission. The synthetic native CLI
 fixture uses the same seam with `bash producer.sh {targets}`; it proves parser
 and runner integration, not the consumer's system tests.
 

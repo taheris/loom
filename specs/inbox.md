@@ -1,20 +1,23 @@
 # Human resolution
 
-Presents human decisions and diagnostics, resolves clarify and blocked work, and
-hands approved tune batches to the trusted driver.
+Presents human decisions and diagnostics, supports checked acceptance repair,
+and hands approved tune batches to the trusted driver.
 
 ## Problem Statement
 
-Agents need a clear way to request human decisions without treating proposed
-options as executable authority. Inbox presents the queue and decision context,
-then separates conversational resolution from trusted tune application.
+Agents need clear human decisions and recovery from invalid task acceptance
+without treating proposals or conversation as executable authority. Inbox
+presents the queue, supports checked in-session acceptance repair, and separates
+bounded execution approval from execution and trusted tune application.
 
 ## Architecture
 
-The human reviews typed queue items in chat; accepted tune proposals cross a
-separate driver apply boundary. Related owners: [findings](findings.md),
-[tuning](tuning.md), [agent](agent.md), [gate](gate.md), [loop](loop.md),
-[protocol](protocol.md).
+The human reviews typed queue items in chat. Agent-authored acceptance
+candidates cross a scoped checked-finalization boundary; accepted tune proposals
+cross a separate driver apply boundary. Execution-authority decisions remain
+bounded permissions, not execution requests. Related owners:
+[findings](findings.md), [tuning](tuning.md), [agent](agent.md),
+[gate](gate.md), [loop](loop.md), [protocol](protocol.md), [issues](issues.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -24,8 +27,10 @@ Acceptance: [criteria and verifier bindings](#success-criteria).
 
 `loom inbox` is the cross-spec human queue for non-closed `loom:clarify`,
 `loom:blocked`, and `loom:infra` beads plus pending, blocked, and apply-failed
-tune proposals. List and view run on the host without mutation; chat launches an
-interactive backend.
+tune proposals, plus non-closed tasks with actionable acceptance-admission
+failures. Those failures are blocked-kind diagnostics on the same task, not new
+decisions or a rewrite of its independent status/holds. List and view run on the
+host without mutation; chat launches an interactive backend.
 
 | Mode             | Invocation                         |
 | ---------------- | ---------------------------------- |
@@ -48,13 +53,16 @@ interactive backend.
 Filters apply before stable kind/FIFO ordering. View renders durable options,
 diagnostics, and repair paths.
 
-Inbox chat has human-authorized Beads write access to queued items and explicit
-linked-work hold/cancellation actions within their validated decision context.
-This preserves source actions formerly authorized on source-hosted briefs,
-without granting unrelated-work authority. It may repair tune artifacts only in
-the proposal checkout. Human decision content and resolution remain
-authoritative. The driver reconciles only explicitly attributed scheduling state
-under [orchestration ownership](#orchestration-ownership), not a generic worker
+Inbox chat has human-authorized task write access through
+[neutral operations](issues.md#workflow-and-worker-use) to queued items and
+explicit linked-work hold/cancellation actions within their validated decision
+context. Candidate acceptance edits do not confer protected admission or
+provenance; only checked finalization below can establish that authority. This
+preserves source actions formerly authorized on source-hosted briefs, without
+granting unrelated-work authority. It may repair tune artifacts only in the
+proposal checkout. Human decision content and resolution remain authoritative.
+The driver reconciles only explicitly attributed scheduling state under
+[orchestration ownership](#orchestration-ownership), not a generic worker
 verdict. Protocol's `Complete` ends chat without tune application; `Apply`
 requests one validated all-or-nothing tune proposal batch through integration,
 gate, and push. A failed batch publishes nothing and leaves every proposal in
@@ -65,15 +73,18 @@ Options are discussion context for chat rather than executable menu entries.
 
 ### Orchestration ownership
 
-Acceptance: [decision resolution](#decision-resolution) and
-[human-state preservation](#workflow-commands).
+Acceptance: [decision resolution](#decision-resolution),
+[human-state preservation](#workflow-commands), and
+[checked acceptance finalization](#acceptance-repair-and-authority).
 
 The human/chat agent owns decision content, authorized outcome recording,
-decision closure, and independent holds. The driver owns only the scheduling
-waits it explicitly admitted and attributed under
-[Loop](loop.md#decision-batches-and-attributed-waits). It may deterministically
-release those waits after chat by re-reading actual decision/dependency state,
-without interpreting prose or using `Complete` as an instruction to unblock.
+decision closure, and independent holds. Trusted acceptance tooling owns
+[checked finalization](#acceptance-repair-and-execution-authority), not the
+agent's candidate edits. Scheduling reconciliation is separately limited to
+waits the driver explicitly admitted and attributed under
+[Loop](loop.md#decision-batches-and-attributed-waits). The driver may release
+those waits after chat by re-reading actual decision/dependency state, without
+interpreting prose or using `Complete` as an instruction to unblock.
 
 This separation forbids generic canonical unblocking, status reversion, and
 label re-application that would undo human changes. A human adoption of an
@@ -115,6 +126,54 @@ option. Such an action is not automatic decision resolution or positive
 implementation coverage. Partial answers release only work whose actual
 prerequisites are satisfied, through Loop's attributed wait resumption.
 
+### Acceptance repair and execution authority
+
+[Acceptance](#acceptance-repair-and-authority).
+
+Acceptance diagnostics expose the selected task's candidate/admitted state,
+source/root references and actionable failures. The agent retrieves repair
+guidance and validator-matched schema/help on demand under
+[Skills](skills.md#ancillary-workflow-guidance), authors the candidate with
+ordinary authorized task operations, and uses
+[Loop's shared verifier](loop.md#follow-up-admission-and-acceptance-repair).
+Human confirmation covers the specific intended goals and authority, not a vague
+request to make the task runnable. The trusted Inbox session establishes that
+confirmation/context; a worker-supplied approval flag cannot do so. A successful
+in-session check finalizes the checked acceptance/provenance for that task and
+applies
+[Loop's resolved-failure retirement](loop.md#follow-up-admission-and-acceptance-repair).
+It returns actual persisted success or actionable failure, not merely a
+caller-reported pass or a promise that a post-chat handoff will repair it later.
+
+Invalid or stale drafts cannot overwrite the last admitted acceptance. Re-read
+and revalidate relevant state changes; materially changed approved goals or
+authority require renewed confirmation. Interrupted/uncertain finalization
+follows Loop's fixed-operation recovery without reminting. Preserve task
+identity, parentage, dependencies, notes, unrelated metadata and independent
+holds. Repair does not reopen/promote/close work, resolve its defect, execute an
+experiment or authorize publication. An independently blocked task can be
+repaired without releasing that block. No general repair/action language or
+mandatory manual mutating CLI is introduced.
+
+Inbox reviews proposed host execution or authority beyond an existing sandbox,
+regardless of task kind. Approval names a specific bounded plan, required
+capabilities and code/input snapshot; relevant changes invalidate it. An answer
+or acceptance repair does not itself execute that plan. No arbitrary host shell,
+submitted-code execution during validation, mount/credential expansion or
+runtime-control access follows from task admission. Reviewed fixed host tests
+use
+[Verify's standing-authorization boundary](verify.md#sandbox-capability-results);
+a known test name or runner does not authorize a different submitted experiment.
+Sandbox-only work within existing authority does not need this permission
+review, and routine current-task investigation needs no separate discovery task.
+Missing required access remains a genuine unfinished hold.
+
+Checked finalization is a scoped trusted tool operation, not an interpretation
+of chat prose or an agent-output marker. `Complete` still ends chat without
+requesting tune application; `Apply` still names tune proposals only. List/view
+remain read-only, and chat exit does not reconstruct acceptance effects from
+prose or automatically release unrelated holds.
+
 ## Success Criteria
 
 ### Workflow commands
@@ -152,12 +211,12 @@ prerequisites are satisfied, through Loop's attributed wait resumption.
   container using the `inbox.md` template; list/view stay host-side
   [test](loom_inbox_chat_launches_container)
 
-- Chat has full bd-write authority on queued bead-backed items and separately
-  human-authorized linked-work holds/cancellations in the validated decision
-  context, not unrelated work. Tune artifact repair stays under
-  `.loom/tune/<id>/repo/`; chat never pushes or leaves `.loom/integration`
-  dirty.
-  [test?](inbox_chat_authority_preserves_explicit_linked_work_resolution_scope)
+- Chat has authorized neutral task-write operations on queued items and
+  separately human-authorized linked-work holds/cancellations in the validated
+  decision context, not unrelated work or unchecked provenance finalization.
+  Tune artifact repair stays under `.loom/tune/<id>/repo/`; chat never pushes or
+  leaves `.loom/integration` dirty.
+  [test?](inbox_neutral_task_authority_preserves_linked_work_and_admission_scope)
 
 - Inbox preserves human-owned outcomes and holds after chat, without generic
   canonical unblocking, status reversion, or label restoration. Deterministic
@@ -216,6 +275,43 @@ prerequisites are satisfied, through Loop's attributed wait resumption.
   prerequisites, including after partial resolution or interrupted chat, while
   list/view stay read-only and chat is never automatically retried.
   [test?](inbox_chat_exit_rechecks_only_attributed_dependency_waits)
+
+### Acceptance repair and authority
+
+- Actual Inbox list/view/chat exposes same-task acceptance failures as
+  actionable blocked-kind diagnostics without a new task, migration sweep or
+  independent-status rewrite; list/view are read-only.
+  [test?](inbox_acceptance_diagnostics_address_same_task_without_state_rewrite)
+
+- A controlled Inbox agent retrieves current schema/help, authors a candidate
+  and invokes the shared verifier after specific human confirmation; successful
+  in-session finalization persists checked admission/provenance and reports the
+  real result without a generic repair parser or later mandatory handoff.
+  [test?](inbox_agent_authored_acceptance_repair_finalizes_checked_state_in_session)
+
+- Successful finalization retires only the resolved admission failure's active
+  Inbox diagnostic and dispatch exclusion, retains durable history, and makes
+  the same task eligible only when all other dispatch conditions hold. Separate
+  holds and task status are unchanged.
+  [test?](inbox_successful_acceptance_repair_retires_only_resolved_admission_failure)
+
+- Invalid/stale candidates and interrupted/uncertain finalization preserve prior
+  admitted acceptance, task identity, parent/dependencies/notes/unrelated
+  metadata and independent holds. Material goal/authority changes require new
+  human confirmation; replay cannot reopen, promote, close or duplicate work.
+  [test?](inbox_acceptance_repair_preserves_holds_and_rejects_stale_authority)
+
+- Actual execution admission for worker-proposed host/expanded-authority plans
+  requires explicit bounded Inbox approval for the matching code/input snapshot,
+  across task kinds. Changed plans/snapshots fail without execution or added
+  mounts/credentials; repair/validation runs no submitted experiment code.
+  Sandbox-only authorized work needs no such escalation.
+  [test?](inbox_probe_approval_is_bounded_snapshot_bound_and_not_task_admission)
+
+- Checked repair results cannot be forged through `Complete`, tune-only `Apply`,
+  tool-output marker text or chat prose; chat exit retains existing human-state
+  and attributed-wait boundaries.
+  [test?](inbox_checked_repair_does_not_reinterpret_chat_markers_or_prose)
 
 ### Integration tests
 
@@ -331,3 +427,8 @@ separate beads, not accumulated active blocks on a Todo work epic.
   owns candidate validity; Inbox does not waive Gate admission.
 
 - A standalone `loom inbox apply` command.
+- A general repair DSL/action parser, mandatory manual acceptance-repair
+  command, or approval queue for ordinary investigation within sandbox/task
+  authority.
+- Acceptance repair as implicit reopening, experiment execution, expanded host
+  access, finding resolution bypass or publication permission.

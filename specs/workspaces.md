@@ -53,9 +53,16 @@ fast-forwards under Git's integration lock. The transient integration-clone
 `loom/<id>` ref is removed on every exit path. Integration conflicts receive one
 worker recovery attempt before clarification.
 
-A bead container mounts its clone at `/workspace` and the authoritative Beads
-Dolt socket at `/workspace/.wrix/dolt.sock`. A configured shared sccache
-directory is an additional mount. `SpawnConfig` owns these per-launch mounts;
+A bead container mounts its clone at `/workspace`. Tracking access is selected
+by the configured [Issues adapter](issues.md#workflow-and-worker-use), not an
+unconditional Beads dependency. The production Beads adapter mounts its
+authoritative Dolt socket at `/workspace/.wrix/dolt.sock`; non-Beads test use
+requires no native socket/database. A configured shared sccache directory is an
+additional mount. Backend selection and acceptance admission cannot expand
+mounts, credentials or execution authority; proposed host/expanded-authority
+experiments require
+[Inbox approval](inbox.md#acceptance-repair-and-execution-authority).
+`SpawnConfig` owns these per-launch mounts;
 [Agent — SpawnConfig](agent.md#spawnconfig) owns their wire shape.
 
 ### Cleanup admission
@@ -255,6 +262,12 @@ for worker feedback.
   [system](nix run .#test-quint -- workspace-safety-history)
 
 ### Bead dispatch
+
+- Production worker preparation selects backend-neutral tracking access with
+  only the configured adapter's required environment/mounts; lightweight test
+  use needs no Beads socket/service. Backend/task admission grants no extra host
+  execution, mounts or credentials and preserves independent holds.
+  [test?](worker_tracking_access_follows_adapter_without_authority_expansion)
 
 - Shared worker preparation threads prompt context and owns scratch cleanup for
   every supported agent runtime
@@ -476,7 +489,7 @@ for worker feedback.
   false completion even if a Beads operation bypassed a mechanical guard.
   [test?](independent_source_closure_preserves_decisions_and_real_prerequisites)
 
-- Bead containers receive the host `wrix-beads` dolt socket as a single-file
+- With the Beads adapter, bead containers receive the host `wrix-beads` Dolt socket as a single-file
   bind mount at `/workspace/.wrix/dolt.sock` via `SpawnConfig.mounts`, replacing
   the host-side hardlink shim previously used in `GitClient::create_worktree`
   [test](bead_container_dolt_socket_via_mounts)
@@ -650,13 +663,13 @@ for worker feedback.
    runtime variants fail at dispatch as static `loom:infra` diagnostics (no
    silent default, no transport retry). `--profile` overrides bead labels.
 
-2. **Beads via shared Dolt socket** — every container has the host's
-   `wrix-beads` Dolt server bind-mounted at `/workspace/.wrix/dolt.sock` via
-   `SpawnConfig.mounts` (see [Bead Dispatch](#bead-dispatch)); in-container `bd`
-   writes go straight to the authoritative state. No per-bead
-   `bd dolt push/pull` handoff. Loom on the host reads the same state through
-   the same socket. The legacy `.beads/issues.jsonl` path is not used — beads no
-   longer supports it.
+2. **Backend-selected task access** — workers use neutral operations through the
+   configured adapter. With Beads, the host's `wrix-beads` Dolt socket is
+   mounted at `/workspace/.wrix/dolt.sock` via `SpawnConfig.mounts`; worker and
+   driver operations see shared authoritative state with no per-task Dolt
+   push/pull. This is the Beads adapter's transport, not a required dependency
+   of other backends or their fixtures. The legacy `.beads/issues.jsonl` path is
+   not used.
 
 #### Concurrency & locking (loom-driver)
 
