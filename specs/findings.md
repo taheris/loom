@@ -640,12 +640,12 @@ errors or blocking on structural bd state — is owned by
 - Every domain `BadWalk` shape requires the context fields defined by the
   finding-failure contract; actual conversion preserves valid records rather
   than supplying an empty default after mixed failure.
-  [test?](bad_walk_failure_shapes_require_all_parseable_context)
+  [test](bad_walk_failure_shapes_require_all_parseable_context)
 
 - Review terminal diagnostics project the canonical decoded message or retain
   malformed/missing raw context without duplicating the terminal vocabulary or
   decoding path.
-  [test?](review_terminal_diagnostics_project_canonical_output_messages)
+  [test](review_terminal_diagnostics_project_canonical_output_messages)
 
 ### Canonical contract location
 

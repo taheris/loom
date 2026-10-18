@@ -220,6 +220,152 @@ mod contract {
         }
     }
 
+    #[tokio::test]
+    async fn bad_walk_failure_shapes_require_all_parseable_context() {
+        let directory = workspace();
+        let validator = WorkspaceFindingValidator::new(directory.path());
+        let expected = parse_walk_output(
+            &format!("{FIRST}\n{LAST}\n{CONCERN}"),
+            DispatchScope::Tree,
+            &validator,
+        )
+        .unwrap();
+        for (stream, terminal) in [
+            ("No findings reported".to_owned(), CONCERN),
+            (format!("{FIRST}\n{LAST}"), "LOOM_COMPLETE"),
+            (format!("{FIRST}\n{BAD_TARGET}\n{LAST}"), CONCERN),
+            (format!("{FIRST}\n{BAD_JSON}\n{LAST}"), CONCERN),
+            (format!("{FIRST}\n{BAD_TARGET}\n{LAST}"), ""),
+            (
+                format!("{FIRST}\n{BAD_TARGET}\n{LAST}"),
+                "LOOM_CONCERN: {\"summary\":\"\"}",
+            ),
+        ] {
+            for text in controlled_outputs(&stream, terminal).await {
+                let walk = WalkOutput::from_stdout(&text, DispatchScope::Tree, &validator);
+                let PhaseVerdict::Recovery {
+                    cause: RecoveryCause::BadWalk(bad_walk),
+                } = phase_verdict_from_walk(&walk)
+                else {
+                    panic!("failed walk must recover: {text}");
+                };
+                assert_bad_walk_transfer(&walk, &bad_walk);
+                match &bad_walk {
+                    BadWalk::ConcernWithoutFindings { summary, .. } => {
+                        assert_eq!(walk.findings(), []);
+                        assert_eq!(summary, "review summary");
+                    }
+                    BadWalk::FindingsWithoutConcern {
+                        finding_count,
+                        findings,
+                        ..
+                    } => {
+                        assert_eq!(*finding_count, expected.len());
+                        assert_eq!(findings, &expected);
+                    }
+                    BadWalk::MalformedFinding { errors, .. } => {
+                        assert_eq!(errors.len(), 1);
+                        assert_eq!(errors[0].line_number(), 2);
+                        assert_eq!(bad_walk.parsed_findings(), expected);
+                    }
+                    BadWalk::Protocol { diagnostics, .. } => {
+                        assert_ne!(diagnostics.as_slice(), []);
+                        assert_eq!(bad_walk.finding_errors().len(), 1);
+                        assert_eq!(bad_walk.parsed_findings(), expected);
+                    }
+                    other @ BadWalk::Concern { .. } => {
+                        panic!("unexpected canonical failure: {other:?}");
+                    }
+                }
+                let previous = cause_to_previous_failure(&RecoveryCause::BadWalk(bad_walk.clone()));
+                let rendered = previous.to_string();
+                assert!(rendered.len() <= PREVIOUS_FAILURE_MAX_LEN);
+                if !walk.findings().is_empty() {
+                    for evidence in ["first\nsecond 🧶", "last finding"] {
+                        assert!(rendered.contains(evidence), "{rendered}");
+                    }
+                }
+                if stream.contains(BAD_TARGET) {
+                    assert!(rendered.contains("tests/missing.rs"), "{rendered}");
+                }
+                if stream.contains(BAD_JSON) {
+                    assert!(rendered.contains(BAD_JSON), "{rendered}");
+                }
+                assert_eq!(previous, PreviousFailure::BadWalk(bad_walk));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn review_terminal_diagnostics_project_canonical_output_messages() {
+        use loom_protocol::output::Message;
+
+        let directory = workspace();
+        let validator = WorkspaceFindingValidator::new(directory.path());
+        let stream = format!("{FIRST}\n{BAD_TARGET}\n{LAST}");
+        for terminal in [
+            "LOOM_COMPLETE",
+            CONCERN,
+            "LOOM_NOOP",
+            "LOOM_WAITING",
+            "LOOM_RETRY: {\"reason\":\"retry\\nreason 🧶\"}",
+            "LOOM_BLOCKED: {\"reason\":\"blocked reason\"}",
+            TODO,
+            "LOOM_APPLY: {\"proposals\":[\"lm-proposal\"]}",
+            "LOOM_CONCERN: {\"summary\":\"\"}",
+            "LOOM_RETRY: {}",
+            "LOOM_BLOCKED: {}",
+            "",
+            "LOOM_COMPLETE\nLOOM_COMPLETE",
+            "LOOM_COMPLETE\ntrailing commentary",
+        ] {
+            for text in controlled_outputs(&stream, terminal).await {
+                let walk = WalkOutput::from_stdout(&text, DispatchScope::Tree, &validator);
+                let decoded = decode(&text, Phase::Review);
+                let context = match &decoded {
+                    Ok(session) => session.context(),
+                    Err(failure) => failure.context(),
+                };
+                assert_eq!(walk.context(), context);
+                let projected = match context.terminal().map(|located| &located.message) {
+                    Some(Message::Complete) => TerminalSurface::Complete,
+                    Some(Message::Concern(payload)) => TerminalSurface::Concern {
+                        summary: payload.summary.to_string(),
+                    },
+                    Some(Message::Retry(payload)) => TerminalSurface::Retry {
+                        reason: payload.reason.to_string(),
+                    },
+                    Some(Message::Blocked(payload)) => TerminalSurface::Blocked {
+                        reason: payload.reason.to_string(),
+                    },
+                    Some(Message::Noop) => TerminalSurface::Noop,
+                    Some(Message::Waiting) => TerminalSurface::Waiting,
+                    _ => TerminalSurface::Missing,
+                };
+                assert_eq!(walk.terminal(), &projected, "{text}");
+                let PhaseVerdict::Recovery {
+                    cause: RecoveryCause::BadWalk(bad_walk),
+                } = phase_verdict_from_walk(&walk)
+                else {
+                    panic!("terminal diagnostics cannot authorize mixed output: {text}");
+                };
+                assert_bad_walk_transfer(&walk, &bad_walk);
+                let previous = cause_to_previous_failure(&RecoveryCause::BadWalk(bad_walk));
+                let rendered = previous.to_string();
+                assert!(rendered.len() <= PREVIOUS_FAILURE_MAX_LEN);
+                if let Some(located) = context.terminal() {
+                    let wire = located.message.to_wire().unwrap();
+                    assert!(rendered.contains(&wire), "{rendered}");
+                } else {
+                    assert!(rendered.contains("no unique independently decoded terminal"));
+                    if !terminal.is_empty() {
+                        assert!(rendered.contains(terminal), "{rendered}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn agent_retry_display_teaches_shared_decision_and_terminal_roles() {
         let text =
