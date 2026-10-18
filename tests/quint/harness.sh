@@ -42,7 +42,7 @@ SH
 test_fail_closed() {
   local script="$LOOM_QUINT_SOURCE/scripts/test-quint.sh"
   must_fail 'unknown scenario' "$BASH" "$script" unknown
-  must_fail 'not implemented' "$BASH" "$script" model
+  must_fail 'not implemented' "$BASH" "$script" conformance
   must_fail 'missing provisioned tool' env PATH="$tmp/empty" "$BASH" "$script" provisioning-and-batching
   mkdir -p "$tmp/old-tool"
   write_script "$tmp/old-tool/quint" <<'SH'

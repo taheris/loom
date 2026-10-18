@@ -85,6 +85,7 @@ _: {
           pkgs.bash
           pkgs.beads
           pkgs.gnused
+          pkgs.gnugrep
         ]
         ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.podman ];
         text = ''
@@ -194,6 +195,25 @@ _: {
             export LOOM_QUINT_SOURCE=${loom.stagedSrc}
             export LOOM_QUINT_PACKAGE=${tools}
             bash ${../../tests/quint/harness.sh}
+            touch "$out"
+          '';
+      checks.quint-model =
+        pkgs.runCommand "quint-model"
+          {
+            nativeBuildInputs = [
+              tools
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.gnugrep
+              pkgs.jq
+              pkgs.python3
+            ];
+          }
+          ''
+            set -euo pipefail
+            export LOOM_QUINT_SOURCE=${loom.stagedSrc}
+            export LOOM_QUINT_PACKAGE=${tools}
+            bash ${../../tests/quint/model-harness.sh}
             touch "$out"
           '';
       apps.test-quint = {

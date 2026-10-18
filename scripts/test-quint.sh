@@ -55,10 +55,16 @@ case "$1" in
   provisioning-and-batching | bridge-smoke)
     campaigns=(routine bridge-replay)
     ;;
+  model | reference-equivalence | cache-model | witnesses)
+    : "${LOOM_QUINT_SOURCE:?missing whole-gate model input bundle}"
+    exec bash "$LOOM_QUINT_SOURCE/scripts/test-quint-model.sh" "$1"
+    ;;
   deeper)
+    : "${LOOM_QUINT_SOURCE:?missing whole-gate model input bundle}"
+    bash "$LOOM_QUINT_SOURCE/scripts/test-quint-model.sh" deeper
     campaigns=(deeper bridge-replay)
     ;;
-  model | reference-equivalence | input-generation | cache-model | witnesses | conformance | replay | mutations | incremental | cost-evidence | adoption)
+  input-generation | conformance | replay | mutations | incremental | cost-evidence | adoption)
     printf 'test-quint: scenario %s is not implemented; no verification completed\n' "$1" >&2
     exit 1
     ;;

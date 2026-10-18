@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "checker": "Quint 0.33.0 / Rust evaluator 0.7.0 / Apalache 0.62.1",
+  "routine": {
+    "seeds": [42, 20250308],
+    "traces": 64,
+    "steps": 80,
+    "samples": 32,
+    "seconds": 120
+  },
+  "deeper": {
+    "seeds": [42, 20250308, 314159, 271828],
+    "traces": 256,
+    "steps": 160,
+    "samples": 128,
+    "seconds": 240
+  },
+  "symbolic": {
+    "steps": 1,
+    "seconds": 180
+  },
+  "tests": 81
+}

@@ -8,12 +8,18 @@ immutable `QUINT_HOME` contains the evaluator and solver distribution; missing
 packaged resources fail before generation.
 
 This app is acceptance infrastructure, not another operational verification or
-publication route. It certifies only the small production-connected bridge:
-named actions and nondeterministic arguments drive `runner::check_zero_match`,
-and upstream `State` comparison checks every observation. Whole-gate scenarios
-remain explicitly unimplemented, not successful empty runs. Extend the same
-`scripts/test-quint.sh` dispatcher for subsequent scenarios, including
-`workspace-safety-history`; do not add another app or hook.
+publication route. The provisioning/bridge scenarios certify only the small
+production-connected bridge: named actions and nondeterministic arguments drive
+`runner::check_zero_match`, and upstream `State` comparison checks observations.
+
+The `model`, `reference-equivalence`, `cache-model` and `witnesses` scenarios
+run the composed [whole-gate model](../../specs/gate/README.md), with
+independent reference evaluation, finite simulation and executable
+positive/negative witnesses. `model` also runs the declared symbolic frontier.
+`deeper` runs both the whole-gate and bridge deeper campaigns. These model
+scenarios do not claim production conformance. Input-generation, conformance,
+replay, mutation, incremental, cost and adoption scenarios still fail explicitly
+as unimplemented. Extend the same dispatcher, not another app or hook.
 
 The workspace scenario uses production worker preparation, the common private
 spawn-config writer, and the real Wrix/Pi container launch. Its stub agent
