@@ -735,19 +735,43 @@ impl GitClient {
     ///
     /// The workspace is a standalone clone (not a git-registered linked
     /// worktree), so cleanup is a recursive directory removal. Idempotent:
-    /// a missing directory is not an error.
+    /// a missing directory is not an error. Returns false when an unresolved
+    /// verification continuation retains the checkout, including a missing one.
     ///
     /// # Errors
     ///
     /// Returns an error when repository inspection, Git execution, or output decoding fails.
-    pub async fn remove_worktree(&self, path: &Path) -> Result<(), GitError> {
-        if !path.exists() {
-            return Ok(());
-        }
-        let path = path.to_path_buf();
-        spawn_blocking(move || -> Result<(), GitError> {
-            std::fs::remove_dir_all(&path)?;
-            Ok(())
+    pub async fn remove_worktree(&self, path: &Path) -> Result<bool, GitError> {
+        let workspace = self.workdir.clone();
+        let path = std::path::absolute(path)?;
+        spawn_blocking(move || -> Result<bool, GitError> {
+            let association = crate::workspace::Association::resolve(&workspace)
+                .map_err(std::io::Error::other)?;
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    std::io::Error::other(format!(
+                        "remove checkout: invalid bead path {}",
+                        path.display()
+                    ))
+                })?;
+            let bead = BeadId::new(name).map_err(std::io::Error::other)?;
+            if path
+                != association
+                    .operator()
+                    .join(WORKTREE_BASE)
+                    .join(bead.as_str())
+            {
+                return Err(std::io::Error::other(format!(
+                    "remove checkout for bead {bead}: path outside bead storage: {}",
+                    path.display()
+                ))
+                .into());
+            }
+            association
+                .remove_verification_checkout(&bead)
+                .map_err(|error| std::io::Error::other(error).into())
         })
         .await?
     }
@@ -854,8 +878,9 @@ impl GitClient {
             if bead.status != crate::bd::Status::Closed || !in_current_molecule {
                 continue;
             }
-            match std::fs::remove_dir_all(&path) {
-                Ok(()) => {
+            match self.remove_worktree(&path).await {
+                Ok(false) => {}
+                Ok(true) => {
                     info!(
                         bead = %bead_id,
                         path = %path.display(),

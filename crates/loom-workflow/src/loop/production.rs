@@ -663,7 +663,9 @@ where
         if self.bd.show(bead).await?.status != loom_driver::bd::Status::Closed {
             return Ok(());
         }
-        self.git.remove_worktree(&path).await?;
+        if !self.git.remove_worktree(&path).await? {
+            return Ok(());
+        }
         self.current_worktree_path = None;
         self.emit_to_log(
             DriverKind::WorktreeCleanupOk,
@@ -5719,6 +5721,62 @@ mod tests {
             assert_eq!(row["head"], head.as_str());
             assert_eq!(row["coverage_admitted"], false);
         }
+    }
+
+    #[tokio::test]
+    async fn closed_source_reap_waits_for_durable_publication_resolution() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let workspace = dir.path().join("workspace");
+        let git = git_workspace(&workspace);
+        let id = BeadId::new("lm-retained").expect("id");
+        let label = SpecLabel::new("gate").expect("label");
+        let source = git.create_worktree(&label, &id).await.expect("source");
+        let head = loom_driver::git::sync_head_commit_sha(&source.path).expect("head");
+        git.preserve_verification_candidate(&id, &head)
+            .await
+            .expect("pin");
+        let association =
+            loom_driver::workspace::Association::resolve(&workspace).expect("authority");
+        let record = association
+            .begin_verification(id.clone(), label.clone(), None, head.clone(), head)
+            .expect("continuation");
+        association
+            .await_verification_publication(&record)
+            .expect("publication pending");
+        let closed = br#"[{"id":"lm-retained","title":"completed source","status":"closed","issue_type":"task"}]"#;
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::with_runner(ScriptedBd::new([ok_stdout(closed), ok_stdout(closed)])),
+            label,
+            PathBuf::from("unused-verifier"),
+            workspace.clone(),
+            git,
+            write_manifest(dir.path()),
+            None,
+            ProfileName::new("base").expect("profile"),
+            |_cfg: SpawnConfig, _id: BeadId| async move { panic!("cleanup must not dispatch source") },
+        );
+        controller.current_worktree_path = Some(source.path.clone());
+        controller
+            .reap_closed_worktree(&id)
+            .await
+            .expect("retention");
+        assert!(source.path.exists());
+        assert_eq!(
+            controller.current_worktree_path.as_ref(),
+            Some(&source.path)
+        );
+        association
+            .validate_verification(&record)
+            .expect("publication identity remains valid");
+        association
+            .finish_verification(&record)
+            .expect("durable resolution");
+        controller
+            .reap_closed_worktree(&id)
+            .await
+            .expect("eligible cleanup");
+        assert!(!source.path.exists());
+        assert!(controller.current_worktree_path.is_none());
     }
 
     #[tokio::test]

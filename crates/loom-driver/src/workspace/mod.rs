@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::identifier::BeadId;
 use crate::scratch::directory::Directory;
 
 pub use launch::validate_spawn;
@@ -24,6 +25,14 @@ const RECORD: &str = "association.json";
 pub enum Error {
     /// workspace authority filesystem operation failed
     Io(#[from] std::io::Error),
+    /// {operation} failed for bead {bead} at {path}; continuation and candidate pins retained; restore the original checkout with its recorded identity, or stop and request provenance-aware recovery (recloning does not recover verification)
+    VerificationFilesystem {
+        operation: &'static str,
+        path: PathBuf,
+        bead: BeadId,
+        #[source]
+        source: std::io::Error,
+    },
     /// workspace authority record is malformed
     Json(#[from] serde_json::Error),
     /// workspace association is unavailable or changed: {reason}; restore the host binding and retained history before proceeding
