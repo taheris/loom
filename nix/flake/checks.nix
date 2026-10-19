@@ -177,7 +177,8 @@
             cd source
             git init -q
             bash tests/agent/native-cargo.sh ${bootstrapCargo}/bin/cargo \
-              ${bootstrapConfig} ${bootstrapConfig.nextestVersion} ${bootstrapConfig.nextestChecksum}
+              ${bootstrapConfig} ${bootstrapConfig.nextestVersion} ${bootstrapConfig.nextestChecksum} \
+              ${loom.hookRunner}/bin/prek
             touch "$out"
           '';
 

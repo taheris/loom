@@ -30,7 +30,7 @@ impl Fixture {
         .expect("write spec");
         loom_test_support::write_executable_bash_script(
             tools.join("nix"),
-            "set -euo pipefail\nprintf '%s\\n' \"$*\" >> system-probed\nexit \"$PENDING_SYSTEM_EXIT\"\n",
+            "set -euo pipefail\nif [[ \"$*\" == '--extra-experimental-features nix-command flakes build '* ]]; then\n  printf '%s/native-pins.toml\\n' \"$PWD\"\n  exit 0\nfi\nprintf '%s\\n' \"$*\" >> system-probed\nexit \"$PENDING_SYSTEM_EXIT\"\n",
         )
         .expect("recording Nix dependency");
         Self { root, tools }
@@ -90,6 +90,13 @@ impl Fixture {
         )
         .expect("explicitly enable Gate for readiness tests");
         std::fs::create_dir(self.workspace().join("scripts")).expect("scripts directory");
+        std::fs::write(self.workspace().join("native-pins.toml"), "paths = []\n")
+            .expect("native bootstrap transport result");
+        std::fs::copy(
+            source.join("scripts/configure-cargo-patches.sh"),
+            self.workspace().join("scripts/configure-cargo-patches.sh"),
+        )
+        .expect("native Cargo initializer");
         std::fs::copy(
             source.join("scripts/check-shell-reexec"),
             self.workspace().join("scripts/check-shell-reexec"),

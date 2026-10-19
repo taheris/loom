@@ -25,6 +25,15 @@ missing optional Cargo include must not leave their CLI binaries unpinned.
 and Nextest, an absent optional include, and absent/conflicting ambient pins.
 Only the unrelated Nix/system stages use fixture tools in that focused check.
 
+Native tracking conformance also needs the immutable Beads executable. Both test
+apps export `LOOM_ISSUES_BD_BIN`, and the same focused check verifies its
+compile-time value with missing and conflicting ambient pins. The project's
+pre-commit lane initializes the generated Cargo configuration before Gate runs
+its tiers, including when an installed driver verifies a fresh integration
+checkout without going through `bin/loom` or the worker's Cargo wrapper.
+`native-cargo-bootstrap` exercises that real hook with absent and legacy
+configurations. Initialization failure fails the lane, not skips native tests.
+
 Remove the runner patch after an upstream release preserves these outcomes.
 
 ## Nextest capture handoff and Cargo home

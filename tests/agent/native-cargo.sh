@@ -5,10 +5,13 @@ cargo_bin="${1:?Cargo wrapper path is required}"
 config="${2:?Cargo patch config is required}"
 version="${3:?Cargo patch version is required}"
 checksum="${4:?Cargo patch checksum is required}"
+prek_bin="${5:?Pinned hook runner is required}"
 repo_root=$(git rev-parse --show-toplevel)
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 real_nix=$(command -v nix)
+export HOME="$fixture/home"
+mkdir -p "$HOME"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export NIX_CONF_DIR="$fixture/nix-conf" NIX_USER_CONF_FILES=/dev/null
 export NIX_CONFIG='experimental-features ='
@@ -55,6 +58,9 @@ cat >> "$fixture/bin/nix" <<'SH'
 set -euo pipefail
 if [[ "${1:-}" == --extra-experimental-features && "${3:-}" == build ]]; then
     [[ "$2" == 'nix-command flakes' ]]
+    if [[ "${NIX_PATCH_BUILD_FAIL:-}" == 1 ]]; then
+        exit 78
+    fi
     printf '%s\n' "$@" >> "$NIX_PATCH_BUILD_CALLS"
     printf '%s\n' "$NIX_PATCH_BUILD_RESULT"
 else
@@ -63,11 +69,26 @@ fi
 SH
 chmod +x "$fixture/bin/nix"
 export PATH="$fixture/bin:$PATH"
-grep -v '^LOOM_ISSUES_BD_BIN = ' "$config" > "$fixture/legacy-issues-config.toml"
-bash scripts/configure-cargo-patches.sh "$fixture/legacy-issues-config.toml" "$version" "$checksum"
+cp "$repo_root/.pre-commit-config.yaml" .pre-commit-config.yaml
+git add scripts .pre-commit-config.yaml .cargo/config.toml Cargo.lock
+rm .cargo/nix-patches.toml
+"$prek_bin" run native-cargo-capabilities --all-files --hook-stage pre-commit
 [[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
 [[ -s "$NIX_PATCH_BUILD_CALLS" ]]
 rm "$NIX_PATCH_BUILD_CALLS"
+grep -v '^LOOM_ISSUES_BD_BIN = ' "$config" > "$fixture/legacy-issues-config.toml"
+ln -sf "$fixture/legacy-issues-config.toml" .cargo/nix-patches.toml
+"$prek_bin" run native-cargo-capabilities --all-files --hook-stage pre-commit
+[[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
+[[ -s "$NIX_PATCH_BUILD_CALLS" ]]
+rm "$NIX_PATCH_BUILD_CALLS"
+export NIX_PATCH_BUILD_FAIL=1
+if "$prek_bin" run native-cargo-capabilities --all-files --hook-stage pre-commit > "$fixture/hook-failure.log" 2>&1; then
+    printf 'Cargo capability hook hid initialization failure\n' >&2
+    exit 1
+fi
+[[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
+unset NIX_PATCH_BUILD_FAIL
 cat > Cargo.lock <<'TOML'
 version = 4
 [[package]]

@@ -12,6 +12,14 @@ repos:
 
   - repo: local
     hooks:
+      - id: native-cargo-capabilities
+        name: Initialize native Cargo capabilities
+        entry: bash scripts/configure-cargo-patches.sh
+        language: system
+        stages: [pre-commit]
+        always_run: true
+        pass_filenames: false
+
       - id: treefmt
         name: treefmt --fail-on-change
         entry: treefmt --fail-on-change

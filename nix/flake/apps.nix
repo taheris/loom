@@ -78,6 +78,7 @@ _:
           runtimeEnv = {
             LOOM_CARGO_PATCHES = loom.cargoConfig;
             LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
+            LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
           };
         };
 
@@ -435,7 +436,8 @@ _:
               bash ${../../tests/agent/test-app-hook-runner.sh} \
                 ${fixtureRequiredTestApp}/bin/test-required \
                 ${fixtureTestApp}/bin/test \
-                ${loom.hookRunner}/bin/prek
+                ${loom.hookRunner}/bin/prek \
+                ${pkgs.beads}/bin/bd
               touch "$out"
             '';
       }
