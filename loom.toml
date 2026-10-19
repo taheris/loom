@@ -4,3 +4,7 @@ sccache_dir = ".loom/sccache"
 [phase.default]
 profile = "rust"
 agent.backend = "pi"
+
+[runner.test]
+# Required criteria cannot inherit the default Nextest scheduling exclusion.
+command = "cargo nextest run --ignore-default-filter --status-level skip -E 'test({paths})'"
