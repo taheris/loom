@@ -24,6 +24,62 @@ pub async fn create(store: &impl Store, title: &str, parent: Option<Id>) -> Id {
         .unwrap()
 }
 
+pub async fn coherent_observation(store: &impl Store) {
+    let source = create(store, "observed source", None).await;
+    let blocker = create(store, "observed blocker", None).await;
+    store
+        .relate(&source, &blocker, Relation::Blocks)
+        .await
+        .unwrap();
+    store
+        .update(
+            &source,
+            Update {
+                status: Some(Status::Blocked),
+                add_labels: vec![label("observed")],
+                set_metadata: BTreeMap::from([("observation".into(), json!("before"))]),
+                ..Update::default()
+            },
+            Guard::None,
+        )
+        .await
+        .unwrap();
+    let before = store.observe(&source).await.unwrap();
+    assert_eq!(before.record.id, source);
+    assert_eq!(before.record.status, Status::Blocked);
+    assert_eq!(before.graph.status, before.record.status);
+    assert!(before.record.labels.contains(&label("observed")));
+    assert_eq!(before.record.metadata["observation"], json!("before"));
+    assert_eq!(
+        before.graph.dependencies,
+        vec![task::Dependency {
+            id: blocker.clone(),
+            status: Status::Open,
+            kind: DependencyKind::Blocks
+        }]
+    );
+    store.close(&blocker, None).await.unwrap();
+    store
+        .update(
+            &source,
+            Update {
+                status: Some(Status::Open),
+                set_metadata: BTreeMap::from([("observation".into(), json!("after"))]),
+                ..Update::default()
+            },
+            Guard::None,
+        )
+        .await
+        .unwrap();
+    let after = store.observe(&source).await.unwrap();
+    assert_eq!(after.record.id, source);
+    assert_eq!(after.record.status, Status::Open);
+    assert_eq!(after.graph.status, after.record.status);
+    assert_eq!(after.record.metadata["observation"], json!("after"));
+    assert_eq!(after.graph.dependencies[0].status, Status::Closed);
+    assert_eq!(before.graph.dependencies[0].status, Status::Open);
+}
+
 pub async fn round_trip(store: &impl Store) {
     let root = store
         .create(Create {

@@ -22,6 +22,14 @@ pub enum Error {
     InvalidResponse { reason: String },
 }
 
+/// One coherent source record and its direct graph, including dependency statuses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Observation {
+    pub record: Record,
+    /// Direct graph of `record.id`, with source status equal to `record.status`.
+    pub graph: Graph,
+}
+
 /// Required safety conditions must be checked, not silently downgraded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Guarantees {
@@ -57,6 +65,15 @@ pub trait Store: Send + Sync {
     fn guarantees(&self) -> Guarantees;
     fn create(&self, request: Create) -> impl Future<Output = Result<Id, Error>> + Send;
     fn get(&self, id: &Id) -> impl Future<Output = Result<Record, Error>> + Send;
+    /// Observe record and graph together, or refuse if coherence cannot be provided.
+    /// No repeatable reads or cross-call consistency; separate reads cannot substitute.
+    fn observe(&self, _id: &Id) -> impl Future<Output = Result<Observation, Error>> + Send {
+        async {
+            Err(Error::Unsupported {
+                reason: "coherent record and graph observation is unavailable".into(),
+            })
+        }
+    }
     fn query(&self, query: Query) -> impl Future<Output = Result<Vec<Record>, Error>> + Send;
     fn update(
         &self,

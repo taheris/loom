@@ -18,7 +18,12 @@ impl CommandRunner for Transport {
 
 async fn portable(store: &impl Store) -> Result<(), loom_issues::tracking::Error> {
     assert!(!store.guarantees().revision_guard);
-    let _records = store.query(task::Query::default()).await?;
+    let records = store.query(task::Query::default()).await?;
+    for record in records {
+        let observation = store.observe(&record.id).await?;
+        assert_eq!(observation.record.id, record.id);
+        assert_eq!(observation.record.status, observation.graph.status);
+    }
     store.synchronize(Synchronization::SharedState).await?;
     Ok(())
 }

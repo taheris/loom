@@ -45,6 +45,7 @@ async fn tracking_conformance_covers_lightweight_and_pinned_beads() {
     let store = Backend::default();
     common::stale_writers(&store, &store.clone()).await;
     common::graph_guards(&store).await;
+    common::coherent_observation(&store).await;
     common::inherited_readiness(&store).await;
     common::interruptions(&store, |fault| store.inject(fault).unwrap()).await;
 }

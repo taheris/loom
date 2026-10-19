@@ -222,6 +222,40 @@ async fn unknown_relationships_are_not_silently_dropped() {
 }
 
 #[tokio::test]
+async fn observation_rejects_a_response_for_another_source() {
+    let (adapter, calls, _) = adapter(
+        Ok(RunOutput {
+            status: 0,
+            stdout: br#"[{"id":"external-b","title":"wrong source","status":"open"}]"#.to_vec(),
+            stderr: Vec::new(),
+        }),
+        false,
+    );
+    assert!(matches!(
+        adapter.observe(&task::Id::new("external-a").unwrap()).await,
+        Err(Error::InvalidResponse { .. })
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn observation_preserves_read_errors_without_retry_or_fallback() {
+    for (response, expected) in [
+        (Err(BdError::Timeout { args: "show external-a".into() }), Error::Transport { reason: String::new() }),
+        (Ok(RunOutput { status: 0, stdout: b"[]".to_vec(), stderr: Vec::new() }), Error::Rejected { reason: String::new() }),
+        (Ok(RunOutput { status: 0, stdout: br#"[{"id":"external-a","title":"source","status":"future-status"}]"#.to_vec(), stderr: Vec::new() }), Error::InvalidResponse { reason: String::new() }),
+        (Ok(RunOutput { status: 0, stdout: br#"[{"id":"external-a","title":"source","status":"open","dependencies":[{"id":"external-b","status":"open","dependency_type":"unknown"}]}]"#.to_vec(), stderr: Vec::new() }), Error::InvalidResponse { reason: String::new() }),
+    ] {
+        let (adapter, calls, _) = adapter(response, false);
+        let error = adapter.observe(&task::Id::new("external-a").unwrap()).await.unwrap_err();
+        assert_eq!(std::mem::discriminant(&error), std::mem::discriminant(&expected));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!adapter.guarantees().revision_guard);
+        assert!(!adapter.guarantees().atomic_batch);
+    }
+}
+
+#[tokio::test]
 async fn shared_state_sync_does_not_spawn_and_publication_is_not_assumed() {
     let (adapter, calls, _) = adapter(Ok(failure(1)), false);
     adapter

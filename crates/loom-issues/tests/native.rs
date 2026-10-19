@@ -184,8 +184,76 @@ mod native {
         common::round_trip(&store).await;
         common::stale_writers(&store, &BdClient::with_runner(native.clone())).await;
         common::graph_guards(&store).await;
+        common::coherent_observation(&store).await;
         common::inherited_readiness(&store).await;
         common::interruptions(&store, |fault| native.inject(fault)).await;
+    }
+
+    struct Interleaving {
+        native: Native,
+        source: loom_issues::task::Id,
+        blocker: loom_issues::task::Id,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CommandRunner for Interleaving {
+        async fn run(&self, args: Vec<OsString>, timeout: Duration) -> Result<RunOutput, BdError> {
+            assert_eq!(
+                args,
+                ["show", self.source.as_str(), "--json"].map(OsString::from)
+            );
+            let output = self.native.run(args, timeout).await?;
+            if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                let peer = BdClient::with_runner(self.native.clone());
+                Store::update(
+                    &peer,
+                    &self.source,
+                    Update {
+                        status: Some(loom_issues::task::Status::Blocked),
+                        set_metadata: std::collections::BTreeMap::from([(
+                            "epoch".into(),
+                            serde_json::json!("after"),
+                        )]),
+                        ..Update::default()
+                    },
+                    Guard::None,
+                )
+                .await
+                .unwrap();
+                Store::close(&peer, &self.blocker, None).await.unwrap();
+            }
+            Ok(output)
+        }
+    }
+
+    #[tokio::test]
+    async fn observation_keeps_one_native_response_despite_interleaved_writes() {
+        use loom_issues::task::{Relation, Status};
+        let native = Native::new().await;
+        let peer = BdClient::with_runner(native.clone());
+        let source = common::create(&peer, "source", None).await;
+        let blocker = common::create(&peer, "blocker", None).await;
+        peer.relate(&source, &blocker, Relation::Blocks)
+            .await
+            .unwrap();
+        let store = BdClient::with_runner(Interleaving {
+            native,
+            source: source.clone(),
+            blocker: blocker.clone(),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let before = store.observe(&source).await.unwrap();
+        assert_eq!(before.record.id, source);
+        assert_eq!(before.record.status, Status::Open);
+        assert_eq!(before.graph.status, Status::Open);
+        assert!(!before.record.metadata.contains_key("epoch"));
+        assert_eq!(before.graph.dependencies[0].id, blocker);
+        assert_eq!(before.graph.dependencies[0].status, Status::Open);
+        let after = store.observe(&source).await.unwrap();
+        assert_eq!(after.record.status, Status::Blocked);
+        assert_eq!(after.graph.status, Status::Blocked);
+        assert_eq!(after.record.metadata["epoch"], serde_json::json!("after"));
+        assert_eq!(after.graph.dependencies[0].status, Status::Closed);
     }
 
     #[tokio::test]

@@ -117,6 +117,19 @@ impl<R: CommandRunner> tracking::Store for BdClient<R> {
             .map_err(|error| translate(&error, false))
     }
 
+    async fn observe(&self, id: &task::Id) -> Result<tracking::Observation, tracking::Error> {
+        let (record, graph) = self
+            .show_with_dependencies(id)
+            .await
+            .map_err(|error| translate(&error, false))?;
+        if record.id != *id || record.status != graph.status {
+            return Err(tracking::Error::InvalidResponse {
+                reason: "observation source identity or status mismatch".into(),
+            });
+        }
+        Ok(tracking::Observation { record, graph })
+    }
+
     async fn query(&self, query: task::Query) -> Result<Vec<task::Record>, tracking::Error> {
         self.list(ListOpts {
             all: true,

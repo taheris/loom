@@ -111,6 +111,26 @@ impl State {
             .ok_or_else(|| rejected(format!("unknown task {id}")))
     }
 
+    fn graph(&self, id: &Id) -> Result<task::Graph, Error> {
+        let status = self.get(id)?.status;
+        let dependencies = self
+            .edges
+            .iter()
+            .filter(|(source, _, _)| source == id)
+            .map(|(_, target, kind)| {
+                Ok(Dependency {
+                    id: target.clone(),
+                    status: self.get(target)?.status,
+                    kind: *kind,
+                })
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(task::Graph {
+            status,
+            dependencies,
+        })
+    }
+
     fn reaches(&self, start: &Id, target: &Id) -> bool {
         let mut pending = vec![start.clone()];
         let mut visited = HashSet::new();
@@ -365,24 +385,14 @@ impl Store for Backend {
     }
 
     async fn graph(&self, id: &Id) -> Result<task::Graph, Error> {
+        self.lock()?.graph(id)
+    }
+
+    async fn observe(&self, id: &Id) -> Result<tracking::Observation, Error> {
         let state = self.lock()?;
-        let status = state.get(id)?.status;
-        let dependencies = state
-            .edges
-            .iter()
-            .filter(|(source, _, _)| source == id)
-            .map(|(_, target, kind)| {
-                Ok(Dependency {
-                    id: target.clone(),
-                    status: state.get(target)?.status,
-                    kind: *kind,
-                })
-            })
-            .collect::<Result<_, Error>>()?;
-        drop(state);
-        Ok(task::Graph {
-            status,
-            dependencies,
+        Ok(tracking::Observation {
+            record: state.get(id)?.clone(),
+            graph: state.graph(id)?,
         })
     }
 
@@ -486,5 +496,47 @@ impl Store for Backend {
 
     async fn synchronize(&self, _mode: Synchronization) -> Result<(), Error> {
         self.mutate(Operation::Synchronize, |_| Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn observation_cannot_read_during_a_shared_state_write() {
+        let store = Backend::default();
+        let source = store.create(task::Create::default()).await.unwrap();
+        let blocker = store.create(task::Create::default()).await.unwrap();
+        store
+            .relate(&source, &blocker, Relation::Blocks)
+            .await
+            .unwrap();
+        let mut write = store.lock().unwrap();
+        write.records.get_mut(&source).unwrap().status = Status::Blocked;
+        let (started, attempted) = std::sync::mpsc::channel();
+        let reader = store.clone();
+        let observed_id = source.clone();
+        let observation = std::thread::spawn(move || {
+            assert!(matches!(
+                reader.state.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            started.send(()).unwrap();
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(reader.observe(&observed_id))
+                .unwrap()
+        });
+        attempted.recv().unwrap();
+        write.records.get_mut(&blocker).unwrap().status = Status::Closed;
+        drop(write);
+        let observed = observation.join().unwrap();
+        assert_eq!(observed.record.id, source);
+        assert_eq!(observed.record.status, Status::Blocked);
+        assert_eq!(observed.graph.status, Status::Blocked);
+        assert_eq!(observed.graph.dependencies[0].id, blocker);
+        assert_eq!(observed.graph.dependencies[0].status, Status::Closed);
     }
 }
