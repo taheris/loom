@@ -106,7 +106,8 @@ if [[ "$1" == model ]]; then
   fi
   symbolic=true
 fi
-jq -n --arg scenario "$1" --arg mode "$mode" --arg identity "$identity" --argjson symbolic "$symbolic" \
+# Gate reads stdout as JSON lines; keep the diagnostic receipt on one line.
+jq -cn --arg scenario "$1" --arg mode "$mode" --arg identity "$identity" --argjson symbolic "$symbolic" \
   --slurpfile definition "$plan" '{
     assurance: "bounded whole-gate model checking; no implementation conformance or unbounded proof",
     checker: $definition[0].checker, scenario: $scenario, identity: $identity,

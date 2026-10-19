@@ -41,6 +41,8 @@ copy_inputs() {
 
 test_real_model_campaign() {
   "$BASH" "$root/scripts/test-quint.sh" reference-equivalence >"$tmp/receipt.json"
+  # Exercise the stdout framing consumed by Gate, not just whole-document JSON.
+  [[ "$(wc -l <"$tmp/receipt.json")" -eq 1 ]]
   jq -e '.scenario == "reference-equivalence" and .tests == 81 and
     .completedSeeds == [42,20250308] and .symbolic == null and
     .plan.traces == 64 and .plan.steps == 80 and (.identity | length) == 64' "$tmp/receipt.json" >/dev/null

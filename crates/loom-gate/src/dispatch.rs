@@ -1110,6 +1110,25 @@ mod tests {
     }
 
     #[test]
+    fn system_dispatch_accepts_compact_model_receipt_as_exit_code_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("model.sh");
+        let receipt = r#"{"assurance":"bounded whole-gate model checking; no implementation conformance or unbounded proof","scenario":"cache-model","tests":81,"symbolic":null}"#;
+        std::fs::write(&script, format!("printf '%s\\n' '{receipt}'\n")).unwrap();
+        let inputs = vec![ann(Tier::System, &format!("sh {}", script.display()))];
+        let results = run_system(
+            &inputs,
+            &[],
+            &DispatchOptions::default(),
+            dir.path(),
+            &TierCwds::default(),
+        );
+        let outcome = results.into_iter().next().unwrap().unwrap();
+        assert!(outcome.verdict.pass);
+        assert_eq!(outcome.verdict.evidence.trim(), receipt);
+    }
+
+    #[test]
     fn parse_verdict_optional_returns_none_when_no_json() {
         let stdout = "no JSON here\nrunning some tests\nall good\n";
         assert!(parse_verdict_optional("cmd", stdout).unwrap().is_none());
