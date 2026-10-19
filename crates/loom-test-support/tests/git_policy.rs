@@ -28,6 +28,7 @@ fn repository(fixture: &Fixture) -> Result<TempDir> {
         .current_dir(repo.path())
         .args([
             "init",
+            "repo",
             "--offline",
             "--no-hooks",
             "--sign",

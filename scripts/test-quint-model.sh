@@ -3,7 +3,7 @@ set -euo pipefail
 trap 'printf "test-quint: invalid or incomplete whole-gate verification; no bounded success\n" >&2' ERR
 
 : "${LOOM_QUINT_SOURCE:?missing whole-gate model input bundle}"
-: "${LOOM_QUINT_PACKAGE:?missing pinned Quint tool and solver bundle}"
+: "${LOOM_QUINT_PACKAGE:?missing pinned Quint and Rust checker bundle}"
 if [[ "$#" -ne 1 ]]; then
   printf 'usage: test-quint-model <scenario>\n' >&2
   exit 64
@@ -13,7 +13,7 @@ case "$1" in
   deeper) mode=deeper ;;
   *) printf 'test-quint: unknown model scenario %s\n' "$1" >&2; exit 64 ;;
 esac
-for tool in quint timeout jq sha256sum grep; do
+for tool in quint loom-quint-checker timeout jq sha256sum; do
   if ! command -v "$tool" >/dev/null; then
     printf 'test-quint: missing provisioned tool %s\n' "$tool" >&2
     exit 1
@@ -23,8 +23,8 @@ if [[ "$(quint --version)" != 0.33.0 ]]; then
   printf 'test-quint: incompatible Quint version (required 0.33.0)\n' >&2
   exit 1
 fi
-if [[ ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.0/quint_evaluator" || ! -f "$LOOM_QUINT_PACKAGE/share/quint/apalache-dist-0.62.1/apalache/lib/apalache.jar" ]]; then
-  printf 'test-quint: incomplete tool/solver provisioning\n' >&2
+if [[ ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.0/quint_evaluator" || ! -x "$LOOM_QUINT_PACKAGE/bin/loom-quint-checker" ]]; then
+  printf 'test-quint: incomplete Quint/Rust checker provisioning\n' >&2
   exit 1
 fi
 cd "$LOOM_QUINT_SOURCE"
@@ -34,15 +34,15 @@ jq -e '
   def campaign:
     (.seeds | length > 0) and (.seeds | unique | length) == (.seeds | length) and
     all(.seeds[]; positive) and all(.traces, .steps, .samples, .seconds; positive);
-  .version == 1 and .checker == "Quint 0.33.0 / Rust evaluator 0.7.0 / Apalache 0.62.1" and
+  .version == 2 and .checker == "Quint 0.33.0 / Rust evaluator 0.7.0 / Rust explicit-state v1" and
   (.routine | campaign) and (.deeper | campaign) and
   .deeper.steps > .routine.steps and .deeper.traces > .routine.traces and
-  (.symbolic.steps | positive) and (.symbolic.seconds | positive) and (.tests | positive)
+  all(.exhaustive.steps, .exhaustive.seconds, .exhaustive.states, .exhaustive.transitions, .exhaustive.bytes; positive) and (.tests | positive)
 ' "$plan" >/dev/null
 identity=$(sha256sum specs/gate/model.qnt specs/gate/witness.qnt specs/gate/README.md "$plan" \
   specs/gate.md specs/verify.md specs/evidence.md specs/simulation.md \
   scripts/test-quint-model.sh scripts/test-quint.sh tests/quint/model-harness.sh \
-  nix/flake/quint.nix flake.lock | sha256sum)
+  nix/flake/quint.nix nix/quint/tools.nix nix/quint/checker.rs nix/cargo-home.nix flake.lock | sha256sum)
 identity="${identity%% *}"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -90,28 +90,27 @@ for seed in "${seeds[@]}"; do
   jq -se --argjson states "$((steps + 1))" 'all(.[]; (.states | length) == $states)' "${batch[@]}" >/dev/null
   printf 'whole-gate: seed=%s traces=%s states/trace=%s tests=%s complete\n' "$seed" "$traces" "$((steps + 1))" "$expected_tests" >&2
 done
-symbolic=false
+printf 'null\n' >"$tmp/exhaustive.json"
 if [[ "$1" == model ]]; then
-  symbolic_steps=$(jq -r '.symbolic.steps' "$plan")
-  symbolic_seconds=$(jq -r '.symbolic.seconds' "$plan")
-  (
-    cd "$tmp"
-    run_checked "$symbolic_seconds" quint verify "$LOOM_QUINT_SOURCE/specs/gate/model.qnt" --main gate \
-      --init symbolicInit --max-steps "$symbolic_steps" --invariant safety --verbosity 1
-  )
-  if ! grep -Fq '[ok] No violation found' "$tmp/output"; then
-    cat "$tmp/output" >&2
-    printf 'test-quint: missing completed symbolic result; no bounded success\n' >&2
+  exhaustive_seconds=$(jq -r '.exhaustive.seconds' "$plan")
+  run_checked "$exhaustive_seconds" quint compile specs/gate/model.qnt --main gate --flatten false
+  cp "$tmp/output" "$tmp/compiled.json"
+  run_checked "$exhaustive_seconds" loom-quint-checker "$tmp/compiled.json" "$plan"
+  if ! jq -se --slurpfile plan "$plan" '
+    length == 1 and (.[0] | .status == "complete" and .backend == "quint-rust-explicit-state-v1" and
+    .depth == $plan[0].exhaustive.steps and .roots > 0 and .states > 0 and .transitions > 0)
+  ' "$tmp/output" >/dev/null; then
+    printf 'test-quint: missing completed exhaustive result; no bounded success\n' >&2
     exit 1
   fi
-  symbolic=true
+  cp "$tmp/output" "$tmp/exhaustive.json"
 fi
 # Gate reads stdout as JSON lines; keep the diagnostic receipt on one line.
-jq -cn --arg scenario "$1" --arg mode "$mode" --arg identity "$identity" --argjson symbolic "$symbolic" \
+jq -cn --arg scenario "$1" --arg mode "$mode" --arg identity "$identity" --slurpfile exhaustive "$tmp/exhaustive.json" \
   --slurpfile definition "$plan" '{
     assurance: "bounded whole-gate model checking; no implementation conformance or unbounded proof",
     checker: $definition[0].checker, scenario: $scenario, identity: $identity,
     properties: ["referenceEquivalence", "cacheSafety", "publicationSafety"],
     plan: $definition[0][$mode], completedSeeds: $definition[0][$mode].seeds,
-    tests: $definition[0].tests, symbolic: (if $symbolic then $definition[0].symbolic else null end)
+    tests: $definition[0].tests, exhaustive: $exhaustive[0]
   }'

@@ -160,7 +160,10 @@ module gate {
     .with("selected", Set(0, 1)).with("structural", true).with("seal", 0).with("verified", 0)
     .with("reviewed", 0).with("validated", 1).with("serial", 1).with("launches", 1)
     .with("facts", Set(smallFact)).with("journal", List(smallEvent))
-  action symbolicInit = any { init, s' = smallInitial }
+  action symbolicInit = {
+    nondet root = 0.to(boundedRootCount - 1).oneOf()
+    boundedInit(root)
+  }
 
   action structural = s' = s.with("structural", s.valid and hooksReady).with("accepted", false).with("rejected", not(s.valid and hooksReady))
   action discover = all {
@@ -327,23 +330,75 @@ module gate {
   action relocate = s' = s.with("label", s.label + 1).with("bindings", false).with("snapshot", s.snapshot + 1).with("accepted", false)
   action loseLink = s' = s.with("link", false).with("accepted", false)
 
-  action step = any {
-    structural, discover, plan, execute, completion, incomplete, imported, verify, review, validate, attemptPush,
-    endAttempt(false), endAttempt(true), retry, claimEdit, malformed, correct, changeDefinition,
-    membership, context, defer, campaign, trust, checkout, consolidate, attemptDeleteJournal, expire, rebuild, changeEnvironment,
-    { nondet c = Claims.oneOf() diagnostic(c) },
-    { nondet c = Claims.oneOf() diagnosticLaunch(c) },
-    { nondet c = Claims.oneOf() absent(c) },
-    interruptedWrite, recovery, restart, remoteAdvance, loseWitness, relocate, loseLink,
-    recordFinding, dispatch, attemptHistoryWrite,
-    { nondet refs = Set(Set(), Set(0), Set(0, 99)).oneOf() assignCriteria(refs) },
-    { nondet finding = Set(0, 1).oneOf() assignRemediation(finding) },
-    { nondet c = Claims.oneOf() reuse(c) },
-    { nondet c = Claims.oneOf() build(c) },
-    { nondet u = Units.oneOf() changeInput(u) },
-    { nondet c = Claims.oneOf() confirm(c) },
-    { nondet c = Claims.oneOf() resolve(c) },
-    { nondet c = Claims.oneOf() replay(c) }
+  pure val boundedRootCount = 2
+  action boundedInit(index: int): bool = if (index == 0) init else all { index == 1, s' = smallInitial }
+  val boundedTasks = s.running.fold(List(), (acc, task) => acc.append(task))
+  val boundedFamilySizes = List(1, 1, 1, 8, s.running.size() * 2, s.running.size() * 3, 256, 1, 1, 1, 1, 2, 1, 1, 1, 1, 5, 8, 576, 8, 1, 1, 1, 1, 1, 1, 1, 1, 8, 8, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 2, 8, 8, 5, 8, 8, 8)
+  action boundedStep(family: int, index: int): bool = all {
+    family >= 0, family < boundedFamilySizes.length(),
+    index >= 0, index < boundedFamilySizes.nth(family),
+    if (family == 0) structural
+    else if (family == 1) discover
+    else if (family == 2) plan
+    else if (family == 3) attemptLaunch(index)
+    else if (family == 4) finish(boundedTasks.nth(index / 2), if (live(boundedTasks.nth(index / 2).manifest.unit)) { if (index % 2 == 0) "pass" else "fail" } else if (boundedTasks.nth(index / 2).manifest.input == 1) "fail" else "pass")
+    else if (family == 5) finish(boundedTasks.nth(index / 3), List("skip", "timeout", "unavailable").nth(index % 3))
+    else if (family == 6) importResult(index / 32, (index / 16) % 2, index % 2 == 1, (index / 2) % 2 == 1, (index / 4) % 2 == 1, (index / 8) % 2 == 1)
+    else if (family == 7) verify
+    else if (family == 8) review
+    else if (family == 9) validate
+    else if (family == 10) attemptPush
+    else if (family == 11) endAttempt(index == 1)
+    else if (family == 12) retry
+    else if (family == 13) claimEdit
+    else if (family == 14) malformed
+    else if (family == 15) correct
+    else if (family == 16) definition(index)
+    else if (family == 17) s' = s.with("subjects", if (s.subjects.contains(index)) s.subjects.exclude(Set(index)) else s.subjects.union(Set(index))).with("snapshot", s.snapshot + 1).with("accepted", false)
+    else if (family == 18) {
+      val stage = List("plan", "worker", "integration", "stabilization", "publication", "standing").nth(index / 96)
+      val caller = List("standalone", "worker", "integration", "driver", "manual", "rehearsal").nth((index / 16) % 6)
+      val scope = List("diff", "files", "tree", "target").nth((index / 4) % 4)
+      s' = s.with("stage", stageFor(caller, stage)).with("caller", caller).with("scope", scope)
+        .with("context", (index / 2) % 2 == 1).with("parent", index % 2 == 1)
+        .with("requested", s.serial).with("snapshot", s.snapshot + 1).with("accepted", false)
+    }
+    else if (family == 19) s' = s.with("deferred", if (s.deferred.contains(index)) s.deferred.exclude(Set(index)) else s.deferred.union(Set(index))).with("snapshot", s.snapshot + 1).with("accepted", false)
+    else if (family == 20) campaign
+    else if (family == 21) trust
+    else if (family == 22) checkout
+    else if (family == 23) consolidate
+    else if (family == 24) attemptDeleteJournal
+    else if (family == 25) expire
+    else if (family == 26) rebuild
+    else if (family == 27) changeEnvironment
+    else if (family == 28) diagnostic(index)
+    else if (family == 29) diagnosticLaunch(index)
+    else if (family == 30) absent(index)
+    else if (family == 31) interruptedWrite
+    else if (family == 32) recovery
+    else if (family == 33) restart
+    else if (family == 34) remoteAdvance
+    else if (family == 35) loseWitness
+    else if (family == 36) relocate
+    else if (family == 37) loseLink
+    else if (family == 38) recordFinding
+    else if (family == 39) dispatch
+    else if (family == 40) attemptHistoryWrite
+    else if (family == 41) assignCriteria(List(Set(), Set(0), Set(0, 99)).nth(index))
+    else if (family == 42) assignRemediation(index)
+    else if (family == 43) reuse(index)
+    else if (family == 44) build(index)
+    else if (family == 45) changeInput(index)
+    else if (family == 46) confirm(index)
+    else if (family == 47) resolve(index)
+    else if (family == 48) replay(index) else all { false, s' = s }
+  }
+
+  action step = {
+    nondet family = 0.to(boundedFamilySizes.length() - 1).oneOf()
+    nondet index = 0.to(boundedFamilySizes.nth(family) - 1).oneOf()
+    boundedStep(family, index)
   }
 
   val referenceEquivalence = current implies Claims.forall(c =>

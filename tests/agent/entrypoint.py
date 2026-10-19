@@ -44,12 +44,14 @@ class Fixture:
             "/home/wrix": str(self.home),
             "/etc/": str(root / "etc") + "/",
             "/tmp/wrix-": str(root / "wrix-"),
+            "/mnt/wrix/tool-caches": str(root / "tool-caches"),
         }
         helpers = {
             "/git-ssh-setup.sh": "lib/util/git-ssh-setup.sh",
             "/beads-sandbox.sh": "lib/beads/sandbox.sh",
             "/network-ready.sh": "lib/sandbox/network-ready.sh",
             "/mcp-manifest.sh": "lib/sandbox/mcp-manifest.sh",
+            "/tool-cache.sh": "lib/sandbox/tool-cache.sh",
         }
         for target, source in helpers.items():
             self.relocations[target] = str(root / target.lstrip("/"))

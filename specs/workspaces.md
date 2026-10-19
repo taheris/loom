@@ -121,13 +121,13 @@ spawning an agent. Repository mode also rejects ambient `GIT_SSH_COMMAND` and
 `GIT_SSH` overrides. Diagnostics identify `--host-key` as the sole ambient-host
 opt-in.
 
-After resolution, Loom runs `wrix init repo --offline --no-hooks --key <key-name>` in
-the selected checkout, exposing key paths only to that child. Loop startup
-selects `.loom/integration`; other Wrix-bearing commands select their active
-workflow checkout. Wrix installs context-stable repository-local transport and
-SSH-signing policy, including `.git/wrix/allowed_signers`; Loom validates the
-expected configuration and policy files and fails closed on a no-op or partial
-result.
+After resolution, Loom runs
+`wrix init repo --offline --no-hooks --key <key-name>` in the selected checkout,
+exposing key paths only to that child. Loop startup selects `.loom/integration`;
+other Wrix-bearing commands select their active workflow checkout. Wrix installs
+context-stable repository-local transport and SSH-signing policy, including
+`.git/wrix/allowed_signers`; Loom validates the expected configuration and
+policy files and fails closed on a no-op or partial result.
 
 New and reused bead clones receive the same policy before dirty-work stashing,
 origin fetch, or host-side rebase. Context-stable helpers let the host and the

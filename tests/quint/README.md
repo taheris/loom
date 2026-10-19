@@ -1,11 +1,12 @@
 # Quint acceptance harness
 
 `nix run .#test-quint -- provisioning-and-batching` provisions Quint 0.33.0, its
-Rust evaluator 0.7.0, Apalache 0.62.1 (including its solver), and Java from the
-existing `flake.lock`. Cargo pins upstream Quint Connect and its macros to 0.1.2
-through `Cargo.lock`. No tool is installed during a campaign. The Nix package's
-immutable `QUINT_HOME` contains the evaluator and solver distribution; missing
-packaged resources fail before generation.
+Rust evaluator 0.7.0 and the Rust explicit-state checker from the existing
+`flake.lock`. Node.js runs the Quint frontend; no Apalache, JVM or external
+solver is in this verification tool closure. Cargo pins upstream Quint Connect
+and its macros to 0.1.2 through `Cargo.lock`. No tool is installed during a
+campaign. The Nix package's immutable `QUINT_HOME` contains the evaluator;
+missing packaged resources fail before generation.
 
 This app is acceptance infrastructure, not another operational verification or
 publication route. The provisioning/bridge scenarios certify only the small
@@ -15,11 +16,13 @@ production-connected bridge: named actions and nondeterministic arguments drive
 The `model`, `reference-equivalence`, `cache-model` and `witnesses` scenarios
 run the composed [whole-gate model](../../specs/gate/README.md), with
 independent reference evaluation, finite simulation and executable
-positive/negative witnesses. `model` also runs the declared symbolic frontier.
-`deeper` runs both the whole-gate and bridge deeper campaigns. These model
-scenarios do not claim production conformance. Input-generation, conformance,
-replay, mutation, incremental, cost and adoption scenarios still fail explicitly
-as unimplemented. Extend the same dispatcher, not another app or hook.
+positive/negative witnesses. `model` also runs the declared exhaustive frontier
+directly over Quint-compiled IR, without a duplicate Rust model. See the model
+README for exact bounds and counterexample replay. `deeper` runs both the
+whole-gate and bridge deeper campaigns. These model scenarios do not claim
+production conformance. Input-generation, conformance, replay, mutation,
+incremental, cost and adoption scenarios still fail explicitly as unimplemented.
+Extend the same dispatcher, not another app or hook.
 
 The workspace scenario uses production worker preparation, the common private
 spawn-config writer, and the real Wrix/Pi container launch. Its stub agent
@@ -89,7 +92,13 @@ limitation, but it is not counted as implementation conformance.
 `nix build .#checks.x86_64-linux.quint-harness` tests provisioning and batching
 against the real tools and exercises invalid models, divergence, unsupported
 actions, short/empty generation, missing tools, empty receipts, and timeouts.
-Native `cargo test -p loom-gate --test quint` covers exact-count/early-guard
-classification, invalid campaigns, and identity invalidation without needing
-Quint on PATH. Shell fixtures mock external processes only; production gate
-logic and upstream comparison remain real.
+`nix build .#checks.x86_64-linux.quint-model` additionally checks the actual
+Rust backend's exhaustive frontier, counterexample serialization/replay,
+malformed, trailing and over-budget inputs, undeclared choices/nondeterminism,
+resource exhaustion and empty-success rejection. `quint-no-jvm` audits the tool
+and harness closures, preventing the retired solver's read-only launcher-removal
+build path from returning. Neither check patches or deletes files in an upstream
+store path. Native `cargo test -p loom-gate --test quint` covers
+exact-count/early-guard classification, invalid campaigns, and identity
+invalidation without needing Quint on PATH. Shell fixtures mock external
+processes only; production gate logic and upstream comparison remain real.

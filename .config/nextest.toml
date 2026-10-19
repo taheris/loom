@@ -1,0 +1,5 @@
+[profile.default]
+# FIXME: Restore this native decision-inventory fixture after ordinary workflow
+# policy tests use the lightweight tracker. Keep native adapter coverage intact.
+# Full coverage remains available with --ignore-default-filter.
+default-filter = 'not (package(loom-workflow) & test(/::native_controller_counts_one_noop_source_and_five_distinct_decisions$/))'

@@ -250,7 +250,12 @@ _:
           profile = wrixLib.profiles.base // {
             name = "verification-transport";
             mounts = [ ];
-            networkAllowlist = [ "cache.nixos.org" ];
+            networkAllowlist = [
+              {
+                host = "cache.nixos.org";
+                ports = [ 443 ];
+              }
+            ];
           };
           agent = "direct";
           agentPkg = probe;
@@ -268,7 +273,7 @@ _:
         pkgs.runCommand "loom-worker-transport-profile.json" { nativeBuildInputs = [ pkgs.jq ]; } ''
           set -euo pipefail
           jq '.security.runtime_secrets = {} |
-              .services.beads.enable = false |
+              del(.services.beads) |
               .services.nix_cache.enable = false |
           .network.default_mode = "limit"' \
             ${sandbox.profileConfig} > "$out"
@@ -321,7 +326,7 @@ _:
           }
           ''
             jq '.security.runtime_secrets = {} |
-                .services.beads.enable = false |
+                del(.services.beads) |
                 .services.nix_cache.enable = false |
                 .profile.mounts = [] |
                 del(.profile.env.LOOM_NATIVE_PREFLIGHT)' \
@@ -352,7 +357,7 @@ _:
           ''
             set -euo pipefail
             jq '.security.runtime_secrets = {} |
-                .services.beads.enable = false |
+                del(.services.beads) |
                 .services.nix_cache.enable = false |
                 .profile.mounts = [] |
                 .profile.env.LOOM_NATIVE_PREFLIGHT = "rust"' \

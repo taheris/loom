@@ -19,17 +19,16 @@
          .arg("-G")
          .arg("github.com")
          .current_dir(root)
-@@ -2345,11 +2346,35 @@
+@@ -2485,10 +2486,34 @@
 
  #[cfg(test)]
  mod test {
 +    use std::{fs, os::unix::fs::PermissionsExt};
 +
      use super::{
-         DeployPolicy, ForcePolicy, HookPolicy, KeyName, OnlineFailure, RemoteKeyId, RemoteName,
-         SigningPolicy, VerificationPolicy, classify_online_failure, parse_flags,
--        parse_github_remote,
-+        parse_github_remote, probe_helper_config,
+         ForcePolicy, HookPolicy, KeyName, OnlineFailure, RemoteKeyId, RemoteName, SigningPolicy,
+-        VerificationPolicy, Workflow, classify_online_failure, parse_flags, parse_github_remote,
++        VerificationPolicy, Workflow, classify_online_failure, parse_flags, parse_github_remote, probe_helper_config,
      };
 +
 +    /// A real process is required to exercise missing shebang interpreter handling.

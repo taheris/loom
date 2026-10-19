@@ -97,7 +97,6 @@ struct Definition {
     quint: String,
     connect: String,
     evaluator: String,
-    apalache: String,
     property: String,
     routine: Plan,
     deeper: Plan,
@@ -111,7 +110,6 @@ impl Plan {
             || definition.quint != "0.33.0"
             || definition.connect != "0.1.2"
             || definition.evaluator != "0.7.0"
-            || definition.apalache != "0.62.1"
             || definition.property != "safety"
         {
             return Err(Error::Unsupported);
@@ -150,6 +148,9 @@ impl Plan {
             "scripts/test-quint.sh",
             "tests/quint/harness.sh",
             "nix/flake/quint.nix",
+            "nix/quint/tools.nix",
+            "nix/quint/checker.rs",
+            "nix/cargo-home.nix",
             "nix/workspace.nix",
             "flake.nix",
             "flake.lock",
@@ -295,7 +296,7 @@ enum Assurance {
 
 #[derive(Serialize)]
 enum Checker {
-    #[serde(rename = "Quint 0.33.0 / Connect 0.1.2 / Rust evaluator 0.7.0 / Apalache 0.62.1")]
+    #[serde(rename = "Quint 0.33.0 / Connect 0.1.2 / Rust evaluator 0.7.0")]
     Pinned,
 }
 

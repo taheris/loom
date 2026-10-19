@@ -7,50 +7,7 @@ _: {
       ...
     }:
     let
-      tools =
-        assert pkgs.quint.version == "0.33.0";
-        pkgs.quint;
-      ownerArchive = ../../tests/quint/inputs/model.tar.gz;
-      ownerIdentity = "92c2bd871227acc7df0a0237e47357c30acebac1fadc408b8bb25f1151907d60";
-      ownerSource =
-        assert builtins.hashFile "sha256" ownerArchive == ownerIdentity;
-        pkgs.runCommand "quint-owner-inputs"
-          {
-            nativeBuildInputs = [
-              pkgs.gnutar
-              pkgs.gzip
-            ];
-          }
-          ''
-            mkdir -p "$out"
-            tar -xzf ${ownerArchive} -C "$out"
-          '';
-      rpcTools =
-        assert
-          builtins.hashFile "sha256" ../../tests/quint/inputs/rpc/tools.nix
-          == "95d0cce2e5f958ea4130831d2ca09b9bfa913acb000002b836392ca9b15f47e3";
-        assert
-          builtins.hashFile "sha256" ../../tests/quint/inputs/rpc/LoomApalache.java
-          == "a67c5a6bdee032d564132dd0e1430fd2f90fd79b583238dbadf63bb02261c8f6";
-        import ../../tests/quint/inputs/rpc/tools.nix { inherit pkgs; };
-      ownerAdmission = pkgs.writeShellApplication {
-        name = "quint-owner-admission";
-        runtimeInputs = [
-          rpcTools
-          pkgs.bash
-          pkgs.coreutils
-          pkgs.gnugrep
-          pkgs.jq
-          pkgs.python3
-        ];
-        text = ''
-          export LOOM_QUINT_OWNER_SOURCE=${ownerSource}
-          export LOOM_QUINT_OWNER_IDENTITY=${ownerIdentity}
-          export LOOM_QUINT_RPC_IDENTITY=fef01065313be0d7cb2b740d61844defae9b81d4
-          export LOOM_APALACHE_BIN=${rpcTools}/share/quint/apalache-dist-0.62.1/apalache/bin/apalache-mc
-          ${builtins.readFile ../../scripts/quint-owner-admission.sh}
-        '';
-      };
+      tools = import ../quint/tools.nix { inherit pkgs; };
       harness = loom.craneLib.buildPackage {
         pname = "loom-quint-acceptance";
         version = "1";
@@ -128,7 +85,7 @@ _: {
           pkgs.gnused
           pkgs.gnugrep
         ]
-        ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.podman ];
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.podman ];
         text = ''
           export LOOM_TODO_ACCEPTANCE_BIN=${todoAcceptance}/bin/todo-acceptance-persistence
           export LOOM_REMEDIATION_ACCEPTANCE_BIN=${remediationAcceptance}/bin/remediation-acceptance
@@ -138,8 +95,6 @@ _: {
           export LOOM_QUINT_BIN=${harness}/bin/loom-quint
           export LOOM_QUINT_SOURCE=${loom.stagedSrc}
           export LOOM_QUINT_PACKAGE=${tools}
-          export LOOM_QUINT_OWNER_SOURCE=${ownerSource}
-          export LOOM_QUINT_OWNER_SOLVER=${rpcTools}/share/quint/apalache-dist-0.62.1/apalache/bin/apalache-mc
           ${builtins.readFile ../../scripts/test-quint.sh}
         '';
       };
@@ -147,8 +102,6 @@ _: {
     {
       packages = {
         quint-tools = tools;
-        quint-owner-inputs = ownerSource;
-        quint-owner-admission = ownerAdmission;
         quint-acceptance = harness;
         test-quint = app;
       };
@@ -239,9 +192,7 @@ _: {
             export LOOM_QUINT_BIN=${harness}/bin/loom-quint
             export LOOM_QUINT_SOURCE=${loom.stagedSrc}
             export LOOM_QUINT_PACKAGE=${tools}
-            export LOOM_QUINT_OWNER_SOURCE=${ownerSource}
-            export LOOM_QUINT_OWNER_SOLVER=${rpcTools}/share/quint/apalache-dist-0.62.1/apalache/bin/apalache-mc
-            bash ${../../tests/quint/harness.sh}
+                bash ${../../tests/quint/harness.sh}
             touch "$out"
           '';
       checks.quint-model =
@@ -263,24 +214,20 @@ _: {
             bash ${../../tests/quint/model-harness.sh}
             touch "$out"
           '';
-      checks.quint-owner-admission =
-        pkgs.runCommand "quint-owner-admission"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.jq
+      checks.quint-no-jvm = pkgs.runCommand "quint-no-jvm" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
+        if grep -Ei '/[^/]*-(openjdk|jdk|jre|apalache)(-|[0-9])' ${
+          pkgs.closureInfo {
+            rootPaths = [
+              tools
+              harness
             ];
           }
-          ''
-            export LOOM_QUINT_OWNER_ADMISSION=${ownerAdmission}/bin/quint-owner-admission
-            bash ${../../tests/quint/owner-admission.sh}
-            touch "$out"
-          '';
-      apps.quint-owner-admission = {
-        type = "app";
-        program = "${ownerAdmission}/bin/quint-owner-admission";
-        meta.description = "Check immutable model input admission.";
-      };
+        }/store-paths; then
+          echo "Quint checking tools retain a forbidden JVM dependency" >&2
+          exit 1
+        fi
+        touch "$out"
+      '';
       apps.test-quint = {
         type = "app";
         program = "${app}/bin/test-quint";

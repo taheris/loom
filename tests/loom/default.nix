@@ -179,7 +179,15 @@ let
   smoke-git-policy = pkgs.runCommand "smoke-git-policy" { } ''
     set -euo pipefail
     env -i \
-      PATH="${makeBinPath (smokeGitInputs ++ [ pkgs.coreutils ])}" \
+      PATH="${
+        makeBinPath (
+          smokeGitInputs
+          ++ [
+            pkgs.coreutils
+            pkgs.jq
+          ]
+        )
+      }" \
       TMPDIR="$TMPDIR" \
       ${pkgs.bash}/bin/bash ${../smoke/git-policy-test.sh} \
         ${smokeSandbox.launcher}/bin/wrix ${../smoke/seed-git-policy.sh}

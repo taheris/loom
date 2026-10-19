@@ -107,42 +107,59 @@ Neither counterexample recording nor this harness generates regression source.
 explicit deeper campaigns run through the existing `test-quint` acceptance app;
 there is no extra operational hook or publication route.
 
-| Work     | Seeds                                           | Traces/seed | Steps/trace | Randomized test samples | Guard/checker invocation |
-| -------- | ----------------------------------------------- | ----------- | ----------- | ----------------------- | ------------------------ |
-| Routine  | 42, 20250308                                    | 64          | 80          | 32                      | 120 seconds              |
-| Deeper   | routine + 314159, 271828                        | 256         | 160         | 128                     | 240 seconds              |
-| Symbolic | exhaustive within declared initial states/bound | n/a         | 1           | n/a                     | 180 seconds              |
+| Work       | Seeds                                   | Traces/seed | Steps/trace | Randomized test samples | Guard/checker invocation |
+| ---------- | --------------------------------------- | ----------- | ----------- | ----------------------- | ------------------------ |
+| Routine    | 42, 20250308                            | 64          | 80          | 32                      | 120 seconds              |
+| Deeper     | routine + 314159, 271828                | 256         | 160         | 128                     | 240 seconds              |
+| Exhaustive | all declared initial states and choices | n/a         | 1           | n/a                     | 180 seconds              |
 
 Every simulation trace must contain exactly the declared steps plus its initial
 state. Every named test must complete, and every declared trace must be present;
 short/empty output, checker failure and resource interruption are not bounded
 success. The guard applies separately to each test batch, simulation batch and
-symbolic invocation. Seeds, counts, bounds, tool identities and logical input
+exhaustive invocation. Seeds, counts, bounds, tool identities and logical input
 hashes appear in the receipt. Nondeterministic test cases use the declared
 sample count; deterministic tests run once. They are not claimed as exhaustive
 searches.
 
-Apalache checks all transitions for one step from `symbolicInit`: either cold
-initialization or a reachable sealed two-subject shared-unit state. The latter's
-exact reachability through ordinary discovery/execution/review is an executable
+The Rust explicit-state checker consumes the actual Quint-compiled IR and checks
+all transitions for one step from `symbolicInit`: either cold initialization or
+a reachable sealed two-subject shared-unit state. The latter's exact
+reachability through ordinary discovery/execution/review is an executable
 witness, not an adapter-supplied trusted state. This frontier exercises reuse
-and publication directly rather than spending the entire small symbolic bound on
-setup. Longer histories, all tiers and full publication use the 81 tests and
+and publication directly rather than spending the entire small exhaustive bound
+on setup. Longer histories, all tiers and full publication use the 81 tests and
 fixed-seed 80/160-step simulation. This is explicitly **not** exhaustive
-symbolic checking of all long whole-gate interleavings. Deeper symbolic
+checking of all long whole-gate interleavings. Earlier deeper symbolic
 experiments that exceeded their guard were incomplete and are not receipts;
 increasing exploration requires changing the versioned campaign and
 re-profiling, never silently shortening a requested run.
 
-Initial Linux x86_64 profiling with provisioned tools and no result cache
-measured about one minute for the model scenario (routine tests/simulation plus
-the symbolic frontier), and about 80 seconds for the harness's successful
-campaign and injected failure cases. A 30-second routine guard interrupted work
-when run alongside the full native suite; the shipped guard retains identical
-coverage with 120-second headroom (240 for deeper work). The interrupted trial
-was rejected, not counted as success. These are model-only costs, not Loom/Wrix
-hook baselines or pilot-adoption evidence. The existing conformance,
-input-generation, replay, mutation, incremental, cost and adoption scenarios
-remain unimplemented until their production bridges land. Bounded model success
-is neither implementation conformance, verifier honesty, human-intent alignment
-nor an unbounded proof.
+The shared Quint `boundedInit`/`boundedStep` interface enumerates 49 finite
+action families, including every parameter combination. The checker verifies the
+exact `symbolicInit` and `step` wrapper contracts and rejects hidden
+nondeterminism or undeclared choices. There is no separately maintained Rust
+transition model. The retained depth-one frontier contains 870 distinct states
+and 1,932 attempted transitions from two roots. This is explicit-state
+exploration, not SMT solving.
+
+`campaign.json` also caps retained states (10,000), attempted transitions
+(10,000) and serialized state bytes (64 MiB). Input IR is capped at 64 MiB. The
+packaged checker has a 2 GiB address-space ceiling and a 300-second hard
+deadline with a five-second kill grace; the campaign's shorter deadline still
+applies. Any exhaustion fails without a completed receipt. Counterexamples
+contain a root, choice sequence and ITF state, replayable with the same compiled
+IR and campaign using
+`loom-quint-checker compiled.json campaign.json replay.json`.
+
+Earlier Apalache profiling with provisioned tools and no result cache measured
+about one minute for the model scenario and about 80 seconds for the harness.
+Those measurements are historical, not timings for this Rust backend. A
+30-second routine guard interrupted work when run alongside the full native
+suite; the shipped guard retains identical coverage with 120-second headroom
+(240 for deeper work). The interrupted trial was rejected, not counted as
+success. These are model-only costs, not Loom/Wrix hook baselines or
+pilot-adoption evidence. The existing conformance, input-generation, replay,
+mutation, incremental, cost and adoption scenarios remain unimplemented until
+their production bridges land. Bounded model success is neither implementation
+conformance, verifier honesty, human-intent alignment nor an unbounded proof.

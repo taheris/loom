@@ -218,20 +218,27 @@ Model activities use
 [Gate's deterministic verify flow](gate.md#deterministic-verify-lanes) and
 spec-owned stage applicability. There is no extra conformance hook, gate tier,
 or authorization route. Routine implementation feedback uses bounded, fixed-seed
-simulation and conformance. Symbolic verification runs when its own
+simulation and conformance. Bounded exhaustive verification runs when its own
 model/import/property/bound/checker inputs change, or consumes admissible
 exact-input evidence under Evidence's admission policy.
 
-Tools and solvers are pinned and provisioned ahead of routine verification.
-Discovery and trace processing are batched, without a subprocess per criterion
-or trace. Routine and explicitly requested deeper campaigns have finite resource
-budgets. Shipped routine and deeper campaign definitions provide usable
-defaults; ordinary callers need not configure seeds, bounds, or timeouts to
-obtain the required verification. Defaults are explicit, versioned verification
-inputs and are checked against coverage and cost requirements, not inferred from
-a check running slowly. Results identify their tools, properties, bounds, seeds,
-and inputs; timeouts, empty campaigns, and incomplete exploration do not count
-as success.
+Quint remains the model source and frontend; Node.js runs its CLI. The pinned
+Rust evaluator and explicit-state backend consume Quint-compiled IR, not an
+independently ported transition model. The checker rejects undeclared choices or
+hidden nondeterminism, explores every declared finite choice within the bound,
+and fails closed on resource exhaustion. Apalache, a JVM and external solvers
+are not part of this model-verification toolchain.
+
+Tools are pinned and provisioned ahead of routine verification. Discovery and
+trace processing are batched, without a subprocess per criterion or trace.
+Routine and explicitly requested deeper campaigns have finite resource budgets.
+Shipped routine and deeper campaign definitions provide usable defaults;
+ordinary callers need not configure seeds, bounds, or timeouts to obtain the
+required verification. Defaults are explicit, versioned verification inputs and
+are checked against coverage and cost requirements, not inferred from a check
+running slowly. Results identify their tools, properties, bounds, seeds, and
+inputs; timeouts, empty campaigns, and incomplete exploration do not count as
+success.
 
 ### Pilot adoption and cost
 
@@ -446,12 +453,12 @@ review; no keyword classifier or compiler can establish intent.
 <!-- prettier-ignore -->
 - Routine implementation feedback selects bounded fixed-seed simulation and
   conformance through the existing stage-aware `loom gate verify` path, not a
-  separate conformance hook. Unchanged symbolic checking is not repeated;
-  changed model-verification inputs select symbolic checks or consume admissible
+  separate conformance hook. Unchanged exhaustive checking is not repeated;
+  changed model-verification inputs select exhaustive checks or consume admissible
   exact-input evidence where policy allows reuse. [system?](nix run .#test-quint -- incremental)
 
 <!-- prettier-ignore -->
-- Model tools and solvers are pinned and provisioned ahead of routine runs;
+- Model tools are pinned and provisioned ahead of routine runs;
   trace generation and verification-graph discovery are batched rather than
   spawning or downloading tools per criterion or trace. [system](nix run .#test-quint -- provisioning-and-batching)
 

@@ -43,10 +43,6 @@ test_fail_closed() {
   local script="$LOOM_QUINT_SOURCE/scripts/test-quint.sh"
   must_fail 'unknown scenario' "$BASH" "$script" unknown
   must_fail 'not implemented' "$BASH" "$script" conformance
-  must_fail 'missing immutable owner inputs' env LOOM_QUINT_OWNER_SOURCE= "$BASH" "$script" provisioning-and-batching
-  must_fail 'missing bounded owner solver' env LOOM_QUINT_OWNER_SOLVER= "$BASH" "$script" provisioning-and-batching
-  must_fail 'missing owner input' env LOOM_QUINT_OWNER_SOURCE="$tmp/empty" "$BASH" "$script" provisioning-and-batching
-  must_fail 'bounded owner solver unavailable' env LOOM_QUINT_OWNER_SOLVER="$tmp/absent" "$BASH" "$script" provisioning-and-batching
   must_fail 'missing provisioned tool' env PATH="$tmp/empty" "$BASH" "$script" provisioning-and-batching
   mkdir -p "$tmp/old-tool"
   write_script "$tmp/old-tool/quint" <<'SH'

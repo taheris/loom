@@ -53,18 +53,6 @@ case "$1" in
     exit 0
     ;;
   provisioning-and-batching)
-    : "${LOOM_QUINT_OWNER_SOURCE:?missing immutable owner inputs}"
-    : "${LOOM_QUINT_OWNER_SOLVER:?missing bounded owner solver}"
-    for input in specs/gate/{model,domain,reference,witnesses}.qnt specs/gate/{campaign,apalache}.json specs/gate/README.md scripts/quint-{model,symbolic}.sh; do
-      if [[ ! -s "$LOOM_QUINT_OWNER_SOURCE/$input" ]]; then
-        printf 'test-quint: missing owner input %s\n' "$input" >&2
-        exit 1
-      fi
-    done
-    if [[ ! -x "$LOOM_QUINT_OWNER_SOLVER" ]]; then
-      printf 'test-quint: bounded owner solver unavailable\n' >&2
-      exit 1
-    fi
     campaigns=(routine bridge-replay)
     ;;
   bridge-smoke)
@@ -91,7 +79,7 @@ esac
 
 : "${LOOM_QUINT_BIN:?missing provisioned Quint acceptance runner}"
 : "${LOOM_QUINT_SOURCE:?missing acceptance input bundle}"
-: "${LOOM_QUINT_PACKAGE:?missing pinned Quint tool and solver bundle}"
+: "${LOOM_QUINT_PACKAGE:?missing pinned Quint and Rust checker bundle}"
 
 for tool in quint timeout jq; do
   if ! command -v "$tool" >/dev/null; then
@@ -103,8 +91,8 @@ if [[ "$(quint --version)" != 0.33.0 ]]; then
   printf 'test-quint: incompatible Quint version (required 0.33.0)\n' >&2
   exit 1
 fi
-if [[ ! -x "$LOOM_QUINT_BIN" || ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.0/quint_evaluator" || ! -f "$LOOM_QUINT_PACKAGE/share/quint/apalache-dist-0.62.1/apalache/lib/apalache.jar" ]]; then
-  printf 'test-quint: incomplete tool/solver provisioning\n' >&2
+if [[ ! -x "$LOOM_QUINT_BIN" || ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.0/quint_evaluator" || ! -x "$LOOM_QUINT_PACKAGE/bin/loom-quint-checker" ]]; then
+  printf 'test-quint: incomplete Quint/Rust checker provisioning\n' >&2
   exit 1
 fi
 
@@ -124,7 +112,7 @@ for campaign in "${campaigns[@]}"; do
   if ! jq -e '
     . as $r |
     ($r.assurance == "bounded simulation and bridge conformance, not whole-gate proof") and
-    ($r.checker == "Quint 0.33.0 / Connect 0.1.2 / Rust evaluator 0.7.0 / Apalache 0.62.1") and
+    ($r.checker == "Quint 0.33.0 / Connect 0.1.2 / Rust evaluator 0.7.0") and
     ($r.identity | test("^[0-9a-f]{64}$")) and
     ($r.plan.seeds | length > 0) and
     ($r.batches | length) == ($r.plan.seeds | length) and

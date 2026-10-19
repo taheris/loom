@@ -29,12 +29,14 @@ write_wrapper() {
 }
 
 copy_inputs() {
-  mkdir -p "$tmp/source/specs" "$tmp/source/scripts" "$tmp/source/tests/quint" "$tmp/source/nix/flake"
+  mkdir -p "$tmp/source/specs" "$tmp/source/scripts" "$tmp/source/tests/quint" "$tmp/source/nix/flake" "$tmp/source/nix/quint"
   cp -r "$root/specs/gate" "$tmp/source/specs/"
   cp "$root/specs/gate.md" "$root/specs/verify.md" "$root/specs/evidence.md" "$root/specs/simulation.md" "$tmp/source/specs/"
   cp "$root/scripts/test-quint-model.sh" "$root/scripts/test-quint.sh" "$tmp/source/scripts/"
   cp "$root/tests/quint/model-harness.sh" "$tmp/source/tests/quint/"
   cp "$root/nix/flake/quint.nix" "$tmp/source/nix/flake/"
+  cp "$root/nix/quint/tools.nix" "$root/nix/quint/checker.rs" "$tmp/source/nix/quint/"
+  cp "$root/nix/cargo-home.nix" "$tmp/source/nix/"
   cp "$root/flake.lock" "$tmp/source/"
   chmod -R u+w "$tmp/source"
 }
@@ -44,7 +46,7 @@ test_real_model_campaign() {
   # Exercise the stdout framing consumed by Gate, not just whole-document JSON.
   [[ "$(wc -l <"$tmp/receipt.json")" -eq 1 ]]
   jq -e '.scenario == "reference-equivalence" and .tests == 81 and
-    .completedSeeds == [42,20250308] and .symbolic == null and
+    .completedSeeds == [42,20250308] and .exhaustive == null and
     .plan.traces == 64 and .plan.steps == 80 and (.identity | length) == 64' "$tmp/receipt.json" >/dev/null
 }
 
@@ -102,12 +104,64 @@ SH
   must_fail 'invalid or incomplete' env PATH="$tmp/bin:$PATH" "$BASH" "$root/scripts/test-quint-model.sh" witnesses
 }
 
-test_no_symbolic_output_is_not_success() {
+test_native_exhaustive_controls() {
+  local checker plan status
+  checker=$(command -v loom-quint-checker)
+  plan="$root/specs/gate/campaign.json"
+  "$real_quint" compile "$root/specs/gate/model.qnt" --main gate --flatten false >"$tmp/compiled.json"
+  "$checker" "$tmp/compiled.json" "$plan" >"$tmp/exhaustive.json"
+  jq -e '.status == "complete" and .roots == 2 and .depth == 1 and .states == 870 and .transitions == 1932' "$tmp/exhaustive.json" >/dev/null
+  for field in states bytes transitions; do
+    jq --arg field "$field" '.exhaustive[$field] = 1' "$plan" >"$tmp/budget.json"
+    must_fail 'budget exhausted' "$checker" "$tmp/compiled.json" "$tmp/budget.json"
+  done
+  jq '.exhaustive.seconds = 0' "$plan" >"$tmp/budget.json"
+  must_fail 'invalid finite exhaustive budget' "$checker" "$tmp/compiled.json" "$tmp/budget.json"
+  status=0
+  timeout --kill-after=5s 0.001s "$checker" "$tmp/compiled.json" "$plan" >"$tmp/deadline.json" 2>"$tmp/deadline.log" || status=$?
+  [[ "$status" -eq 124 ]] && [[ ! -s "$tmp/deadline.json" ]]
+
+  printf '{"main":"gate","main":"gate","modules":[],"table":{}}\n' >"$tmp/malformed.json"
+  must_fail 'duplicate field' "$checker" "$tmp/malformed.json" "$plan"
+  printf '{' >"$tmp/malformed.json"
+  must_fail 'EOF' "$checker" "$tmp/malformed.json" "$plan"
+  cat "$tmp/compiled.json" >"$tmp/malformed.json"
+  printf 'null\n' >>"$tmp/malformed.json"
+  must_fail 'trailing characters' "$checker" "$tmp/malformed.json" "$plan"
+  truncate -s 67108865 "$tmp/over-input.json"
+  must_fail 'input document budget exhausted' "$checker" "$tmp/over-input.json" "$plan"
+  must_fail 'No such file' "$checker" "$tmp/absent.json" "$plan"
+
+  jq '(.modules[] | select(.name == "gate") | .declarations[] | select(.name == "step") | .expr) = {kind:"bool", id:0, value:true}' "$tmp/compiled.json" >"$tmp/uncovered.json"
+  must_fail 'unsupported bounded wrapper' "$checker" "$tmp/uncovered.json" "$plan"
+  jq '(.modules[] | select(.name == "gate") | .declarations[] | select(.name == "boundedStep") | .expr) = {kind:"app", id:0, opcode:"oneOf", args:[]}' "$tmp/compiled.json" >"$tmp/nondeterministic.json"
+  must_fail 'undeclared nondeterminism' "$checker" "$tmp/nondeterministic.json" "$plan"
+  jq '(.modules[] | select(.name == "gate") | .declarations) |= map(select(.name != "boundedStep"))' "$tmp/compiled.json" >"$tmp/missing-action.json"
+  must_fail 'Input definition not found' "$checker" "$tmp/missing-action.json" "$plan"
+
+  jq '(.modules[] | select(.name == "gate") | .declarations[] | select(.name == "safety") | .expr) |= {kind:"bool", id:.id, value:false}' "$tmp/compiled.json" >"$tmp/counterexample-model.json"
+  status=0
+  "$checker" "$tmp/counterexample-model.json" "$plan" >"$tmp/counterexample.json" 2>"$tmp/counterexample.log" || status=$?
+  [[ "$status" -ne 0 ]]
+  jq -e '.status == "violation" and .trace.root == 0 and .trace.choices == [] and .state != null' "$tmp/counterexample.json" >/dev/null
+  jq '.trace' "$tmp/counterexample.json" >"$tmp/replay.json"
+  status=0
+  "$checker" "$tmp/counterexample-model.json" "$plan" "$tmp/replay.json" >"$tmp/replayed.json" 2>"$tmp/replayed.log" || status=$?
+  [[ "$status" -ne 0 ]]
+  jq -se 'length == 2 and .[0] == .[1]' "$tmp/counterexample.json" "$tmp/replayed.json" >/dev/null
+}
+
+test_no_exhaustive_output_is_not_success() {
   write_wrapper <<'SH'
 set -euo pipefail
-if [[ "$1" != verify ]]; then exec "$LOOM_REAL_QUINT" "$@"; fi
+exec "$LOOM_REAL_QUINT" "$@"
 SH
-  must_fail 'missing completed symbolic result' env PATH="$tmp/bin:$PATH" "$BASH" "$root/scripts/test-quint-model.sh" model
+  {
+    printf '#!%s\n' "$BASH"
+    printf 'set -euo pipefail\nexit 0\n'
+  } >"$tmp/bin/loom-quint-checker"
+  chmod +x "$tmp/bin/loom-quint-checker"
+  must_fail 'missing completed exhaustive result' env PATH="$tmp/bin:$PATH" "$BASH" "$root/scripts/test-quint-model.sh" model
 }
 
 test_timeout_is_not_completion() {
@@ -126,5 +180,6 @@ test_invalid_and_empty_campaigns
 test_witness_rejects_always_reject_model
 test_witness_rejects_stale_signer_trust
 test_short_trace_cannot_hide_before_full_trace
-test_no_symbolic_output_is_not_success
+test_native_exhaustive_controls
+test_no_exhaustive_output_is_not_success
 test_timeout_is_not_completion

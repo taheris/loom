@@ -85,6 +85,7 @@ let
   # Specs, mock binaries, and any other non-Cargo inputs the tests and
   # `[check]`-tier verifiers read from the workspace root.
   extraSrcs = {
+    ".config/nextest.toml" = "${src}/.config/nextest.toml";
     "flake.nix" = "${src}/flake.nix";
     "flake.lock" = "${src}/flake.lock";
     "tests/quint" = "${src}/tests/quint";

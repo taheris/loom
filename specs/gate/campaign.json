@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "checker": "Quint 0.33.0 / Rust evaluator 0.7.0 / Apalache 0.62.1",
+  "version": 2,
+  "checker": "Quint 0.33.0 / Rust evaluator 0.7.0 / Rust explicit-state v1",
   "routine": {
     "seeds": [42, 20250308],
     "traces": 64,
@@ -15,9 +15,12 @@
     "samples": 128,
     "seconds": 240
   },
-  "symbolic": {
+  "exhaustive": {
     "steps": 1,
-    "seconds": 180
+    "seconds": 180,
+    "states": 10000,
+    "transitions": 10000,
+    "bytes": 67108864
   },
   "tests": 81
 }

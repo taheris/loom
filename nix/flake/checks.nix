@@ -356,7 +356,7 @@
       transportHarnessProfile = pkgs.writeText "transport-harness-profile.json" (
         builtins.toJSON {
           schema = 1;
-          system = "test";
+          inherit system;
           profile = {
             name = "transport-harness";
             env = { };
@@ -385,7 +385,6 @@
             ipv6 = "disabled";
           };
           services = {
-            beads.enable = false;
             nix_cache.enable = false;
           };
           features.mcp_runtime = false;

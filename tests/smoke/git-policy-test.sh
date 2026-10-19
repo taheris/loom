@@ -52,7 +52,7 @@ test_smoke_policy_preserves_launch_grants_in_bead_clone() {
     cat >"$fixture/profile.json" <<'JSON'
 {
   "schema": 1,
-  "system": "test",
+  "system": "x86_64-linux",
   "profile": {"name": "base", "env": {}, "mounts": [], "writable_dirs": [], "network_allowlist": []},
   "image": {
     "ref": "localhost/wrix-test:latest",
@@ -71,16 +71,19 @@ JSON
     cat >"$fixture/spawn.json" <<JSON
 {"workspace": "$fixture/bead", "env": [], "agent_args": []}
 JSON
-    plan=$(WRIX_DRY_RUN=1 "$wrix_bin" --profile-config "$fixture/profile.json" spawn --spawn-config "$fixture/spawn.json" --stdio)
-    [[ "$plan" == *"ENV=WRIX_EFFECTIVE_GIT_SIGN=1"* ]]
-    [[ "$plan" == *"ENV=WRIX_DEPLOY_KEY=/etc/wrix/keys/smoke"* ]]
-    [[ "$plan" == *"ENV=WRIX_SIGNING_KEY=/etc/wrix/keys/smoke-signing"* ]]
+    # The supported preview reports grants and availability, not secret paths or
+    # prepared container environment. It must not execute a container runtime.
+    plan=$("$wrix_bin" --profile-config "$fixture/profile.json" spawn --spawn-config "$fixture/spawn.json" --stdio --dry-run --json)
+    jq -e '.schema == 1 and .plan.git_sign == {enabled:true, origin:"repository"} and
+      .plan.git_deploy == {enabled:true, origin:"repository"} and
+      (.plan.credentials | length) == 2 and
+      ([.plan.credentials[].name] | sort) == ["WRIX_DEPLOY_KEY", "WRIX_SIGNING_KEY"] and
+      all(.plan.credentials[]; .available == true and .source == "host_environment")' <<<"$plan" >/dev/null
 
     mv wrix.toml "$fixture/smoke-policy.toml"
-    plan=$(WRIX_DRY_RUN=1 "$wrix_bin" --profile-config "$fixture/profile.json" spawn --spawn-config "$fixture/spawn.json" --stdio)
-    [[ "$plan" == *"ENV=WRIX_EFFECTIVE_GIT_SIGN=0"* ]]
-    [[ "$plan" != *"ENV=WRIX_SIGNING_KEY="* ]]
-    [[ "$plan" != *"ENV=WRIX_DEPLOY_KEY="* ]]
+    plan=$("$wrix_bin" --profile-config "$fixture/profile.json" spawn --spawn-config "$fixture/spawn.json" --stdio --dry-run --json)
+    jq -e '.schema == 1 and .plan.git_sign == {enabled:false, origin:"default"} and
+      .plan.git_deploy == {enabled:false, origin:"default"} and .plan.credentials == []' <<<"$plan" >/dev/null
     mv "$fixture/smoke-policy.toml" wrix.toml
 }
 

@@ -110,14 +110,16 @@ for mode in baseline-failure guard-success; do
   if [[ "$mode" == guard-success ]]; then name=guard-spawn.json; fi
   config=$(find "$work/$mode" -name "$name" -print)
   [[ -n "$config" ]]
-  WRIX_DRY_RUN=1 "$real_launcher" --profile-config "$real_profile" spawn --spawn-config "$config" \
+  "$real_launcher" --profile-config "$real_profile" spawn --spawn-config "$config" --dry-run --json \
     > "$work/$mode.dry-run"
-  if ! { grep -Fxq SUBCOMMAND=spawn "$work/$mode.dry-run" &&
-    grep -Fxq STDIO=0 "$work/$mode.dry-run" &&
-    grep -Fxq GIT_DEPLOY_OVERRIDE=false "$work/$mode.dry-run" &&
-    grep -Fxq GIT_SIGN_OVERRIDE=false "$work/$mode.dry-run"; }; then
-    cat "$work/$mode.dry-run" >&2
-    exit 1
+  jq -e '.schema == 1 and .plan.agent == "direct" and
+    .plan.git_deploy == {enabled:false, origin:"invocation"} and
+    .plan.git_sign == {enabled:false, origin:"invocation"} and .plan.credentials == []' \
+    "$work/$mode.dry-run" >/dev/null
+  if [[ "$mode" == guard-success ]]; then
+    jq -e --slurpfile config "$config" '
+      .plan.mounts | any(.destination == $config[0].mounts[0].container_path and .source == $config[0].mounts[0].host_path and .read_only == true)
+    ' "$work/$mode.dry-run" >/dev/null
   fi
 done
 printf 'worker-transport-harness-tests-ok\n'
