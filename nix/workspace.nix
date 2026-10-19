@@ -153,6 +153,7 @@ let
     commonArgs
     // {
       LOOM_PREK_BIN = "${hookRunner}/bin/prek";
+      LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
       src = stagedSrc;
       inherit cargoArtifacts;
       nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
