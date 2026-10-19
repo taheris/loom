@@ -45,7 +45,7 @@ test_real_model_campaign() {
   "$BASH" "$root/scripts/test-quint.sh" reference-equivalence >"$tmp/receipt.json"
   # Exercise the stdout framing consumed by Gate, not just whole-document JSON.
   [[ "$(wc -l <"$tmp/receipt.json")" -eq 1 ]]
-  jq -e '.scenario == "reference-equivalence" and .tests == 81 and
+  jq -e '.scenario == "reference-equivalence" and .tests == 113 and
     .completedSeeds == [42,20250308] and .exhaustive == null and
     .plan.traces == 64 and .plan.steps == 80 and (.identity | length) == 64' "$tmp/receipt.json" >/dev/null
 }
@@ -86,6 +86,47 @@ PY
   cp "$root/specs/gate/model.qnt" "$tmp/source/specs/gate/model.qnt"
 }
 
+assert_model_mutation_fails() {
+  local before="$1" after="$2"
+  python3 - "$tmp/source/specs/gate/model.qnt" "$before" "$after" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+source = p.read_text()
+assert source.count(sys.argv[2]) == 1
+p.write_text(source.replace(sys.argv[2], sys.argv[3]))
+PY
+  must_fail 'no bounded success' env LOOM_QUINT_SOURCE="$tmp/source" "$BASH" "$root/scripts/test-quint-model.sh" witnesses
+  cp "$root/specs/gate/model.qnt" "$tmp/source/specs/gate/model.qnt"
+}
+
+test_witness_rejects_resource_construction_omission() {
+  assert_model_mutation_fails \
+    'resources: s.subjects.filter(x => unit(x) == unit(c)).union(Set(8 + unit(c)))' \
+    'resources: s.subjects.filter(x => unit(x) == unit(c))'
+}
+
+test_witness_rejects_wrong_subject_responsibility() {
+  assert_model_mutation_fails 'if (c < 2) 0 else if' 'if (c < 1) 0 else if'
+}
+
+test_witness_rejects_passing_readiness_as_coverage() {
+  assert_model_mutation_fails \
+    'required.forall(c => Set("pass", "pending").contains(coverage(c)))' \
+    'required.forall(c => Set("pass", "pending", "UnneededPendingMarker").contains(coverage(c)))'
+}
+
+test_witness_rejects_worker_canonical_write_permission() {
+  assert_model_mutation_fails \
+    'def trustedWriter = Set("operator", "integration").contains(s.checkout)' \
+    'def trustedWriter = true'
+}
+
+test_witness_rejects_nondurable_checkpoint_deletion() {
+  assert_model_mutation_fails \
+    's.with("stagedCheckpoint", events).with("checkpointStaged", true)' \
+    's.with("checkpoint", events).with("stagedCheckpoint", events).with("checkpointStaged", true)'
+}
+
 test_short_trace_cannot_hide_before_full_trace() {
   export LOOM_REAL_QUINT="$real_quint"
   write_wrapper <<'SH'
@@ -110,7 +151,7 @@ test_native_exhaustive_controls() {
   plan="$root/specs/gate/campaign.json"
   "$real_quint" compile "$root/specs/gate/model.qnt" --main gate --flatten false >"$tmp/compiled.json"
   "$checker" "$tmp/compiled.json" "$plan" >"$tmp/exhaustive.json"
-  jq -e '.status == "complete" and .roots == 2 and .depth == 1 and .states == 870 and .transitions == 1932' "$tmp/exhaustive.json" >/dev/null
+  jq -e '.status == "complete" and .roots == 2 and .depth == 1 and .states == 881 and .transitions == 1960' "$tmp/exhaustive.json" >/dev/null
   for field in states bytes transitions; do
     jq --arg field "$field" '.exhaustive[$field] = 1' "$plan" >"$tmp/budget.json"
     must_fail 'budget exhausted' "$checker" "$tmp/compiled.json" "$tmp/budget.json"
@@ -179,6 +220,11 @@ test_real_model_campaign
 test_invalid_and_empty_campaigns
 test_witness_rejects_always_reject_model
 test_witness_rejects_stale_signer_trust
+test_witness_rejects_resource_construction_omission
+test_witness_rejects_wrong_subject_responsibility
+test_witness_rejects_passing_readiness_as_coverage
+test_witness_rejects_worker_canonical_write_permission
+test_witness_rejects_nondurable_checkpoint_deletion
 test_short_trace_cannot_hide_before_full_trace
 test_native_exhaustive_controls
 test_no_exhaustive_output_is_not_success

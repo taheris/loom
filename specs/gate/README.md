@@ -9,25 +9,35 @@ transitions. Neither file supplies admitted production evidence.
 ## Abstraction and trust boundary
 
 Eight repository subjects represent two shared check obligations, a test and a
-system sharing another unit, a live system, a judge, pending test readiness
+system sharing another unit, a live system, a judge, pending system readiness
 sharing the test unit, and a project hook. The universe includes membership and
 absence observations. Discovery reads current subjects, not previous targets;
-planning applies each criterion's policy before execution sharing. Readiness has
-a different execution purpose and never becomes an ordinary criterion pass. An
-absent pending definition has no probe; an absent ordinary definition or invalid
-offered definition prevents admission. Structural success precedes behavioral
-discovery/build/launch. Diff hooks precede the annotation lane; modified-tree,
-unavailable, skip and timeout outcomes cannot supply coverage.
+planning applies each criterion's policy before execution sharing. Executable
+readiness has a different execution purpose: assertion failure remains pending,
+incomplete work remains uncovered, and success emits `UnneededPendingMarker`,
+blocking publication until marker removal. Native test and judge readiness
+remains structural. Removing a marker cannot promote a readiness result into
+ordinary passing evidence, but independently admissible verification of a shared
+unit remains usable. An absent pending definition has no probe; an absent
+ordinary definition or invalid offered definition prevents admission. Structural
+success precedes behavioral discovery/build/launch. Diff hooks precede the
+annotation lane; modified-tree, unavailable, skip and timeout outcomes cannot
+supply coverage.
 
 The fixed unit assignment is a bounded supported dependency graph, not an
 assumption that a production provider's inventory or tracing is complete.
 Generated-repository conformance must compare real discovery and construction
-against it. Integer input and definition versions abstract canonical checked
-execution inputs, tools, invocation, resources and environments. Membership,
-absence, campaign and purpose participate in the manifest. Claim/policy edits,
-labels, signer trust, history and attempt liveness do not salt execution
-identity. Changed bindings still require current admission. Builds remain
-separate from result facts.
+against it. A separate responsibility table and resource fold derive expected
+unit assignments, subject membership, absence observations and required subject
+and shared resources without calling the optimized constructor. Construction
+completeness is checked even before a result exists; omission and wrong-unit
+controls exercise that oracle. This does not prove real provider completeness.
+Integer input and definition versions abstract canonical checked execution
+inputs, tools, invocation, resources and environments. Membership, absence,
+campaign and purpose participate in the manifest. Claim/policy edits, labels,
+signer trust, history and attempt liveness do not salt execution identity.
+Changed bindings still require current admission. Builds remain separate from
+result facts.
 
 For deterministic units, input version 1 fails and versions 0 and 2 pass. The
 full reference evaluates every current applicable subject against that oracle;
@@ -50,14 +60,22 @@ not replace them with these abstract outcomes. No cryptographic or filesystem
 correctness is proved here.
 
 The shared journal has ordered attributed events, a separately durable
-checkpoint, immutable witness identities, a rebuildable index and independent
-expiring transcripts. Recording is atomic at the admitted append boundary;
-interleavings through two associated checkouts preserve both updates.
-Interrupted writes make history unavailable until recovery from retained
-complete sources. Witness loss and missing relocation linkage remain
-unavailable, never empty history. Consolidation must precede deletion. Direct
-untrusted history writes are rejected. Journal facts cannot substitute for
-positive result evidence.
+checkpoint, a nondurable staged checkpoint, immutable attributed witness
+objects, a rebuildable index and independent expiring transcripts. Recording is
+atomic at the admitted append boundary; interleavings through two associated
+checkouts preserve both updates. Interrupted writes make history unavailable
+until recovery from retained complete sources. Witness loss and missing
+relocation linkage remain unavailable, never empty history. Witness retention
+precedes confirmation. Checkpoint staging does not permit deletion: committing
+the retained replacement is a separate transition, and concurrent appends not
+included in it still prevent reclamation. Restart discards staging, not the
+durable journal. Missing canonical history cannot recover as an empty history or
+be repaired by a fresh pass. Every modeled canonical mutator checks checkout
+permission; worker-local completions and imports cannot append canonical facts.
+Direct untrusted writes and forged checkout association are rejected.
+Environmental loss/interruption actions represent storage faults, not worker
+filesystem permissions. Journal facts cannot substitute for positive result
+evidence.
 
 Confirmation requires an observed violation; timeout is not confirmation.
 Resolution requires a fixed current input, a current fresh pass and a successful
@@ -85,7 +103,7 @@ to repair, while malformed acceptance can still be repaired through a finding.
 - `publicationSafety`: each observed successful push agrees with the independent
   full-obligation authorization check at the validation/use boundary.
 
-The 81 named tests include positive driver/manual publication, worker feedback,
+The 113 named tests include positive driver/manual publication, worker feedback,
 all six stages, all four tiers and the hook lane, independent reuse, cold work,
 shared deferral/order permutations, policy-only edits, corrected admission,
 readiness, imports and trust removal/restoration, diagnostic freshness,
@@ -128,28 +146,29 @@ a reachable sealed two-subject shared-unit state. The latter's exact
 reachability through ordinary discovery/execution/review is an executable
 witness, not an adapter-supplied trusted state. This frontier exercises reuse
 and publication directly rather than spending the entire small exhaustive bound
-on setup. Longer histories, all tiers and full publication use the 81 tests and
+on setup. Longer histories, all tiers and full publication use the 113 tests and
 fixed-seed 80/160-step simulation. This is explicitly **not** exhaustive
 checking of all long whole-gate interleavings. Earlier deeper symbolic
 experiments that exceeded their guard were incomplete and are not receipts;
 increasing exploration requires changing the versioned campaign and
 re-profiling, never silently shortening a requested run.
 
-The shared Quint `boundedInit`/`boundedStep` interface enumerates 49 finite
+The shared Quint `boundedInit`/`boundedStep` interface enumerates 55 finite
 action families, including every parameter combination. The checker verifies the
 exact `symbolicInit` and `step` wrapper contracts and rejects hidden
 nondeterminism or undeclared choices. There is no separately maintained Rust
-transition model. The retained depth-one frontier contains 870 distinct states
-and 1,932 attempted transitions from two roots. This is explicit-state
+transition model. The retained depth-one frontier contains 881 distinct states
+and 1,960 attempted transitions from two roots. This is explicit-state
 exploration, not SMT solving.
 
 `campaign.json` also caps retained states (10,000), attempted transitions
 (10,000) and serialized state bytes (64 MiB). Input IR is capped at 64 MiB. The
-packaged checker has a 2 GiB address-space ceiling and a 300-second hard
-deadline with a five-second kill grace; the campaign's shorter deadline still
-applies. Any exhaustion fails without a completed receipt. Counterexamples
-contain a root, choice sequence and ITF state, replayable with the same compiled
-IR and campaign using
+Quint frontend has a pinned 3 GiB JavaScript heap ceiling for retaining the
+declared deeper trace batch. The packaged checker has a separate 2 GiB
+address-space ceiling and a 300-second hard deadline with a five-second kill
+grace; the campaign's shorter deadline still applies. Any exhaustion fails
+without a completed receipt. Counterexamples contain a root, choice sequence and
+ITF state, replayable with the same compiled IR and campaign using
 `loom-quint-checker compiled.json campaign.json replay.json`.
 
 Earlier Apalache profiling with provisioned tools and no result cache measured
