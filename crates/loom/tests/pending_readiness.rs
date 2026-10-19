@@ -80,11 +80,15 @@ impl Fixture {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         std::fs::write(self.workspace().join("flake.nix"), "{ }\n")
             .expect("formatter workspace anchor");
-        std::fs::copy(
-            source.join(".pre-commit-config.yaml"),
+        // Readiness behavior remains testable while the automatic Gate hook
+        // is temporarily manual-only in the repository's default policy.
+        let config = std::fs::read_to_string(source.join(".pre-commit-config.yaml"))
+            .expect("canonical hook configuration");
+        std::fs::write(
             self.workspace().join(".pre-commit-config.yaml"),
+            config.replacen("stages: [manual]", "stages: [pre-commit]", 1),
         )
-        .expect("canonical hook configuration");
+        .expect("explicitly enable Gate for readiness tests");
         std::fs::create_dir(self.workspace().join("scripts")).expect("scripts directory");
         std::fs::copy(
             source.join("scripts/check-shell-reexec"),

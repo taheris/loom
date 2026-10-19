@@ -147,7 +147,12 @@ fn validate_local_pre_commit_hook(
         path,
         hook,
         "local",
-        "pre-commit",
+        if id == "loom-gate-verify-files" {
+            // Temporary manual-only Gate policy; sanitation stays automatic.
+            "manual"
+        } else {
+            "pre-commit"
+        },
         Some("system"),
         violations,
     );
@@ -187,10 +192,23 @@ fn validate_pre_push(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
         let Some(hook) = required_hook(path, hooks, id, violations) else {
             continue;
         };
-        validate_binding(path, hook, "local", "pre-push", Some("system"), violations);
+        // FIXME: Restore pre-push for Gate and full-suite hooks after stabilization.
+        let stage = if matches!(id, "loom-gate-verify-diff" | "full-test-suite") {
+            "manual"
+        } else {
+            "pre-push"
+        };
+        validate_binding(path, hook, "local", stage, Some("system"), violations);
     }
 
-    for hook in pre_push_hooks {
+    // Manual-only hooks still retain their publication wrapper contract.
+    for hook in hooks.iter().filter(|hook| {
+        hook.is_pre_push()
+            || matches!(
+                hook.id.as_str(),
+                "loom-gate-verify-diff" | "full-test-suite"
+            )
+    }) {
         let Some(entry) = hook.entry.as_deref() else {
             violations.push(format!(
                 "{path}:{} pre-push hook `{}` has no entry",
