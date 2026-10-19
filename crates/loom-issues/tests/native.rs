@@ -177,7 +177,6 @@ mod native {
     }
 
     #[tokio::test]
-    #[ignore = "requires pinned Beads; run nix build .#checks.x86_64-linux.issues-native-conformance"]
     async fn tracking_conformance_covers_lightweight_and_pinned_beads() {
         let native = Native::new().await;
         let store = BdClient::with_runner(native.clone());
@@ -189,7 +188,6 @@ mod native {
     }
 
     #[tokio::test]
-    #[ignore = "requires pinned Beads; run nix build .#checks.x86_64-linux.issues-native-conformance"]
     async fn native_multi_id_status_predicates_do_not_make_updates_atomic() {
         let native = Native::new().await;
         let store = BdClient::with_runner(native.clone());
@@ -221,7 +219,6 @@ mod native {
     }
 
     #[tokio::test]
-    #[ignore = "requires pinned Beads; run nix build .#checks.x86_64-linux.issues-native-conformance"]
     async fn beads_tracking_adapter_retains_native_interoperability_coverage() {
         let native = Native::new().await;
         let store = BdClient::with_runner(native.clone());

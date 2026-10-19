@@ -562,7 +562,7 @@
         doCheck = true;
         doInstallCargoArtifacts = false;
         buildPhaseCargoCommand = "cargo test --locked -p loom-issues --test native --no-run";
-        checkPhaseCargoCommand = "cargo test --locked -p loom-issues --test native -- --ignored";
+        checkPhaseCargoCommand = "cargo test --locked -p loom-issues --test native";
         installPhaseCommand = "touch $out";
       };
 
