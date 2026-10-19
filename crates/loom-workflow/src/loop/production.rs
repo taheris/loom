@@ -838,6 +838,19 @@ where
             .into_iter()
             .find(|record| record.bead == bead.id)
         {
+            let pin = format!(
+                "refs/loom/verification/{}/{}",
+                record.bead, record.candidate
+            );
+            if loom_driver::git::sync_rev_parse(&self.git.loom_workspace(), &pin)?
+                != record.candidate
+            {
+                return Err(LoopError::Bug {
+                    context: "verification candidate pin changed before source reconciliation"
+                        .into(),
+                });
+            }
+            let record = association.reconcile_verification_source(&record)?;
             self.verification_attempted.insert(bead.id.clone());
             if record.needs_source_repair() {
                 let Some(mut source) =
@@ -2133,6 +2146,9 @@ async fn verification_publication_ready<R: CommandRunner>(
                 .as_ref()
                 .is_none_or(|root| root.as_str() == molecule.as_str());
         if integrated && !record.needs_source_repair() {
+            if !association.verification_source_unchanged(&record)? {
+                return Ok(false);
+            }
             association.validate_verification(&record)?;
             let pin = format!(
                 "refs/loom/verification/{}/{}",
@@ -6480,6 +6496,88 @@ mod tests {
                 .id,
             id
         );
+    }
+
+    #[tokio::test]
+    async fn changed_completed_source_reenters_repair_without_admitting_old_coverage() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let workspace = dir.path().join("workspace");
+        let git = git_workspace(&workspace);
+        let integration = git.loom_workspace();
+        let base = loom_driver::git::sync_head_commit_sha(&integration).expect("base");
+        std::fs::write(integration.join("candidate.txt"), "completed source\n").expect("source");
+        loom_driver::git::commit_all_in(&integration, "completed source").expect("commit");
+        let candidate = loom_driver::git::sync_head_commit_sha(&integration).expect("candidate");
+        let label = SpecLabel::new("gate").expect("label");
+        let mut source = bead("lm-drift");
+        source.status = loom_driver::bd::Status::Closed;
+        let clone = git
+            .create_worktree(&label, &source.id)
+            .await
+            .expect("clone");
+        git.preserve_verification_candidate(&source.id, &candidate)
+            .await
+            .expect("pin");
+        let association =
+            loom_driver::workspace::Association::resolve(&workspace).expect("authority");
+        association
+            .begin_verification(
+                source.id.clone(),
+                label.clone(),
+                None,
+                base.clone(),
+                candidate.clone(),
+            )
+            .expect("continuation");
+        std::fs::write(clone.path.join("repair.txt"), "retained source edits\n").expect("edits");
+        loom_driver::git::commit_all_in(&clone.path, "source edits after capture")
+            .expect("commit edits");
+        let observed = serde_json::to_vec(&vec![source.clone()]).expect("native state");
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::with_runner(ScriptedBd::new([
+                ok_stdout(&observed),
+                ok_stdout(&observed),
+                ok_stdout(b""),
+            ])),
+            label,
+            "unused-verifier".into(),
+            workspace.clone(),
+            git,
+            write_manifest(dir.path()),
+            None,
+            ProfileName::new("base").expect("profile"),
+            |cfg: SpawnConfig, _id: BeadId| async move {
+                assert!(cfg.initial_prompt.contains("Source checkout changed"));
+                assert_eq!(
+                    std::fs::read_to_string(cfg.workspace.join("repair.txt"))
+                        .expect("preserved edits"),
+                    "retained source edits\n"
+                );
+                (
+                    SessionResult::PreflightFailed {
+                        error: "fixture stops before execution".into(),
+                    },
+                    None,
+                )
+            },
+        );
+        assert!(matches!(
+            controller
+                .run_bead(&source, None)
+                .await
+                .expect("reconciled dispatch"),
+            AgentOutcome::InfraPreflight { .. }
+        ));
+        assert_eq!(
+            loom_driver::git::sync_head_commit_sha(&integration).expect("owned rollback"),
+            base
+        );
+        let records = association
+            .verification_continuations()
+            .expect("retained history");
+        assert!(records[0].needs_source_repair());
+        assert_eq!(records[0].candidate, candidate);
+        assert_eq!(records[0].semantic_failures, 0);
     }
 
     #[tokio::test]

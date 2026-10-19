@@ -898,7 +898,7 @@ mod tests {
         cfg.scratch_dir = scratch.path().to_path_buf();
         let file = runtime::Config::write(&cfg.scratch_dir, &cfg).expect("write");
         let bytes = std::fs::read(file.path()).expect("read");
-        let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
+        let decoded: SpawnConfig = SpawnConfig::from_wrix_slice(&bytes).expect("decode");
         assert_eq!(decoded.image_ref, cfg.image_ref);
         assert_eq!(decoded.image_source, cfg.image_source);
         assert_eq!(decoded.initial_prompt, cfg.initial_prompt);

@@ -10,7 +10,7 @@ record, mode, *args = sys.argv[1:]
 config = json.loads(Path(args[args.index("--spawn-config") + 1]).read_text())
 workspace = Path(config["workspace"])
 assert workspace.is_absolute()
-assert Path(config["scratch_dir"]).is_relative_to(workspace)
+assert Path(config["extensions"]["loom"]["scratch_dir"]).is_relative_to(workspace)
 assert not config.get("mounts", [])
 assert (workspace / "src/lib.rs").read_text() == "original fixture\n"
 assert (workspace / "binary").read_bytes() == bytes([0, 255, 0])
@@ -25,7 +25,7 @@ print(json.dumps({"type": "response", "id": probe["id"], "command": "get_state",
                   "data": {"isStreaming": False, "isCompacting": False, "messageCount": 0, "pendingMessageCount": 0}}), flush=True)
 prompt = json.loads(input())
 if prompt["type"] == "set_thinking_level":
-    assert prompt["level"] == config["thinking_level"]
+    assert prompt["level"] == config["extensions"]["loom"]["thinking_level"]
     print(json.dumps({"type": "response", "id": prompt["id"],
                       "command": "set_thinking_level", "success": True}), flush=True)
     prompt = json.loads(input())

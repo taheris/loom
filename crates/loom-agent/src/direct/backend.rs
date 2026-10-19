@@ -346,7 +346,7 @@ mod tests {
         assert!(spawn_config_path.exists());
 
         let bytes = std::fs::read(spawn_config_path).expect("read");
-        let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
+        let decoded: SpawnConfig = SpawnConfig::from_wrix_slice(&bytes).expect("decode");
         assert_eq!(decoded.image_ref, cfg.image_ref);
         assert_eq!(decoded.image_source, cfg.image_source);
         assert_eq!(decoded.initial_prompt, cfg.initial_prompt);
@@ -374,7 +374,7 @@ mod tests {
         let spawn_config = prepare_runtime(&cfg).expect("prepare_runtime");
 
         let bytes = std::fs::read(spawn_config.path()).expect("read");
-        let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
+        let decoded: SpawnConfig = SpawnConfig::from_wrix_slice(&bytes).expect("decode");
         assert_eq!(decoded.observers, cfg.observers);
     }
 
@@ -396,7 +396,7 @@ mod tests {
 
         assert_eq!(spawn_config.path(), scratch_dir.join("spawn-config.json"));
         let bytes = std::fs::read(spawn_config.path()).expect("read");
-        let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
+        let decoded: SpawnConfig = SpawnConfig::from_wrix_slice(&bytes).expect("decode");
         assert_eq!(
             decoded.scratch_dir,
             PathBuf::from("/workspace/.loom/scratch/lm-direct"),
@@ -496,7 +496,7 @@ printf '%s\n' '{"type":"session_complete","exit_code":0}'
             "direct\n",
         );
         let decoded: SpawnConfig =
-            serde_json::from_slice(&fs::read(&config_log).expect("read copied spawn config"))
+            SpawnConfig::from_wrix_slice(&fs::read(&config_log).expect("read copied spawn config"))
                 .expect("decode copied spawn config");
         assert!(
             decoded

@@ -385,7 +385,7 @@ mod tests {
         // The wrapper consumes this JSON: backend-owned permission transport
         // precedes the caller arguments without mutating the original config.
         let bytes = std::fs::read(spawn_config_path).expect("read");
-        let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
+        let decoded: SpawnConfig = SpawnConfig::from_wrix_slice(&bytes).expect("decode");
         assert_eq!(decoded.image_ref, cfg.image_ref);
         assert_eq!(decoded.image_source, cfg.image_source);
         assert_eq!(decoded.initial_prompt, cfg.initial_prompt);

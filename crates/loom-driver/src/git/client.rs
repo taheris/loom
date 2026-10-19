@@ -1098,9 +1098,10 @@ impl GitClient {
                     .verification_continuations()
                     .map_err(std::io::Error::other)?
                 {
-                    if !integration
-                        .is_ancestor_of_head(record.candidate.as_str())
-                        .await?
+                    if record.needs_source_repair()
+                        || !integration
+                            .is_ancestor_of_head(record.candidate.as_str())
+                            .await?
                     {
                         continue;
                     }
@@ -1898,6 +1899,16 @@ impl GitClient {
             let Some(intent) = &record.publication_rebase else {
                 continue;
             };
+            if record.needs_source_repair()
+                || !association
+                    .verification_source_unchanged(record)
+                    .map_err(std::io::Error::other)?
+            {
+                association
+                    .validate_verification_checkout(record)
+                    .map_err(std::io::Error::other)?;
+                continue;
+            }
             if intent.after.is_some() {
                 continue;
             }
@@ -2046,9 +2057,20 @@ impl GitClient {
             }
         }
         let current = sync_head_commit_sha(&integration)?;
-        let pending = association
+        let mut pending = Vec::new();
+        for record in association
             .verification_continuations()
-            .map_err(std::io::Error::other)?;
+            .map_err(std::io::Error::other)?
+        {
+            if record.publication_rebase.is_some()
+                && !record.needs_source_repair()
+                && association
+                    .verification_source_unchanged(&record)
+                    .map_err(std::io::Error::other)?
+            {
+                pending.push(record);
+            }
+        }
         if let Some(intent) = pending
             .iter()
             .filter_map(|record| record.publication_rebase.as_ref())
@@ -2122,7 +2144,13 @@ impl GitClient {
             .verification_continuations()
             .map_err(std::io::Error::other)?
         {
-            if record.candidate != head || record.publication_rebase.is_none() {
+            if record.needs_source_repair()
+                || record.candidate != head
+                || record.publication_rebase.is_none()
+                || !association
+                    .verification_source_unchanged(&record)
+                    .map_err(std::io::Error::other)?
+            {
                 continue;
             }
             association
@@ -2206,7 +2234,7 @@ impl GitClient {
                 continue;
             }
             association
-                .validate_verification(&record)
+                .validate_verification_checkout(&record)
                 .map_err(std::io::Error::other)?;
             let reference = format!(
                 "refs/loom/verification/{}/{}",

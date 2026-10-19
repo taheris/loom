@@ -2898,6 +2898,63 @@ async fn publication_rebase_recovery_preserves_source_and_replays_unfinished_tra
 }
 
 #[tokio::test]
+async fn startup_preserves_repair_checkout_with_new_commits_without_replaying_publication()
+-> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let integration = loom_path(repo.path());
+    let base = loom_driver::git::sync_head_commit_sha(&integration)?;
+    std::fs::write(integration.join("candidate.txt"), "rejected\n")?;
+    loom_driver::git::commit_all_in(&integration, "candidate")?;
+    let candidate = loom_driver::git::sync_head_commit_sha(&integration)?;
+    let id = BeadId::new("lm-rstr")?;
+    let label = SpecLabel::new("gate")?;
+    let source = client.create_worktree(&label, &id).await?;
+    client
+        .preserve_verification_candidate(&id, &candidate)
+        .await?;
+    let association = loom_driver::workspace::Association::resolve(repo.path())?;
+    let record =
+        association.begin_verification(id, label, None, base.clone(), candidate.clone())?;
+    std::fs::write(source.path.join("repair.txt"), "retained repair\n")?;
+    loom_driver::git::commit_all_in(&source.path, "repair candidate")?;
+    let repair_head = loom_driver::git::sync_head_commit_sha(&source.path)?;
+    assert!(association.validate_verification(&record).is_err());
+    assert!(client.has_pending_verification_tip().await?);
+    let record = association.reconcile_verification_source(&record)?;
+    assert!(record.needs_source_repair());
+    assert_eq!(record.semantic_failures, 0);
+    association.await_verification_repair(&record, "semantic rejection".into(), None)?;
+    let mut record = association.verification_continuations()?.remove(0);
+    assert!(record.publication_rebase.is_none());
+    // Older retained repair records can still carry an obsolete publication transaction.
+    record.publication_rebase = Some(loom_driver::workspace::PublicationRebase {
+        before: candidate.clone(),
+        onto: base,
+        after: None,
+    });
+    association.append_verification(&record)?;
+    client.recover_publication_rebase().await?;
+    assert!(!client.refresh_pending_publication_rebase().await?);
+    assert!(client.has_pending_verification_tip().await?);
+    assert_eq!(
+        loom_driver::git::sync_head_commit_sha(&source.path)?,
+        repair_head
+    );
+    assert_eq!(
+        loom_driver::git::sync_head_commit_sha(&integration)?,
+        candidate
+    );
+    assert_eq!(association.verification_continuations()?.len(), 1);
+    let saved = source.path.with_extension("saved");
+    std::fs::rename(&source.path, &saved)?;
+    std::fs::create_dir(&source.path)?;
+    std::fs::create_dir(source.path.join(".git"))?;
+    assert!(client.has_pending_verification_tip().await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn publication_rebase_recovery_preserves_unattributed_independent_commit() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;

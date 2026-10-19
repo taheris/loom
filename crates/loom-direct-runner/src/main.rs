@@ -57,7 +57,8 @@ async fn run(cli: Cli) -> Result<(), RunnerError> {
         })?;
 
     let bytes = std::fs::read(&path).map_err(RunnerError::Io)?;
-    let config: SpawnConfig = serde_json::from_slice(&bytes).map_err(RunnerError::EncodeJson)?;
+    let config: SpawnConfig =
+        SpawnConfig::from_wrix_slice(&bytes).map_err(RunnerError::EncodeJson)?;
     info!(
         spawn_config = %path.display(),
         workspace = %config.workspace.display(),

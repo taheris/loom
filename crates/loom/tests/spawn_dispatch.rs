@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use loom_driver::agent::SpawnConfig;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
@@ -510,7 +511,7 @@ fn enable_workspace_sccache(workspace: &Path) -> PathBuf {
 fn assert_spawn_config_uses_sccache(spawn_copy: &Path, host_cache: &Path) {
     let bytes = std::fs::read(spawn_copy).expect("shim should copy spawn-config aside");
     let cfg: loom_driver::agent::SpawnConfig =
-        serde_json::from_slice(&bytes).expect("spawn-config must deserialize");
+        SpawnConfig::from_wrix_slice(&bytes).expect("spawn-config must deserialize");
     let mount = cfg
         .mounts
         .iter()
@@ -740,7 +741,7 @@ fn wrix_spawn_invocation_records_correct_argv() {
         "image digest belongs to the selected ProfileConfig, not SpawnConfig: {raw}",
     );
     let cfg: loom_driver::agent::SpawnConfig =
-        serde_json::from_slice(&bytes).expect("spawn-config must deserialize");
+        SpawnConfig::from_wrix_slice(&bytes).expect("spawn-config must deserialize");
     assert_eq!(
         cfg.image_ref, "localhost/wrix-rust-pi:test",
         "spawn-config image_ref must match the resolved profile image",

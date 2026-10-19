@@ -95,7 +95,10 @@ esac
         } else {
             scratch.path().to_path_buf()
         };
-        assert_eq!(json["scratch_dir"], expected_scratch.to_str().unwrap());
+        assert_eq!(
+            json["extensions"]["loom"]["scratch_dir"],
+            expected_scratch.to_str().unwrap()
+        );
         assert_eq!(json["workspace"], workspace.path().to_str().unwrap());
         let mut session = session.prompt("test").await.unwrap();
         loop {

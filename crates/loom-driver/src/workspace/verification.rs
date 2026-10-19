@@ -220,6 +220,7 @@ impl Association {
                 })?;
         }
         record.repair_failure = failure;
+        record.publication_rebase = None;
         record.phase = Phase::Repair;
         record.repair_detail = Some(detail);
         self.append_verification(&record)
@@ -250,23 +251,54 @@ impl Association {
         self.recheck()
     }
 
+    /// Reconcile source edits as unfinished repair, never as verified coverage.
+    ///
+    /// # Errors
+    /// Rejects replaced checkouts or unavailable retained history.
+    pub fn reconcile_verification_source(
+        &self,
+        record: &VerificationContinuation,
+    ) -> Result<VerificationContinuation, Error> {
+        self.validate_verification_checkout(record)?;
+        if record.needs_source_repair() || self.verification_source_unchanged(record)? {
+            return Ok(record.clone());
+        }
+        let mut record = record.clone();
+        record.phase = Phase::Repair;
+        record.publication_rebase = None;
+        record.repair_detail = Some(
+            "Source checkout changed after candidate capture; retained candidate and source edits require fresh implementation verification".into(),
+        );
+        self.append_verification(&record)?;
+        Ok(record)
+    }
+
+    /// Check completed source content while requiring its original checkout identity.
+    ///
+    /// # Errors
+    /// Rejects replaced checkout storage or unavailable Git state.
+    pub fn verification_source_unchanged(
+        &self,
+        record: &VerificationContinuation,
+    ) -> Result<bool, Error> {
+        self.validate_verification_checkout(record)?;
+        let path = self
+            .operator()
+            .join(".loom/beads")
+            .join(record.bead.as_str());
+        let unchanged = sync_head_commit_sha(&path).map_err(std::io::Error::other)?
+            == record.source_head
+            && head_tree_oid_sync(&path).map_err(std::io::Error::other)? == record.source_tree;
+        self.recheck()?;
+        Ok(unchanged)
+    }
+
     /// Require the same independent source checkout and immutable completed source.
     ///
     /// # Errors
     /// Rejects path/device/inode replacement or changed source commits/trees.
     pub fn validate_verification(&self, record: &VerificationContinuation) -> Result<(), Error> {
-        self.recheck()?;
-        let path = self
-            .operator()
-            .join(".loom/beads")
-            .join(record.bead.as_str());
-        let directory = Directory::open(&path)?;
-        let git = directory.child(Path::new(".git"))?;
-        if Identity::from_stat(&directory.stat()?) != record.directory
-            || Identity::from_stat(&git.stat()?) != record.git
-            || sync_head_commit_sha(&path).map_err(std::io::Error::other)? != record.source_head
-            || head_tree_oid_sync(&path).map_err(std::io::Error::other)? != record.source_tree
-        {
+        if !self.verification_source_unchanged(record)? {
             return Err(Error::Association {
                 reason: "verification source checkout changed; preserved candidate requires reconciliation",
             });

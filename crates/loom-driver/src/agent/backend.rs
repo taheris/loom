@@ -193,6 +193,53 @@ pub struct SpawnConfig {
     pub launcher_env: Vec<(String, String)>,
 }
 
+impl SpawnConfig {
+    /// Encode launch fields separately from Loom's opaque consumer extension.
+    ///
+    /// # Errors
+    /// Returns JSON serialization errors.
+    pub fn to_wrix_json(&self) -> Result<serde_json::Value, serde_json::Error> {
+        let mut consumer = serde_json::to_value(self)?;
+        let mut launch = serde_json::Map::new();
+        if let Some(fields) = consumer.as_object_mut() {
+            for key in [
+                "image_ref",
+                "image_source",
+                "image_source_kind",
+                "workspace",
+                "env",
+                "agent_args",
+                "mounts",
+            ] {
+                if let Some(value) = fields.remove(key) {
+                    launch.insert(key.into(), value);
+                }
+            }
+        }
+        launch.insert("extensions".into(), serde_json::json!({"loom": consumer}));
+        Ok(serde_json::Value::Object(launch))
+    }
+
+    /// Decode Wrix launch data and its Loom consumer extension.
+    ///
+    /// # Errors
+    /// Returns malformed or incomplete configuration errors.
+    pub fn from_wrix_slice(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+        if let Some(fields) = value.as_object_mut()
+            && let Some(mut extensions) = fields.remove("extensions")
+            && let Some(consumer) = extensions
+                .get_mut("loom")
+                .and_then(serde_json::Value::as_object_mut)
+        {
+            for (key, value) in std::mem::take(consumer) {
+                fields.entry(key).or_insert(value);
+            }
+        }
+        serde_json::from_value(value)
+    }
+}
+
 /// Wrix image source install path selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -446,6 +493,48 @@ mod tests {
             stall_warn_interval: None,
             launcher_env: Vec::new(),
         }
+    }
+
+    #[test]
+    fn wrix_envelope_separates_launch_fields_and_round_trips_consumer_state() {
+        let mut config = sample_config(None);
+        config.model_id = Some("test-model".into());
+        config.thinking_level = Some(ThinkingLevel::High);
+        config.shutdown_grace = Some(Duration::from_secs(7));
+        config.launcher_env = vec![("WRIX_SIGNING_KEY".into(), "/secret/key".into())];
+        let wire = config.to_wrix_json().expect("encode envelope");
+        assert_eq!(
+            wire.as_object()
+                .expect("object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "agent_args",
+                "env",
+                "extensions",
+                "image_ref",
+                "image_source",
+                "image_source_kind",
+                "workspace"
+            ]
+        );
+        assert_eq!(
+            wire["extensions"]["loom"]["initial_prompt"],
+            config.initial_prompt
+        );
+        assert_eq!(wire["extensions"]["loom"]["model_id"], "test-model");
+        let bytes = serde_json::to_vec(&wire).expect("encode");
+        assert!(!String::from_utf8_lossy(&bytes).contains("/secret/key"));
+        let decoded = SpawnConfig::from_wrix_slice(&bytes).expect("decode envelope");
+        assert_eq!(decoded.workspace, config.workspace);
+        assert_eq!(decoded.env, config.env);
+        assert_eq!(decoded.initial_prompt, config.initial_prompt);
+        assert_eq!(decoded.repin.orientation, config.repin.orientation);
+        assert_eq!(decoded.scratch_dir, config.scratch_dir);
+        assert_eq!(decoded.model_id, config.model_id);
+        assert_eq!(decoded.thinking_level, config.thinking_level);
+        assert_eq!(decoded.shutdown_grace, config.shutdown_grace);
     }
 
     /// An absent model preserves the wire shape expected by older launchers.
