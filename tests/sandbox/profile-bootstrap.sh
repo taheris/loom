@@ -50,7 +50,7 @@ git init -q -b main
 git remote add origin "$fixture/origin.git"
 git config user.name 'Isolated profile bootstrap'
 git config user.email fixture@example.invalid
-"$wrix_bin" init --offline --no-hooks --sign --key bootstrap
+"$wrix_bin" init repo --offline --no-hooks --sign --key bootstrap
 printf '.loom/\n.wrix/\n.beads/\n' > .gitignore
 printf '[package]\nname="bootstrap-fixture"\nversion="0.0.0"\nedition="2024"\n' > Cargo.toml
 printf 'pub fn fixture() {}\n' > src/lib.rs

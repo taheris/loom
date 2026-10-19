@@ -121,7 +121,7 @@ spawning an agent. Repository mode also rejects ambient `GIT_SSH_COMMAND` and
 `GIT_SSH` overrides. Diagnostics identify `--host-key` as the sole ambient-host
 opt-in.
 
-After resolution, Loom runs `wrix init --offline --no-hooks --key <key-name>` in
+After resolution, Loom runs `wrix init repo --offline --no-hooks --key <key-name>` in
 the selected checkout, exposing key paths only to that child. Loop startup
 selects `.loom/integration`; other Wrix-bearing commands select their active
 workflow checkout. Wrix installs context-stable repository-local transport and
@@ -511,7 +511,7 @@ for worker feedback.
 
 - Every non-loop Wrix-bearing command requires both repository deploy and
   signing keys by default and invokes
-  `wrix init --offline --no-hooks     --key <key-name>` in its active checkout
+  `wrix init repo --offline --no-hooks     --key <key-name>` in its active checkout
   before selecting beads or launching Wrix
   [test](all_non_loop_wrix_launch_surfaces_preflight_repository_policy)
 

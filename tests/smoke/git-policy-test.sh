@@ -22,7 +22,7 @@ test_smoke_git_tools_initialize_repository_signing() {
     git remote add origin "$fixture/origin.git"
     git config user.name "Smoke Git Policy"
     git config user.email smoke@example.com
-    "$wrix_bin" init --offline --no-hooks --sign --key smoke
+    "$wrix_bin" init repo --offline --no-hooks --sign --key smoke
 
     [[ "$(git config --local gpg.format)" == "ssh" ]]
     [[ "$(git config --local gpg.ssh.program)" == "wrix-git-sign" ]]
@@ -44,7 +44,7 @@ test_smoke_policy_preserves_launch_grants_in_bead_clone() {
     cd "$fixture/bead"
     git config user.name "Smoke Git Policy"
     git config user.email smoke@example.com
-    "$wrix_bin" init --offline --no-hooks --key smoke
+    "$wrix_bin" init repo --offline --no-hooks --key smoke
     [[ "$(git config --local commit.gpgsign)" == "true" ]]
     git commit --allow-empty -q -m "Verify cloned smoke repository signing"
     git verify-commit HEAD

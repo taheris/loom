@@ -91,14 +91,14 @@ pub enum GitError {
         source: io::Error,
     },
 
-    /// `wrix init --offline` failed in {workdir} with status {status}: {detail}
+    /// `wrix init repo --offline` failed in {workdir} with status {status}: {detail}
     WrixInit {
         workdir: PathBuf,
         status: i32,
         detail: String,
     },
 
-    /// `wrix init --offline` left invalid repository Git policy in {workdir}: {detail}
+    /// `wrix init repo --offline` left invalid repository Git policy in {workdir}: {detail}
     WrixPolicyInvalid { workdir: PathBuf, detail: String },
 
     /// cannot resolve canonical wrix.prekHooks hooks directory — set $WRIX_PREK_HOOKS or enter a wrix devshell that configures core.hooksPath

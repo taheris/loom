@@ -271,7 +271,7 @@ chmod +x .git/wrix/git-ssh
     assert!(
         invocations
             .lines()
-            .all(|line| line == "init --offline --no-hooks --sign --key repo-key"),
+            .all(|line| line == "init repo --offline --no-hooks --sign --key repo-key"),
         "unexpected policy invocation: {invocations}",
     );
 }
@@ -415,7 +415,7 @@ chmod +x .git/wrix/git-ssh
         "wrix init must target the integration clone: {log}",
     );
     assert!(
-        log.contains("args=init --offline --no-hooks --sign --key repo-key"),
+        log.contains("args=init repo --offline --no-hooks --sign --key repo-key"),
         "unexpected wrix init argv: {log}",
     );
     assert!(log.contains(&format!("deploy={}", deploy_key.display())));

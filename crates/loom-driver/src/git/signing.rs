@@ -1,7 +1,7 @@
 //! Repository Git isolation and rerere configuration.
 //!
 //! `loom loop` resolves repository keys before bead selection, then delegates
-//! repository-local transport and signing policy to `wrix init`. Wrix helper
+//! repository-local transport and signing policy to `wrix init repo`. Wrix helper
 //! tokens are stable across the host and container contexts in which bead
 //! clones run; private host paths are passed only to Wrix child processes.
 //!
@@ -141,6 +141,7 @@ impl RepoGitPolicy {
         let output = command
             .args([
                 "init",
+                "repo",
                 "--offline",
                 "--no-hooks",
                 "--sign",
@@ -191,7 +192,7 @@ impl RepoGitPolicy {
         env
     }
 
-    /// Allowed-signers file created by `wrix init` for repository mode.
+    /// Allowed-signers file created by `wrix init repo` for repository mode.
     pub fn allowed_signers_path(&self, workspace: &Path) -> Option<PathBuf> {
         (self.mode == KeyMode::Repository).then(|| workspace.join(".git/wrix/allowed_signers"))
     }
