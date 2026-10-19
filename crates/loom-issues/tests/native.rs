@@ -31,6 +31,7 @@ mod native {
         async fn new() -> Self {
             let binary = PathBuf::from(
                 std::env::var_os("LOOM_ISSUES_BD_BIN")
+                    .or_else(|| option_env!("LOOM_ISSUES_BD_BIN").map(OsString::from))
                     .expect("set LOOM_ISSUES_BD_BIN to the pinned Beads executable"),
             );
             assert!(

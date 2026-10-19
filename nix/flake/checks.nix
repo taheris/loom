@@ -145,6 +145,7 @@
           paths = []
           [env]
           LOOM_PREK_BIN = { value = "${import ../prek.nix { inherit pkgs; }}/bin/prek", force = true }
+          LOOM_ISSUES_BD_BIN = { value = "${pkgs.beads}/bin/bd", force = true }
         '').overrideAttrs
           {
             passthru = {

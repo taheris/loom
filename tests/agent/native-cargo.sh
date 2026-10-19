@@ -63,6 +63,11 @@ fi
 SH
 chmod +x "$fixture/bin/nix"
 export PATH="$fixture/bin:$PATH"
+grep -v '^LOOM_ISSUES_BD_BIN = ' "$config" > "$fixture/legacy-issues-config.toml"
+bash scripts/configure-cargo-patches.sh "$fixture/legacy-issues-config.toml" "$version" "$checksum"
+[[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
+[[ -s "$NIX_PATCH_BUILD_CALLS" ]]
+rm "$NIX_PATCH_BUILD_CALLS"
 cat > Cargo.lock <<'TOML'
 version = 4
 [[package]]

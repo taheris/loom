@@ -12,8 +12,10 @@ if [[ -n "$config" && -n "${2:-}" ]]; then
         config=""
     fi
 fi
-if [[ -n "$config" ]] && ! grep -q '^LOOM_PREK_BIN = ' "$config"; then
-    config=""
+if [[ -n "$config" ]]; then
+    if ! grep -q '^LOOM_PREK_BIN = ' "$config" || ! grep -q '^LOOM_ISSUES_BD_BIN = ' "$config"; then
+        config=""
+    fi
 fi
 if [[ -z "$config" ]]; then
     mkdir -p "$repo_root/.loom"

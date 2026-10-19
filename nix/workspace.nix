@@ -72,6 +72,7 @@ let
 
       [env]
       LOOM_PREK_BIN = { value = "${hookRunner}/bin/prek", force = true }
+      LOOM_ISSUES_BD_BIN = { value = "${pkgs.beads}/bin/bd", force = true }
     '').overrideAttrs
       {
         passthru = {
