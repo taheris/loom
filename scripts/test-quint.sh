@@ -52,7 +52,22 @@ case "$1" in
     printf '%s\n' "$receipt"
     exit 0
     ;;
-  provisioning-and-batching | bridge-smoke)
+  provisioning-and-batching)
+    : "${LOOM_QUINT_OWNER_SOURCE:?missing immutable owner inputs}"
+    : "${LOOM_QUINT_OWNER_SOLVER:?missing bounded owner solver}"
+    for input in specs/gate/{model,domain,reference,witnesses}.qnt specs/gate/{campaign,apalache}.json specs/gate/README.md scripts/quint-{model,symbolic}.sh; do
+      if [[ ! -s "$LOOM_QUINT_OWNER_SOURCE/$input" ]]; then
+        printf 'test-quint: missing owner input %s\n' "$input" >&2
+        exit 1
+      fi
+    done
+    if [[ ! -x "$LOOM_QUINT_OWNER_SOLVER" ]]; then
+      printf 'test-quint: bounded owner solver unavailable\n' >&2
+      exit 1
+    fi
+    campaigns=(routine bridge-replay)
+    ;;
+  bridge-smoke)
     campaigns=(routine bridge-replay)
     ;;
   model | reference-equivalence | cache-model | witnesses)
