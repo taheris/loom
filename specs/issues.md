@@ -133,7 +133,7 @@ using a database or subprocess does not itself make a test host-only.
   parentage, bonds, queries, dependency graphs, readiness, progress, closure,
   and declared synchronization behavior through the same typed contract.
   Unknown/unsupported values fail without lossy mapping or invented authority.
-  [test?](issues_shared_contract_round_trips_operations)
+  [test](issues_shared_contract_round_trips_operations)
 
 - Actual adapter failures distinguish rejected/conflicting, unsupported,
   transport, and uncertain outcomes; timeout/cancellation and partial mutations
@@ -144,18 +144,18 @@ using a database or subprocess does not itself make a test host-only.
 
 - Lightweight fixtures use no Beads/Dolt binary, database startup or subprocess,
   and exercise real state/graph operations with isolated deterministic state.
-  [test?](lightweight_tracking_fixtures_need_no_native_database)
+  [test](lightweight_tracking_fixtures_need_no_native_database)
 
 - Shared conformance runs against both lightweight and isolated pinned-Beads
   backends, including targeted metadata preservation, graph/readiness rules,
   stale writes, interrupted operations and uncertain outcomes. Backend-specific
   differences remain explicit rather than silently strengthened by the fake.
-  [test?](tracking_conformance_covers_lightweight_and_pinned_beads)
+  [test](tracking_conformance_covers_lightweight_and_pinned_beads)
 
 - Isolated Beads adapter and assembly tests exercise real argv/JSON, native
   graph guards, shared-state visibility and synchronization failures; they do
   not infer production interoperability from in-process conformance alone.
-  [test?](beads_tracking_adapter_retains_native_interoperability_coverage)
+  [test](beads_tracking_adapter_retains_native_interoperability_coverage)
 
 ### Workflow consumption
 

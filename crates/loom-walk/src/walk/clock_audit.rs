@@ -100,6 +100,17 @@ const CLOCK_BOUNDARIES: &[Permit] = &[
 
 const EXCEPTIONS: &[Exception] = &[
     Exception {
+        path: "crates/loom-issues/tests/native.rs",
+        function: "run",
+        operation: Operation::TokioTimeout,
+        occurrences: 1,
+        boundary: Boundary::ProcessLifecycle,
+        justification: "Pinned Beads subprocess interoperability requires OS completion without importing Loom runtime clocks into the public crate.",
+        upper_deadline: "Each native invocation has a caller-supplied budget, defaulting to sixty seconds.",
+        cleanup: "Command kill_on_drop terminates the embedded Beads child when the future is dropped.",
+        deterministic_companion: "relationship_faults_preserve_before_and_after_write_boundaries",
+    },
+    Exception {
         path: "crates/loom/tests/common/tune_worker.rs",
         function: "startup",
         operation: Operation::TokioTimeout,

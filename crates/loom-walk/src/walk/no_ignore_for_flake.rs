@@ -9,6 +9,19 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "TST-3 #[ignore] is limited to enumerated process entry points";
 const ALLOWLIST: &[(&str, &str)] = &[
+    // The issues-native-conformance Nix check supplies pinned Beads to these isolated fixtures.
+    (
+        "crates/loom-issues/tests/native.rs",
+        "tracking_conformance_covers_lightweight_and_pinned_beads",
+    ),
+    (
+        "crates/loom-issues/tests/native.rs",
+        "native_multi_id_status_predicates_do_not_make_updates_atomic",
+    ),
+    (
+        "crates/loom-issues/tests/native.rs",
+        "beads_tracking_adapter_retains_native_interoperability_coverage",
+    ),
     // Replay acceptance tests re-execute this worker with isolated subprocess environment.
     ("crates/loom/tests/tune_cli.rs", "tune_replay_clock_worker"),
     (
