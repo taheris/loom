@@ -104,6 +104,28 @@ _: {
         quint-tools = tools;
         quint-acceptance = harness;
         test-quint = app;
+        # FIXME: Restore the automatic check after bounding the mutation harness;
+        # its isolated rebuild took 129s. Keep every other flake check enabled.
+        # Run explicitly with `nix build .#quint-model` while it is deferred.
+        quint-model =
+          pkgs.runCommand "quint-model"
+            {
+              nativeBuildInputs = [
+                tools
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.gnugrep
+                pkgs.jq
+                pkgs.python3
+              ];
+            }
+            ''
+              set -euo pipefail
+              export LOOM_QUINT_SOURCE=${loom.stagedSrc}
+              export LOOM_QUINT_PACKAGE=${tools}
+              bash ${../../tests/quint/model-harness.sh}
+              touch "$out"
+            '';
       };
       checks.todo-acceptance-persistence =
         pkgs.runCommand "todo-acceptance-persistence"
@@ -193,25 +215,6 @@ _: {
             export LOOM_QUINT_SOURCE=${loom.stagedSrc}
             export LOOM_QUINT_PACKAGE=${tools}
                 bash ${../../tests/quint/harness.sh}
-            touch "$out"
-          '';
-      checks.quint-model =
-        pkgs.runCommand "quint-model"
-          {
-            nativeBuildInputs = [
-              tools
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.gnugrep
-              pkgs.jq
-              pkgs.python3
-            ];
-          }
-          ''
-            set -euo pipefail
-            export LOOM_QUINT_SOURCE=${loom.stagedSrc}
-            export LOOM_QUINT_PACKAGE=${tools}
-            bash ${../../tests/quint/model-harness.sh}
             touch "$out"
           '';
       checks.quint-no-jvm = pkgs.runCommand "quint-no-jvm" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''

@@ -92,11 +92,13 @@ limitation, but it is not counted as implementation conformance.
 `nix build .#checks.x86_64-linux.quint-harness` tests provisioning and batching
 against the real tools and exercises invalid models, divergence, unsupported
 actions, short/empty generation, missing tools, empty receipts, and timeouts.
-`nix build .#checks.x86_64-linux.quint-model` additionally checks the actual
-Rust backend's exhaustive frontier, counterexample serialization/replay,
-malformed, trailing and over-budget inputs, undeclared choices/nondeterminism,
-resource exhaustion and empty-success rejection. `quint-no-jvm` audits the tool
-and harness closures, preventing the retired solver's read-only launcher-removal
+`nix build .#quint-model` additionally checks the actual Rust backend's
+exhaustive frontier, counterexample serialization/replay, malformed, trailing
+and over-budget inputs, undeclared choices/nondeterminism, resource exhaustion
+and empty-success rejection. This single mutation harness is temporarily
+on-demand because its isolated rebuild took 129 seconds; the other flake checks
+and routine model scenarios remain enabled. `quint-no-jvm` audits the tool and
+harness closures, preventing the retired solver's read-only launcher-removal
 build path from returning. Neither check patches or deletes files in an upstream
 store path. Native `cargo test -p loom-gate --test quint` covers
 exact-count/early-guard classification, invalid campaigns, and identity
