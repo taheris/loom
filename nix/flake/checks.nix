@@ -552,6 +552,20 @@
 
       test-app-ignores-host-git-signing = testsDeriv.test-app-ignores-host-git-signing;
 
+      issues-native-conformance = craneLib.mkCargoDerivation {
+        pname = "issues-native-conformance";
+        version = "0.0.0";
+        src = stagedSrc;
+        inherit cargoArtifacts;
+        nativeBuildInputs = [ pkgs.git ];
+        LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+        doCheck = true;
+        doInstallCargoArtifacts = false;
+        buildPhaseCargoCommand = "cargo test --locked -p loom-issues --test native --no-run";
+        checkPhaseCargoCommand = "cargo test --locked -p loom-issues --test native -- --ignored";
+        installPhaseCommand = "touch $out";
+      };
+
       smoke-beads-fixture =
         pkgs.runCommand "smoke-beads-fixture"
           {
@@ -924,6 +938,7 @@
           worker-private-nix-api
           worker-transport-harness
           native-factory-private-nix
+          issues-native-conformance
           smoke-beads-fixture
           smoke-preflight-skips-runtime-build
           test-app-ignores-host-git-signing

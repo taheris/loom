@@ -40,6 +40,8 @@ pub enum Visibility {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Persistence {
     BackendManaged,
+    /// State survives handle replacement, but not the hosting process.
+    ProcessLifetime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
