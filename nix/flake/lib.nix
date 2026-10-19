@@ -123,23 +123,16 @@ in
         mkTreefmtConfig imageRustToolchain
       );
 
-      patchedWrixSrc = pkgs.applyPatches {
-        name = "wrix-src-loom-agent";
-        src = inputs.wrix;
-        patches = [
-          ../patches/wrix-claude-permission-prompt.patch
-          ../patches/wrix-git-helper-bash.patch
-          ../patches/wrix-known-hosts-store.patch
-        ];
-      };
-      wrixLib = import "${patchedWrixSrc}/lib" {
+      # Import upstream modules directly: no generated-source IFD boundary.
+      wrixSrc = inputs.wrix;
+      wrixLib = import "${wrixSrc}/lib" {
         inherit system;
         inherit (inputs) crane fenix;
         pkgs = wrixPkgs;
         linuxPkgs = wrixLinuxPkgs;
         treefmt = imageTreefmtWrapper;
       };
-      imagePiCodingAgent = import "${patchedWrixSrc}/lib/sandbox/pi.nix" {
+      imagePiCodingAgent = import "${wrixSrc}/lib/sandbox/pi.nix" {
         pkgs = wrixLinuxPkgs;
       };
       smokeMockPi = wrixLinuxPkgs.writeShellScriptBin "pi" ''
@@ -247,7 +240,7 @@ in
           loom
           loomBin
           nativeCargo
-          patchedWrixSrc
+          wrixSrc
           profileManifest
           rustProfile
           rustToolchain

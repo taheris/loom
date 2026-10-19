@@ -9,7 +9,7 @@ _:
       imagePiCodingAgent,
       loom,
       loomBin,
-      patchedWrixSrc,
+      wrixSrc,
       profileManifest,
       ...
     }:
@@ -29,7 +29,7 @@ _:
         sandbox-image = sandbox.image;
 
         wrixSrc = pkgs.runCommand "wrix-src" { } ''
-          cp -r ${patchedWrixSrc} $out
+          cp -r ${wrixSrc} $out
         '';
       };
     };

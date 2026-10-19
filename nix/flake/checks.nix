@@ -10,7 +10,7 @@
       nativeCargo,
       sandbox,
       profileManifest,
-      patchedWrixSrc,
+      wrixSrc,
       smokeSandbox,
       system,
       wrixLinuxPkgs,
@@ -239,7 +239,7 @@
         preCheck = ''
           export HOME=$(mktemp -d)
           export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-          export LOOM_AGENT_WRIX_SOURCE=${patchedWrixSrc}
+          export LOOM_AGENT_WRIX_SOURCE=${wrixSrc}
         '';
         # `--tree` (every verifier, no file filter) is the explicit scope
         # for a git-less build sandbox: the source artifact has no `.git`,
@@ -315,7 +315,7 @@
 
       known-hosts-preserves-store = pkgs.runCommand "known-hosts-preserves-store" { } ''
         set -euo pipefail
-        bash ${../../tests/sandbox/known-hosts-store.sh} ${patchedWrixSrc}/lib/sandbox/install-known-hosts.sh
+        bash ${../../tests/sandbox/known-hosts-store.sh} ${wrixSrc}/lib/sandbox/install-known-hosts.sh
         touch "$out"
       '';
 
@@ -334,14 +334,7 @@
             touch "$out"
           '';
 
-      # Test-only portability fix: build sandboxes need not contain /nix/var/nix.
-      # Keep production Wrix sources and image provisioning completely unchanged.
-      privateNixTestSrc = pkgs.applyPatches {
-        name = "wrix-private-nix-tests";
-        src = inputs.wrix;
-        patches = [ ../patches/wrix-private-nix-test-portability.patch ];
-      };
-      privateNixChecks = import "${privateNixTestSrc}/tests/sandbox/private-nix.nix" {
+      privateNixChecks = import "${wrixSrc}/tests/sandbox/private-nix.nix" {
         inherit pkgs;
         linuxPkgs = wrixLinuxPkgs;
         wrix = wrixLib;
@@ -421,7 +414,7 @@
           }
           ''
             set -euo pipefail
-            python3 ${../../tests/agent/entrypoint.py} ${patchedWrixSrc}
+            python3 ${../../tests/agent/entrypoint.py} ${wrixSrc}
             touch "$out"
           '';
 

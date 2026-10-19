@@ -16,8 +16,6 @@ EXPECTED_ARGS = {
     "pi": ["--mode", "rpc"],
     "claude": [
         "--dangerously-skip-permissions",
-        "--permission-prompt-tool",
-        "stdio",
         "--print",
         "--verbose",
         "--input-format",
@@ -134,20 +132,20 @@ sys.exit(23)
         path.write_text(f"#!{sys.executable}\n{body}")
         path.chmod(0o755)
 
-    def run(self):
-        return subprocess.run([BASH, str(self.entrypoint)], env=self.env,
+    def run(self, agent_args=()):
+        return subprocess.run([BASH, str(self.entrypoint), *agent_args], env=self.env,
                               capture_output=True, text=True, timeout=20, check=False)
 
 
 class Entrypoint(unittest.TestCase):
-    def check_runtime(self, agent, mutation=None):
+    def check_runtime(self, agent, mutation=None, agent_args=()):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(Path(directory), agent, mutation)
-            result = fixture.run()
+            result = fixture.run(agent_args)
             self.assertEqual(result.returncode, 23, result.stderr)
             observed = json.loads(result.stdout)
             self.assertEqual(observed["runtime"], agent)
-            self.assertEqual(observed["argv"], EXPECTED_ARGS[agent])
+            self.assertEqual(observed["argv"], EXPECTED_ARGS[agent] + list(agent_args))
             self.assertEqual((fixture.home / ".claude/settings.json").exists(), agent == "claude")
             self.assertEqual((fixture.home / ".pi/agent").exists(), agent == "pi")
 
@@ -201,9 +199,16 @@ class Entrypoint(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.check_runtime("pi", ('"$WRIX_AGENT_BIN" --mode rpc', '"$WRIX_AGENT_BIN" --mode text'))
 
-    def test_claude_verifier_rejects_missing_permission_tool(self):
+    def test_claude_client_opts_into_permission_prompts(self):
+        self.check_runtime("claude", agent_args=("--permission-prompt-tool", "stdio"))
+
+    def test_claude_verifier_rejects_dropped_client_arguments(self):
         with self.assertRaises(AssertionError):
-            self.check_runtime("claude", ("--permission-prompt-tool stdio", "--permission-prompt-tool wrong"))
+            self.check_runtime(
+                "claude",
+                ('--output-format stream-json \\\n    "$@"', "--output-format stream-json"),
+                ("--permission-prompt-tool", "stdio"),
+            )
 
     def test_claude_verifier_rejects_missing_bypass(self):
         with self.assertRaises(AssertionError):

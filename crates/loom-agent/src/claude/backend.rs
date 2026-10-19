@@ -144,6 +144,10 @@ impl ClaudeBackend {
 /// [`ScratchSession`]: loom_driver::scratch::ScratchSession
 pub(crate) fn prepare_runtime(config: &SpawnConfig) -> Result<runtime::Config, ProtocolError> {
     let mut config = config.clone();
+    // This backend answers control_request on stdin; generic Wrix clients do not.
+    config
+        .agent_args
+        .splice(0..0, ["--permission-prompt-tool".into(), "stdio".into()]);
     if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
         upsert_env(&mut config.env, "CLAUDE_CODE_OAUTH_TOKEN", &token);
     }
@@ -378,14 +382,18 @@ mod tests {
         assert_eq!(spawn_config_path, scratch.path().join("spawn-config.json"));
         assert!(spawn_config_path.exists());
 
-        // Round-trip the spawn-config file to confirm it carries the input
-        // unchanged — the wrapper consumes this exact JSON.
+        // The wrapper consumes this JSON: backend-owned permission transport
+        // precedes the caller arguments without mutating the original config.
         let bytes = std::fs::read(spawn_config_path).expect("read");
         let decoded: SpawnConfig = serde_json::from_slice(&bytes).expect("decode");
         assert_eq!(decoded.image_ref, cfg.image_ref);
         assert_eq!(decoded.image_source, cfg.image_source);
         assert_eq!(decoded.initial_prompt, cfg.initial_prompt);
-        assert_eq!(decoded.agent_args, cfg.agent_args);
+        assert_eq!(
+            decoded.agent_args,
+            ["--permission-prompt-tool", "stdio", "--print"],
+        );
+        assert_eq!(cfg.agent_args, ["--print"]);
     }
 
     #[test]

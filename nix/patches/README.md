@@ -107,3 +107,18 @@ tests through ordinary Cargo without changing the lockfile.
 Remove the overlay and native override once an upstream release passes these
 regressions without them. A patch-application failure after a dependency update
 requires review rather than silently falling back to the recovering parser.
+
+## Upstream Wrix sources
+
+Wrix `2ac6d00adaeb117b05c6e999d9ac8e048ec6ab26` incorporates the Git-helper Bash
+invocation, immutable-store known-hosts handling and private-Nix test
+portability fixes. Import its pinned modules directly; generated patched-source
+imports create an unnecessary import-from-derivation boundary. The downstream
+Wrix patches are removed, not the independent Cargo, Nextest or prek patches.
+
+Claude permission prompts are client-specific. Loom's Claude backend answers
+`control_request` messages on stdin and adds
+`"agent_args": ["--permission-prompt-tool", "stdio", ...]` to its spawn config.
+Generic Wrix entrypoints do not force that transport. The entrypoint contract
+checks both the unchanged default and explicit client argument forwarding,
+including a dropped-argument mutation control.
