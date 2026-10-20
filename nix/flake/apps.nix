@@ -485,6 +485,7 @@ _:
         test-profile-bootstrap = {
           type = "app";
           program = "${profileBootstrapApp}/bin/test-profile-bootstrap";
+          meta.description = "Verify profile bootstrap and native worker preparation";
         };
         test = {
           type = "app";
@@ -494,6 +495,7 @@ _:
         test-decision-admission = {
           type = "app";
           program = "${decisionAdmissionApp}/bin/test-decision-admission";
+          meta.description = "Verify decision admission against pinned native Beads";
         };
         test-required = {
           type = "app";

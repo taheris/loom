@@ -91,7 +91,9 @@ mod native {
                 .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
                 .env("GIT_COMMITTER_NAME", "Conformance")
                 .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
-                .env("BD_JSON_ENVELOPE", "1");
+                .env("BD_JSON_ENVELOPE", "1")
+                .env("BD_DISABLE_METRICS", "1")
+                .env("BD_DISABLE_EVENT_FLUSH", "1");
             command
         }
 
@@ -175,6 +177,18 @@ mod native {
                 })
             }
         }
+    }
+
+    #[tokio::test]
+    async fn native_fixture_keeps_telemetry_disabled() {
+        let native = Native::new().await;
+        let output = native.raw(&["metrics"]).await;
+        assert!(output.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("Anonymous usage metrics: OFF"),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 
     #[tokio::test]

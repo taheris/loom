@@ -566,7 +566,8 @@
         doCheck = true;
         doInstallCargoArtifacts = false;
         buildPhaseCargoCommand = "cargo test --locked -p loom-issues --test native --no-run";
-        checkPhaseCargoCommand = "cargo test --locked -p loom-issues --test native";
+        # Embedded Dolt fixtures must not compete for the builder's CPU and memory budget.
+        checkPhaseCargoCommand = "cargo test --locked -p loom-issues --test native -- --test-threads=1";
         installPhaseCommand = "touch $out";
       };
 
