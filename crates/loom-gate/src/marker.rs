@@ -540,6 +540,13 @@ mod tests {
             .to_path_buf()
     }
 
+    fn marker_cargo_command() -> Cmd {
+        let mut command = Cmd::new("cargo");
+        loom_driver::workspace::cargo::trusted_command(&mut command, &repo_root())
+            .expect("private marker CLI build storage");
+        command
+    }
+
     fn run_verify_marker_cli(workspace: &Path) -> std::process::Output {
         let _guard = LOOM_CLI_LOCK.lock().expect("loom cli lock");
         match std::env::var_os("CARGO_BIN_EXE_loom") {
@@ -548,7 +555,7 @@ mod tests {
                 .current_dir(workspace)
                 .output()
                 .expect("spawn loom gate verify-marker"),
-            None => Cmd::new("cargo")
+            None => marker_cargo_command()
                 .args(["run", "--quiet", "--manifest-path"])
                 .arg(repo_root().join("Cargo.toml"))
                 .args(["-p", "loom", "--bin", "loom", "--", "gate", "verify-marker"])
@@ -842,12 +849,20 @@ mod tests {
     /// The wrapper resolves `loom` through `PATH`, so its live CLI seam needs
     /// a transparent launcher when Cargo does not expose the binary directly.
     fn install_loom_cli_launcher(bin_dir: &Path) {
-        let exec = match std::env::var_os("CARGO_BIN_EXE_loom") {
-            Some(bin) => format!("exec {} \"$@\"", shell_single_quote(Path::new(&bin))),
-            None => format!(
-                "exec cargo run --quiet --manifest-path {} -p loom --bin loom -- \"$@\"",
+        let exec = if let Some(bin) = std::env::var_os("CARGO_BIN_EXE_loom") {
+            format!("exec {} \"$@\"", shell_single_quote(Path::new(&bin)))
+        } else {
+            let command = marker_cargo_command();
+            let target = command
+                .get_envs()
+                .find(|(key, _)| *key == "CARGO_TARGET_DIR")
+                .and_then(|(_, value)| value)
+                .expect("admitted marker target");
+            format!(
+                "export CARGO_TARGET_DIR={}\nexport CARGO_BUILD_TARGET_DIR=\"$CARGO_TARGET_DIR\" CARGO_BUILD_BUILD_DIR=\"$CARGO_TARGET_DIR\"\nexport RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER= CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=\nexec cargo run --quiet --manifest-path {} -p loom --bin loom -- \"$@\"",
+                shell_single_quote(Path::new(target)),
                 shell_single_quote(&repo_root().join("Cargo.toml")),
-            ),
+            )
         };
         install_executable(
             bin_dir,

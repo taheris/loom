@@ -41,6 +41,8 @@ fn external_consumer_fixture_survives_checkout_relocation() {
             "--message-format=json",
         ])
         .current_dir(&original)
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("CARGO_BUILD_BUILD_DIR")
         .env("CARGO_TARGET_DIR", fixture.path().join("target"))
         .output()
         .unwrap();
@@ -161,6 +163,8 @@ fn issues_external_consumer_preserves_extraction_boundary() {
     let output = Command::new(env!("CARGO"))
         .args(["check", "--offline", "-p", "consumer"])
         .current_dir(fixture.path())
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("CARGO_BUILD_BUILD_DIR")
         .env("CARGO_TARGET_DIR", fixture.path().join("target"))
         .output()
         .unwrap();

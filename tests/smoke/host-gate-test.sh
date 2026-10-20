@@ -4,7 +4,7 @@ set -euo pipefail
 # Real Loom, prek, Git and Wrix exercise the host gate without a container.
 wrix_bin="${1:?absolute Wrix launcher path is required}"
 pre_push_checks="${2:?pre-push wrapper path is required}"
-fixture=$(mktemp -d)
+fixture=$(mktemp -d "$(cd /tmp && pwd -P)/loom-host-gate.XXXXXXXX")
 trap 'rm -rf "$fixture"' EXIT
 export HOME="$fixture/home"
 export GIT_CONFIG_GLOBAL=/dev/null

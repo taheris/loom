@@ -13,12 +13,11 @@ integration_branch = "main"
 # Setting `sccache_dir` enables shared sccache. For bead and todo
 # container spawns, the directory is bind-mounted at
 # `sccache_container_path` and `SCCACHE_DIR` + `RUSTC_WRAPPER=sccache`
-# are set in container env. For host-side cargo invocations (loom's
-# gate-verify against the loom workspace; optionally the operator's
-# `nix develop`), the same env vars are exported and cargo reads the
-# host directory directly — no mount, because there is no container
-# boundary. Leaving `sccache_dir` unset disables the feature entirely;
-# every cargo invocation pays full cold-build cost.
+# are set in container env. Compatible beads share this one worker pool.
+# Private Wrix tool-cache policy omits the shared projection.
+# Trusted Gate commands use private targets and explicitly disable
+# compiler caching rather than consuming worker-writable objects.
+# Leaving `sccache_dir` unset omits this additional worker cache mount.
 # `sccache_container_path` defaults to `/sccache` and is consulted only
 # when `sccache_dir` is set.
 # Worker-only Cargo reuse: "copy-on-write" (default), "off", or "allow-hardlinks".

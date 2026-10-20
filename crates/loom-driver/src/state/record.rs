@@ -8,6 +8,7 @@ use super::{CacheDb, CacheError};
 /// Closed set of local workflow record owners.
 #[derive(Debug, Clone, Copy)]
 pub enum RecordKind {
+    CargoTarget,
     DecisionInventory,
     DependencyWait,
     DecisionDisposition,
@@ -20,6 +21,7 @@ pub enum RecordKind {
 impl RecordKind {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::CargoTarget => "cargo-target",
             Self::DecisionInventory => "decision-inventory",
             Self::DependencyWait => "dependency-wait",
             Self::DecisionDisposition => "decision-disposition",

@@ -53,7 +53,11 @@ pub(super) fn read(path: &Path) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-pub(super) fn sharing_allowed(workspace: &Path) -> Result<bool, Error> {
+/// Read the worker\'s explicit cache-sharing choice without following policy symlinks.
+///
+/// # Errors
+/// Malformed or indirect policy is not permission to share.
+pub fn sharing_allowed(workspace: &Path) -> Result<bool, Error> {
     let path = workspace.join("wrix.toml");
     match fs::symlink_metadata(&path) {
         Ok(_) => {

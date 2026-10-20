@@ -668,7 +668,12 @@ impl InputResolver {
         let mut cmd = Command::new(head);
         cmd.arg("--print-inputs").args(tail);
         cmd.current_dir(&self.repo_root);
-        let output = match cmd.output() {
+        let output = match loom_driver::workspace::cargo::verifier_command(
+            &mut cmd,
+            &self.repo_root,
+        )
+        .and_then(|()| cmd.output())
+        {
             Ok(output) => output,
             Err(source) => {
                 let err = InputsError::Spawn {
@@ -693,7 +698,12 @@ impl InputResolver {
         let mut cmd = Command::new(head);
         cmd.args(tail);
         cmd.current_dir(&self.repo_root);
-        let output = match cmd.output() {
+        let output = match loom_driver::workspace::cargo::verifier_command(
+            &mut cmd,
+            &self.repo_root,
+        )
+        .and_then(|()| cmd.output())
+        {
             Ok(output) => output,
             Err(source) => {
                 let err = InputsError::Spawn {
@@ -1008,6 +1018,12 @@ enum InputQueryDocument {
 
 /// Capture one opted-in query without collapsing errors into empty inputs.
 fn query_inputs(mut cmd: Command, command: &str) -> Result<InputQueryDocument, String> {
+    let root = cmd
+        .get_current_dir()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    loom_driver::workspace::cargo::verifier_command(&mut cmd, &root)
+        .map_err(|error| format!("input-query output isolation unavailable: {error}"))?;
     let output = cmd.output().map_err(|source| {
         let err = InputsError::Spawn {
             command: command.to_owned(),

@@ -1,5 +1,6 @@
 //! Checked invocation-local host checkout context; no local file is permanent authority.
 
+pub mod cargo;
 pub mod external;
 mod launch;
 mod verification;

@@ -1724,7 +1724,11 @@ fn run_project_hook_lane(workspace: &Path, args: &GateScope) -> anyhow::Result<i
         )?;
         return Ok(78);
     };
-    let status = match std::process::Command::new(hook_runner)
+    let mut command = std::process::Command::new(hook_runner);
+    if std::env::var_os(loom_driver::agent::LOOM_INSIDE_ENV).is_none() {
+        loom_driver::workspace::cargo::trusted_command(&mut command, workspace)?;
+    }
+    let status = match command
         .current_dir(workspace)
         .env_remove("PREK_QUIET")
         .env("LOOM_PARENT_DIFF_GATE", "1")
@@ -3776,6 +3780,7 @@ async fn dispatch_for_slot(
     let worker::Worker {
         spawn: mut spawn_config,
         scratch,
+        cargo_namespace,
         ..
     } = *worker;
 
@@ -3816,6 +3821,7 @@ async fn dispatch_for_slot(
     )
     .await;
     drop(scratch);
+    drop(cargo_namespace);
     let (result, marker) =
         loom_workflow::agent::admit_session_output(result, &output, output::Phase::Loop);
     Ok(loom_workflow::r#loop::reconcile_session(

@@ -98,6 +98,7 @@ impl Association {
         self.deny_source(&workspace)?;
         for mount in mounts {
             self.validate_mount(&mount.host_path, &mount.container_path)?;
+            self.validate_cargo_mount(Some(&workspace), &mount.host_path)?;
         }
         let profile = profile.ok_or(Error::Association {
             reason: "worker launch has no selected profile configuration",
@@ -109,7 +110,9 @@ impl Association {
         let profile: Profile =
             serde_json::from_slice(&std::fs::read(&profile)?).map_err(std::io::Error::other)?;
         for mount in profile.profile.mounts {
-            self.validate_mount(&expand_source(&mount.source)?, &mount.dest)?;
+            let source = expand_source(&mount.source)?;
+            self.validate_mount(&source, &mount.dest)?;
+            self.validate_cargo_mount(None, &source)?;
         }
         Ok(())
     }
@@ -121,6 +124,47 @@ impl Association {
     pub fn admit_mount(&self, mount: &MountSpec) -> Result<(), Error> {
         self.recheck()?;
         self.validate_mount(&mount.host_path, &mount.container_path)
+    }
+
+    fn validate_cargo_mount(&self, workspace: Option<&Path>, original: &Path) -> Result<(), Error> {
+        let root = self.operator().join(".loom/cargo-artifacts");
+        let source = resolved_path(original)?;
+        if overlaps(original, &root) || overlaps(&source, &root) {
+            // Profiles cannot name even an old generation owned by the same bead.
+            // Only the driver's per-launch projection may expose generated output.
+            let workspace = workspace.ok_or_else(|| Error::Mount {
+                path: source.clone(),
+            })?;
+            let owner = workspace.file_name().ok_or(Error::Association {
+                reason: "Cargo worker has no owner",
+            })?;
+            let namespace_root = root.join("worker").join(owner);
+            let relative = source
+                .strip_prefix(namespace_root)
+                .map_err(|_| Error::Mount {
+                    path: source.clone(),
+                })?;
+            let parts: Vec<_> = relative.components().collect();
+            if parts.len() != 3
+                || !parts
+                    .iter()
+                    .all(|part| matches!(part, Component::Normal(_)))
+                || parts[0].as_os_str().as_encoded_bytes().len() != 64
+                || !parts[0]
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .iter()
+                    .all(u8::is_ascii_hexdigit)
+                || !parts[1]
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .starts_with(b"generation-")
+                || parts[2].as_os_str() != "target"
+            {
+                return Err(Error::Mount { path: source });
+            }
+        }
+        Ok(())
     }
 
     fn validate_mount(&self, source: &Path, destination: &Path) -> Result<(), Error> {
@@ -148,6 +192,10 @@ impl Association {
             sidecar(".init.lock"),
             self.integration().to_path_buf(),
             self.operator().join(".git"),
+            self.operator().join("target"),
+            self.operator().join(".loom/trusted-cargo"),
+            super::cargo::trusted_root()?,
+            std::env::current_exe()?,
         ] {
             if overlaps(source, &protected) {
                 return Err(Error::Mount {

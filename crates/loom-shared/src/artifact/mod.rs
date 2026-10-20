@@ -59,6 +59,114 @@ pub struct Report {
     pub copied_bytes: u64,
 }
 
+pub use context::sharing_allowed;
+
+/// A worker checkout and its driver-selected generated target.
+#[derive(Debug, Clone)]
+pub struct Location {
+    pub workspace: PathBuf,
+    pub target: PathBuf,
+}
+
+/// Seed an absent managed worker target; records and cached bytes confer no disposal authority.
+///
+/// # Errors
+/// Rejects indirect storage, targets outside their worker domain, and invalid reuse inputs.
+pub fn prepare_managed(
+    beads: &Path,
+    recipient: &Location,
+    image: &Path,
+    reuse: Reuse,
+    donors: &[Location],
+) -> Result<Outcome, Error> {
+    let beads = context::directory(beads)?;
+    check_managed(&beads, recipient)?;
+    if fs::symlink_metadata(&recipient.target).is_ok() {
+        return Ok(Outcome::Preserved);
+    }
+    if reuse == Reuse::Off {
+        return Ok(Outcome::Disabled);
+    }
+    if !sharing_allowed(&recipient.workspace)? {
+        return Ok(Outcome::Private);
+    }
+    let expected = context::Stamp {
+        fingerprint: context::fingerprint(&recipient.workspace, image)?,
+        reuse,
+    };
+    let packages = catalog::Packages::read(&recipient.workspace.join("Cargo.lock"))?;
+    for donor in donors {
+        if donor.target == recipient.target {
+            continue;
+        }
+        let result = check_managed(&beads, donor).and_then(|()| {
+            seed(
+                &donor.workspace,
+                &donor.target,
+                &recipient.target,
+                image,
+                &expected,
+                &packages,
+                &transfer::Native,
+            )
+        });
+        match result {
+            Ok(Some(report)) => return Ok(Outcome::Seeded(report)),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(donor = ?donor.target, ?error, "managed target donor skipped");
+            }
+        }
+    }
+    let parent = recipient
+        .target
+        .parent()
+        .ok_or_else(|| Error::Storage(recipient.target.clone()))?;
+    let stage = staging(parent)?;
+    expected.write(stage.path())?;
+    if publish(stage.path(), &recipient.target)? {
+        Ok(Outcome::Cold)
+    } else {
+        Ok(Outcome::Preserved)
+    }
+}
+
+fn check_managed(beads: &Path, location: &Location) -> Result<(), Error> {
+    let workspace = context::directory(&location.workspace)?;
+    if workspace.parent() != Some(beads) {
+        return Err(Error::Storage(workspace));
+    }
+    let root = beads
+        .parent()
+        .ok_or_else(|| Error::Storage(beads.into()))?
+        .join("cargo-artifacts/worker")
+        .join(
+            workspace
+                .file_name()
+                .ok_or_else(|| Error::Storage(workspace.clone()))?,
+        );
+    let parent = location
+        .target
+        .parent()
+        .ok_or_else(|| Error::Storage(location.target.clone()))?;
+    if !location.target.starts_with(&root)
+        || location
+            .target
+            .file_name()
+            .is_none_or(|name| name != "target")
+        || location.target.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+        || context::directory(parent)? != parent
+    {
+        return Err(Error::Storage(location.target.clone()));
+    }
+    Ok(())
+}
+
 /// Initialize an absent target using compatible direct worker siblings only.
 ///
 /// # Errors
@@ -107,7 +215,8 @@ fn prepare_with(
         }
         match seed(
             &sibling.path(),
-            &workspace,
+            &sibling.path().join("target"),
+            &target,
             image,
             &context,
             &packages,
@@ -132,7 +241,8 @@ fn prepare_with(
 
 fn seed(
     donor: &Path,
-    workspace: &Path,
+    source: &Path,
+    target: &Path,
     image: &Path,
     expected: &context::Stamp,
     packages: &catalog::Packages,
@@ -144,7 +254,7 @@ fn seed(
     {
         return Ok(None);
     }
-    let source = context::directory(&donor.join("target"))?;
+    let source = context::directory(source)?;
     let recorded = context::Stamp::read(&source)?;
     if recorded.reuse == Reuse::Off || recorded.fingerprint != expected.fingerprint {
         return Ok(None);
@@ -155,7 +265,11 @@ fn seed(
         Reuse::CopyOnWrite
     };
     let profiles = layout::locked_profiles(&source)?;
-    let stage = staging(workspace)?;
+    let stage = staging(
+        target
+            .parent()
+            .ok_or_else(|| Error::Storage(target.to_path_buf()))?,
+    )?;
     let mut report = Report::default();
     for profile in &profiles {
         let relative = profile
@@ -175,7 +289,7 @@ fn seed(
         return Err(Error::Storage(donor));
     }
     expected.write(stage.path())?;
-    if publish(stage.path(), &workspace.join("target"))? {
+    if publish(stage.path(), target)? {
         Ok(Some(report))
     } else {
         Ok(None)

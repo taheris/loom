@@ -336,7 +336,8 @@ fn build_pi_bridge_spawn_config(
     launcher_env: &[(String, String)],
 ) -> Result<SpawnConfig, ChatError> {
     let mut mounts: Vec<_> = dolt_socket_mount(workspace).into_iter().collect();
-    if let Some(spec) = sccache_mount(&cfg.loom)? {
+    let cache = loom_driver::workspace::cargo::shared_cache_config(&cfg.loom, workspace)?;
+    if let Some(spec) = sccache_mount(&cache)? {
         mounts.push(spec);
     }
     let mut spawn_config = crate::spawn::build_spawn_config(
@@ -345,7 +346,7 @@ fn build_pi_bridge_spawn_config(
         workspace.to_path_buf(),
         prompt_body,
         scratch_dir,
-        cfg.loom.container_sccache_env(),
+        cache.container_sccache_env(),
         vec![],
         mounts,
         launcher_env.to_vec(),

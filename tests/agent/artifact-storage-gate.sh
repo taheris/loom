@@ -9,13 +9,16 @@ case "$report_name" in
     artifact-storage-report.json|rust-cache-context-report.json) ;;
     *) printf 'unsupported bounded fixture report: %s\n' "$report_name" >&2; exit 64 ;;
 esac
-fixture=$(mktemp -d)
+runtime=$(mktemp -d "$(cd /tmp && pwd -P)/loom-storage-fixture.XXXXXXXX")
+fixture="$runtime/source"
+mkdir "$fixture"
+export XDG_STATE_HOME="$runtime/host-state"
 cleanup() {
     local rc=$?
     if [[ "$rc" == 0 ]]; then
-        rm -rf "$fixture"
+        rm -rf "$runtime"
     else
-        printf 'failed gate fixture retained at %s\n' "$fixture" >&2
+        printf 'failed gate fixture retained at %s\n' "$runtime" >&2
     fi
 }
 trap cleanup EXIT

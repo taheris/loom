@@ -21,9 +21,8 @@ pub struct LoomTopConfig {
     /// container spawns get a bind mount at
     /// [`sccache_container_path`](Self::sccache_container_path) plus
     /// `SCCACHE_DIR` + `RUSTC_WRAPPER=sccache` in container env, and
-    /// host-side cargo invocations get the same env vars (pointing at the
-    /// host path — no mount, no container boundary). `None` disables the
-    /// feature entirely; every cargo invocation pays full cold-build cost.
+    /// trusted host commands explicitly disable compiler caching instead of
+    /// consuming worker-writable cache entries. `None` omits this projection.
     /// See `specs/harness.md` § Configuration.
     #[serde(default)]
     pub sccache_dir: Option<PathBuf>,
@@ -94,23 +93,6 @@ impl LoomTopConfig {
                 "CARGO_BUILD_RUSTC_WRAPPER".to_string(),
                 "sccache".to_string(),
             ),
-        ]
-    }
-
-    /// Host-side sccache env entries for cargo invocations the driver runs
-    /// directly (no container boundary): `SCCACHE_DIR` set to the host
-    /// path plus `RUSTC_WRAPPER=sccache`. Empty when
-    /// [`sccache_dir`](Self::sccache_dir) is `None`.
-    pub fn host_sccache_env(&self) -> Vec<(String, String)> {
-        let Some(dir) = self.sccache_dir.as_ref() else {
-            return Vec::new();
-        };
-        vec![
-            (
-                "SCCACHE_DIR".to_string(),
-                dir.to_string_lossy().into_owned(),
-            ),
-            ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
         ]
     }
 }

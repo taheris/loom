@@ -19,4 +19,5 @@ mod error;
 mod manager;
 
 pub use error::{LockError, PhaseLock};
+pub(crate) use manager::resolve_xdg_state_home;
 pub use manager::{LockGuard, LockManager};

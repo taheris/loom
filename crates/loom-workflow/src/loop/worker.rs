@@ -4,7 +4,7 @@ use std::path::Path;
 
 use loom_driver::agent::{AgentRuntime, SpawnConfig};
 use loom_driver::bd::{BdClient, Bead, CommandRunner};
-use loom_driver::config::{CargoTargetReuse, LoomTopConfig, Phase, SkillsConfig};
+use loom_driver::config::{LoomTopConfig, Phase, SkillsConfig};
 use loom_driver::git::{BeadCloneAlignment, GitClient, GitError};
 use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::profile_manifest::{NativePreflight, ProfileError, ProfileImageManifest};
@@ -70,6 +70,7 @@ pub struct Worker {
     pub spawn: SpawnConfig,
     pub scratch: ScratchSession,
     pub acceptance: super::acceptance::Resolved,
+    pub cargo_namespace: Option<loom_driver::workspace::cargo::Namespace>,
 }
 
 pub enum Preparation {
@@ -245,15 +246,16 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         &format!("loom loop @ {}", bead.id),
     )?;
     loom_driver::spec::context::write(&package_context, scratch.path())?;
+    let worker_loom = loom_driver::workspace::cargo::shared_cache_config(loom, workspace)?;
     let mut mounts: Vec<_> = dolt_socket_mount(loom_workspace).into_iter().collect();
-    if let Some(cache) = &loom.sccache_dir {
+    if let Some(cache) = &worker_loom.sccache_dir {
         association.admit_mount(&loom_driver::agent::MountSpec {
             host_path: cache.clone(),
             container_path: loom.sccache_container_path.clone(),
             read_only: false,
         })?;
     }
-    mounts.extend(sccache_mount(loom)?);
+    mounts.extend(sccache_mount(&worker_loom)?);
     let mut spawn = match build_spawn_config_from_manifest(
         manifest,
         bead,
@@ -263,7 +265,7 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         workspace.to_path_buf(),
         initial_prompt,
         scratch.path().to_path_buf(),
-        loom.container_sccache_env(),
+        worker_loom.container_sccache_env(),
         vec![],
         mounts,
         launcher_env,
@@ -296,28 +298,19 @@ pub async fn prepare_with_bd<R: CommandRunner>(
                 .max(std::time::Duration::from_secs(370)),
         );
     }
+    let cargo_namespace = if native_feedback {
+        let namespace = loom_driver::workspace::cargo::prepare(
+            &association,
+            workspace,
+            &manifest.lookup(&profile, runtime)?.profile_config,
+            loom.cargo_target_reuse,
+        )?;
+        namespace.configure(&mut spawn);
+        Some(namespace)
+    } else {
+        None
+    };
     association.validate_worker(workspace, &spawn.mounts, spawn.profile_config.as_deref())?;
-    if loom.cargo_target_reuse != CargoTargetReuse::Off && native_feedback {
-        let beads = association.operator().join(".loom/beads");
-        let workspace = workspace.to_path_buf();
-        let image = manifest.lookup(&profile, runtime)?.profile_config.clone();
-        let reuse = loom.cargo_target_reuse;
-        match tokio::task::spawn_blocking(move || {
-            loom_shared::artifact::prepare(&beads, &workspace, &image, reuse)
-        })
-        .await
-        {
-            Ok(Ok(outcome)) => {
-                tracing::info!(bead_id = %bead.id, ?outcome, "worker target prepared");
-            }
-            Ok(Err(error)) => {
-                tracing::warn!(bead_id = %bead.id, ?error, "target seeding skipped; ordinary Cargo remains available");
-            }
-            Err(error) => {
-                tracing::warn!(bead_id = %bead.id, ?error, "target seeding task failed; ordinary Cargo remains available");
-            }
-        }
-    }
     let skill_session = skill_plan.materialize(scratch.path(), workspace)?;
     spawn.skills = Some(skill_session.registered);
     spawn.event_metadata = Some(AgentStartMetadata {
@@ -330,6 +323,7 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         spawn,
         scratch,
         acceptance,
+        cargo_namespace,
     })))
 }
 
@@ -397,6 +391,7 @@ fn profile_rejection(
 mod tests {
     use super::*;
     use loom_driver::agent::AgentBackend;
+    use loom_driver::config::CargoTargetReuse;
 
     #[tokio::test]
     async fn worker_cargo_target_reuse_honors_policy_before_spawn() {
@@ -427,21 +422,18 @@ mod tests {
             )
             .unwrap();
         }
-        let beads = dir.path().join(".loom/beads");
-        assert_eq!(
-            loom_shared::artifact::prepare(
-                &beads,
-                &donor,
-                &profile_config,
-                CargoTargetReuse::default()
-            )
-            .unwrap(),
-            loom_shared::artifact::Outcome::Cold
-        );
+        let association = loom_driver::workspace::Association::resolve(dir.path()).unwrap();
+        let donor_namespace = loom_driver::workspace::cargo::prepare(
+            &association,
+            &donor,
+            &profile_config,
+            CargoTargetReuse::default(),
+        )
+        .unwrap();
         for subdir in ["deps", ".fingerprint"] {
-            std::fs::create_dir_all(donor.join("target/debug").join(subdir)).unwrap();
+            std::fs::create_dir_all(donor_namespace.target().join("debug").join(subdir)).unwrap();
         }
-        std::fs::File::create_new(donor.join("target/debug/.cargo-lock")).unwrap();
+        std::fs::File::create_new(donor_namespace.target().join("debug/.cargo-lock")).unwrap();
         let images = dir.path().join("images.json");
         std::fs::write(&images, serde_json::to_vec(&serde_json::json!({"rust":{"pi":{
             "ref":"fixture", "source":"/fixture/image", "source_kind":"nix-descriptor",
@@ -473,6 +465,7 @@ mod tests {
             .unwrap();
             let loom = LoomTopConfig {
                 cargo_target_reuse: reuse,
+                sccache_dir: Some(dir.path().join("sccache")),
                 ..LoomTopConfig::default()
             };
             let prepared = prepare(Request {
@@ -495,14 +488,34 @@ mod tests {
             })
             .await
             .unwrap();
-            assert!(matches!(prepared, Preparation::Ready(_)));
+            let Preparation::Ready(worker) = prepared else {
+                panic!("worker rejected")
+            };
+            let namespace = worker.cargo_namespace.as_ref().unwrap();
             assert_eq!(
-                workspace.join("target/debug/.cargo-lock").exists(),
+                namespace.target().join("debug/.cargo-lock").exists(),
                 reuse != CargoTargetReuse::Off && !private
             );
-            if workspace.join("target").exists() {
-                std::fs::remove_dir_all(workspace.join("target")).unwrap();
-            }
+            assert!(!workspace.join("target").exists());
+            assert_eq!(
+                worker.spawn.env.iter().any(|(key, _)| key == "SCCACHE_DIR"),
+                !private
+            );
+            assert_eq!(
+                worker
+                    .spawn
+                    .mounts
+                    .iter()
+                    .any(|mount| mount.container_path == Path::new("/sccache")),
+                !private
+            );
+            assert!(
+                worker
+                    .spawn
+                    .env
+                    .iter()
+                    .any(|(key, value)| key == "CARGO_TARGET_DIR" && value == "/loom-cargo-target")
+            );
         }
     }
 

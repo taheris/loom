@@ -55,7 +55,6 @@ impl Directory {
         Ok(dir)
     }
 
-    #[cfg(test)]
     pub(crate) fn ensure(path: &Path) -> io::Result<Self> {
         let path = std::path::absolute(path)?;
         if path.components().any(|c| c == Component::ParentDir) {

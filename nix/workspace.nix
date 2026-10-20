@@ -166,6 +166,9 @@ let
       ];
       # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
       preCheck = ''
+        # Runtime ownership checks require fixture ancestors owned by this user
+        # (the host-side Nix build parent may belong to the daemon caller).
+        export TMPDIR="$(cd /tmp && pwd -P)"
         export HOME=$(mktemp -d)
         export GIT_CONFIG_GLOBAL="$PWD/tests/fixtures/git/test-gitconfig"
         export GIT_CONFIG_SYSTEM=/dev/null

@@ -16,6 +16,7 @@ mod tests {
 
     struct Fixture {
         dir: tempfile::TempDir,
+        _runtime: tempfile::TempDir,
         home: PathBuf,
         bin: PathBuf,
         state: PathBuf,
@@ -27,7 +28,8 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();
             let base = git(dir.path(), &["rev-parse", "HEAD"]);
-            let home = dir.path().join(".loom/fixture");
+            let runtime = tempfile::tempdir().unwrap();
+            let home = runtime.path().join("fixture");
             let bin = home.join("bin");
             let state = home.join("bd-state");
             std::fs::create_dir_all(&bin).unwrap();
@@ -59,6 +61,7 @@ mod tests {
             }
             let fixture = Self {
                 dir,
+                _runtime: runtime,
                 home,
                 bin,
                 state,

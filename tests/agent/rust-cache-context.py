@@ -59,6 +59,7 @@ def environment(root):
         "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
         "CARGO_TARGET_DIR",
         "CARGO_BUILD_TARGET_DIR",
+        "CARGO_BUILD_BUILD_DIR",
         "CARGO_BUILD_TARGET",
         "CARGO_ENCODED_RUSTFLAGS",
         "SCCACHE_BASEDIRS",

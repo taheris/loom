@@ -239,7 +239,9 @@
         buildPhaseCargoCommand = "loom --version";
 
         preCheck = ''
+          export TMPDIR="$(cd /tmp && pwd -P)"
           export HOME=$(mktemp -d)
+          export CARGO_BUILD_JOBS="$NIX_BUILD_CORES"
           export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
           export LOOM_AGENT_WRIX_SOURCE=${wrixSrc}
         '';

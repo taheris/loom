@@ -1,0 +1,395 @@
+//! Private Cargo output selection. A namespace record is never evidence or disposal authority.
+
+use std::fs::{self, File};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use super::{Association, Error, Identity};
+use crate::agent::{MountSpec, SpawnConfig};
+use crate::identifier::BeadId;
+use crate::scratch::directory::Directory;
+use crate::state::{CacheDb, RecordKind};
+
+const WORKER_TARGET: &str = "/loom-cargo-target";
+
+/// Apply Wrix's cache-sharing policy consistently before any additional cache projection.
+///
+/// # Errors
+/// Invalid or indirect policy is not permission to share.
+pub fn shared_cache_config(
+    config: &crate::config::LoomTopConfig,
+    workspace: &Path,
+) -> std::io::Result<crate::config::LoomTopConfig> {
+    let mut admitted = config.clone();
+    if !loom_shared::artifact::sharing_allowed(workspace).map_err(std::io::Error::other)? {
+        admitted.sccache_dir = None;
+    }
+    Ok(admitted)
+}
+
+/// A private generated namespace retained on every exit, including process death.
+pub struct Namespace {
+    path: PathBuf,
+    _lease: File,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Record {
+    version: u8,
+    bead: BeadId,
+    source: PathBuf,
+    source_identity: Identity,
+    target: PathBuf,
+    namespace_identity: Identity,
+    profile: PathBuf,
+    context: Context,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+struct Context([u8; 32]);
+
+impl Context {
+    fn name(&self) -> String {
+        format!("{:x}", sha2::digest::Output::<Sha256>::from(self.0))
+    }
+}
+
+impl Namespace {
+    pub fn target(&self) -> PathBuf {
+        self.path.join("target")
+    }
+
+    /// Project exactly this generation; no source target or canonical executable is moved.
+    pub fn configure(&self, spawn: &mut SpawnConfig) {
+        for key in [
+            "CARGO_TARGET_DIR",
+            "CARGO_BUILD_TARGET_DIR",
+            "CARGO_BUILD_BUILD_DIR",
+        ] {
+            spawn.env.retain(|(name, _)| name != key);
+            spawn.env.push((key.into(), WORKER_TARGET.into()));
+        }
+        spawn.mounts.push(MountSpec {
+            host_path: self.target(),
+            container_path: WORKER_TARGET.into(),
+            read_only: false,
+        });
+    }
+}
+
+/// Allocate a unique owned generation and optionally seed compatible worker dependencies.
+///
+/// # Errors
+/// Unsafe storage and state failures stop preparation without touching legacy targets.
+pub fn prepare(
+    association: &Association,
+    workspace: &Path,
+    profile: &Path,
+    reuse: crate::config::CargoTargetReuse,
+) -> Result<Namespace, Error> {
+    association.recheck()?;
+    let beads = association.operator().join(".loom/beads");
+    if workspace.parent() != Some(beads.as_path()) {
+        return Err(Error::Association {
+            reason: "Cargo namespace requires a direct worker clone",
+        });
+    }
+    let bead: BeadId = workspace
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(Error::Association {
+            reason: "worker has no Cargo owner",
+        })?
+        .parse()
+        .map_err(|_| Error::Association {
+            reason: "invalid Cargo worker owner",
+        })?;
+    let source_identity = Identity::from_stat(&Directory::open(workspace)?.stat()?);
+    let context = context(workspace, Some(profile))?;
+    let root = Directory::open(association.operator())?
+        .ensure_child(Path::new(".loom"))?
+        .ensure_child(Path::new("cargo-artifacts"))?
+        .ensure_child(Path::new("worker"))?;
+    let owner = root.ensure_child(Path::new(bead.as_str()))?;
+    owner.ensure_child(Path::new(&context.name()))?;
+    let parent = association
+        .operator()
+        .join(".loom/cargo-artifacts/worker")
+        .join(bead.as_str())
+        .join(context.name());
+    let generation = tempfile::Builder::new()
+        .prefix("generation-")
+        .tempdir_in(&parent)?
+        .keep();
+    let generation_handle = Directory::open(&generation)?;
+    generation_handle.require_private()?;
+    let lease = generation_handle.append_private_file(Path::new("lease"))?;
+    lease.lock()?;
+    let namespace = Namespace {
+        path: generation,
+        _lease: lease,
+    };
+    let record = Record {
+        version: 1,
+        bead,
+        source: workspace.into(),
+        source_identity,
+        target: namespace.target(),
+        namespace_identity: Identity::from_stat(&generation_handle.stat()?),
+        profile: profile.into(),
+        context,
+    };
+    let database = CacheDb::open(crate::state::path(association.operator()))?;
+    let donors = database
+        .records::<Record>(RecordKind::CargoTarget)?
+        .into_iter()
+        .filter_map(|(_, donor)| eligible_donor(association, &record, donor).transpose())
+        .collect::<Result<Vec<_>, _>>()?;
+    let recipient = loom_shared::artifact::Location {
+        workspace: workspace.into(),
+        target: namespace.target(),
+    };
+    match loom_shared::artifact::prepare_managed(&beads, &recipient, profile, reuse, &donors) {
+        Ok(outcome) => {
+            tracing::info!(?outcome, target = ?recipient.target, "managed worker target prepared");
+        }
+        Err(error) => tracing::warn!(
+            ?error,
+            "managed dependency seeding unavailable; using a cold private target"
+        ),
+    }
+    if !namespace.target().try_exists()? {
+        generation_handle.create_child(Path::new("target"))?;
+    }
+    let key = namespace
+        .path
+        .strip_prefix(association.operator())
+        .map_err(std::io::Error::other)?
+        .to_string_lossy()
+        .into_owned();
+    database.put_record(RecordKind::CargoTarget, &key, &record)?;
+    Ok(namespace)
+}
+
+fn eligible_donor(
+    association: &Association,
+    recipient: &Record,
+    donor: Record,
+) -> Result<Option<loom_shared::artifact::Location>, Error> {
+    if donor.version != 1
+        || donor.profile != recipient.profile
+        || donor.context != recipient.context
+    {
+        return Ok(None);
+    }
+    let root = association
+        .operator()
+        .join(".loom/cargo-artifacts/worker")
+        .join(donor.bead.as_str())
+        .join(donor.context.name());
+    let Some(parent) = donor.target.parent() else {
+        return Ok(None);
+    };
+    if donor.target.file_name().is_none_or(|name| name != "target")
+        || parent.parent() != Some(root.as_path())
+        || donor.source
+            != association
+                .operator()
+                .join(".loom/beads")
+                .join(donor.bead.as_str())
+    {
+        return Ok(None);
+    }
+    let source = match Directory::open(&donor.source) {
+        Ok(directory) => directory,
+        Err(error) => {
+            tracing::warn!(?error, source = ?donor.source, "Cargo donor source unavailable");
+            return Ok(None);
+        }
+    };
+    let directory = match Directory::open(parent) {
+        Ok(directory) => directory,
+        Err(error) => {
+            tracing::warn!(?error, path = ?parent, "Cargo donor generation unavailable");
+            return Ok(None);
+        }
+    };
+    if Identity::from_stat(&source.stat()?) != donor.source_identity
+        || Identity::from_stat(&directory.stat()?) != donor.namespace_identity
+    {
+        return Ok(None);
+    }
+    Ok(Some(loom_shared::artifact::Location {
+        workspace: donor.source,
+        target: donor.target,
+    }))
+}
+
+fn context(workspace: &Path, profile: Option<&Path>) -> std::io::Result<Context> {
+    let mut hash = Sha256::new();
+    hash.update(b"loom-cargo-context-v1");
+    if let Some(profile) = profile {
+        hash.update(profile.as_os_str().as_encoded_bytes());
+        hash.update(fs::read(profile)?);
+    } else {
+        hash.update(workspace.as_os_str().as_encoded_bytes());
+        let executable = std::env::current_exe()?;
+        let runtime = fs::metadata(&executable)?;
+        hash.update(executable.as_os_str().as_encoded_bytes());
+        hash.update(runtime.dev().to_le_bytes());
+        hash.update(runtime.ino().to_le_bytes());
+        for key in [
+            "PATH",
+            "RUSTC",
+            "RUSTFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "RUSTUP_TOOLCHAIN",
+        ] {
+            hash.update(key.as_bytes());
+            if let Some(value) = std::env::var_os(key) {
+                hash.update(value.as_encoded_bytes());
+            }
+        }
+        hash.update(std::env::consts::OS.as_bytes());
+        hash.update(std::env::consts::ARCH.as_bytes());
+    }
+    for name in [
+        "Cargo.toml",
+        "Cargo.lock",
+        ".cargo/config",
+        ".cargo/config.toml",
+        "rust-toolchain",
+        "rust-toolchain.toml",
+    ] {
+        hash.update(name.as_bytes());
+        let path = workspace.join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                if name.starts_with(".cargo/")
+                    && !fs::symlink_metadata(workspace.join(".cargo"))?.is_dir()
+                {
+                    return Err(std::io::Error::other(
+                        "Cargo configuration directory is indirect",
+                    ));
+                }
+                let bytes = fs::read(path)?;
+                hash.update(bytes.len().to_le_bytes());
+                hash.update(bytes);
+            }
+            Ok(_) => {
+                return Err(std::io::Error::other(
+                    "Cargo context contains an indirect or special file",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => hash.update(b"absent"),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(Context(hash.finalize().into()))
+}
+
+/// Select isolation for native verifiers; worker feedback retains its admitted worker projection.
+///
+/// # Errors
+/// Reports unavailable trusted output storage before any verifier is executed.
+pub fn verifier_command(command: &mut Command, workspace: &Path) -> std::io::Result<()> {
+    if std::env::var_os(crate::agent::LOOM_INSIDE_ENV).is_none() {
+        trusted_command(command, workspace)?;
+    }
+    Ok(())
+}
+
+/// Isolate trusted subprocesses from inherited worker targets, wrappers and compiler-cache servers.
+///
+/// # Errors
+/// An unavailable or indirect trusted output root refuses execution, rather than using ambient output.
+pub fn trusted_command(command: &mut Command, workspace: &Path) -> std::io::Result<()> {
+    trusted_command_at(command, workspace, &trusted_root()?)
+}
+
+pub(super) fn trusted_root() -> std::io::Result<PathBuf> {
+    std::path::absolute(
+        crate::lock::resolve_xdg_state_home()
+            .map_err(std::io::Error::other)?
+            .join("loom/trusted-cargo"),
+    )
+}
+
+fn trusted_command_at(
+    command: &mut Command,
+    workspace: &Path,
+    output: &Path,
+) -> std::io::Result<()> {
+    let workspace = std::path::absolute(workspace)?;
+    let workspace = workspace
+        .ancestors()
+        .find(|parent| parent.join(".git").exists())
+        .unwrap_or(&workspace)
+        .to_path_buf();
+    if workspace
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(std::io::Error::other("invalid trusted Cargo workspace"));
+    }
+    let controlling = workspace
+        .ancestors()
+        .find_map(|ancestor| {
+            let group = ancestor.parent()?;
+            let loom = group.parent()?;
+            (matches!(
+                group.file_name()?.to_str(),
+                Some("beads" | "tune" | "scratch")
+            ) && loom.file_name()? == ".loom")
+                .then(|| loom.parent())
+                .flatten()
+        })
+        .unwrap_or(&workspace);
+    let state = crate::state::path(controlling);
+    let controlling = state
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| std::io::Error::other("trusted workspace has no controlling root"))?;
+    if output.starts_with(controlling) || controlling.starts_with(output) {
+        return Err(std::io::Error::other(
+            "trusted Cargo output overlaps a source checkout",
+        ));
+    }
+    let root = Directory::ensure(output)?;
+    root.require_private()?;
+    let context = context(&workspace, None)?.name();
+    root.ensure_child(Path::new(&context))?;
+    let target = output.join(context);
+    let keys: Vec<_> = std::env::vars_os()
+        .map(|(key, _)| key)
+        .chain(command.get_envs().map(|(key, _)| key.to_os_string()))
+        .filter(|key| key.as_encoded_bytes().starts_with(b"SCCACHE_"))
+        .collect();
+    for key in keys {
+        command.env_remove(key);
+    }
+    for key in [
+        "RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    ] {
+        command.env(key, "");
+    }
+    for key in [
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_TARGET_DIR",
+        "CARGO_BUILD_BUILD_DIR",
+    ] {
+        command.env(key, &target);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

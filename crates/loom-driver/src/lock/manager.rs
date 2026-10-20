@@ -315,7 +315,11 @@ impl LockManager {
     }
 }
 
-fn resolve_xdg_state_home() -> Result<PathBuf, LockError> {
+/// Resolve the existing per-user driver state location.
+///
+/// # Errors
+/// Reports an unset home when no explicit state root is configured.
+pub fn resolve_xdg_state_home() -> Result<PathBuf, LockError> {
     if let Some(val) = std::env::var_os("XDG_STATE_HOME")
         && !val.is_empty()
     {

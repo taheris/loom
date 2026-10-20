@@ -1299,7 +1299,12 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         );
         built_prompt.dossier.write(scratch.path())?;
         let scratch_dir = scratch.path().to_path_buf();
-        let mounts = crate::r#loop::sccache_mount(&self.loom_cfg)
+        let cache =
+            loom_driver::workspace::cargo::shared_cache_config(&self.loom_cfg, &self.workspace)
+                .map_err(|source| {
+                    TodoError::Protocol(loom_driver::agent::ProtocolError::Io(source))
+                })?;
+        let mounts = crate::r#loop::sccache_mount(&cache)
             .map_err(|source| TodoError::Protocol(loom_driver::agent::ProtocolError::Io(source)))?
             .into_iter()
             .collect();
@@ -1309,7 +1314,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             self.workspace.clone(),
             prompt,
             scratch_dir,
-            self.loom_cfg.container_sccache_env(),
+            cache.container_sccache_env(),
             vec![],
             mounts,
             vec![],

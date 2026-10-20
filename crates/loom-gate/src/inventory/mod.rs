@@ -588,17 +588,16 @@ fn is_document(path: &ResourcePath) -> bool {
 }
 
 fn command(root: &Path, program: Tool, args: &[&str]) -> Result<Vec<u8>, Error> {
-    let output = Command::new(program.program())
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Error::Capability { program }
-            } else {
-                Error::Io(error)
-            }
-        })?;
+    let mut command = Command::new(program.program());
+    command.args(args).current_dir(root);
+    loom_driver::workspace::cargo::verifier_command(&mut command, root)?;
+    let output = command.output().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Error::Capability { program }
+        } else {
+            Error::Io(error)
+        }
+    })?;
     if !output.status.success() {
         return Err(Error::Discovery {
             program,

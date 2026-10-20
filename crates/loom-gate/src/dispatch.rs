@@ -956,6 +956,9 @@ fn spawn_command(
     }
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
+        if std::env::var_os(loom_driver::agent::LOOM_INSIDE_ENV).is_none() {
+            loom_driver::workspace::cargo::trusted_command(&mut cmd, dir)?;
+        }
     }
     cmd.output()
 }

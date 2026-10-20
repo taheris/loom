@@ -1000,6 +1000,7 @@ where
         let super::worker::Worker {
             spawn: spawn_config,
             scratch,
+            cargo_namespace,
             ..
         } = *worker;
         info!(
@@ -1010,6 +1011,7 @@ where
             "loom loop: dispatching agent",
         );
         let (session, marker) = (self.spawn)(spawn_config, bead.id.clone()).await;
+        drop(cargo_namespace);
         let marker_is_noop = matches!(marker.as_ref(), Some(ExitSignal::Noop));
         let marker_for_event = marker.clone();
         let session_exit_code = session_exit_code(&session);

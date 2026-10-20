@@ -520,8 +520,7 @@ integration_branch = "trunk"
     /// `[loom] sccache_dir` and `sccache_container_path` round-trip through
     /// the parser. Defaults: `sccache_dir = None`, `sccache_container_path
     /// = "/sccache"`. Setting `sccache_dir` enables both the container
-    /// mount and the env entries via the `container_sccache_env` /
-    /// `host_sccache_env` helpers.
+    /// mount and worker env entries via `container_sccache_env`.
     #[test]
     fn loom_sccache_fields_round_trip_and_default() -> Result<()> {
         use std::path::PathBuf;
@@ -534,10 +533,6 @@ integration_branch = "trunk"
         );
         assert_eq!(
             absent.loom.container_sccache_env(),
-            [] as [(std::string::String, std::string::String); 0]
-        );
-        assert_eq!(
-            absent.loom.host_sccache_env(),
             [] as [(std::string::String, std::string::String); 0]
         );
 
@@ -562,12 +557,6 @@ sccache_container_path = "/sccache"
             cenv.iter()
                 .any(|(k, v)| k == "RUSTC_WRAPPER" && v == "sccache"),
             "container_sccache_env missing RUSTC_WRAPPER: {cenv:?}",
-        );
-        let henv = cfg.loom.host_sccache_env();
-        assert!(
-            henv.iter()
-                .any(|(k, v)| k == "SCCACHE_DIR" && v == "/var/cache/loom-sccache"),
-            "host_sccache_env must point SCCACHE_DIR at the host path: {henv:?}",
         );
         Ok(())
     }
@@ -844,19 +833,6 @@ reason = "Generated template noise."
         assert_eq!(
             cfg.loom.sccache_dir,
             Some(dir.path().join("config/.loom/sccache"))
-        );
-        assert_eq!(
-            cfg.loom.host_sccache_env(),
-            vec![
-                (
-                    "SCCACHE_DIR".to_string(),
-                    dir.path()
-                        .join("config/.loom/sccache")
-                        .display()
-                        .to_string(),
-                ),
-                ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
-            ],
         );
         Ok(())
     }
