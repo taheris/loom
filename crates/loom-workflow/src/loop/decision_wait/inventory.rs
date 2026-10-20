@@ -170,6 +170,12 @@ async fn admit_for<R: CommandRunner>(
     }
     let decisions = super::inventory(bd, journal, &source, &known).await?;
     let previous_context = previous.as_ref().and_then(|entry| entry.context.as_ref());
+    let active_native_wait = previous.as_ref().is_some_and(|entry| entry.native_wait)
+        && !bd
+            .dependency_snapshot(&source.id)
+            .await?
+            .active_blockers()
+            .is_empty();
     let context = match producer {
         Producer::Integrity {
             findings,
@@ -186,11 +192,7 @@ async fn admit_for<R: CommandRunner>(
             )
             .await?
         }
-        Producer::Task | Producer::Waiting
-            if legacy_wait
-                || (source.status == Status::Blocked
-                    && previous.as_ref().is_some_and(|entry| entry.native_wait)) =>
-        {
+        Producer::Task | Producer::Waiting if legacy_wait || active_native_wait => {
             super::graph::resolve(bd, &source, &current_root, &decisions, previous_context).await?
         }
         Producer::Task | Producer::Waiting => {

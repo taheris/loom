@@ -199,11 +199,11 @@ must pause. Its admission follows
 consumes the existing in-session retry budget; `Blocked.reason` routes the
 source to semantic inbox resolution. Missing terminals retain `swallowed-marker`
 recovery; malformed output carries its typed protocol context. A valid `Waiting`
-records driver-owned attribution and visibly parks the source as
-`status=blocked`, without `loom:blocked`, `loom:clarify`, or `loom:infra`. It
-consumes no retry budget and performs no integration or per-bead gate.
-Resumption follows current prerequisites, not a fresh worker run to rediscover
-the same decision.
+releases an ended active claim to `open`; current native prerequisites keep the
+source off readiness, without a second status projection or new `loom:blocked`,
+`loom:clarify`, or `loom:infra` label. It consumes no retry budget and performs
+no integration or per-bead gate. Resumption follows current prerequisites, not a
+fresh worker run to rediscover the same decision.
 
 The `Blocked` predicate is mechanical: a checked nonblank reason determines
 routing without an LLM call. Whether that reason adequately explains why no safe
