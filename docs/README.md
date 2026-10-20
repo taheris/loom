@@ -56,7 +56,7 @@ Ownership boundaries do not require new crates or commands.
 | [tuning](../specs/tuning.md)         | [`crates/loom-tune/`](../crates/loom-tune/)                                                                | —         | SkillOpt pipeline, cases/checkers, budgets, candidate validation, and proposal artifacts                                    |
 | [verify](../specs/verify.md)         | [`crates/loom-gate/`](../crates/loom-gate/), [`crates/loom-walk/`](../crates/loom-walk/)                   | —         | Obligations, checked providers, tracked inputs, affected selection, batching, integrity, and execution                      |
 | [issues](../specs/issues.md)         | `loom-issues` public crate                                                                                 | —         | Extractable backend-neutral tasks, Beads/lightweight adapters, worker operations, and conformance                           |
-| [workspaces](../specs/workspaces.md) | [`crates/loom-driver/`](../crates/loom-driver/)                                                            | —         | Checkout isolation, Git authority/signatures, profile images, mounts, locks, and dirty-work preservation                    |
+| [workspaces](../specs/workspaces.md) | [`crates/loom-driver/`](../crates/loom-driver/), [`crates/loom-shared/`](../crates/loom-shared/)           | —         | Checkout isolation, Git authority/signatures, profile images, mounts, locks, and dirty-work preservation                    |
 
 ## Terminology Index
 

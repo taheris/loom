@@ -297,6 +297,26 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         );
     }
     association.validate_worker(workspace, &spawn.mounts, spawn.profile_config.as_deref())?;
+    if loom.shared_target && native_feedback {
+        let beads = association.operator().join(".loom/beads");
+        let workspace = workspace.to_path_buf();
+        let image = manifest.lookup(&profile, runtime)?.profile_config.clone();
+        match tokio::task::spawn_blocking(move || {
+            loom_shared::artifact::prepare(&beads, &workspace, &image)
+        })
+        .await
+        {
+            Ok(Ok(outcome)) => {
+                tracing::info!(bead_id = %bead.id, ?outcome, "worker target prepared");
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(bead_id = %bead.id, ?error, "target seeding skipped; ordinary Cargo remains available");
+            }
+            Err(error) => {
+                tracing::warn!(bead_id = %bead.id, ?error, "target seeding task failed; ordinary Cargo remains available");
+            }
+        }
+    }
     let skill_session = skill_plan.materialize(scratch.path(), workspace)?;
     spawn.skills = Some(skill_session.registered);
     spawn.event_metadata = Some(AgentStartMetadata {
@@ -376,6 +396,99 @@ fn profile_rejection(
 mod tests {
     use super::*;
     use loom_driver::agent::AgentBackend;
+
+    #[tokio::test]
+    async fn worker_target_seeding_is_opt_in_and_runs_before_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();
+        let label = SpecLabel::new("workspaces").unwrap();
+        let id = loom_driver::identifier::BeadId::new("lm-seeded").unwrap();
+        let workspace = git.create_worktree(&label, &id).await.unwrap().path;
+        let donor = git
+            .create_worktree(
+                &label,
+                &loom_driver::identifier::BeadId::new("lm-donor").unwrap(),
+            )
+            .await
+            .unwrap()
+            .path;
+        let profile_config = dir.path().join("profile.json");
+        std::fs::write(&profile_config, r#"{"profile":{"mounts":[]}}"#).unwrap();
+        for path in [&workspace, &donor] {
+            std::fs::write(
+                path.join("Cargo.toml"),
+                "[package]\nname='local'\nversion='0.1.0'\n",
+            )
+            .unwrap();
+            std::fs::write(
+                path.join("Cargo.lock"),
+                "version=4\n[[package]]\nname='local'\nversion='0.1.0'\n",
+            )
+            .unwrap();
+        }
+        let beads = dir.path().join(".loom/beads");
+        assert_eq!(
+            loom_shared::artifact::prepare(&beads, &donor, &profile_config).unwrap(),
+            loom_shared::artifact::Outcome::Cold
+        );
+        for subdir in ["deps", ".fingerprint"] {
+            std::fs::create_dir_all(donor.join("target/debug").join(subdir)).unwrap();
+        }
+        std::fs::File::create_new(donor.join("target/debug/.cargo-lock")).unwrap();
+        let images = dir.path().join("images.json");
+        std::fs::write(&images, serde_json::to_vec(&serde_json::json!({"rust":{"pi":{
+            "ref":"fixture", "source":"/fixture/image", "source_kind":"nix-descriptor",
+            "launcher":"/fixture/wrix", "profile_config":profile_config, "native_preflight":"rust"
+        }}})).unwrap()).unwrap();
+        let manifest = ProfileImageManifest::from_path(&images).unwrap();
+        crate::test_support::acceptance::write_contract(
+            &workspace,
+            &label,
+            "Seed worker dependencies before launch.",
+        );
+        let mut bead: Bead = serde_json::from_value(
+            serde_json::json!({"id":id.to_string(), "title":"seed", "status":"open"}),
+        )
+        .unwrap();
+        crate::test_support::acceptance::bind(&workspace, &label, &mut bead);
+        let profile = ProfileName::new("rust").unwrap();
+        for (enabled, private) in [(false, false), (true, true), (true, false)] {
+            std::fs::write(
+                workspace.join("wrix.toml"),
+                format!("[tool_caches]\nshared={}\n", !private),
+            )
+            .unwrap();
+            let loom = LoomTopConfig {
+                shared_target: enabled,
+                ..LoomTopConfig::default()
+            };
+            let prepared = prepare(Request {
+                bead: &bead,
+                workspace: &workspace,
+                loom_workspace: dir.path(),
+                manifest: &manifest,
+                cli_profile: None,
+                phase_default: &profile,
+                runtime: AgentRuntime::Pi,
+                label: &label,
+                style_rules: "docs/style-rules.md",
+                loom: &loom,
+                skills: &SkillsConfig::default(),
+                launcher_env: vec![],
+                previous_failure: None,
+                bead_base: git.head_commit_sha().await.unwrap(),
+                workspace_recovery: None,
+                attempt: 1,
+            })
+            .await
+            .unwrap();
+            assert!(matches!(prepared, Preparation::Ready(_)));
+            assert_eq!(
+                workspace.join("target/debug/.cargo-lock").exists(),
+                enabled && !private
+            );
+        }
+    }
 
     async fn run_prepared_backend<B: AgentBackend>(
         spawn: &SpawnConfig,

@@ -43,6 +43,8 @@ paths use `wrix run`, while non-TTY Pi inbox chat uses the controlled
 The fixed workspace separates public contracts from internal orchestration:
 
 - `loom` — CLI parsing and dispatch (internal).
+- `loom-shared` — internal worker-only artifact seeding under
+  [Workspaces](workspaces.md#cargo-target-seeding); no external seeding service.
 - `loom-driver` — host configuration, state, locking, Git, tracking-adapter
   composition, and session support (internal).
 - `loom-issues` — backend-neutral tracking contract and Beads/lightweight

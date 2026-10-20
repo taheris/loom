@@ -17,6 +17,7 @@ loom-llm = { workspace = true }
 loom-protocol = { workspace = true }
 loom-render = { workspace = true }
 loom-skill = { workspace = true }
+loom-shared = { workspace = true }
 loom-templates = { workspace = true }
 loom-tune = { workspace = true }
 pulldown-cmark = { workspace = true }

@@ -1,0 +1,25 @@
+[package]
+name = "loom-shared"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+displaydoc = { workspace = true }
+filetime = { workspace = true }
+reflink-copy = { workspace = true }
+rustix = { workspace = true }
+serde = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+loom-driver = { workspace = true }
+
+[lints]
+workspace = true

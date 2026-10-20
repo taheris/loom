@@ -65,6 +65,50 @@ experiments require
 `SpawnConfig` owns these per-launch mounts;
 [Agent — SpawnConfig](agent.md#spawnconfig) owns their wire shape.
 
+### Cargo target seeding
+
+[Acceptance](#cargo-target-seeding-1).
+
+Loom alone owns optional bead-target seeding, implemented by the internal
+`loom-shared` crate before worker launch. `[loom] shared_target = true` opts
+into worker-to-worker artifact influence; the default is false. No Wrix API,
+service, target pool, compiler wrapper or external seeding tool is introduced.
+Private tool-cache policy (`[tool_caches] shared = false` in the bead's
+`wrix.toml`) disables seeding. Missing Rust manifests/lockfiles or unsupported
+layouts simply leave normal Cargo behavior available.
+
+Only an absent ordinary `target/` in a direct bead clone under this operator's
+`.loom/beads/` may be initialized. Existing targets, including empty directories
+and symlinks, are never replaced or merged. Donors are other direct bead clones
+with matching Loom-recorded worker image identity, Cargo.lock, root manifest,
+toolchain and Cargo configuration. Compatibility records are cache hints, not
+provenance or verifier results; donor inputs are rechecked before use. Operator,
+integration, recovery, verification and installed runtime storage are never
+donors. Native Darwin artifacts must not seed Linux workers.
+
+Only dependency units identified by external registry/git packages in Cargo.lock
+and their matching Cargo fingerprints are seeded. Ambiguous names shared with
+local/path packages are excluded. Mutable fingerprints, dep-info and external
+build-script outputs are copied privately with timestamps preserved. External
+`.rlib`/`.rmeta` libraries use filesystem cloning when supported (including APFS
+on Darwin), or same-filesystem hard links on ext4. Other dependency files are
+private copies; workspace/path artifacts, top-level executables and incremental
+caches are omitted. Hard links deliberately allow participating workers to
+modify each other's linked library bytes, even without donor mounts; this is not
+isolation against a malicious worker. Trusted host builds and canonical
+executables must never consume these worker-writable artifacts.
+
+Seeding holds the donor's recognized Cargo profile locks nonblockingly; busy,
+missing or unknown locks refuse reuse. Symlinks and special files in selected
+input trees refuse reuse rather than redirecting reads or writes. A unique
+staging directory is published atomically without replacing a concurrently
+created target. Failed staging is cleaned only by its owner; process death may
+leave inert staging directories which are neither targets nor donors. No
+collector or new checkout-disposal authority is added. Missing/incompatible/busy
+donors and seeding failures produce diagnostics and fall back to normal Cargo;
+retries preserve their existing target. Cargo still checks freshness and every
+required verifier still runs.
+
 ### Cleanup admission
 
 [Acceptance](#bead-dispatch-1).
@@ -260,6 +304,36 @@ for worker feedback.
   history; ordinary deterministic worker feedback still works without exposing
   the integration checkout or transferring marker authority.
   [system](nix run .#test-quint -- workspace-safety-history)
+
+### Cargo target seeding
+
+- The shared preparation path invokes Loom-owned seeding only when explicitly
+  enabled, after workspace admission and profile resolution, before spawn;
+  default/off and private-cache policy do not seed or register donors.
+  [test](worker_target_seeding_is_opt_in_and_runs_before_spawn)
+
+- Existing targets are preserved, and only compatible direct worker siblings are
+  reused, excluding operator/integration/recovery storage and symlinked
+  checkouts; changed image, lockfile or configuration selects a cold target.
+  [test](target_seeding_preserves_existing_and_rejects_incompatible_donors)
+
+- External dependency libraries share storage on ext4 while metadata remains
+  private; workspace/path artifacts, executables, incremental state and
+  ambiguous package names are omitted. Supported filesystem clones preserve
+  independent writable inodes.
+  [test](target_seeding_shares_only_external_libraries)
+
+- Busy/unknown Cargo locks, symlinks, malformed input and interrupted staging
+  cannot publish a partial target; publication preserves a concurrently created
+  destination, and seeding failures leave normal Cargo available.
+  [test](target_seeding_refuses_unsafe_donors_and_preserves_publication_races)
+
+- Actual Cargo builds across independently writable checkouts execute divergent
+  code, rebuild changed dependencies correctly, and continue after donor
+  deletion, without modifying source donor library bytes through normal
+  rebuilds. The same native fixture exercises APFS cloning on Darwin and hard
+  links on ext4; unavailable platform runs are reported rather than counted as
+  passes. [test](target_seeding_real_cargo_rebuilds_divergent_checkouts)
 
 ### Bead dispatch
 

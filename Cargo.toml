@@ -7,6 +7,7 @@ members = [
     "crates/loom-events",
     "crates/loom-llm",
     "crates/loom-skill",
+    "crates/loom-shared",
     "crates/loom-tune",
     "crates/loom-render",
     "crates/loom-agent",
@@ -40,6 +41,7 @@ colored_json = "5"
 crossterm = "0.29"
 displaydoc = "0.2"
 fd-lock = "4"
+filetime = "0.2"
 futures-core = "0.3"
 genai = "0.6.5"
 glob = "0.3"
@@ -60,6 +62,7 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 proptest = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 quint-connect = "0.1.2"
+reflink-copy = "0.1"
 regex = "1"
 roxmltree = "0.21"
 reqwest = { version = "0.13", default-features = false, features = [
@@ -94,6 +97,7 @@ loom-issues = { path = "crates/loom-issues" }
 loom-events = { path = "crates/loom-events" }
 loom-llm = { path = "crates/loom-llm" }
 loom-skill = { path = "crates/loom-skill" }
+loom-shared = { path = "crates/loom-shared" }
 loom-tune = { path = "crates/loom-tune" }
 loom-render = { path = "crates/loom-render" }
 loom-agent = { path = "crates/loom-agent" }
