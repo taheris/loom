@@ -3,12 +3,13 @@ use std::path::Path;
 
 use filetime::FileTime;
 
-use super::{Error, Report};
+use super::{Error, Report, Reuse};
 
 pub(super) fn file(
     source: &Path,
     destination: &Path,
     library: bool,
+    reuse: Reuse,
     report: &mut Report,
 ) -> Result<(), Error> {
     let metadata = fs::symlink_metadata(source)?;
@@ -27,6 +28,9 @@ pub(super) fn file(
             }
             Err(error) if matches!(error.raw_os_error(), Some(18 | 22 | 25 | 38 | 45 | 95)) => {}
             Err(error) => return Err(error.into()),
+        }
+        if reuse != Reuse::AllowHardlinks {
+            return Err(Error::CloneUnavailable(source.to_path_buf()));
         }
         fs::hard_link(source, destination)?;
         report.linked_bytes += metadata.len();
@@ -52,7 +56,7 @@ pub(super) fn tree(source: &Path, destination: &Path, report: &mut Report) -> Re
         if entry.file_type()?.is_dir() {
             tree(&entry.path(), &to, report)?;
         } else {
-            file(&entry.path(), &to, false, report)?;
+            file(&entry.path(), &to, false, Reuse::CopyOnWrite, report)?;
         }
     }
     filetime::set_file_mtime(

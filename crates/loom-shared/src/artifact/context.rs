@@ -2,9 +2,30 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use super::Error;
+use serde::{Deserialize, Serialize};
 
-pub(super) const STAMP: &str = ".loom-shared-context";
+use super::{Error, Reuse};
+
+const STAMP: &str = ".loom-shared-context";
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Stamp {
+    pub(super) fingerprint: Vec<u8>,
+    pub(super) reuse: Reuse,
+}
+
+impl Stamp {
+    pub(super) fn read(target: &Path) -> Result<Self, Error> {
+        Ok(toml::from_str(std::str::from_utf8(&read(
+            &target.join(STAMP),
+        )?)?)?)
+    }
+
+    pub(super) fn write(&self, target: &Path) -> Result<(), Error> {
+        Ok(fs::write(target.join(STAMP), toml::to_string(self)?)?)
+    }
+}
 
 pub(super) fn directory(path: &Path) -> Result<PathBuf, Error> {
     if !fs::symlink_metadata(path)?.is_dir() {
@@ -63,7 +84,7 @@ pub(super) fn fingerprint(workspace: &Path, image: &Path) -> Result<Vec<u8>, Err
         directory(&cargo)?;
     }
     let mut hash = blake3::Hasher::new();
-    hash.update(b"loom-shared-v1");
+    hash.update(b"loom-shared-v2");
     hash.update(image.as_os_str().as_encoded_bytes());
     for name in [
         "Cargo.lock",

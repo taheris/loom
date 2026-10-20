@@ -39,7 +39,7 @@ pub use direct::{DirectConfig, InlineByteLimit, InvalidInlineByteLimit};
 pub use error::LoomConfigError;
 pub use logs::LogsConfig;
 pub use loom_section::{
-    LoomTopConfig, default_git_hook_timeout_secs, default_integration_branch,
+    CargoTargetReuse, LoomTopConfig, default_git_hook_timeout_secs, default_integration_branch,
     default_sccache_container_path,
 };
 pub use loop_config::{LoopConfig, LoopInfraConfig};
@@ -81,7 +81,7 @@ pub struct LoomConfig {
     pub spec_conventions: String,
     pub beads: BeadsConfig,
     /// `[loom]` block — workspace-level knobs (`integration_branch`,
-    /// `sccache_dir`, `sccache_container_path`). See `specs/harness.md`
+    /// `sccache_dir`, `sccache_container_path`, `cargo_target_reuse`). See `specs/harness.md`
     /// § Configuration.
     pub loom: LoomTopConfig,
     #[serde(rename = "loop")]
@@ -457,6 +457,36 @@ min_bytes = 1024
         assert_eq!(cfg.agent.doom_loop.stage_2_after_stage_1, 2);
         assert!(!cfg.agent.duplicate_result.enabled);
         assert_eq!(cfg.agent.duplicate_result.min_bytes, 1024);
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_target_reuse_parses_permissions_and_defaults_to_copy_on_write() -> Result<()> {
+        for src in ["", "[loom]\n"] {
+            assert_eq!(
+                LoomConfig::from_toml_str(src)?.loom.cargo_target_reuse,
+                CargoTargetReuse::CopyOnWrite
+            );
+        }
+        assert_eq!(
+            LoomConfig::default().loom.cargo_target_reuse,
+            CargoTargetReuse::CopyOnWrite
+        );
+        for (value, expected) in [
+            ("off", CargoTargetReuse::Off),
+            ("copy-on-write", CargoTargetReuse::CopyOnWrite),
+            ("allow-hardlinks", CargoTargetReuse::AllowHardlinks),
+        ] {
+            let cfg =
+                LoomConfig::from_toml_str(&format!("[loom]\ncargo_target_reuse = '{value}'\n"))?;
+            assert_eq!(cfg.loom.cargo_target_reuse, expected);
+        }
+        for value in ["true", "'hardlinks'", "'copy'", "'unknown'"] {
+            assert!(
+                LoomConfig::from_toml_str(&format!("[loom]\ncargo_target_reuse = {value}\n"))
+                    .is_err()
+            );
+        }
         Ok(())
     }
 

@@ -20,6 +20,10 @@ mod cases {
 
     impl Fixture {
         fn new() -> Self {
+            Self::with_reuse(Reuse::AllowHardlinks)
+        }
+
+        fn with_reuse(reuse: Reuse) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let beads = dir.path().join(".loom/beads");
             fs::create_dir_all(&beads).unwrap();
@@ -27,7 +31,7 @@ mod cases {
             fs::create_dir(&donor).unwrap();
             project(&donor);
             assert_eq!(
-                prepare(&beads, &donor, Path::new(IMAGE)).unwrap(),
+                prepare(&beads, &donor, Path::new(IMAGE), reuse).unwrap(),
                 Outcome::Cold
             );
             let profile = donor.join("target/debug");
@@ -55,7 +59,13 @@ mod cases {
         }
 
         fn seed(&self, workspace: &Path) -> Outcome {
-            prepare(&self.beads, workspace, Path::new(IMAGE)).unwrap()
+            prepare(
+                &self.beads,
+                workspace,
+                Path::new(IMAGE),
+                Reuse::AllowHardlinks,
+            )
+            .unwrap()
         }
     }
 
@@ -128,6 +138,71 @@ mod cases {
     }
 
     #[test]
+    fn target_reuse_off_does_not_initialize_or_register_a_target() {
+        let fixture = Fixture::new();
+        let destination = fixture.destination("lm-off");
+        assert_eq!(
+            prepare(&fixture.beads, &destination, Path::new(IMAGE), Reuse::Off).unwrap(),
+            Outcome::Disabled
+        );
+        assert!(!destination.join("target").exists());
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 2);
+    }
+
+    fn assert_independent_or_cold(fixture: &Fixture, destination: &Path, outcome: Outcome) {
+        let library = format!("target/debug/deps/librenamed-{HASH}.rlib");
+        let source = fixture.donor.join(&library);
+        let target = destination.join(&library);
+        match outcome {
+            Outcome::Seeded(report) => {
+                assert_eq!(report.linked_bytes, 0);
+                assert_eq!(report.cloned_bytes, 4096);
+                assert_ne!(
+                    fs::metadata(&source).unwrap().ino(),
+                    fs::metadata(&target).unwrap().ino()
+                );
+                fs::write(&target, "private modification").unwrap();
+                assert_eq!(fs::read(&source).unwrap(), vec![42; 4096]);
+            }
+            Outcome::Cold => {
+                assert!(!target.exists());
+                assert!(!destination.join("target/debug").exists());
+            }
+            other => panic!("unexpected reuse outcome: {other:?}"),
+        }
+        assert!(fs::read_dir(destination).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".loom-shared-")
+        }));
+    }
+
+    #[test]
+    fn target_reuse_defaults_to_independent_clones_or_cold_builds() {
+        let fixture = Fixture::new();
+        let destination = fixture.destination("lm-cow");
+        assert_eq!(Reuse::default(), Reuse::CopyOnWrite);
+        let outcome = prepare(
+            &fixture.beads,
+            &destination,
+            Path::new(IMAGE),
+            Reuse::default(),
+        )
+        .unwrap();
+        assert_independent_or_cold(&fixture, &destination, outcome);
+    }
+
+    #[test]
+    fn target_reuse_hardlinks_require_donor_permission() {
+        let fixture = Fixture::with_reuse(Reuse::CopyOnWrite);
+        let destination = fixture.destination("lm-hardlinks");
+        let outcome = fixture.seed(&destination);
+        assert_independent_or_cold(&fixture, &destination, outcome);
+    }
+
+    #[test]
     fn target_seeding_preserves_existing_and_rejects_incompatible_donors() {
         let fixture = Fixture::new();
         for (index, filename) in [
@@ -145,7 +220,15 @@ mod cases {
             }
             fs::write(workspace.join(filename), "changed").unwrap();
             if filename == "Cargo.lock" {
-                assert!(prepare(&fixture.beads, &workspace, Path::new(IMAGE)).is_err());
+                assert!(
+                    prepare(
+                        &fixture.beads,
+                        &workspace,
+                        Path::new(IMAGE),
+                        Reuse::AllowHardlinks
+                    )
+                    .is_err()
+                );
                 assert!(!workspace.join("target").exists());
             } else {
                 assert_eq!(fixture.seed(&workspace), Outcome::Cold);
@@ -153,7 +236,13 @@ mod cases {
         }
         let workspace = fixture.destination("lm-image");
         assert_eq!(
-            prepare(&fixture.beads, &workspace, Path::new("/different/profile")).unwrap(),
+            prepare(
+                &fixture.beads,
+                &workspace,
+                Path::new("/different/profile"),
+                Reuse::AllowHardlinks
+            )
+            .unwrap(),
             Outcome::Cold
         );
         let existing = fixture.destination("lm-existing");
@@ -174,7 +263,15 @@ mod cases {
         let outside = fixture.dir.path().join("operator");
         fs::create_dir(&outside).unwrap();
         project(&outside);
-        assert!(prepare(&fixture.beads, &outside, Path::new(IMAGE)).is_err());
+        assert!(
+            prepare(
+                &fixture.beads,
+                &outside,
+                Path::new(IMAGE),
+                Reuse::AllowHardlinks
+            )
+            .is_err()
+        );
         assert!(!outside.join("target").exists());
     }
 
@@ -302,7 +399,7 @@ mod cases {
         run(&mut cargo(&donor, &home, &["generate-lockfile"]));
         fs::copy(donor.join("Cargo.lock"), destination.join("Cargo.lock")).unwrap();
         assert_eq!(
-            prepare(&beads, &donor, Path::new(IMAGE)).unwrap(),
+            prepare(&beads, &donor, Path::new(IMAGE), Reuse::AllowHardlinks).unwrap(),
             Outcome::Cold
         );
         run(&mut cargo(&donor, &home, &["build", "--offline"]));
@@ -313,8 +410,13 @@ mod cases {
             .map(|entry| (entry.path(), fs::read(entry.path()).unwrap()))
             .collect::<Vec<_>>();
         assert_ne!(before.len(), 0);
-        let Outcome::Seeded(report) = prepare(&beads, &destination, Path::new(IMAGE)).unwrap()
-        else {
+        let Outcome::Seeded(report) = prepare(
+            &beads,
+            &destination,
+            Path::new(IMAGE),
+            Reuse::AllowHardlinks,
+        )
+        .unwrap() else {
             panic!("compatible dependency was not seeded");
         };
         assert_ne!(report.linked_bytes + report.cloned_bytes, 0);

@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+pub use loom_shared::artifact::Reuse as CargoTargetReuse;
+
 /// `[loom]` block — workspace-level loom knobs that don't fit any of the
 /// phase-, agent-, runner-, or component-specific sections. See
 /// `specs/harness.md` § Configuration.
@@ -25,8 +27,8 @@ pub struct LoomTopConfig {
     /// See `specs/harness.md` § Configuration.
     #[serde(default)]
     pub sccache_dir: Option<PathBuf>,
-    /// Opt into dependency-target reuse between worker clones, including writable hard links.
-    pub shared_target: bool,
+    /// Worker-only Cargo dependency reuse; defaults to independent copy-on-write clones.
+    pub cargo_target_reuse: CargoTargetReuse,
     /// Container-side path the [`sccache_dir`](Self::sccache_dir) host
     /// directory is bind-mounted to. Defaults to `/sccache`. Consulted
     /// only when `sccache_dir` is set; harmless when unset.
@@ -48,7 +50,7 @@ impl Default for LoomTopConfig {
         Self {
             integration_branch: default_integration_branch(),
             sccache_dir: None,
-            shared_target: false,
+            cargo_target_reuse: CargoTargetReuse::default(),
             sccache_container_path: default_sccache_container_path(),
             git_hook_timeout_secs: default_git_hook_timeout_secs(),
         }

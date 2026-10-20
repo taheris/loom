@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
-use super::{Error, Report, catalog::Packages, transfer};
+use super::{Error, Report, Reuse, catalog::Packages, transfer};
 
 pub(super) struct Profile {
     pub(super) path: PathBuf,
@@ -74,6 +74,7 @@ pub(super) fn copy_profile(
     source: &Path,
     destination: &Path,
     packages: &Packages,
+    reuse: Reuse,
     report: &mut Report,
 ) -> Result<(), Error> {
     let fingerprints = source.join(".fingerprint");
@@ -127,6 +128,7 @@ pub(super) fn copy_profile(
             &entry.path(),
             &destination.join("deps").join(name),
             name.starts_with("lib") && matches!(extension, "rlib" | "rmeta"),
+            reuse,
             report,
         )?;
     }

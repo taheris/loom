@@ -69,13 +69,22 @@ experiments require
 
 [Acceptance](#cargo-target-seeding-1).
 
-Loom alone owns optional bead-target seeding, implemented by the internal
-`loom-shared` crate before worker launch. `[loom] shared_target = true` opts
-into worker-to-worker artifact influence; the default is false. No Wrix API,
-service, target pool, compiler wrapper or external seeding tool is introduced.
-Private tool-cache policy (`[tool_caches] shared = false` in the bead's
-`wrix.toml`) disables seeding. Missing Rust manifests/lockfiles or unsupported
-layouts simply leave normal Cargo behavior available.
+Loom alone owns bead-target seeding, implemented by the internal `loom-shared`
+crate before worker launch. `[loom] cargo_target_reuse` is an enum:
+
+- `"off"` disables reuse and donor registration.
+- `"copy-on-write"` (default) reuses dependency libraries only through
+  independent filesystem clones; unavailable CoW falls back to ordinary Cargo.
+- `"allow-hardlinks"` prefers CoW but explicitly permits writable dependency
+  hard links as fallback. Both the recipient and donor's recorded initialization
+  policy must permit hard links; otherwise only CoW may reuse that donor.
+
+Unknown values and booleans fail configuration parsing. No Wrix API, service,
+target pool, compiler wrapper or external seeding tool is introduced. Private
+tool-cache policy (`[tool_caches] shared = false` in the bead's `wrix.toml`)
+disables seeding and donor use regardless of the enum. Missing Rust
+manifests/lockfiles or unsupported layouts leave normal Cargo behavior
+available.
 
 Only an absent ordinary `target/` in a direct bead clone under this operator's
 `.loom/beads/` may be initialized. Existing targets, including empty directories
@@ -91,12 +100,16 @@ and their matching Cargo fingerprints are seeded. Ambiguous names shared with
 local/path packages are excluded. Mutable fingerprints, dep-info and external
 build-script outputs are copied privately with timestamps preserved. External
 `.rlib`/`.rmeta` libraries use filesystem cloning when supported (including APFS
-on Darwin), or same-filesystem hard links on ext4. Other dependency files are
-private copies; workspace/path artifacts, top-level executables and incremental
-caches are omitted. Hard links deliberately allow participating workers to
-modify each other's linked library bytes, even without donor mounts; this is not
-isolation against a malicious worker. Trusted host builds and canonical
-executables must never consume these worker-writable artifacts.
+on Darwin), or explicitly permitted same-filesystem hard links on ext4. Without
+hard-link permission, a failed clone discards staging and continues with another
+donor or a cold target; libraries are never silently hard-linked or privately
+copied. Other dependency files are private copies; workspace/path artifacts,
+top-level executables and incremental caches are omitted. CoW clones have
+independently writable inodes. Hard links deliberately allow participating
+workers to modify each other's linked library bytes, even without donor mounts;
+this is not isolation against a malicious worker. All modes still reuse
+worker-produced bytes, never verifier evidence. Trusted host builds and
+canonical executables must never consume these worker-writable artifacts.
 
 Seeding holds the donor's recognized Cargo profile locks nonblockingly; busy,
 missing or unknown locks refuse reuse. Symlinks and special files in selected
@@ -307,10 +320,26 @@ for worker feedback.
 
 ### Cargo target seeding
 
-- The shared preparation path invokes Loom-owned seeding only when explicitly
-  enabled, after workspace admission and profile resolution, before spawn;
-  default/off and private-cache policy do not seed or register donors.
-  [test](worker_target_seeding_is_opt_in_and_runs_before_spawn)
+- Cargo target reuse parses `off`, `copy-on-write` (default) and
+  `allow-hardlinks` as a closed enum, rejecting booleans and unknown values.
+  [test](cargo_target_reuse_parses_permissions_and_defaults_to_copy_on_write)
+
+- The shared preparation path invokes Loom-owned seeding after workspace
+  admission and profile resolution, before spawn; `off` and private-cache policy
+  leave targets absent under either enabled policy.
+  [test](worker_cargo_target_reuse_honors_policy_before_spawn)
+
+- Disabled reuse does not initialize or register a target.
+  [test](target_reuse_off_does_not_initialize_or_register_a_target)
+
+- Default reuse never hard-links libraries: it creates independent CoW clones
+  when supported or discards staging and initializes a cold target without
+  privately copying libraries when CoW is unavailable.
+  [test](target_reuse_defaults_to_independent_clones_or_cold_builds)
+
+- A recipient's hard-link opt-in cannot make a CoW-only donor's libraries
+  writable through shared inodes; such donors can only supply CoW clones.
+  [test](target_reuse_hardlinks_require_donor_permission)
 
 - Existing targets are preserved, and only compatible direct worker siblings are
   reused, excluding operator/integration/recovery storage and symlinked

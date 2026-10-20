@@ -10,7 +10,19 @@ use std::path::{Path, PathBuf};
 
 use displaydoc::Display;
 use rustix::fs::{CWD, RenameFlags, renameat_with};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// Permission to reuse dependency artifacts between worker checkouts.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reuse {
+    Off,
+    #[default]
+    CopyOnWrite,
+    /// Prefer independent copy-on-write clones; permit writable library hard links as fallback.
+    AllowHardlinks,
+}
 
 /// Failure to safely initialize a target; callers may continue with ordinary Cargo.
 #[derive(Debug, Display, Error)]
@@ -19,6 +31,10 @@ pub enum Error {
     Io(#[from] std::io::Error),
     /// target seeding input is invalid TOML
     Toml(#[from] toml::de::Error),
+    /// target seeding context could not be encoded
+    Encode(#[from] toml::ser::Error),
+    /// copy-on-write is unavailable and hard links are not permitted: {0}
+    CloneUnavailable(PathBuf),
     /// target seeding input is not UTF-8
     Utf8(#[from] std::str::Utf8Error),
     /// target seeding refused unsafe or unsupported storage: {0}
@@ -28,6 +44,7 @@ pub enum Error {
 /// A target is either preserved, initialized cold, or seeded from a worker sibling.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
+    Disabled,
     Preserved,
     Private,
     Cold,
@@ -46,7 +63,15 @@ pub struct Report {
 ///
 /// # Errors
 /// Returns unsupported storage, malformed input or filesystem failures without replacing a target.
-pub fn prepare(beads: &Path, workspace: &Path, image: &Path) -> Result<Outcome, Error> {
+pub fn prepare(
+    beads: &Path,
+    workspace: &Path,
+    image: &Path,
+    reuse: Reuse,
+) -> Result<Outcome, Error> {
+    if reuse == Reuse::Off {
+        return Ok(Outcome::Disabled);
+    }
     let beads = context::directory(beads)?;
     let workspace = context::directory(workspace)?;
     if workspace.parent() != Some(beads.as_path()) {
@@ -59,7 +84,10 @@ pub fn prepare(beads: &Path, workspace: &Path, image: &Path) -> Result<Outcome, 
     if !context::sharing_allowed(&workspace)? {
         return Ok(Outcome::Private);
     }
-    let context = context::fingerprint(&workspace, image)?;
+    let context = context::Stamp {
+        fingerprint: context::fingerprint(&workspace, image)?,
+        reuse,
+    };
     let packages = catalog::Packages::read(&workspace.join("Cargo.lock"))?;
     let mut siblings = fs::read_dir(&beads)?.collect::<Result<Vec<_>, _>>()?;
     siblings.sort_by_key(std::fs::DirEntry::file_name);
@@ -77,7 +105,7 @@ pub fn prepare(beads: &Path, workspace: &Path, image: &Path) -> Result<Outcome, 
         }
     }
     let stage = staging(&workspace)?;
-    fs::write(stage.path().join(context::STAMP), context)?;
+    context.write(stage.path())?;
     if publish(stage.path(), &target)? {
         Ok(Outcome::Cold)
     } else {
@@ -89,17 +117,25 @@ fn seed(
     donor: &Path,
     workspace: &Path,
     image: &Path,
-    expected: &[u8],
+    expected: &context::Stamp,
     packages: &catalog::Packages,
 ) -> Result<Option<Report>, Error> {
     let donor = context::directory(donor)?;
-    if !context::sharing_allowed(&donor)? || context::fingerprint(&donor, image)? != expected {
+    if !context::sharing_allowed(&donor)?
+        || context::fingerprint(&donor, image)? != expected.fingerprint
+    {
         return Ok(None);
     }
     let source = context::directory(&donor.join("target"))?;
-    if context::read(&source.join(context::STAMP))? != expected {
+    let recorded = context::Stamp::read(&source)?;
+    if recorded.reuse == Reuse::Off || recorded.fingerprint != expected.fingerprint {
         return Ok(None);
     }
+    let reuse = if recorded.reuse == Reuse::AllowHardlinks {
+        expected.reuse
+    } else {
+        Reuse::CopyOnWrite
+    };
     let profiles = layout::locked_profiles(&source)?;
     let stage = staging(workspace)?;
     let mut report = Report::default();
@@ -112,13 +148,14 @@ fn seed(
             &profile.path,
             &stage.path().join(relative),
             packages,
+            reuse,
             &mut report,
         )?;
     }
-    if context::fingerprint(&donor, image)? != expected {
+    if context::fingerprint(&donor, image)? != expected.fingerprint {
         return Err(Error::Storage(donor));
     }
-    fs::write(stage.path().join(context::STAMP), expected)?;
+    expected.write(stage.path())?;
     if publish(stage.path(), &workspace.join("target"))? {
         Ok(Some(report))
     } else {

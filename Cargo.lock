@@ -2741,6 +2741,7 @@ dependencies = [
  "loom-llm",
  "loom-protocol",
  "loom-render",
+ "loom-shared",
  "loom-skill",
  "loom-test-support",
  "proptest",

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use loom_driver::agent::{AgentRuntime, SpawnConfig};
 use loom_driver::bd::{BdClient, Bead, CommandRunner};
-use loom_driver::config::{LoomTopConfig, Phase, SkillsConfig};
+use loom_driver::config::{CargoTargetReuse, LoomTopConfig, Phase, SkillsConfig};
 use loom_driver::git::{BeadCloneAlignment, GitClient, GitError};
 use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::profile_manifest::{NativePreflight, ProfileError, ProfileImageManifest};
@@ -297,12 +297,13 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         );
     }
     association.validate_worker(workspace, &spawn.mounts, spawn.profile_config.as_deref())?;
-    if loom.shared_target && native_feedback {
+    if loom.cargo_target_reuse != CargoTargetReuse::Off && native_feedback {
         let beads = association.operator().join(".loom/beads");
         let workspace = workspace.to_path_buf();
         let image = manifest.lookup(&profile, runtime)?.profile_config.clone();
+        let reuse = loom.cargo_target_reuse;
         match tokio::task::spawn_blocking(move || {
-            loom_shared::artifact::prepare(&beads, &workspace, &image)
+            loom_shared::artifact::prepare(&beads, &workspace, &image, reuse)
         })
         .await
         {
@@ -398,7 +399,7 @@ mod tests {
     use loom_driver::agent::AgentBackend;
 
     #[tokio::test]
-    async fn worker_target_seeding_is_opt_in_and_runs_before_spawn() {
+    async fn worker_cargo_target_reuse_honors_policy_before_spawn() {
         let dir = tempfile::tempdir().unwrap();
         let git = loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();
         let label = SpecLabel::new("workspaces").unwrap();
@@ -428,7 +429,13 @@ mod tests {
         }
         let beads = dir.path().join(".loom/beads");
         assert_eq!(
-            loom_shared::artifact::prepare(&beads, &donor, &profile_config).unwrap(),
+            loom_shared::artifact::prepare(
+                &beads,
+                &donor,
+                &profile_config,
+                CargoTargetReuse::default()
+            )
+            .unwrap(),
             loom_shared::artifact::Outcome::Cold
         );
         for subdir in ["deps", ".fingerprint"] {
@@ -452,14 +459,20 @@ mod tests {
         .unwrap();
         crate::test_support::acceptance::bind(&workspace, &label, &mut bead);
         let profile = ProfileName::new("rust").unwrap();
-        for (enabled, private) in [(false, false), (true, true), (true, false)] {
+        for (reuse, private) in [
+            (CargoTargetReuse::Off, false),
+            (CargoTargetReuse::CopyOnWrite, true),
+            (CargoTargetReuse::AllowHardlinks, true),
+            (CargoTargetReuse::default(), false),
+            (CargoTargetReuse::AllowHardlinks, false),
+        ] {
             std::fs::write(
                 workspace.join("wrix.toml"),
                 format!("[tool_caches]\nshared={}\n", !private),
             )
             .unwrap();
             let loom = LoomTopConfig {
-                shared_target: enabled,
+                cargo_target_reuse: reuse,
                 ..LoomTopConfig::default()
             };
             let prepared = prepare(Request {
@@ -485,8 +498,11 @@ mod tests {
             assert!(matches!(prepared, Preparation::Ready(_)));
             assert_eq!(
                 workspace.join("target/debug/.cargo-lock").exists(),
-                enabled && !private
+                reuse != CargoTargetReuse::Off && !private
             );
+            if workspace.join("target").exists() {
+                std::fs::remove_dir_all(workspace.join("target")).unwrap();
+            }
         }
     }
 

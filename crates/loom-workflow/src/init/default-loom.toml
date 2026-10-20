@@ -21,8 +21,9 @@ integration_branch = "main"
 # every cargo invocation pays full cold-build cost.
 # `sccache_container_path` defaults to `/sccache` and is consulted only
 # when `sccache_dir` is set.
-# Opt into worker-only target seeding; ext4 shares writable dependency libraries.
-# shared_target = false
+# Worker-only Cargo reuse: "copy-on-write" (default), "off", or "allow-hardlinks".
+# "allow-hardlinks" prefers CoW but permits writable dependency hard links as fallback.
+# cargo_target_reuse = "copy-on-write"
 # sccache_dir = ".loom/sccache"
 # sccache_container_path = "/sccache"
 
