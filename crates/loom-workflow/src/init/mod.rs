@@ -32,9 +32,13 @@ pub const DEFAULT_CONFIG_TOML: &str = include_str!("default-loom.toml");
 
 /// Options accepted by [`run`].
 #[derive(Debug, Clone, Copy, Default)]
-pub struct InitOpts {
+pub struct InitOpts<'a> {
     /// Drop and repopulate the cache DB from on-disk specs + active beads.
     pub rebuild: bool,
+    /// Explicit host-side adapter selection; omission retains the existing selection.
+    pub workspace_associator: Option<&'a Path>,
+    /// Explicitly disable a retained adapter, without deleting its selection file.
+    pub no_workspace_associator: bool,
 }
 
 /// Files touched by [`run`] and (optionally) the rebuild report.
@@ -106,6 +110,31 @@ fn run_locked(
     guard: &LockGuard,
     resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<InitReport, InitError> {
+    if opts.workspace_associator.is_some() && opts.no_workspace_associator {
+        return Err(loom_driver::workspace::Error::Association {
+            reason: "cannot select and disable a workspace associator together",
+        }
+        .into());
+    }
+    if opts.workspace_associator.is_some() || opts.no_workspace_associator {
+        loom_driver::workspace::external::Membership::configure(
+            workspace,
+            opts.workspace_associator,
+            guard,
+        )?;
+    }
+    let membership = loom_driver::workspace::external::Membership::load(workspace)?;
+    if let Some(membership) = &membership {
+        membership.admit_blocking(workspace)?;
+    }
+    // Admit an existing integration checkout before touching config, native state or its Git policy.
+    let integration = workspace.join(".loom/integration");
+    if let Some(membership) = &membership
+        && integration.try_exists()?
+    {
+        membership.admit_blocking(&integration)?;
+    }
+
     let runtime_dir = workspace.join(".loom");
     fs::create_dir_all(&runtime_dir).map_err(|source| InitError::CreateDir {
         path: runtime_dir.clone(),
@@ -131,6 +160,19 @@ fn run_locked(
         })?;
     }
 
+    // Fresh clone creation necessarily precedes its membership association. All later initialization
+    // (including native-state creation/rebuild) waits for successful target admission.
+    let admitted_integration = if membership.is_some() {
+        materialize_integration_workspace(
+            workspace,
+            &config_path,
+            &resolve_hooks,
+            membership.as_ref(),
+        )?
+    } else {
+        None
+    };
+
     let rebuild_report = if opts.rebuild {
         let db = CacheDb::recreate_for_init(&cache_db_path, guard)?;
         Some(db.rebuild(workspace, molecules)?)
@@ -139,8 +181,11 @@ fn run_locked(
         None
     };
 
-    let integration_workspace =
-        materialize_integration_workspace(workspace, &config_path, &resolve_hooks)?;
+    let integration_workspace = if membership.is_some() {
+        admitted_integration
+    } else {
+        materialize_integration_workspace(workspace, &config_path, &resolve_hooks, None)?
+    };
 
     if integration_workspace.is_some() {
         loom_driver::workspace::Association::establish(workspace)?;
@@ -170,9 +215,13 @@ fn materialize_integration_workspace(
     workspace: &Path,
     config_path: &Path,
     resolve_hooks: &impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
+    membership: Option<&loom_driver::workspace::external::Membership>,
 ) -> Result<Option<MaterializedIntegration>, InitError> {
     let dest = workspace.join(".loom/integration");
     if dest.exists() {
+        if let Some(membership) = membership {
+            membership.admit_blocking(&dest)?;
+        }
         // Reconcile an existing integration line with published HEAD before
         // any later `loom loop` materializes bead clones off it. A diverged
         // line (local commits never pushed) fails loud rather than seeding
@@ -193,6 +242,9 @@ fn materialize_integration_workspace(
     };
     let config = LoomConfig::load(config_path)?;
     clone_loom_workspace(&origin_url, &dest, &config.loom.integration_branch)?;
+    if let Some(membership) = membership {
+        membership.admit_blocking(&dest)?;
+    }
 
     // Enable rerere unconditionally so driver-side rebases replay recorded
     // conflict resolutions. `loom loop` installs repository Git policy in a
@@ -474,7 +526,14 @@ mod tests {
         assert_eq!(post, 1);
         drop(db);
 
-        let report = run(dir.path(), InitOpts { rebuild: true }, &molecules)?;
+        let report = run(
+            dir.path(),
+            InitOpts {
+                rebuild: true,
+                ..InitOpts::default()
+            },
+            &molecules,
+        )?;
         let rb = report
             .rebuild
             .ok_or_else(|| anyhow::anyhow!("rebuild must produce a report"))?;

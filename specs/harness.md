@@ -173,6 +173,10 @@ current canonical inputs and requires fresh coverage when evidence is
 unavailable. Host checkout identity is checked per invocation, not pinned to
 another machine's filesystem or home directory.
 
+Optional host-side external membership selection and its fail-closed preparation
+ordering are owned by [Workspaces](workspaces.md#external-workspace-membership).
+Selection is local configuration, not a new native identity/history registry.
+
 `loom init` imports retired local stores once under the controlling workspace
 initialization lock. Imported records grant no positive verification authority;
 invalid imports retain their sources for repair. SQL migration and record writes

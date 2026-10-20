@@ -270,6 +270,11 @@ being in an associated bead clone does not make them trusted safety facts.
 Missing required shared history follows the retained-evidence failure policy,
 not a fallback to an empty clone-local history.
 
+Optional [external membership](workspaces.md#external-workspace-membership)
+never selects another history store or supplies evidence-admission authority;
+the controlling native `.loom/state.db` and current admission rules are
+unchanged.
+
 Sharing safety facts does not establish execution equivalence or a reusable
 positive result. Each result still needs ordinary current-context admission;
 independent admissible evidence remains reusable. Markers and publication

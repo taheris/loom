@@ -14,6 +14,9 @@ use loom_driver::state::CacheError;
 /// Failures raised by [`super::run`] and [`super::fetch_epics`].
 #[derive(Debug, Display, Error)]
 pub enum InitError {
+    /// initialization filesystem operation failed
+    Io(#[from] io::Error),
+
     /// failed to create directory at {path}
     CreateDir {
         path: PathBuf,

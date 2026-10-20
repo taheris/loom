@@ -177,6 +177,73 @@ invalidates missing evidence and requires fresh current checks. This association
 does not expose the integration checkout or its marker to workers; Gate retains
 publication authority and Evidence owns history admission.
 
+### External workspace membership
+
+[Acceptance](#external-membership).
+
+An optional host-side membership adapter groups the operator, integration and
+execution checkouts for an external consumer. It is not execution, evidence or
+cleanup authority: native checkout checks, the controlling `.loom/state.db`,
+worker isolation and invocation-local inode rechecks remain authoritative. There
+is no persistent native association registry or external safety-history store.
+
+`loom init --workspace-associator <absolute-program>` explicitly selects or
+replaces the adapter. `--no-workspace-associator` explicitly disables it.
+Omission retains the previous selection; genuine absence preserves standalone
+behavior. Selection belongs to the operator's direct private Git storage, not
+tracked configuration, Git configuration or worker-provided environment.
+Integration invocations locate the controlling operator's selection. Workers
+cannot select or execute host adapters. Unsafe objects, malformed/unreadable
+selection, unavailable programs and interrupted selection staging fail closed.
+An accepted selection is durably published under the workspace initialization
+lock before admission; failed initialization does not undo it or silently become
+standalone. Interrupted staging is retained for explicit inspection.
+
+Loom directly executes the selected program as the host user, from the operator
+checkout, with `--operator <absolute-path> --checkout <absolute-path>`. Stdin is
+closed, runtime is bounded to 30 seconds and each captured output pipe to 16
+KiB. Nonzero exit, signal, timeout, excess output or uncertain process cleanup
+stops preparation. On timeout or capture failure, owned process groups are
+terminated and the direct child reaped. The adapter must leave no background
+work on ordinary exit; deliberately detached descendants remain its
+responsibility. Diagnostics include bounded adapter stderr, which must not
+contain secrets.
+
+The adapter confirms an already registered operator, derives its external
+identity from that registration, and atomically associates an unregistered
+target or confirms matching membership. It refuses unknown operators and
+conflicting membership without enrollment or rebind. Operator-equals-target is
+confirmation-only, although supported location refresh may write existing
+registration. Paths locate participants; path, remote or readable-name equality
+cannot establish membership. The consumer owns membership serialization,
+participant validation around writes, stable host-user store/tool selection and
+idempotent retry. Exit zero is the only response; no identity payload or receipt
+is execution authority. A timeout may follow committed membership, which Loom
+does not roll back. No transaction across independent stores is claimed.
+
+Operator confirmation precedes integrated initialization. Existing integration
+admission precedes native-state initialization/rebuild and Git reconciliation;
+fresh integration admission follows necessary cloning but precedes rerere, hooks
+and native-state creation. Fresh/reused bead admission precedes identity,
+policy, hooks, mount preparation, dirty-work stashing and fetch/alignment. Tune
+clone admission precedes checkout and identity configuration. Rejection retains
+clones, dirty work and recovery evidence; directory existence never establishes
+successful admission. Native participant and selection observations are checked
+around adapter execution. Cleanup does not call the adapter or acquire external
+authority.
+
+An intact operator tree may move with its nested integration, bead clones and
+native state. New invocations resolve the current layout; old invocation
+capabilities fail recheck. Reused bead preparation repairs the retained absolute
+`origin` to the current integration location after membership admission. Moving
+integration independently outside the required layout is not supported. Native
+checks do not prove cross-invocation continuity against copies or replacements;
+external continuity remains the consumer's responsibility. Host association and
+configured selection require direct Git directories, not `.git` pointer
+interpretation. Existing bead linked-worktree/indirect/shared-storage refusal is
+unchanged. See
+[the integration guide](../docs/external-workspace-membership.md).
+
 ### Repository Git Isolation
 
 [Acceptance](#bead-dispatch-1).
@@ -332,6 +399,94 @@ for worker feedback.
   history; ordinary deterministic worker feedback still works without exposing
   the integration checkout or transferring marker authority.
   [system](nix run .#test-quint -- workspace-safety-history)
+
+### External membership
+
+- Public initialization confirms operator and fresh integration membership
+  before native state creation.
+  [test](external_membership_cli_selected_before_initialization_confirms_operator_and_integration)
+
+- Unknown-operator refusal does not enroll it, and failed initialization retains
+  the selected adapter.
+  [test](external_membership_cli_unknown_operator_retains_selection_without_initializing_native_state)
+
+- Public rebuild tracker failure retains explicitly selected integration rather
+  than allowing the next invocation to fall back to standalone.
+  [test](external_membership_cli_rebuild_tracker_failure_cannot_erase_explicit_selection)
+
+- Selection after standalone initialization preserves existing native records.
+  [test](external_membership_cli_selecting_after_initialization_preserves_native_records)
+
+- Rejected integration admission precedes configuration/state changes and
+  preserves dirty work.
+  [test](external_membership_cli_rejected_integration_precedes_configuration_and_native_state)
+
+- Malformed, unavailable and interrupted selections fail closed without
+  consuming staging evidence.
+  [test](external_membership_malformed_unavailable_and_interrupted_selection_fail_closed)
+
+- Unsafe selection objects and configuration under a foreign workspace lock are
+  refused.
+  [test](external_membership_selection_refuses_unsafe_objects_and_foreign_lock)
+
+- Public reinitialization cannot hide malformed selection; explicit disabling
+  permits standalone initialization.
+  [test](external_membership_cli_malformed_selection_cannot_be_hidden_by_reinit)
+
+- Explicit disabling restores standalone execution preparation without running
+  an adapter.
+  [test](external_membership_explicit_disable_restores_standalone_preparation)
+
+- Fresh/reused bead admission preserves dirty work through production recovery
+  stashing.
+  [test](external_membership_admits_fresh_and_reused_clones_without_losing_dirty_work)
+
+- Conflicting independent membership is refused before configuration or
+  stashing, without rebinding.
+  [test](external_membership_refuses_independent_clone_before_configuration_or_stashing)
+
+- Fresh clone rejection precedes identity, hooks and mount setup while retaining
+  the clone for retry.
+  [test](external_membership_rejects_fresh_clone_before_identity_hooks_or_mount_setup)
+
+- Tune clone rejection precedes checkout and identity configuration.
+  [test](external_membership_tune_clone_admission_precedes_checkout_and_identity_configuration)
+
+- Public initialization of an intact moved tree retains native state and
+  membership.
+  [test](external_membership_cli_moved_operator_tree_retains_initialization_and_membership)
+
+- Moved trees support reused/fresh bead preparation, with current origin repair
+  and stale capability refusal.
+  [test](external_membership_moved_pair_prepares_reused_and_fresh_clones_and_invalidates_old_capability)
+
+- Linked-worktree refusal remains intact and occurs before target admission.
+  [test](external_membership_preserves_linked_worktree_refusal_before_target_admission)
+
+- The public worker guard prevents host selection configuration or execution.
+  [test](external_membership_cli_worker_guard_prevents_selection_execution)
+
+- Integration resolves controlling selection; workers cannot supply it and Git
+  replacement rejects admission.
+  [test](external_membership_checks_controlling_selection_and_rejects_git_replacement)
+
+- Selection replacement during adapter execution rejects admission.
+  [test](external_membership_detects_selection_replacement_during_admission)
+
+- Native checkout cleanup neither invokes nor requires external membership
+  policy.
+  [test](external_membership_does_not_participate_in_native_checkout_cleanup)
+
+- Adapter timeout terminates/reaps the owned group without undoing committed
+  membership, allowing idempotent retry.
+  [test](external_membership_timeout_reaps_group_preserves_committed_effect_and_allows_retry)
+
+- Both adapter output pipes are bounded and interactive stdin is closed.
+  [test](external_membership_bounds_both_output_pipes_and_closes_interactive_stdin)
+
+- The fixture independently demonstrates unknown-operator/conflict refusal and
+  retry semantics, not production identity security.
+  [test](fixture_adapter_confirms_operator_refuses_conflicts_and_retries_idempotently)
 
 ### Cargo target seeding
 

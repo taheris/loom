@@ -42,6 +42,9 @@ pub enum GitError {
     /// worktree task panicked or was cancelled
     JoinError(#[from] tokio::task::JoinError),
 
+    /// external workspace membership admission failed
+    Workspace(#[from] crate::workspace::Error),
+
     /// io failure
     Io(#[from] io::Error),
 

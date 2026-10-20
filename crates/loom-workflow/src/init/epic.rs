@@ -240,7 +240,10 @@ mod tests {
         .unwrap();
         let report = super::super::run(
             directory.path(),
-            super::super::InitOpts { rebuild: true },
+            super::super::InitOpts {
+                rebuild: true,
+                ..super::super::InitOpts::default()
+            },
             &epics,
         )
         .unwrap();

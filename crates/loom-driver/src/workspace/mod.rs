@@ -1,5 +1,6 @@
 //! Checked invocation-local host checkout context; no local file is permanent authority.
 
+pub mod external;
 mod launch;
 mod verification;
 pub use verification::{
@@ -29,6 +30,13 @@ pub enum Error {
         bead: BeadId,
         #[source]
         source: std::io::Error,
+    },
+    /// external workspace membership subprocess failed
+    ExternalProcess(#[from] crate::process::Error),
+    /// external workspace membership rejected ({status}): {detail}
+    ExternalRejected {
+        status: std::process::ExitStatus,
+        detail: String,
     },
     /// local workspace state operation failed
     State(#[from] crate::state::CacheError),
@@ -64,12 +72,17 @@ struct Checkout {
 impl Checkout {
     fn read(path: &Path) -> Result<Self, Error> {
         let path = std::path::absolute(path)?;
-        let directory = Directory::open(&path)?;
         if disposable(&path) {
             return Err(Error::Association {
                 reason: "worker checkouts cannot select host workflow state",
             });
         }
+        Self::read_participant(&path)
+    }
+
+    fn read_participant(path: &Path) -> Result<Self, Error> {
+        let path = std::path::absolute(path)?;
+        let directory = Directory::open(&path)?;
         let git = directory.child(Path::new(".git"))?;
         Ok(Self {
             path,

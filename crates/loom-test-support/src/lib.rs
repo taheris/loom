@@ -10,6 +10,7 @@ pub mod finding;
 pub mod git_policy;
 pub mod parallel_process;
 pub mod profile_manifest;
+pub mod workspace_associator;
 
 use proptest::test_runner::Config as ProptestConfig;
 

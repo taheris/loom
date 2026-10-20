@@ -495,6 +495,12 @@ enum Command {
         /// Drop and repopulate the cache DB from `specs/*.md` and active beads.
         #[arg(long)]
         rebuild: bool,
+        /// Select the host workspace membership adapter.
+        #[arg(long, value_name = "PATH", conflicts_with = "no_workspace_associator")]
+        workspace_associator: Option<PathBuf>,
+        /// Disable the selected workspace membership adapter.
+        #[arg(long)]
+        no_workspace_associator: bool,
     },
     /// Print cache health and work-epic status.
     Status,
@@ -846,7 +852,19 @@ fn main() -> ExitCode {
     let host_key = cli.host_key;
 
     let result: anyhow::Result<ExitCode> = match cli.command {
-        Command::Init { rebuild } => run_init(&workspace, rebuild).map(|()| ExitCode::SUCCESS),
+        Command::Init {
+            rebuild,
+            workspace_associator,
+            no_workspace_associator,
+        } => run_init(
+            &workspace,
+            init::InitOpts {
+                rebuild,
+                workspace_associator: workspace_associator.as_deref(),
+                no_workspace_associator,
+            },
+        )
+        .map(|()| ExitCode::SUCCESS),
         Command::Status => run_status(&workspace).map(|()| ExitCode::SUCCESS),
         Command::UseSpec { label } => run_use(&workspace, &label).map(|()| ExitCode::SUCCESS),
         Command::Logs {
@@ -931,6 +949,7 @@ fn exit_code_for_gate(gate: &GateOutcome) -> ExitCode {
 }
 
 fn prepare_wrix_git_policy(workspace: &Path, host_key: bool) -> anyhow::Result<RepoGitPolicy> {
+    loom_driver::workspace::external::admit_blocking(workspace, workspace)?;
     let mode = if host_key {
         KeyMode::Host
     } else {
@@ -1032,9 +1051,26 @@ fn tune_surface_request(
     clippy::print_stdout,
     reason = "this command renders its initialization report to stdout"
 )]
-fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
+fn run_init(workspace: &std::path::Path, opts: init::InitOpts) -> anyhow::Result<()> {
+    // Rebuild observes the tracker before native initialization. Persist explicit selection first
+    // so tracker/runtime failures cannot turn the next invocation into standalone preparation.
+    if opts.workspace_associator.is_some() || opts.no_workspace_associator {
+        let manager = loom_driver::lock::LockManager::new(workspace)?;
+        let guard = manager.acquire_workspace()?;
+        loom_driver::workspace::external::Membership::configure(
+            workspace,
+            opts.workspace_associator,
+            &guard,
+        )?;
+    }
+    loom_driver::workspace::external::admit_blocking(workspace, workspace)?;
+    let opts = init::InitOpts {
+        workspace_associator: None,
+        no_workspace_associator: false,
+        ..opts
+    };
     let runtime = command_runtime()?;
-    let molecules = if rebuild {
+    let molecules = if opts.rebuild {
         runtime.block_on(async {
             let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
             init::fetch_epics(&bd).await
@@ -1042,7 +1078,7 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
     } else {
         Vec::new()
     };
-    let report = init::run(workspace, init::InitOpts { rebuild }, &molecules)?;
+    let report = init::run(workspace, opts, &molecules)?;
     println!("loom init: workspace={}", workspace.display());
     println!(
         "  config: {} ({})",
@@ -3102,6 +3138,10 @@ fn run_loop_cmd(
     host_key: bool,
     render_flags: RenderFlags,
 ) -> anyhow::Result<LoopOutcome> {
+    loom_driver::workspace::external::admit_blocking(
+        workspace,
+        &workspace.join(".loom/integration"),
+    )?;
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     sweep_retention_at(
         &workspace.join(".loom/logs"),

@@ -10,6 +10,7 @@ use tracing::{info, warn};
 use crate::bd::{BdClient, CommandRunner};
 use crate::clock::{Clock, SystemClock};
 use crate::identifier::{BeadId, MoleculeId, SpecLabel};
+use crate::workspace::{Association, external::Membership};
 
 use loom_protocol::oid::GitOid;
 
@@ -185,6 +186,27 @@ impl GitClient {
             .is_some_and(super::signing::RepoGitPolicy::uses_host_key)
     }
 
+    fn external_membership(&self) -> Result<Option<(Membership, Association)>, GitError> {
+        Membership::load(&self.workdir)?
+            .map(|membership| Ok((membership, Association::resolve(&self.workdir)?)))
+            .transpose()
+    }
+
+    async fn admit_external_checkout(
+        context: Option<&(Membership, Association)>,
+        workspace: &Path,
+    ) -> Result<(), GitError> {
+        if let Some((membership, native)) = context {
+            native.recheck()?;
+            membership.admit(native.integration()).await?;
+            if workspace != native.integration() {
+                membership.admit(workspace).await?;
+            }
+            native.recheck()?;
+        }
+        Ok(())
+    }
+
     async fn apply_repo_git_policy(&self, workspace: &Path) -> Result<(), GitError> {
         let Some(policy) = self.repo_git_policy.clone() else {
             return Ok(());
@@ -350,11 +372,30 @@ impl GitClient {
         _label: &SpecLabel,
         bead_id: &BeadId,
     ) -> Result<CreatedWorktree, GitError> {
+        let membership = self.external_membership()?;
+        Self::admit_external_checkout(membership.as_ref(), &self.loom_workspace()).await?;
         let branch = format!("{BRANCH_PREFIX}/{bead_id}");
         let rel = PathBuf::from(WORKTREE_BASE).join(bead_id.as_str());
         let path = self.workdir.join(&rel);
         if path.exists() {
             ensure_private_bead_storage(&path).await?;
+            Self::admit_external_checkout(membership.as_ref(), &path).await?;
+            if membership.is_some() {
+                ensure_private_bead_storage(&path).await?;
+                // The integration clone is layout-authoritative, not the retained absolute remote URL.
+                run_git(
+                    &path,
+                    self.clock.as_ref(),
+                    [
+                        OsString::from("remote"),
+                        OsString::from("set-url"),
+                        OsString::from("origin"),
+                        self.loom_workspace().into_os_string(),
+                    ],
+                    None,
+                )
+                .await?;
+            }
             self.apply_repo_git_policy(&path).await?;
             ensure_wrix_mount_dir(&path)?;
             self.repair_bead_hooks_path(&path).await?;
@@ -383,6 +424,10 @@ impl GitClient {
         .await?;
 
         ensure_private_bead_storage(&path).await?;
+        Self::admit_external_checkout(membership.as_ref(), &path).await?;
+        if membership.is_some() {
+            ensure_private_bead_storage(&path).await?;
+        }
 
         // Inherit user.email / user.name from the source's effective git
         // config (local + global) into the clone's local config so commits
@@ -480,6 +525,12 @@ impl GitClient {
         path: &Path,
         bead_id: &BeadId,
     ) -> Result<BeadClonePreparation, GitError> {
+        let membership = self.external_membership()?;
+        if membership.is_some() {
+            ensure_private_bead_storage(path).await?;
+            Self::admit_external_checkout(membership.as_ref(), path).await?;
+            ensure_private_bead_storage(path).await?;
+        }
         let status_before = self.status_short_branch_at(path).await?;
         let recovery = if status_short_branch_is_dirty(&status_before) {
             Some(
@@ -964,6 +1015,8 @@ impl GitClient {
         base: &str,
         branch: &str,
     ) -> Result<(), GitError> {
+        let membership = self.external_membership()?;
+        Self::admit_external_checkout(membership.as_ref(), &self.loom_workspace()).await?;
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -980,6 +1033,7 @@ impl GitClient {
             None,
         )
         .await?;
+        Self::admit_external_checkout(membership.as_ref(), destination).await?;
         run_git(
             destination,
             self.clock.as_ref(),

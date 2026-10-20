@@ -18,6 +18,12 @@ Ownership boundaries do not require new crates or commands.
 - [`tuning.md`](tuning.md) — Loom tuning handbook: SkillOpt adaptation,
   behavioral checker model, `loom-case` syntax, and consumer tuning guidance.
 
+## Integration Interfaces
+
+- [External workspace membership](external-workspace-membership.md) — explicit
+  host-side adapter selection, status-only admission, failure handling and
+  scope.
+
 ## Engineering Investigations
 
 - [Cargo target reuse validation](cargo-target-reuse.md) — Rust/Nextest safety

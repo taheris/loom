@@ -34,13 +34,35 @@ pub async fn output(
     clock: &dyn Clock,
     timeout: Duration,
 ) -> Result<Output, Error> {
+    capture(command, clock, timeout, None).await
+}
+
+/// Capture at most `limit` bytes per pipe; excess output terminates the owned group.
+///
+/// # Errors
+/// Returns capture, limit, timeout or cleanup errors, preserving already completed child effects.
+pub async fn output_limited(
+    command: &mut Command,
+    clock: &dyn Clock,
+    timeout: Duration,
+    limit: u64,
+) -> Result<Output, Error> {
+    capture(command, clock, timeout, Some(limit)).await
+}
+
+async fn capture(
+    command: &mut Command,
+    clock: &dyn Clock,
+    timeout: Duration,
+    limit: Option<u64>,
+) -> Result<Output, Error> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut process = OwnedChild::spawn(command)?;
     let result = tokio::select! {
-        result = process.output() => result.map_err(Error::Io),
+        result = process.output(limit) => result.map_err(Error::Io),
         () = clock.sleep(timeout) => Err(Error::Timeout),
     };
     match result {
@@ -130,9 +152,9 @@ impl OwnedChild {
         Ok(status)
     }
 
-    async fn output(&mut self) -> io::Result<Output> {
-        let stdout = read_pipe(self.child.stdout.take());
-        let stderr = read_pipe(self.child.stderr.take());
+    async fn output(&mut self, limit: Option<u64>) -> io::Result<Output> {
+        let stdout = read_pipe(self.child.stdout.take(), limit);
+        let stderr = read_pipe(self.child.stderr.take(), limit);
         // Keep the leader unreaped until both pipes close so its group ID cannot be reused.
         let (stdout, stderr) = tokio::try_join!(stdout, stderr)?;
         let status = self.child.wait().await?;
@@ -199,10 +221,23 @@ impl Drop for OwnedChild {
     }
 }
 
-async fn read_pipe(pipe: Option<impl AsyncRead + Unpin>) -> io::Result<Vec<u8>> {
+async fn read_pipe(
+    pipe: Option<impl AsyncRead + Unpin>,
+    limit: Option<u64>,
+) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     if let Some(mut pipe) = pipe {
-        pipe.read_to_end(&mut bytes).await?;
+        if let Some(limit) = limit {
+            (&mut pipe)
+                .take(limit.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() as u64 > limit {
+                return Err(io::Error::other("subprocess output exceeded capture limit"));
+            }
+        } else {
+            pipe.read_to_end(&mut bytes).await?;
+        }
     }
     Ok(bytes)
 }

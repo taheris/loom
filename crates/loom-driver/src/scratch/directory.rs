@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Component, Path};
 
 use rustix::fs::{
@@ -18,7 +18,18 @@ const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
 #[derive(Debug)]
 pub struct Directory(OwnedFd);
 
+impl AsFd for Directory {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
 impl Directory {
+    pub(crate) fn sync(&self) -> io::Result<()> {
+        rustix::fs::fsync(&self.0)?;
+        Ok(())
+    }
+
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         if path.as_os_str().is_empty() || path.components().any(|c| c == Component::ParentDir) {
             return Err(io::Error::new(
