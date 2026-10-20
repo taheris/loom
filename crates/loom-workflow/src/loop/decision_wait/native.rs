@@ -51,7 +51,7 @@ fn independent(source: &Bead) -> bool {
             || label.as_str() == super::HOLD_LABEL
     }) || matches!(
         source.status,
-        Status::Deferred | Status::Pinned | Status::Tombstone
+        Status::Closed | Status::Deferred | Status::Pinned | Status::Tombstone
     )
 }
 
@@ -126,11 +126,11 @@ impl DecisionWaitJournal {
         bd: &BdClient<R>,
         bead: &Bead,
     ) -> Result<bool, LoopError> {
-        if bead.metadata.contains_key(KEY) {
-            return Err(invalid("legacy native wait lacks a checked release disposition; preserve the hold for review").into());
-        }
         if bead.status == Status::Closed {
             return Ok(false);
+        }
+        if bead.metadata.contains_key(KEY) {
+            return Err(invalid(format!("task {}: legacy native wait lacks a checked release disposition; preserve the hold for review", bead.id)).into());
         }
         if matches!(
             bead.status,

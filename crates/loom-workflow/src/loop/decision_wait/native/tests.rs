@@ -289,6 +289,73 @@ mod cases {
         assert_eq!(f.bd.show(&f.source.id).await.unwrap(), before);
     }
 
+    #[tokio::test]
+    async fn closed_legacy_native_wait_preserves_history_without_blocking_loop() {
+        for phase in [None, Some(Phase::Cancelled), Some(Phase::Active)] {
+            let f = Fixture::new().await;
+            let record = Record {
+                version: 1,
+                source: f.source.id.clone(),
+                root: f.root.clone(),
+                parent: f.source.parent.clone(),
+                kind: f.source.issue_type,
+                initial_status: Status::InProgress,
+                blockers: f.blockers.clone(),
+            };
+            for blocker in &f.blockers {
+                f.close(blocker).await;
+            }
+            f.bd.update(
+                &f.source.id,
+                UpdateOpts {
+                    set_metadata: vec![(KEY.into(), serde_json::to_string(&record).unwrap())],
+                    ..UpdateOpts::default()
+                },
+            )
+            .await
+            .unwrap();
+            f.close(&f.source.id).await;
+            let journal = f.journal();
+            if let Some(phase) = phase {
+                journal
+                    .db()
+                    .unwrap()
+                    .put_record(
+                        RecordKind::DependencyWait,
+                        f.source.id.as_str(),
+                        &Entry {
+                            record,
+                            phase,
+                            additional_blockers: vec![],
+                        },
+                    )
+                    .unwrap();
+            }
+            let before = f.bd.show(&f.source.id).await.unwrap();
+            let records = journal
+                .db()
+                .unwrap()
+                .records::<serde_json::Value>(RecordKind::DependencyWait)
+                .unwrap();
+            f.refresh().await;
+            assert!(
+                !super::super::super::held(&f.bd, &journal, &before)
+                    .await
+                    .unwrap()
+            );
+            assert!(!journal.blocks_scope(&f.bd, &f.root).await.unwrap());
+            assert_eq!(f.bd.show(&f.source.id).await.unwrap(), before);
+            assert_eq!(
+                journal
+                    .db()
+                    .unwrap()
+                    .records::<serde_json::Value>(RecordKind::DependencyWait)
+                    .unwrap(),
+                records
+            );
+        }
+    }
+
     struct LostAck {
         native: IsolatedBeads,
         armed: Arc<AtomicBool>,
