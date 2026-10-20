@@ -48,6 +48,9 @@ pub enum CacheError {
         source: std::fs::TryLockError,
     },
 
+    /// checkout Git storage could not be resolved
+    Git(#[source] Box<crate::git::GitError>),
+
     /// io failure
     Io(#[from] io::Error),
 
@@ -65,4 +68,10 @@ pub enum CacheError {
 
     /// work epic `{id}` is missing its cached range or state; run `loom init --rebuild`
     WorkEpicMissing { id: String },
+}
+
+impl From<crate::git::GitError> for CacheError {
+    fn from(error: crate::git::GitError) -> Self {
+        Self::Git(Box::new(error))
+    }
 }

@@ -162,6 +162,11 @@ impl GitClient {
         })
     }
 
+    /// Checkout-specific Git administration, distinct from a linked worktree\'s common directory.
+    pub fn administrative_directory(&self) -> &Path {
+        self.repo.git_dir()
+    }
+
     /// Override the timeout used for hook-running git operations
     /// (currently [`Self::push`]). Production threads
     /// `[loom] git_hook_timeout_secs` here; absent an override the client
@@ -3704,6 +3709,54 @@ where
 #[cfg(test)]
 #[cfg(unix)]
 mod timeout_tests {
+    #[test]
+    fn linked_worktree_legacy_state_is_local_and_requires_explicit_import() {
+        use crate::state::{CacheDb, RecordKind};
+
+        let root = tempfile::tempdir().unwrap();
+        let main = root.path().join("main");
+        super::init_test_repo(&main).unwrap();
+        let checkout = root.path().join("linked");
+        super::run_test_git(
+            &main,
+            &["worktree", "add", "--detach", checkout.to_str().unwrap()],
+        )
+        .unwrap();
+        assert!(checkout.join(".git").is_file());
+        let git = super::GitClient::open(&checkout).unwrap();
+        let path = crate::state::path(&checkout);
+        let clean = root.path().join("clean");
+        super::run_test_git(
+            &main,
+            &["worktree", "add", "--detach", clean.to_str().unwrap()],
+        )
+        .unwrap();
+        drop(CacheDb::open(crate::state::path(&clean)).unwrap());
+        let legacy = git
+            .administrative_directory()
+            .join("loom-verification-continuations");
+        std::fs::create_dir(&legacy).unwrap();
+        let record = serde_json::json!({"bead":"lm-kept","phase":"verify"});
+        std::fs::write(legacy.join("saved.json"), record.to_string()).unwrap();
+        assert!(CacheDb::open(&path).is_err());
+        let foreign = main.join(".git/loom-verification-continuations");
+        std::fs::create_dir(&foreign).unwrap();
+        std::fs::write(foreign.join("foreign.json"), "not checkout state").unwrap();
+        let manager = crate::lock::LockManager::new(&checkout).unwrap();
+        let guard = manager.acquire_workspace().unwrap();
+        let db = CacheDb::open_for_init(&path, &guard).unwrap();
+        assert_eq!(
+            db.record::<serde_json::Value>(RecordKind::Verification, "lm-kept")
+                .unwrap(),
+            Some(record)
+        );
+        assert!(!legacy.join("saved.json").exists());
+        assert!(foreign.join("foreign.json").exists());
+        drop(db);
+        drop(guard);
+        drop(CacheDb::open(&path).unwrap());
+    }
+
     use super::*;
     use crate::process::tests::{Fixture, TriggerClock, bounded};
 

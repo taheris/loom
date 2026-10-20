@@ -53,7 +53,7 @@ pub(super) fn pending(database: &Path) -> Result<bool, CacheError> {
         ".loom/dependency-waits",
         ".git/loom-verification-continuations",
     ] {
-        let directory = workspace.join(name);
+        let directory = directory(workspace, name)?;
         if directory.try_exists()? {
             for entry in std::fs::read_dir(directory)? {
                 if entry?
@@ -130,7 +130,7 @@ pub(super) fn import(conn: &Connection, database: &Path) -> Result<Import, Cache
             "bead",
         ),
     ] {
-        let directory = workspace.join(directory);
+        let directory = self::directory(workspace, directory)?;
         if !directory.try_exists()? {
             continue;
         }
@@ -255,6 +255,17 @@ pub(super) fn copy_notes(source: &Connection, destination: &Connection) -> Resul
         )?;
     }
     Ok(())
+}
+
+fn directory(workspace: &Path, name: &str) -> Result<PathBuf, CacheError> {
+    if let Some(relative) = name.strip_prefix(".git/")
+        && workspace.join(".git").is_file()
+    {
+        return Ok(crate::git::GitClient::open(workspace)?
+            .administrative_directory()
+            .join(relative));
+    }
+    Ok(workspace.join(name))
 }
 
 fn invalid(path: &Path, detail: &str) -> CacheError {
