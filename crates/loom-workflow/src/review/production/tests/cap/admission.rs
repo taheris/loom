@@ -7,7 +7,7 @@ mod tests {
     use std::time::Duration;
 
     use loom_driver::bd::{
-        BdClient, BdError, CommandRunner, CreateOpts, IssueType, RunOutput, UpdateOpts,
+        BdClient, BdError, CommandRunner, CreateOpts, IssueType, ReadyOpts, RunOutput, UpdateOpts,
     };
     use loom_driver::identifier::BeadId;
     use loom_gate::{IntegrityFinding, Tier};
@@ -442,6 +442,7 @@ mod tests {
         let before = canonical_files(&f.directory.path().join(".loom"));
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.is_err());
         assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
+        let before_wait = f.bd.show(&source.id).await.unwrap();
         assert!(matches!(
             crate::r#loop::reconcile_session(
                 &f.bd,
@@ -456,12 +457,51 @@ mod tests {
         ));
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
         let waiting = f.bd.show(&source.id).await.unwrap();
-        assert_eq!(waiting.status, loom_driver::bd::Status::Blocked);
-        assert!(waiting.metadata.contains_key("loom.dependency_wait"));
+        assert_eq!(waiting.status, loom_driver::bd::Status::Open);
+        assert_eq!(waiting.metadata, before_wait.metadata);
+        assert_eq!(waiting.labels, before_wait.labels);
+        assert_eq!(waiting.notes, before_wait.notes);
+        assert!(!waiting.metadata.contains_key("loom.dependency_wait"));
+        assert_eq!(
+            loom_driver::state::CacheDb::open(loom_driver::state::path(f.directory.path()))
+                .unwrap()
+                .records::<serde_json::Value>(loom_driver::state::RecordKind::DependencyWait)
+                .unwrap(),
+            []
+        );
+        assert_eq!(
+            f.bd.dependency_snapshot(&source.id)
+                .await
+                .unwrap()
+                .active_blockers(),
+            std::slice::from_ref(&decision.id)
+        );
+        assert!(
+            !f.bd
+                .ready(ReadyOpts {
+                    parent: Some(f.root.clone()),
+                    ..ReadyOpts::default()
+                })
+                .await
+                .unwrap()
+                .iter()
+                .any(|bead| bead.id == source.id)
+        );
         assert_eq!(
             f.bd.show(&decision.id).await.unwrap().status,
             decision.status
         );
+        // Native waiting is not a hold; establish an independent hold for the later refusal.
+        f.bd.update(
+            &source.id,
+            UpdateOpts {
+                status: Some(loom_driver::bd::Status::Blocked),
+                append_notes: Some("independent human hold".into()),
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .unwrap();
         let continuation =
             f.bd.create(CreateOpts {
                 title: "later bound follow-up".into(),
