@@ -20,6 +20,10 @@ Ownership boundaries do not require new crates or commands.
 
 ## Engineering Investigations
 
+- [Cargo target reuse validation](cargo-target-reuse.md) — Rust/Nextest safety
+  coverage, replayable native Cargo measurements and the minimal APFS/Wrix
+  substrate-only remainder.
+
 - [Retained verification checkout recovery](verification-checkout-recovery.md) —
   cleanup/publication ordering, retention locking, and safe operator refusal or
   original-storage restoration for missing verification checkouts.

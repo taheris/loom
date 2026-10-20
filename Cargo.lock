@@ -2881,6 +2881,7 @@ dependencies = [
 name = "loom-shared"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "blake3",
  "displaydoc",
  "filetime",
@@ -2888,8 +2889,10 @@ dependencies = [
  "reflink-copy",
  "rustix",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
  "toml",
  "tracing",
 ]

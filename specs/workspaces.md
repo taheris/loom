@@ -122,6 +122,16 @@ donors and seeding failures produce diagnostics and fall back to normal Cargo;
 retries preserve their existing target. Cargo still checks freshness and every
 required verifier still runs.
 
+Policy, failure, locking, recovery and actual multi-checkout Cargo behavior run
+inside Rust/Nextest without a host bridge. The native clone syscall is a narrow
+filesystem-capability boundary: deterministic fixtures cover supported,
+unsupported and failed operations without claiming physical CoW sharing. Only
+actual APFS/shared-mount behavior through the Darwin Wrix launch substrate
+requires that platform; ordinary policy tests are not deferred to it. Focused
+on-demand measurements report Cargo freshness, advisory build time and
+inode-aware allocated library bytes; ordinary acceptance has no speed quota and
+does not infer CoW physical sharing from file sizes or allocated block sums.
+
 ### Cleanup admission
 
 [Acceptance](#bead-dispatch-1).
@@ -340,6 +350,42 @@ for worker feedback.
 - A recipient's hard-link opt-in cannot make a CoW-only donor's libraries
   writable through shared inodes; such donors can only supply CoW clones.
   [test](target_reuse_hardlinks_require_donor_permission)
+
+- Supported cloning is preferred under both enabled policies, creating
+  independently writable recipient files.
+  [test](target_reuse_prefers_independent_clones_even_with_hardlink_permission)
+
+- Unsupported cloning permits library hard links only when both workers allow
+  them; the full permission matrix runs independently of filesystem support.
+  [test](target_reuse_unsupported_clone_respects_both_workers_permissions)
+
+- Permission, interruption and other clone I/O errors cannot authorize a
+  hard-link fallback merely because hard links were allowed.
+  [test](target_reuse_clone_io_errors_never_authorize_hardlink_fallback)
+
+- The fixture clone adapter and native syscall adapter preserve bytes and
+  independent writes on success; native unavailability is explicit, not evidence
+  of physical sharing.
+  [test](clone_adapter_contract_keeps_successful_files_independently_writable)
+
+- Interrupted clone operations discard staging and cannot publish partial files.
+  [test](target_reuse_interrupted_clone_discards_staging_without_partial_publication)
+
+- Actual process death before publication leaves inert staging, never a partial
+  target or donor; an independent retry works without deleting the orphan.
+  [test](target_reuse_killed_preparation_leaves_inert_staging_and_retry_works)
+
+- A concurrently created destination wins over a completed seed without any file
+  merge or loss of the destination's contents.
+  [test](target_reuse_concurrent_destination_wins_without_partial_merge)
+
+- Private-cache donors are excluded under both enabled reuse policies.
+  [test](target_reuse_private_donors_are_not_used_by_either_enabled_policy)
+
+- A bounded native fixture reports actual external-dependency freshness and
+  inode-aware library accounting for off, CoW-only and hard-link-permitted
+  modes, without requiring host access or asserting timing quotas.
+  [test](target_reuse_measurement_reports_freshness_and_inode_aware_storage)
 
 - Existing targets are preserved, and only compatible direct worker siblings are
   reused, excluding operator/integration/recovery storage and symlinked

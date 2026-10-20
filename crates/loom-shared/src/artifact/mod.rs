@@ -69,6 +69,16 @@ pub fn prepare(
     image: &Path,
     reuse: Reuse,
 ) -> Result<Outcome, Error> {
+    prepare_with(beads, workspace, image, reuse, &transfer::Native)
+}
+
+fn prepare_with(
+    beads: &Path,
+    workspace: &Path,
+    image: &Path,
+    reuse: Reuse,
+    cloner: &impl transfer::Cloner,
+) -> Result<Outcome, Error> {
     if reuse == Reuse::Off {
         return Ok(Outcome::Disabled);
     }
@@ -95,7 +105,14 @@ pub fn prepare(
         if sibling.path() == workspace || !sibling.file_type()?.is_dir() {
             continue;
         }
-        match seed(&sibling.path(), &workspace, image, &context, &packages) {
+        match seed(
+            &sibling.path(),
+            &workspace,
+            image,
+            &context,
+            &packages,
+            cloner,
+        ) {
             Ok(Some(report)) => return Ok(Outcome::Seeded(report)),
             Ok(None) => {}
             Err(error) => tracing::warn!(donor = ?sibling.path(), ?error, "target donor skipped"),
@@ -119,6 +136,7 @@ fn seed(
     image: &Path,
     expected: &context::Stamp,
     packages: &catalog::Packages,
+    cloner: &impl transfer::Cloner,
 ) -> Result<Option<Report>, Error> {
     let donor = context::directory(donor)?;
     if !context::sharing_allowed(&donor)?
@@ -149,6 +167,7 @@ fn seed(
             &stage.path().join(relative),
             packages,
             reuse,
+            cloner,
             &mut report,
         )?;
     }

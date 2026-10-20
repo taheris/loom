@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod cases {
     use std::fs;
+    use std::io;
     use std::os::unix::fs::{MetadataExt, symlink};
     use std::path::{Path, PathBuf};
-    use std::process::Command;
 
     use rustix::fs::{FlockOperation, flock};
 
@@ -327,169 +327,293 @@ mod cases {
         assert!(packages.unit(&format!("external-{HASH}")).is_none());
     }
 
-    fn run(command: &mut Command) -> String {
-        let output = command.output().unwrap();
-        assert!(
-            output.status.success(),
-            "{command:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).unwrap()
+    struct IndependentClone;
+
+    impl transfer::Cloner for IndependentClone {
+        fn clone_file(&self, source: &Path, destination: &Path) -> io::Result<()> {
+            fs::copy(source, destination)?;
+            Ok(())
+        }
     }
 
-    fn cargo(workspace: &Path, home: &Path, args: &[&str]) -> Command {
-        let mut command = Command::new("cargo");
-        command
-            .current_dir(workspace)
-            .args(args)
-            .env("CARGO_HOME", home)
-            .env("CARGO_INCREMENTAL", "0");
-        for name in [
-            "RUSTC_WRAPPER",
-            "RUSTC_WORKSPACE_WRAPPER",
-            "CARGO_BUILD_RUSTC_WRAPPER",
-            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
-            "CARGO_TARGET_DIR",
-            "CARGO_BUILD_TARGET_DIR",
-            "CARGO_BUILD_BUILD_DIR",
-            "RUSTFLAGS",
-            "CARGO_ENCODED_RUSTFLAGS",
-            "CARGO_MAKEFLAGS",
-        ] {
-            command.env_remove(name);
+    struct RejectedClone(io::ErrorKind);
+
+    impl transfer::Cloner for RejectedClone {
+        fn clone_file(&self, _: &Path, _: &Path) -> io::Result<()> {
+            Err(io::Error::from(self.0))
         }
-        command
     }
 
     #[test]
-    fn target_seeding_real_cargo_rebuilds_divergent_checkouts() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("cargo-home");
-        let beads = dir.path().join(".loom/beads");
-        fs::create_dir_all(&beads).unwrap();
-        let dependency = dir.path().join("dependency");
-        fs::create_dir_all(dependency.join("src")).unwrap();
-        fs::write(
-            dependency.join("Cargo.toml"),
-            "[package]\nname='external'\nversion='0.1.0'\nedition='2024'\n",
-        )
-        .unwrap();
-        fs::write(
-            dependency.join("src/lib.rs"),
-            "pub fn value() -> u8 { 1 }\n",
-        )
-        .unwrap();
-        loom_driver::git::init_test_repo(&dependency).unwrap();
-        loom_driver::git::commit_all_in(&dependency, "Dependency").unwrap();
-        let manifest = format!(
-            "[package]\nname='application'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nexternal={{git='file://{}'}}\n",
-            dependency.display()
-        );
-        let donor = beads.join("lm-real-a");
-        let destination = beads.join("lm-real-b");
-        for workspace in [&donor, &destination] {
-            fs::create_dir_all(workspace.join("src")).unwrap();
-            fs::write(workspace.join("Cargo.toml"), &manifest).unwrap();
-            fs::write(
-                workspace.join("src/main.rs"),
-                "fn main() { println!(\"{}:{}\", external::value(), env!(\"CARGO_MANIFEST_DIR\")); }\n",
+    fn target_reuse_prefers_independent_clones_even_with_hardlink_permission() {
+        for (name, reuse) in [
+            ("lm-cow", Reuse::CopyOnWrite),
+            ("lm-links", Reuse::AllowHardlinks),
+        ] {
+            let fixture = Fixture::new();
+            let destination = fixture.destination(name);
+            let outcome = prepare_with(
+                &fixture.beads,
+                &destination,
+                Path::new(IMAGE),
+                reuse,
+                &IndependentClone,
             )
             .unwrap();
+            assert!(matches!(outcome, Outcome::Seeded(_)));
+            assert_independent_or_cold(&fixture, &destination, outcome);
         }
-        run(&mut cargo(&donor, &home, &["generate-lockfile"]));
-        fs::copy(donor.join("Cargo.lock"), destination.join("Cargo.lock")).unwrap();
-        assert_eq!(
-            prepare(&beads, &donor, Path::new(IMAGE), Reuse::AllowHardlinks).unwrap(),
-            Outcome::Cold
-        );
-        run(&mut cargo(&donor, &home, &["build", "--offline"]));
-        let before = fs::read_dir(donor.join("target/debug/deps"))
-            .unwrap()
-            .map(Result::unwrap)
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".rlib"))
-            .map(|entry| (entry.path(), fs::read(entry.path()).unwrap()))
-            .collect::<Vec<_>>();
-        assert_ne!(before.len(), 0);
-        let Outcome::Seeded(report) = prepare(
-            &beads,
+    }
+
+    #[test]
+    fn target_reuse_unsupported_clone_respects_both_workers_permissions() {
+        for donor in [Reuse::CopyOnWrite, Reuse::AllowHardlinks] {
+            for recipient in [Reuse::CopyOnWrite, Reuse::AllowHardlinks] {
+                let fixture = Fixture::with_reuse(donor);
+                let destination = fixture.destination("lm-recipient");
+                let outcome = prepare_with(
+                    &fixture.beads,
+                    &destination,
+                    Path::new(IMAGE),
+                    recipient,
+                    &RejectedClone(io::ErrorKind::Unsupported),
+                )
+                .unwrap();
+                if donor == Reuse::AllowHardlinks && recipient == Reuse::AllowHardlinks {
+                    let Outcome::Seeded(report) = outcome else {
+                        panic!("hardlink opt-in was ignored")
+                    };
+                    assert_eq!(report.cloned_bytes, 0);
+                    assert_eq!(report.linked_bytes, 4096);
+                    let library = format!("target/debug/deps/librenamed-{HASH}.rlib");
+                    assert_eq!(
+                        fs::metadata(fixture.donor.join(&library)).unwrap().ino(),
+                        fs::metadata(destination.join(&library)).unwrap().ino()
+                    );
+                } else {
+                    assert_eq!(outcome, Outcome::Cold);
+                    assert_independent_or_cold(&fixture, &destination, outcome);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn target_reuse_clone_io_errors_never_authorize_hardlink_fallback() {
+        for error in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::Interrupted,
+            io::ErrorKind::Other,
+        ] {
+            let fixture = Fixture::new();
+            let destination = fixture.destination("lm-error");
+            let outcome = prepare_with(
+                &fixture.beads,
+                &destination,
+                Path::new(IMAGE),
+                Reuse::AllowHardlinks,
+                &RejectedClone(error),
+            )
+            .unwrap();
+            assert_eq!(outcome, Outcome::Cold);
+            assert_independent_or_cold(&fixture, &destination, outcome);
+        }
+    }
+
+    #[test]
+    fn clone_adapter_contract_keeps_successful_files_independently_writable() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::write(&source, vec![42; 4096]).unwrap();
+        for (name, cloner) in [
+            ("fixture", &IndependentClone as &dyn transfer::Cloner),
+            ("native", &transfer::Native as &dyn transfer::Cloner),
+        ] {
+            let destination = dir.path().join(name);
+            match cloner.clone_file(&source, &destination) {
+                Ok(()) => {
+                    assert_eq!(fs::read(&destination).unwrap(), fs::read(&source).unwrap());
+                    assert_ne!(
+                        fs::metadata(&source).unwrap().ino(),
+                        fs::metadata(&destination).unwrap().ino()
+                    );
+                    fs::write(&destination, "changed").unwrap();
+                    assert_eq!(fs::read(&source).unwrap(), vec![42; 4096]);
+                }
+                Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                    assert_eq!(name, "native");
+                    assert!(!destination.exists());
+                }
+                Err(error) => panic!("unexpected clone adapter error: {error}"),
+            }
+        }
+    }
+
+    struct RacingClone(PathBuf);
+
+    impl transfer::Cloner for RacingClone {
+        fn clone_file(&self, source: &Path, destination: &Path) -> io::Result<()> {
+            fs::copy(source, destination)?;
+            fs::create_dir(&self.0)?;
+            fs::write(self.0.join("sentinel"), "keep")
+        }
+    }
+
+    #[test]
+    fn target_reuse_concurrent_destination_wins_without_partial_merge() {
+        let fixture = Fixture::new();
+        let destination = fixture.destination("lm-racing");
+        let outcome = prepare_with(
+            &fixture.beads,
             &destination,
             Path::new(IMAGE),
             Reuse::AllowHardlinks,
-        )
-        .unwrap() else {
-            panic!("compatible dependency was not seeded");
-        };
-        assert_ne!(report.linked_bytes + report.cloned_bytes, 0);
-        fs::write(
-            destination.join("src/main.rs"),
-            "fn main() { println!(\"{}:{}\", external::value() + 1, env!(\"CARGO_MANIFEST_DIR\")); }\n",
+            &RacingClone(destination.join("target")),
         )
         .unwrap();
-        let a = cargo(&donor, &home, &["build", "--offline"])
-            .spawn()
-            .unwrap();
-        let b = cargo(&destination, &home, &["build", "--offline"])
-            .spawn()
-            .unwrap();
-        assert!(a.wait_with_output().unwrap().status.success());
-        assert!(b.wait_with_output().unwrap().status.success());
+        assert_eq!(outcome, Outcome::Preserved);
         assert_eq!(
-            run(&mut Command::new(donor.join("target/debug/application"))).trim(),
-            format!("1:{}", donor.display())
+            fs::read(destination.join("target/sentinel")).unwrap(),
+            b"keep"
         );
-        assert_eq!(
-            run(&mut Command::new(
-                destination.join("target/debug/application")
-            ))
-            .trim(),
-            format!("2:{}", destination.display())
-        );
-        for (path, bytes) in &before {
-            let seeded = destination
-                .join("target/debug/deps")
-                .join(path.file_name().unwrap());
-            assert_eq!(fs::read(&seeded).unwrap(), *bytes);
-            assert_eq!(
-                filetime::FileTime::from_last_modification_time(&fs::metadata(path).unwrap()),
-                filetime::FileTime::from_last_modification_time(&fs::metadata(&seeded).unwrap())
-            );
-            if report.linked_bytes > 0 {
-                assert_eq!(
-                    fs::metadata(path).unwrap().ino(),
-                    fs::metadata(seeded).unwrap().ino()
-                );
-            }
+        assert_eq!(fs::read_dir(destination.join("target")).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn target_reuse_private_donors_are_not_used_by_either_enabled_policy() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.donor.join("wrix.toml"),
+            "[tool_caches]\nshared=false\n",
+        )
+        .unwrap();
+        for (name, reuse) in [
+            ("lm-cow", Reuse::CopyOnWrite),
+            ("lm-links", Reuse::AllowHardlinks),
+        ] {
+            let destination = fixture.destination(name);
+            let outcome = prepare_with(
+                &fixture.beads,
+                &destination,
+                Path::new(IMAGE),
+                reuse,
+                &IndependentClone,
+            )
+            .unwrap();
+            assert_eq!(outcome, Outcome::Cold);
+            assert_independent_or_cold(&fixture, &destination, outcome);
         }
-        let fingerprint = fs::read_dir(destination.join("target/debug/.fingerprint"))
+    }
+
+    struct BlockedClone;
+
+    impl transfer::Cloner for BlockedClone {
+        fn clone_file(&self, _: &Path, destination: &Path) -> io::Result<()> {
+            use std::io::{Read, Write};
+            fs::write(destination, "partial")?;
+            writeln!(io::stdout(), "target-staging-ready")?;
+            io::stdout().flush()?;
+            io::stdin().read_exact(&mut [0])
+        }
+    }
+
+    /// Kernel process death must leave only inert staging; the owned child group is killed and reaped.
+    #[tokio::test]
+    async fn target_reuse_killed_preparation_leaves_inert_staging_and_retry_works() {
+        use loom_driver::clock::{Clock, SystemClock};
+        use loom_driver::process::OwnedChild;
+        use std::process::Stdio;
+        use std::time::Duration;
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio::process::Command;
+
+        if let Some(beads) = std::env::var_os("LOOM_TARGET_KILL_BEADS") {
+            let destination = std::env::var_os("LOOM_TARGET_KILL_DESTINATION").unwrap();
+            prepare_with(
+                Path::new(&beads),
+                Path::new(&destination),
+                Path::new(IMAGE),
+                Reuse::AllowHardlinks,
+                &BlockedClone,
+            )
+            .unwrap();
+            panic!("blocked clone unexpectedly completed");
+        }
+        let fixture = Fixture::new();
+        let destination = fixture.destination("lm-killed");
+        let mut child = OwnedChild::spawn(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "artifact::tests::cases::target_reuse_killed_preparation_leaves_inert_staging_and_retry_works", "--nocapture"])
+                .env("LOOM_TARGET_KILL_BEADS", &fixture.beads)
+                .env("LOOM_TARGET_KILL_DESTINATION", &destination)
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit())
+        ).unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        SystemClock
+            .timeout(Duration::from_secs(30), async {
+                while let Some(line) = lines.next_line().await.unwrap() {
+                    if line.ends_with("target-staging-ready") {
+                        return;
+                    }
+                }
+                panic!("child exited before staging readiness");
+            })
+            .await
+            .unwrap();
+        child.terminate().await.unwrap();
+        assert!(!destination.join("target").exists());
+        let orphans = fs::read_dir(&destination)
             .unwrap()
             .map(Result::unwrap)
-            .find(|entry| entry.file_name().to_string_lossy().starts_with("external-"))
-            .unwrap();
-        fs::remove_dir_all(fingerprint.path()).unwrap();
-        run(&mut cargo(&destination, &home, &["build", "--offline"]));
-        fs::write(
-            dependency.join("src/lib.rs"),
-            "pub fn value() -> u8 { 5 }\n",
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".loom-shared-")
+            })
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        assert_eq!(orphans.len(), 1);
+        let outcome = prepare_with(
+            &fixture.beads,
+            &destination,
+            Path::new(IMAGE),
+            Reuse::CopyOnWrite,
+            &RejectedClone(io::ErrorKind::Unsupported),
         )
         .unwrap();
-        loom_driver::git::commit_all_in(&dependency, "Change dependency").unwrap();
-        run(&mut cargo(
-            &destination,
-            &home,
-            &["update", "-p", "external"],
-        ));
-        run(&mut cargo(&destination, &home, &["build", "--offline"]));
-        for (path, bytes) in before {
-            assert_eq!(fs::read(path).unwrap(), bytes);
-        }
-        fs::remove_dir_all(donor.join("target")).unwrap();
-        run(&mut cargo(&destination, &home, &["build", "--offline"]));
-        assert_eq!(
-            run(&mut Command::new(
-                destination.join("target/debug/application")
-            ))
-            .trim(),
-            format!("6:{}", destination.display())
+        assert_eq!(outcome, Outcome::Cold);
+        assert!(
+            orphans[0]
+                .join(format!("debug/deps/librenamed-{HASH}.rlib"))
+                .exists()
         );
+        assert!(!destination.join("target/debug").exists());
+    }
+
+    struct InterruptedClone;
+
+    impl transfer::Cloner for InterruptedClone {
+        fn clone_file(&self, _: &Path, destination: &Path) -> io::Result<()> {
+            fs::write(destination, "partial")?;
+            Err(io::Error::from(io::ErrorKind::Interrupted))
+        }
+    }
+
+    #[test]
+    fn target_reuse_interrupted_clone_discards_staging_without_partial_publication() {
+        let fixture = Fixture::new();
+        let destination = fixture.destination("lm-partial");
+        let outcome = prepare_with(
+            &fixture.beads,
+            &destination,
+            Path::new(IMAGE),
+            Reuse::AllowHardlinks,
+            &InterruptedClone,
+        )
+        .unwrap();
+        assert_eq!(outcome, Outcome::Cold);
+        assert_independent_or_cold(&fixture, &destination, outcome);
     }
 }

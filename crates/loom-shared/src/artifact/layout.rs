@@ -75,6 +75,7 @@ pub(super) fn copy_profile(
     destination: &Path,
     packages: &Packages,
     reuse: Reuse,
+    cloner: &impl transfer::Cloner,
     report: &mut Report,
 ) -> Result<(), Error> {
     let fingerprints = source.join(".fingerprint");
@@ -124,13 +125,12 @@ pub(super) fn copy_profile(
         {
             continue;
         }
-        transfer::file(
-            &entry.path(),
-            &destination.join("deps").join(name),
-            name.starts_with("lib") && matches!(extension, "rlib" | "rmeta"),
-            reuse,
-            report,
-        )?;
+        let destination = destination.join("deps").join(name);
+        if name.starts_with("lib") && matches!(extension, "rlib" | "rmeta") {
+            transfer::library(&entry.path(), &destination, reuse, cloner, report)?;
+        } else {
+            transfer::private(&entry.path(), &destination, report)?;
+        }
     }
     let build = source.join("build");
     if build.try_exists()? {
