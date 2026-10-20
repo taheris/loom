@@ -17,15 +17,19 @@ check_runner() {
 
   (
     umask 000
-    NIX_BUILD_TOP="$candidate" TMPDIR="$fallback" bash "$runner" bash -euc '
+    XDG_STATE_HOME="$fixture/ambient-state" NIX_BUILD_TOP="$candidate" TMPDIR="$fallback" bash "$runner" bash -euc '
       [[ "$(umask)" == 0077 ]]
       [[ "$(stat --format=%a -- "$TMPDIR")" == 700 ]]
+      [[ "$XDG_STATE_HOME" == "$TMPDIR/state" ]]
+      [[ "$(stat --format=%a -- "$XDG_STATE_HOME")" == 700 ]]
+      touch "$XDG_STATE_HOME/fixture-lock"
       [[ "$(dirname -- "$TMPDIR")" == "$1" ]]
       [[ "$2" == "literal argument with spaces" ]]
       mkdir "$TMPDIR/child"
       [[ "$(stat --format=%a -- "$TMPDIR/child")" == 700 ]]
     ' _ "$expected" 'literal argument with spaces'
   )
+  [[ ! -e "$fixture/ambient-state" ]]
 }
 
 check_runner "$fixture/safe" "$fixture/safe"

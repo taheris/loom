@@ -46,5 +46,9 @@ fi
 umask 077
 TMPDIR=$(private_root)
 export TMPDIR
+# Reconciliation locks must be as private and disposable as fixture worktrees.
+# In unsandboxed Nix checks, the default HOME is the forbidden /homeless-shelter.
+export XDG_STATE_HOME="$TMPDIR/state"
+mkdir -p -- "$XDG_STATE_HOME"
 trap 'rm -rf -- "$TMPDIR"' EXIT
 "$@"
