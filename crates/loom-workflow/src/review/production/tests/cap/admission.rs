@@ -212,7 +212,7 @@ mod tests {
         .await
         .unwrap();
         f.escalate(2).await.unwrap();
-        assert!(!f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
+        assert!(f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
         let before = canonical_files(&f.directory.path().join(".loom"));
         for key in ["loom.acceptance", "loom.finding_batch"] {
             let original = task.metadata[key].as_str().unwrap();

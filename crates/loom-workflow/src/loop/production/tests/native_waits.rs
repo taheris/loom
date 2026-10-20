@@ -12,6 +12,7 @@ mod cases {
         root: BeadId,
         source: Bead,
         sibling: Bead,
+        blocker: BeadId,
     }
 
     impl Fixture {
@@ -45,7 +46,6 @@ mod cases {
                 })
                 .await
                 .unwrap();
-            bd.dep_add(&work[0], &blocker).await.unwrap();
             let source = bd.show(&work[0]).await.unwrap();
             let sibling = bd.show(&work[1]).await.unwrap();
             Self {
@@ -55,6 +55,7 @@ mod cases {
                 root,
                 source,
                 sibling,
+                blocker,
             }
         }
     }
@@ -73,6 +74,7 @@ mod cases {
     async fn attributed_dependency_waits_park_without_integration_or_retry() {
         let f = Fixture::new().await;
         let source_id = f.source.id.clone();
+        let blocker = f.blocker.clone();
         let source_path = Arc::new(std::sync::Mutex::new(None));
         let path = Arc::clone(&source_path);
         let agent = Arc::clone(&f.bd);
@@ -90,8 +92,10 @@ mod cases {
                 let agent = Arc::clone(&agent);
                 let path = Arc::clone(&path);
                 let waiting = id == source_id;
+                let blocker = blocker.clone();
                 async move {
                     if waiting {
+                        agent.dep_add(&id, &blocker).await.unwrap();
                         std::fs::write(cfg.workspace.join("retained-draft.txt"), "unmerged draft")
                             .unwrap();
                         *path.lock().unwrap() = Some(cfg.workspace);
@@ -117,10 +121,7 @@ mod cases {
         .unwrap();
         assert_eq!(summary.beads_waiting, 1);
         assert_eq!(summary.beads_processed, 2);
-        assert_eq!(
-            f.bd.show(&f.source.id).await.unwrap().status,
-            Status::Blocked
-        );
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
         assert_eq!(
             f.bd.show(&f.sibling.id).await.unwrap().status,
             Status::Closed
@@ -148,6 +149,7 @@ mod cases {
         let f = Fixture::new().await;
         let agent = Arc::clone(&f.bd);
         let waiting = f.source.id.clone();
+        let blocker = f.blocker.clone();
         let workspace = f.directory.path().to_path_buf();
         let source_path = Arc::new(std::sync::Mutex::new(None));
         let path = Arc::clone(&source_path);
@@ -160,8 +162,10 @@ mod cases {
                 let workspace = workspace.clone();
                 let path = Arc::clone(&path);
                 let waiting = slot.bead.id == waiting;
+                let blocker = blocker.clone();
                 async move {
                     if waiting {
+                        agent.dep_add(&slot.bead.id, &blocker).await.unwrap();
                         std::fs::write(
                             slot.worktree.path.join("retained-draft.txt"),
                             "parallel draft",
@@ -201,10 +205,7 @@ mod cases {
         .unwrap();
         assert!(outcome.results.iter().any(|result| matches!(result, crate::r#loop::BatchResult::Waiting { bead, .. } if *bead == f.source.id)));
         assert!(outcome.results.iter().any(|result| matches!(result, crate::r#loop::BatchResult::Merged { bead } if *bead == f.sibling.id)));
-        assert_eq!(
-            f.bd.show(&f.source.id).await.unwrap().status,
-            Status::Blocked
-        );
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
         let path = source_path.lock().unwrap().clone().unwrap();
         assert_eq!(
             std::fs::read_to_string(path.join("retained-draft.txt")).unwrap(),

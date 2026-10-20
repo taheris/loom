@@ -71,16 +71,26 @@ pub fn assert_native_wait_parking() {
         "--title",
         "real prerequisite",
     ]);
-    run(&["dep", "add", "lm-waiting", "lm-blocker"]);
+    let launcher = workspace.join("waiting-agent");
+    loom_test_support::write_executable_bash_script(
+        &launcher,
+        &format!(
+            "set -euo pipefail\n{} dep add lm-waiting lm-blocker >/dev/null\nexec {} \"$@\"\n",
+            quote(&bd.to_string_lossy()),
+            quote(env!("CARGO_BIN_EXE_mock-loom-agent")),
+        ),
+    )
+    .unwrap();
     let before = loom_driver::git::sync_head_commit_sha(workspace).unwrap();
     let manifest = write_minimal_manifest(workspace);
-    let output = run_loom_loop_bead(
+    let output = run_loom_loop_bead_with_agent(
         workspace,
         &bin,
         &state,
         &manifest,
         "waiting-marker",
         "lm-waiting",
+        &launcher,
     );
     let log = read_invocation_log(&state);
     assert!(
@@ -91,8 +101,13 @@ pub fn assert_native_wait_parking() {
     );
     let current: serde_json::Value =
         serde_json::from_slice(&run(&["show", "lm-waiting", "--json"])).unwrap();
-    assert_eq!(current[0]["status"], "blocked");
-    assert!(current[0]["metadata"]["loom.dependency_wait"].is_string());
+    assert_eq!(
+        current[0]["status"],
+        "open",
+        "source={current}; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(current[0]["metadata"]["loom.dependency_wait"].is_null());
     assert!(
         current[0]["labels"]
             .as_array()
@@ -106,11 +121,6 @@ pub fn assert_native_wait_parking() {
         loom_driver::git::sync_head_commit_sha(workspace).unwrap(),
         before
     );
-    assert!(workspace.join(".loom/dependency-waits").is_dir());
-    assert!(
-        log.lines()
-            .any(|line| line.starts_with("update lm-waiting ")
-                && line.contains("--if-status open")
-                && line.contains("--set-metadata loom.dependency_wait="))
-    );
+    assert!(!workspace.join(".loom/dependency-waits").exists());
+    assert!(!log.contains("--set-metadata loom.dependency_wait="));
 }

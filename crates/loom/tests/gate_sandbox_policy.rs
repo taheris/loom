@@ -104,7 +104,7 @@ fn run(dir: &Path, tier: &str, worker: bool) -> Output {
 }
 
 fn rows(dir: &Path) -> std::collections::BTreeMap<String, loom_gate::cache::CacheRow> {
-    StatusCache::open(&dir.join(".loom/cache.db"))
+    StatusCache::open(&dir.join(".loom/state.db"))
         .unwrap()
         .read_all()
         .unwrap()

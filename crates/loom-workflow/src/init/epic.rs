@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(report.spec_epics, 2);
         assert_eq!(report.work_epics, 2);
         let cache =
-            loom_driver::state::CacheDb::open(directory.path().join(".loom/cache.db")).unwrap();
+            loom_driver::state::CacheDb::open(directory.path().join(".loom/state.db")).unwrap();
         let work = cache
             .work_epic(&"lm-work".parse().unwrap())
             .unwrap()

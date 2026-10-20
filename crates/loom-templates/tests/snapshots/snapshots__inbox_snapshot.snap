@@ -170,8 +170,10 @@ Use a SQLite table.
    Pair label removal with `--status=open` unless closing the bead.
 5. For tune proposals, use the bead body/metadata as durable state and local
    `.loom/tune/<id>/` paths as repair artifacts. Before requesting apply, set
-   both bead metadata and `manifest.json` state to `accepted`; disagreement
-   between their proposal id, state, base, branch, or head blocks the handoff.
+   bead metadata state to `accepted`; its proposal identity, base, branch and
+   head must agree with the current Git objects. Local execution metadata is
+   transient `.loom/state.db` state, not a second approval authority. Missing
+   local artifacts are reconstructed when the canonical Git inputs exist.
    Never push from chat and never leave `.loom/integration` dirty.
 6. The driver does not reconcile bd state after this interactive session.
    Unresolved items remain visible in the next `loom inbox` list.

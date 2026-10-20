@@ -308,7 +308,7 @@ this acceptance document owns Gate composition and authorization.
   [system?](nix run .#test-quint -- finite-verify-stages)
 
 - `loom gate status --diff <range>` / `--files <paths...>` / `--tree` reads
-  criterion evidence from `.loom/cache.db` and prints the report per
+  criterion evidence from `.loom/state.db` and prints the report per
   [Evidence — Status cache](evidence.md#status-cache-1); status without an
   explicit scope prints help and runs no cache lookup [test](loom_gate_status_requires_explicit_scope)
 
@@ -494,7 +494,7 @@ kind of inspection or act path runs:
 | **`loom gate judge`**         | LLM judge, one lane     | Runs criterion-attached `[judge]` verifiers for an explicit scope or exact `--target`; skips the rubric walk. Inspection-only, like `review`.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **`loom gate rubric`**        | LLM judge, one lane     | Runs only the rubric walk for an explicit `--diff` or `--tree` scope; skips criterion-attached judges. Inspection-only, like `review`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | **`loom gate mint`**          | Act                     | Materializes findings into bd work. `loom gate mint -m/--molecule <id>` promotes that molecule's deferred remediation batches after original work drains; `loom gate mint --tree` runs the standing safety-net sweep and creates or updates ready remediation batches under one active work epic when actionable findings remain. `mint` has no per-bead, diff, file, spec-filter, or target surface. Clarify-route findings still materialize as one `loom:clarify` bead per finding so each carries one `## Options — …` block. See [_Findings and Minting_](findings.md#findings-and-minting-1). |
-| **`loom gate verify-marker`** | Trust check             | Reads `.loom/marker.json`, validates the current workspace fingerprint, and exits 0 iff the marker is well-formed and current. Diagnostic use on the CLI remains valid. The `pre-push-checks` wrapper performs the hook-coverage validation defined in _Marker_ before short-circuiting any wrapped command; `verify-marker` is not registered as a standalone prek hook.                                                                                                                                                                                                                           |
+| **`loom gate verify-marker`** | Trust check             | Reads the checkout receipt in `.loom/state.db`, validates the current workspace fingerprint, and exits 0 iff the marker is well-formed and current. Diagnostic use on the CLI remains valid. The `pre-push-checks` wrapper performs the hook-coverage validation defined in _Marker_ before short-circuiting any wrapped command; `verify-marker` is not registered as a standalone prek hook.                                                                                                                                                                                                      |
 
 Inspection runs one reviewer session, not a recovery or publishing loop. Human
 live rendering goes to stderr; stdout carries result records and the terminal
@@ -1012,12 +1012,13 @@ trust bypass.
 
 [Acceptance](#gate-evidence-and-marker-coverage).
 
-Marker lives at `.loom/marker.json` in the loom workspace — a single file,
-overwritten on each mint. Atomic write uses `<path>.tmp` + rename. The file
-lives in the loom workspace only; operator and bead workspaces do not contain a
-trusted marker. Gate logs referenced by the active marker are evidence;
-retention should preserve them while the marker is active when possible. If
-positive run evidence is missing, validation fails and hooks run. Separately,
+The marker is a checkout-keyed publication receipt in the controlling
+`.loom/state.db`, atomically replaced on mint. Operator and integration
+invocations share the store, but receipts remain bound to their actual checkout
+fingerprint; a worker clone has no host receipt authority. Gate logs referenced
+by the active marker are evidence; retention should preserve them while the
+marker is active when possible. If positive run evidence is missing, validation
+fails and hooks run. Separately,
 [retained safety evidence](evidence.md#retained-safety-evidence) remains
 required for current admission; neither falling through to a hook nor an old
 marker can bypass lost or disqualifying safety history.
@@ -1060,10 +1061,11 @@ release before starting its own critical section.
 [Acceptance](#execution-and-admissible-evidence).
 
 `loom gate verify-marker` is a diagnostic marker-validation subcommand. It reads
-`.loom/marker.json`, checks the current workspace fingerprint, and exits 0 on a
-current marker, non-zero on a missing, stale, malformed, or unsupported marker.
-The diagnostic on stderr names the specific `MarkerError` variant for human
-debugging but is not the machine-readable contract.
+the checkout receipt from `.loom/state.db`, checks the current workspace
+fingerprint, and exits 0 on a current marker, non-zero on a missing, stale,
+malformed, or unsupported marker. The diagnostic on stderr names the specific
+`MarkerError` variant for human debugging but is not the machine-readable
+contract.
 
 The pre-push chain consumes markers through the repo-local `bin/pre-push-checks`
 wrapper, while the Git hook shim that invokes prek comes from `wrix.prekHooks` —

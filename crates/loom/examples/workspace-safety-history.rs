@@ -50,25 +50,19 @@ async fn container_scenario() -> Result<()> {
         include_str!("../../../tests/quint/workspace-safety-probe.sh"),
     )?;
     let targets = [
-        fixture.association.history_dir().join("journal.jsonl"),
-        fixture.association.history_dir().join("witnesses/object"),
-        fixture.association.history_dir().join("checkpoint.json"),
-        fixture
-            .association
-            .operator()
-            .join(".git/loom-workspace.json"),
-        fixture.association.integration().join(".loom/marker.json"),
+        loom_driver::state::path(fixture.association.operator()),
+        fixture.association.operator().join(".loom/state.db.lock"),
+        fixture.association.operator().join(".git/config"),
+        fixture.association.integration().join(".git/config"),
+        fixture.association.integration().join(".loom/state.db"),
     ];
     fs::write(
         fixture.worker_path.join("targets.json"),
         serde_json::to_vec(&targets)?,
     )?;
-    fs::copy(
-        fixture
-            .association
-            .operator()
-            .join(".git/loom-workspace.json"),
+    fs::write(
         fixture.worker_path.join(".git/loom-workspace.json"),
+        b"forged legacy binding",
     )?;
     let pi = fixture.worker_path.join("bin/pi");
     fs::write(

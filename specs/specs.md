@@ -109,7 +109,7 @@ author-facing navigation surface.
 
 `criterion_status` identifies current criteria and their historical verifier
 observations. The driver parses the changed specs' Success Criteria, computes
-typed criterion ids, and joins `.loom/cache.db`'s observation rows. Cache
+typed criterion ids, and joins `.loom/state.db`'s observation rows. Cache
 absence is missing evidence, never no work. The observation shape below is not a
 current-admission certificate: `Current` means the annotation matches, not that
 the result remains usable.

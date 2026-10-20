@@ -105,15 +105,21 @@ mod cases {
         let mut entry = f.journal().load(&f.source.id).unwrap().unwrap();
         entry.phase = Phase::InventoryPending;
         f.journal().save(&entry).unwrap();
-        for entry in
-            std::fs::read_dir(f.dir.path().join(".loom/decision-waits/dispositions")).unwrap()
+        let kind = loom_driver::state::RecordKind::DecisionDisposition;
+        for (key, mut value) in f
+            .journal()
+            .db()
+            .unwrap()
+            .records::<serde_json::Value>(kind)
+            .unwrap()
         {
-            let path = entry.unwrap().path();
-            let mut value: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             if value["snapshot"]["id"] == serde_json::to_value(&f.decisions[1]).unwrap() {
                 value["effect"] = "Planned".into();
-                std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+                f.journal()
+                    .db()
+                    .unwrap()
+                    .put_record(kind, &key, &value)
+                    .unwrap();
             }
         }
         for entry in std::fs::read_dir(f.dir.path().join(".loom/logs/decisions")).unwrap() {
@@ -177,10 +183,11 @@ mod cases {
             .unwrap();
         let answered = f.bd.show(&f.decisions[0]).await.unwrap();
         let restart = AdmissionTracker::default();
+        let second_machine = tempfile::tempdir().unwrap();
         assert_eq!(
             reconcile_session(
                 &f.bd,
-                &f.journal().with_admissions(restart.clone()),
+                &DecisionWaitJournal::new(second_machine.path()).with_admissions(restart.clone()),
                 &sibling,
                 session(&f.decisions[..1]),
                 None
@@ -227,17 +234,25 @@ mod cases {
             .unwrap();
         let before = f.bd.show(&f.decisions[0]).await.unwrap();
         let mut corrupt = None;
-        for entry in
-            std::fs::read_dir(f.dir.path().join(".loom/decision-waits/dispositions")).unwrap()
+        for (key, mut value) in f
+            .journal()
+            .db()
+            .unwrap()
+            .records::<serde_json::Value>(loom_driver::state::RecordKind::DecisionDisposition)
+            .unwrap()
         {
-            let path = entry.unwrap().path();
-            let mut value: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             if value["snapshot"]["id"] == serde_json::to_value(&f.decisions[0]).unwrap() {
                 value["report"]["evidence_hash"] = "not-the-admitted-brief".into();
-                let bytes = serde_json::to_vec(&value).unwrap();
-                std::fs::write(&path, &bytes).unwrap();
-                corrupt = Some((path, bytes));
+                f.journal()
+                    .db()
+                    .unwrap()
+                    .put_record(
+                        loom_driver::state::RecordKind::DecisionDisposition,
+                        &key,
+                        &value,
+                    )
+                    .unwrap();
+                corrupt = Some((key, value));
             }
         }
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.is_err());
@@ -247,8 +262,18 @@ mod cases {
                 .unwrap(),
             AgentOutcome::Failure { .. }
         ));
-        let (path, bytes) = corrupt.unwrap();
-        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        let (key, value) = corrupt.unwrap();
+        assert_eq!(
+            f.journal()
+                .db()
+                .unwrap()
+                .record::<serde_json::Value>(
+                    loom_driver::state::RecordKind::DecisionDisposition,
+                    &key
+                )
+                .unwrap(),
+            Some(value)
+        );
         assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), before);
         assert_eq!(
             f.journal().load(&f.source.id).unwrap().unwrap().phase,
@@ -258,19 +283,20 @@ mod cases {
     }
 
     #[tokio::test]
-    async fn native_admitted_disposition_loss_is_not_reconstructed_from_projection() {
+    async fn native_missing_disposition_is_readmitted_from_current_canonical_inputs() {
         let f = Fixture::new().await;
         reconcile_session(&f.bd, &f.journal(), &f.source, session(&f.decisions), None)
             .await
             .unwrap();
-        let directory = f.dir.path().join(".loom/decision-waits/dispositions");
-        let path = std::fs::read_dir(directory)
+        let kind = loom_driver::state::RecordKind::DecisionDisposition;
+        let (key, _) = f
+            .journal()
+            .db()
             .unwrap()
-            .next()
+            .records::<serde_json::Value>(kind)
             .unwrap()
-            .unwrap()
-            .path();
-        std::fs::remove_file(&path).unwrap();
+            .remove(0);
+        f.journal().db().unwrap().remove_record(kind, &key).unwrap();
         let before = f.bd.show(&f.decisions[0]).await.unwrap();
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.is_err());
         assert!(
@@ -281,9 +307,16 @@ mod cases {
                     &loom_driver::identifier::SpecLabel::new("loop").unwrap()
                 )
                 .await
-                .is_err()
+                .is_ok()
         );
-        assert!(!path.exists());
+        assert!(
+            f.journal()
+                .db()
+                .unwrap()
+                .record::<serde_json::Value>(kind, &key)
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), before);
         assert_eq!(
             f.journal().load(&f.source.id).unwrap().unwrap().phase,

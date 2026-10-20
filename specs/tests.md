@@ -352,7 +352,7 @@ fn cache_db_rebuild() {
     // their index rows, and the durable metadata expected by mock_bd_client.
     seed_indexed_spec_packages(dir.path(), &["auth", "api"]);
 
-    let db = CacheDb::open(&dir.path().join("cache.db")).unwrap();
+    let db = CacheDb::open(&dir.path().join("state.db")).unwrap();
     let report = db.rebuild(dir.path(), &mock_bd_client()).unwrap();
 
     assert_eq!(report.specs_found, 2);
@@ -365,7 +365,7 @@ fn cache_db_rebuild() {
 #[test]
 fn cache_db_corruption_recovery() {
     let dir = tempdir().unwrap();
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
 
     // Write garbage to the DB file
     std::fs::write(&db_path, b"not a sqlite db").unwrap();

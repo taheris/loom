@@ -16,49 +16,17 @@
 //! ceiling against a 2000-row seeded cache so a future schema or
 //! rendering regression is caught at gate time.
 
-mod projection;
-
+use loom_driver::state::{CacheDb, CriterionEvidenceRow};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use displaydoc::Display;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Deserialize;
 use thiserror::Error;
 
 use crate::annotation::{Annotation, ParsedSpecs, Tier};
 use crate::integrity::IntegrityFinding;
-
-// Older parsers allowed malformed reports and failed producers to certify passes.
-const EVIDENCE_VERSION: &str = "2";
-const EVIDENCE_VERSION_KEY: &str = "verifier_evidence_version";
-
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS specs (
-    label     TEXT PRIMARY KEY,
-    spec_path TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS criterion_status (
-    spec_label        TEXT NOT NULL REFERENCES specs(label),
-    criterion_id      TEXT NOT NULL,
-    annotation_json   TEXT NOT NULL,
-    result            TEXT NOT NULL,
-    last_timestamp_ms INTEGER,
-    last_commit       TEXT,
-    evidence          TEXT,
-    PRIMARY KEY (spec_label, criterion_id)
-);
-CREATE INDEX IF NOT EXISTS idx_criterion_status_result
-    ON criterion_status(result);
-CREATE INDEX IF NOT EXISTS idx_criterion_status_spec
-    ON criterion_status(spec_label);
-CREATE TABLE IF NOT EXISTS meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-";
 
 /// Per-criterion verdict recorded by the most recent verifier run.
 ///
@@ -118,215 +86,85 @@ pub struct CacheRow {
 /// underlying `rusqlite::Connection` is `!Sync`. Opening creates the
 /// schema on first use and migrates older versions in place.
 pub struct StatusCache {
-    conn: Mutex<Connection>,
-    path: PathBuf,
+    db: CacheDb,
 }
 
 impl StatusCache {
-    /// Open or create the cache at `path`, applying the schema.
+    /// Open the shared transient state store.
     ///
     /// # Errors
-    ///
-    /// Returns an error when cache metadata cannot be read, validated, or updated.
+    /// Reports database initialization failures.
     pub fn open(path: &Path) -> Result<Self, CacheError> {
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent).map_err(|source| CacheError::OpenIo {
-                path: path.to_path_buf(),
-                source,
-            })?;
-        }
-        let _write_lock = lock_writer(path)?;
-        let mut conn = Connection::open(path).map_err(|source| CacheError::Open {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        conn.execute_batch(
-            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000; PRAGMA journal_mode = WAL;",
-        )?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(SCHEMA)?;
-        let version: Option<String> = tx
-            .query_row(
-                "SELECT value FROM meta WHERE key = ?1",
-                [EVIDENCE_VERSION_KEY],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if version.as_deref() != Some(EVIDENCE_VERSION) {
-            tx.execute("DELETE FROM criterion_status", [])?;
-            tx.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
-                params![EVIDENCE_VERSION_KEY, EVIDENCE_VERSION],
-            )?;
-        }
-        tx.commit()?;
         Ok(Self {
-            conn: Mutex::new(conn),
-            path: path.to_path_buf(),
+            db: CacheDb::open(path)?,
         })
     }
 
-    /// Read every row currently persisted for `spec_label`, sorted by
-    /// `criterion_anchor` for deterministic output. Empty when the spec has
-    /// no cached rows (fresh checkout, never-verified spec).
+    /// Read observations for one current spec.
     ///
     /// # Errors
-    ///
-    /// Returns an error when cache metadata cannot be read, validated, or updated.
+    /// Reports invalid rows and database failures.
     pub fn read_for_spec(&self, spec_label: &str) -> Result<Vec<CacheRow>, CacheError> {
-        let conn = self.lock_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT spec_label, criterion_id, annotation_json,
-                    last_timestamp_ms, last_commit, result, evidence
-             FROM criterion_status
-             WHERE spec_label = ?1
-             ORDER BY criterion_id",
-        )?;
-        let rows = stmt
-            .query_map(params![spec_label], row_to_cache_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(stmt);
-        drop(conn);
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
+        let label = parse_label(spec_label)?;
+        self.db
+            .criterion_evidence_for_spec(&label)?
+            .into_iter()
+            .map(decode_row)
+            .collect()
     }
 
-    /// Read every row currently persisted, sorted by
-    /// `(spec_label, criterion_anchor)` for deterministic output.
+    /// Read observations in stable spec/criterion order.
     ///
     /// # Errors
-    ///
-    /// Returns an error when cache metadata cannot be read, validated, or updated.
+    /// Reports invalid rows and database failures.
     pub fn read_all(&self) -> Result<Vec<CacheRow>, CacheError> {
-        let conn = self.lock_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT spec_label, criterion_id, annotation_json,
-                    last_timestamp_ms, last_commit, result, evidence
-             FROM criterion_status
-             ORDER BY spec_label, criterion_id",
-        )?;
-        let mut rows = stmt.query([])?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            out.push(row_to_cache_row(row)??);
-        }
-        drop(rows);
-        drop(stmt);
-        drop(conn);
-        Ok(out)
+        self.db
+            .criterion_evidence()?
+            .into_iter()
+            .map(decode_row)
+            .collect()
     }
 
-    /// Insert or update a row keyed by `(spec_label, criterion_anchor)`.
-    /// Idempotent — re-upserting the same key overwrites the prior verdict.
+    /// Replace one criterion observation.
     ///
     /// # Errors
-    ///
-    /// Returns an error when cache metadata cannot be read, validated, or updated.
+    /// Reports invalid rows and database failures.
     pub fn upsert(&self, row: &CacheRow) -> Result<(), CacheError> {
         self.upsert_many(std::slice::from_ref(row))
     }
 
-    /// Batched form of [`Self::upsert`]: every row lands inside one
-    /// transaction with a single prepared statement, so callers seeding
-    /// many rows pay one fsync instead of N.
+    /// Atomically record a batch of observations.
     ///
     /// # Errors
-    ///
-    /// Returns an error when cache metadata cannot be read, validated, or updated.
+    /// Reports encoding or database failures without recording a partial batch.
     pub fn upsert_many(&self, rows: &[CacheRow]) -> Result<(), CacheError> {
-        if rows.is_empty() {
-            return Ok(());
-        }
-        let mut conn = self.lock_conn()?;
-        let _write_lock = lock_writer(&self.path)?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for row in rows {
-            ensure_spec_row(&tx, &row.spec_label)?;
-        }
-        {
-            let mut stmt = tx.prepare_cached(UPSERT_SQL)?;
-            for row in rows {
-                exec_upsert(&mut stmt, row)?;
-            }
-        }
-        tx.commit()?;
-        drop(conn);
+        let rows = rows
+            .iter()
+            .map(|row| {
+                Ok(CriterionEvidenceRow {
+                    spec_label: parse_label(&row.spec_label)?,
+                    criterion_id: row.criterion_anchor.clone(),
+                    annotation_json: annotation_json(row)
+                        .map_err(|source| CacheError::Json { source })?,
+                    result: row.verdict.as_wire().into(),
+                    last_timestamp_ms: Some(row.last_run_ts_ms),
+                    last_commit: Some(row.last_run_commit.clone()),
+                    evidence: Some(row.evidence.clone()),
+                })
+            })
+            .collect::<Result<Vec<_>, CacheError>>()?;
+        self.db.upsert_criterion_evidence_many(&rows)?;
         Ok(())
     }
-
-    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, CacheError> {
-        self.conn.lock().map_err(|_| CacheError::Poisoned)
-    }
 }
 
-fn lock_writer(path: &Path) -> Result<std::fs::File, CacheError> {
-    let mut lock_path = path.as_os_str().to_os_string();
-    lock_path.push(".lock");
-    let lock_path = PathBuf::from(lock_path);
-    let acquire = || -> std::io::Result<std::fs::File> {
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)?;
-        lock.lock()?;
-        Ok(lock)
-    };
-    acquire().map_err(|source| CacheError::WriterLock {
-        path: lock_path,
-        source,
+fn parse_label(label: &str) -> Result<loom_driver::identifier::SpecLabel, CacheError> {
+    label.parse().map_err(|_| {
+        CacheError::Store(loom_driver::state::CacheError::InvalidIdentifier {
+            kind: "spec",
+            value: label.into(),
+        })
     })
-}
-
-const UPSERT_SQL: &str = "INSERT INTO criterion_status(
-         spec_label, criterion_id, annotation_json, result,
-         last_timestamp_ms, last_commit, evidence
-     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-     ON CONFLICT(spec_label, criterion_id) DO UPDATE SET
-         annotation_json = excluded.annotation_json,
-         result = excluded.result,
-         last_timestamp_ms = excluded.last_timestamp_ms,
-         last_commit = excluded.last_commit,
-         evidence = excluded.evidence";
-
-fn exec_upsert(stmt: &mut rusqlite::CachedStatement<'_>, row: &CacheRow) -> rusqlite::Result<()> {
-    let annotation_json = annotation_json(row)
-        .map_err(|source| rusqlite::Error::ToSqlConversionFailure(Box::new(source)))?;
-    stmt.execute(params![
-        row.spec_label.as_str(),
-        row.criterion_anchor.as_str(),
-        annotation_json,
-        row.verdict.as_wire(),
-        row.last_run_ts_ms,
-        row.last_run_commit.as_str(),
-        row.evidence.as_str(),
-    ])?;
-    Ok(())
-}
-
-fn ensure_spec_row(conn: &Connection, spec_label: &str) -> rusqlite::Result<()> {
-    match conn.execute(
-        "INSERT OR IGNORE INTO specs(label, spec_path) VALUES (?1, ?2)",
-        params![spec_label, format!("specs/{spec_label}.md")],
-    ) {
-        Ok(_) => Ok(()),
-        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
-            if message.contains("no column named spec_path") =>
-        {
-            conn.execute(
-                "INSERT OR IGNORE INTO specs(label) VALUES (?1)",
-                params![spec_label],
-            )?;
-            Ok(())
-        }
-        Err(source) => Err(source),
-    }
 }
 
 fn annotation_json(row: &CacheRow) -> serde_json::Result<String> {
@@ -348,49 +186,28 @@ fn parse_annotation_json(value: &str) -> serde_json::Result<CachedAnnotation<'_>
     serde_json::from_str(value)
 }
 
-fn row_to_cache_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CacheRow, CacheError>> {
-    let spec_label: String = row.get(0)?;
-    let criterion_anchor: String = row.get(1)?;
-    let annotation_value = row.get_ref(2)?;
-    let annotation_json = annotation_value.as_str().map_err(|source| {
-        rusqlite::Error::FromSqlConversionFailure(2, annotation_value.data_type(), Box::new(source))
+fn decode_row(row: CriterionEvidenceRow) -> Result<CacheRow, CacheError> {
+    let annotation = parse_annotation_json(&row.annotation_json)
+        .map_err(|source| CacheError::Json { source })?;
+    let key = format!("{}/{}", row.spec_label, row.criterion_id);
+    let tier = Tier::from_wire(&annotation.tier).ok_or_else(|| CacheError::BadTier {
+        row_key: key.clone(),
+        tier: annotation.tier.to_string(),
     })?;
-    let annotation = parse_annotation_json(annotation_json).map_err(|source| {
-        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(source))
+    let verdict = Verdict::from_wire(&row.result).ok_or_else(|| CacheError::BadVerdict {
+        row_key: key,
+        verdict: row.result.clone(),
     })?;
-    let last_run_ts_ms: Option<i64> = row.get(3)?;
-    let last_run_commit: Option<String> = row.get(4)?;
-    let verdict_value = row.get_ref(5)?;
-    let verdict_wire = verdict_value.as_str().map_err(|source| {
-        rusqlite::Error::FromSqlConversionFailure(5, verdict_value.data_type(), Box::new(source))
-    })?;
-    let evidence: Option<String> = row.get(6)?;
-
-    let tier_wire = annotation.tier;
-    let annotation_target = annotation.target;
-
-    let Some(tier) = Tier::from_wire(&tier_wire) else {
-        return Ok(Err(CacheError::BadTier {
-            row_key: format!("{spec_label}/{criterion_anchor}"),
-            tier: tier_wire.into_owned(),
-        }));
-    };
-    let Some(verdict) = Verdict::from_wire(verdict_wire) else {
-        return Ok(Err(CacheError::BadVerdict {
-            row_key: format!("{spec_label}/{criterion_anchor}"),
-            verdict: verdict_wire.to_owned(),
-        }));
-    };
-    Ok(Ok(CacheRow {
-        spec_label,
-        criterion_anchor,
+    Ok(CacheRow {
+        spec_label: row.spec_label.to_string(),
+        criterion_anchor: row.criterion_id,
         tier,
-        annotation_target: annotation_target.into_owned(),
-        last_run_ts_ms: last_run_ts_ms.unwrap_or_default(),
-        last_run_commit: last_run_commit.unwrap_or_default(),
+        annotation_target: annotation.target.into_owned(),
+        last_run_ts_ms: row.last_timestamp_ms.unwrap_or_default(),
+        last_run_commit: row.last_commit.unwrap_or_default(),
         verdict,
-        evidence: evidence.unwrap_or_default(),
-    }))
+        evidence: row.evidence.unwrap_or_default(),
+    })
 }
 
 /// Failures the cache surfaces. Per RS-4 each variant carries enough
@@ -401,6 +218,8 @@ fn row_to_cache_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CacheRow
 )]
 #[derive(Debug, Display, Error)]
 pub enum CacheError {
+    /// local state operation failed
+    Store(#[from] loom_driver::state::CacheError),
     /// failed to open cache at {path}: {source}
     Open {
         path: PathBuf,
@@ -539,7 +358,13 @@ pub fn render_report(
     now_ms: i64,
     stale_threshold_days: i64,
 ) -> Result<Report, CacheError> {
-    projection::render(cache, parsed, integrity, now_ms, stale_threshold_days)
+    Ok(render_from_rows(
+        &cache.read_all()?,
+        parsed,
+        integrity,
+        now_ms,
+        stale_threshold_days,
+    ))
 }
 
 /// Pure rendering core — separated so the latency self-test can pump rows
@@ -806,7 +631,7 @@ mod tests {
     use crate::annotation::{Annotation, Criterion};
 
     fn db_path(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path().join("cache.db")
+        dir.path().join("state.db")
     }
 
     fn row(spec: &str, anchor: &str, tier: Tier, verdict: Verdict, ts: i64) -> CacheRow {

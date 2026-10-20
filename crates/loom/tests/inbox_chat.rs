@@ -257,10 +257,6 @@ case "$mode" in
     accept-tune)
         workspace="${{2:?}}"
         while IFS= read -r id; do
-            manifest="$workspace/.loom/tune/$id/manifest.json"
-            if [[ -f "$manifest" ]]; then
-                sed -i -e 's/"state":[[:space:]]*"pending"/"state":"accepted"/' "$manifest"
-            fi
             bd update "$id" --status open --set-metadata loom.tune.state=accepted
         done < <(printf '%s\n' "$prompt" | awk '/^### [0-9]+\. lm-/ && /\[tune\]/ {{print $3}}')
         ;;
@@ -602,7 +598,7 @@ case "${{1:-}} ${{2:-}}" in
                     duplicate-log) cp "$review_log" "$review_log.tmp"; cat "$review_log.tmp" >> "$review_log"; rm "$review_log.tmp" ;;
                     changed-tree) printf 'changed after review\n' > README.md ;;
                     changed-verify-log) printf 'removed verification evidence\n' > "${{LOOM_REVIEW_VERIFIED_LOG:?}}" ;;
-                    marker-write-failed) mkdir .loom/marker.json ;;
+                    marker-write-failed) python3 -c "import sqlite3; c=sqlite3.connect('../state.db'); c.execute(\"CREATE TRIGGER reject_receipt BEFORE INSERT ON workflow_records WHEN NEW.kind='publication-receipt' BEGIN SELECT RAISE(FAIL, 'injected receipt failure'); END\"); c.commit()" ;;
                     contradictory-output) printf 'LOOM_CONCERN: {{"summary":"not complete"}}\n' ;;
                 esac
                 ;;
@@ -666,28 +662,14 @@ fn create_tune_proposal(env: &ChatRun, id: &str, edits: &[(&str, &str)]) {
         )
         .expect("proposal head")
         .to_string();
-    std::fs::write(
-        env.workspace
-            .join(".loom/tune")
-            .join(id)
-            .join("manifest.json"),
-        serde_json::json!({
-            "proposal_id": id,
-            "state": "pending",
-            "targets": ["skill:fixture"],
-            "level": "fast",
-            "seed": 7,
-            "base_commit": base,
-            "proposal_branch": branch,
-            "proposal_head": head,
-            "plan_hash": "fixture-plan",
-            "case_counts": {"declared": 0, "mined_train": 0, "mined_selection": 0, "selected": 0, "skipped": 0},
-            "outcome_counts": {"pending": 0, "passed": 0, "failed": 0, "blocked": 0},
-            "evidence_split": {"algorithm": "sha256-salt-v1", "salt_id": "fixture", "selection_fraction": 0.34},
-        })
-        .to_string(),
-    )
-    .expect("write manifest");
+    loom_driver::state::CacheDb::open(loom_driver::state::path(&env.workspace))
+        .unwrap()
+        .put_record(
+            loom_driver::state::RecordKind::Tune,
+            id,
+            &serde_json::json!({"proposal_id": id, "state": "pending", "proposal_head": head}),
+        )
+        .unwrap();
     seed_bead(
         &env.state_dir,
         id,
@@ -1509,10 +1491,15 @@ fn inbox_apply_marker_triggers_single_driver_handoff() {
     let integration = env.workspace.join(".loom/integration");
     let proof = loom_gate::verify_marker(&integration).expect("marker requires real matching logs");
     assert_eq!(proof.covered_hooks().len(), 1);
-    let marker: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(integration.join(loom_gate::MARKER_PATH)).expect("marker"),
-    )
-    .expect("marker json");
+    let marker: serde_json::Value =
+        loom_driver::state::CacheDb::open(loom_driver::state::path(&integration))
+            .unwrap()
+            .record(
+                loom_driver::state::RecordKind::PublicationReceipt,
+                integration.to_str().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
     let log_paths: Vec<PathBuf> = serde_json::from_value(marker["gate_log_paths"].clone()).unwrap();
     assert_eq!(
         log_paths.len(),
@@ -1768,12 +1755,14 @@ fn inbox_apply_marker_write_failure_keeps_actual_pre_push_checks() {
     init_apply_repo(&env);
     let loom_stub = install_apply_loom_stub(&env.workspace);
     create_tune_proposal(&env, "lm-fallback", &[("proposal.txt", "candidate\n")]);
-    let marker_path = env
-        .workspace
-        .join(".loom/integration")
-        .join(loom_gate::MARKER_PATH);
-    std::fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
-    std::fs::write(marker_path, "previous attempt marker").unwrap();
+    loom_driver::state::CacheDb::open(loom_driver::state::path(&env.workspace))
+        .unwrap()
+        .put_record(
+            loom_driver::state::RecordKind::PublicationReceipt,
+            env.workspace.join(".loom/integration").to_str().unwrap(),
+            &"previous attempt marker",
+        )
+        .unwrap();
     let hook = env.workspace.join(".loom/test-prek-hooks/pre-push");
     loom_test_support::write_executable_bash_script(
         &hook,
@@ -1818,17 +1807,19 @@ fn inbox_apply_marker_write_failure_keeps_actual_pre_push_checks() {
 }
 
 #[test]
-fn inbox_apply_blocks_manifest_bead_disagreement() {
+fn inbox_apply_ignores_stale_local_execution_metadata() {
     let env = setup_chat();
     init_apply_repo(&env);
     let loom_stub = install_apply_loom_stub(&env.workspace);
     create_tune_proposal(&env, "lm-appm", &[("proposal.txt", "accepted\n")]);
-    let manifest_path = env.workspace.join(".loom/tune/lm-appm/manifest.json");
-    let mut manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest"))
-            .expect("manifest json");
-    manifest["proposal_head"] = serde_json::json!("disagrees-with-bead");
-    std::fs::write(&manifest_path, manifest.to_string()).expect("write mismatched manifest");
+    loom_driver::state::CacheDb::open(loom_driver::state::path(&env.workspace))
+        .unwrap()
+        .put_record(
+            loom_driver::state::RecordKind::Tune,
+            "lm-appm",
+            &serde_json::json!({"proposal_head": "stale"}),
+        )
+        .unwrap();
     let marker = apply_marker(&["lm-appm"]);
     let loom_stub_path = loom_stub.to_string_lossy().into_owned();
 
@@ -1843,17 +1834,12 @@ fn inbox_apply_blocks_manifest_bead_disagreement() {
     );
 
     assert!(
-        !output.status.success(),
-        "manifest disagreement must block apply"
+        output.status.success(),
+        "stale execution metadata must not override canonical proposal inputs: {output:?}"
     );
     let metadata = read_metadata(&env.state_dir, "lm-appm");
-    assert_eq!(metadata["loom.tune.state"], "blocked");
-    assert_eq!(read_field(&env.state_dir, "lm-appm", "status"), "blocked");
-    assert!(
-        read_labels(&env.state_dir, "lm-appm")
-            .iter()
-            .any(|label| label == "loom:blocked")
-    );
+    assert_eq!(metadata["loom.tune.state"], "applied");
+    assert_eq!(read_field(&env.state_dir, "lm-appm", "status"), "closed");
 }
 
 #[test]

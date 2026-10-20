@@ -881,7 +881,7 @@ mod tests {
         .expect("spec");
         std::fs::write(workspace.join("loom.toml"), "").expect("config");
         let manifest = fixture_manifest(workspace);
-        let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
+        let state = Arc::new(CacheDb::open(workspace.join(".loom/state.db")).expect("cache db"));
         let runner = ScriptedRunner::new(vec![Ok(ok_stdout("[]")), Ok(ok_stdout("[]"))]);
         let bd = BdClient::with_runner(runner);
         let rubric_stdout = format!(
@@ -954,7 +954,7 @@ mod tests {
         )
         .expect("spec");
         let manifest = fixture_manifest(workspace);
-        let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
+        let state = Arc::new(CacheDb::open(workspace.join(".loom/state.db")).expect("cache db"));
         let bd = BdClient::with_runner(ScriptedRunner::new(vec![
             Ok(ok_stdout("[]")),
             Ok(ok_stdout("[]")),
@@ -1473,7 +1473,7 @@ cwd = "verifier-cwd"
         )
         .expect("loom.toml");
         let manifest = fixture_manifest(&workspace);
-        let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
+        let state = Arc::new(CacheDb::open(workspace.join(".loom/state.db")).expect("cache db"));
 
         // bd.list calls during prompt build: (1) spec-label bead summary,
         // (2) resolve_open_epic. Both return `[]` so the walker proceeds
@@ -1611,7 +1611,7 @@ cwd = "verifier-cwd"
         )
         .expect("loom.toml");
         let manifest = fixture_manifest(&workspace);
-        let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
+        let state = Arc::new(CacheDb::open(workspace.join(".loom/state.db")).expect("cache db"));
 
         let responses = vec![Ok(ok_stdout("[]")), Ok(ok_stdout("[]"))];
         let bd = BdClient::with_runner(ScriptedRunner::new(responses));

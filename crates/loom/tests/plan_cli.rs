@@ -41,7 +41,7 @@ fn seed_workspace(root: &Path) -> PathBuf {
     std::fs::write(root.join("specs/agent.md"), "# Agent\n\nBefore plan.\n")
         .expect("write agent spec");
 
-    let db = CacheDb::open(root.join(".loom/cache.db")).expect("open cache");
+    let db = CacheDb::open(root.join(".loom/state.db")).expect("open cache");
     db.notes_set(
         &SpecLabel::new("agent").unwrap(),
         "implementation",
@@ -438,7 +438,7 @@ fn plan_does_not_create_epic_or_touch_bd() {
             .expect("read updated index")
             .contains("planning-session-update"),
     );
-    let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("reopen cache");
+    let db = CacheDb::open(workspace.join(".loom/state.db")).expect("reopen cache");
     let notes = db
         .notes_list(
             Some(&SpecLabel::new("agent").unwrap()),

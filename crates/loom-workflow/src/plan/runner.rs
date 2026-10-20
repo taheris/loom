@@ -84,7 +84,7 @@ pub fn run_with_timeout(
 
     let pinned_context = read_pinned_context(workspace, &cfg.pinned_context)?;
     let spec_index = read_pinned_context(workspace, "docs/README.md")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(loom_driver::state::path(workspace))?;
     let companion_paths = anchor_companions(&db, &anchor_labels)?;
     let key = resolve_plan_scratch_key(&anchor_labels);
     let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key);
@@ -373,7 +373,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             dir.join("docs/README.md"),
             "# Loom Docs\n| Spec | Purpose |\n",
         )?;
-        let _db = CacheDb::open(dir.join(".loom/cache.db"))?;
+        let _db = CacheDb::open(dir.join(".loom/state.db"))?;
         Ok(())
     }
 
@@ -601,7 +601,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
             Duration::from_secs(1),
         )?;
 
-        let _db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
+        let _db = CacheDb::open(dir.path().join(".loom/state.db"))?;
         Ok(())
     }
 
@@ -609,7 +609,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
     fn plan_threads_anchor_companions_into_prompt_without_reconcile_write() -> Result<()> {
         let dir = tempfile::tempdir()?;
         seed_workspace(dir.path())?;
-        let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
+        let db = CacheDb::open(dir.path().join(".loom/state.db"))?;
         db.replace_companions(
             &SpecLabel::new("harness").unwrap(),
             &["lib/sandbox/".to_string()],

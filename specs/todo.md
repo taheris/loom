@@ -315,7 +315,7 @@ cursor advancement.
   active state is cleared. Any failure leaves cursors and active state unchanged
   [test](todo_finalization_advances_cursors_and_active_epic_atomically)
 
-- Missing criterion evidence in `.loom/cache.db` produces typed
+- Missing criterion evidence in `.loom/state.db` produces typed
   `EvidenceState::Missing` rows in `criterion_status`; it is never treated as no
   criteria or no work. Malformed criteria block preflight
   [test](todo_missing_criterion_cache_rows_are_missing_evidence)
@@ -512,7 +512,7 @@ cursor advancement.
    preflight before rendering the prompt, creates or reuses the `loom:todo` work
    epic, and surfaces a per-criterion `CriterionStatus` row (shape owned by
    [Specs](specs.md#criterion-status-surface)) for every changed spec.
-   Historical observations come from `.loom/cache.db`; empty cache surfaces as
+   Historical observations come from `.loom/state.db`; empty cache surfaces as
    `EvidenceState::Missing`. Evidence's current coverage projection accompanies
    those rows, exposing inadmissibility and retained blockers without treating a
    cached pass as authority. The todo agent's only success terminal is

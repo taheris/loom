@@ -559,36 +559,22 @@ reparent decisions or write driver journals/projections. Migration and pending
 admission recover before dispatch; read-only publication cannot invent missing
 admission authority.
 
-**Attributed native scheduling state.** For supported non-descendant native
-prerequisites, the driver parks eligible affected work waiting on admitted
-decision prerequisites, and a source admitted with `Waiting`, as
-`status=blocked`. It records typed durable wait attribution in Beads metadata,
-including the work identity, phase/work-root context, and admitted prerequisite
-references. Preserve unrelated metadata. The original work does not acquire a
-duplicate Options brief or human-queue label merely because it waits. The driver
-must not take ownership of an independently blocked/deferred/closed item or
-another running dispatch based only on a newly reported decision.
+**Native scheduling state.** Current native prerequisites determine readiness;
+ordinary dependency waiting does not write a second blocked-status projection or
+require a local release credential. A waiting worker may return its ended
+`in_progress` claim to `open` with a guarded update; native prerequisites keep
+it off readiness until resolved. The driver preserves unrelated labels,
+metadata, notes and independently blocked/deferred/closed work.
 
-**Resumption.** On Inbox chat exit, Loop/Todo startup, and scheduler refresh,
-the driver re-reads attributed work and its current dependency graph. It returns
-only matching natively parked driver-waiting work to `open` when all current
-prerequisites have resolved and no independent human, semantic, infra, or
-deferred hold remains. Other active blockers, cancelled/replaced attribution,
-malformed/missing prerequisites, or incompatible status changes prevent
-reopening. Human adoption of an independent hold cancels or replaces the wait
-attribution; a blocked status alone cannot distinguish ownership. The driver
-never reopens closed work, closes tasks on answered decisions, erases human
-resolutions, or restores labels from a generic interactive-session verdict.
-
-Wait admission/release is durable and idempotent. Interrupted or repeated
-processing reuses the same decisions, edges, drafts, and attributed wait without
-consuming retry budget or overwriting independent changes. Recheck current state
-before writes; a conflict or ambiguous ownership fails visibly rather than
-forcing a transition. A process restart needs no ephemeral cache fact to decide
-that work is eligible. Waiting Loop workspaces and committed/uncommitted work
-are preserved under [Workspaces](workspaces.md); waiting Todo drafts, fixed
-batch state, notes, and cursors follow
-[Todo](todo.md#decision-wait-and-resumption).
+**Resumption.** Inbox exit, Loop/Todo startup and scheduler refresh inspect the
+current graph, including current additions and removals. A cold machine needs no
+prior local record to determine readiness. An independent human hold is never
+reopened merely because prerequisites resolved. Retired attributed holds are
+migrated only with matching checked attribution; ambiguous state is retained for
+review. Restart and lost acknowledgements do not consume semantic retries,
+rediscover decisions or discard committed/uncommitted work. Decision operation
+snapshots live in `.loom/state.db`, not separate decision/dependency journals.
+Canonical task inputs must be re-admitted when local snapshots are absent.
 
 `partial/dependency_wait.md` is shared by Loop and Todo. It teaches durable
 prerequisite declaration, non-closure while genuinely waiting, visible
@@ -670,10 +656,11 @@ mutation permission.
   redispatch completed source work.
   [test](production_scheduler_resumes_exhausted_verification_after_restart_without_source_dispatch)
 
-- Recovery state rejects replaced source identities, missing authority and
-  corrupt retained history; worker-local copies cannot select canonical recovery
-  work.
-  [test](verification_continuation_rejects_replaced_source_missing_authority_and_corrupt_history)
+- Corrupt recovery snapshots never authorize cleanup.
+  [test](invalid_database_snapshot_never_authorizes_cleanup)
+
+- Missing local history cannot authorize discarding dirty source work.
+  [test](reset_does_not_authorize_discarding_dirty_work)
 
 ### Task acceptance
 
@@ -912,14 +899,14 @@ mutation permission.
   [Gate — Gate success receipt](gate.md#gate-success-receipt)
   [test](push_gate_evaluates_typed_evidence_and_marker_coverage)
 
-- On a **clean** push gate the `MarkerProof` is minted to `.loom/marker.json`
-  **immediately before** `git push`, inside the gate's critical section, after
-  deterministic pre-push and review have both covered the actual push range. A
-  **refused** push (unresolved blocked/clarify/deferred/infra bead, pre-push
-  failure, verify-fail, review-concern, integrity finding, or missing marker
-  coverage) mints nothing. A missing or invalid marker falls the pre-push
-  consumer through to running hooks rather than failing the push by itself
-  [test](clean_push_mints_marker_after_covered_verify_and_review)
+- On a **clean** push gate the `MarkerProof` is recorded in the controlling
+  `.loom/state.db` **immediately before** `git push`, inside the gate's critical
+  section, after deterministic pre-push and review have both covered the actual
+  push range. A **refused** push (unresolved blocked/clarify/deferred/infra
+  bead, pre-push failure, verify-fail, review-concern, integrity finding, or
+  missing marker coverage) mints nothing. A missing or invalid marker falls the
+  pre-push consumer through to running hooks rather than failing the push by
+  itself [test](clean_push_mints_marker_after_covered_verify_and_review)
 
 - Push gate refuses when `loom gate review`'s `--diff`-scoped invocation emits
   `LOOM_CONCERN`; molecule routes to recovery with cause `review-concern`
@@ -1138,24 +1125,22 @@ mutation permission.
   semantic queue labels or driver-side source closure.
   [test](waiting_marker_parks_owned_native_wait_without_queue_labels_or_integration)
 
-- Native dependency waits retain canonical driver attribution separately from
-  their worker-visible metadata projection, release only after all current
-  prerequisites resolve, and preserve unrelated labels, notes, and metadata.
-  [test](native_attributed_wait_parks_and_releases_without_queue_labels)
+- Native prerequisites keep waiting work off readiness without local permission
+  records, while preserving its dirty clone and independently ready siblings.
+  [test](native_attributed_wait_preserves_ready_siblings)
 
-- Interrupted native wait admission and release recover from lost native
-  acknowledgements without duplicate items or generic reopening.
-  [test](native_wait_restart_recovers_projection_and_release_after_lost_ack)
+- A second machine derives wait and publication readiness from the current graph,
+  not the first machine's cache.
+  [test](cold_machine_uses_current_dependencies_without_local_permission)
 
-- Removing an unresolved admitted prerequisite cannot authorize release.
-  [test](native_wait_removed_unresolved_prerequisite_cannot_authorize_release)
+- Lost acknowledgement of an ended worker's claim release is restart-safe.
+  [test](native_wait_restart_reconciles_lost_claim_release_ack)
 
-- Observed late prerequisites remain durably attributed across restart; removing
-  their native edges while unresolved cannot authorize release.
-  [test](native_wait_restart_retains_late_unresolved_prerequisites)
+- A removed historical dependency is not a permanent local veto.
+  [test](current_graph_does_not_require_a_removed_historical_dependency)
 
-- Human closure after resolution is preserved rather than reopened.
-  [test](native_wait_preserves_human_closed_source_after_prerequisites_resolve)
+- Cold-state reconciliation preserves independent human holds and closed work.
+  [test](cold_machine_never_reopens_independent_human_holds)
 
 - `LOOM_WAITING` without an active declared blocker is invalid, routes through
   visible recovery as `invalid-waiting`, and never silently parks the bead
@@ -1438,7 +1423,7 @@ mutation permission.
 
 - Completed inventory admission with a lost canonical disposition rejects
   publication and recovery without reconstructing authority from native queues.
-  [test](native_admitted_disposition_loss_is_not_reconstructed_from_projection)
+  [test](native_missing_disposition_is_readmitted_from_current_canonical_inputs)
 
 - A compatible producer may reuse an exact, canonically admitted decision with
   the same checked native root/graph, without requeueing it or losing its closed
@@ -1508,9 +1493,9 @@ mutation permission.
 - Foreign and wrong-type references reject the complete handoff before effects.
   [test](foreign_or_wrong_type_references_reject_whole_context_before_effects)
 
-- Canonical holds and orphaned projections prevent publication after native
-  closure.
-  [test](canonical_pending_hold_blocks_publication_even_after_native_closure)
+- Current native graph closure releases the wait; orphaned projections still
+  prevent publication until reconciled.
+  [test](current_graph_releases_wait_but_orphaned_projection_blocks_publication)
 
 - Restart finishes partial staging without rewriting human context.
   [test](restart_finishes_partial_staging_without_rewriting_human_context)
@@ -1518,23 +1503,13 @@ mutation permission.
 - Restart acknowledges completed hold release without reopening work.
   [test](restart_acknowledges_completed_release_without_reopening_work)
 
-- Driver wait release reopens only matching attributed work after all current
-  prerequisites resolve; independent holds, cancelled attribution, malformed
-  state, other blockers, and closed work are preserved.
-  [test](native_wait_release_preserves_human_takeover_and_unrelated_metadata)
+- Ending a native waiting dispatch releases only that worker's current claim; it
+  preserves unrelated metadata and native prerequisites.
+  [test](explicit_native_wait_releases_only_the_ended_workers_claim)
 
-- Repeated or interrupted admission/resumption reuses durable decision and wait
-  state without duplicate queue items, lost drafts, overwritten unrelated
-  metadata, or retry-budget consumption; ambiguous ownership fails visibly.
-  [test](native_wait_restart_recovers_projection_and_release_after_lost_ack)
-
-- A released native wait can admit a new current prerequisite in a subsequent
-  dispatch without inheriting stale ownership.
-  [test](released_native_wait_can_admit_a_new_current_prerequisite)
-
-- Moving natively parked work cannot evade the publication barrier or authorize
-  release; canonical ownership is retained and the mismatch fails visibly.
-  [test](moved_native_wait_cannot_evade_publication_or_release)
+- A native projection without checked legacy attribution cannot authorize
+  reopening work.
+  [test](native_wait_rejects_unowned_projection_without_reconstructing_authority)
 
 <!-- prettier-ignore -->
 - Actual Beads dependency/ready selection and production Loop/Todo/Inbox paths

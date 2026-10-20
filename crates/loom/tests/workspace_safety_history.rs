@@ -22,7 +22,7 @@ async fn worker_preparation_denies_sccache_projections_of_canonical_authority() 
     let fixture = Fixture::new().await?;
     let manifest = manifest(&fixture)?;
     let config = LoomTopConfig {
-        sccache_dir: Some(fixture.association.history_dir().join("new-cache")),
+        sccache_dir: Some(fixture.association.integration().join("new-cache")),
         ..LoomTopConfig::default()
     };
     assert!(fixture.prepare(&manifest, &config).await.is_err());

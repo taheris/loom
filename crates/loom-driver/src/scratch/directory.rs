@@ -4,8 +4,7 @@ use std::os::fd::OwnedFd;
 use std::path::{Component, Path};
 
 use rustix::fs::{
-    AtFlags, Dir, Mode, OFlags, Stat, fchmod, fstat, mkdirat, open, openat, renameat, statat,
-    unlinkat,
+    AtFlags, Dir, Mode, OFlags, Stat, fchmod, fstat, mkdirat, open, openat, statat, unlinkat,
 };
 use rustix::io::Errno;
 use rustix::process::geteuid;
@@ -20,23 +19,6 @@ const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
 pub struct Directory(OwnedFd);
 
 impl Directory {
-    pub(crate) fn names(&self) -> io::Result<Vec<std::ffi::OsString>> {
-        use std::os::unix::ffi::OsStrExt as _;
-        let mut names = Vec::new();
-        for entry in Dir::read_from(&self.0)? {
-            let entry = entry?;
-            if matches!(entry.file_name().to_bytes(), b"." | b"..") {
-                continue;
-            }
-            names.push(std::ffi::OsStr::from_bytes(entry.file_name().to_bytes()).to_owned());
-        }
-        Ok(names)
-    }
-
-    pub(crate) fn rename_file(&self, source: &Path, destination: &Path) -> io::Result<()> {
-        renameat(&self.0, source, &self.0, destination)?;
-        Ok(())
-    }
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         if path.as_os_str().is_empty() || path.components().any(|c| c == Component::ParentDir) {
             return Err(io::Error::new(
@@ -62,6 +44,7 @@ impl Directory {
         Ok(dir)
     }
 
+    #[cfg(test)]
     pub(crate) fn ensure(path: &Path) -> io::Result<Self> {
         let path = std::path::absolute(path)?;
         if path.components().any(|c| c == Component::ParentDir) {
@@ -89,33 +72,6 @@ impl Directory {
 
     pub(crate) fn stat(&self) -> io::Result<Stat> {
         Ok(fstat(&self.0)?)
-    }
-
-    pub(crate) fn sync(&self) -> io::Result<()> {
-        rustix::fs::fsync(&self.0)?;
-        Ok(())
-    }
-
-    pub(crate) fn read_private_file(&self, name: &Path) -> io::Result<File> {
-        let fd = openat(
-            &self.0,
-            name,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        let stat = fstat(&fd)?;
-        if stat.st_uid != geteuid().as_raw()
-            || stat.st_mode & 0o7777 != 0o600
-            || rustix::fs::FileType::from_raw_mode(stat.st_mode)
-                != rustix::fs::FileType::RegularFile
-            || stat.st_nlink != 1
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "authority file must be private and singly linked",
-            ));
-        }
-        Ok(File::from(fd))
     }
 
     pub(crate) fn child(&self, name: &Path) -> io::Result<Self> {

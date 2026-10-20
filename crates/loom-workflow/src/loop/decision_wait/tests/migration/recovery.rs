@@ -60,10 +60,7 @@ mod cases {
                 .recover_inventory(&f.bd, Some(&f.root), &SpecLabel::new("loop").unwrap())
                 .await
                 .unwrap();
-            assert_eq!(
-                f.bd.show(&f.source.id).await.unwrap().status,
-                Status::Blocked
-            );
+            assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
             assert_eq!(
                 f.bd.dependency_snapshot(&f.source.id)
                     .await
@@ -186,9 +183,6 @@ mod cases {
                 .metadata
                 .contains_key(HOLD_KEY)
         );
-        assert_eq!(
-            f.bd.show(&f.source.id).await.unwrap().status,
-            Status::Blocked
-        );
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
     }
 }

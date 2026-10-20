@@ -120,10 +120,10 @@ Loom's state lives under `.loom/` in the workspace:
 
 ```
 .loom/
-├── cache.db          # SQLite: specs, work epics, notes, companions, evidence
+├── state.db          # SQLite: all structured transient local workflow state
 ├── beads/<id>/       # Disposable bead worktrees
 ├── integration/      # Publish-only integration checkout
-├── tune/<id>/        # Tune proposal envelopes and candidate checkout
+├── tune/<id>/        # Tune candidate checkout and evidence payloads
 ├── scratch/<key>/    # Per-session scratchpads (deleted at session end)
 └── logs/             # Session transcripts, agent JSONL, gate/tune evidence
 ```
@@ -134,13 +134,18 @@ fallback), not under `.loom/`. Read-only inspection takes no lock.
 
 The cache DB is rebuildable from durable workspace sources
 (`loom init --rebuild`): the spec index, spec files, bd epics, git history, and
-Evidence-owned records for verification views. It is not the sole authority for
-correctness-sensitive state.
-[Evidence](../specs/evidence.md#retained-safety-evidence) owns compact canonical
-safety records and required replay witnesses that survive ordinary transcript
-expiry; [Events](../specs/events.md#persisted-logs-and-replay) owns log cleanup.
-This is a lifetime boundary within existing evidence handling, not a second
-cache service or authorization path.
+current admitted execution evidence for verification views. Decision recovery,
+verification snapshots, publication receipts and tune execution metadata share
+this store. Missing local state is cold state, never evidence of success or a
+credential to release human holds or discard unique Git work. Host checkout
+identity is checked for the current invocation without a persistent external
+registry. It is not the sole authority for correctness-sensitive state.
+[Evidence](../specs/evidence.md#retained-safety-evidence) owns admission of
+local evidence facts in this same database; canonical required regressions
+belong in project inputs, not a separate machine-local history authority.
+Missing evidence requires fresh checks.
+[Events](../specs/events.md#persisted-logs-and-replay) owns ordinary log
+cleanup. No second cache service or authorization path is implied.
 
 ## Compatibility and Retired Internals
 

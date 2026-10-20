@@ -150,7 +150,7 @@ async fn native_descendant_wait_preserves_guards_and_releases_only_owned_state()
         matches!(f.admit().await, AgentOutcome::Waiting { blockers: WaitPrerequisites::Native(ref blockers) } if blockers.ids().count() == 2)
     );
     let source = f.bd.show(&f.source.id).await.unwrap();
-    assert_eq!(source.status, Status::Blocked);
+    assert_eq!(source.status, Status::Open);
     assert_eq!(source.parent, f.source.parent);
     assert_eq!(
         f.bd.dependency_snapshot(&source.id)
@@ -350,7 +350,7 @@ async fn restart_recovers_intent_and_human_takeover_without_reopening() {
     let source = f.bd.show(&f.source.id).await.unwrap();
     assert_eq!(source.status, Status::Deferred);
     assert_eq!(source.notes.as_deref(), Some("human takeover"));
-    assert!(source.metadata.contains_key("loom.dependency_wait"));
+    assert!(!source.metadata.contains_key("loom.dependency_wait"));
     assert!(!journal.has_pending_for(&f.root).unwrap());
 }
 
@@ -369,7 +369,10 @@ async fn changed_root_or_corrupt_projection_cannot_release_owned_hold() {
     .await
     .unwrap();
     assert!(held(&f.bd, &f.journal(), &f.source).await.is_err());
-    assert!(f.journal().has_pending_for(&f.root).unwrap());
+    assert!(!matches!(
+        f.journal().blocks_scope(&f.bd, &f.root).await,
+        Ok(false)
+    ));
     let other =
         f.bd.create(CreateOpts {
             title: "other root".into(),
@@ -381,8 +384,5 @@ async fn changed_root_or_corrupt_projection_cannot_release_owned_hold() {
     f.bd.reparent(&f.source.id, &other).await.unwrap();
     assert!(held(&f.bd, &f.journal(), &f.source).await.is_err());
     assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
-    assert_eq!(
-        f.bd.show(&f.source.id).await.unwrap().status,
-        Status::Blocked
-    );
+    assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
 }

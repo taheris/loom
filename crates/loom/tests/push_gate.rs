@@ -79,9 +79,10 @@ mod tests {
             .unwrap();
             db.set_iteration(&MoleculeId::new("lm-work").unwrap(), 7)
                 .unwrap();
-            std::fs::write(
-                fixture.root().join(".loom/marker.json"),
-                "existing operator marker\n",
+            db.put_record(
+                loom_driver::state::RecordKind::PublicationReceipt,
+                fixture.root().to_str().unwrap(),
+                &"existing operator marker\n",
             )
             .unwrap();
             fixture
@@ -91,7 +92,7 @@ mod tests {
             self.dir.path()
         }
         fn db(&self) -> CacheDb {
-            CacheDb::open(self.root().join(".loom/cache.db")).unwrap()
+            CacheDb::open(self.root().join(".loom/state.db")).unwrap()
         }
         fn range(&self) -> String {
             format!(
@@ -281,7 +282,13 @@ mod tests {
                 );
             }
             assert_eq!(
-                std::fs::read_to_string(self.root().join(".loom/marker.json")).unwrap(),
+                self.db()
+                    .record::<String>(
+                        loom_driver::state::RecordKind::PublicationReceipt,
+                        self.root().to_str().unwrap()
+                    )
+                    .unwrap()
+                    .unwrap(),
                 "existing operator marker\n"
             );
             assert_eq!(

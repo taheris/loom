@@ -12,10 +12,11 @@ counterexamples, rather than reliance on the latest cached status.
 ## Architecture
 
 Execution manifests identify verification executions; current admission decides
-whether their results may be used. Canonical safety history survives rebuildable
-indexes and expiring transcripts. Related owners: [verify](verify.md),
-[gate](gate.md), [events](events.md), [harness](harness.md),
-[simulation](simulation.md).
+whether their results may be used. Local evidence facts share the transient
+state database, independently of expiring transcripts; absent evidence requires
+fresh checks against canonical project inputs rather than historical authority.
+Related owners: [verify](verify.md), [gate](gate.md), [events](events.md),
+[harness](harness.md), [simulation](simulation.md).
 
 Acceptance: [criteria and verifier bindings](#success-criteria).
 
@@ -218,28 +219,27 @@ the admitted outcome facts needed for failure invalidation and pass/fail
 disagreement, plus confirmed counterexamples, their claim/input attribution, and
 resolution history. Required provenance and replay inputs remain available; a
 path into an expired transcript or a latest-status scalar is not sufficient.
-Transcript age, restart, index rebuilding, or cache import cannot reset these
-facts or remove a regression obligation.
+Ordinary transcript age or cache import cannot turn known failures into reusable
+passes. Portable required regression obligations belong in canonical project
+inputs, not solely in machine-local history.
 
-Canonical safety facts live in a dedicated append-only journal of typed,
-Serde-backed JSONL records; required witnesses live in separate immutable,
-content-addressed objects. Integrity and ordering checks, locking, durable
-writes, and crash-safe checkpoints protect recording and reconstruction. SQLite
-safety indexes rebuild from this canonical history rather than replacing it.
-Content addressing identifies bytes, not confirmation, provenance, resolution,
-or a verifier pass; parsing a record does not establish its admitted meaning.
+Structured local evidence facts share the transient `.loom/state.db`; there is
+no separate append-only journal, witness-object authority or external safety
+registry. Larger actual logs and replay inputs remain ordinary payloads or
+canonical checked-in regression fixtures. Transactional writes and current
+admission protect local evidence. A digest identifies bytes, not confirmation,
+provenance, resolution or a verifier pass; decoding a stored record does not
+establish its admitted meaning.
 
 These records belong to existing typed Gate evidence handling, not a second
 result cache, authorization route, or mutable summary with independent
-authority. Append-only describes retained logical facts, not indefinite
-retention of every physical segment. Compaction may consolidate representation,
-but cannot change the safety facts or their admission meaning. Recording and
-consolidation must preserve them across interruption, including before a
-complete `GateRun` end event exists. Cleanup must not remove the last usable
-copy before its retained replacement and required witnesses are durable.
-Missing, corrupt, or incomplete required safety evidence blocks dependent reuse
-and authorization with actionable diagnostics; it is not an empty history. A
-fresh pass cannot silently repair lost disagreement or counterexample knowledge.
+authority. Local database loss, corruption or explicit rebuild invalidates reuse
+of unavailable evidence; it does not prove a pass, erase required canonical
+regressions or permanently bind a machine to missing history. The cold path
+re-derives current obligations and runs fresh verification and review. Required
+unavailable inputs remain an actionable verification failure, never an empty
+obligation set or stale receipt. Recording is transactional across interruption,
+including before a complete `GateRun` end event exists.
 
 Ordinary transcripts still expire automatically; users need not disable
 retention or retain every full log indefinitely. Compact safety records do not
@@ -255,11 +255,13 @@ reusable.
 The operator checkout and its associated Loom integration clone share one
 admitted retained safety history within that local Loom workspace. Trusted
 observations admitted through either checkout constrain subsequent admission in
-both under the same execution-identity and claim-attribution rules. Changing
-checkouts or rebuilding a clone-local status view cannot hide a known failure,
-disagreement, or unresolved counterexample. Admission consumes current shared
-facts, including relevant observations admitted after an earlier validation;
-concurrent recording cannot silently lose one checkout's admitted facts.
+both under the same execution-identity and claim-attribution rules. The shared
+store is the controlling `.loom/state.db`, not clone-local parallel databases.
+Changing checkout cannot borrow an old pass to bypass a known failure. Reset or
+cold-machine recovery discards unavailable reuse and requires current checks.
+Admission consumes current shared facts, including relevant observations
+admitted after an earlier validation; concurrent recording cannot silently lose
+one checkout's admitted facts.
 
 [Workspaces](workspaces.md#gate-safety-history-isolation) resolves the checkout
 association and protects canonical history from worker writes. Worker reports
@@ -395,22 +397,20 @@ unavailable required linkage as empty safety history.
   [system?](nix run .#test-quint -- counterexample-invalidates-routine-evidence)
 
 <!-- prettier-ignore -->
-- Canonical safety facts in the typed JSONL journal and immutable
-  content-addressed replay witnesses survive normal transcript expiry, restart,
-  and SQLite index rebuilding. Production admission still rejects disqualified
-  passes and unresolved counterexample bypasses after cache reimport, while
-  independent evidence remains reusable and expired ordinary transcripts are
-  removed without disabling retention. [system?](nix run .#test-quint -- evidence-retention)
+- Local evidence facts in the shared state database survive normal transcript
+  expiry and restart. Production admission rejects known disqualified passes
+  and unresolved canonical regression bypasses after cache reimport, while
+  independent evidence remains reusable. Database loss invalidates dependent
+  reuse and requires fresh checks against current canonical inputs. [system?](nix run .#test-quint -- evidence-retention)
 
 <!-- prettier-ignore -->
-- Journal recording and checkpoint/consolidation enforce ordering, integrity,
-  locking, and durable preservation of admitted facts and witness objects across
-  interruption, including before a run's end event. Safe reconstruction and
-  reclamation preserve logical history without keeping every segment. Missing,
-  corrupt, or incomplete required records/objects block dependent admission,
-  rather than becoming empty history or being repaired by a fresh pass. Parsed
-  records and witness digests cannot substitute for admitted positive evidence,
-  and retained facts cannot replace receipt-required successful run evidence.
+- Transactional database recording preserves admitted local facts across
+  interruption, including before a run's end event. Missing, corrupt or
+  incomplete local evidence cannot authorize dependent reuse. Cold recovery
+  re-derives current canonical obligations and requires fresh verification;
+  required unavailable canonical inputs remain failures. Stored records and
+  payload digests cannot substitute for admitted positive evidence or
+  receipt-required successful run evidence.
   [system?](nix run .#test-quint -- evidence-retention-recovery)
 
 <!-- prettier-ignore -->
@@ -489,7 +489,7 @@ unavailable required linkage as empty safety history.
   not-required-here is neither positive coverage nor sufficient no-work evidence.
   Projections neither execute verifiers nor authorize publication. [system?](nix run .#test-quint -- coverage-projection)
 
-- `.loom/cache.db` is created on first `open` when the path is missing
+- `.loom/state.db` is created on first `open` when the path is missing
   [test](open_creates_db_file_when_missing)
 
 - A criterion-evidence `CacheRow` round-trips through sqlite preserving every
@@ -532,7 +532,7 @@ unavailable required linkage as empty safety history.
 
 [Acceptance](#status-cache).
 
-`loom gate status` reads criterion evidence from the unified `.loom/cache.db`
+`loom gate status` reads criterion evidence from the unified `.loom/state.db`
 cache and prints a fast report. (Bare `loom gate` shows the subcommand help —
 see [Gate — Commands](gate.md#commands).) Every subcommand that runs verifiers
 or the LLM rubric writes to the cache as it runs — `loom gate verify`,
@@ -548,7 +548,7 @@ and rubric walks). There is no separate `.loom/gate-cache.sqlite`.
   verifier-reported prerequisite gaps via exit 77)
 - evidence string from the verifier's JSON output
 
-**Cache schema** is part of `.loom/cache.db` in [Harness](harness.md). One row
+**Cache schema** is part of `.loom/state.db` in [Harness](harness.md). One row
 per criterion, indexed by typed `(SpecLabel, CriterionId)`. If the current spec
 file's annotation differs from the cached annotation for the same criterion id,
 todo renders `EvidenceState::StaleAnnotation` rather than reusing stale pass
@@ -581,10 +581,9 @@ as current coverage.
 ## Out of Scope
 
 - A global safety ledger or automatic synchronization of independent clones or
-  machines. Shared history is bounded to the associated local Loom workspace;
-  this does not weaken ordinary admission of imported evidence or permit
-  discarding facts already admitted locally. No network history service is
-  introduced.
+  machines. Shared local facts are bounded to the associated Loom workspace. No
+  network history service, external safety registry or separate journal
+  authority is introduced; cold recovery invalidates missing evidence reuse.
 - Evidence admission does not independently authorize publication. SQLite status
-  is not canonical safety history; ordinary transcript rendering belongs to
+  is not canonical project authority; ordinary transcript rendering belongs to
   Events.

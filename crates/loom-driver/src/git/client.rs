@@ -1096,8 +1096,9 @@ impl GitClient {
         let before = self.rev_parse_in_loom("HEAD").await?;
         let onto = self.rev_parse_in_loom(&remote_ref).await?;
         let mut cohort = Vec::new();
-        let journal = self.workdir.join(".git/loom-verification-continuations");
-        let association = if journal.try_exists()? {
+        let association = if crate::workspace::has_verification_state(&self.workdir)
+            .map_err(std::io::Error::other)?
+        {
             Some(
                 crate::workspace::Association::resolve(&self.workdir)
                     .map_err(std::io::Error::other)?,
@@ -1891,6 +1892,67 @@ impl GitClient {
         })
     }
 
+    /// Prepare independently checked recovery storage from available candidate bytes.
+    /// Missing history never grants coverage or permission to discard existing work.
+    ///
+    /// # Errors
+    /// Reports unavailable candidate bytes or unsafe storage with recovery diagnostics.
+    pub async fn recover_verification_checkout(
+        &self,
+        record: &crate::workspace::VerificationContinuation,
+    ) -> Result<crate::workspace::VerificationContinuation, GitError> {
+        let association =
+            crate::workspace::Association::resolve(&self.workdir).map_err(std::io::Error::other)?;
+        let path = association
+            .operator()
+            .join(WORKTREE_BASE)
+            .join(record.bead.as_str());
+        let integration = self.loom_workspace();
+        if !GitClient::open(&integration)?
+            .rev_exists(record.candidate.as_str())
+            .await?
+        {
+            if !self.rev_exists(record.candidate.as_str()).await? {
+                return Err(GitError::GitCli {
+                    status: 1,
+                    stderr: format!(
+                        "verification candidate {} for {} is unavailable; synchronize its Git objects, or preserve remaining work and use loom init --rebuild to restart from the current assignment; no coverage was restored",
+                        record.candidate, record.bead
+                    ),
+                });
+            }
+            run_git(
+                &integration,
+                self.clock.as_ref(),
+                [
+                    OsString::from("fetch"),
+                    OsString::from("--no-tags"),
+                    self.workdir.clone().into(),
+                    OsString::from(record.candidate.as_str()),
+                ],
+                None,
+            )
+            .await?;
+        }
+        self.preserve_verification_candidate(&record.bead, &record.candidate)
+            .await?;
+        let reconstructed = !path.try_exists()?;
+        self.create_worktree(&record.label, &record.bead).await?;
+        if reconstructed {
+            // Only the clone created above may be reset; an existing checkout is never overwritten.
+            run_git(
+                &path,
+                self.clock.as_ref(),
+                ["reset", "--hard", record.candidate.as_str()],
+                None,
+            )
+            .await?;
+        }
+        association
+            .rebind_verification_checkout(record, reconstructed)
+            .map_err(|error| std::io::Error::other(error).into())
+    }
+
     /// Pin a verified candidate before a reversible integration advance.
     ///
     /// # Errors
@@ -1910,15 +1972,20 @@ impl GitClient {
     /// # Errors
     /// Changed source identities, dirty checkouts and unrelated Git history remain preserved.
     pub async fn recover_publication_rebase(&self) -> Result<(), GitError> {
-        let journal = self.workdir.join(".git/loom-verification-continuations");
-        if !journal.try_exists()? {
+        if !crate::workspace::has_verification_state(&self.workdir)
+            .map_err(std::io::Error::other)?
+        {
             return Ok(());
         }
         let association =
             crate::workspace::Association::resolve(&self.workdir).map_err(std::io::Error::other)?;
-        let records = association
+        let mut records = Vec::new();
+        for record in association
             .verification_continuations()
-            .map_err(std::io::Error::other)?;
+            .map_err(std::io::Error::other)?
+        {
+            records.push(self.recover_verification_checkout(&record).await?);
+        }
         let integration = self.loom_workspace();
         for record in &records {
             let Some(intent) = &record.publication_rebase else {
@@ -2145,10 +2212,8 @@ impl GitClient {
     /// # Errors
     /// Rejects changed source/checkouts/pins; does not admit coverage or reconcile unrelated work.
     pub async fn refresh_pending_publication_rebase(&self) -> Result<bool, GitError> {
-        if !self
-            .workdir
-            .join(".git/loom-verification-continuations")
-            .try_exists()?
+        if !crate::workspace::has_verification_state(&self.workdir)
+            .map_err(std::io::Error::other)?
         {
             return Ok(false);
         }
@@ -2866,8 +2931,7 @@ pub fn init_test_repo_with_integration_branch(
     run_test_git(&loom_workspace, &["config", "commit.gpgsign", "false"])?;
     let hooks = ensure_test_prek_hooks(path)?;
     super::hooks::write_hooks_config(&loom_workspace, &hooks)?;
-    crate::workspace::Association::establish_with_state_home(path, &origin_path.join("loom-state"))
-        .map_err(std::io::Error::other)?;
+    crate::workspace::Association::establish(path).map_err(std::io::Error::other)?;
     GitClient::open_with_integration_branch(path, branch.to_string())
 }
 
@@ -3083,6 +3147,53 @@ pub fn sync_rev_parse(workspace: &Path, rev: &str) -> Result<GitOid, GitError> {
 /// # Errors
 ///
 /// Returns an error when repository inspection, Git execution, or output decoding fails.
+/// Check that removing a clean source checkout will not discard unique Git data.
+///
+/// # Errors
+/// Reports repository/command failures; missing integration objects preserve the checkout.
+pub fn checkout_redundant_sync(
+    workspace: &Path,
+    integration: &Path,
+    accepted: bool,
+) -> Result<bool, GitError> {
+    let stash = sync_git_raw(
+        workspace,
+        &["rev-parse", "--verify", "--quiet", "refs/stash"],
+    )?;
+    if stash.status.success() {
+        return Ok(false);
+    }
+    let head = sync_head_commit_sha(workspace)?;
+    let refs = sync_git_raw(
+        workspace,
+        &["for-each-ref", "--format=%(objectname)", "refs/heads"],
+    )?;
+    if !refs.status.success() {
+        return Err(cli_error(&refs));
+    }
+    for revision in String::from_utf8_lossy(&refs.stdout).lines() {
+        if accepted && revision == head.as_str() {
+            continue;
+        }
+        let reachable = sync_git_raw(
+            integration,
+            &["merge-base", "--is-ancestor", revision, "HEAD"],
+        )?;
+        if !reachable.status.success() {
+            tracing::info!(
+                revision,
+                "source branch not proven reachable from integration; checkout preserved"
+            );
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Read current tracked and untracked changes synchronously.
+///
+/// # Errors
+/// Reports unavailable Git state and command failures.
 pub fn status_porcelain_sync(workspace: &Path) -> Result<String, GitError> {
     sync_git_capture(workspace, &["status", "--porcelain"])
 }

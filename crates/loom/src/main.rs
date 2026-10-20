@@ -1053,7 +1053,7 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
             "kept existing"
         }
     );
-    println!("  cache.db: {}", report.cache_db_path.display());
+    println!("  state.db: {}", report.cache_db_path.display());
     match &report.integration_workspace {
         Some(integ) => println!(
             "  integration: {} ({})",
@@ -1080,7 +1080,7 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
     reason = "this command renders note results to stdout"
 )]
 fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<()> {
-    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = loom_driver::state::CacheDb::open(loom_driver::state::path(workspace))?;
     let clock = SystemClock::new();
     let now_ms = i64::try_from(
         clock
@@ -1424,7 +1424,7 @@ fn is_allowlisted_check_annotation(ann: &loom_gate::Annotation) -> bool {
 }
 
 fn run_gate_status(workspace: &Path) -> anyhow::Result<()> {
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = loom_driver::state::path(workspace);
     let cache = StatusCache::open(&cache_path)?;
     let parsed = loom_gate::annotation::parse(&workspace.join("specs"))?;
     let now_ms = i64::try_from(
@@ -1902,7 +1902,7 @@ fn dispatch_tier_with_input_resolver(
         return Ok(combined);
     }
     let options = gate_dispatch_options(args);
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = loom_driver::state::path(workspace);
     let cache = StatusCache::open(&cache_path)?;
     let now_ms = i64::try_from(
         SystemClock::new()
@@ -2463,7 +2463,7 @@ fn run_gate_mint(
             let shutdown_grace = resolve_shutdown_grace(&selection);
             let direct_output_limits = config.direct_output_limits();
             let observer_config = config.agent.clone();
-            let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
+            let state = Arc::new(CacheDb::open(loom_driver::state::path(workspace))?);
             let style_rules = config.style_rules;
             let workspace_buf = workspace.to_path_buf();
             let logs_root = workspace.join(".loom/logs");
@@ -2909,7 +2909,7 @@ fn run_gate_review(
     reason = "this command renders workspace status to stdout"
 )]
 fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
-    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = loom_driver::state::CacheDb::open(loom_driver::state::path(workspace))?;
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     let report = status::load(&db, config.loom.integration_branch)?;
     print!("{}", status::render(&report));
@@ -2922,7 +2922,7 @@ fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
 )]
 fn run_use(workspace: &std::path::Path, label: &str) -> anyhow::Result<()> {
     let label: SpecLabel = label.parse()?;
-    let db_path = workspace.join(".loom/cache.db");
+    let db_path = loom_driver::state::path(workspace);
     use_spec::run(workspace, &label, &db_path)?;
     println!("spec exists: {label}");
     Ok(())
@@ -4572,7 +4572,7 @@ fn run_review(
     let observer_config = config.agent.clone();
 
     let loom_bin = current_loom_bin()?;
-    let state = std::sync::Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
+    let state = std::sync::Arc::new(CacheDb::open(loom_driver::state::path(workspace))?);
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
     let workspace_for_review_renderer = workspace.to_path_buf();
@@ -5010,7 +5010,11 @@ fn render_inbox_item_view_text(workspace: &Path, item: &InboxItem) -> String {
         push_line(&mut out, "artifacts:");
         push_artifact(&mut out, "envelope", &envelope);
         push_artifact(&mut out, "repo", &envelope.join("repo"));
-        push_artifact(&mut out, "manifest", &envelope.join("manifest.json"));
+        push_artifact(
+            &mut out,
+            "transient state",
+            &loom_driver::state::path(workspace),
+        );
         push_artifact(&mut out, "evidence", &envelope.join("evidence.md"));
     }
     push_blank(&mut out);
@@ -5126,7 +5130,7 @@ fn run_todo(
     let direct_output_limits = config.direct_output_limits();
     let observer_config = config.agent.clone();
 
-    let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
+    let state = Arc::new(CacheDb::open(loom_driver::state::path(workspace))?);
     let git = Arc::new(GitClient::open_with_integration_branch(
         workspace,
         config.loom.integration_branch.clone(),
@@ -5494,7 +5498,7 @@ mod tests {
             .unwrap()
             .annotations;
         assert_eq!(annotations.len(), 128);
-        let cache = StatusCache::open(&workspace.path().join(".loom/cache.db")).unwrap();
+        let cache = StatusCache::open(&workspace.path().join(".loom/state.db")).unwrap();
         let mut verdict = loom_gate::dispatch::VerifierVerdict::from_outcome(
             Verdict::Pass,
             "each test reported pass".into(),

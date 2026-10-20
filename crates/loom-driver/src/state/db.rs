@@ -7,9 +7,15 @@ use crate::identifier::{MoleculeId, SpecLabel};
 
 use super::error::CacheError;
 
-const SCHEMA_VERSION: &str = "9";
+const SCHEMA_VERSION: &str = "10";
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS workflow_records (
+    kind TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (kind, record_key)
+);
 CREATE TABLE IF NOT EXISTS specs (
     label     TEXT PRIMARY KEY,
     spec_path TEXT NOT NULL
@@ -72,6 +78,7 @@ DROP TABLE IF EXISTS meta;
 /// is `!Sync`.
 pub struct CacheDb {
     conn: Mutex<Connection>,
+    _lifecycle: std::fs::File,
 }
 
 /// One row of the `specs` table.
@@ -134,15 +141,93 @@ impl CacheDb {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path).map_err(|source| CacheError::OpenDb {
+        let lifecycle = lifecycle_lock(path)?;
+        lifecycle.lock_shared()?;
+        Self::open_locked(path, lifecycle, false)
+    }
+
+    /// Perform a stopped-driver legacy import while holding the controlling workspace lock.
+    ///
+    /// # Errors
+    /// Rejects a guard for another workspace and reports migration failures.
+    pub fn open_for_init(
+        path: impl AsRef<Path>,
+        guard: &crate::lock::LockGuard,
+    ) -> Result<Self, CacheError> {
+        let path = path.as_ref();
+        check_initialization_guard(path, guard)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let lifecycle = lifecycle_lock(path)?;
+        lifecycle.lock_shared()?;
+        Self::open_locked(path, lifecycle, true)
+    }
+
+    fn open_locked(
+        path: &Path,
+        lifecycle: std::fs::File,
+        allow_import: bool,
+    ) -> Result<Self, CacheError> {
+        let mut initialization = path.as_os_str().to_os_string();
+        initialization.push(".init.lock");
+        let initialization = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(std::path::PathBuf::from(initialization))?;
+        initialization.lock()?;
+        let mut conn = Connection::open(path).map_err(|source| CacheError::OpenDb {
             path: path.to_path_buf(),
             source,
         })?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        conn.execute_batch(SCHEMA)?;
-        apply_migrations(&conn)?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000; PRAGMA journal_mode = WAL;",
+        )?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(SCHEMA)?;
+        apply_migrations(&tx)?;
+        let evidence_version: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'verifier_evidence_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if evidence_version.as_deref() != Some("2") {
+            tx.execute("DELETE FROM criterion_status", [])?;
+            tx.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('verifier_evidence_version', '2')",
+                [],
+            )?;
+        }
+        let imported = if path.file_name().is_some_and(|name| name == "state.db")
+            && tx.query_row(
+                "SELECT COUNT(*) FROM meta WHERE key = 'state_store_import'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )? == 0
+        {
+            if !allow_import && super::legacy::pending(path)? {
+                return Err(CacheError::Legacy { path: path.into(), detail: "stop other Loom drivers and run loom init once to import retired local stores".into() });
+            }
+            let imported = super::legacy::import(&tx, path)?;
+            tx.execute(
+                "INSERT INTO meta(key,value) VALUES ('state_store_import','complete')",
+                [],
+            )?;
+            Some(imported)
+        } else {
+            None
+        };
+        tx.commit()?;
+        if let Some(imported) = imported {
+            imported.finish();
+        }
         Ok(Self {
             conn: Mutex::new(conn),
+            _lifecycle: lifecycle,
         })
     }
 
@@ -153,13 +238,46 @@ impl CacheDb {
     ///
     /// Returns an error when database access, stored state, or state validation fails.
     pub fn recreate(path: impl AsRef<Path>) -> Result<Self, CacheError> {
-        let path = path.as_ref();
+        Self::recreate_with_import(path.as_ref(), false)
+    }
+
+    /// Reset local state under an initialization guard, importing retired operations once.
+    ///
+    /// # Errors
+    /// Reports unavailable exclusive access, invalid guard or migration failures.
+    pub fn recreate_for_init(
+        path: impl AsRef<Path>,
+        guard: &crate::lock::LockGuard,
+    ) -> Result<Self, CacheError> {
+        check_initialization_guard(path.as_ref(), guard)?;
+        Self::recreate_with_import(path.as_ref(), true)
+    }
+
+    fn recreate_with_import(path: &Path, allow_import: bool) -> Result<Self, CacheError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let lifecycle = lifecycle_lock(path)?;
+        lifecycle.try_lock().map_err(|source| CacheError::Busy {
+            path: path.to_path_buf(),
+            source,
+        })?;
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
-        Self::open(path)
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            match std::fs::remove_file(sidecar) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        lifecycle.lock_shared()?;
+        Self::open_locked(path, lifecycle, allow_import)
     }
 
     /// Look up a single spec row by label.
@@ -385,10 +503,26 @@ impl CacheDb {
     ///
     /// Returns an error when database access, stored state, or state validation fails.
     pub fn upsert_criterion_evidence(&self, row: &CriterionEvidenceRow) -> Result<(), CacheError> {
-        self.ensure_spec_row(&row.spec_label)?;
-        let conn = self.lock_conn()?;
-        conn.execute(
-            "INSERT INTO criterion_status(
+        self.upsert_criterion_evidence_many(std::slice::from_ref(row))
+    }
+
+    /// Atomically record a batch of observations through the shared schema.
+    ///
+    /// # Errors
+    /// Reports database failures without recording a partial batch.
+    pub fn upsert_criterion_evidence_many(
+        &self,
+        rows: &[CriterionEvidenceRow],
+    ) -> Result<(), CacheError> {
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for row in rows {
+            tx.execute(
+                "INSERT OR IGNORE INTO specs(label, spec_path) VALUES (?1, ?2)",
+                params![row.spec_label.as_str(), default_spec_path(&row.spec_label)],
+            )?;
+            tx.execute(
+                "INSERT INTO criterion_status(
                  spec_label, criterion_id, annotation_json, result,
                  last_timestamp_ms, last_commit, evidence
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -398,16 +532,18 @@ impl CacheDb {
                  last_timestamp_ms = excluded.last_timestamp_ms,
                  last_commit = excluded.last_commit,
                  evidence = excluded.evidence",
-            params![
-                row.spec_label.as_str(),
-                row.criterion_id.as_str(),
-                row.annotation_json.as_str(),
-                row.result.as_str(),
-                row.last_timestamp_ms,
-                row.last_commit.as_deref(),
-                row.evidence.as_deref(),
-            ],
-        )?;
+                params![
+                    row.spec_label.as_str(),
+                    row.criterion_id.as_str(),
+                    row.annotation_json.as_str(),
+                    row.result.as_str(),
+                    row.last_timestamp_ms,
+                    row.last_commit.as_deref(),
+                    row.evidence.as_deref(),
+                ],
+            )?;
+        }
+        tx.commit()?;
         drop(conn);
         Ok(())
     }
@@ -758,9 +894,15 @@ pub(super) fn drop_and_recreate(conn: &Connection) -> Result<(), CacheError> {
 fn apply_migrations(conn: &Connection) -> Result<(), CacheError> {
     let from = read_schema_version(conn)?;
     match from.as_deref() {
-        None => write_schema_version(conn, SCHEMA_VERSION)?,
+        None | Some("9") => write_schema_version(conn, SCHEMA_VERSION)?,
         Some(SCHEMA_VERSION) => {}
-        Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") => drop_and_recreate(conn)?,
+        Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") => {
+            conn.execute_batch("CREATE TEMP TABLE loom_preserved_notes AS SELECT id, spec_label, kind, text, created_at FROM notes")?;
+            drop_and_recreate(conn)?;
+            conn.execute_batch("INSERT OR IGNORE INTO specs(label,spec_path) SELECT DISTINCT spec_label, 'specs/' || spec_label || '.md' FROM loom_preserved_notes;
+                INSERT INTO notes(id,spec_label,kind,text,created_at) SELECT id,spec_label,kind,text,created_at FROM loom_preserved_notes;
+                DROP TABLE loom_preserved_notes")?;
+        }
         Some(other) => {
             return Err(CacheError::UnknownSchemaVersion {
                 version: other.to_string(),
@@ -768,6 +910,38 @@ fn apply_migrations(conn: &Connection) -> Result<(), CacheError> {
         }
     }
     Ok(())
+}
+
+fn check_initialization_guard(
+    path: &Path,
+    guard: &crate::lock::LockGuard,
+) -> Result<(), CacheError> {
+    let root = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| CacheError::Legacy {
+            path: path.into(),
+            detail: "state database has no workspace".into(),
+        })?
+        .canonicalize()?;
+    if guard.workspace() != Some(root.as_path()) {
+        return Err(CacheError::Legacy {
+            path: path.into(),
+            detail: "legacy import requires the controlling workspace initialization lock".into(),
+        });
+    }
+    Ok(())
+}
+
+fn lifecycle_lock(path: &Path) -> Result<std::fs::File, CacheError> {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".lock");
+    Ok(std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(std::path::PathBuf::from(name))?)
 }
 
 fn read_schema_version(conn: &Connection) -> Result<Option<String>, CacheError> {

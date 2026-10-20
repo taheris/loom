@@ -4,14 +4,7 @@ use std::str::FromStr;
 
 use loom_driver::bd::LabelExt;
 use loom_driver::bd::{Bead, Label};
-use loom_driver::identifier::{BeadId, SpecLabel};
-use loom_tune::checker::Level;
-use loom_tune::evidence::SplitMetadata;
-use loom_tune::plan::Hash as PlanHash;
-use loom_tune::proposal::{CaseCounts, OutcomeCounts, State as TuneState};
-use loom_tune::target::Target;
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use loom_driver::identifier::SpecLabel;
 use tracing::warn;
 
 use super::options::{Brief, Error as BriefError, parse_options_in};
@@ -210,121 +203,17 @@ pub fn build_queue(
         .collect()
 }
 
-/// Present tune items with unavailable local proposal repositories or corrupt
-/// metadata as blocked while keeping host-side list/view modes read-only.
+/// Diagnose unavailable local proposal inputs without changing canonical review state.
 pub fn frame_unavailable_tune_items(workspace: &Path, items: &mut [InboxItem]) {
     for item in items {
-        let Some(tune) = item.tune.as_mut() else {
-            continue;
-        };
-        let envelope = workspace.join(".loom/tune").join(&tune.proposal_id);
-        let repo = envelope.join("repo");
-        let manifest = read_manifest_identity(&envelope.join("manifest.json"));
-        let unavailable = tune.proposal_branch.is_none()
-            || tune.proposal_head.is_none()
-            || !repo.is_dir()
-            || manifest
-                .as_ref()
-                .is_none_or(|manifest| !manifest.agrees_with_bead(&item.bead));
-        if unavailable {
-            if tune.state == "pending" {
-                tune.state = "blocked".to_string();
-            }
-            item.bead.status = loom_driver::bd::Status::Blocked;
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct ManifestIdentity {
-    proposal_id: BeadId,
-    state: TuneState,
-    targets: Vec<Target>,
-    level: Level,
-    seed: u64,
-    base_commit: String,
-    proposal_branch: String,
-    proposal_head: String,
-    plan_hash: PlanHash,
-    case_counts: CaseCounts,
-    outcome_counts: OutcomeCounts,
-    evidence_split: SplitMetadata,
-}
-
-impl ManifestIdentity {
-    fn agrees_with_bead(&self, bead: &Bead) -> bool {
-        self.proposal_id == bead.id
-            && metadata_matches(&bead.metadata, TUNE_ID_KEY, &self.proposal_id)
-            && metadata_matches(&bead.metadata, TUNE_STATE_KEY, &self.state)
-            && metadata_matches(&bead.metadata, "loom.tune.targets", &self.targets)
-            && metadata_matches(&bead.metadata, "loom.tune.level", &self.level)
-            && metadata_matches(&bead.metadata, "loom.tune.seed", &self.seed)
-            && metadata_matches(&bead.metadata, TUNE_BASE_KEY, &self.base_commit)
-            && metadata_matches(&bead.metadata, TUNE_BRANCH_KEY, &self.proposal_branch)
-            && metadata_matches(&bead.metadata, TUNE_HEAD_KEY, &self.proposal_head)
-            && metadata_matches(&bead.metadata, "loom.tune.plan_hash", &self.plan_hash)
-            && metadata_matches(&bead.metadata, "loom.tune.case_counts", &self.case_counts)
-            && metadata_matches(
-                &bead.metadata,
-                "loom.tune.outcome_counts",
-                &self.outcome_counts,
-            )
-            && metadata_matches(
-                &bead.metadata,
-                "loom.tune.evidence_split",
-                &self.evidence_split,
-            )
-    }
-
-    pub(crate) fn agrees_for_apply(
-        &self,
-        bead: &Bead,
-        state: TuneState,
-        base_commit: &str,
-        branch: &str,
-        head: &str,
-    ) -> bool {
-        self.agrees_with_bead(bead)
-            && self.state == state
-            && self.base_commit == base_commit
-            && self.proposal_branch == branch
-            && self.proposal_head == head
-    }
-}
-
-fn metadata_matches<T>(
-    metadata: &BTreeMap<String, serde_json::Value>,
-    key: &str,
-    expected: &T,
-) -> bool
-where
-    T: DeserializeOwned + PartialEq,
-{
-    let Some(value) = metadata.get(key) else {
-        return false;
-    };
-    match serde_json::from_value::<T>(value.clone()) {
-        Ok(actual) => actual == *expected,
-        Err(source) => {
-            warn!(key, %source, "tune bead metadata has an invalid canonical value");
-            false
-        }
-    }
-}
-
-pub fn read_manifest_identity(path: &Path) -> Option<ManifestIdentity> {
-    let body = match std::fs::read_to_string(path) {
-        Ok(body) => body,
-        Err(source) => {
-            warn!(path = %path.display(), %source, "tune manifest is unavailable");
-            return None;
-        }
-    };
-    match serde_json::from_str(&body) {
-        Ok(manifest) => Some(manifest),
-        Err(source) => {
-            warn!(path = %path.display(), %source, "tune manifest is corrupt");
-            None
+        if let Some(tune) = &item.tune
+            && !workspace
+                .join(".loom/tune")
+                .join(&tune.proposal_id)
+                .join("repo")
+                .is_dir()
+        {
+            warn!(proposal = %tune.proposal_id, "local tune checkout unavailable; apply will recover reachable Git inputs; canonical state unchanged");
         }
     }
 }
@@ -735,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn tune_manifest_disagreement_frames_pending_item_as_blocked() {
+    fn missing_or_stale_local_metadata_preserves_pending_review_state() {
         let workspace = tempfile::tempdir().expect("workspace");
         let mut tune = bead("lm-tune", "tune", "", &["loom:tune"]);
         for (key, value) in [
@@ -789,8 +678,8 @@ mod tests {
         let mut queue = build_queue(&[tune], None, None, true);
         frame_unavailable_tune_items(workspace.path(), &mut queue);
 
-        assert_eq!(queue[0].bead.status, loom_driver::bd::Status::Blocked);
-        assert_eq!(queue[0].tune.as_ref().expect("tune").state, "blocked");
+        assert_eq!(queue[0].bead.status, loom_driver::bd::Status::Open);
+        assert_eq!(queue[0].tune.as_ref().expect("tune").state, "pending");
     }
 
     #[test]

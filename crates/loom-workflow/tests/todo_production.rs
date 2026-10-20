@@ -632,7 +632,7 @@ fn controller<R: CommandRunner + 'static>(
 ) -> Result<ProductionTodoController<R>> {
     Ok(ProductionTodoController::for_workspace(
         workspace.to_path_buf(),
-        Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?),
+        Arc::new(CacheDb::open(workspace.join(".loom/state.db"))?),
         manifest(workspace)?,
         ProfileName::new("base").unwrap(),
         Arc::new(GitClient::open(workspace)?),
@@ -1705,7 +1705,7 @@ async fn todo_package_retry_reuses_batch_notes_drafts_and_checkpoint() -> Result
     run_git(dir.path(), &["add", "--all"])?;
     run_git(dir.path(), &["commit", "-qm", "change model only"])?;
     let runner = StatefulRunner::new(&base, None);
-    let cache = CacheDb::open(dir.path().join(".loom/cache.db"))?;
+    let cache = CacheDb::open(dir.path().join(".loom/state.db"))?;
     cache.notes_add(
         &SpecLabel::new("alpha")?,
         "implementation",
@@ -1963,7 +1963,7 @@ async fn todo_large_batch_pages_all_evidence_and_resumes_fixed_roster() -> Resul
             state.beads.insert(prototype.id.clone(), prototype.clone());
         }
     }
-    let cache = CacheDb::open(dir.path().join(".loom/cache.db"))?;
+    let cache = CacheDb::open(dir.path().join(".loom/state.db"))?;
     let mut notes = BTreeMap::new();
     for (i, label) in labels.iter().enumerate() {
         let entries = (0..if i < 17 { 3 } else { 2 })
@@ -1995,7 +1995,7 @@ async fn todo_large_batch_pages_all_evidence_and_resumes_fixed_roster() -> Resul
         let body = read_dossier_section(&scratch.join(format!("evidence/{label}/criteria")))?;
         let rows = loom_workflow::todo::build_criterion_status(
             dir.path(),
-            &dir.path().join(".loom/cache.db"),
+            &dir.path().join(".loom/state.db"),
             &SpecLabel::new(label)?,
             Path::new(&format!("specs/{label}.md")),
             &git,
@@ -2199,7 +2199,7 @@ async fn assert_atomic_finalization_failure(
     let dir = tempfile::tempdir()?;
     let (base, _head) = init_two_changed_workspace(dir.path())?;
     let runner = StatefulRunner::new(&base, fail_update);
-    let state = Arc::new(CacheDb::open(dir.path().join(".loom/cache.db"))?);
+    let state = Arc::new(CacheDb::open(dir.path().join(".loom/state.db"))?);
     let note_label = SpecLabel::new("alpha")?;
     state.notes_add(&note_label, "implementation", "keep until finalized", 1)?;
     state.upsert_work_epic(&WorkEpicRow {
@@ -2545,7 +2545,7 @@ async fn rejected_todo_record_emits_diagnostic_route_without_state_transition() 
 async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
-    let state = Arc::new(CacheDb::open(dir.path().join(".loom/cache.db"))?);
+    let state = Arc::new(CacheDb::open(dir.path().join(".loom/state.db"))?);
     state.notes_add(
         &SpecLabel::new("alpha").unwrap(),
         "implementation",
@@ -2625,7 +2625,7 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
 
     let invalid_dir = tempfile::tempdir()?;
     let (invalid_base, invalid_head) = init_workspace(invalid_dir.path())?;
-    let invalid_state = Arc::new(CacheDb::open(invalid_dir.path().join(".loom/cache.db"))?);
+    let invalid_state = Arc::new(CacheDb::open(invalid_dir.path().join(".loom/state.db"))?);
     invalid_state.notes_add(
         &SpecLabel::new("alpha").unwrap(),
         "implementation",

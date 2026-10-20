@@ -383,7 +383,7 @@ The newtypes (`SpecLabel`, `MoleculeId`, `BeadId`, `ProfileName`, `GitSha`,
 are defined in [Harness](harness.md#parse-dont-validate). The template treats
 them as opaque typed values.
 
-`implementation_notes` is sourced from `.loom/cache.db`'s `notes` table (kind =
+`implementation_notes` is sourced from `.loom/state.db`'s `notes` table (kind =
 `implementation`); see _Notes lifecycle_ in
 [Harness](harness.md#sqlite-cache-store).
 
@@ -1528,7 +1528,7 @@ bundled documents in front of the agent with zero configuration.
    `criterion_status: Vec<CriterionStatus>` where each row exposes `spec_label`,
    typed `criterion_id`, criterion text, typed annotation, and `EvidenceState`
    (`Current`, `Missing`, `StaleAnnotation`). The driver populates the surface
-   by parsing the changed specs and joining against `.loom/cache.db`'s criterion
+   by parsing the changed specs and joining against `.loom/state.db`'s criterion
    evidence cache. Missing cache rows become `EvidenceState::Missing`, never no
    work. The partial may present observation-age hints for inspection, but those
    hints do not decide current coverage. It renders the supplied

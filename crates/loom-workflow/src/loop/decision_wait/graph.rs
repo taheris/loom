@@ -72,12 +72,6 @@ impl Context {
         Ok(())
     }
 
-    pub(super) fn affected_work(&self) -> impl Iterator<Item = &BeadId> {
-        self.decisions
-            .iter()
-            .flat_map(|decision| &decision.affected_work)
-    }
-
     pub(super) fn discovery_parent(&self, id: &BeadId) -> Option<&BeadId> {
         self.decisions
             .iter()
@@ -147,10 +141,27 @@ pub(super) async fn check_reuse<R: CommandRunner>(
     if super::migration::historical(journal, decision, &root)? {
         return Ok(());
     }
-    let entry = journal
-        .load(producer)?
-        .ok_or_else(|| incompatible("foreign decision lacks prior canonical admission"))?;
     let owner = bd.show(producer).await?;
+    if super::root(bd, &owner).await? != root {
+        return Err(incompatible("decision producer belongs to another work root").into());
+    }
+    let Some(entry) = journal.load(producer)? else {
+        if decision.status != Status::Closed
+            && !decision.labels.iter().any(|label| {
+                matches!(
+                    label.as_str(),
+                    "loom:clarify" | "loom:blocked" | "loom:infra"
+                )
+            })
+        {
+            return Err(incompatible(
+                "foreign decision has no current canonical queue disposition",
+            )
+            .into());
+        }
+        resolve(bd, &owner, &root, std::slice::from_ref(decision), None).await?;
+        return Ok(());
+    };
     if entry.record.root != root
         || super::root(bd, &owner).await? != root
         || !entry.record.decisions.contains(&decision.id)

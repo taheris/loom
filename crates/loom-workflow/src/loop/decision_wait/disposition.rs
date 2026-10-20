@@ -1,8 +1,8 @@
 //! Durable decision effects and replayable routing breadcrumbs.
 
+use loom_driver::state::RecordKind;
 use std::collections::HashSet;
 use std::io::Write;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, Status};
@@ -71,14 +71,11 @@ pub(super) fn reusable(
     parent: &BeadId,
 ) -> Result<bool, LoopError> {
     let key = blake3::hash(format!("{producer}\n{decision}").as_bytes()).to_hex();
-    let path = journal
-        .directory
-        .join("dispositions")
-        .join(format!("{key}.json"));
-    let receipt: Receipt = match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(DecisionWaitError::from)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
+    let Some(receipt) = journal
+        .db()?
+        .record::<Receipt>(RecordKind::DecisionDisposition, key.as_ref())?
+    else {
+        return Ok(false);
     };
     receipt.validate(producer, decision)?;
     if receipt.snapshot.parent.as_ref() != Some(parent)
@@ -125,18 +122,10 @@ fn independent(decision: &Bead) -> bool {
     })
 }
 
-fn save(path: &Path, receipt: &Receipt) -> Result<(), LoopError> {
-    let directory = path
-        .parent()
-        .ok_or_else(|| invalid("missing disposition directory"))?;
-    std::fs::create_dir_all(directory)?;
-    let mut file = tempfile::NamedTempFile::new_in(directory)?;
-    serde_json::to_writer(&mut file, receipt).map_err(DecisionWaitError::from)?;
-    file.as_file().sync_all()?;
-    file.persist(path).map_err(|error| error.error)?;
-    for directory in directory.ancestors().take(4) {
-        std::fs::File::open(directory)?.sync_all()?;
-    }
+fn save(journal: &DecisionWaitJournal, key: &str, receipt: &Receipt) -> Result<(), LoopError> {
+    journal
+        .db()?
+        .put_record(RecordKind::DecisionDisposition, key, receipt)?;
     Ok(())
 }
 
@@ -169,42 +158,39 @@ pub(super) async fn stage<R: CommandRunner>(
         let key = blake3::hash(format!("{producer}\n{}", decision.id).as_bytes())
             .to_hex()
             .to_string();
-        let path = journal
-            .directory
-            .join("dispositions")
-            .join(format!("{key}.json"));
-        let mut receipt: Receipt = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(DecisionWaitError::from)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let receipt = Receipt {
-                    version: 1,
-                    producer: producer.clone(),
-                    snapshot: decision.clone(),
-                    event_created_at_ms: i64::try_from(
-                        journal
-                            .clock
-                            .wall_now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map_err(|_| invalid("decision event clock precedes Unix epoch"))?
-                            .as_millis(),
-                    )
-                    .map_err(|_| invalid("decision event clock exceeds timestamp range"))?,
-                    source_route: journal.source_route,
-                    effect: if independent(&decision) {
-                        Effect::Preserved
-                    } else {
-                        Effect::Planned
-                    },
-                    report: if independent(&decision) {
-                        None
-                    } else {
-                        Some(inspect_decision(&decision))
-                    },
-                };
-                save(&path, &receipt)?;
-                receipt
-            }
-            Err(error) => return Err(error.into()),
+        let mut receipt: Receipt = if let Some(receipt) = journal
+            .db()?
+            .record(RecordKind::DecisionDisposition, &key)?
+        {
+            receipt
+        } else {
+            let receipt = Receipt {
+                version: 1,
+                producer: producer.clone(),
+                snapshot: decision.clone(),
+                event_created_at_ms: i64::try_from(
+                    journal
+                        .clock
+                        .wall_now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|_| invalid("decision event clock precedes Unix epoch"))?
+                        .as_millis(),
+                )
+                .map_err(|_| invalid("decision event clock exceeds timestamp range"))?,
+                source_route: journal.source_route,
+                effect: if independent(&decision) {
+                    Effect::Preserved
+                } else {
+                    Effect::Planned
+                },
+                report: if independent(&decision) {
+                    None
+                } else {
+                    Some(inspect_decision(&decision))
+                },
+            };
+            save(journal, &key, &receipt)?;
+            receipt
         };
         receipt.validate(producer, &decision.id)?;
         if receipt.snapshot.parent != decision.parent
@@ -247,7 +233,7 @@ pub(super) async fn stage<R: CommandRunner>(
                 }
                 receipt.effect = Effect::Applied;
             }
-            save(&path, &receipt)?;
+            save(journal, &key, &receipt)?;
         }
         if matches!(receipt.effect, Effect::Applied) {
             deliver(journal, &key, &receipt)?;
@@ -262,11 +248,7 @@ fn deliver(journal: &DecisionWaitJournal, key: &str, receipt: &Receipt) -> Resul
         .report
         .as_ref()
         .ok_or_else(|| invalid("applied decision lacks brief disposition"))?;
-    let loom = journal
-        .directory
-        .parent()
-        .ok_or_else(|| invalid("decision journal has no workspace"))?;
-    let directory = loom.join("logs/decisions");
+    let directory = journal.workspace.join(".loom/logs/decisions");
     std::fs::create_dir_all(&directory)?;
     let path = directory.join(format!("{}-{key}.jsonl", receipt.snapshot.id));
     let existing = match std::fs::read(&path) {

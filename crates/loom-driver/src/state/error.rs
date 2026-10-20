@@ -36,6 +36,18 @@ pub enum CacheError {
     /// unknown cache-db schema_version {version}; expected a value this build of loom can migrate from
     UnknownSchemaVersion { version: String },
 
+    /// cannot import retired state at `{path}`: {detail}
+    Legacy {
+        path: std::path::PathBuf,
+        detail: String,
+    },
+    /// state database is in use at {path}; stop active Loom commands before resetting it
+    Busy {
+        path: PathBuf,
+        #[source]
+        source: std::fs::TryLockError,
+    },
+
     /// io failure
     Io(#[from] io::Error),
 

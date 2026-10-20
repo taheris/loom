@@ -89,8 +89,7 @@ fn to_template_item(workspace: &Path, item: &InboxItem) -> TemplateItem {
                 base_commit: tune.base_commit.clone(),
                 envelope_path: envelope.to_string_lossy().into_owned(),
                 repo_path: envelope.join("repo").to_string_lossy().into_owned(),
-                manifest_path: envelope
-                    .join("manifest.json")
+                manifest_path: loom_driver::state::path(workspace)
                     .to_string_lossy()
                     .into_owned(),
                 evidence_path: envelope.join("evidence.md").to_string_lossy().into_owned(),

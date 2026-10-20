@@ -369,7 +369,7 @@ mod tests {
         for reserved in [
             ".git/config",
             ".beads/config.yaml",
-            ".loom/cache.db",
+            ".loom/state.db",
             ".wrix/dolt.sock",
         ] {
             let (source, _) = source();

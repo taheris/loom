@@ -147,6 +147,10 @@ fi
 if [ "$cmd" = "update" ]; then
   exit 0
 fi
+if [ "$cmd" = "show" ]; then
+  if [ "${{2:-}}" = "lm-active" ]; then printf '%s' '{active}'; else printf '%s' '{ready}'; fi
+  exit 0
+fi
 if [ "$has_json" = "1" ]; then
   printf '%s' '[]'
   exit 0
@@ -509,7 +513,7 @@ fn loom_loop_parallel_does_not_pass_exclude_label_to_bd_ready() {
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
     std::fs::write(workspace.join("specs/harness.md"), "# harness\n").unwrap();
 
-    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
+    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/state.db")).unwrap();
     db.upsert_spec(
         &loom_driver::identifier::SpecLabel::new("harness").unwrap(),
         "specs/harness.md",
@@ -585,7 +589,7 @@ fn parallel_codepath_returns_loop_outcome_with_gate_field() {
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
     std::fs::write(workspace.join("specs/harness.md"), "# harness\n").unwrap();
 
-    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
+    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/state.db")).unwrap();
     db.upsert_spec(
         &loom_driver::identifier::SpecLabel::new("harness").unwrap(),
         "specs/harness.md",

@@ -318,7 +318,7 @@ impl Context {
             serde_json::to_string_pretty(&beads)?,
         )?;
 
-        let cache_path = self.workspace.join(".loom/cache.db");
+        let cache_path = loom_driver::state::path(&self.workspace);
         if cache_path.is_file() {
             let rows = CacheDb::open(&cache_path)?.criterion_evidence()?;
             let evidence = rows
@@ -648,7 +648,6 @@ async fn create_proposal(
         let envelope = context.workspace.join(".loom/tune").join(bead_id.as_str());
         let repo = envelope.join("repo");
         let local_paths = local_paths(&envelope);
-        create_envelope_dirs(&local_paths)?;
         let branch = format!("loom/tune/{bead_id}");
         clone_repo(&context.workspace, &repo, &context.base_commit, &branch).await?;
         let touched = write_candidate_files(&context, &prepared, &repo)?;
@@ -695,7 +694,11 @@ async fn create_proposal(
             caps: Caps::from(&context.tune_config.checks),
             local_paths: relative_local_paths(&local_paths, &context.workspace),
         });
-        write_manifest(&local_paths.manifest, &manifest)?;
+        CacheDb::open(loom_driver::state::path(&context.workspace))?.put_record(
+            loom_driver::state::RecordKind::Tune,
+            manifest.proposal_id.as_str(),
+            &manifest,
+        )?;
         write_evidence(&local_paths.evidence, &context, &prepared)?;
         update_tune_bead(BeadUpdate {
             bead_id: &bead_id,
@@ -1186,33 +1189,17 @@ fn generated_seed(targets: &[Target], level: Level, base_commit: &str) -> u64 {
     u64::from_be_bytes(bytes)
 }
 
-fn create_envelope_dirs(paths: &LocalPaths) -> Result<(), TuneError> {
-    for path in [&paths.logs, &paths.evidence_dir] {
-        fs::create_dir_all(path).map_err(|source| TuneError::CreateDir {
-            path: path.clone(),
-            source,
-        })?;
-    }
-    Ok(())
-}
-
 fn local_paths(envelope: &Path) -> LocalPaths {
     LocalPaths {
         repo: envelope.join("repo"),
-        manifest: envelope.join("manifest.json"),
         evidence: envelope.join("evidence.md"),
-        logs: envelope.join("logs"),
-        evidence_dir: envelope.join("evidence"),
     }
 }
 
 fn relative_local_paths(paths: &LocalPaths, workspace: &Path) -> LocalPaths {
     LocalPaths {
         repo: relative_or_original(&paths.repo, workspace),
-        manifest: relative_or_original(&paths.manifest, workspace),
         evidence: relative_or_original(&paths.evidence, workspace),
-        logs: relative_or_original(&paths.logs, workspace),
-        evidence_dir: relative_or_original(&paths.evidence_dir, workspace),
     }
 }
 
@@ -2130,11 +2117,6 @@ async fn commit_candidate(
     Ok(())
 }
 
-fn write_manifest(path: &Path, manifest: &ProposalManifest) -> Result<(), TuneError> {
-    let body = serde_json::to_string_pretty(manifest)?;
-    write_parented(path, &(body + "\n"))
-}
-
 fn write_evidence(path: &Path, context: &Context, plan: &PreparedPlan) -> Result<(), TuneError> {
     let mut body = String::new();
     body.push_str("# Tune Evidence Appendix\n\n");
@@ -2264,11 +2246,7 @@ fn bead_body(update: &BeadUpdate<'_>) -> String {
         "- Proposal repo: `{}`",
         update.local_paths.repo.display()
     );
-    let _ = writeln!(
-        body,
-        "- Manifest: `{}`",
-        update.local_paths.manifest.display()
-    );
+    body.push_str("- Local execution metadata is transient state in `.loom/state.db`.\n");
     let _ = writeln!(
         body,
         "- Evidence appendix: `{}`",

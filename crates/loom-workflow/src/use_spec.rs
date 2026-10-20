@@ -57,7 +57,7 @@ mod tests {
     use loom_driver::state::CacheError;
 
     fn db_path(workspace: &std::path::Path) -> std::path::PathBuf {
-        workspace.join(".loom/cache.db")
+        workspace.join(".loom/state.db")
     }
 
     fn seed_spec(workspace: &std::path::Path, label: &str) -> Result<CacheDb> {

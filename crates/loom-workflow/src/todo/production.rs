@@ -675,7 +675,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 spec.input_scopes.join("`, `"),
                 diff,
             ));
-            let cache_path = self.workspace.join(".loom/cache.db");
+            let cache_path = loom_driver::state::path(&self.workspace);
             criterion_status.extend(
                 build_criterion_status(
                     &self.workspace,

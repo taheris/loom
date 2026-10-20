@@ -46,10 +46,7 @@ mod cases {
                 .active_blockers()
                 .contains(&f.decisions[0])
         );
-        assert_eq!(
-            f.bd.show(&f.source.id).await.unwrap().status,
-            Status::Blocked
-        );
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
     }
 
     #[tokio::test]
@@ -276,29 +273,28 @@ mod cases {
     async fn changed_affected_work_cannot_reuse_canonical_decision_admission() {
         let f = Fixture::new().await;
         assert!(matches!(f.admit().await, AgentOutcome::Waiting { .. }));
-        let before = std::fs::read_dir(f.dir.path().join(".loom/decision-waits"))
+        let before = f
+            .journal()
+            .db()
             .unwrap()
-            .filter_map(|entry| {
-                let path = entry.unwrap().path();
-                (path.extension().is_some_and(|ext| ext == "json"))
-                    .then(|| std::fs::read(path).unwrap())
-            })
-            .collect::<Vec<_>>();
+            .records::<serde_json::Value>(loom_driver::state::RecordKind::DecisionInventory)
+            .unwrap();
         f.bd.dep_add(&f.sibling, &f.decisions[0]).await.unwrap();
         assert!(held(&f.bd, &f.journal(), &f.source).await.is_err());
         assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
-        let after = std::fs::read_dir(f.dir.path().join(".loom/decision-waits"))
+        let after = f
+            .journal()
+            .db()
             .unwrap()
-            .filter_map(|entry| {
-                let path = entry.unwrap().path();
-                (path.extension().is_some_and(|ext| ext == "json"))
-                    .then(|| std::fs::read(path).unwrap())
-            })
-            .collect::<Vec<_>>();
+            .records::<serde_json::Value>(loom_driver::state::RecordKind::DecisionInventory)
+            .unwrap();
         assert_eq!(
             before, after,
             "uncertainty cannot replace the retained admission"
         );
-        assert!(f.journal().has_pending_for(&f.root).unwrap());
+        assert!(!matches!(
+            f.journal().blocks_scope(&f.bd, &f.root).await,
+            Ok(false)
+        ));
     }
 }

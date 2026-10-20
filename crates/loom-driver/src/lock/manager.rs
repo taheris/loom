@@ -15,11 +15,20 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct LockManager {
+    workspace: PathBuf,
     locks_dir: PathBuf,
 }
 
 pub struct LockGuard {
     file: File,
+    workspace: Option<PathBuf>,
+    workspace_lock: Option<File>,
+}
+
+impl LockGuard {
+    pub(crate) fn workspace(&self) -> Option<&Path> {
+        self.workspace.as_deref()
+    }
 }
 
 impl std::fmt::Debug for LockGuard {
@@ -33,6 +42,7 @@ impl Drop for LockGuard {
         if let Err(error) = flock(&self.file, FlockOperation::Unlock) {
             tracing::warn!(?error, "failed to unlock loom lock");
         }
+        drop(self.workspace_lock.take());
     }
 }
 
@@ -60,7 +70,40 @@ impl LockManager {
             path: locks_dir.clone(),
             source,
         })?;
-        Ok(Self { locks_dir })
+        let workspace = workspace.as_ref().canonicalize().map_err(|source| {
+            LockError::CanonicalizeWorkspace {
+                path: workspace.as_ref().to_path_buf(),
+                source,
+            }
+        })?;
+        Ok(Self {
+            workspace,
+            locks_dir,
+        })
+    }
+
+    /// Serialize a local reconciliation independently of scheduler work-root locks.
+    ///
+    /// # Errors
+    /// Reports lock acquisition and timeout failures.
+    pub async fn acquire_record_async(
+        &self,
+        kind: crate::state::RecordKind,
+        key: &BeadId,
+        clock: &dyn Clock,
+    ) -> Result<LockGuard, LockError> {
+        let workspace = self.shared_workspace_lock()?;
+        let path = self
+            .locks_dir
+            .join(format!("record-{}-{key}.lock", kind.as_str()));
+        let mut guard = acquire_with_timeout(&path, DEFAULT_LOCK_TIMEOUT, clock, || {
+            LockError::WorkRootBusy {
+                root: key.to_string(),
+            }
+        })
+        .await?;
+        guard.workspace_lock = Some(workspace);
+        Ok(guard)
     }
 
     pub fn locks_dir(&self) -> &Path {
@@ -130,8 +173,12 @@ impl LockManager {
         clock: &dyn Clock,
         timeout: Duration,
     ) -> Result<LockGuard, LockError> {
+        let workspace = self.shared_workspace_lock()?;
         let path = self.phase_lock_path(phase);
-        acquire_with_timeout(&path, timeout, clock, || LockError::PhaseBusy { phase }).await
+        let mut guard =
+            acquire_with_timeout(&path, timeout, clock, || LockError::PhaseBusy { phase }).await?;
+        guard.workspace_lock = Some(workspace);
+        Ok(guard)
     }
 
     ///
@@ -151,10 +198,13 @@ impl LockManager {
         root: &BeadId,
         timeout: Duration,
     ) -> Result<LockGuard, LockError> {
+        let workspace = self.shared_workspace_lock()?;
         let path = self.work_root_lock_path(root);
-        if let Some(guard) = try_lock_file(open_lock_file(&path)?)? {
+        if let Some(mut guard) = try_lock_file(open_lock_file(&path)?)? {
+            guard.workspace_lock = Some(workspace);
             return Ok(guard);
         }
+        drop(workspace);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
@@ -189,11 +239,14 @@ impl LockManager {
         clock: &dyn Clock,
         timeout: Duration,
     ) -> Result<LockGuard, LockError> {
+        let workspace = self.shared_workspace_lock()?;
         let path = self.work_root_lock_path(root);
-        acquire_with_timeout(&path, timeout, clock, || LockError::WorkRootBusy {
+        let mut guard = acquire_with_timeout(&path, timeout, clock, || LockError::WorkRootBusy {
             root: root.to_string(),
         })
-        .await
+        .await?;
+        guard.workspace_lock = Some(workspace);
+        Ok(guard)
     }
 
     ///
@@ -201,17 +254,30 @@ impl LockManager {
     ///
     /// Returns an error when lock state cannot be read, updated, or validated.
     pub fn acquire_workspace(&self) -> Result<LockGuard, LockError> {
+        let path = self.locks_dir.join(format!("{WORKSPACE_LOCK_STEM}.lock"));
+        let file = open_lock_file(&path)?;
+        let Some(mut guard) = try_lock_file(file)? else {
+            return Err(LockError::WorkspaceBusy {
+                root: self
+                    .find_held_mutating_lock()?
+                    .unwrap_or_else(|| WORKSPACE_LOCK_STEM.into()),
+            });
+        };
         if let Some(root) = self.find_held_mutating_lock()? {
             return Err(LockError::WorkspaceBusy { root });
         }
+        guard.workspace = Some(self.workspace.clone());
+        Ok(guard)
+    }
+
+    fn shared_workspace_lock(&self) -> Result<File, LockError> {
         let path = self.locks_dir.join(format!("{WORKSPACE_LOCK_STEM}.lock"));
         let file = open_lock_file(&path)?;
-        match try_lock_file(file)? {
-            Some(guard) => Ok(guard),
-            None => Err(LockError::WorkspaceBusy {
-                root: WORKSPACE_LOCK_STEM.to_string(),
-            }),
-        }
+        file.try_lock_shared()
+            .map_err(|_| LockError::WorkspaceBusy {
+                root: WORKSPACE_LOCK_STEM.into(),
+            })?;
+        Ok(file)
     }
 
     fn phase_lock_path(&self, phase: PhaseLock) -> PathBuf {
@@ -299,7 +365,11 @@ where
 
 fn try_lock_file(file: File) -> Result<Option<LockGuard>, LockError> {
     match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-        Ok(()) => Ok(Some(LockGuard { file })),
+        Ok(()) => Ok(Some(LockGuard {
+            file,
+            workspace: None,
+            workspace_lock: None,
+        })),
         Err(error) => {
             let io_error = std::io::Error::from(error);
             if io_error.kind() == std::io::ErrorKind::WouldBlock {

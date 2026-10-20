@@ -81,7 +81,7 @@ mod tests {
     use loom_driver::identifier::MoleculeId;
 
     fn fresh_db(workspace: &std::path::Path) -> Result<CacheDb> {
-        Ok(CacheDb::open(workspace.join(".loom/cache.db"))?)
+        Ok(CacheDb::open(loom_driver::state::path(workspace))?)
     }
 
     #[test]

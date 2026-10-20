@@ -98,10 +98,6 @@ if [[ "$append_push_range" == "1" ]]; then
     set -- "$@" "$push_range"
 fi
 
-if [[ ! -f .loom/marker.json ]]; then
-    exec_sanitized "$@"
-fi
-
 if [[ -z "$hook_id" || -z "$hook_entry" ]]; then
     exec_sanitized "$@"
 fi
@@ -110,7 +106,11 @@ push_range="$(resolve_push_range "$push_range")"
 
 scrub_git_local_env
 
-if ! command -v loom >/dev/null; then
+state_db=".loom/state.db"
+if [[ "$PWD" == */.loom/integration ]]; then
+    state_db="../state.db"
+fi
+if [[ ! -f "$state_db" ]] || ! command -v loom >/dev/null; then
     exec_sanitized "$@"
 fi
 

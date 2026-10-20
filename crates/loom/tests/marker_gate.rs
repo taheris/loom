@@ -82,14 +82,32 @@ fn run_loom_loop_bead(
     agent_mode: &str,
     bead_id: &str,
 ) -> std::process::Output {
+    run_loom_loop_bead_with_agent(
+        workspace,
+        bin_dir,
+        state_dir,
+        manifest,
+        agent_mode,
+        bead_id,
+        Path::new(env!("CARGO_BIN_EXE_mock-loom-agent")),
+    )
+}
+
+fn run_loom_loop_bead_with_agent(
+    workspace: &Path,
+    bin_dir: &Path,
+    state_dir: &Path,
+    manifest: &Path,
+    agent_mode: &str,
+    bead_id: &str,
+    mock_agent: &Path,
+) -> std::process::Output {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut entries: Vec<PathBuf> = vec![bin_dir.to_path_buf()];
     entries.extend(std::env::split_paths(&path_var));
     let new_path = std::env::join_paths(entries).expect("join PATH");
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
-    let mock_agent = env!("CARGO_BIN_EXE_mock-loom-agent");
-
     Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)

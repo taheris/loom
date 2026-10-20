@@ -1,7 +1,7 @@
 //! Build `criterion_status` rows for todo prompts.
 //!
 //! The todo prompt consumes the current spec text, not the cache schema, as
-//! the source of criteria in scope. `.loom/cache.db` contributes verifier
+//! the source of criteria in scope. `.loom/state.db` contributes verifier
 //! evidence only; absent rows become [`EvidenceState::Missing`].
 
 use std::collections::BTreeMap;

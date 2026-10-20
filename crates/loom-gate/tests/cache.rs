@@ -16,7 +16,7 @@ use loom_gate::integrity::IntegrityFinding;
 use tempfile::tempdir;
 
 fn cache_path(dir: &tempfile::TempDir) -> PathBuf {
-    dir.path().join("cache.db")
+    dir.path().join("state.db")
 }
 
 fn cache_row(spec: &str, anchor: &str, tier: Tier, verdict: Verdict) -> CacheRow {
@@ -129,7 +129,7 @@ fn concurrent_cache_open_and_upsert_preserve_every_batch() -> std::io::Result<()
         |root, worker| {
             for batch in 0..BATCHES {
                 let cache =
-                    StatusCache::open(&root.join("cache.db")).map_err(std::io::Error::other)?;
+                    StatusCache::open(&root.join("state.db")).map_err(std::io::Error::other)?;
                 let rows = (0..ROWS)
                     .map(|index| {
                         cache_row(

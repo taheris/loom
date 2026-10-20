@@ -583,7 +583,7 @@ fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
     assert!(commit.success(), "git commit seeded spec failed: {commit}");
     let state_dir = workspace.join(".loom");
     std::fs::create_dir_all(&state_dir).expect("mkdir .loom");
-    let db = CacheDb::open(state_dir.join("cache.db")).expect("open state db");
+    let db = CacheDb::open(state_dir.join("state.db")).expect("open state db");
     let spec = SpecLabel::new(label).unwrap();
     // `replace_companions` is the canonical insert-or-ignore on `specs`
     // (no companions seeded here — we just need the row to exist).
@@ -1740,7 +1740,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     {
         use loom_driver::identifier::{MoleculeId, SpecLabel};
         use loom_driver::state::{CacheDb, WorkEpicRow};
-        let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache db");
+        let db = CacheDb::open(workspace.join(".loom/state.db")).expect("open cache db");
         let label = SpecLabel::new("agent").unwrap();
         db.upsert_spec(&label, "specs/agent.md").expect("seed spec");
         db.upsert_work_epic(&WorkEpicRow {
@@ -1934,6 +1934,15 @@ fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
              printf '%s\\n' \"{{\\\"molecule_id\\\":\\\"${{3:-}}\\\",\\\"completed\\\":1,\\\"in_progress\\\":0,\\\"total\\\":1,\\\"percent\\\":100.0}}\"\n\
              exit 0\n\
          fi\n\
+         if [[ \"${{1:-}}\" == 'list' ]]; then\n\
+             for arg in \"$@\"; do\n\
+                 case \"$arg\" in\n\
+                     --parent=lm-mola) printf '[%s]\\n' \"$bead_a\"; exit 0 ;;\n\
+                     --parent=lm-molb) printf '[%s]\\n' \"$bead_b\"; exit 0 ;;\n\
+                     --parent=*) printf '[]\\n'; exit 0 ;;\n\
+                 esac\n\
+             done\n\
+         fi\n\
          for arg in \"$@\"; do\n\
              if [[ \"$arg\" == '--json' ]]; then\n\
                  printf '[%s,%s]\\n' \"$bead_a\" \"$bead_b\"\n\
@@ -2007,6 +2016,7 @@ __BD_CLOSED_JSON__\n\
              printf '[]\\n'\n\
              exit 0\n\
          fi\n\
+         if [[ \"${{1:-}}\" == 'list' && \" $* \" == *' --parent='* && \" $* \" != *' --parent={parent} '* ]]; then printf '[]\\n'; exit 0; fi\n\
          if [[ \"${{1:-}}\" == 'show' && \"${{2:-}}\" == 'lm-work' && '{todo_fixture}' == 'true' ]]; then\n\
              printf '%s\\n' '{todo_json}'\n\
              exit 0\n\

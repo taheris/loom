@@ -21,6 +21,7 @@ impl ActiveBlockers {
         Self { first, rest }
     }
 
+    #[cfg(test)]
     pub(crate) fn ids(&self) -> impl Iterator<Item = &BeadId> {
         std::iter::once(&self.first).chain(&self.rest)
     }

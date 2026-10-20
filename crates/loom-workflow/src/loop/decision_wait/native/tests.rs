@@ -1,9 +1,5 @@
 #[cfg(test)]
 mod cases {
-    mod affected;
-    mod ownership;
-    mod safety;
-
     use super::super::*;
     use crate::r#loop::{AgentOutcome, WaitPrerequisites};
     use crate::test_support::{IsolatedBeads, client};
@@ -122,50 +118,6 @@ mod cases {
     }
 
     #[tokio::test]
-    async fn native_attributed_wait_parks_and_releases_without_queue_labels() {
-        let f = Fixture::new().await;
-        f.admit().await;
-        let parked = f.bd.show(&f.source.id).await.unwrap();
-        assert_eq!(parked.status, Status::Blocked);
-        assert_eq!(parked.notes, f.source.notes);
-        assert_eq!(
-            parked.metadata["operator.note"],
-            f.source.metadata["operator.note"]
-        );
-        assert_eq!(parked.labels, f.source.labels);
-        assert!(parked.metadata.contains_key(KEY));
-        assert!(f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
-        let repeat = f
-            .journal()
-            .admit_native_wait(&f.bd, &f.source)
-            .await
-            .unwrap();
-        assert_eq!(repeat.count(), 2);
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), parked);
-        f.close(&f.blockers[0]).await;
-        f.refresh().await;
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), parked);
-        let third =
-            f.bd.create(CreateOpts {
-                title: "late prerequisite".into(),
-                parent: Some(f.root.clone()),
-                ..CreateOpts::default()
-            })
-            .await
-            .unwrap();
-        f.bd.dep_add(&f.source.id, &third).await.unwrap();
-        f.close(&f.blockers[1]).await;
-        f.refresh().await;
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), parked);
-        f.close(&third).await;
-        f.refresh().await;
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
-        assert!(!f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
-        f.refresh().await;
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
-    }
-
-    #[tokio::test]
     async fn native_attributed_wait_preserves_ready_siblings() {
         let f = Fixture::new().await;
         let clone = f
@@ -176,91 +128,165 @@ mod cases {
         std::fs::create_dir_all(&clone).unwrap();
         std::fs::write(clone.join("draft"), "uncommitted source").unwrap();
         f.admit().await;
-        let batch = crate::r#loop::schedule::parallel_ready_batch(
-            &f.bd,
-            f.directory.path(),
-            &SpecLabel::new("loop").unwrap(),
-            Some(&f.root),
-            20,
-            &[],
-            &HashSet::new(),
-        )
-        .await
-        .unwrap();
-        assert!(batch.iter().any(|bead| bead.id == f.sibling));
-        assert!(!batch.iter().any(|bead| bead.id == f.source.id));
-        f.close(&f.blockers[0]).await;
-        f.close(&f.blockers[1]).await;
-        let batch = crate::r#loop::schedule::parallel_ready_batch(
-            &f.bd,
-            f.directory.path(),
-            &SpecLabel::new("loop").unwrap(),
-            Some(&f.root),
-            20,
-            &[],
-            &HashSet::new(),
-        )
-        .await
-        .unwrap();
-        assert!(batch.iter().any(|bead| bead.id == f.source.id));
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
+        assert!(
+            !f.bd
+                .show(&f.source.id)
+                .await
+                .unwrap()
+                .metadata
+                .contains_key(KEY)
+        );
         assert_eq!(
-            std::fs::read_to_string(clone.join("draft")).unwrap(),
-            "uncommitted source"
+            f.journal()
+                .db()
+                .unwrap()
+                .records::<serde_json::Value>(RecordKind::DependencyWait)
+                .unwrap(),
+            []
         );
         let ready =
             f.bd.ready(ReadyOpts {
-                parent: Some(f.root),
+                parent: Some(f.root.clone()),
+                ..ReadyOpts::default()
+            })
+            .await
+            .unwrap();
+        assert!(ready.iter().any(|bead| bead.id == f.sibling));
+        assert!(!ready.iter().any(|bead| bead.id == f.source.id));
+        for blocker in &f.blockers {
+            f.close(blocker).await;
+        }
+        let ready =
+            f.bd.ready(ReadyOpts {
+                parent: Some(f.root.clone()),
                 ..ReadyOpts::default()
             })
             .await
             .unwrap();
         assert!(ready.iter().any(|bead| bead.id == f.source.id));
+        assert_eq!(
+            std::fs::read_to_string(clone.join("draft")).unwrap(),
+            "uncommitted source"
+        );
     }
 
     #[tokio::test]
-    async fn native_wait_release_preserves_human_takeover_and_unrelated_metadata() {
-        for takeover in ["label", "cancel", "replace", "defer"] {
+    async fn cold_machine_uses_current_dependencies_without_local_permission() {
+        let f = Fixture::new().await;
+        f.admit().await;
+        let second_machine = tempfile::tempdir().unwrap();
+        let journal = DecisionWaitJournal::new(second_machine.path());
+        assert!(journal.native_held(&f.bd, &f.source).await.unwrap());
+        assert!(journal.blocks_scope(&f.bd, &f.root).await.unwrap());
+        for blocker in &f.blockers {
+            f.close(blocker).await;
+        }
+        assert!(!journal.native_held(&f.bd, &f.source).await.unwrap());
+        assert!(!journal.blocks_scope(&f.bd, &f.root).await.unwrap());
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
+    }
+
+    #[tokio::test]
+    async fn explicit_native_wait_releases_only_the_ended_workers_claim() {
+        let mut f = Fixture::new().await;
+        f.bd.update(
+            &f.source.id,
+            UpdateOpts {
+                status: Some(Status::InProgress),
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        f.source = f.bd.show(&f.source.id).await.unwrap();
+        f.admit().await;
+        let current = f.bd.show(&f.source.id).await.unwrap();
+        assert_eq!(current.status, Status::Open);
+        assert_eq!(current.notes, f.source.notes);
+        assert_eq!(current.metadata, f.source.metadata);
+        assert!(f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn cold_machine_never_reopens_independent_human_holds() {
+        for status in [Status::Blocked, Status::Deferred, Status::Closed] {
             let f = Fixture::new().await;
             f.admit().await;
-            let update = match takeover {
-                "label" => UpdateOpts {
-                    add_labels: vec!["loom:blocked".into()],
-                    ..UpdateOpts::default()
-                },
-                "cancel" => UpdateOpts {
-                    unset_metadata: vec![KEY.into()],
-                    ..UpdateOpts::default()
-                },
-                "replace" => UpdateOpts {
-                    set_metadata: vec![(KEY.into(), "{}".into())],
-                    ..UpdateOpts::default()
-                },
-                "defer" => UpdateOpts {
-                    status: Some(Status::Deferred),
-                    ..UpdateOpts::default()
-                },
-                _ => panic!("closed takeover set"),
-            };
+            if status == Status::Closed {
+                for blocker in &f.blockers {
+                    f.close(blocker).await;
+                }
+            }
             f.bd.update(
                 &f.source.id,
                 UpdateOpts {
+                    status: Some(status),
+                    add_labels: vec!["loom:blocked".into()],
                     append_notes: Some("human outcome".into()),
-                    ..update
+                    ..UpdateOpts::default()
                 },
             )
             .await
             .unwrap();
-            f.close(&f.blockers[0]).await;
-            f.close(&f.blockers[1]).await;
-            let before = f.bd.show(&f.source.id).await.unwrap();
-            let result = f.journal().refresh_native_waits(&f.bd, None, None).await;
-            if takeover == "replace" {
-                assert!(result.is_err());
-            } else {
-                result.unwrap();
+            let held = f.bd.show(&f.source.id).await.unwrap();
+            if status != Status::Closed {
+                for blocker in &f.blockers {
+                    f.close(blocker).await;
+                }
             }
-            assert_eq!(f.bd.show(&f.source.id).await.unwrap(), before);
+            let second_machine = tempfile::tempdir().unwrap();
+            DecisionWaitJournal::new(second_machine.path())
+                .refresh_native_waits(&f.bd, Some(&f.root), None)
+                .await
+                .unwrap();
+            assert_eq!(f.bd.show(&f.source.id).await.unwrap(), held);
         }
+    }
+
+    #[tokio::test]
+    async fn current_graph_does_not_require_a_removed_historical_dependency() {
+        let f = Fixture::new().await;
+        f.admit().await;
+        let output = IsolatedBeads::attach(f.directory.path())
+            .run(
+                [
+                    "dep",
+                    "remove",
+                    f.source.id.as_str(),
+                    f.blockers[0].as_str(),
+                ]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert!(output.success());
+        f.close(&f.blockers[1]).await;
+        f.refresh().await;
+        assert!(!f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
+    }
+
+    #[tokio::test]
+    async fn native_wait_rejects_unowned_projection_without_reconstructing_authority() {
+        let f = Fixture::new().await;
+        f.bd.update(
+            &f.source.id,
+            UpdateOpts {
+                status: Some(Status::Blocked),
+                set_metadata: vec![(KEY.into(), "{}".into())],
+                ..UpdateOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        let before = f.bd.show(&f.source.id).await.unwrap();
+        assert!(f.journal().admit_native_wait(&f.bd, &before).await.is_err());
+        assert!(f.journal().native_held(&f.bd, &before).await.is_err());
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), before);
     }
 
     struct LostAck {
@@ -283,62 +309,36 @@ mod cases {
     }
 
     #[tokio::test]
-    async fn native_wait_restart_recovers_projection_and_release_after_lost_ack() {
-        let f = Fixture::new().await;
-        let armed = Arc::new(AtomicBool::new(true));
-        let bd = BdClient::with_runner(LostAck {
-            native: IsolatedBeads::attach(f.directory.path()),
-            armed: armed.clone(),
-        });
-        assert!(f.journal().admit_native_wait(&bd, &f.source).await.is_err());
-        assert_eq!(
-            f.bd.show(&f.source.id).await.unwrap().status,
-            Status::Blocked
-        );
-        f.refresh().await;
-        assert_eq!(
-            f.bd.show(&f.source.id).await.unwrap().status,
-            Status::Blocked
-        );
-        f.close(&f.blockers[0]).await;
-        f.close(&f.blockers[1]).await;
-        armed.store(true, Ordering::SeqCst);
-        assert!(
-            f.journal()
-                .refresh_native_waits(&bd, None, None)
-                .await
-                .is_err()
-        );
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
-        f.refresh().await;
-        assert!(!f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn native_wait_rejects_unowned_projection_without_reconstructing_authority() {
-        let f = Fixture::new().await;
+    async fn native_wait_restart_reconciles_lost_claim_release_ack() {
+        let mut f = Fixture::new().await;
         f.bd.update(
             &f.source.id,
             UpdateOpts {
-                set_metadata: vec![(KEY.into(), "{}".into())],
+                status: Some(Status::InProgress),
                 ..UpdateOpts::default()
             },
         )
         .await
         .unwrap();
-        let forged = f.bd.show(&f.source.id).await.unwrap();
-        assert!(f.journal().native_held(&f.bd, &forged).await.is_err());
-        assert!(f.journal().admit_native_wait(&f.bd, &forged).await.is_err());
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), forged);
-        assert!(
-            !f.journal().native().directory.exists()
-                || std::fs::read_dir(f.journal().native().directory)
-                    .unwrap()
-                    .all(|entry| entry
-                        .unwrap()
-                        .path()
-                        .extension()
-                        .is_none_or(|ext| ext != "json"))
+        f.source = f.bd.show(&f.source.id).await.unwrap();
+        let bd = BdClient::with_runner(LostAck {
+            native: IsolatedBeads::attach(f.directory.path()),
+            armed: Arc::new(AtomicBool::new(true)),
+        });
+        assert!(f.journal().admit_native_wait(&bd, &f.source).await.is_err());
+        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
+        let restarted = DecisionWaitJournal::new(f.directory.path());
+        assert_eq!(
+            restarted
+                .admit_native_wait(&f.bd, &f.source)
+                .await
+                .unwrap()
+                .count(),
+            2
         );
+        for blocker in &f.blockers {
+            f.close(blocker).await;
+        }
+        assert!(!restarted.blocks_scope(&f.bd, &f.root).await.unwrap());
     }
 }

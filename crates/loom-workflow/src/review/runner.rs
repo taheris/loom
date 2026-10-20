@@ -74,7 +74,7 @@ pub trait ReviewController: Send {
         reason: &str,
     ) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
 
-    /// Mint the molecule-completion `MarkerProof` to `.loom/marker.json`
+    /// Record the molecule-completion `MarkerProof` in `.loom/state.db`
     /// immediately before [`Self::git_push`], inside the push gate's
     /// critical section per `specs/harness.md` § Verdict Gate. The mint
     /// must precede the push so prek's pre-push hook chain reads the

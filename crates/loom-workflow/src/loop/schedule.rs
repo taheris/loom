@@ -86,6 +86,7 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
         else {
             continue;
         };
+        let record = git.recover_verification_checkout(&record).await?;
         sources.push((bead, record));
     }
     let profile =

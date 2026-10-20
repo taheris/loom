@@ -116,7 +116,7 @@ async fn criterion_results(workspace: &Path) -> BTreeMap<String, CriterionResult
     let git = GitClient::open(workspace).unwrap();
     loom_workflow::todo::build_criterion_status(
         workspace,
-        &workspace.join(".loom/cache.db"),
+        &workspace.join(".loom/state.db"),
         &"gate".parse().unwrap(),
         Path::new("specs/gate.md"),
         &git,
@@ -173,7 +173,7 @@ async fn skipped_tests_survive_cli_cache_and_criterion_evidence() {
             !output.status.success(),
             "unclassified legacy skips remain unverified and blocking"
         );
-        let cache = StatusCache::open(&dir.path().join(".loom/cache.db")).unwrap();
+        let cache = StatusCache::open(&dir.path().join(".loom/state.db")).unwrap();
         let rows = cache.read_all().unwrap();
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|row| row.verdict == Verdict::Skipped));
@@ -221,7 +221,7 @@ fn failed() { panic!("must remain skipped"); }
         "unstructured skips cannot establish sandbox-capability permission"
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("per-target outcomes unavailable"));
-    let cache = StatusCache::open(&dir.path().join(".loom/cache.db")).unwrap();
+    let cache = StatusCache::open(&dir.path().join(".loom/state.db")).unwrap();
     let rows = cache.read_all().unwrap();
     assert_eq!(rows.len(), 3);
     assert!(rows.iter().all(|row| row.verdict == Verdict::Skipped));
@@ -275,6 +275,6 @@ fn malformed_junit_fails_without_persisting_partial_passes() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("invalid junit-xml"), "{stderr}");
-    let cache = StatusCache::open(&dir.path().join(".loom/cache.db")).unwrap();
+    let cache = StatusCache::open(&dir.path().join(".loom/state.db")).unwrap();
     assert_eq!(cache.read_all().unwrap(), [] as [loom_gate::CacheRow; 0]);
 }

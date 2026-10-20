@@ -74,10 +74,7 @@ pub enum ValidationStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalPaths {
     pub repo: PathBuf,
-    pub manifest: PathBuf,
     pub evidence: PathBuf,
-    pub logs: PathBuf,
-    pub evidence_dir: PathBuf,
 }
 
 /// Resource caps frozen with the checker plan.
@@ -98,7 +95,7 @@ impl From<&ChecksConfig> for Caps {
     }
 }
 
-/// Tune proposal manifest persisted beside an isolated proposal worktree.
+/// Transient tune execution metadata persisted in the shared state database.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProposalManifest {
     pub schema_version: u32,
@@ -216,10 +213,7 @@ mod tests {
         let caps = Caps::from(&TuneConfig::default().checks);
         let local_paths = LocalPaths {
             repo: ".loom/tune/lm-tune.1/repo".into(),
-            manifest: ".loom/tune/lm-tune.1/manifest.json".into(),
             evidence: ".loom/tune/lm-tune.1/evidence.md".into(),
-            logs: ".loom/tune/lm-tune.1/logs".into(),
-            evidence_dir: ".loom/tune/lm-tune.1/evidence".into(),
         };
         let validation = vec![ValidationRow {
             check: "askama-render".into(),

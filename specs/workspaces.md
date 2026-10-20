@@ -163,14 +163,16 @@ decision beads and their history intact.
 Workspace preparation resolves the operator/integration checkout association
 used by
 [Evidence's local safety history](evidence.md#local-workspace-safety-history).
-Host Gate invocations through either checkout reach that history through the
-same evidence-admission boundary. Canonical records and required witness
-artifacts are not worker-writable, whether through container mounts or direct
-write interfaces; a worker cannot replace, erase, or append trusted history by
+Host Gate invocations through either checkout reach the controlling transient
+`.loom/state.db` through the same evidence-admission boundary. Host evidence
+records are not worker-writable through container mounts or direct write
+interfaces; a worker cannot replace, erase or append trusted observations by
 editing its clone or reporting another workspace identity. Deterministic worker
-feedback remains available without canonical-history write authority. This
-association does not expose the integration checkout or its marker to workers;
-Gate retains publication authority and Evidence owns history admission.
+feedback remains available without host-state write authority. There is no
+external safety registry or separate canonical witness store; cold recovery
+invalidates missing evidence and requires fresh current checks. This association
+does not expose the integration checkout or its marker to workers; Gate retains
+publication authority and Evidence owns history admission.
 
 ### Repository Git Isolation
 

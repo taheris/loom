@@ -1156,7 +1156,7 @@ where
             Ok(_) => info!(
                 label = %self.label,
                 workspace = %self.workspace.display(),
-                "marker minted: .loom/marker.json",
+                "publication receipt recorded in .loom/state.db",
             ),
             Err(error) => warn!(
                 ?error,
@@ -1621,7 +1621,7 @@ mod tests {
     }
 
     fn empty_state(workspace: &std::path::Path) -> Arc<CacheDb> {
-        Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).unwrap())
+        Arc::new(CacheDb::open(workspace.join(".loom/state.db")).unwrap())
     }
 
     fn seeded_state(workspace: &std::path::Path, label: &str, mol: &str) -> Arc<CacheDb> {
@@ -1631,7 +1631,7 @@ mod tests {
             format!("# {label}\n"),
         )
         .unwrap();
-        let db = CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
+        let db = CacheDb::open(workspace.join(".loom/state.db")).unwrap();
         db.rebuild(
             workspace,
             &epic_fixture(
@@ -1856,7 +1856,7 @@ mod tests {
         .unwrap();
         loom_driver::git::commit_all_in(&workspace, "add runner-owned spec").expect("commit");
 
-        let db = CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
+        let db = CacheDb::open(workspace.join(".loom/state.db")).unwrap();
         db.rebuild(
             &workspace,
             &epic_fixture(

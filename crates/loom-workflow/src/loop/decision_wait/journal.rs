@@ -1,14 +1,13 @@
-//! Canonical host attribution. Native metadata is only a checked projection.
+//! Transient decision reconciliation; canonical task inputs are rechecked before use.
 
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use loom_driver::bd::{BdClient, CommandRunner};
 use loom_driver::identifier::BeadId;
 use serde::{Deserialize, Serialize};
 
-use super::{DecisionWaitError, LoopError, Record, invalid};
+use super::{LoopError, Record, invalid};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum Phase {
@@ -44,11 +43,11 @@ pub(super) struct Entry {
     pub native_wait: bool,
 }
 
-/// Not cache state: never reconstructed from worker-writable metadata. The
+/// Transient operation state: never reconstructed from worker-writable claims. The
 /// driver workspace is not the independent clone mounted into a worker.
 #[derive(Clone)]
 pub struct DecisionWaitJournal {
-    pub(super) directory: PathBuf,
+    pub(super) workspace: PathBuf,
     pub(super) clock: std::sync::Arc<dyn loom_driver::clock::Clock>,
     pub(super) admissions: super::AdmissionTracker,
     pub(super) source_route: crate::gate_clarify::ClarifySourceRoute,
@@ -58,7 +57,7 @@ impl std::fmt::Debug for DecisionWaitJournal {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("DecisionWaitJournal")
-            .field("directory", &self.directory)
+            .field("workspace", &self.workspace)
             .field("admissions", &self.admissions)
             .field("source_route", &self.source_route)
             .finish_non_exhaustive()
@@ -69,7 +68,11 @@ impl DecisionWaitJournal {
     #[must_use]
     pub fn new(workspace: &Path) -> Self {
         Self {
-            directory: workspace.join(".loom/decision-waits"),
+            workspace: loom_driver::state::path(workspace)
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or(workspace)
+                .to_path_buf(),
             clock: std::sync::Arc::new(loom_driver::clock::SystemClock::new()),
             admissions: super::AdmissionTracker::default(),
             source_route: crate::gate_clarify::ClarifySourceRoute::LoopMarker,
@@ -127,11 +130,13 @@ impl DecisionWaitJournal {
         &self,
         source: &BeadId,
     ) -> Result<loom_driver::lock::LockGuard, LoopError> {
-        std::fs::create_dir_all(&self.directory)?;
-        let locks =
-            loom_driver::lock::LockManager::with_state_home(&self.directory, &self.directory)?;
+        let locks = loom_driver::lock::LockManager::new(&self.workspace)?;
         Ok(locks
-            .acquire_work_root_async(source, self.clock.as_ref())
+            .acquire_record_async(
+                loom_driver::state::RecordKind::DecisionInventory,
+                source,
+                self.clock.as_ref(),
+            )
             .await?)
     }
 
@@ -173,11 +178,10 @@ impl DecisionWaitJournal {
     }
 
     pub(crate) fn has_pending_for(&self, root: &BeadId) -> Result<bool, LoopError> {
-        Ok(self.native_pending_for(root)?
-            || self.entries()?.iter().any(|entry| {
-                entry.phase.blocks_publication()
-                    && (entry.record.root == *root || entry.record.source == *root)
-            }))
+        Ok(self.entries()?.iter().any(|entry| {
+            entry.phase.blocks_publication()
+                && (entry.record.root == *root || entry.record.source == *root)
+        }))
     }
 
     /// Protect both original attribution and current native membership: moving
@@ -221,7 +225,12 @@ impl DecisionWaitJournal {
             }
             if in_scope {
                 if entry.phase.blocks_publication()
-                    || (entry.native_wait && self.native_pending_for(&entry.record.source)?)
+                    || (entry.native_wait
+                        && !bd
+                            .dependency_snapshot(&entry.record.source)
+                            .await?
+                            .active_blockers()
+                            .is_empty())
                 {
                     // A live native source wait is already a publication veto,
                     // not permission to reseal its inventory's changed graph.
@@ -234,43 +243,36 @@ impl DecisionWaitJournal {
         Ok(blocked)
     }
 
-    fn entries(&self) -> Result<Vec<Entry>, LoopError> {
-        let files = match std::fs::read_dir(&self.directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        let mut entries = Vec::new();
-        for path in files {
-            let path = path?.path();
-            if path.extension().is_none_or(|extension| extension != "json") {
-                continue;
-            }
-            let bytes = std::fs::read(&path)?;
-            let entry: Entry = serde_json::from_slice(&bytes).map_err(DecisionWaitError::from)?;
-            if path != self.path(&entry.record.source) {
-                return Err(invalid("mismatched journal filename").into());
-            }
-            entries.push(
-                self.load(&entry.record.source)?
-                    .ok_or_else(|| invalid("journal changed during publication barrier"))?,
-            );
-        }
-        Ok(entries)
+    pub(super) fn db(&self) -> Result<loom_driver::state::CacheDb, LoopError> {
+        Ok(loom_driver::state::CacheDb::open(
+            loom_driver::state::path(&self.workspace),
+        )?)
     }
 
-    pub(super) fn path(&self, source: &BeadId) -> PathBuf {
-        let hash = blake3::hash(source.as_str().as_bytes()).to_hex();
-        self.directory.join(format!("{hash}.json"))
+    fn entries(&self) -> Result<Vec<Entry>, LoopError> {
+        let entries = self
+            .db()?
+            .records::<Entry>(loom_driver::state::RecordKind::DecisionInventory)?;
+        entries
+            .into_iter()
+            .map(|(key, entry)| {
+                if key != entry.record.source.as_str() {
+                    return Err(invalid("mismatched decision record key").into());
+                }
+                self.load(&entry.record.source)?
+                    .ok_or_else(|| invalid("decision record changed during reconciliation").into())
+            })
+            .collect()
     }
 
     pub(super) fn load(&self, source: &BeadId) -> Result<Option<Entry>, LoopError> {
-        let bytes = match std::fs::read(self.path(source)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
+        let Some(mut entry) = self.db()?.record::<Entry>(
+            loom_driver::state::RecordKind::DecisionInventory,
+            source.as_str(),
+        )?
+        else {
+            return Ok(None);
         };
-        let mut entry: Entry = serde_json::from_slice(&bytes).map_err(DecisionWaitError::from)?;
         if let Some(context) = &mut entry.context {
             context.apply_migrations(self)?;
         }
@@ -291,16 +293,11 @@ impl DecisionWaitJournal {
     }
 
     pub(super) fn save(&self, entry: &Entry) -> Result<(), LoopError> {
-        std::fs::create_dir_all(&self.directory)?;
-        let mut file = tempfile::NamedTempFile::new_in(&self.directory)?;
-        file.write_all(&serde_json::to_vec(entry).map_err(DecisionWaitError::from)?)?;
-        file.as_file().sync_all()?;
-        file.persist(self.path(&entry.record.source))
-            .map_err(|error| error.error)?;
-        // Also persist directory creation, not only the renamed receipt.
-        for directory in self.directory.ancestors().take(3) {
-            std::fs::File::open(directory)?.sync_all()?;
-        }
+        self.db()?.put_record(
+            loom_driver::state::RecordKind::DecisionInventory,
+            entry.record.source.as_str(),
+            entry,
+        )?;
         Ok(())
     }
 }

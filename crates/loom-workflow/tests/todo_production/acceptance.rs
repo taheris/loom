@@ -44,7 +44,7 @@ impl Fixture {
         )?;
         let head = git_output(dir.path(), &["rev-parse", "HEAD"])?;
         let runner = StatefulRunner::new(&base, None);
-        let state = Arc::new(CacheDb::open(dir.path().join(".loom/cache.db"))?);
+        let state = Arc::new(CacheDb::open(dir.path().join(".loom/state.db"))?);
         state.notes_add(
             &SpecLabel::new("alpha")?,
             "implementation",

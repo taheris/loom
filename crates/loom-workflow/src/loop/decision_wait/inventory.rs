@@ -369,13 +369,8 @@ pub(super) async fn recover<R: CommandRunner>(
         entry.context = Some(context);
         journal.save(entry)?;
     }
-    if entry.phase == Phase::InventoryAdmitted
-        && !legacy_context
-        && !journal.complete_dispositions(entry)?
-    {
-        return Err(invalid("completed inventory lost canonical decision dispositions").into());
-    }
-    if entry.phase == Phase::InventoryPending || legacy_context {
+    let missing_dispositions = !journal.complete_dispositions(entry)?;
+    if entry.phase == Phase::InventoryPending || legacy_context || missing_dispositions {
         entry.phase = Phase::InventoryPending;
         journal.save(entry)?;
         stage(bd, journal, &entry.record.source, &decisions).await?;

@@ -115,7 +115,7 @@ fn task_acceptance_resolution_produces_typed_obligations() {
     indexed(root.path(), &["alpha", "beta"], true);
     fs::create_dir(root.path().join(".loom")).unwrap();
     fs::write(
-        root.path().join(".loom/cache.db"),
+        root.path().join(".loom/state.db"),
         "not a database or passing evidence",
     )
     .unwrap();

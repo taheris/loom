@@ -41,9 +41,8 @@ use crate::gate_outcome::{
 /// rejected with `MarkerError::UnsupportedSchema`.
 const CURRENT_VERSION: u32 = 4;
 
-/// Canonical marker location relative to the workspace root, per
-/// `specs/gate.md` § Marker — *File location and lifecycle*.
-pub const MARKER_PATH: &str = ".loom/marker.json";
+/// Shared state store containing checkout-scoped publication receipts.
+pub const MARKER_PATH: &str = ".loom/state.db";
 
 /// Sealed content-addressed receipt that the gate ran cleanly at a
 /// specific workspace tree.
@@ -138,20 +137,17 @@ impl MarkerProof {
         })
     }
 
-    /// Atomic write to `path` via `<path>.tmp` + rename, per
-    /// `specs/gate.md` § *File location and lifecycle*.
-    ///
-    /// `pub(crate)`: callers outside `loom-gate` route through
-    /// [`MarkerProof::mint`].
-    pub(crate) fn write_to(&self, path: &Path) -> Result<(), io::Error> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        let tmp = tmp_sibling(path);
-        fs::write(&tmp, &bytes)?;
-        fs::rename(&tmp, path)?;
-        Ok(())
+    /// Atomically replace this checkout's receipt in the shared state database.
+    fn store(&self, workspace: &Path) -> Result<(), io::Error> {
+        loom_driver::state::CacheDb::open(loom_driver::state::path(workspace))
+            .and_then(|db| {
+                db.put_record(
+                    loom_driver::state::RecordKind::PublicationReceipt,
+                    &receipt_key(workspace)?,
+                    self,
+                )
+            })
+            .map_err(io::Error::other)
     }
 
     /// Public mint wrapper the driver-side push gate calls inside its
@@ -174,8 +170,8 @@ impl MarkerProof {
         clock: &dyn Clock,
     ) -> Result<Self, MintError> {
         let marker = MarkerProof::from_gate_success(success, workspace, clock)?;
-        let path = workspace.join(MARKER_PATH);
-        marker.write_to(&path).map_err(|source| MintError::Write {
+        let path = loom_driver::state::path(workspace);
+        marker.store(workspace).map_err(|source| MintError::Write {
             path: path.clone(),
             source,
         })?;
@@ -192,21 +188,26 @@ impl MarkerProof {
     /// # Errors
     ///
     /// Returns an error when marker state cannot be read, parsed, or validated.
-    pub fn read_and_validate(path: &Path, workspace: &Path) -> Result<Self, MarkerError> {
-        let bytes = fs::read(path).map_err(|source| match source.kind() {
-            io::ErrorKind::NotFound => MarkerError::MissingMarker {
-                path: path.to_path_buf(),
-            },
-            _ => MarkerError::ReadMarker {
-                path: path.to_path_buf(),
-                source,
-            },
-        })?;
-        let marker: ParsedMarkerProof =
-            serde_json::from_slice(&bytes).map_err(|source| MarkerError::ParseMarker {
-                path: path.to_path_buf(),
-                source,
-            })?;
+    pub fn read_and_validate(workspace: &Path) -> Result<Self, MarkerError> {
+        let path = loom_driver::state::path(workspace);
+        let marker = loom_driver::state::CacheDb::open(loom_driver::state::path(workspace))
+            .and_then(|db| {
+                db.record::<ParsedMarkerProof>(
+                    loom_driver::state::RecordKind::PublicationReceipt,
+                    &receipt_key(workspace)?,
+                )
+            })
+            .map_err(|source| match source {
+                loom_driver::state::CacheError::Json { source, .. } => MarkerError::ParseMarker {
+                    path: path.clone(),
+                    source,
+                },
+                source => MarkerError::ReadMarker {
+                    path: path.clone(),
+                    source: io::Error::other(source),
+                },
+            })?
+            .ok_or_else(|| MarkerError::MissingMarker { path })?;
         marker.validate(workspace)
     }
 
@@ -215,11 +216,10 @@ impl MarkerProof {
     ///
     /// Returns an error when marker state cannot be read, parsed, or validated.
     pub fn read_and_validate_for_hook(
-        path: &Path,
         workspace: &Path,
         request: &MarkerValidationRequest,
     ) -> Result<Self, MarkerError> {
-        let marker = Self::read_and_validate(path, workspace)?;
+        let marker = Self::read_and_validate(workspace)?;
         if marker.push_range != request.push_range {
             return Err(MarkerError::CoverageMismatch {
                 reason: "push range".to_owned(),
@@ -368,7 +368,7 @@ impl ParsedMarkerProof {
     }
 }
 
-/// Validate the marker file at `<workspace>/.loom/marker.json` against
+/// Validate the checkout receipt in the shared `.loom/state.db` against
 /// the workspace's current `HEAD` tree. The `loom gate verify-marker`
 /// CLI subcommand maps `Ok` to exit code 0 and `Err` to non-zero.
 ///
@@ -376,8 +376,7 @@ impl ParsedMarkerProof {
 ///
 /// Returns an error when marker state cannot be read, parsed, or validated.
 pub fn verify_marker(workspace: &Path) -> Result<MarkerProof, MarkerError> {
-    let path = workspace.join(MARKER_PATH);
-    MarkerProof::read_and_validate(&path, workspace)
+    MarkerProof::read_and_validate(workspace)
 }
 
 ///
@@ -388,8 +387,7 @@ pub fn verify_marker_for_hook(
     workspace: &Path,
     request: &MarkerValidationRequest,
 ) -> Result<MarkerProof, MarkerError> {
-    let path = workspace.join(MARKER_PATH);
-    MarkerProof::read_and_validate_for_hook(&path, workspace, request)
+    MarkerProof::read_and_validate_for_hook(workspace, request)
 }
 
 fn workspace_path(workspace: &Path, path: &Path) -> PathBuf {
@@ -439,16 +437,21 @@ pub enum MintError {
     },
 }
 
-fn tmp_sibling(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map(std::ffi::OsString::from)
-        .unwrap_or_default();
-    name.push(".tmp");
-    match path.parent() {
-        Some(parent) => parent.join(name),
-        None => PathBuf::from(name),
-    }
+fn receipt_key(workspace: &Path) -> Result<String, loom_driver::state::CacheError> {
+    Ok(std::path::absolute(workspace)?
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// Invalidate a checkout-local publication receipt without changing task state.
+///
+/// # Errors
+/// Reports database failures.
+pub fn invalidate_marker(workspace: &Path) -> Result<(), loom_driver::state::CacheError> {
+    loom_driver::state::CacheDb::open(loom_driver::state::path(workspace))?.remove_record(
+        loom_driver::state::RecordKind::PublicationReceipt,
+        &receipt_key(workspace)?,
+    )
 }
 
 /// Failure modes of [`MarkerProof::read_and_validate`].
@@ -592,10 +595,7 @@ mod tests {
     }
 
     fn write_marker_at(workspace: &Path, marker: &MarkerProof) {
-        let path = workspace.join(MARKER_PATH);
-        fs::create_dir_all(path.parent().expect("marker parent")).expect("mkdir .loom");
-        let bytes = serde_json::to_vec_pretty(marker).expect("serialise marker");
-        fs::write(&path, bytes).expect("write marker");
+        marker.store(workspace).expect("store publication receipt");
     }
 
     fn hook() -> HookCoverage {
@@ -883,9 +883,7 @@ mod tests {
     }
 
     fn seed_marker(workspace: &Path) {
-        let path = workspace.join(MARKER_PATH);
-        std::fs::create_dir_all(path.parent().expect("marker parent")).expect("mkdir marker dir");
-        std::fs::write(&path, "{}").expect("write marker");
+        write_receipt_value(workspace, &serde_json::json!({}));
     }
 
     fn run_pre_push_checks(workspace: &Path, bin_dir: &Path) -> std::process::Output {
@@ -949,7 +947,7 @@ mod tests {
         );
     }
 
-    /// Operator-direct invariant: when no `.loom/marker.json` exists in
+    /// Operator-direct invariant: when no publication receipt exists in
     /// the workspace (the normal state of an operator's clone, which the
     /// driver-side verdict gate never wrote into), the `pre-push-checks`
     /// wrapper MUST exec the argument command rather than fail the push.
@@ -1091,11 +1089,16 @@ mod tests {
         let dir = init_test_workspace();
         let (_log, success) = good_gate_success(dir.path());
         MarkerProof::mint(success, dir.path(), &loom_driver::clock::SystemClock::new()).unwrap();
-        let path = dir.path().join(MARKER_PATH);
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut value = loom_driver::state::CacheDb::open(loom_driver::state::path(dir.path()))
+            .unwrap()
+            .record::<serde_json::Value>(
+                loom_driver::state::RecordKind::PublicationReceipt,
+                &receipt_key(dir.path()).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
         value["version"] = serde_json::json!(CURRENT_VERSION - 1);
-        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+        write_receipt_value(dir.path(), &value);
         assert!(matches!(
             verify_marker(dir.path()),
             Err(MarkerError::UnsupportedSchema { .. })
@@ -1168,33 +1171,34 @@ mod tests {
         assert_eq!(validated, minted);
     }
 
-    /// The mint path uses `<path>.tmp` + rename, so an external observer
-    /// can never see a partially-written marker file. Crash the write at
-    /// the rename boundary by leaving a pre-existing tmp file in place;
-    /// the rename must overwrite it cleanly and the final marker bytes
-    /// must match the JSON we serialised.
+    fn write_receipt_value(workspace: &Path, value: &serde_json::Value) {
+        loom_driver::state::CacheDb::open(loom_driver::state::path(workspace))
+            .unwrap()
+            .put_record(
+                loom_driver::state::RecordKind::PublicationReceipt,
+                &receipt_key(workspace).unwrap(),
+                value,
+            )
+            .unwrap();
+    }
+
     #[test]
-    fn mint_atomic_write_replaces_existing_tmp() {
+    fn mint_transaction_replaces_previous_receipt() {
         let dir = init_test_workspace();
         let workspace = dir.path();
-        let loom_dir = workspace.join(".loom");
-        std::fs::create_dir_all(&loom_dir).expect("mkdir .loom");
-        std::fs::write(loom_dir.join("marker.json.tmp"), b"stale\n").expect("seed stale tmp");
-
+        seed_marker(workspace);
+        assert!(verify_marker(workspace).is_err());
         let (_log, success) = good_gate_success(workspace);
-        let clock = loom_driver::clock::SystemClock::new();
-        let minted = MarkerProof::mint(success, workspace, &clock).expect("mint succeeds");
-
-        let final_bytes = std::fs::read(workspace.join(MARKER_PATH)).expect("marker file readable");
-        serde_json::from_slice::<ParsedMarkerProof>(&final_bytes)
-            .expect("marker file is valid JSON");
-        let parsed = MarkerProof::read_and_validate(&workspace.join(MARKER_PATH), workspace)
-            .expect("marker file validates");
-        assert_eq!(parsed, minted);
-        assert!(
-            !loom_dir.join("marker.json.tmp").exists(),
-            "tmp sibling must be renamed away, not left behind",
-        );
+        let minted =
+            MarkerProof::mint(success, workspace, &loom_driver::clock::SystemClock::new()).unwrap();
+        assert_eq!(verify_marker(workspace).unwrap(), minted);
+        assert!(!workspace.join(".loom/marker.json").exists());
+        assert!(!workspace.join(".loom/marker.json.tmp").exists());
+        invalidate_marker(workspace).unwrap();
+        assert!(matches!(
+            verify_marker(workspace),
+            Err(MarkerError::MissingMarker { .. })
+        ));
     }
 
     /// `mint` must refuse to fingerprint a workspace that is not a git

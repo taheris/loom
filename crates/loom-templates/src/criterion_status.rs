@@ -3,7 +3,7 @@
 //! `CriterionStatus` is the per-criterion record that gives `todo_*`
 //! decomposition agents evidence of which Success-Criteria bullets already
 //! have current verifier evidence before they fan out beads. The driver joins
-//! freshly parsed criteria against `.loom/cache.db`; cache misses are explicit
+//! freshly parsed criteria against `.loom/state.db`; cache misses are explicit
 //! [`EvidenceState::Missing`] values.
 
 use std::fmt;

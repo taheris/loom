@@ -329,6 +329,7 @@ where
             .into_iter()
             .find(|record| &record.bead == bead && record.needs_source_repair())
         {
+            let record = self.git.recover_verification_checkout(&record).await?;
             association.validate_verification_checkout(&record)?;
             if record.semantic_failures > self.retry_policy.max_retries {
                 self.apply_blocked(bead, super::runner::RETRY_EXHAUSTED_CAUSE, &format!("{} semantic verification failures exhausted max_retries={}; rejected source and failure evidence remain retained: {detail}", record.semantic_failures, self.retry_policy.max_retries)).await?;
@@ -411,6 +412,10 @@ where
         }
         let bead = &current_bead;
         let association = loom_driver::workspace::Association::resolve(&self.workspace)?;
+        record = self.git.recover_verification_checkout(&record).await?;
+        if record.needs_source_repair() {
+            return Ok(AgentOutcome::StaticInfra { cause: "verification-continuation-unavailable".into(), error: "Recovered source contains unfinished edits; it is retained for implementation repair, not publication".into() });
+        }
         association.validate_verification(&record)?;
         let path = self.workspace.join(".loom/beads").join(bead.id.as_str());
         if !self.git.status_porcelain_at(&path).await?.trim().is_empty() {
@@ -767,7 +772,9 @@ where
                 );
                 continue;
             }
-            if held(
+            // Native ready already observed current prerequisites. Reconcile local
+            // operation snapshots without a redundant second native graph read.
+            if super::decision_wait::held_with_dependencies(
                 &self.bd,
                 &DecisionWaitJournal::new(&self.workspace).with_admissions(self.admissions.clone()),
                 &bead,
@@ -840,6 +847,7 @@ where
             .into_iter()
             .find(|record| record.bead == bead.id)
         {
+            let record = self.git.recover_verification_checkout(&record).await?;
             let pin = format!(
                 "refs/loom/verification/{}/{}",
                 record.bead, record.candidate
@@ -1973,9 +1981,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
             });
         }
     };
-    if workspace
-        .join(".git/loom-verification-continuations")
-        .try_exists()?
+    if loom_driver::workspace::has_verification_state(workspace)?
         && (DecisionWaitJournal::new(workspace)
             .blocks_scope(bd, &root)
             .await?
@@ -2131,10 +2137,7 @@ async fn verification_publication_ready<R: CommandRunner>(
     workspace: &Path,
     git: &GitClient,
 ) -> Result<bool, LoopError> {
-    if !workspace
-        .join(".git/loom-verification-continuations")
-        .try_exists()?
-    {
+    if !loom_driver::workspace::has_verification_state(workspace)? {
         return Ok(true);
     }
     let association = loom_driver::workspace::Association::resolve(workspace)?;
@@ -2193,9 +2196,7 @@ pub(super) async fn verification_source<R: CommandRunner>(
             .metadata
             .get("loom.infra.phase")
             .is_some_and(|phase| phase == "loop")
-        && workspace
-            .join(".git/loom-verification-continuations")
-            .try_exists()?
+        && loom_driver::workspace::has_verification_state(workspace)?
     {
         let association = loom_driver::workspace::Association::resolve(workspace)?;
         if association
@@ -2219,7 +2220,12 @@ pub(super) async fn verification_source<R: CommandRunner>(
     }
     if verification_has_independent_hold(&guard_source)
         || !dependencies.active_blockers().is_empty()
-        || held(bd, &DecisionWaitJournal::new(workspace), &source).await?
+        || super::decision_wait::held_with_dependencies(
+            bd,
+            &DecisionWaitJournal::new(workspace),
+            &guard_source,
+        )
+        .await?
     {
         return Ok(None);
     }
@@ -2751,6 +2757,7 @@ mod tests {
     /// `BdClient` call in order.
     struct ScriptedBd {
         responses: Mutex<VecDeque<RunOutput>>,
+        molecule: Option<(String, Vec<u8>)>,
         /// Capture handle shared with the test, so an `Arc::clone` snapshot
         /// is held while the inner `ScriptedBd` is moved into `BdClient`.
         calls: Arc<Mutex<Vec<Vec<OsString>>>>,
@@ -2760,6 +2767,7 @@ mod tests {
         fn new(responses: impl IntoIterator<Item = RunOutput>) -> Self {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
+                molecule: None,
                 calls: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -2771,7 +2779,23 @@ mod tests {
 
     impl CommandRunner for ScriptedBd {
         async fn run(&self, args: Vec<OsString>, _timeout: Duration) -> Result<RunOutput, BdError> {
-            self.calls.lock().unwrap().push(args);
+            self.calls.lock().unwrap().push(args.clone());
+            if let Some((id, body)) = &self.molecule {
+                let command: Vec<_> = args.iter().map(|arg| arg.to_string_lossy()).collect();
+                return Ok(match command.first().map(std::convert::AsRef::as_ref) {
+                    Some("show") => {
+                        assert_eq!(command[1].as_ref(), id, "unexpected molecule fixture lookup");
+                        ok_stdout(body)
+                    }
+                    Some("list") if command.iter().any(|arg| arg.starts_with("--parent=") || arg.as_ref() == "--type=decision") => ok_stdout(b"[]"),
+                    Some("list") if command.iter().any(|arg| arg.as_ref() == "--type=epic") => ok_stdout(body),
+                    Some("list") => ok_stdout(b"[]"),
+                    Some("mol") => ok_stdout(serde_json::json!({"molecule_id":id,"completed":1,"in_progress":0,"total":1,"percent":100.0}).to_string().as_bytes()),
+                    Some("create") => ok_stdout(b"lm-routed.1\n"),
+                    Some("update" | "dep" | "close") => ok_stdout(b""),
+                    _ => panic!("unexpected molecule fixture command: {command:?}"),
+                });
+            }
             Ok(self
                 .responses
                 .lock()
@@ -2817,21 +2841,9 @@ mod tests {
                 "metadata": {{ "loom.base_commit": "{base}" }}
             }}]"#,
         );
-        let progress =
-            r#"{"molecule_id":"lm-3hhwq","completed":1,"in_progress":0,"total":1,"percent":100.0}"#;
-        ScriptedBd::new([
-            ok_stdout(body.as_bytes()),
-            ok_stdout(body.as_bytes()),
-            ok_stdout(progress.as_bytes()),
-            ok_stdout(b"[]"),
-            ok_stdout(body.as_bytes()),
-            ok_stdout(b"[]"),
-            ok_stdout(b"[]"),
-            ok_stdout(b"[]"),
-            ok_stdout(b"lm-routed.1\n"),
-            ok_stdout(b""),
-            ok_stdout(b""),
-        ])
+        let mut runner = ScriptedBd::new([]);
+        runner.molecule = Some((mol_id.to_owned(), body.into_bytes()));
+        runner
     }
 
     /// FR12 — `loom loop`'s per-bead exit MUST route the agent's marker
@@ -3172,6 +3184,10 @@ mod tests {
             let bd = BdClient::with_runner(ScriptedBd::new([
                 ok_stdout(epic),
                 ok_stdout(epic),
+                ok_stdout(child.as_bytes()),
+                ok_stdout(child.as_bytes()),
+                ok_stdout(b"[]"),
+                ok_stdout(epic),
                 ok_stdout(progress),
                 ok_stdout(child.as_bytes()),
             ]));
@@ -3253,7 +3269,7 @@ mod tests {
             "issue_type":"task",
             "labels":["spec:gate","profile:base","loom:infra"]
         }]"#;
-        let scripted = ScriptedBd::new([ok_stdout(b"[]\n"), ok_stdout(infra)]);
+        let scripted = ScriptedBd::new([ok_stdout(b"[]\n"), ok_stdout(infra), ok_stdout(infra)]);
         let calls = scripted.calls_handle();
         let bd = BdClient::with_runner(scripted);
         let mut controller = ProductionAgentLoopController::new(
@@ -3284,7 +3300,7 @@ mod tests {
 
         assert_eq!(picked.id, BeadId::new("lm-infra").expect("valid"));
         let captured = calls.lock().unwrap();
-        assert_eq!(captured.len(), 2);
+        assert_eq!(captured.len(), 3);
         let infra_argv: Vec<String> = captured[1]
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
@@ -5927,6 +5943,8 @@ mod tests {
             ok_stdout(parked),
             ok_stdout(parked),
             ok_stdout(parked),
+            ok_stdout(parked),
+            ok_stdout(parked),
             ok_stdout(b""),
         ]);
         let calls = scripted.calls_handle();
@@ -6328,6 +6346,7 @@ mod tests {
             open.status = loom_driver::bd::Status::Open;
             let open = serde_json::to_vec(&vec![open]).expect("native open source");
             let runner = ScriptedBd::new([
+                ok_stdout(&open),
                 ok_stdout(&open),
                 ok_stdout(&open),
                 ok_stdout(&open),
@@ -6913,6 +6932,8 @@ mod tests {
                 let progress = serde_json::to_vec(&serde_json::json!({"molecule_id":molecule,"completed":1,"total":1,"in_progress":0,"percent":100.0})).expect("progress");
                 let bd = BdClient::with_runner(ScriptedBd::new([
                     ok_stdout(&epic),
+                    ok_stdout(b"[]"),
+                    ok_stdout(&epic),
                     ok_stdout(&progress),
                     ok_stdout(b"[]"),
                 ]));
@@ -7040,8 +7061,12 @@ mod tests {
                     .labels
                     .push(loom_driver::bd::Label::new("loom:clarify").expect("human hold"));
                 let held_observation = serde_json::to_vec(&vec![held_source]).expect("later hold");
-                let scripted =
-                    ScriptedBd::new([ok_stdout(&observed), ok_stdout(&held_observation)]);
+                let mut responses = vec![ok_stdout(&observed)];
+                if code == 0 {
+                    responses.push(ok_stdout(&observed));
+                }
+                responses.extend([ok_stdout(&held_observation), ok_stdout(&held_observation)]);
+                let scripted = ScriptedBd::new(responses);
                 let calls = scripted.calls_handle();
                 let policy = loom_driver::git::RepoGitPolicy::resolve(
                     &workspace,
@@ -7111,7 +7136,10 @@ mod tests {
                             .into_iter()
                             .find(|record| record.bead == bead.id)
                             .expect("owned continuation");
-                        resumed.bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(&observed)]));
+                        resumed.bd = BdClient::with_runner(ScriptedBd::new([
+                            ok_stdout(&observed),
+                            ok_stdout(&observed),
+                        ]));
                         assert_eq!(
                             resumed
                                 .resume_verification(&bead, next)

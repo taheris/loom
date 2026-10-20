@@ -103,7 +103,7 @@ async fn todo_criterion_identity_survives_markdown_formatting() {
     let body = "## Success Criteria\n\n- A criterion [check](cargo test)\n";
     let spec_rel = write_spec(workspace, "alpha", body);
     let git = GitClient::open(workspace).unwrap();
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     let expected_id = criterion_id_for(&label, "A criterion");
     cache
@@ -141,7 +141,7 @@ async fn criterion_identity_excludes_strategy_metadata() {
     let baseline = "## Success Criteria\n\n- A criterion [check](cargo test)\n";
     let spec_rel = write_spec(workspace, "alpha", baseline);
     let git = GitClient::open(workspace).unwrap();
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let expected = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
         .await
         .unwrap();
@@ -195,7 +195,7 @@ async fn invalid_strategy_cannot_become_empty_successful_criterion_status() {
     assert!(matches!(
         build_criterion_status(
             workspace,
-            &workspace.join(".loom/cache.db"),
+            &workspace.join(".loom/state.db"),
             &label,
             &source,
             &git
@@ -215,7 +215,7 @@ async fn todo_does_not_reuse_evidence_for_contaminated_criterion_ids() {
     let body = "## Success Criteria\n\n- A criterion [check](cargo test)\n\n## Requirements\n\nUnrelated prose.\n";
     let spec_rel = write_spec(workspace, "alpha", body);
     let git = GitClient::open(workspace).unwrap();
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     let old_id = criterion_id_for(&label, "A criterion ## Requirements Unrelated prose.");
     cache
@@ -250,7 +250,7 @@ async fn empty_cache_yields_missing_evidence_for_every_criterion() {
 ";
     let spec_rel = write_spec(workspace, "alpha", body);
     let git = GitClient::open(workspace).unwrap();
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
 
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
         .await
@@ -262,7 +262,7 @@ async fn empty_cache_yields_missing_evidence_for_every_criterion() {
     );
     assert!(
         cache_path.exists(),
-        "fresh .loom/cache.db should be created"
+        "fresh .loom/state.db should be created"
     );
     assert_eq!(
         rows[0].annotation.to_string(),
@@ -288,7 +288,7 @@ async fn cache_hit_with_stale_commit_renders_non_zero_commits_since() {
     add_empty_commit(workspace, "second");
     add_empty_commit(workspace, "third");
 
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
         .upsert(&cache_row(
@@ -333,7 +333,7 @@ async fn todo_populates_criterion_status_from_cache_db() {
 ";
     let spec_rel = write_spec(workspace, "alpha", body);
     let head = head_sha(workspace);
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
         .upsert(&cache_row(
@@ -366,7 +366,7 @@ async fn stale_annotation_detected_when_cached_binding_differs() {
 ";
     let spec_rel = write_spec(workspace, "alpha", body);
     let head = head_sha(workspace);
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
         .upsert(&cache_row(
@@ -422,7 +422,7 @@ async fn legacy_gate_cache_file_is_not_a_live_input() {
     let git = GitClient::open(workspace).unwrap();
     let rows = build_criterion_status(
         workspace,
-        &workspace.join(".loom/cache.db"),
+        &workspace.join(".loom/state.db"),
         &label,
         &spec_rel,
         &git,
@@ -449,7 +449,7 @@ async fn criterion_status_commits_since_computed_from_git_rev_list() {
     add_empty_commit(workspace, "two");
     add_empty_commit(workspace, "three");
 
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
         .upsert(&cache_row(
@@ -481,7 +481,7 @@ async fn criterion_status_commits_since_is_missing_when_no_cache_row() {
 ";
     let spec_rel = write_spec(workspace, "alpha", body);
     let git = GitClient::open(workspace).unwrap();
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
         .await
         .expect("valid acceptance fixture");
@@ -502,7 +502,7 @@ async fn todo_missing_criterion_cache_rows_are_missing_evidence() {
 ";
     let spec_rel = write_spec(workspace, "alpha", body);
     let head = head_sha(workspace);
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
         .upsert(&cache_row(
@@ -538,7 +538,7 @@ async fn missing_acceptance_file_returns_read_error() {
     let label = SpecLabel::new("ghost").unwrap();
     let spec_rel = PathBuf::from("specs/ghost.md");
     let git = GitClient::open(workspace).unwrap();
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     let error = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git)
         .await
         .expect_err("missing acceptance must not become an empty inventory");

@@ -57,7 +57,7 @@ pub enum LoopError {
     /// config load failed during `loom loop`
     Config(#[from] LoomConfigError),
 
-    /// cache.db access failure during `loom loop`
+    /// state.db access failure during `loom loop`
     State(#[from] CacheError),
 
     /// decision-wait journal locking failed

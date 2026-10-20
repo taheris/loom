@@ -219,6 +219,24 @@ pub(super) async fn held<R: CommandRunner>(
     journal: &DecisionWaitJournal,
     bead: &Bead,
 ) -> Result<bool, LoopError> {
+    held_current(bd, journal, bead, false).await
+}
+
+/// Reconcile local operations after the caller atomically read current native dependencies.
+pub(super) async fn held_with_dependencies<R: CommandRunner>(
+    bd: &BdClient<R>,
+    journal: &DecisionWaitJournal,
+    bead: &Bead,
+) -> Result<bool, LoopError> {
+    held_current(bd, journal, bead, true).await
+}
+
+async fn held_current<R: CommandRunner>(
+    bd: &BdClient<R>,
+    journal: &DecisionWaitJournal,
+    bead: &Bead,
+    native_checked: bool,
+) -> Result<bool, LoopError> {
     migration::recover(bd, journal).await?;
     if let Some(mut entry) = journal.load(&bead.id)? {
         if entry.phase.holds_source() || entry.phase == Phase::Released {
@@ -244,7 +262,14 @@ pub(super) async fn held<R: CommandRunner>(
     {
         return Err(invalid("native hold assertion lacks driver attribution").into());
     } else {
-        return journal.native_held(bd, bead).await;
+        return if native_checked {
+            Ok(false)
+        } else {
+            journal.native_held(bd, bead).await
+        };
+    }
+    if native_checked {
+        return Ok(false);
     }
     let source = bd.show(&bead.id).await?;
     journal.native_held(bd, &source).await

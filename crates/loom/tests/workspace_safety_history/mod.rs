@@ -1,13 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use loom_driver::agent::AgentRuntime;
 use loom_driver::bd::Bead;
 use loom_driver::config::{LoomTopConfig, SkillsConfig};
 use loom_driver::git::{GitClient, commit_all_in, init_test_repo_with_integration};
 use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
+use loom_driver::state::{CacheDb, RecordKind};
 use loom_driver::workspace::Association;
 use loom_workflow::r#loop::worker::{self, Preparation, Worker};
 
@@ -56,17 +57,11 @@ impl Fixture {
             )?),
         );
         commit_all_in(&worker_path, "Add deterministic feedback fixture")?;
-        for path in ["journal.jsonl", "witnesses/object", "checkpoint.json"] {
-            let path = association.history_dir().join(path);
-            fs::create_dir_all(path.parent().context("fixture path parent")?)?;
-            fs::write(
-                path,
-                b"host isolation fixture, not admitted safety evidence\n",
-            )?;
-        }
-        let marker = association.integration().join(".loom/marker.json");
-        fs::create_dir_all(marker.parent().context("marker parent")?)?;
-        fs::write(marker, b"integration-local-authority\n")?;
+        CacheDb::open(loom_driver::state::path(association.operator()))?.put_record(
+            RecordKind::Tune,
+            "isolation-fixture",
+            &"host fixture, not admitted evidence",
+        )?;
         Ok(Self {
             root,
             git,
@@ -112,16 +107,15 @@ impl Fixture {
     pub fn check_host_surfaces(&self) -> Result<()> {
         self.association.recheck()?;
         let integration = Association::resolve(self.association.integration())?;
-        ensure!(integration.history_dir() == self.association.history_dir());
-        for path in ["journal.jsonl", "witnesses/object", "checkpoint.json"] {
-            ensure!(
-                fs::read(integration.history_dir().join(path))?
-                    == b"host isolation fixture, not admitted safety evidence\n"
-            );
-        }
         ensure!(
-            fs::read(integration.integration().join(".loom/marker.json"))?
-                == b"integration-local-authority\n"
+            loom_driver::state::path(integration.integration())
+                == loom_driver::state::path(self.association.operator())
+        );
+        ensure!(
+            CacheDb::open(loom_driver::state::path(integration.integration()))?
+                .record::<String>(RecordKind::Tune, "isolation-fixture")?
+                .as_deref()
+                == Some("host fixture, not admitted evidence")
         );
         ensure!(Association::resolve(&self.worker_path).is_err());
         Ok(())

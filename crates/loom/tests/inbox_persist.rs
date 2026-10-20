@@ -440,7 +440,7 @@ fn inbox_view_modes_render_host_side_with_infra_diagnostics() {
         stderr(&by_proposal)
     );
     let out = stdout(&by_proposal);
-    assert!(out.contains("inbox item lm-prop [tune] (blocked)"), "{out}");
+    assert!(out.contains("inbox item lm-prop [tune] (open)"), "{out}");
     assert!(out.contains("proposal branch: loom/tune/lm-prop"), "{out}");
     assert!(out.contains("repo:") && out.contains("(missing)"), "{out}");
     assert!(out.contains("loom inbox chat -p lm-prop"), "{out}");

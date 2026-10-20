@@ -824,7 +824,7 @@ fn load_companion_paths(
     spec_filter: Option<&SpecLabel>,
     items: &[InboxItem],
 ) -> Result<Vec<String>, ChatError> {
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(loom_driver::state::path(workspace))?;
     let mut labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if let Some(label) = spec_filter {
         labels.insert(label.as_str().to_string());

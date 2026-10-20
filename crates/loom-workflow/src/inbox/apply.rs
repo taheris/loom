@@ -18,13 +18,11 @@ use loom_gate::{
     GateRun, GateSuccess, HandoffEvidence, MarkerProof, MintError, VerifiedScope,
     append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
 };
-use loom_tune::proposal::State as TuneState;
 use serde_json::json;
 use thiserror::Error;
 use tokio::process::Command;
 use tracing::warn;
 
-use super::list::read_manifest_identity;
 use crate::r#loop::{REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, REVIEW_VERIFIED_LOG_ENV};
 use crate::review::{DispatchScope, WalkOutput, WorkspaceFindingValidator};
 
@@ -56,6 +54,8 @@ pub enum ApplyError {
     InvalidProposal { id: BeadId, reason: String },
     /// tune proposal `{id}` is accepted but its canonical/local records are invalid: {reason}
     BlockedProposal { id: BeadId, reason: String },
+    /// tune proposal `{id}` has unavailable local inputs: {reason}; synchronize its Git objects and retry; review state unchanged
+    UnavailableProposal { id: BeadId, reason: String },
     /// tune apply requires at least one proposal id
     EmptyBatch,
     /// failed to create tokio runtime for tune apply
@@ -250,21 +250,23 @@ async fn validate_proposal(workspace: &Path, bead: Bead) -> Result<Proposal, App
     let head = required_metadata(&bead, TUNE_HEAD_KEY)?;
     let envelope = workspace.join(".loom/tune").join(bead.id.as_str());
     let repo = envelope.join("repo");
-    require_path(&bead.id, &repo, "proposal repo")?;
-    let manifest_path = envelope.join("manifest.json");
-    require_file(&bead.id, &manifest_path, "manifest")?;
-    let manifest =
-        read_manifest_identity(&manifest_path).ok_or_else(|| ApplyError::BlockedProposal {
-            id: bead.id.clone(),
-            reason: format!("manifest is corrupt at {}", manifest_path.display()),
-        })?;
-    if !manifest.agrees_for_apply(&bead, TuneState::Accepted, &base, &branch, &head) {
-        return blocked(
-            bead.id,
-            "manifest disagrees with canonical tune bead metadata",
-        );
+    if !repo.is_dir() {
+        let source = GitClient::open(workspace)?;
+        if !source.rev_exists(&head).await? {
+            return Err(ApplyError::UnavailableProposal {
+                id: bead.id,
+                reason: format!("proposal commit {head} is not available in this checkout"),
+            });
+        }
+        source.create_tune_checkout(&repo, &head, &branch).await?;
     }
     let proposal_git = GitClient::open(&repo)?;
+    if !proposal_git.rev_exists(&base).await? {
+        return Err(ApplyError::UnavailableProposal {
+            id: bead.id,
+            reason: format!("proposal base {base} is unavailable"),
+        });
+    }
     let branch_head = proposal_git
         .resolve_commit_sha(&branch)
         .await
@@ -665,12 +667,10 @@ async fn mark_apply_failed(
 }
 
 fn remove_marker(workspace: &Path) -> Result<(), ApplyError> {
-    let path = workspace.join(loom_gate::MARKER_PATH);
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(ApplyError::Io { path, source }),
-    }
+    loom_gate::invalidate_marker(workspace).map_err(|source| ApplyError::Io {
+        path: loom_driver::state::path(workspace),
+        source: std::io::Error::other(source),
+    })
 }
 
 fn pre_commit_config_digest(workspace: &Path) -> Result<String, std::io::Error> {
@@ -782,26 +782,6 @@ fn required_metadata(bead: &Bead, key: &str) -> Result<String, ApplyError> {
     metadata_string(&bead.metadata, key).ok_or_else(|| ApplyError::BlockedProposal {
         id: bead.id.clone(),
         reason: format!("missing metadata `{key}`"),
-    })
-}
-
-fn require_path(id: &BeadId, path: &Path, label: &str) -> Result<(), ApplyError> {
-    if path.is_dir() {
-        return Ok(());
-    }
-    Err(ApplyError::BlockedProposal {
-        id: id.clone(),
-        reason: format!("{label} missing at {}", path.display()),
-    })
-}
-
-fn require_file(id: &BeadId, path: &Path, label: &str) -> Result<(), ApplyError> {
-    if path.is_file() {
-        return Ok(());
-    }
-    Err(ApplyError::BlockedProposal {
-        id: id.clone(),
-        reason: format!("{label} missing at {}", path.display()),
     })
 }
 

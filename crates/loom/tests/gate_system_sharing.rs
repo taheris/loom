@@ -91,7 +91,7 @@ fn system_cli_sharing_preserves_per_criterion_reports_failures_skips_and_cache_r
                     .count(),
                 1
             );
-            let rows = StatusCache::open(&dir.path().join(".loom/cache.db"))
+            let rows = StatusCache::open(&dir.path().join(".loom/state.db"))
                 .unwrap()
                 .read_all()
                 .unwrap();
@@ -183,7 +183,7 @@ fn system_cli_shared_dispatch_errors_report_every_owner_without_passing_cache_en
             1
         );
         assert_eq!(
-            StatusCache::open(&dir.path().join(".loom/cache.db"))
+            StatusCache::open(&dir.path().join(".loom/state.db"))
                 .unwrap()
                 .read_all()
                 .unwrap(),
@@ -210,7 +210,7 @@ fn system_cli_exact_shared_target_executes_again_on_a_later_gate_run() {
             count
         );
         assert_eq!(
-            StatusCache::open(&dir.path().join(".loom/cache.db"))
+            StatusCache::open(&dir.path().join(".loom/state.db"))
                 .unwrap()
                 .read_all()
                 .unwrap()

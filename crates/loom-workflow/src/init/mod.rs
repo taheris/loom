@@ -1,7 +1,7 @@
 //! `loom init` — workspace bootstrap and optional cache-DB rebuild.
 //!
 //! Acquires the workspace lock (errors immediately if any phase or work-root
-//! lock is held), ensures `<workspace>/loom.toml` and `.loom/cache.db`
+//! lock is held), ensures `<workspace>/loom.toml` and `.loom/state.db`
 //! exist, and — when `--rebuild` is passed — drops/recreates the cache DB
 //! and repopulates it from specs and independent durable spec/work epics.
 
@@ -68,7 +68,7 @@ pub struct MaterializedIntegration {
 ///    if any phase or work-root lock is held.
 /// 2. Creates `<workspace>/.loom/` and writes `loom.toml` if it
 ///    does not already exist (existing config files are preserved).
-/// 3. Opens `cache.db` (creating the schema on first open). When
+/// 3. Opens `state.db` (creating the schema on first open). When
 ///    `opts.rebuild` is true, the file is dropped and recreated, and the
 ///    schema is repopulated from `specs/*.md` plus `molecules`.
 ///
@@ -96,14 +96,14 @@ fn run_with_hooks_resolver(
 ) -> Result<InitReport, InitError> {
     let lock_mgr = LockManager::new(workspace)?;
     let guard = lock_mgr.acquire_workspace()?;
-    run_locked(workspace, opts, molecules, guard, resolve_hooks)
+    run_locked(workspace, opts, molecules, &guard, resolve_hooks)
 }
 
 fn run_locked(
     workspace: &Path,
     opts: InitOpts,
     molecules: &[RebuildEpic],
-    _guard: LockGuard,
+    guard: &LockGuard,
     resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<InitReport, InitError> {
     let runtime_dir = workspace.join(".loom");
@@ -113,7 +113,7 @@ fn run_locked(
     })?;
 
     let config_path = LoomConfig::resolve_path(workspace);
-    let cache_db_path = runtime_dir.join("cache.db");
+    let cache_db_path = loom_driver::state::path(workspace);
 
     let config_created = !config_path.exists();
     if config_created {
@@ -132,10 +132,10 @@ fn run_locked(
     }
 
     let rebuild_report = if opts.rebuild {
-        let db = CacheDb::recreate(&cache_db_path)?;
+        let db = CacheDb::recreate_for_init(&cache_db_path, guard)?;
         Some(db.rebuild(workspace, molecules)?)
     } else {
-        let _db = CacheDb::open(&cache_db_path)?;
+        let _db = CacheDb::open_for_init(&cache_db_path, guard)?;
         None
     };
 
@@ -242,11 +242,8 @@ mod tests {
 
     fn run_with_hooks(workspace: &Path, hooks: &Path) -> Result<InitReport, InitError> {
         run_with_hooks_resolver(workspace, InitOpts::default(), &[], |workspace| {
-            loom_driver::workspace::Association::establish_with_state_home(
-                workspace,
-                &loom_driver::git::bare_origin_path(workspace).join("loom-state"),
-            )
-            .map_err(std::io::Error::other)?;
+            loom_driver::workspace::Association::establish(workspace)
+                .map_err(std::io::Error::other)?;
             Ok(hooks.to_path_buf())
         })
     }
@@ -409,7 +406,7 @@ mod tests {
         let report = run(dir.path(), InitOpts::default(), &[])?;
         assert!(report.config_created, "first init must write config");
         assert!(report.config_path.exists(), "loom.toml must exist on disk");
-        assert!(report.cache_db_path.exists(), "cache.db must exist on disk");
+        assert!(report.cache_db_path.exists(), "state.db must exist on disk");
         // The default body must parse cleanly and resolve through `agent_for`
         // identically to the empty-default config — the file writes the
         // built-in `[phase.default]` values explicitly for documentation,
@@ -471,7 +468,7 @@ mod tests {
             SpecLabel::new("alpha").unwrap(),
             None,
         )?;
-        let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
+        let db = CacheDb::open(dir.path().join(".loom/state.db"))?;
         db.rebuild(dir.path(), &molecules)?;
         let post = db.increment_iteration(&MoleculeId::new("lm-mol1").unwrap())?;
         assert_eq!(post, 1);
@@ -485,7 +482,7 @@ mod tests {
         assert_eq!(rb.work_epics, 1, "one active work epic");
 
         // Iteration counter reset to 0 after rebuild.
-        let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
+        let db = CacheDb::open(dir.path().join(".loom/state.db"))?;
         let row = db
             .work_epic(&MoleculeId::new("lm-mol1").unwrap())?
             .ok_or_else(|| anyhow::anyhow!("active work epic must exist"))?;
@@ -528,7 +525,7 @@ mod tests {
         std::fs::write(specs.join("alpha.md"), "# alpha\n")?;
 
         run(dir.path(), InitOpts::default(), &[])?;
-        let db_path = dir.path().join(".loom/cache.db");
+        let db_path = dir.path().join(".loom/state.db");
         let db = CacheDb::open(&db_path)?;
         db.rebuild(
             dir.path(),

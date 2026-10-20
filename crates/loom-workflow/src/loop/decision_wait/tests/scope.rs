@@ -32,7 +32,7 @@ async fn foreign_or_wrong_type_references_reject_whole_context_before_effects() 
 
 #[cfg(test)]
 #[tokio::test]
-async fn canonical_pending_hold_blocks_publication_even_after_native_closure() {
+async fn current_graph_releases_wait_but_orphaned_projection_blocks_publication() {
     let f = Fixture::new().await;
     assert!(matches!(f.admit().await, AgentOutcome::Waiting { .. }));
     for id in &f.decisions {
@@ -60,17 +60,27 @@ async fn canonical_pending_hold_blocks_publication_even_after_native_closure() {
         f.dir.path(),
         &git,
     )
-    .await
-    .unwrap();
-    assert_eq!(
-        handoff.evidence.molecule_state,
-        loom_gate::MoleculeState::Unresolved
-    );
+    .await;
+    assert!(matches!(
+        handoff,
+        Err(LoopError::Git(
+            loom_driver::git::GitError::PrekHooksMissing { .. }
+        ))
+    ));
     assert_eq!(
         f.journal().load(&f.source.id).unwrap().unwrap().phase,
         Phase::InventoryAdmitted
     );
-    // Released attribution must still leave the orphaned native projection fenced.
+    // Only an actual orphaned projection, not historical waiting, fences publication.
+    f.bd.update(
+        &f.source.id,
+        UpdateOpts {
+            set_metadata: vec![(HOLD_KEY.into(), "{}".into())],
+            ..UpdateOpts::default()
+        },
+    )
+    .await
+    .unwrap();
     let mut entry = f.journal().load(&f.source.id).unwrap().unwrap();
     entry.phase = Phase::Released;
     f.journal().save(&entry).unwrap();

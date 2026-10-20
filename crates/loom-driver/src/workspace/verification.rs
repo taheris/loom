@@ -1,8 +1,7 @@
-//! Driver recovery state beneath the existing protected operator Git directory.
+//! Transient driver recovery snapshots in the protected operator state database.
 //! These records retain unfinished driver work; they never authenticate coverage.
 
-use std::collections::BTreeMap;
-use std::io::Write as _;
+use crate::state::{CacheDb, RecordKind};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -12,8 +11,6 @@ use crate::bd::Status;
 use crate::git::{GitOid, head_tree_oid_sync, sync_head_commit_sha};
 use crate::identifier::{BeadId, SpecLabel};
 use crate::scratch::directory::Directory;
-
-const LOG: &str = "loom-verification-continuations";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -87,30 +84,32 @@ impl Association {
     pub fn remove_verification_checkout(&self, bead: &BeadId) -> Result<bool, Error> {
         let _lock = self.verification_lifecycle_lock()?;
         let path = self.operator().join(".loom/beads").join(bead.as_str());
-        let git = Directory::open(&self.operator().join(".git"))?;
-        match git.child(Path::new(LOG)) {
-            Ok(directory) => {
-                if directory
-                    .names()?
-                    .iter()
-                    .any(|name| name.to_string_lossy().starts_with(".pending-"))
-                {
-                    return Err(Error::Association {
-                        reason: "interrupted verification append requires provenance-aware recovery; all checkout cleanup is blocked and staging records must be preserved",
-                    });
-                }
-                directory.sync()?;
-                git.sync()?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
         if self
             .verification_continuations()?
             .iter()
             .any(|record| record.bead == *bead)
         {
             tracing::info!(%bead, path = %path.display(), "checkout retained by unresolved verification continuation");
+            return Ok(false);
+        }
+        if path.exists()
+            && !crate::git::status_porcelain_sync(&path)
+                .map_err(std::io::Error::other)?
+                .trim()
+                .is_empty()
+        {
+            tracing::info!(%bead, "dirty checkout preserved during cleanup");
+            return Ok(false);
+        }
+        let resolved = self
+            .state_db()?
+            .record::<VerificationContinuation>(RecordKind::Verification, bead.as_str())?
+            .is_some_and(|record| record.phase == Phase::Resolved);
+        if path.exists()
+            && !crate::git::checkout_redundant_sync(&path, self.integration(), resolved)
+                .map_err(std::io::Error::other)?
+        {
+            tracing::info!(%bead, "checkout with unique Git data preserved without local cleanup disposition");
             return Ok(false);
         }
         match Directory::open(&path) {
@@ -199,32 +198,32 @@ impl Association {
     /// Missing or corrupt authority and malformed retained history are not repaired.
     pub fn verification_continuations(&self) -> Result<Vec<VerificationContinuation>, Error> {
         self.recheck()?;
-        let git = Directory::open(&self.operator().join(".git"))?;
-        let directory = match git.child(Path::new(LOG)) {
-            Ok(directory) => directory,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        directory.require_private()?;
-        let lock = directory.read_private_file(Path::new(".lock"))?;
-        lock.lock_shared()?;
-        let mut latest = BTreeMap::new();
-        for (_, name) in record_names(&directory)? {
-            let record: VerificationContinuation =
-                serde_json::from_reader(directory.read_private_file(&name)?)?;
-            latest.insert(record.bead.as_str().to_owned(), record);
+        let mut pending = Vec::new();
+        for (key, record) in self
+            .state_db()?
+            .records::<VerificationContinuation>(RecordKind::Verification)?
+        {
+            if key != record.bead.as_str() {
+                return Err(Error::Association {
+                    reason: "verification record key changed",
+                });
+            }
+            if record.phase != Phase::Resolved {
+                pending.push(record);
+            }
         }
         self.recheck()?;
-        Ok(latest
-            .into_values()
-            .filter(|record| record.phase != Phase::Resolved)
-            .collect())
+        Ok(pending)
     }
 
-    /// Append one immutable, atomically published recovery event, without minting coverage.
+    fn state_db(&self) -> Result<CacheDb, Error> {
+        Ok(CacheDb::open(crate::state::path(self.operator()))?)
+    }
+
+    /// Replace an operation snapshot without admitting verification coverage.
     ///
     /// # Errors
-    /// Rejects changed authority or unsafe storage; interrupted staging files remain retained.
+    /// Reports current checkout and database failures.
     pub fn append_verification(&self, record: &VerificationContinuation) -> Result<(), Error> {
         let _lock = self.verification_lifecycle_lock()?;
         self.append_verification_locked(record)
@@ -232,43 +231,8 @@ impl Association {
 
     fn append_verification_locked(&self, record: &VerificationContinuation) -> Result<(), Error> {
         self.validate_verification_checkout(record)?;
-        let git = Directory::open(&self.operator().join(".git"))?;
-        let directory = git.ensure_child(Path::new(LOG))?;
-        directory.require_private()?;
-        let names = directory.names()?;
-        if !names.is_empty() && !names.iter().any(|name| name == ".lock") {
-            return Err(std::io::Error::other(
-                "retained verification history lacks its synchronization lock",
-            )
-            .into());
-        }
-        let lock = directory.append_private_file(Path::new(".lock"))?;
-        lock.lock()?;
-        let sequence = record_names(&directory)?
-            .last()
-            .map_or(Ok(1), |(sequence, _)| {
-                sequence
-                    .checked_add(1)
-                    .ok_or_else(|| std::io::Error::other("verification history sequence exhausted"))
-            })?;
-        // Allocate under the lock, retaining interrupted staging files without clock dependence.
-        let existing = directory.names()?;
-        let staging = (0..1024)
-            .map(|nonce| format!(".pending-{sequence}-{}-{nonce}", std::process::id()))
-            .find(|name| !existing.iter().any(|entry| entry == name.as_str()))
-            .ok_or_else(|| std::io::Error::other("verification staging names exhausted"))?;
-        let published = format!("{sequence:020}.json");
-        let mut file = directory.create_file(
-            Path::new(&staging),
-            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-        )?;
-        let mut bytes = serde_json::to_vec(record)?;
-        bytes.push(b'\n');
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        directory.rename_file(Path::new(&staging), Path::new(&published))?;
-        directory.sync()?;
-        git.sync()?;
+        self.state_db()?
+            .put_record(RecordKind::Verification, record.bead.as_str(), record)?;
         self.recheck()
     }
 
@@ -309,7 +273,53 @@ impl Association {
         self.append_verification(&record)
     }
 
-    /// Require the original repair checkout while allowing its worker to edit source.
+    /// Bind independently checked recovery storage, discarding unavailable verification reuse.
+    ///
+    /// This captures local storage identity only. It never admits coverage, changes a
+    /// native task, or removes existing work.
+    ///
+    /// # Errors
+    /// Reports unavailable independent storage or concurrent operation changes.
+    pub fn rebind_verification_checkout(
+        &self,
+        record: &VerificationContinuation,
+        reconstructed: bool,
+    ) -> Result<VerificationContinuation, Error> {
+        let _lock = self.verification_lifecycle_lock()?;
+        if self.validate_verification_checkout(record).is_ok() && !reconstructed {
+            return Ok(record.clone());
+        }
+        let path = self
+            .operator()
+            .join(".loom/beads")
+            .join(record.bead.as_str());
+        let (directory, git) = verification_directories(&path, &record.bead)?;
+        let head = sync_head_commit_sha(&path).map_err(std::io::Error::other)?;
+        let tree = head_tree_oid_sync(&path).map_err(std::io::Error::other)?;
+        let dirty = !crate::git::status_porcelain_sync(&path)
+            .map_err(std::io::Error::other)?
+            .trim()
+            .is_empty();
+        let mut next = record.clone();
+        next.directory = verification_identity(&directory, &path, &record.bead)?;
+        next.git = verification_identity(&git, &path.join(".git"), &record.bead)?;
+        next.publication_rebase = None;
+        if next.needs_source_repair()
+            || dirty
+            || (!reconstructed && (head != record.source_head || tree != record.source_tree))
+        {
+            next.phase = Phase::Repair;
+            next.repair_detail = Some("Recovery storage contains unfinished or changed source; preserve it for implementation repair and fresh verification".into());
+        } else {
+            next.phase = Phase::Verify;
+        }
+        next.source_head = head;
+        next.source_tree = tree;
+        self.append_verification_locked(&next)?;
+        Ok(next)
+    }
+
+    /// Require this operation's current repair checkout while allowing its worker to edit source.
     ///
     /// # Errors
     /// Rejects replacement of the retained checkout or its Git directory.
@@ -463,42 +473,28 @@ fn verification_directories(path: &Path, bead: &BeadId) -> Result<(Directory, Di
     Ok((directory, git))
 }
 
-fn record_names(directory: &Directory) -> Result<Vec<(u64, std::path::PathBuf)>, Error> {
-    let mut names = Vec::new();
-    for name in directory.names()? {
-        let path = std::path::PathBuf::from(name);
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-        {
-            let sequence = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .and_then(|stem| stem.parse::<u64>().ok())
-                .ok_or_else(|| std::io::Error::other("invalid verification history filename"))?;
-            names.push((sequence, path));
-        }
-    }
-    names.sort_by_key(|(sequence, _)| *sequence);
-    Ok(names)
+/// Whether this workspace has local verification recovery snapshots.
+///
+/// # Errors
+/// Reports malformed state rather than treating it as absence.
+pub fn has_verification_state(workspace: &Path) -> Result<bool, Error> {
+    Ok(!CacheDb::open(crate::state::path(workspace))?
+        .records::<VerificationContinuation>(RecordKind::Verification)?
+        .is_empty())
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        reason = "isolated authority fixture failures abort the test"
-    )]
     use super::*;
 
-    async fn cleanup_fixture() -> (
+    async fn fixture() -> (
         tempfile::TempDir,
         std::path::PathBuf,
         crate::git::GitClient,
         VerificationContinuation,
     ) {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().join("operator");
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("operator");
         let git = crate::git::init_test_repo_with_integration(&workspace).unwrap();
         let bead = BeadId::new("lm-cleanup").unwrap();
         let label = SpecLabel::new("gate").unwrap();
@@ -511,212 +507,36 @@ mod tests {
             .unwrap()
             .begin_verification(bead, label, None, head.clone(), head)
             .unwrap();
-        (dir, workspace, git, record)
-    }
-
-    #[tokio::test]
-    async fn startup_sweep_rechecks_continuations_created_after_its_inventory() {
-        struct CaptureDuringLookup {
-            workspace: std::path::PathBuf,
-            record: VerificationContinuation,
-        }
-        impl crate::bd::CommandRunner for CaptureDuringLookup {
-            async fn run(
-                &self,
-                args: Vec<std::ffi::OsString>,
-                _timeout: std::time::Duration,
-            ) -> Result<crate::bd::RunOutput, crate::bd::BdError> {
-                assert_eq!(args[0], "show");
-                assert_eq!(args[1], self.record.bead.as_str());
-                Association::resolve(&self.workspace)
-                    .unwrap()
-                    .append_verification(&self.record)
-                    .unwrap();
-                Ok(crate::bd::RunOutput {
-                    status: 0,
-                    stdout: serde_json::to_vec(&serde_json::json!([{
-                        "id": self.record.bead, "title": "completed source", "status": "closed", "parent": "lm-root"
-                    }])).unwrap(),
-                    stderr: Vec::new(),
-                })
-            }
-        }
-        let (_dir, workspace, git, record) = cleanup_fixture().await;
-        let association = Association::resolve(&workspace).unwrap();
-        association.finish_verification(&record).unwrap();
-        let bd = crate::bd::BdClient::with_runner(CaptureDuringLookup {
-            workspace: workspace.clone(),
-            record: record.clone(),
-        });
-        let removed = git
-            .sweep_orphan_bead_clones(&bd, &crate::identifier::MoleculeId::new("lm-root").unwrap())
-            .await
-            .unwrap();
-        assert_eq!(removed, Vec::<std::path::PathBuf>::new());
-        association.validate_verification(&record).unwrap();
-        assert_eq!(association.verification_continuations().unwrap().len(), 1);
+        (root, workspace, git, record)
     }
 
     #[tokio::test]
     async fn cleanup_retains_every_unresolved_phase_across_restart() {
-        let (_dir, workspace, git, record) = cleanup_fixture().await;
+        let (_root, workspace, git, record) = fixture().await;
         let path = workspace.join(".loom/beads").join(record.bead.as_str());
         for phase in [Phase::Verify, Phase::Repair, Phase::Publication] {
-            let mut retained = record.clone();
-            retained.phase = phase;
+            let mut record = record.clone();
+            record.phase = phase;
             Association::resolve(&workspace)
                 .unwrap()
-                .append_verification(&retained)
+                .append_verification(&record)
                 .unwrap();
             assert!(!git.remove_worktree(&path).await.unwrap());
-            Association::resolve(&workspace)
-                .unwrap()
-                .validate_verification(&retained)
-                .unwrap();
         }
-    }
-
-    #[tokio::test]
-    async fn durable_resolution_allows_idempotent_cleanup_without_removing_history_or_pins() {
-        let (_dir, workspace, git, record) = cleanup_fixture().await;
         let association = Association::resolve(&workspace).unwrap();
-        association.await_verification_publication(&record).unwrap();
-        let path = workspace.join(".loom/beads").join(record.bead.as_str());
-        assert!(!git.remove_worktree(&path).await.unwrap());
         association.finish_verification(&record).unwrap();
         assert!(git.remove_worktree(&path).await.unwrap());
         assert!(git.remove_worktree(&path).await.unwrap());
-        assert!(!path.exists());
         assert!(
-            Association::resolve(&workspace)
-                .unwrap()
-                .verification_continuations()
-                .unwrap()
-                .is_empty()
+            !workspace
+                .join(".git/loom-verification-continuations")
+                .exists()
         );
-        assert_eq!(
-            record_names(&Directory::open(&workspace.join(".git").join(LOG)).unwrap())
-                .unwrap()
-                .len(),
-            3
-        );
-        let pin = format!(
-            "refs/loom/verification/{}/{}",
-            record.bead, record.candidate
-        );
-        assert_eq!(
-            crate::git::sync_rev_parse(&git.loom_workspace(), &pin).unwrap(),
-            record.candidate
-        );
-        assert!(association.await_verification_publication(&record).is_err());
-    }
-
-    #[tokio::test]
-    async fn missing_checkout_refuses_recovery_without_mutating_journal_or_candidate_pin() {
-        let (_dir, workspace, git, record) = cleanup_fixture().await;
-        let path = workspace.join(".loom/beads").join(record.bead.as_str());
-        std::fs::remove_dir_all(&path).unwrap();
-        let association = Association::resolve(&workspace).unwrap();
-        let error = association
-            .validate_verification(&record)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("open verification checkout"));
-        assert!(error.contains(path.to_str().unwrap()));
-        assert!(error.contains(record.bead.as_str()));
-        assert!(error.contains("provenance-aware recovery"));
-        assert!(association.finish_verification(&record).is_err());
-        assert!(!git.remove_worktree(&path).await.unwrap());
-        assert_eq!(association.verification_continuations().unwrap().len(), 1);
-        assert_eq!(
-            record_names(&Directory::open(&workspace.join(".git").join(LOG)).unwrap())
-                .unwrap()
-                .len(),
-            1
-        );
-        let pin = format!(
-            "refs/loom/verification/{}/{}",
-            record.bead, record.candidate
-        );
-        assert_eq!(
-            crate::git::sync_rev_parse(&git.loom_workspace(), &pin).unwrap(),
-            record.candidate
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_resolution_append_preserves_checkout_and_unresolved_record() {
-        let (_dir, workspace, git, record) = cleanup_fixture().await;
-        let events = workspace.join(".git").join(LOG);
-        let lock = events.join(".lock");
-        let saved_lock = events.join(".saved-lock");
-        std::fs::rename(&lock, &saved_lock).unwrap();
-        let association = Association::resolve(&workspace).unwrap();
-        assert!(association.finish_verification(&record).is_err());
-        let path = workspace.join(".loom/beads").join(record.bead.as_str());
-        assert!(git.remove_worktree(&path).await.is_err());
-        assert!(path.exists());
-        assert!(!lock.exists());
-        std::fs::rename(&saved_lock, &lock).unwrap();
-        assert!(!git.remove_worktree(&path).await.unwrap());
-        assert_eq!(association.verification_continuations().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn interrupted_resolution_staging_never_authorizes_cleanup() {
-        let (_dir, workspace, git, record) = cleanup_fixture().await;
-        let events = workspace.join(".git").join(LOG);
-        let mut resolved = record.clone();
-        resolved.phase = Phase::Resolved;
-        let staging = events.join(".pending-resolution");
-        let bytes = serde_json::to_vec(&resolved).unwrap();
-        std::fs::write(&staging, &bytes).unwrap();
-        let path = workspace.join(".loom/beads").join(record.bead.as_str());
-        assert!(git.remove_worktree(&path).await.is_err());
-        assert!(path.exists());
-        assert_eq!(std::fs::read(staging).unwrap(), bytes);
-        assert_eq!(
-            Association::resolve(&workspace)
-                .unwrap()
-                .verification_continuations()
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn process_exit_releases_lifecycle_lock_but_retains_interrupted_intent() {
-        const CHILD: &str = "LOOM_TEST_CLEANUP_CRASH_WORKSPACE";
-        if let Some(workspace) = std::env::var_os(CHILD) {
-            let workspace = std::path::PathBuf::from(workspace);
-            let association = Association::resolve(&workspace).unwrap();
-            let _lock = association.verification_lifecycle_lock().unwrap();
-            let events = workspace.join(".git").join(LOG);
-            let mut file = std::fs::File::create(events.join(".pending-crash")).unwrap();
-            file.write_all(b"interrupted append").unwrap();
-            file.sync_all().unwrap();
-            Directory::open(&events).unwrap().sync().unwrap();
-            std::process::exit(73);
-        }
-        let (_dir, workspace, git, record) = cleanup_fixture().await;
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "workspace::verification::tests::process_exit_releases_lifecycle_lock_but_retains_interrupted_intent"])
-            .env(CHILD, &workspace)
-            .status().unwrap();
-        assert_eq!(status.code(), Some(73));
-        let association = Association::resolve(&workspace).unwrap();
-        let lock = association.verification_lifecycle_lock().unwrap();
-        drop(lock);
-        let path = workspace.join(".loom/beads").join(record.bead.as_str());
-        assert!(git.remove_worktree(&path).await.is_err());
-        assert!(path.exists());
-        assert_eq!(association.verification_continuations().unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn cleanup_serializes_with_continuation_capture() {
-        let (_dir, workspace, _git, record) = cleanup_fixture().await;
+        let (_root, workspace, _git, record) = fixture().await;
         let association = Association::resolve(&workspace).unwrap();
         association.finish_verification(&record).unwrap();
         let lock = association.verification_lifecycle_lock().unwrap();
@@ -734,126 +554,90 @@ mod tests {
             drop(lock);
             assert!(!worker.join().unwrap());
         });
-        association.validate_verification(&record).unwrap();
     }
 
     #[tokio::test]
-    async fn verification_history_serializes_contending_writers_and_readers() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().join("operator");
-        let git = crate::git::init_test_repo_with_integration(&workspace).unwrap();
-        let association = Association::resolve(&workspace).unwrap();
-        let label = SpecLabel::new("gate").unwrap();
-        let mut records = Vec::new();
-        for index in 0..4 {
-            let bead = BeadId::new(&format!("lm-contention{index}")).unwrap();
-            let source = git.create_worktree(&label, &bead).await.unwrap();
-            let head = sync_head_commit_sha(&source.path).unwrap();
-            records.push(
-                association
-                    .begin_verification(bead, label.clone(), None, head.clone(), head)
-                    .unwrap(),
-            );
-        }
-        let events = workspace.join(".git").join(LOG);
-        let interrupted = events.join(".pending-interrupted");
-        std::fs::write(&interrupted, b"interrupted bytes").unwrap();
-        let barrier = std::sync::Barrier::new(5);
+    async fn reset_does_not_authorize_discarding_dirty_work() {
+        let (_root, workspace, git, record) = fixture().await;
+        let path = workspace.join(".loom/beads").join(record.bead.as_str());
+        std::fs::write(path.join("unfinished.txt"), "irreplaceable work").unwrap();
+        drop(CacheDb::recreate(crate::state::path(&workspace)).unwrap());
+        assert!(!git.remove_worktree(&path).await.unwrap());
+        assert_eq!(
+            std::fs::read_to_string(path.join("unfinished.txt")).unwrap(),
+            "irreplaceable work"
+        );
+    }
+
+    #[tokio::test]
+    async fn verification_snapshots_serialize_concurrent_writers() {
+        let (_root, workspace, _git, record) = fixture().await;
         std::thread::scope(|scope| {
-            for record in &records {
-                let workspace = &workspace;
-                let barrier = &barrier;
-                scope.spawn(move || {
-                    let association = Association::resolve(workspace).unwrap();
-                    barrier.wait();
+            for _ in 0..4 {
+                scope.spawn(|| {
                     for _ in 0..8 {
-                        association.append_verification(record).unwrap();
+                        Association::resolve(&workspace)
+                            .unwrap()
+                            .append_verification(&record)
+                            .unwrap();
                     }
-                    association.await_verification_publication(record).unwrap();
                 });
             }
-            barrier.wait();
-            for _ in 0..16 {
-                assert_eq!(association.verification_continuations().unwrap().len(), 4);
-            }
         });
-        let retained = association.verification_continuations().unwrap();
-        assert_eq!(retained.len(), 4);
-        assert!(
-            retained
-                .iter()
-                .all(VerificationContinuation::awaiting_publication)
-        );
-        for record in &retained {
-            association.validate_verification(record).unwrap();
-        }
-        let names = record_names(&Directory::open(&events).unwrap()).unwrap();
-        assert_eq!(names.len(), 40);
-        assert_eq!(
-            names
-                .iter()
-                .map(|(sequence, _)| *sequence)
-                .collect::<Vec<_>>(),
-            (1..=40).collect::<Vec<_>>()
-        );
-        assert_eq!(std::fs::read(&interrupted).unwrap(), b"interrupted bytes");
+        let association = Association::resolve(&workspace).unwrap();
+        assert_eq!(association.verification_continuations().unwrap().len(), 1);
+        association.validate_verification(&record).unwrap();
     }
 
     #[tokio::test]
-    async fn verification_continuation_rejects_replaced_source_missing_authority_and_corrupt_history()
-     {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().join("operator");
-        let git = crate::git::init_test_repo_with_integration(&workspace).unwrap();
+    async fn missing_checkout_is_reconstructed_without_restoring_publication_coverage() {
+        let (_root, workspace, git, record) = fixture().await;
         let association = Association::resolve(&workspace).unwrap();
-        let bead = BeadId::new("lm-vstate").unwrap();
-        let label = SpecLabel::new("gate").unwrap();
-        let source = git.create_worktree(&label, &bead).await.unwrap();
-        let head = sync_head_commit_sha(&source.path).unwrap();
-        let record = association
-            .begin_verification(bead, label, None, head.clone(), head)
+        association.await_verification_publication(&record).unwrap();
+        let record = association.verification_continuations().unwrap().remove(0);
+        let path = workspace.join(".loom/beads").join(record.bead.as_str());
+        std::fs::remove_dir_all(&path).unwrap();
+        let recovered = git.recover_verification_checkout(&record).await.unwrap();
+        assert_eq!(recovered.phase, Phase::Verify);
+        assert!(recovered.publication_rebase.is_none());
+        assert_eq!(sync_head_commit_sha(&path).unwrap(), record.candidate);
+        association.validate_verification(&recovered).unwrap();
+        assert!(!git.remove_worktree(&path).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn replacement_checkout_retains_dirty_work_and_requires_source_repair() {
+        let (_root, workspace, git, record) = fixture().await;
+        let path = workspace.join(".loom/beads").join(record.bead.as_str());
+        let original = path.with_extension("saved");
+        std::fs::rename(&path, &original).unwrap();
+        git.create_worktree(&record.label, &record.bead)
+            .await
             .unwrap();
-        association.validate_verification(&record).unwrap();
-        std::fs::write(source.path.join(".git").join(LOG), "worker-forged-state\n").unwrap();
-        assert_eq!(association.verification_continuations().unwrap().len(), 1);
-        let source_git = source.path.join(".git");
-        let saved_git = source.path.join("saved-git");
-        std::fs::rename(&source_git, &saved_git).unwrap();
-        std::fs::create_dir(&source_git).unwrap();
-        assert!(association.validate_verification(&record).is_err());
-        std::fs::remove_dir(&source_git).unwrap();
-        std::fs::rename(&saved_git, &source_git).unwrap();
-        association.validate_verification(&record).unwrap();
-        let binding = workspace.join(".git/loom-workspace.json");
-        let saved_binding = workspace.join(".git/saved-workspace.json");
-        std::fs::rename(&binding, &saved_binding).unwrap();
-        assert!(association.verification_continuations().is_err());
-        assert!(!binding.exists());
-        std::fs::rename(&saved_binding, &binding).unwrap();
-        association.validate_verification(&record).unwrap();
-        let events = workspace.join(".git").join(LOG);
-        let lock = events.join(".lock");
-        let saved_lock = events.join(".saved-lock");
-        std::fs::rename(&lock, &saved_lock).unwrap();
-        assert!(association.verification_continuations().is_err());
-        assert!(association.append_verification(&record).is_err());
-        assert!(!lock.exists());
-        std::fs::rename(&saved_lock, &lock).unwrap();
-        assert_eq!(association.verification_continuations().unwrap().len(), 1);
-        std::fs::write(
-            events.join(".pending-interrupted"),
-            b"partial staging record",
-        )
-        .unwrap();
-        assert_eq!(association.verification_continuations().unwrap().len(), 1);
-        let journal = events.join("00000000000000000001.json");
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&journal)
+        std::fs::write(path.join("human-draft.txt"), "keep these bytes").unwrap();
+        let recovered = git.recover_verification_checkout(&record).await.unwrap();
+        assert_eq!(recovered.phase, Phase::Repair);
+        assert_eq!(
+            std::fs::read_to_string(path.join("human-draft.txt")).unwrap(),
+            "keep these bytes"
+        );
+        assert!(original.is_dir());
+        assert!(!git.remove_worktree(&path).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn invalid_database_snapshot_never_authorizes_cleanup() {
+        let (_root, workspace, git, record) = fixture().await;
+        CacheDb::open(crate::state::path(&workspace))
+            .unwrap()
+            .put_record(
+                RecordKind::Verification,
+                record.bead.as_str(),
+                &"invalid snapshot",
+            )
             .unwrap();
-        file.write_all(b"malformed retained history\n").unwrap();
-        let bytes = std::fs::read(&journal).unwrap();
-        assert!(association.verification_continuations().is_err());
-        assert_eq!(std::fs::read(&journal).unwrap(), bytes);
+        let path = workspace.join(".loom/beads").join(record.bead.as_str());
+        assert!(git.remove_worktree(&path).await.is_err());
+        assert!(path.exists());
     }
 }

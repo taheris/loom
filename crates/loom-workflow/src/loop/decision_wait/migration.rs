@@ -4,8 +4,8 @@
 use super::{DecisionWaitError, DecisionWaitJournal, LoopError, graph, invalid};
 use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, Status, UpdateOpts};
 use loom_driver::identifier::BeadId;
+use loom_driver::state::RecordKind;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,20 +20,13 @@ pub(super) struct Plan {
     complete: bool,
 }
 
-fn path(journal: &DecisionWaitJournal, id: &BeadId) -> std::path::PathBuf {
-    journal.directory.join("migrations").join(format!(
-        "{}.json",
-        blake3::hash(id.as_str().as_bytes()).to_hex()
-    ))
-}
-
 fn read(journal: &DecisionWaitJournal, id: &BeadId) -> Result<Option<Plan>, LoopError> {
-    let bytes = match std::fs::read(path(journal, id)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+    let Some(plan) = journal
+        .db()?
+        .record::<Plan>(RecordKind::DecisionMigration, id.as_str())?
+    else {
+        return Ok(None);
     };
-    let plan: Plan = serde_json::from_slice(&bytes).map_err(DecisionWaitError::from)?;
     if plan.version != 1
         || plan.before.id != *id
         || plan.before.issue_type != IssueType::Decision
@@ -49,18 +42,9 @@ fn read(journal: &DecisionWaitJournal, id: &BeadId) -> Result<Option<Plan>, Loop
 }
 
 fn save(journal: &DecisionWaitJournal, plan: &Plan) -> Result<(), LoopError> {
-    let path = path(journal, &plan.before.id);
-    let directory = path
-        .parent()
-        .ok_or_else(|| invalid("missing migration directory"))?;
-    std::fs::create_dir_all(directory)?;
-    let mut file = tempfile::NamedTempFile::new_in(directory)?;
-    file.write_all(&serde_json::to_vec(plan).map_err(DecisionWaitError::from)?)?;
-    file.as_file().sync_all()?;
-    file.persist(&path).map_err(|error| error.error)?;
-    for directory in directory.ancestors().take(4) {
-        std::fs::File::open(directory)?.sync_all()?;
-    }
+    journal
+        .db()?
+        .put_record(RecordKind::DecisionMigration, plan.before.id.as_str(), plan)?;
     Ok(())
 }
 
@@ -114,11 +98,10 @@ pub(super) async fn apply<R: CommandRunner>(
     decisions: &[Bead],
     waiting: bool,
 ) -> Result<Vec<Bead>, LoopError> {
-    let locks = DecisionWaitJournal {
-        directory: journal.directory.join("migration-locks"),
-        ..journal.clone()
-    };
-    let _guard = locks.acquire(root).await?;
+    let locks = loom_driver::lock::LockManager::new(&journal.workspace)?;
+    let _guard = locks
+        .acquire_record_async(RecordKind::DecisionMigration, root, journal.clock.as_ref())
+        .await?;
     let mut plans = Vec::new();
     for decision in decisions {
         if decision.parent.as_ref() == Some(root) {
@@ -241,27 +224,21 @@ pub(super) async fn recover<R: CommandRunner>(
     bd: &BdClient<R>,
     journal: &DecisionWaitJournal,
 ) -> Result<(), LoopError> {
-    let directory = journal.directory.join("migrations");
-    let files = match std::fs::read_dir(directory) {
-        Ok(files) => files,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    for file in files {
-        let path = file?.path();
-        if path.extension().is_none_or(|ext| ext != "json") {
-            continue;
+    for (key, plan) in journal
+        .db()?
+        .records::<Plan>(RecordKind::DecisionMigration)?
+    {
+        if key != plan.before.id.as_str() {
+            return Err(invalid("migration record key mismatch").into());
         }
-        let plan: Plan =
-            serde_json::from_slice(&std::fs::read(&path)?).map_err(DecisionWaitError::from)?;
-        if path != self::path(journal, &plan.before.id) {
-            return Err(invalid("migration filename mismatch").into());
-        }
-        let locks = DecisionWaitJournal {
-            directory: journal.directory.join("migration-locks"),
-            ..journal.clone()
-        };
-        let _guard = locks.acquire(&plan.root).await?;
+        let locks = loom_driver::lock::LockManager::new(&journal.workspace)?;
+        let _guard = locks
+            .acquire_record_async(
+                RecordKind::DecisionMigration,
+                &plan.root,
+                journal.clock.as_ref(),
+            )
+            .await?;
         resume(bd, journal, &plan.before.id).await?;
     }
     Ok(())

@@ -156,7 +156,7 @@ completed before termination may still be durable.
 
 [Acceptance](#cache-database).
 
-`.loom/cache.db` is disposable, reconstructable workflow cache. Git, Beads
+`.loom/state.db` is disposable, reconstructable workflow cache. Git, Beads
 metadata, specs, and the current spec index are durable authority; missing or
 corrupt cache data cannot establish that changed work is clean.
 
@@ -164,7 +164,21 @@ The schema caches indexed specs, spec-epic ids/cursors, work-epic metadata and
 iteration counts, companion paths, typed notes, criterion evidence, and schema
 metadata. Criterion evidence joins on typed `(SpecLabel, CriterionId)` and
 exposes missing or stale values rather than treating them as success. Cache APIs
-own SQL access.
+own SQL access. The same store owns transient decision reconciliation, legacy
+wait migration, verification recovery, publication receipts and tune execution
+metadata. It is not a permanent journal or release credential. Native
+prerequisites determine readiness even without local state. Human holds and
+dirty or unique Git work survive missing local records. Recovery re-admits
+current canonical inputs and requires fresh coverage when evidence is
+unavailable. Host checkout identity is checked per invocation, not pinned to
+another machine's filesystem or home directory.
+
+`loom init` imports retired local stores once under the controlling workspace
+initialization lock. Imported records grant no positive verification authority;
+invalid imports retain their sources for repair. SQL migration and record writes
+are transactional. Explicit reset refuses live database connections rather than
+unlinking a database still in use. Work-root locks remain independent for normal
+operations and exclude initialization.
 
 `loom init --rebuild` recreates this state from the spec index, spec files,
 Beads spec/work epics, and companion declarations. It rejects structural
@@ -419,10 +433,10 @@ is required.
 ### Auxiliary commands
 
 - `loom init` creates `<workspace>/loom.toml` (or `$LOOM_CONFIG` when set) and
-  `.loom/cache.db` with the default cache schema
+  `.loom/state.db` with the default cache schema
   [test](run_creates_config_and_cache_db)
 
-- `loom init --rebuild` drops and repopulates `.loom/cache.db` from durable
+- `loom init --rebuild` drops and repopulates `.loom/state.db` from durable
   sources: the spec index, canonical spec packages, bd spec/work epics, and each
   package contract's `## Companions` section. It also folds gate
   criterion-status storage into the unified cache; there is no
@@ -433,7 +447,7 @@ is required.
 
 ### Cache database
 
-- `CacheDb::open` creates `.loom/cache.db` tables on first open (`specs`,
+- `CacheDb::open` creates `.loom/state.db` tables on first open (`specs`,
   `spec_epics`, `work_epics`, `companions`, `notes`, `criterion_status`, and
   `meta`) [test](cache_db_init_creates_tables)
 
@@ -628,7 +642,7 @@ halves of the pipeline; no per-line versioning needed.
      piping)
 
    **State** — workspace lifecycle and cached state:
-   - `loom init` — create `.loom/` config + `.loom/cache.db`. `--rebuild` drops
+   - `loom init` — create `.loom/` config + `.loom/state.db`. `--rebuild` drops
      and repopulates the cache from the spec index, spec files, bd spec/work
      epics, and each spec's `## Companions` section. The cache is
      non-authoritative; hot correctness paths re-read durable Git/Beads inputs
@@ -665,8 +679,8 @@ halves of the pipeline; no per-line versioning needed.
 
 ### Cache and Beads
 
-1. **SQLite cache store** — workflow cache persisted in `.loom/cache.db`
-   (renamed from `.loom/state.db`). Tracks indexed spec rows, spec/work epic
+1. **SQLite cache store** — workflow cache persisted in `.loom/state.db`
+   (replacing `.loom/cache.db`). Tracks indexed spec rows, spec/work epic
    mirrors, criterion evidence cache, companions, iteration counters, and
    implementation notes. It is reconstructable or disposable:
    correctness-sensitive decisions use Git + Beads/Dolt metadata + current spec
@@ -757,7 +771,7 @@ success-criteria walk did not catch.
 
 [Acceptance](#success-criteria).
 
-- `loom init` writes a default `loom.toml` and creates `.loom/cache.db` with the
+- `loom init` writes a default `loom.toml` and creates `.loom/state.db` with the
   expected schema (specs, spec epics, work epics, companions, notes, criterion
   status, meta tables)
 - `loom init` is idempotent: running twice does not clobber existing notes or

@@ -106,7 +106,8 @@ impl Association {
         if overlaps(&profile, &workspace) {
             return Err(Error::Mount { path: profile });
         }
-        let profile: Profile = serde_json::from_slice(&std::fs::read(&profile)?)?;
+        let profile: Profile =
+            serde_json::from_slice(&std::fs::read(&profile)?).map_err(std::io::Error::other)?;
         for mount in profile.profile.mounts {
             self.validate_mount(&expand_source(&mount.source)?, &mount.dest)?;
         }
@@ -133,11 +134,18 @@ impl Association {
     }
 
     fn deny_source(&self, source: &Path) -> Result<(), Error> {
-        let registry_root = self.binding.registry.parent().ok_or(Error::Association {
-            reason: "registry has no parent",
-        })?;
+        let database = crate::state::path(self.operator());
+        let sidecar = |suffix: &str| {
+            let mut path = database.as_os_str().to_os_string();
+            path.push(suffix);
+            PathBuf::from(path)
+        };
         for protected in [
-            registry_root.to_path_buf(),
+            database.clone(),
+            sidecar("-wal"),
+            sidecar("-shm"),
+            sidecar(".lock"),
+            sidecar(".init.lock"),
             self.integration().to_path_buf(),
             self.operator().join(".git"),
         ] {

@@ -44,8 +44,8 @@ pub use integrity::{
     TestPathResolver, check_inputs_protocol, is_missing_binary_target,
 };
 pub use marker::{
-    MARKER_PATH, MarkerError, MarkerProof, MarkerValidationRequest, MintError, verify_marker,
-    verify_marker_for_hook,
+    MARKER_PATH, MarkerError, MarkerProof, MarkerValidationRequest, MintError, invalidate_marker,
+    verify_marker, verify_marker_for_hook,
 };
 pub use pre_commit::{
     ConfigError as PreCommitConfigError, pre_push_hook_coverage_from_config,

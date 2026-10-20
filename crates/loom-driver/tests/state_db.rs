@@ -45,9 +45,9 @@ fn list_table(db_path: &Path, sql: &str) -> Result<Vec<Vec<String>>> {
 #[test]
 fn cache_db_init_creates_tables() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
     let _db = CacheDb::open(&db_path)?;
-    assert!(db_path.exists(), "cache.db should be created");
+    assert!(db_path.exists(), "state.db should be created");
 
     let tables = list_table(
         &db_path,
@@ -79,7 +79,7 @@ fn cache_db_init_creates_tables() -> Result<()> {
     )?;
     assert_eq!(
         meta,
-        vec![vec!["schema_version".to_string(), "9".to_string()]]
+        vec![vec!["schema_version".to_string(), "10".to_string()]]
     );
     Ok(())
 }
@@ -91,7 +91,7 @@ fn cache_db_rebuild_populates_specs_and_molecules() -> Result<()> {
     write_spec(workspace, "alpha", "# alpha\n\nbody\n")?;
     write_spec(workspace, "beta", "# beta\n\nbody\n")?;
 
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let molecules = epic_fixture(
         MoleculeId::new("lm-alpha").unwrap(),
         SpecLabel::new("alpha").unwrap(),
@@ -131,13 +131,13 @@ fn cache_db_rebuild_companions() -> Result<()> {
         "# bare spec\n\nno section here\n",
     )?;
 
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let report = db.rebuild(workspace, &[])?;
     assert_eq!(report.specs, 2);
     assert_eq!(report.companions, 2);
 
     let rows = list_table(
-        &workspace.join(".loom/cache.db"),
+        &workspace.join(".loom/state.db"),
         "SELECT spec_label, companion_path FROM companions ORDER BY spec_label, companion_path",
     )?;
     assert_eq!(
@@ -155,7 +155,7 @@ fn cache_db_rebuild_resets_counters() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let molecules = epic_fixture(
         MoleculeId::new("lm-alpha").unwrap(),
         SpecLabel::new("alpha").unwrap(),
@@ -183,7 +183,7 @@ fn cache_db_rebuild_resets_counters() -> Result<()> {
 #[test]
 fn current_molecule_table_does_not_exist() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
     let _db = CacheDb::open(&db_path)?;
     let rows = list_table(
         &db_path,
@@ -202,7 +202,7 @@ fn current_molecule_table_does_not_exist() -> Result<()> {
 #[test]
 fn cache_db_open_migrates_v6_drops_current_molecule() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
 
     // Hand-build a v6 DB whose `current_molecule` table carries one
     // pointer, plus rows in the unrelated tables that must survive the
@@ -258,8 +258,8 @@ fn cache_db_open_migrates_v6_drops_current_molecule() -> Result<()> {
     )?;
     assert_eq!(
         version,
-        vec![vec!["9".to_string()]],
-        "schema_version must advance to 9",
+        vec![vec!["10".to_string()]],
+        "schema_version must advance to 10",
     );
 
     let surviving = list_table(
@@ -283,7 +283,7 @@ fn cache_increment_iteration_returns_updated_count() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let molecules = epic_fixture(
         MoleculeId::new("lm-alpha").unwrap(),
         SpecLabel::new("alpha").unwrap(),
@@ -303,7 +303,7 @@ fn cache_set_and_reset_iteration_round_trip() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let molecules = epic_fixture(
         MoleculeId::new("lm-alpha").unwrap(),
         SpecLabel::new("alpha").unwrap(),
@@ -337,7 +337,7 @@ fn cache_set_and_reset_iteration_round_trip() -> Result<()> {
 #[test]
 fn cache_db_open_migrates_v1_to_v2() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
 
     // Hand-build a v1 DB matching the pre-migration shape (specs has spec_path
     // NOT NULL, schema_version='1'). The new open() must drop spec_path and
@@ -379,7 +379,7 @@ fn cache_db_open_migrates_v1_to_v2() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(meta, vec![vec!["9".to_string()]]);
+    assert_eq!(meta, vec![vec!["10".to_string()]]);
 
     let cols = list_table(&db_path, "PRAGMA table_info(specs)")?;
     let names: Vec<&str> = cols.iter().map(|r| r[1].as_str()).collect();
@@ -400,7 +400,7 @@ fn cache_db_open_migrates_v1_to_v2() -> Result<()> {
 #[test]
 fn cache_db_open_is_idempotent_after_migration() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
 
     // Fresh open lands at the current schema; a second open must be a
     // no-op rather than re-running any ALTER (which would fail because
@@ -413,7 +413,7 @@ fn cache_db_open_is_idempotent_after_migration() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(meta, vec![vec!["9".to_string()]]);
+    assert_eq!(meta, vec![vec!["10".to_string()]]);
     Ok(())
 }
 
@@ -422,7 +422,7 @@ fn routine_commands_never_delete_spec_row() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let molecules = epic_fixture(
         MoleculeId::new("lm-alpha").unwrap(),
         SpecLabel::new("alpha").unwrap(),
@@ -445,7 +445,7 @@ fn routine_commands_never_delete_spec_row() -> Result<()> {
     db.notes_clear(&label, Some("implementation"))?;
 
     let row_count = list_table(
-        &workspace.join(".loom/cache.db"),
+        &workspace.join(".loom/state.db"),
         "SELECT COUNT(*) FROM specs WHERE label='alpha'",
     )?;
     assert_eq!(
@@ -460,7 +460,7 @@ fn routine_commands_never_delete_spec_row() -> Result<()> {
 #[test]
 fn cache_corruption_recovery() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
     std::fs::write(&db_path, b"this is not a sqlite database\x00\x01\x02")?;
 
     if CacheDb::open(&db_path).is_ok() {
@@ -480,7 +480,7 @@ fn cache_corruption_recovery() -> Result<()> {
 #[test]
 fn notes_add_then_list_chronological() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db = CacheDb::open(dir.path().join("cache.db"))?;
+    let db = CacheDb::open(dir.path().join("state.db"))?;
     let label = SpecLabel::new("alpha").unwrap();
     let id1 = db.notes_add(&label, "implementation", "first", 100)?;
     let id2 = db.notes_add(&label, "implementation", "second", 200)?;
@@ -497,7 +497,7 @@ fn notes_add_then_list_chronological() -> Result<()> {
 #[test]
 fn notes_set_replaces_atomically() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db = CacheDb::open(dir.path().join("cache.db"))?;
+    let db = CacheDb::open(dir.path().join("state.db"))?;
     let label = SpecLabel::new("alpha").unwrap();
     db.notes_add(&label, "implementation", "old A", 100)?;
     db.notes_add(&label, "implementation", "old B", 200)?;
@@ -520,7 +520,7 @@ fn notes_set_replaces_atomically() -> Result<()> {
 #[test]
 fn notes_clear_kind_only_or_all_kinds() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db = CacheDb::open(dir.path().join("cache.db"))?;
+    let db = CacheDb::open(dir.path().join("state.db"))?;
     let label = SpecLabel::new("alpha").unwrap();
     db.notes_add(&label, "implementation", "impl note", 100)?;
     db.notes_add(&label, "design", "design note", 100)?;
@@ -539,7 +539,7 @@ fn notes_clear_kind_only_or_all_kinds() -> Result<()> {
 #[test]
 fn notes_rm_removes_one_row_by_id() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db = CacheDb::open(dir.path().join("cache.db"))?;
+    let db = CacheDb::open(dir.path().join("state.db"))?;
     let label = SpecLabel::new("alpha").unwrap();
     let id1 = db.notes_add(&label, "implementation", "first", 100)?;
     let id2 = db.notes_add(&label, "implementation", "second", 200)?;
@@ -558,7 +558,7 @@ fn notes_kind_defaults_implementation() -> Result<()> {
     // "implementation"` matches what `list` reads when called with
     // `--kind implementation` (the same default).
     let dir = tempfile::tempdir()?;
-    let db = CacheDb::open(dir.path().join("cache.db"))?;
+    let db = CacheDb::open(dir.path().join("state.db"))?;
     let label = SpecLabel::new("alpha").unwrap();
     db.notes_add(&label, "implementation", "a", 100)?;
     db.notes_add(&label, "implementation", "b", 200)?;
@@ -572,7 +572,7 @@ fn rebuild_drops_all_notes() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let label = SpecLabel::new("alpha").unwrap();
     db.notes_add(&label, "implementation", "impl 1", 100)?;
     db.notes_add(&label, "implementation", "impl 2", 200)?;
@@ -588,7 +588,7 @@ fn rebuild_drops_all_notes() -> Result<()> {
     );
 
     let table_rows = list_table(
-        &workspace.join(".loom/cache.db"),
+        &workspace.join(".loom/state.db"),
         "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'",
     )?;
     assert_eq!(
@@ -606,7 +606,7 @@ fn notes_cascade_on_spec_delete() -> Result<()> {
     // dormant guarantee (no routine command DELETEs from `specs`) but the
     // clause must work if a future code path ever takes that route.
     let dir = tempfile::tempdir()?;
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
     let db = CacheDb::open(&db_path)?;
     let label = SpecLabel::new("alpha").unwrap();
     db.notes_add(&label, "implementation", "n1", 100)?;
@@ -644,7 +644,7 @@ fn open_wipes_legacy_todo_cursor_meta_keys() -> Result<()> {
     // the molecule's `loom.base_commit` bead metadata; legacy rows are
     // dead state that must not bleed into v5 callers.
     let dir = tempfile::tempdir()?;
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
 
     {
         let conn = rusqlite::Connection::open(&db_path)?;
@@ -686,7 +686,7 @@ fn open_wipes_legacy_todo_cursor_meta_keys() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(version, vec![vec!["9".to_string()]]);
+    assert_eq!(version, vec![vec!["10".to_string()]]);
 
     let legacy = list_table(
         &db_path,
@@ -713,7 +713,7 @@ fn todo_resolution_is_single_query_with_invariant_violation_refusal() -> Result<
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
 
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let molecules = ["lm-aaa", "lm-bbb"].map(|id| {
         RebuildEpic::Spec(SpecEpicRow {
             epic_id: MoleculeId::new(id).unwrap(),
@@ -738,7 +738,7 @@ fn todo_resolution_is_single_query_with_invariant_violation_refusal() -> Result<
 #[test]
 fn cache_db_round_trips_specs_epics_notes_and_criteria() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db = CacheDb::open(dir.path().join("cache.db"))?;
+    let db = CacheDb::open(dir.path().join("state.db"))?;
     let label = SpecLabel::new("alpha").unwrap();
     let spec = loom_driver::state::SpecRow {
         label: label.clone(),
@@ -803,7 +803,7 @@ fn cache_rebuild_cross_checks_spec_index_and_files() -> Result<()> {
         "| [alpha](../specs/alpha.md) | x | lm-a | p |\n",
     )?;
     std::fs::write(workspace.join("specs/beta.md"), "# beta\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let err = db.rebuild(workspace, &[]).unwrap_err();
     assert!(matches!(err, CacheError::SpecIndexMismatch { .. }));
     Ok(())
@@ -827,7 +827,7 @@ fn cache_rebuild_cross_checks_spec_index_and_packages() -> Result<()> {
     let index = workspace.join("docs/README.md");
     let valid = "## Specs\n\n| Spec | Purpose |\n| --- | --- |\n| [beta](../specs/beta/spec.md) | B |\n| [alpha](../specs/alpha/spec.md) | A |\n";
     std::fs::write(&index, valid)?;
-    let db_path = workspace.join(".loom/cache.db");
+    let db_path = workspace.join(".loom/state.db");
     let db = CacheDb::open(&db_path)?;
     let epics = ["alpha", "beta"]
         .into_iter()
@@ -919,7 +919,7 @@ fn cache_rebuild_requires_one_spec_epic_per_indexed_spec() -> Result<()> {
         "| [alpha](../specs/alpha.md) | x | lm-a | p |\n",
     )?;
     std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let err = db.rebuild(workspace, &[]).unwrap_err();
     assert!(matches!(err, CacheError::SpecIndexMismatch { .. }));
     Ok(())
@@ -939,7 +939,7 @@ fn cache_db_rebuild_populates_specs_epics_and_companions() -> Result<()> {
         workspace.join("specs/alpha.md"),
         "# alpha\n\n## Companions\n\n- `lib/a/`\n",
     )?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let report = db.rebuild(
         workspace,
         &epic_fixture(
@@ -966,7 +966,7 @@ fn cache_rebuild_resets_work_epic_counters() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/state.db"))?;
     let molecules = epic_fixture(
         MoleculeId::new("lm-alpha").unwrap(),
         SpecLabel::new("alpha").unwrap(),
@@ -988,7 +988,7 @@ fn cache_rebuild_resets_work_epic_counters() -> Result<()> {
 fn cache_rebuild_rolls_back_partial_replacement_on_duplicate_work_ids() -> Result<()> {
     let directory = tempfile::tempdir()?;
     write_spec(directory.path(), "alpha", "# alpha")?;
-    let db = CacheDb::open(directory.path().join("cache.db"))?;
+    let db = CacheDb::open(directory.path().join("state.db"))?;
     let id = MoleculeId::new("lm-work")?;
     let label = SpecLabel::new("alpha")?;
     let mut epics = epic_fixture(id.clone(), label.clone(), Some("anchor".into()))?.to_vec();
@@ -1013,7 +1013,7 @@ fn cache_rebuild_rejects_empty_present_index() -> Result<()> {
     write_spec(directory.path(), "alpha", "# alpha")?;
     std::fs::create_dir(directory.path().join("docs"))?;
     std::fs::write(directory.path().join("docs/README.md"), "# empty index")?;
-    let db = CacheDb::open(directory.path().join("cache.db"))?;
+    let db = CacheDb::open(directory.path().join("state.db"))?;
     assert!(matches!(
         db.rebuild(directory.path(), &[]),
         Err(CacheError::SpecIndexMismatch { .. })
@@ -1024,7 +1024,7 @@ fn cache_rebuild_rejects_empty_present_index() -> Result<()> {
 #[test]
 fn cache_corruption_recovery_never_implies_clean_todo() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db_path = dir.path().join("cache.db");
+    let db_path = dir.path().join("state.db");
     std::fs::write(&db_path, "not sqlite")?;
     assert!(CacheDb::open(&db_path).is_err());
     let db = CacheDb::recreate(&db_path)?;

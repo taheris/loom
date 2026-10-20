@@ -30,10 +30,7 @@ async fn work_root_candidates_wait_on_native_prerequisites_and_resume_open() {
         matches!(outcome, AgentOutcome::Waiting { blockers: WaitPrerequisites::Native(ref blockers) } if blockers.ids().count() == 2),
         "{outcome:?}"
     );
-    assert_eq!(
-        f.bd.show(&f.source.id).await.unwrap().status,
-        Status::Blocked
-    );
+    assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
     assert!(
         f.bd.dep_add(&f.root, &f.decisions[0]).await.is_err(),
         "native descendant guard"
@@ -148,10 +145,7 @@ async fn interrupted_native_migration_recovers_without_losing_the_batch() {
         assert_eq!(provenance["root"], f.root.as_str());
     }
     assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap().description, BRIEF);
-    assert_eq!(
-        f.bd.show(&f.source.id).await.unwrap().status,
-        Status::Blocked
-    );
+    assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
     assert_eq!(
         f.bd.dependency_snapshot(&f.source.id)
             .await

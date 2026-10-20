@@ -77,7 +77,7 @@ fn bare_loom_gate_verify_prints_help_and_runs_nothing() {
         "bare verify must print subcommand help, got:\n{stdout}",
     );
     assert!(
-        !workspace.join(".loom/cache.db").exists(),
+        !workspace.join(".loom/state.db").exists(),
         "bare verify must not open the gate cache",
     );
 }
@@ -186,7 +186,7 @@ fn assert_status_report(workspace: &Path, args: &[&str]) {
 fn gate_status_rejects_target_before_cache_or_subprocess_work() {
     let dir = verifier_workspace();
     let workspace = dir.path();
-    let cache_path = workspace.join(".loom/cache.db");
+    let cache_path = workspace.join(".loom/state.db");
     for seeded in [false, true] {
         if seeded {
             std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();

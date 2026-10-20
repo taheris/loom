@@ -109,7 +109,7 @@ proptest! {
             std::fs::write(&path, body).unwrap();
         }
 
-        let db_path = workspace.join(".loom/cache.db");
+        let db_path = workspace.join(".loom/state.db");
         let db = CacheDb::open(&db_path).unwrap();
 
         let result = db.rebuild(workspace, &[]);
@@ -135,7 +135,7 @@ proptest! {
         garbage in proptest::collection::vec(any::<u8>(), 0..2048),
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("cache.db");
+        let db_path = dir.path().join("state.db");
         std::fs::write(&db_path, &garbage).unwrap();
 
         let db = CacheDb::recreate(&db_path).unwrap();
@@ -173,7 +173,7 @@ proptest! {
             .flat_map(|(i, label)| epic_fixture(MoleculeId::new(format!("lm-{i}")).unwrap(), SpecLabel::new(label.clone()).unwrap(), Some(format!("commit-{i}"))).unwrap())
             .collect();
 
-        let db_path = workspace.join(".loom/cache.db");
+        let db_path = workspace.join(".loom/state.db");
         let db = CacheDb::open(&db_path).unwrap();
         let report = db.rebuild(workspace, &molecules).unwrap();
         prop_assert_eq!(report.specs, unique.len());

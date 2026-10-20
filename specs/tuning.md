@@ -312,10 +312,7 @@ The proposal id is the tune bead id.
 ```text
 .loom/tune/<bead-id>/
   repo/                 # isolated proposal checkout on branch loom/tune/<bead-id>
-  manifest.json         # local execution manifest/cache
   evidence.md           # local expanded evidence appendix
-  logs/
-  evidence/
 ```
 
 The tune bead is the canonical durable review record. It carries labels such as
@@ -339,20 +336,17 @@ machine-readable `loom.tune.*` fields for the same canonical state, including:
 - `loom.tune.outcome_counts`
 - `loom.tune.apply_failure` when relevant
 
-`.loom/tune/<id>/` is local and disposable. `manifest.json` is a resume/debug
-cache containing the structured checker plan/results and local path map;
-`evidence.md` may contain larger excerpts and checker output tails. Manifest
-fields include schema version, proposal/bead id, workspace path, state at write,
-target kind/names/files, git base/branch/head/commit ids, tune level/seed/ plan
-hash/plan/results/caps, and local paths. The bead and proposal branch are
-canonical; if manifest and bead disagree, the tune item blocks for review.
-`loom inbox view -p <id>` must still work from the tune bead body and local
-proposal repo when `evidence.md` is absent. If `.loom/tune/<id>/` is missing or
-corrupt but bead metadata and the proposal branch/head still exist, Loom may
-regenerate local manifest/evidence artifacts on demand. If the proposal branch
-or identified commits are missing/unreachable, the tune item remains
-`kind = tune` but moves to blocked state for chat review with repair/drop
-options. Corrupt tune items are never silently skipped.
+`.loom/tune/<id>/` is local payload storage. Structured execution metadata
+(checker plan/results, caps, local paths and proposal identity) lives only in
+`.loom/state.db`; it is a disposable resume/debug cache, not review authority.
+`evidence.md` may contain larger excerpts and checker output tails. The bead and
+identified Git commits are canonical. Missing or stale local metadata does not
+change pending/accepted human review state. `loom inbox view -p <id>` still
+works from the bead body when the appendix or checkout is absent. Apply can
+reconstruct a missing checkout from reachable proposal commits and requires
+fresh gates. Unavailable commits produce a recovery diagnostic without rewriting
+canonical review state; conflicting branch/head identities block apply for
+repair/drop review. Corrupt canonical tune items are never silently skipped.
 
 Tune proposal states are:
 
@@ -471,8 +465,8 @@ driver without making tuning a second resolution authority.
   proposal-creating commands [test](loom_tune_cli_surface)
 
 - Each tuning invocation creates one tune bead plus one isolated
-  `.loom/tune/<bead-id>/` envelope with `repo/`, `manifest.json`, `evidence.md`,
-  candidate commit(s), and no changes to the invoking checkout
+  `.loom/tune/<bead-id>/` envelope with `repo/`, `evidence.md`, candidate
+  commit(s), and no changes to the invoking checkout
   [test](loom_tune_subcommands_create_isolated_proposals)
 
 - Tune checker planning freezes a deterministic registered-checker plan from the

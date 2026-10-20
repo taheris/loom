@@ -357,11 +357,11 @@ max_changed_files = 2
             .output()
             .unwrap();
         assert_success(&output, &["replay clock worker"]);
-        serde_json::from_str(
-            &std::fs::read_to_string(self.workspace.join(".loom/tune/lm-replay.1/manifest.json"))
-                .unwrap(),
-        )
-        .unwrap()
+        loom_driver::state::CacheDb::open(loom_driver::state::path(&self.workspace))
+            .unwrap()
+            .record::<serde_json::Value>(loom_driver::state::RecordKind::Tune, "lm-replay.1")
+            .unwrap()
+            .unwrap()
     }
 
     fn starts(&self) -> Vec<serde_json::Value> {
@@ -837,10 +837,22 @@ contains = ["missing test from replay input"]
 
     assert_success(&output, &args);
     let envelope = tmp.path().join(".loom/tune/lm-tune.2");
-    let manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(envelope.join("manifest.json")).expect("read manifest"),
+    let manifest: serde_json::Value = loom_driver::state::CacheDb::open(loom_driver::state::path(
+        envelope
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(),
+    ))
+    .unwrap()
+    .record::<serde_json::Value>(
+        loom_driver::state::RecordKind::Tune,
+        envelope.file_name().unwrap().to_str().unwrap(),
     )
-    .expect("manifest json");
+    .unwrap()
+    .unwrap();
     assert_eq!(manifest["state"], "pending", "manifest={manifest}");
     let replay_runs = match std::fs::read_to_string(&replay_count) {
         Ok(body) => body.lines().count(),
@@ -916,11 +928,12 @@ fn template_tune_candidate_validation() {
     assert_success(&output, &args);
 
     let proposal_repo = workspace.join(".loom/tune/lm-tune.3/repo");
-    let manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(workspace.join(".loom/tune/lm-tune.3/manifest.json"))
-            .expect("manifest"),
-    )
-    .expect("manifest json");
+    let manifest: serde_json::Value =
+        loom_driver::state::CacheDb::open(loom_driver::state::path(&workspace))
+            .unwrap()
+            .record::<serde_json::Value>(loom_driver::state::RecordKind::Tune, "lm-tune.3")
+            .unwrap()
+            .unwrap();
     assert_eq!(manifest["state"], "pending", "manifest={manifest}");
     let labels = std::fs::read_to_string(state_dir.join("lm-tune.3/labels")).expect("labels");
     assert!(
@@ -1035,17 +1048,28 @@ fn loom_tune_subcommands_create_isolated_proposals() {
         "{out}"
     );
     let envelope = tmp.path().join(".loom/tune/lm-tune.1");
-    for path in ["repo", "logs", "evidence"] {
-        assert!(envelope.join(path).is_dir(), "missing dir {path}");
-    }
-    for path in ["manifest.json", "evidence.md"] {
-        assert!(envelope.join(path).is_file(), "missing file {path}");
-    }
+    assert!(envelope.join("repo").is_dir());
+    assert!(envelope.join("evidence.md").is_file());
+    assert!(!envelope.join("manifest.json").exists());
+    assert!(!envelope.join("logs").exists());
+    assert!(!envelope.join("evidence").exists());
 
-    let manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(envelope.join("manifest.json")).expect("read manifest"),
+    let manifest: serde_json::Value = loom_driver::state::CacheDb::open(loom_driver::state::path(
+        envelope
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(),
+    ))
+    .unwrap()
+    .record::<serde_json::Value>(
+        loom_driver::state::RecordKind::Tune,
+        envelope.file_name().unwrap().to_str().unwrap(),
     )
-    .expect("manifest json");
+    .unwrap()
+    .unwrap();
     assert_eq!(manifest["proposal_id"], "lm-tune.1");
     assert_eq!(manifest["state"], "pending");
     assert_eq!(manifest["level"], "fast");
