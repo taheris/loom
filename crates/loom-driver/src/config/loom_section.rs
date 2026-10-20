@@ -77,7 +77,7 @@ impl LoomTopConfig {
     }
 
     /// Container-side sccache env entries: `SCCACHE_DIR` set to the
-    /// configured container path plus `RUSTC_WRAPPER=sccache`. Empty when
+    /// configured container path plus both Cargo Rust wrapper settings. Empty when
     /// [`sccache_dir`](Self::sccache_dir) is `None` so callers can
     /// unconditionally extend their env allowlist.
     pub fn container_sccache_env(&self) -> Vec<(String, String)> {
@@ -90,6 +90,10 @@ impl LoomTopConfig {
                 self.sccache_container_path.to_string_lossy().into_owned(),
             ),
             ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
+            (
+                "CARGO_BUILD_RUSTC_WRAPPER".to_string(),
+                "sccache".to_string(),
+            ),
         ]
     }
 

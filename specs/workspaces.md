@@ -58,9 +58,12 @@ by the configured [Issues adapter](issues.md#workflow-and-worker-use), not an
 unconditional Beads dependency. The production Beads adapter mounts its
 authoritative Dolt socket at `/workspace/.wrix/dolt.sock`; non-Beads test use
 requires no native socket/database. A configured shared sccache directory is an
-additional mount. Backend selection and acceptance admission cannot expand
-mounts, credentials or execution authority; proposed host/expanded-authority
-experiments require
+additional mount. Compatible beads share that worker cache, not one cache per
+bead; their Cargo targets remain separate. Cache keys retain source, toolchain
+and configuration distinctions: a shared pool does not promise hits for every
+unit or authorize consumption by trusted builds. Backend selection and
+acceptance admission cannot expand mounts, credentials or execution authority;
+proposed host/expanded-authority experiments require
 [Inbox approval](inbox.md#acceptance-repair-and-execution-authority).
 `SpawnConfig` owns these per-launch mounts;
 [Agent — SpawnConfig](agent.md#spawnconfig) owns their wire shape.
@@ -651,6 +654,15 @@ for worker feedback.
 
 - When `[loom] sccache_dir` is unset, no sccache mount appears on the bead
   container spawn args [test](sccache_mount_omitted_when_unset)
+
+- Two independently cloned Rust beads receive the same configured writable
+  sccache source and effective cache path, with both Rust wrapper environment
+  settings aligned. Actual offline Cargo builds with separate targets reuse a
+  compatible external dependency through that pool; changing application
+  features rebuilds the library and preserves each clone's correct output.
+  This native test translates only the mount projection; it does not certify
+  deployed Wrix mounts or trusted-build isolation.
+  [test](sccache_shared_across_bead_clones)
 
 - Cache hits are observable across beads in a multi-bead loop when
   `[loom] sccache_dir` is configured

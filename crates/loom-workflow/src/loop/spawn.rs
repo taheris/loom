@@ -145,6 +145,8 @@ fn validate_spawn_manifest_entry(
 
 #[cfg(test)]
 mod tests {
+    mod cache;
+
     use super::*;
     use loom_driver::agent::ImageSourceKind;
     use loom_driver::bd::Label;

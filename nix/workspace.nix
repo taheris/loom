@@ -162,6 +162,7 @@ let
         pkgs.flock
         pkgs.jq
         pkgs.openssh
+        pkgs.sccache
       ];
       # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
       preCheck = ''
