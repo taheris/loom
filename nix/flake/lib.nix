@@ -90,13 +90,7 @@ in
       inherit (inputs) nixpkgs;
       nextestOverlay = import ../nextest-overlay.nix;
 
-      linuxSystem =
-        if system == "aarch64-darwin" then
-          "aarch64-linux"
-        else if system == "x86_64-darwin" then
-          "x86_64-linux"
-        else
-          system;
+      linuxSystem = if system == "aarch64-darwin" then "aarch64-linux" else system;
 
       wrixPkgs = import nixpkgs {
         inherit system;

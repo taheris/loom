@@ -7,6 +7,9 @@ backend over `loom-llm`).
 
 ## Quick Start
 
+The flake supports `aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`. Intel
+Darwin (`x86_64-darwin`) is not supported.
+
 ```bash
 nix build              # Build the loom binary
 nix run -- --help      # CLI overview

@@ -22,13 +22,11 @@ let
       {
         aarch64-darwin = null;
         aarch64-linux = null;
-        x86_64-darwin = null;
         x86_64-linux = null;
       };
 in
-assert names.aarch64-darwin == names.x86_64-darwin;
 assert names.aarch64-linux == names.x86_64-linux;
-assert names.x86_64-darwin != [ ];
-assert subtractLists names.x86_64-linux names.x86_64-darwin == [ ];
-assert subtractLists names.x86_64-darwin names.x86_64-linux != [ ];
+assert names.aarch64-darwin != [ ];
+assert subtractLists names.x86_64-linux names.aarch64-darwin == [ ];
+assert subtractLists names.aarch64-darwin names.x86_64-linux != [ ];
 names

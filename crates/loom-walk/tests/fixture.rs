@@ -4898,7 +4898,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "flake.nix",
-        "systems = [ \"aarch64-darwin\" \"aarch64-linux\" \"x86_64-darwin\" \"x86_64-linux\" ];\n",
+        "systems = [ \"aarch64-darwin\" \"aarch64-linux\" \"x86_64-linux\" ];\n",
     );
     seed(
         root,
