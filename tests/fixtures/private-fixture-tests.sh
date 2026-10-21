@@ -62,7 +62,7 @@ for arg in "$@"; do
     printf '%s 755\n' "$FIXTURE_NAMESPACE_OWNER"
     exit 0
   fi
-  if [[ "$arg" == /tmp && "${FIXTURE_UNTRUSTED_TMP:-0}" == 1 ]]; then
+  if [[ "$arg" == "$FIXTURE_SYSTEM_TMP" && "${FIXTURE_UNTRUSTED_TMP:-0}" == 1 ]]; then
     printf '%s 1777\n' "$FIXTURE_NAMESPACE_OWNER"
     exit 0
   fi
@@ -74,6 +74,8 @@ chmod u+x "$fixture/bin/stat"
 (
   export PATH="$fixture/bin:$PATH"
   export FIXTURE_REAL_STAT="$real_stat"
+  FIXTURE_SYSTEM_TMP=$(realpath -e -- /tmp)
+  export FIXTURE_SYSTEM_TMP
   export FIXTURE_NAMESPACE_OWNER="$namespace_owner"
   export FIXTURE_ROOT_STAT_CALLED="$fixture/root-stat-called"
 

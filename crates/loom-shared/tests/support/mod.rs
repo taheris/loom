@@ -68,7 +68,7 @@ impl Fixture {
         let directory = tempfile::Builder::new()
             .prefix("loom-target-reuse-")
             .tempdir_in(parent)?;
-        let root = directory.path();
+        let root = directory.path().canonicalize()?;
         let home = root.join("cargo-home");
         let dependency = root.join("dependency");
         fs::create_dir_all(dependency.join("src"))?;
