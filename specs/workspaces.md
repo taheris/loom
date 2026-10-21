@@ -188,7 +188,11 @@ implementation boundary: abandoned never-dispatched preparations can be
 collected. A durable private projection tombstone, outside the worker mount,
 protects dispatched output even if transient database snapshots are reset or
 replayed; every dispatched generation remains unreconciled pending trusted
-runtime lifetime observations. Trusted native output retention remains pending.
+runtime lifetime observations. Trusted-native commands share an operator-owned
+per-user budget under `loom/trusted-cargo`; worker configuration cannot enlarge
+it. Native admission reuses the same artifact records, fence, ownership checks,
+quarantine and hold model without adding evidence authority. Dispatched native
+output also remains unreconciled; lifecycle-based collection remains pending.
 
 A trusted lifecycle lease is necessary but insufficient after process loss.
 Restart reconciles owned process/cgroup generations before making output idle;
@@ -456,6 +460,32 @@ for worker feedback.
   output collectible: a private per-generation projection tombstone remains
   protective after its launcher lease is released.
   [test](cargo_retention_cache_replay_cannot_erase_projection_tombstones)
+
+- Trusted-native admission shares one per-user budget across controlling
+  workspaces, ignores worker-selected budget configuration, and can refuse a new
+  context while independently admissible existing work continues.
+  [test](trusted_cargo_retention_shares_one_budget_across_controlling_workspaces)
+
+- Native replayed records cannot erase durable dispatch protection or release
+  independent holds.
+  [test](trusted_cargo_retention_replay_cannot_erase_dispatch_or_independent_holds)
+
+- Native allocation refuses unsafe policy and target substitutions instead of
+  consuming ambient worker output or silently choosing a different budget.
+  [test](trusted_cargo_retention_refuses_policy_and_target_substitution)
+
+- Parallel native admission serializes through database teardown and reuses one
+  context reservation without admitting duplicate generations.
+  [test](trusted_cargo_retention_serializes_parallel_admission_without_double_reservation)
+
+- Native collection reclaims only owned never-dispatched preparations while
+  preserving dispatched generations under the same policy and fence.
+  [test](trusted_cargo_retention_collects_only_owned_never_dispatched_preparations)
+
+- A real trusted-native Cargo descendant surviving launcher SIGKILL retains its
+  output through pressure and restart; eventual completion does not grant
+  lifecycle disposal authority.
+  [test](trusted_cargo_retention_restart_preserves_surviving_processes)
 
 - Accounting and reservation admission cover only recorded generated namespaces;
   size, age and free-space policy protects active, held, pinned and unknown

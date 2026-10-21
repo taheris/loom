@@ -12,12 +12,13 @@ use crate::identifier::BeadId;
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
     pub(super) version: u8,
-    pub(super) bead: BeadId,
+    #[serde(default)]
+    pub(super) bead: Option<BeadId>,
     pub(super) source: PathBuf,
     pub(super) source_identity: Identity,
     pub(super) target: PathBuf,
     pub(super) namespace_identity: Identity,
-    pub(super) profile: PathBuf,
+    pub(super) profile: Option<PathBuf>,
     pub(super) context: Context,
     #[serde(default)]
     pub(super) lease_identity: Option<Identity>,

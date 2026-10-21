@@ -210,6 +210,16 @@ pub(super) mod cases {
     }
 
     #[test]
+    fn trusted_cargo_workspace_alias_cannot_hide_source_output_overlap() {
+        let (root, association, _worker, _profile) = fixture();
+        let alias = root.path().join("operator-alias");
+        std::os::unix::fs::symlink(association.operator(), &alias).unwrap();
+        let output = association.operator().join("hidden-trusted-output");
+        assert!(trusted_command_at(&mut Command::new("true"), &alias, &output).is_err());
+        assert!(!output.exists());
+    }
+
+    #[test]
     fn trusted_cargo_execution_rejects_worker_cache_inputs() {
         let (root, association, worker, profile) = fixture();
         let namespace = prepare(

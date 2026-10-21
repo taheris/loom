@@ -41,15 +41,29 @@ mod cases {
         let association = Association::resolve(Path::new(&operator)).unwrap();
         let worker = association.operator().join(".loom/beads/lm-cargo");
         let profile = PathBuf::from(std::env::var_os("LOOM_RETENTION_TEST_PROFILE").unwrap());
-        let namespace = allocate(&association, &worker, &profile, &policy());
-        namespace.configure(&mut spawn(&worker)).unwrap();
-        fs::write(signals.join("target"), namespace.target().to_str().unwrap()).unwrap();
+        let (target, _namespace) =
+            if let Some(output) = std::env::var_os("LOOM_RETENTION_TEST_NATIVE") {
+                (
+                    crate::workspace::cargo::trusted::prepare(
+                        Path::new(&output),
+                        &worker,
+                        &MockClock::new(),
+                    )
+                    .unwrap(),
+                    None,
+                )
+            } else {
+                let namespace = allocate(&association, &worker, &profile, &policy());
+                namespace.configure(&mut spawn(&worker)).unwrap();
+                (namespace.target(), Some(namespace))
+            };
+        fs::write(signals.join("target"), target.to_str().unwrap()).unwrap();
         let status = Command::new("sh")
             .args(["-c", "cargo build --offline; code=$?; printf '%s\\n' \"$code\" > \"$LOOM_RETENTION_TEST_SIGNALS/cargo-done\"; exit \"$code\""])
             .current_dir(&worker)
-            .env("CARGO_TARGET_DIR", namespace.target())
-            .env("CARGO_BUILD_TARGET_DIR", namespace.target())
-            .env("CARGO_BUILD_BUILD_DIR", namespace.target())
+            .env("CARGO_TARGET_DIR", &target)
+            .env("CARGO_BUILD_TARGET_DIR", &target)
+            .env("CARGO_BUILD_BUILD_DIR", &target)
             .env("CARGO_BUILD_JOBS", "1")
             .env("RUSTC_WRAPPER", "")
             .env("CARGO_BUILD_RUSTC_WRAPPER", "")
@@ -62,8 +76,29 @@ mod cases {
 
     #[tokio::test]
     async fn cargo_retention_restart_preserves_surviving_processes() {
+        surviving_processes(false).await;
+    }
+
+    #[tokio::test]
+    async fn trusted_cargo_retention_restart_preserves_surviving_processes() {
+        surviving_processes(true).await;
+    }
+
+    async fn surviving_processes(native: bool) {
         use rustix::process::{Pid, test_kill_process};
         let (root, association, worker, profile) = fixture();
+        let native_output = root.path().join("trusted-cargo");
+        if native {
+            let fence = Fence::trusted(&native_output).unwrap();
+            let file = fence
+                .root
+                .create_file(
+                    Path::new("policy.json"),
+                    rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+                )
+                .unwrap();
+            serde_json::to_writer(file, &policy()).unwrap();
+        }
         let signals = root.path().join("signals");
         fs::create_dir(&signals).unwrap();
         let release = Release(signals.join("release"));
@@ -88,7 +123,11 @@ fn main() {
         )
         .unwrap();
         let log = fs::File::create(root.path().join("launcher.log")).unwrap();
-        let mut launcher = Command::new(std::env::current_exe().unwrap())
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        if native {
+            command.env("LOOM_RETENTION_TEST_NATIVE", &native_output);
+        }
+        let mut launcher = command
             .args([
                 "--exact",
                 "workspace::cargo::retention::process::cases::cargo_retention_launcher_child",
@@ -122,14 +161,51 @@ fn main() {
             max_age_secs: 0,
             ..policy()
         };
-        let report = sweep(&restarted, &pressure, &MockClock::new()).unwrap();
+        let sweep_pool = || {
+            if native {
+                Fence::trusted(&native_output)
+                    .unwrap()
+                    .collect(&pressure, Bytes::default(), &MockClock::new())
+                    .unwrap()
+            } else {
+                sweep(&restarted, &pressure, &MockClock::new()).unwrap()
+            }
+        };
+        let report = sweep_pool();
         assert!(report.charged.get() > 0);
         assert!(target.join("live-build-output").exists());
         assert!(test_kill_process(Pid::from_raw(pid).unwrap()).is_ok());
         let mut independent_policy = policy();
         independent_policy.max_bytes = report.charged.add(Bytes::new(256 * 1024)).unwrap();
-        let independent = allocate(&restarted, &worker, &profile, &independent_policy);
-        assert!(independent.target().is_dir());
+        if native {
+            let source = root.path().join("independent-source");
+            fs::create_dir(&source).unwrap();
+            independent_policy.max_bytes = independent_policy
+                .max_bytes
+                .add(Bytes::new(1024 * 1024))
+                .unwrap();
+            {
+                let fence = Fence::trusted(&native_output).unwrap();
+                let file = fence
+                    .root
+                    .read_private_file(Path::new("policy.json"))
+                    .unwrap();
+                file.set_len(0).unwrap();
+                serde_json::to_writer(file, &independent_policy).unwrap();
+            }
+            assert!(
+                crate::workspace::cargo::trusted::prepare(
+                    &native_output,
+                    &source,
+                    &MockClock::new()
+                )
+                .unwrap()
+                .is_dir()
+            );
+        } else {
+            let independent = allocate(&restarted, &worker, &profile, &independent_policy);
+            assert!(independent.target().is_dir());
+        }
         fs::write(&release.0, "release").unwrap();
         wait_for(&signals.join("cargo-done")).await;
         assert_eq!(
@@ -138,7 +214,7 @@ fn main() {
                 .trim(),
             "0"
         );
-        sweep(&restarted, &pressure, &MockClock::new()).unwrap();
+        sweep_pool();
         assert!(
             target.join("live-build-output").exists(),
             "completion without runtime reconciliation is still unknown"

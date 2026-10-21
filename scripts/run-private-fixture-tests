@@ -49,6 +49,8 @@ export TMPDIR
 # Reconciliation locks must be as private and disposable as fixture worktrees.
 # In unsandboxed Nix checks, the default HOME is the forbidden /homeless-shelter.
 export XDG_STATE_HOME="$TMPDIR/state"
-mkdir -p -- "$XDG_STATE_HOME"
+mkdir -p -- "$XDG_STATE_HOME/loom/trusted-cargo"
+# Tiny fixture checkouts reserve one MiB each; real allocated growth is still charged.
+printf '{"reservation_bytes":1048576}\n' > "$XDG_STATE_HOME/loom/trusted-cargo/policy.json"
 trap 'rm -rf -- "$TMPDIR"' EXIT
 "$@"

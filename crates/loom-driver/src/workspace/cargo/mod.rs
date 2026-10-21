@@ -2,6 +2,7 @@
 
 mod record;
 pub mod retention;
+mod trusted;
 
 use std::fs::{self, File};
 use std::os::unix::fs::MetadataExt;
@@ -87,7 +88,7 @@ impl Namespace {
             || spawn
                 .profile_config
                 .as_ref()
-                .is_some_and(|profile| profile != &record.profile)
+                .is_some_and(|profile| Some(profile) != record.profile.as_ref())
             || record.lease_identity.as_ref()
                 != Some(&Identity::from_stat(
                     &rustix::fs::fstat(&self.lease).map_err(std::io::Error::from)?,
@@ -198,12 +199,12 @@ pub fn prepare(
     };
     let mut record = Record {
         version: 2,
-        bead,
+        bead: Some(bead),
         source: workspace.into(),
         source_identity,
         target: namespace.target(),
         namespace_identity: Identity::from_stat(&generation_handle.stat()?),
-        profile: profile.into(),
+        profile: Some(profile.into()),
         context,
         lease_identity: Some(Identity::from_stat(
             &rustix::fs::fstat(&namespace.lease).map_err(std::io::Error::from)?,
@@ -266,10 +267,13 @@ fn eligible_donor(
     {
         return Ok(None);
     }
+    let Some(bead) = &donor.bead else {
+        return Ok(None);
+    };
     let root = association
         .operator()
         .join(".loom/cargo-artifacts/worker")
-        .join(donor.bead.as_str())
+        .join(bead.as_str())
         .join(donor.context.name());
     let Some(parent) = donor.target.parent() else {
         return Ok(None);
@@ -280,7 +284,7 @@ fn eligible_donor(
             != association
                 .operator()
                 .join(".loom/beads")
-                .join(donor.bead.as_str())
+                .join(bead.as_str())
     {
         return Ok(None);
     }
@@ -327,6 +331,9 @@ fn context(workspace: &Path, profile: Option<&Path>) -> std::io::Result<Context>
         hash.update(fs::read(profile)?);
     } else {
         hash.update(workspace.as_os_str().as_encoded_bytes());
+        let source = trusted::source_identity(workspace)?;
+        hash.update(source.device.to_le_bytes());
+        hash.update(source.inode.to_le_bytes());
         let executable = std::env::current_exe()?;
         let runtime = fs::metadata(&executable)?;
         hash.update(executable.as_os_str().as_encoded_bytes());
@@ -414,7 +421,7 @@ fn trusted_command_at(
     workspace: &Path,
     output: &Path,
 ) -> std::io::Result<()> {
-    let workspace = std::path::absolute(workspace)?;
+    let workspace = std::fs::canonicalize(workspace)?;
     let workspace = workspace
         .ancestors()
         .find(|parent| parent.join(".git").exists())
@@ -449,11 +456,8 @@ fn trusted_command_at(
             "trusted Cargo output overlaps a source checkout",
         ));
     }
-    let root = Directory::ensure(output)?;
-    root.require_private()?;
-    let context = context(&workspace, None)?.name();
-    root.ensure_child(Path::new(&context))?;
-    let target = output.join(context);
+    let target = trusted::prepare(output, &workspace, &crate::clock::SystemClock)
+        .map_err(std::io::Error::other)?;
     let keys: Vec<_> = std::env::vars_os()
         .map(|(key, _)| key)
         .chain(command.get_envs().map(|(key, _)| key.to_os_string()))

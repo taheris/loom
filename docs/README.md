@@ -24,9 +24,9 @@ Ownership boundaries do not require new crates or commands.
   host-side adapter selection, status-only admission, failure handling and
   scope.
 
-- [Generated Cargo storage admission](cargo-retention.md) — bounded worker
-  reservations, conservative accounting and the current never-dispatched-only
-  collection boundary.
+- [Generated Cargo storage admission](cargo-retention.md) — bounded worker and
+  shared per-user trusted-native reservations, conservative accounting and the
+  current never-dispatched-only collection boundary.
 
 ## Engineering Investigations
 

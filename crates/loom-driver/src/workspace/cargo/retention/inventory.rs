@@ -7,15 +7,25 @@ use super::{Directory, Error, Fence};
 
 impl Fence<'_> {
     pub(super) fn unrecorded(&self, known: &BTreeSet<(Dev, u64)>) -> Result<Vec<Directory>, Error> {
-        let worker = match self.root.child(Path::new("worker")) {
+        let name = match self.scope {
+            super::Scope::Worker(_) => "worker",
+            super::Scope::Trusted { .. } => "native",
+        };
+        let worker = match self.root.child(Path::new(name)) {
             Ok(worker) => worker,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
-        let mut contexts = Vec::new();
-        for owner in children(&worker)? {
-            contexts.extend(children(&owner)?);
-        }
+        let contexts = match self.scope {
+            super::Scope::Worker(_) => {
+                let mut contexts = Vec::new();
+                for owner in children(&worker)? {
+                    contexts.extend(children(&owner)?);
+                }
+                contexts
+            }
+            super::Scope::Trusted { .. } => children(&worker)?,
+        };
         let mut generations = Vec::new();
         let mut seen = known.clone();
         for context in contexts {

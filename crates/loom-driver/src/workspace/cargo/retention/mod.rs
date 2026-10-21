@@ -71,11 +71,36 @@ pub struct Report {
     pub free: Bytes,
 }
 
+enum Scope<'a> {
+    Worker(&'a Association),
+    Trusted { path: &'a Path, identity: Identity },
+}
+
+impl Scope<'_> {
+    fn base(&self) -> &Path {
+        match self {
+            Self::Worker(association) => association.operator(),
+            Self::Trusted { path, .. } => path,
+        }
+    }
+
+    fn recheck(&self) -> Result<(), Error> {
+        match self {
+            Self::Worker(association) => association.recheck(),
+            Self::Trusted { path, identity } => {
+                let directory = Directory::open(path)?;
+                directory.require_private()?;
+                require_identity(&directory, identity)
+            }
+        }
+    }
+}
+
 pub(super) struct Fence<'a> {
-    association: &'a Association,
+    scope: Scope<'a>,
     pub(super) root: Directory,
-    _lock: File,
     pub(super) database: CacheDb,
+    _lock: File,
 }
 
 impl<'a> Fence<'a> {
@@ -84,25 +109,55 @@ impl<'a> Fence<'a> {
         let root = Directory::open(association.operator())?
             .ensure_child(Path::new(".loom"))?
             .ensure_child(Path::new("cargo-artifacts"))?;
+        let state = Directory::open(association.operator())?.child(Path::new(".loom"))?;
+        Self::locked(
+            Scope::Worker(association),
+            root,
+            &state,
+            &crate::state::path(association.operator()),
+        )
+    }
+
+    pub(super) fn trusted(path: &'a Path) -> Result<Self, Error> {
+        let root = Directory::ensure(path)?;
+        let state = Directory::open(path)?;
+        let identity = Identity::from_stat(&root.stat()?);
+        Self::locked(
+            Scope::Trusted { path, identity },
+            root,
+            &state,
+            &path.join("state.db"),
+        )
+    }
+
+    fn locked(
+        scope: Scope<'a>,
+        root: Directory,
+        state: &Directory,
+        database_path: &Path,
+    ) -> Result<Self, Error> {
         root.require_private()?;
         let lock = root.append_private_file(Path::new("retention.lock"))?;
-        match lock.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "generated Cargo allocation or collection is busy; retry independently",
-                )
-                .into());
-            }
-            Err(TryLockError::Error(error)) => return Err(error.into()),
+        match &scope {
+            Scope::Trusted { .. } => lock.lock()?,
+            Scope::Worker(_) => match lock.try_lock() {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "generated Cargo allocation or collection is busy; retry independently",
+                    )
+                    .into());
+                }
+                Err(TryLockError::Error(error)) => return Err(error.into()),
+            },
         }
-        let state = Directory::open(association.operator())?.child(Path::new(".loom"))?;
-        inventory::require_state(&state)?;
-        let database = CacheDb::open(crate::state::path(association.operator()))?;
-        inventory::require_state(&state)?;
+        inventory::require_state(state)?;
+        let database = CacheDb::open(database_path)?;
+        inventory::require_state(state)?;
+        scope.recheck()?;
         Ok(Self {
-            association,
+            scope,
             root,
             _lock: lock,
             database,
@@ -132,7 +187,24 @@ impl<'a> Fence<'a> {
         Ok(report)
     }
 
-    fn report(&self, policy: &Policy) -> Result<Report, Error> {
+    pub(super) fn report(&self, policy: &Policy) -> Result<Report, Error> {
+        for _ in 0..16 {
+            match self.report_once(policy) {
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::debug!(
+                        ?error,
+                        "Cargo output changed during accounting; retrying snapshot"
+                    );
+                    std::thread::yield_now();
+                }
+                result => return result,
+            }
+        }
+        self.report_once(policy)
+    }
+
+    fn report_once(&self, policy: &Policy) -> Result<Report, Error> {
+        self.scope.recheck()?;
         let mut allocated = Bytes::default();
         let mut outstanding = Bytes::default();
         let mut excluded = std::collections::BTreeSet::new();
@@ -198,12 +270,30 @@ impl<'a> Fence<'a> {
     }
 
     pub(super) fn paths(&self, key: &str, record: &Record) -> Result<(PathBuf, PathBuf), Error> {
-        let context = self
-            .association
-            .operator()
-            .join(".loom/cargo-artifacts/worker")
-            .join(record.bead.as_str())
-            .join(record.context.name());
+        let context = match (&self.scope, &record.bead) {
+            (Scope::Worker(association), Some(bead))
+                if record.profile.is_some()
+                    && record.source
+                        == association
+                            .operator()
+                            .join(".loom/beads")
+                            .join(bead.as_str()) =>
+            {
+                association
+                    .operator()
+                    .join(".loom/cargo-artifacts/worker")
+                    .join(bead.as_str())
+                    .join(record.context.name())
+            }
+            (Scope::Trusted { path, .. }, None) if record.profile.is_none() => {
+                path.join("native").join(record.context.name())
+            }
+            _ => {
+                return Err(Error::Association {
+                    reason: "Cargo record belongs to a different storage trust domain; retained",
+                });
+            }
+        };
         let original = record.target.parent().ok_or(Error::Association {
             reason: "generated Cargo record has no namespace",
         })?;
@@ -215,7 +305,7 @@ impl<'a> Fence<'a> {
                     reason: "generated Cargo record has an invalid namespace",
                 })?;
         let expected_key = original
-            .strip_prefix(self.association.operator())
+            .strip_prefix(self.scope.base())
             .map_err(std::io::Error::other)?;
         if record
             .target
@@ -225,12 +315,6 @@ impl<'a> Fence<'a> {
             || !name.starts_with("generation-")
             || name.len() <= "generation-".len()
             || expected_key.to_str() != Some(key)
-            || record.source
-                != self
-                    .association
-                    .operator()
-                    .join(".loom/beads")
-                    .join(record.bead.as_str())
         {
             return Err(Error::Association {
                 reason: "conflicting generated Cargo ownership or layout; retained",
@@ -288,42 +372,75 @@ pub fn set_hold(
     action: HoldAction,
 ) -> Result<(), Error> {
     let fence = Fence::open(association)?;
-    let namespace = target.parent().ok_or(Error::Association {
-        reason: "Cargo hold has no namespace",
-    })?;
-    let key = namespace
-        .strip_prefix(association.operator())
-        .map_err(std::io::Error::other)?
-        .to_string_lossy()
-        .into_owned();
-    let mut record: Record = fence
-        .database
-        .record(RecordKind::CargoTarget, &key)?
-        .ok_or(Error::Association {
-            reason: "unrecorded Cargo namespace cannot receive a hold",
+    fence.change_hold(target, hold, action)
+}
+
+/// Inspect or collect only never-dispatched output in the shared per-user native pool.
+///
+/// # Errors
+/// Untrusted policy, controller state or ambiguous ownership refuses collection.
+pub fn sweep_trusted(clock: &dyn Clock) -> Result<Report, Error> {
+    let output = super::trusted_root()?;
+    let fence = Fence::trusted(&output)?;
+    fence.collect(
+        &super::trusted::policy(&fence.root)?,
+        Bytes::default(),
+        clock,
+    )
+}
+
+/// Change one native-pool hold without altering any other owner's protection.
+///
+/// # Errors
+/// Unrecorded, foreign or substituted targets cannot receive holds.
+pub fn set_trusted_hold(target: &Path, hold: Hold, action: HoldAction) -> Result<(), Error> {
+    let output = super::trusted_root()?;
+    let fence = Fence::trusted(&output)?;
+    fence.change_hold(target, hold, action)
+}
+
+impl Fence<'_> {
+    pub(super) fn change_hold(
+        &self,
+        target: &Path,
+        hold: Hold,
+        action: HoldAction,
+    ) -> Result<(), Error> {
+        let namespace = target.parent().ok_or(Error::Association {
+            reason: "Cargo hold has no namespace",
         })?;
-    if record.target != target {
-        return Err(Error::Association {
-            reason: "Cargo hold target does not match its ownership record",
-        });
-    }
-    fence
-        .stored_directory(&key, &record)?
-        .ok_or(Error::Association {
-            reason: "removed Cargo namespace cannot receive a hold",
-        })?;
-    match action {
-        HoldAction::Acquire => {
-            record.holds.insert(hold);
+        let key = namespace
+            .strip_prefix(self.scope.base())
+            .map_err(std::io::Error::other)?
+            .to_string_lossy()
+            .into_owned();
+        let mut record: Record =
+            self.database
+                .record(RecordKind::CargoTarget, &key)?
+                .ok_or(Error::Association {
+                    reason: "unrecorded Cargo namespace cannot receive a hold",
+                })?;
+        if record.target != target {
+            return Err(Error::Association {
+                reason: "Cargo hold target does not match its ownership record",
+            });
         }
-        HoldAction::Release => {
-            record.holds.remove(&hold);
+        self.stored_directory(&key, &record)?
+            .ok_or(Error::Association {
+                reason: "removed Cargo namespace cannot receive a hold",
+            })?;
+        match action {
+            HoldAction::Acquire => {
+                record.holds.insert(hold);
+            }
+            HoldAction::Release => {
+                record.holds.remove(&hold);
+            }
         }
+        self.database
+            .put_record(RecordKind::CargoTarget, &key, &record)?;
+        Ok(())
     }
-    fence
-        .database
-        .put_record(RecordKind::CargoTarget, &key, &record)?;
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]

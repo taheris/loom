@@ -45,22 +45,77 @@ sharing is conservatively charged separately. These counters do not claim CoW
 extent sharing or predict physically reclaimed volume space. Free-space checks
 use the storage filesystem's actual available blocks.
 
-Trusted verification outputs, legacy targets, source checkouts, runtime roots,
-evidence and the configured sccache backend are not collection candidates.
-Consumption on the same filesystem still affects its free-space check. This
-policy does **not** yet provide lifecycle-based retention of trusted native
-Cargo output.
+Source-local legacy targets, source checkouts, runtime roots, evidence and the
+configured sccache backend are not collection candidates. Consumption on the
+same filesystem still affects its free-space check.
+
+## Trusted-native pool
+
+Trusted commands reserve capacity in one pool per effective user/state root at
+`$XDG_STATE_HOME/loom/trusted-cargo` (or the standard user-state fallback). All
+controlling workspaces using that root share the budget. Worker configuration
+cannot divide or enlarge it: `[loom.cargo_retention]` remains the worker policy.
+The native pool's operator-owned `policy.json` uses the same policy fields and
+numeric defaults, for example:
+
+```json
+{
+  "max_bytes": 274877906944,
+  "reservation_bytes": 536870912,
+  "min_free_bytes": 17179869184,
+  "max_age_secs": 604800
+}
+```
+
+The first use creates a private default policy. Operator policy changes require
+quiescing allocation/collection or holding that pool's `retention.lock`,
+preserving a regular, singly linked, owner-only `0600` file. Missing fields
+retain defaults; unknown keys, malformed/oversized files, symlinks, hard links
+and unsafe modes refuse admission instead of silently selecting another budget.
+Native requests use `reservation_bytes`; optional profile estimates only
+increase conservative unknown-generation charges because native commands have no
+worker profile.
+
+The same CargoTarget records, durable handoff, accounting, quarantine and hold
+implementation serve both trust domains. The native pool's `state.db` contains
+artifact ownership/accounting, not workspace evidence or a second safety-history
+registry. New targets live under `native/<context>/generation-*/target`.
+Repeated commands with the same checkout/toolchain/configuration/driver context
+reuse the recorded native target and reservation, after identity and capacity
+rechecks. Checkout replacement changes the context. Parallel native admissions
+serialize through database close; commands execute after releasing the
+allocation fence. No worker target or compiler-cache object seeds these trusted
+targets. Source identity is read-only context, not ownership or disposal
+authority; source paths are canonicalized before overlap checks. Storage and
+control-plane paths still require private, trusted ancestry. Collection
+separately requires the strict source-directory check and retains unavailable or
+untrusted source ownership.
+
+The budget charges all files in this pool, including older flat contexts and
+controller overhead. Unrecorded generations retain conservative reservations;
+old flat contexts are charged by allocated blocks and never adopted or deleted.
+A native command receives its target only after a synced private dispatch
+tombstone and durable record update. Its launcher exit, a free lease or eventual
+Cargo completion does not authorize disposal. Unknown or replayed ownership
+never makes that output collectible. Native evidence/runtime/operator holds use
+the same owner-specific API as worker holds.
+
+As with workers, admission is not a runtime quota: active commands can outgrow
+their estimates, and their measured growth constrains later requests. A new
+context can be refused while independently admissible existing work continues.
+Lifecycle-based collection of **dispatched** trusted output remains pending.
 
 ## Current collection boundary
 
 The collector can reclaim only driver-created preparations that were **never
-projected to a worker**. The host records dispatch durably before installing the
-mount/environment projection. A synced per-generation projection tombstone lives
-outside the worker-writable target; replaying or resetting transient database
-records cannot turn projected output into a never-dispatched preparation. There
-is no tombstone-clear operation. Once dispatched, a generation remains
-unreconciled even after launcher exit, Cargo completion or release of its lease.
-Older ownership records default to unreconciled, not never-dispatched.
+dispatched**, whether worker or trusted-native. The host records dispatch
+durably before installing the mount/environment projection. A synced
+per-generation projection tombstone lives outside the worker-writable target;
+replaying or resetting transient database records cannot turn projected output
+into a never-dispatched preparation. There is no tombstone-clear operation. Once
+dispatched, a generation remains unreconciled even after launcher exit, Cargo
+completion or release of its lease. Older ownership records default to
+unreconciled, not never-dispatched.
 
 Completed-worker collection is intentionally not implemented: pinned Wrix lacks
 the required trusted generation-bound lifetime receipt and restart observation.
@@ -81,15 +136,21 @@ adoption, source-clone removal, broad pruning or safety-state reset operation.
 
 ```bash
 bash scripts/configure-cargo-patches.sh
-cargo nextest run -p loom-driver -p loom-workflow \
+bash scripts/run-private-fixture-tests cargo nextest run -p loom-driver -p loom-workflow \
   -E 'test(cargo_retention) | test(worker_cargo_target_reuse_honors_policy_before_spawn)'
 ```
+
+The private fixture runner gives each suite its own native pool with a one-MiB
+reservation for its many tiny checkouts. Actual allocated growth still counts;
+production policy defaults and lifetime protection are unchanged. The runner
+never consumes or resets an operator's existing native pool.
 
 Bounded fixtures exercise capacity/free-space rejection, distinct pin owners,
 unrecorded/legacy/conflicting records, native worker preparation and smaller
 request continuation, filesystem substitutions and controller-file provenance. A
 real Cargo build script survives launcher SIGKILL while its target stays
-protected; even later build completion does not manufacture teardown authority.
-Real collector processes are killed at journal/rename/unlink boundaries and
-reopened through the production sweep path. These are Rust/Nextest checks, not
-host-only scenario scripts or actual Wrix mount/backend conformance evidence.
+protected in both worker and trusted-native pools; even later build completion
+does not manufacture teardown authority. Real collector processes are killed at
+journal/rename/unlink boundaries and reopened through the production sweep path.
+These are Rust/Nextest checks, not host-only scenario scripts or actual Wrix
+mount/backend conformance evidence.

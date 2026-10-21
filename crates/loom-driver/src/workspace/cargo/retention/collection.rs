@@ -168,7 +168,7 @@ impl Fence<'_> {
     }
 
     fn recheck(&self, key: &str, expected: &Record) -> Result<(), Error> {
-        self.association.recheck()?;
+        self.scope.recheck()?;
         let current = self
             .database
             .record::<Record>(RecordKind::CargoTarget, key)?;

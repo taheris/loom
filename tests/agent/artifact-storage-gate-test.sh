@@ -9,6 +9,19 @@ trap 'rm -rf -- "$fixture"' EXIT
 mkdir -m 0700 "$fixture/builder" "$fixture/temporary"
 mkdir -m 0777 "$fixture/unsafe"
 ln -s "$fixture/temporary" "$fixture/alias"
+bash "$runner" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+import stat
+
+state = Path(os.environ["XDG_STATE_HOME"])
+assert state == Path(os.environ["TMPDIR"]) / "state"
+policy = state / "loom/trusted-cargo/policy.json"
+assert stat.S_IMODE(policy.stat().st_mode) == 0o600
+assert policy.stat().st_nlink == 1
+assert json.loads(policy.read_text()) == {"reservation_bytes": 1048576}
+PY
 cat > "$fixture/probe.py" <<'PY'
 import json
 import os
