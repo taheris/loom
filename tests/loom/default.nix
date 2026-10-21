@@ -78,8 +78,8 @@ let
     # rather than silently degrading. Running `check` and `test` separately
     # excludes `[system]` without an environment override.
     checkPhaseCargoCommand = ''
-      loom gate check --tree
-      loom gate test --tree
+      bash ${../../scripts/run-private-fixture-tests} loom gate check --tree
+      bash ${../../scripts/run-private-fixture-tests} loom gate test --tree
     '';
   };
 
@@ -213,8 +213,10 @@ let
     env -i \
       PATH="${makeBinPath smokeRuntimeInputs}" \
       TMPDIR="$TMPDIR" \
-      ${pkgs.bash}/bin/bash ${../smoke/host-gate-test.sh} \
-        ${smokeSandbox.launcher}/bin/wrix ${../../bin/pre-push-checks}
+      NIX_BUILD_TOP="''${NIX_BUILD_TOP:-}" \
+      ${pkgs.bash}/bin/bash ${../../scripts/run-private-fixture-tests} \
+        ${pkgs.bash}/bin/bash ${../smoke/host-gate-temporary-root-test.sh} \
+        ${../smoke/host-gate-test.sh} ${smokeSandbox.launcher}/bin/wrix ${../../bin/pre-push-checks}
     touch "$out"
   '';
 

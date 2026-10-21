@@ -150,32 +150,43 @@ let
     }
   );
 
-  nextest = craneLib.cargoNextest (
-    commonArgs
-    // {
-      LOOM_PREK_BIN = "${hookRunner}/bin/prek";
-      LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
-      src = stagedSrc;
-      inherit cargoArtifacts;
-      nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
-        pkgs.cacert
-        pkgs.flock
-        pkgs.jq
-        pkgs.openssh
-        pkgs.sccache
-      ];
-      # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
-      preCheck = ''
-        # Runtime ownership checks require fixture ancestors owned by this user
-        # (the host-side Nix build parent may belong to the daemon caller).
-        export TMPDIR="$(cd /tmp && pwd -P)"
-        export HOME=$(mktemp -d)
-        export GIT_CONFIG_GLOBAL="$PWD/tests/fixtures/git/test-gitconfig"
-        export GIT_CONFIG_SYSTEM=/dev/null
-        export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-      '';
-    }
-  );
+  nextest =
+    (craneLib.cargoNextest (
+      commonArgs
+      // {
+        LOOM_PREK_BIN = "${hookRunner}/bin/prek";
+        LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+        src = stagedSrc;
+        inherit cargoArtifacts;
+        nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
+          pkgs.cacert
+          pkgs.flock
+          pkgs.jq
+          pkgs.openssh
+          pkgs.sccache
+        ];
+        # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
+        preCheck = ''
+          export HOME=$(mktemp -d)
+          export GIT_CONFIG_GLOBAL="$PWD/tests/fixtures/git/test-gitconfig"
+          export GIT_CONFIG_SYSTEM=/dev/null
+          export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+        '';
+      }
+    )).overrideAttrs
+      (
+        old:
+        assert hasInfix "cargo nextest run" old.checkPhase;
+        {
+          checkPhase =
+            builtins.replaceStrings
+              [ "cargo nextest run" ]
+              [
+                "bash ${../scripts/run-private-fixture-tests} cargo nextest run"
+              ]
+              old.checkPhase;
+        }
+      );
 in
 {
   inherit
