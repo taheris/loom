@@ -9,7 +9,9 @@ case "$report_name" in
     artifact-storage-report.json|rust-cache-context-report.json) ;;
     *) printf 'unsupported bounded fixture report: %s\n' "$report_name" >&2; exit 64 ;;
 esac
-runtime=$(mktemp -d "$(cd /tmp && pwd -P)/loom-storage-fixture.XXXXXXXX")
+umask 077
+runtime=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/loom-storage-fixture.XXXXXXXX")
+export TMPDIR="$runtime"
 fixture="$runtime/source"
 mkdir "$fixture"
 export XDG_STATE_HOME="$runtime/host-state"

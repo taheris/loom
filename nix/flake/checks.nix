@@ -116,10 +116,20 @@
         pkgs.stdenv.cc
       ];
 
+      artifact-storage-gate-temporary-root =
+        pkgs.runCommand "artifact-storage-gate-temporary-root" { nativeBuildInputs = rustFixtureInputs; }
+          ''
+            bash ${../../scripts/run-private-fixture-tests} \
+              bash ${../../tests/agent/artifact-storage-gate-test.sh} \
+              ${bin}/bin/loom ${../../tests/agent/artifact-storage-gate.sh} ${../../scripts/run-private-fixture-tests}
+            touch "$out"
+          '';
+
       artifact-storage-fixture =
         pkgs.runCommand "artifact-storage-fixture" { nativeBuildInputs = rustFixtureInputs; }
           ''
-            bash ${../../tests/agent/artifact-storage-gate.sh} \
+            bash ${../../scripts/run-private-fixture-tests} \
+              bash ${../../tests/agent/artifact-storage-gate.sh} \
               ${bin}/bin/loom ${../../tests/agent/artifact-storage.py} "$out"
           '';
 
@@ -185,7 +195,8 @@
       rust-cache-context-fixture =
         pkgs.runCommand "rust-cache-context-fixture" { nativeBuildInputs = rustFixtureInputs; }
           ''
-            bash ${../../tests/agent/artifact-storage-gate.sh} \
+            bash ${../../scripts/run-private-fixture-tests} \
+              bash ${../../tests/agent/artifact-storage-gate.sh} \
               ${bin}/bin/loom ${../../tests/agent/rust-cache-context.py} "$out" rust-cache-context-report.json
           '';
 
@@ -239,7 +250,6 @@
         buildPhaseCargoCommand = "loom --version";
 
         preCheck = ''
-          export TMPDIR="$(cd /tmp && pwd -P)"
           export HOME=$(mktemp -d)
           export CARGO_BUILD_JOBS="$NIX_BUILD_CORES"
           export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
@@ -247,7 +257,7 @@
         '';
         # `--tree` (every verifier, no file filter) is the explicit scope
         # for a git-less build sandbox: the source artifact has no `.git`,
-        checkPhaseCargoCommand = "loom gate check --tree";
+        checkPhaseCargoCommand = "bash ${../../scripts/run-private-fixture-tests} loom gate check --tree";
       };
 
       wrixProfilePackages = filter (pkg: (pkg.meta.mainProgram or "") == "wrix") sandbox.profile.packages;
@@ -926,6 +936,7 @@
         inherit
           agent-entrypoint-contract
           artifact-storage-fixture
+          artifact-storage-gate-temporary-root
           loom-gate-check
           nextest-filtering-syntax
           native-check-discovery
