@@ -1,5 +1,8 @@
 //! Private Cargo output selection. A namespace record is never evidence or disposal authority.
 
+mod record;
+pub mod retention;
+
 use std::fs::{self, File};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
@@ -10,9 +13,12 @@ use sha2::{Digest, Sha256};
 
 use super::{Association, Error, Identity};
 use crate::agent::{MountSpec, SpawnConfig};
+use crate::clock::Clock;
 use crate::identifier::BeadId;
 use crate::scratch::directory::Directory;
-use crate::state::{CacheDb, RecordKind};
+use crate::state::RecordKind;
+use record::{Lifetime, Placement, Record};
+use retention::Fence;
 
 const WORKER_TARGET: &str = "/loom-cargo-target";
 
@@ -34,20 +40,9 @@ pub fn shared_cache_config(
 /// A private generated namespace retained on every exit, including process death.
 pub struct Namespace {
     path: PathBuf,
-    _lease: File,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Record {
-    version: u8,
-    bead: BeadId,
-    source: PathBuf,
-    source_identity: Identity,
-    target: PathBuf,
-    namespace_identity: Identity,
-    profile: PathBuf,
-    context: Context,
+    operator: PathBuf,
+    identity: Identity,
+    lease: File,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -64,8 +59,71 @@ impl Namespace {
         self.path.join("target")
     }
 
-    /// Project exactly this generation; no source target or canonical executable is moved.
-    pub fn configure(&self, spawn: &mut SpawnConfig) {
+    /// Durably mark dispatch before projecting this generation to a worker.
+    ///
+    /// # Errors
+    /// Changed ownership or quarantine stops projection and retains the output.
+    pub fn configure(&self, spawn: &mut SpawnConfig) -> Result<(), Error> {
+        let association = Association::resolve(&self.operator)?;
+        let fence = Fence::open(&association)?;
+        let key = self
+            .path
+            .strip_prefix(&self.operator)
+            .map_err(std::io::Error::other)?
+            .to_string_lossy()
+            .into_owned();
+        let mut record: Record = fence
+            .database
+            .record(RecordKind::CargoTarget, &key)?
+            .ok_or(Error::Association {
+                reason: "Cargo dispatch has no ownership record",
+            })?;
+        if record.version != 2
+            || record.lifetime != Lifetime::Prepared
+            || record.placement != Placement::Live
+            || record.namespace_identity != self.identity
+            || record.target != self.target()
+            || spawn.workspace != record.source
+            || spawn
+                .profile_config
+                .as_ref()
+                .is_some_and(|profile| profile != &record.profile)
+            || record.lease_identity.as_ref()
+                != Some(&Identity::from_stat(
+                    &rustix::fs::fstat(&self.lease).map_err(std::io::Error::from)?,
+                ))
+        {
+            return Err(Error::Association {
+                reason: "Cargo dispatch ownership or lifecycle changed",
+            });
+        }
+        fence.paths(&key, &record)?;
+        let directory = Directory::open(&self.path)?;
+        directory.require_private()?;
+        retention::require_identity(&directory, &self.identity)?;
+        retention::require_identity(&Directory::open(&record.source)?, &record.source_identity)?;
+        let target = Directory::open(&self.target())?;
+        if record.target_identity.as_ref() != Some(&Identity::from_stat(&target.stat()?)) {
+            return Err(Error::Association {
+                reason: "Cargo dispatch target identity changed",
+            });
+        }
+        if retention::projected(&directory)? {
+            return Err(Error::Association {
+                reason: "generated Cargo namespace already has a projection tombstone; retained",
+            });
+        }
+        directory
+            .create_file(
+                Path::new(retention::PROJECTION),
+                rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            )?
+            .sync_all()?;
+        directory.sync()?;
+        record.lifetime = Lifetime::Dispatched;
+        fence
+            .database
+            .put_record(RecordKind::CargoTarget, &key, &record)?;
         for key in [
             "CARGO_TARGET_DIR",
             "CARGO_BUILD_TARGET_DIR",
@@ -79,6 +137,7 @@ impl Namespace {
             container_path: WORKER_TARGET.into(),
             read_only: false,
         });
+        Ok(())
     }
 }
 
@@ -91,6 +150,8 @@ pub fn prepare(
     workspace: &Path,
     profile: &Path,
     reuse: crate::config::CargoTargetReuse,
+    request: retention::Request<'_>,
+    clock: &dyn Clock,
 ) -> Result<Namespace, Error> {
     association.recheck()?;
     let beads = association.operator().join(".loom/beads");
@@ -111,10 +172,9 @@ pub fn prepare(
         })?;
     let source_identity = Identity::from_stat(&Directory::open(workspace)?.stat()?);
     let context = context(workspace, Some(profile))?;
-    let root = Directory::open(association.operator())?
-        .ensure_child(Path::new(".loom"))?
-        .ensure_child(Path::new("cargo-artifacts"))?
-        .ensure_child(Path::new("worker"))?;
+    let fence = Fence::open(association)?;
+    fence.admit(request.policy, request.reservation, clock)?;
+    let root = fence.root.ensure_child(Path::new("worker"))?;
     let owner = root.ensure_child(Path::new(bead.as_str()))?;
     owner.ensure_child(Path::new(&context.name()))?;
     let parent = association
@@ -132,10 +192,12 @@ pub fn prepare(
     lease.lock()?;
     let namespace = Namespace {
         path: generation,
-        _lease: lease,
+        operator: association.operator().into(),
+        identity: Identity::from_stat(&generation_handle.stat()?),
+        lease,
     };
-    let record = Record {
-        version: 1,
+    let mut record = Record {
+        version: 2,
         bead,
         source: workspace.into(),
         source_identity,
@@ -143,8 +205,24 @@ pub fn prepare(
         namespace_identity: Identity::from_stat(&generation_handle.stat()?),
         profile: profile.into(),
         context,
+        lease_identity: Some(Identity::from_stat(
+            &rustix::fs::fstat(&namespace.lease).map_err(std::io::Error::from)?,
+        )),
+        target_identity: None,
+        reservation: request.reservation,
+        created: Some(clock.wall_now()),
+        lifetime: Lifetime::Prepared,
+        placement: Placement::Live,
+        holds: std::collections::BTreeSet::new(),
     };
-    let database = CacheDb::open(crate::state::path(association.operator()))?;
+    let key = namespace
+        .path
+        .strip_prefix(association.operator())
+        .map_err(std::io::Error::other)?
+        .to_string_lossy()
+        .into_owned();
+    let database = &fence.database;
+    database.put_record(RecordKind::CargoTarget, &key, &record)?;
     let donors = database
         .records::<Record>(RecordKind::CargoTarget)?
         .into_iter()
@@ -166,13 +244,11 @@ pub fn prepare(
     if !namespace.target().try_exists()? {
         generation_handle.create_child(Path::new("target"))?;
     }
-    let key = namespace
-        .path
-        .strip_prefix(association.operator())
-        .map_err(std::io::Error::other)?
-        .to_string_lossy()
-        .into_owned();
+    record.target_identity = Some(Identity::from_stat(
+        &Directory::open(&namespace.target())?.stat()?,
+    ));
     database.put_record(RecordKind::CargoTarget, &key, &record)?;
+    fence.admit(request.policy, retention::Bytes::default(), clock)?;
     Ok(namespace)
 }
 
@@ -181,7 +257,10 @@ fn eligible_donor(
     recipient: &Record,
     donor: Record,
 ) -> Result<Option<loom_shared::artifact::Location>, Error> {
-    if donor.version != 1
+    if donor.target == recipient.target
+        || !matches!(donor.version, 1 | 2)
+        || donor.placement != Placement::Live
+        || (donor.version == 2 && donor.target_identity.is_none())
         || donor.profile != recipient.profile
         || donor.context != recipient.context
     {
@@ -223,6 +302,16 @@ fn eligible_donor(
         || Identity::from_stat(&directory.stat()?) != donor.namespace_identity
     {
         return Ok(None);
+    }
+    if let Some(identity) = &donor.target_identity {
+        match Directory::open(&donor.target) {
+            Ok(target) if Identity::from_stat(&target.stat()?) == *identity => {}
+            Ok(_) => return Ok(None),
+            Err(error) => {
+                tracing::warn!(?error, target = ?donor.target, "Cargo donor target unavailable");
+                return Ok(None);
+            }
+        }
     }
     Ok(Some(loom_shared::artifact::Location {
         workspace: donor.source,

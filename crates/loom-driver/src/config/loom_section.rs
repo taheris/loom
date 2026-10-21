@@ -28,6 +28,8 @@ pub struct LoomTopConfig {
     pub sccache_dir: Option<PathBuf>,
     /// Worker-only Cargo dependency reuse; defaults to independent copy-on-write clones.
     pub cargo_target_reuse: CargoTargetReuse,
+    /// Admission bounds for generated worker targets; uncertainty always retains output.
+    pub cargo_retention: crate::workspace::cargo::retention::Policy,
     /// Container-side path the [`sccache_dir`](Self::sccache_dir) host
     /// directory is bind-mounted to. Defaults to `/sccache`. Consulted
     /// only when `sccache_dir` is set; harmless when unset.
@@ -50,6 +52,7 @@ impl Default for LoomTopConfig {
             integration_branch: default_integration_branch(),
             sccache_dir: None,
             cargo_target_reuse: CargoTargetReuse::default(),
+            cargo_retention: crate::workspace::cargo::retention::Policy::default(),
             sccache_container_path: default_sccache_container_path(),
             git_hook_timeout_secs: default_git_hook_timeout_secs(),
         }

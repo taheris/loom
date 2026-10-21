@@ -26,6 +26,17 @@ integration_branch = "main"
 # sccache_dir = ".loom/sccache"
 # sccache_container_path = "/sccache"
 
+# Generated worker storage admission estimates, not a runtime filesystem quota.
+# Only never-dispatched preparations can be collected; completed workers remain
+# protected until trusted runtime lifetime reconciliation is available.
+# [loom.cargo_retention]
+# max_bytes = 274877906944       # 256 GiB
+# reservation_bytes = 536870912 # 512 MiB per request
+# min_free_bytes = 17179869184  # 16 GiB headroom
+# max_age_secs = 604800         # seven days
+# [loom.cargo_retention.profile_reservations]
+# rust = 8589934592             # optional per-profile estimate
+
 [loop]
 # Molecule-level: bounds `loom loop`'s outer loop on fix-up beads. Each
 # full molecule pass — initial pass plus every verdict-gate-produced

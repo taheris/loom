@@ -67,6 +67,9 @@ impl CacheDb {
     ) -> Result<(), CacheError> {
         let value = serde_json::to_string(value).map_err(json_error)?;
         self.with_conn(|conn| {
+            if matches!(kind, RecordKind::CargoTarget) {
+                conn.pragma_update(None, "synchronous", "FULL")?;
+            }
             conn.execute(
                 "INSERT INTO workflow_records(kind, record_key, payload) VALUES (?1, ?2, ?3)
                  ON CONFLICT(kind, record_key) DO UPDATE SET payload = excluded.payload",
@@ -153,6 +156,25 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn cargo_target_handoffs_force_durable_commits_before_projection() {
+        let root = tempfile::tempdir().unwrap();
+        let db = CacheDb::open(super::super::path(root.path())).unwrap();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "synchronous", "OFF")?;
+            Ok(())
+        })
+        .unwrap();
+        db.put_record(RecordKind::CargoTarget, "generation", &"native-handoff")
+            .unwrap();
+        db.with_conn(|conn| {
+            let level: u32 = conn.pragma_query_value(None, "synchronous", |row| row.get(0))?;
+            assert_eq!(level, 2);
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

@@ -299,14 +299,31 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         );
     }
     let cargo_namespace = if native_feedback {
-        let namespace = loom_driver::workspace::cargo::prepare(
+        let prepared = loom_driver::workspace::cargo::prepare(
             &association,
             workspace,
             &manifest.lookup(&profile, runtime)?.profile_config,
             loom.cargo_target_reuse,
-        )?;
-        namespace.configure(&mut spawn);
-        Some(namespace)
+            loom.cargo_retention.request(&profile),
+            &loom_driver::clock::SystemClock::new(),
+        )
+        .and_then(|namespace| {
+            namespace.configure(&mut spawn)?;
+            Ok(namespace)
+        });
+        match prepared {
+            Ok(namespace) => Some(namespace),
+            Err(error) => {
+                return Ok(Preparation::Rejected(AgentOutcome::InfraPreflight {
+                    error: std::iter::successors(Some(&error as &dyn std::error::Error), |error| {
+                        error.source()
+                    })
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(": "),
+                }));
+            }
+        }
     } else {
         None
     };
@@ -395,7 +412,10 @@ mod tests {
 
     #[tokio::test]
     async fn worker_cargo_target_reuse_honors_policy_before_spawn() {
-        let dir = tempfile::tempdir().unwrap();
+        use loom_driver::workspace::cargo::retention::{Bytes, Policy};
+
+        let dir =
+            tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         let git = loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();
         let label = SpecLabel::new("workspaces").unwrap();
         let id = loom_driver::identifier::BeadId::new("lm-seeded").unwrap();
@@ -423,11 +443,19 @@ mod tests {
             .unwrap();
         }
         let association = loom_driver::workspace::Association::resolve(dir.path()).unwrap();
+        let budget = Policy {
+            max_bytes: Bytes::new(8 * 1024 * 1024),
+            reservation_bytes: Bytes::new(128 * 1024),
+            min_free_bytes: Bytes::default(),
+            ..Policy::default()
+        };
         let donor_namespace = loom_driver::workspace::cargo::prepare(
             &association,
             &donor,
             &profile_config,
             CargoTargetReuse::default(),
+            budget.default_request(),
+            &loom_driver::clock::MockClock::new(),
         )
         .unwrap();
         for subdir in ["deps", ".fingerprint"] {
@@ -451,6 +479,42 @@ mod tests {
         .unwrap();
         crate::test_support::acceptance::bind(&workspace, &label, &mut bead);
         let profile = ProfileName::new("rust").unwrap();
+        let unavailable = LoomTopConfig {
+            cargo_retention: Policy {
+                profile_reservations: std::collections::BTreeMap::from([(
+                    profile.clone(),
+                    budget.max_bytes,
+                )]),
+                ..budget.clone()
+            },
+            ..LoomTopConfig::default()
+        };
+        let rejected = prepare(Request {
+            bead: &bead,
+            workspace: &workspace,
+            loom_workspace: dir.path(),
+            manifest: &manifest,
+            cli_profile: None,
+            phase_default: &profile,
+            runtime: AgentRuntime::Pi,
+            label: &label,
+            style_rules: "docs/style-rules.md",
+            loom: &unavailable,
+            skills: &SkillsConfig::default(),
+            launcher_env: vec![],
+            previous_failure: None,
+            bead_base: git.head_commit_sha().await.unwrap(),
+            workspace_recovery: None,
+            attempt: 1,
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(rejected, Preparation::Rejected(AgentOutcome::InfraPreflight { error })
+            if error.contains("generated Cargo storage unavailable"))
+        );
+        assert!(donor_namespace.target().is_dir());
+        assert!(!workspace.join("target").exists());
         for (reuse, private) in [
             (CargoTargetReuse::Off, false),
             (CargoTargetReuse::CopyOnWrite, true),
@@ -465,6 +529,7 @@ mod tests {
             .unwrap();
             let loom = LoomTopConfig {
                 cargo_target_reuse: reuse,
+                cargo_retention: budget.clone(),
                 sccache_dir: Some(dir.path().join("sccache")),
                 ..LoomTopConfig::default()
             };

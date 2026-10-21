@@ -43,6 +43,14 @@ pub enum Error {
     State(#[from] crate::state::CacheError),
     /// workspace context is unavailable or changed: {reason}
     Association { reason: &'static str },
+    /// generated Cargo storage unavailable: charged={charged}, reservation={reservation}, limit={limit}, free={free}, required-free={headroom}; active, held, pinned and unreconciled generations retained
+    CargoAdmission {
+        charged: cargo::retention::Bytes,
+        reservation: cargo::retention::Bytes,
+        limit: cargo::retention::Bytes,
+        free: cargo::retention::Bytes,
+        headroom: cargo::retention::Bytes,
+    },
     /// worker mount would expose host authority or override workspace isolation: {path}
     Mount { path: PathBuf },
 }

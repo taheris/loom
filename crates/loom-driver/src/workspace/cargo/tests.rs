@@ -1,10 +1,13 @@
 #[cfg(test)]
-mod cases {
+pub(super) mod cases {
     use super::super::*;
     use crate::config::CargoTargetReuse;
+    use crate::state::CacheDb;
 
-    fn fixture() -> (tempfile::TempDir, Association, PathBuf, PathBuf) {
-        let root = tempfile::tempdir().unwrap();
+    pub(in crate::workspace::cargo) fn fixture()
+    -> (tempfile::TempDir, Association, PathBuf, PathBuf) {
+        let root =
+            tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         let operator = root.path().join("operator");
         fs::create_dir_all(operator.join(".git")).unwrap();
         fs::create_dir_all(operator.join(".loom/integration/.git")).unwrap();
@@ -36,10 +39,20 @@ mod cases {
             &worker,
             &profile,
             CargoTargetReuse::CopyOnWrite,
+            retention::Policy::default().default_request(),
+            &crate::clock::MockClock::new(),
         )
         .unwrap();
         fs::write(first.target().join("retained"), "retry output").unwrap();
-        let second = prepare(&association, &worker, &profile, CargoTargetReuse::Off).unwrap();
+        let second = prepare(
+            &association,
+            &worker,
+            &profile,
+            CargoTargetReuse::Off,
+            retention::Policy::default().default_request(),
+            &crate::clock::MockClock::new(),
+        )
+        .unwrap();
         assert_ne!(first.target(), second.target());
         assert_eq!(
             first.target().parent().unwrap().parent(),
@@ -50,7 +63,15 @@ mod cases {
             "[toolchain]\nchannel='stable'\n",
         )
         .unwrap();
-        let changed = prepare(&association, &worker, &profile, CargoTargetReuse::Off).unwrap();
+        let changed = prepare(
+            &association,
+            &worker,
+            &profile,
+            CargoTargetReuse::Off,
+            retention::Policy::default().default_request(),
+            &crate::clock::MockClock::new(),
+        )
+        .unwrap();
         assert_ne!(
             second.target().parent().unwrap().parent(),
             changed.target().parent().unwrap().parent()
@@ -126,7 +147,15 @@ mod cases {
     fn cargo_storage_preserves_unknown_generations_and_refuses_symlinks() {
         use std::os::unix::fs::symlink;
         let (root, association, worker, profile) = fixture();
-        let first = prepare(&association, &worker, &profile, CargoTargetReuse::Off).unwrap();
+        let first = prepare(
+            &association,
+            &worker,
+            &profile,
+            CargoTargetReuse::Off,
+            retention::Policy::default().default_request(),
+            &crate::clock::MockClock::new(),
+        )
+        .unwrap();
         fs::write(first.target().join("retained"), "unknown owner").unwrap();
         let db = CacheDb::open(crate::state::path(association.operator())).unwrap();
         let key = db
@@ -137,7 +166,15 @@ mod cases {
             .0;
         db.remove_record(RecordKind::CargoTarget, &key).unwrap();
         drop(first);
-        let next = prepare(&association, &worker, &profile, CargoTargetReuse::Off).unwrap();
+        let next = prepare(
+            &association,
+            &worker,
+            &profile,
+            CargoTargetReuse::Off,
+            retention::Policy::default().default_request(),
+            &crate::clock::MockClock::new(),
+        )
+        .unwrap();
         assert!(next.target().exists());
         fs::create_dir(worker.join(".cargo")).unwrap();
         symlink(
@@ -145,7 +182,17 @@ mod cases {
             worker.join(".cargo/config.toml"),
         )
         .unwrap();
-        assert!(prepare(&association, &worker, &profile, CargoTargetReuse::Off).is_err());
+        assert!(
+            prepare(
+                &association,
+                &worker,
+                &profile,
+                CargoTargetReuse::Off,
+                retention::Policy::default().default_request(),
+                &crate::clock::MockClock::new()
+            )
+            .is_err()
+        );
         let indirect = root.path().join("indirect-trusted-cargo");
         symlink(root.path(), &indirect).unwrap();
         assert!(
@@ -165,7 +212,15 @@ mod cases {
     #[test]
     fn trusted_cargo_execution_rejects_worker_cache_inputs() {
         let (root, association, worker, profile) = fixture();
-        let namespace = prepare(&association, &worker, &profile, CargoTargetReuse::Off).unwrap();
+        let namespace = prepare(
+            &association,
+            &worker,
+            &profile,
+            CargoTargetReuse::Off,
+            retention::Policy::default().default_request(),
+            &crate::clock::MockClock::new(),
+        )
+        .unwrap();
         let output_root = root.path().join("trusted-cargo");
         let mut command = Command::new("env");
         command
@@ -271,7 +326,14 @@ mod cases {
         let profile = root.path().join("profile.json");
         fs::write(&profile, r#"{"profile":{"mounts":[]}}"#)?;
         let association = Association::resolve(&operator)?;
-        let namespace = prepare(&association, &worker, &profile, CargoTargetReuse::Off)?;
+        let namespace = prepare(
+            &association,
+            &worker,
+            &profile,
+            CargoTargetReuse::Off,
+            retention::Policy::default().default_request(),
+            &crate::clock::MockClock::new(),
+        )?;
         let canonical = operator.join("target/debug/loom");
         fs::create_dir_all(canonical.parent().unwrap())?;
         fs::write(&canonical, "canonical executable sentinel")?;

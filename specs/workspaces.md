@@ -180,7 +180,15 @@ configurable size/age/free-space thresholds. Active, held, pinned or unknown
 generations remain protected under pressure. An unavailable large reservation
 returns infrastructure unavailability while independently admissible work may
 continue. Accounting failures and ambiguous ownership are diagnostics, not zero
-usage.
+usage. `[loom.cargo_retention]` configures the generated worker pool budget,
+request reservation, free-space floor and age threshold. Per-profile reservation
+estimates change request size, not the shared budget or compiler-cache pool.
+[Storage admission](../docs/cargo-retention.md) records defaults and the current
+implementation boundary: abandoned never-dispatched preparations can be
+collected. A durable private projection tombstone, outside the worker mount,
+protects dispatched output even if transient database snapshots are reset or
+replayed; every dispatched generation remains unreconciled pending trusted
+runtime lifetime observations. Trusted native output retention remains pending.
 
 A trusted lifecycle lease is necessary but insufficient after process loss.
 Restart reconciles owned process/cgroup generations before making output idle;
@@ -429,17 +437,37 @@ for worker feedback.
 
 ### Generated Cargo retention
 
+- Generated worker admission accounts allocated output and reservations, rejects
+  unavailable large requests without deleting unreconciled output, and permits
+  independently admissible smaller requests.
+  [test](cargo_retention_bounds_protect_independent_work)
+
+- Native Rust worker preparation reports storage admission failure through
+  preflight infrastructure handling, then admits a smaller request under the
+  same storage budget without changing its cache-sharing policy.
+  [test](worker_cargo_target_reuse_honors_policy_before_spawn)
+
+- Reclaiming abandoned never-dispatched preparations survives native SIGKILL
+  interruptions at quarantine journal, rename and unlink boundaries, preserves
+  source sentinels and honors new evidence holds before continuing removal.
+  [test](cargo_retention_quarantine_rechecks_ownership_and_resumes_sigkill)
+
+- Replaying or resetting transient database snapshots cannot make projected
+  output collectible: a private per-generation projection tombstone remains
+  protective after its launcher lease is released.
+  [test](cargo_retention_cache_replay_cannot_erase_projection_tombstones)
+
 - Accounting and reservation admission cover only recorded generated namespaces;
   size, age and free-space policy protects active, held, pinned and unknown
   generations, preserves every source/evidence/runtime root, diagnoses failed
   accounting and permits independently admissible smaller work.
-  [test?](cargo_retention_bounds_protect_independent_work)
+  [test?](wrix_cargo_retention_pressure_bounds_protect_independent_work)
 
 - Process death and restart never convert a free lease or missing/reused PID
   into collection authority. Real surviving build processes retain their
   namespaces until their exact owned process/cgroup generation is confirmed
   inactive; unknown platform observations retain with diagnostics.
-  [test?](cargo_retention_restart_preserves_surviving_processes)
+  [test?](wrix_cargo_retention_restart_reconciles_completed_process_generations)
 
 - Quarantine and removal fence allocation and recheck trusted ownership,
   filesystem identity, holds and pins. Actual generated fixtures exercise
