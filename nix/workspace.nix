@@ -104,6 +104,7 @@ let
     "docs" = "${src}/docs";
     "nix" = "${src}/nix";
     "scripts" = "${src}/scripts";
+    "bin/loom" = "${src}/bin/loom";
     "bin/pre-push-checks" = "${src}/bin/pre-push-checks";
     ".pre-commit-config.yaml" = "${src}/.pre-commit-config.yaml";
   };

@@ -158,10 +158,18 @@ seeding. The selected profile's effective wrapper and cache destination must
 agree with the admitted mount. Trusted commands use separate targets and either
 a separate trusted compiler-cache backend or explicitly disabled compiler
 caching; ambient worker cache directories, sockets and wrappers cannot select
-trusted execution inputs. Trusted output resides under the existing per-user
-driver state root (`loom/trusted-cargo`), outside source checkouts and worker
-projections. The source checkout's canonical executables are not ordinary worker
-output.
+trusted execution inputs. Native Cargo output resides under the existing
+per-user driver state root (`loom/trusted-cargo`), outside source checkouts and
+worker projections. The source checkout's canonical executables are not ordinary
+worker output.
+
+Before a managed driver exists, the host source wrapper launches the current
+checkout's locked Nix package, not an unmanaged temporary Cargo target. Nix owns
+those immutable package outputs and build lifetimes; its store is outside the
+native pool's accounting and collection authority. Bootstrap failure propagates
+without falling back to unmanaged Cargo. Worker source feedback still uses Cargo
+with its projected target/cache and initializes dependency patches first.
+Existing temporary bootstrap output remains protected, not adopted or removed.
 
 ### Generated Cargo retention
 
@@ -412,6 +420,19 @@ for worker feedback.
 ## Success Criteria
 
 ### Cargo storage isolation
+
+- The host source wrapper selects the current checkout's locked Nix package,
+  preserves arguments and caller location, removes ambient Cargo output/cache
+  overrides, and allocates no unmanaged Cargo bootstrap target.
+  [test](host_bootstrap_uses_locked_nix_without_unmanaged_cargo)
+
+- A failed Nix bootstrap propagates its status without falling back to unmanaged
+  Cargo or changing existing bootstrap output.
+  [test](host_bootstrap_nix_failure_never_falls_back_to_unmanaged_cargo)
+
+- Worker source feedback initializes dependency patches before Cargo, preserves
+  its projected target and shared cache, and does not bootstrap through Nix.
+  [test](worker_bootstrap_preserves_projected_cargo_target_and_shared_cache)
 
 - Generated worker targets have private context/generation ownership while
   preserving legacy targets and retry output. Profiles cannot project another
@@ -1083,8 +1104,9 @@ for worker feedback.
 - Profile factory output must be complete and identify an immutable store
   manifest. [test](factory_output_rejects_partial_results_and_mutable_manifests)
 
-- The configured native startup wrapper initializes pinned Cargo patches before
-  invoking Cargo. [test](configured_native_wrapper_initializes_patches_before_cargo)
+- The configured worker Cargo startup wrapper initializes pinned dependency
+  patches before invoking Cargo.
+  [test](configured_worker_wrapper_initializes_patches_before_cargo)
 
 - A declared legacy native profile is upgraded from the installed driver's
   explicit pinned closure without introducing profiles or runtimes. Explicit

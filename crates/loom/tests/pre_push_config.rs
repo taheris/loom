@@ -186,7 +186,7 @@ fn marker_free_hook_rejects_absent_required_tool_before_skip_wrapper() {
 }
 
 #[test]
-fn configured_native_wrapper_initializes_patches_before_cargo() {
+fn configured_worker_wrapper_initializes_patches_before_cargo() {
     let fixture = Fixture::new();
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../bin/loom");
     std::fs::copy(source, fixture.workspace.join("bin/loom")).expect("configured wrapper");
@@ -201,9 +201,10 @@ fn configured_native_wrapper_initializes_patches_before_cargo() {
     let output = fixture
         .recording_command("bash")
         .args(["bin/loom", "--help"])
+        .env("LOOM_INSIDE", "1")
         .output()
-        .expect("configured native startup");
-    assert_success(&output, "configured native wrapper");
+        .expect("configured worker startup");
+    assert_success(&output, "configured worker wrapper");
     assert_eq!(
         String::from_utf8(output.stdout).expect("startup output"),
         "cargo-after-patches\n"

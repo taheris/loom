@@ -12,20 +12,28 @@ scrub_git_local_env() {
   done <<<"$vars"
 }
 
-top_level="$(git rev-parse --show-toplevel)"
-
-if [[ -z "${LOOM_INSIDE+x}" ]]; then
-  export CARGO_TARGET_DIR
-  CARGO_TARGET_DIR="$(mktemp -d "$(cd /tmp && pwd -P)/loom-trusted-bootstrap.XXXXXXXX")"
-  export CARGO_BUILD_TARGET_DIR="$CARGO_TARGET_DIR"
-  export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
+scrub_host_cargo_env() {
+  local var
+  unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR CARGO_BUILD_BUILD_DIR
   export RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
   export RUSTC_WORKSPACE_WRAPPER= CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=
-elif sccache_bin="$(command -v sccache)"; then
+  for var in "${!SCCACHE_@}"; do
+    unset "$var"
+  done
+}
+
+top_level="$(git rev-parse --show-toplevel)"
+scrub_git_local_env
+
+if [[ -z "${LOOM_INSIDE+x}" ]]; then
+  scrub_host_cargo_env
+  exec nix run --no-update-lock-file --no-write-lock-file "$top_level#loom" -- "$@"
+fi
+
+if sccache_bin="$(command -v sccache)"; then
   export RUSTC_WRAPPER="$sccache_bin"
   export CARGO_BUILD_RUSTC_WRAPPER="$sccache_bin"
 fi
 
-scrub_git_local_env
 bash "$top_level/scripts/configure-cargo-patches.sh"
 exec cargo run --bin loom --manifest-path "$top_level/Cargo.toml" -- "$@"

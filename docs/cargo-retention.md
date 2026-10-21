@@ -105,6 +105,20 @@ their estimates, and their measured growth constrains later requests. A new
 context can be refused while independently admissible existing work continues.
 Lifecycle-based collection of **dispatched** trusted output remains pending.
 
+### Before the driver starts
+
+The host `bin/loom` wrapper launches the current checkout's locked Nix package.
+It does not create a fresh temporary Cargo target before native admission is
+available. Nix owns the immutable package outputs and build lifetimes; the Nix
+store remains outside Loom's native pool budget and collection authority. A
+failed bootstrap returns its failure without falling back to unmanaged Cargo.
+Existing `loom-trusted-bootstrap.*` directories remain untouched and protected;
+this change neither adopts nor removes them.
+
+Inside a worker, the same wrapper continues to initialize Cargo patches and run
+Cargo against the existing projected target and configured worker cache. Host
+bootstrap does not consume that worker output or compiler cache.
+
 ## Current collection boundary
 
 The collector can reclaim only driver-created preparations that were **never

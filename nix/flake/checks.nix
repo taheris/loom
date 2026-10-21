@@ -85,6 +85,7 @@
           ''
             set -euo pipefail
             diff --recursive ${../../nix} "${stagedSrc}/nix"
+            cmp ${../../bin/loom} "${stagedSrc}/bin/loom"
             touch "$out"
           '';
 
