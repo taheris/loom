@@ -7,6 +7,46 @@ use anyhow::Result;
 use loom_shared::artifact::{Outcome, Reuse};
 use support::{Fixture, external_libraries};
 
+#[tokio::test]
+async fn target_reuse_fixture_initializes_without_ambient_hooks() -> Result<()> {
+    const CHILD: &str = "LOOM_TARGET_FIXTURE_HOOKS_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        assert!(std::env::var_os("WRIX_PREK_HOOKS").is_none());
+        let fixture = Fixture::new(&std::env::temp_dir()).await?;
+        assert!(fixture.donor.join("Cargo.toml").is_file());
+        assert!(
+            fixture
+                .workspace("lm-bbbb")
+                .await?
+                .join("Cargo.toml")
+                .is_file()
+        );
+        return Ok(());
+    }
+    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "target_reuse_fixture_initializes_without_ambient_hooks",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env_remove("WRIX_PREK_HOOKS");
+    let output = loom_driver::process::output(
+        &mut command,
+        &loom_driver::clock::SystemClock,
+        std::time::Duration::from_secs(60),
+    )
+    .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "fixture subprocess failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
 /// Real independent Git clones and Cargo are needed to detect stale cross-checkout artifact reuse.
 #[tokio::test]
 async fn target_seeding_real_cargo_rebuilds_divergent_checkouts() -> Result<()> {

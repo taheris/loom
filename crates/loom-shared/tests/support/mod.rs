@@ -80,9 +80,8 @@ impl Fixture {
         loom_driver::git::init_test_repo(&dependency)?;
         loom_driver::git::commit_all_in(&dependency, "Dependency")?;
         let operator = root.join("operator");
-        let git = loom_driver::git::init_test_repo(&operator)?;
+        let git = loom_driver::git::init_test_repo_with_integration(&operator)?;
         let integration = operator.join(".loom/integration");
-        loom_driver::git::init_test_repo(&integration)?;
         fs::create_dir_all(integration.join("src"))?;
         fs::write(
             integration.join("Cargo.toml"),
