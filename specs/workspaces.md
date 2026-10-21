@@ -457,8 +457,8 @@ for worker feedback.
   routes the configured compiler cache to its bounded backend. Private profiles
   cannot reach forbidden shared pools, and no worker mount exposes trusted
   output/runtime roots. This is runtime mount/backend substrate conformance, not
-  a repeat of portable Cargo correctness or policy scenarios.
-  [test?](wrix_cargo_storage_projection_matches_admitted_profile)
+  a repeat of portable Cargo correctness or policy scenarios. [system](bash
+  scripts/verify-wrix-cargo-projection)
 
 ### Generated Cargo retention
 

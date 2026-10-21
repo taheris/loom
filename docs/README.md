@@ -30,6 +30,9 @@ Ownership boundaries do not require new crates or commands.
 
 ## Engineering Investigations
 
+- [Actual Wrix Cargo projection](wrix-cargo-projection.md) — explicitly selected
+  Linux runtime mount/backend conformance and its platform/version boundary.
+
 - [Cargo target reuse validation](cargo-target-reuse.md) — Rust/Nextest safety
   coverage, replayable native Cargo measurements and the minimal APFS/Wrix
   substrate-only remainder.

@@ -485,4 +485,6 @@ fn trusted_command_at(
 }
 
 #[cfg(test)]
+mod projection;
+#[cfg(test)]
 mod tests;
