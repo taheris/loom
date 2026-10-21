@@ -574,6 +574,7 @@
         inherit cargoArtifacts;
         nativeBuildInputs = [ pkgs.git ];
         LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+        GOMAXPROCS = "2";
         doCheck = true;
         doInstallCargoArtifacts = false;
         buildPhaseCargoCommand = "cargo test --locked -p loom-issues --test native --no-run";

@@ -93,7 +93,8 @@ mod native {
                 .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
                 .env("BD_JSON_ENVELOPE", "1")
                 .env("BD_DISABLE_METRICS", "1")
-                .env("BD_DISABLE_EVENT_FLUSH", "1");
+                .env("BD_DISABLE_EVENT_FLUSH", "1")
+                .env("GOMAXPROCS", "2");
             command
         }
 
