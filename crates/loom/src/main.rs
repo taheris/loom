@@ -2189,10 +2189,11 @@ fn run_check_with_progress(
             }
             Err(err) => {
                 let _ = writeln!(stderr, "loom gate [check] dispatch error: {}", ann.target);
-                for line in format!("{err:#}").lines().take(5) {
+                let code = dispatch_error_code(&err);
+                for line in format!("{:#}", anyhow::Error::new(err)).lines().take(5) {
                     let _ = writeln!(stderr, "  {line}");
                 }
-                combined = combine_verifier_codes(combined, dispatch_error_code(&err));
+                combined = combine_verifier_codes(combined, code);
             }
         }
     }
@@ -2281,10 +2282,11 @@ fn run_system_with_progress(
                         let _ = write!(stderr, "\x1b[2K\r");
                     }
                     let _ = writeln!(stderr, "loom gate [{tier}] dispatch error: {}", ann.target);
-                    for line in format!("{err:#}").lines().take(5) {
+                    let code = dispatch_error_code(&err);
+                    for line in format!("{:#}", anyhow::Error::new(err)).lines().take(5) {
                         let _ = writeln!(stderr, "  {line}");
                     }
-                    combined = combine_verifier_codes(combined, dispatch_error_code(&err));
+                    combined = combine_verifier_codes(combined, code);
                 }
             }
         }

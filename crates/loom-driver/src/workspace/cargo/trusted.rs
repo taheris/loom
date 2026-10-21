@@ -61,6 +61,7 @@ pub(super) fn prepare(output: &Path, source: &Path, clock: &dyn Clock) -> Result
     let parent_path = output.join("native").join(context.name());
     let path = tempfile::Builder::new()
         .prefix("generation-")
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
         .tempdir_in(&parent_path)?
         .keep();
     let namespace = Directory::open(&path)?;

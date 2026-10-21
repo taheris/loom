@@ -16,7 +16,7 @@ const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
 
 /// A no-follow directory handle whose ancestors cannot be replaced by other users.
 #[derive(Debug)]
-pub struct Directory(OwnedFd);
+pub struct Directory(OwnedFd, std::path::PathBuf);
 
 impl AsFd for Directory {
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -38,7 +38,7 @@ impl Directory {
             ));
         }
         let path = std::path::absolute(path)?;
-        let mut dir = Self(open("/", DIRECTORY_FLAGS, Mode::empty())?);
+        let mut dir = Self(open("/", DIRECTORY_FLAGS, Mode::empty())?, "/".into());
         let mut ancestor = std::path::PathBuf::from("/");
         for component in path.components() {
             if let Component::Normal(name) = component {
@@ -63,7 +63,7 @@ impl Directory {
                 "invalid directory path",
             ));
         }
-        let mut dir = Self(open("/", DIRECTORY_FLAGS, Mode::empty())?);
+        let mut dir = Self(open("/", DIRECTORY_FLAGS, Mode::empty())?, "/".into());
         let mut ancestor = std::path::PathBuf::from("/");
         for component in path.components() {
             if let Component::Normal(name) = component {
@@ -85,7 +85,10 @@ impl Directory {
     }
 
     pub(crate) fn child(&self, name: &Path) -> io::Result<Self> {
-        let child = Self(openat(&self.0, name, DIRECTORY_FLAGS, Mode::empty())?);
+        let child = Self(
+            openat(&self.0, name, DIRECTORY_FLAGS, Mode::empty())?,
+            self.1.join(name),
+        );
         let stat = fstat(&child.0)?;
         let trusted_owner = stat.st_uid == geteuid().as_raw() || stat.st_uid == 0;
         let sticky = stat.st_mode & 0o1000 != 0;
@@ -126,7 +129,11 @@ impl Directory {
         if stat.st_mode & 0o7777 != 0o700 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "runtime directory must have mode 0700",
+                format!(
+                    "runtime directory {} has mode {:04o}; required mode 0700",
+                    self.1.display(),
+                    stat.st_mode & 0o7777,
+                ),
             ));
         }
         Ok(())
@@ -209,6 +216,8 @@ impl Directory {
         &self,
         excluded: &std::collections::BTreeSet<(rustix::fs::Dev, u64)>,
     ) -> io::Result<u64> {
+        use std::os::unix::ffi::OsStrExt as _;
+
         let device = self.stat()?.st_dev;
         let mut pending = vec![self.child(Path::new("."))?];
         let mut seen = std::collections::BTreeSet::new();
@@ -241,7 +250,12 @@ impl Directory {
                 if rustix::fs::FileType::from_raw_mode(stat.st_mode)
                     == rustix::fs::FileType::Directory
                 {
-                    let child = Self(openat(&directory.0, name, DIRECTORY_FLAGS, Mode::empty())?);
+                    let child = Self(
+                        openat(&directory.0, name, DIRECTORY_FLAGS, Mode::empty())?,
+                        directory
+                            .1
+                            .join(std::ffi::OsStr::from_bytes(name.to_bytes())),
+                    );
                     let current = child.stat()?;
                     if current.st_dev != stat.st_dev || current.st_ino != stat.st_ino {
                         return Err(io::Error::other(
