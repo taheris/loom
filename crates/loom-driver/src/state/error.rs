@@ -75,3 +75,31 @@ impl From<crate::git::GitError> for CacheError {
         Self::Git(Box::new(error))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+
+    use super::CacheError;
+    use crate::git::GitError;
+
+    #[test]
+    fn git_error_conversion_preserves_typed_source() {
+        let error = CacheError::from(GitError::GitCli {
+            status: 128,
+            stderr: "repository unavailable".into(),
+        });
+        assert_eq!(
+            error.to_string(),
+            "checkout Git storage could not be resolved"
+        );
+        assert!(matches!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<Box<GitError>>()
+                .map(Box::as_ref),
+            Some(GitError::GitCli { status: 128, stderr }) if stderr == "repository unavailable"
+        ));
+    }
+}
