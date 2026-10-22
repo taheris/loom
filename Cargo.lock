@@ -2813,6 +2813,7 @@ dependencies = [
  "anyhow",
  "displaydoc",
  "loom-events",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

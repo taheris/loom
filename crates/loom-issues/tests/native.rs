@@ -1,9 +1,12 @@
 #[cfg(test)]
 mod common;
+#[cfg(test)]
+#[path = "native/process.rs"]
+mod process;
 
 #[cfg(test)]
 mod native {
-    use super::common;
+    use super::{common, process};
     use loom_issues::{
         beads::{BdClient, BdError, CommandRunner, RunOutput},
         memory::{Fault, Operation, Timing},
@@ -141,15 +144,10 @@ mod native {
                 });
             }
             let output =
-                tokio::time::timeout(timeout, self.command(&self.binary).args(&args).output())
-                    .await
-                    .map_err(|_| BdError::Timeout {
-                        args: format!("{args:?}"),
-                    })?
-                    .map_err(BdError::Spawn)?;
+                process::run(self.command(&self.binary), &args, self.root.path(), timeout).await?;
             if fault.is_some_and(|fault| fault.timing == Timing::AfterWrite) {
                 assert!(
-                    output.status.success(),
+                    output.success(),
                     "fault must follow a real write: {}",
                     String::from_utf8_lossy(&output.stderr)
                 );
@@ -157,11 +155,7 @@ mod native {
                     args: "receipt lost after native write".into(),
                 });
             }
-            Ok(RunOutput {
-                status: output.status.code().unwrap_or(-1),
-                stdout: output.stdout,
-                stderr: output.stderr,
-            })
+            Ok(output)
         }
 
         async fn publish(&self, timeout: Duration) -> Result<(), BdError> {

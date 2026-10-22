@@ -146,6 +146,16 @@ fn issues_external_consumer_preserves_extraction_boundary() {
         let mut package: toml::Value =
             toml::from_str(&fs::read_to_string(source.join("Cargo.toml")).unwrap()).unwrap();
         package.as_table_mut().unwrap().remove("dev-dependencies");
+        if let Some(targets) = package
+            .get_mut("target")
+            .and_then(toml::Value::as_table_mut)
+        {
+            targets.retain(|_, target| {
+                let target = target.as_table_mut().unwrap();
+                target.remove("dev-dependencies");
+                !target.is_empty()
+            });
+        }
         fs::write(
             target.join("Cargo.toml"),
             toml::to_string(&package).unwrap(),
