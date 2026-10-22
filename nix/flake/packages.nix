@@ -10,9 +10,33 @@ _:
       loom,
       loomBin,
       wrixSrc,
+      wrixLauncher,
       profileManifest,
       ...
     }:
+    let
+      launchApp =
+        {
+          name,
+          profileConfig,
+          launcher ? wrixLauncher,
+        }:
+        pkgs.writeShellApplication {
+          inherit name;
+          text = ''
+            exec ${launcher}/bin/wrix --profile-config ${pkgs.lib.escapeShellArg profileConfig} run "$@"
+          '';
+        };
+      fixtureLauncher = pkgs.writeShellScriptBin "wrix" ''
+        set -euo pipefail
+        printf '%s\n' "$@"
+      '';
+      fixtureApp = launchApp {
+        name = "sandbox-launch-fixture";
+        profileConfig = "/selected profile.json";
+        launcher = fixtureLauncher;
+      };
+    in
     {
       packages = {
         inherit profileManifest;
@@ -24,13 +48,27 @@ _:
         loom-wrix = loomBin;
         pi-coding-agent = imagePiCodingAgent;
 
-        debug = debugSandbox.package;
-        sandbox = sandbox.package;
+        debug = launchApp {
+          name = "loom-debug";
+          profileConfig = "${debugSandbox.image.profileConfig}";
+        };
+        sandbox = launchApp {
+          name = "loom-sandbox";
+          profileConfig = "${sandbox.image.profileConfig}";
+        };
         sandbox-image = sandbox.image;
 
         wrixSrc = pkgs.runCommand "wrix-src" { } ''
           cp -r ${wrixSrc} $out
         '';
       };
+
+      checks.sandbox-launch-command = pkgs.runCommand "sandbox-launch-command" { } ''
+        set -euo pipefail
+        ${fixtureApp}/bin/sandbox-launch-fixture '/workspace with spaces' -- --version > actual
+        printf '%s\n' --profile-config '/selected profile.json' run '/workspace with spaces' -- --version > expected
+        cmp actual expected
+        touch "$out"
+      '';
     };
 }

@@ -5,8 +5,7 @@ _:
     {
       config,
       pkgs,
-      wrixLib,
-      rustProfile,
+      wrixLauncher,
       rustToolchain,
       sandbox,
       loom,
@@ -31,7 +30,7 @@ _:
         pkgs.cargo-nextest
         pkgs.flock
         rustToolchain
-        sandbox.package
+        wrixLauncher
       ]
       ++ wrixSpawnRuntimePackages;
 
@@ -44,13 +43,12 @@ _:
       commonEnv = {
         LOOM_PROFILES_MANIFEST = profileManifest;
         LOOM_PROVISIONED_PROFILES_MANIFEST = profileManifest;
-        LOOM_WRIX_BIN = "${sandbox.package}/bin/wrix";
+        LOOM_WRIX_BIN = "${wrixLauncher}/bin/wrix";
       };
     in
     {
       devShells = {
-        default = wrixLib.mkDevShell {
-          profile = rustProfile;
+        default = sandbox.devShell {
           env = commonEnv;
           packages = commonPackages;
           shellHook = cargoPatchSetup;

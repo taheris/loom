@@ -27,7 +27,7 @@ _:
       imageLoom,
       nativeCargo,
       rustProfile,
-      sandbox,
+      wrixLauncher,
       ...
     }:
     let
@@ -40,6 +40,7 @@ _:
           smokeProfileManifest
           smokeSandbox
           smokeServiceImage
+          wrixLauncher
           ;
         loomPackage = loom;
         smokePrekHooks = wrixLib.prekHooks;
@@ -143,14 +144,14 @@ _:
           pkgs.beads
         ];
         runtimeEnv.WRIX_PREK_HOOKS = wrixLib.prekHooks;
-        runtimeEnv.LOOM_WRIX_BIN = "${sandbox.package}/bin/wrix";
+        runtimeEnv.LOOM_WRIX_BIN = "${wrixLauncher}/bin/wrix";
         text = ''
           if [[ "$#" != 0 ]]; then
             printf 'this fixed fixture accepts no arguments\n' >&2
             exit 64
           fi
           exec ${pkgs.bash}/bin/bash ${../../tests/sandbox/profile-bootstrap.sh} \
-            ${loom.bin}/bin/loom ${sandbox.package}/bin/wrix ${profileManifest} \
+            ${loom.bin}/bin/loom ${wrixLauncher}/bin/wrix ${profileManifest} \
             ${pkgs.bash} ${pkgs.coreutils} ${pkgs.stdenv.hostPlatform.system}
         '';
       };
@@ -277,7 +278,7 @@ _:
               del(.services.beads) |
               .services.nix_cache.enable = false |
           .network.default_mode = "limit"' \
-            ${sandbox.profileConfig} > "$out"
+            ${sandbox.image.profileConfig} > "$out"
         '';
       transportProfile = mkTransportProfile transportSandbox;
       outageProfile = mkTransportProfile outageSandbox;
@@ -295,7 +296,7 @@ _:
         ++ optionals isLinux [ pkgs.podman ];
         text = ''
           exec ${pkgs.bash}/bin/bash ${../../tests/sandbox/worker-transport.sh} \
-            ${transportSandbox.launcher}/bin/wrix \
+            ${wrixLauncher}/bin/wrix \
             ${transportProfile} ${transientProfile} ${outageProfile} ${stalledProfile}
         '';
       };

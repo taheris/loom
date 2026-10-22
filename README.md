@@ -150,14 +150,23 @@ wrix can hand to `mkSandbox`:
         sandbox    = wrix.mkSandbox {
           profile      = wrix.profiles.rust;
           agent        = "direct";
-          directRunner = loomLinux.bin;
+          agentPkg = loomLinux.bin.overrideAttrs (old: {
+            meta = old.meta // { mainProgram = "loom-direct-runner"; };
+          });
         };
       in {
-        packages.sandbox = sandbox.package;
+        packages.wrix = wrix.rustPackage.wrix;
+        packages.image = sandbox.image.source;
+        packages.profile-config = sandbox.image.profileConfig;
       };
   };
 }
 ```
+
+Programmatic launches pass the selected image's immutable `profile-config` to
+the independent host `wrix` CLI. Loom's `sandbox` and `debug` packages are
+dedicated launch apps: `nix run .#sandbox -- .` runs the selected image in the
+current checkout. They are not configured `wrix` CLIs for service commands.
 
 Loom itself has no Nix dependency on wrix — it just expects the binary on PATH
 and the standard env vars.

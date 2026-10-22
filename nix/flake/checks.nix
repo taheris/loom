@@ -15,6 +15,7 @@
       system,
       wrixLinuxPkgs,
       wrixLib,
+      wrixLauncher,
       ...
     }:
     let
@@ -42,7 +43,7 @@
       hostPlatform = systems.elaborate system;
       loomLib = import ../lib.nix;
       testsDeriv = import ../../tests/default.nix {
-        inherit pkgs smokeSandbox;
+        inherit pkgs smokeSandbox wrixLauncher;
         loomPackage = loom;
       };
 
@@ -418,7 +419,7 @@
             set -euo pipefail
             bash ${../../tests/sandbox/worker-transport-test.sh} \
               ${../../tests/sandbox/worker-transport.sh} \
-              ${sandbox.launcher}/bin/wrix ${transportHarnessProfile}
+              ${wrixLauncher}/bin/wrix ${transportHarnessProfile}
             touch "$out"
           '';
 
@@ -927,7 +928,7 @@
         pkgs.runCommand "wrix-requires-explicit-profile-config" { }
           ''
             set -euo pipefail
-            launcher=${sandbox.launcher}/bin/wrix
+            launcher=${wrixLauncher}/bin/wrix
             "$launcher" --profile-config /selected-profile.json run --help > "$TMPDIR/help"
             ${pkgs.gnugrep}/bin/grep -q -- '--profile-config' "$TMPDIR/help"
             if WRIX_DEFAULT_IMAGE_REF=ignored WRIX_DEFAULT_IMAGE_SOURCE=ignored \

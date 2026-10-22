@@ -147,11 +147,8 @@ in
             source = "${image.source or image}";
           }
           // {
-            # The raw launcher accepts Loom's per-bead ProfileConfig. Do not
-            # use `sandbox.package` here: that configured wrapper already
-            # injects its own `--profile-config`, which would collide with the
-            # runtime-selected one below.
-            launcher = "${sandboxes.${profileName}.${runtime}.launcher}/bin/wrix";
+            # The host CLI receives the selected image configuration at dispatch.
+            launcher = "${wrixLib.rustPackage.wrix}/bin/wrix";
           }
           // {
             # Image-backed launches require the immutable ProfileConfig; keep

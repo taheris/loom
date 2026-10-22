@@ -30,6 +30,7 @@
   smokePrekHooks ? null,
   smokeSandbox ? null,
   smokeServiceImage ? null,
+  wrixLauncher ? null,
   ...
 }:
 
@@ -173,7 +174,7 @@ let
     pkgs.bash
     pkgs.git
     pkgs.openssh
-    smokeSandbox.launcher
+    wrixLauncher
   ];
 
   smoke-git-policy = pkgs.runCommand "smoke-git-policy" { } ''
@@ -190,7 +191,7 @@ let
       }" \
       TMPDIR="$TMPDIR" \
       ${pkgs.bash}/bin/bash ${../smoke/git-policy-test.sh} \
-        ${smokeSandbox.launcher}/bin/wrix ${../smoke/seed-git-policy.sh}
+        ${wrixLauncher}/bin/wrix ${../smoke/seed-git-policy.sh}
     touch "$out"
   '';
 
@@ -216,7 +217,7 @@ let
       NIX_BUILD_TOP="''${NIX_BUILD_TOP:-}" \
       ${pkgs.bash}/bin/bash ${../../scripts/run-private-fixture-tests} \
         ${pkgs.bash}/bin/bash ${../smoke/host-gate-temporary-root-test.sh} \
-        ${../smoke/host-gate-test.sh} ${smokeSandbox.launcher}/bin/wrix ${../../bin/pre-push-checks}
+        ${../smoke/host-gate-test.sh} ${wrixLauncher}/bin/wrix ${../../bin/pre-push-checks}
     touch "$out"
   '';
 
@@ -241,9 +242,9 @@ let
       export WRIX_SERVICE_IMAGE_SOURCE=${smokeServiceImage.source}
       export WRIX_SERVICE_IMAGE_SOURCE_KIND=${smokeServiceImage.source_kind}
       export WRIX_SERVICE_IMAGE_DIGEST=${smokeServiceImage.digest}
-      export LOOM_WRIX_BIN=${smokeSandbox.package}/bin/wrix
-      export LOOM_WRIX_SERVICE_BIN=${smokeSandbox.package}/bin/wrix
-      export LOOM_WRIX_SPAWN_BIN=${smokeSandbox.launcher}/bin/wrix
+      export LOOM_WRIX_BIN=${wrixLauncher}/bin/wrix
+      export LOOM_WRIX_SERVICE_BIN=${wrixLauncher}/bin/wrix
+      export LOOM_WRIX_SPAWN_BIN=${wrixLauncher}/bin/wrix
       ${builtins.readFile ../run-tests.sh}
     '';
   };

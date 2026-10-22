@@ -213,10 +213,11 @@ in
         agentPkg = imagePiCodingAgent;
       };
 
+      wrixLauncher = wrixLib.rustPackage.wrix;
+
       loomBin = loomLib.mkLoomBin {
-        inherit pkgs profileManifest;
+        inherit pkgs profileManifest wrixLauncher;
         loomBuild = loom;
-        wrixLauncher = sandbox.package;
       };
     in
     {
@@ -242,6 +243,7 @@ in
           smokeProfileManifest
           smokeSandbox
           wrixLib
+          wrixLauncher
           wrixLinuxPkgs
           ;
         smokeServiceImage = wrixLib.serviceImage;

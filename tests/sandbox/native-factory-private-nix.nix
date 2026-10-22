@@ -12,6 +12,10 @@ let
   # provisioning and execution belong to the ordinary constructor alone.
   wrixLib = {
     capabilities.privateNix = 1;
+    rustPackage.wrix = pkgs.writeShellScriptBin "wrix" ''
+      set -euo pipefail
+      printf '%s\n' "$@"
+    '';
     mkSandbox =
       {
         profile,
@@ -27,7 +31,6 @@ let
           agentPkg
           image
           ;
-        launcher = agentPkg;
       };
     mkProfileImages = images: {
       passthru.manifest = builtins.mapAttrs (runtime: _: {
@@ -69,6 +72,9 @@ assert rejected unsupported;
 assert legacy.sandboxes.base.pi.agent == "pi";
 assert allRuntimes (runtime: factory.sandboxes.rust.${runtime}.agent == runtime);
 assert allRuntimes (runtime: factory.manifest.rust.${runtime}.native_preflight == "rust");
+assert allRuntimes (
+  runtime: factory.manifest.rust.${runtime}.launcher == "${wrixLib.rustPackage.wrix}/bin/wrix"
+);
 assert allRuntimes (runtime: !(factory.manifest.base.${runtime} ? native_preflight));
 assert allRuntimes (runtime: !(factory.manifest.python.${runtime} ? native_preflight));
 pkgs.runCommand "native-factory-private-nix" { } ''

@@ -13,6 +13,7 @@
   smokePrekHooks ? null,
   smokeSandbox ? null,
   smokeServiceImage ? null,
+  wrixLauncher ? null,
   ...
 }:
 
@@ -25,6 +26,7 @@ let
       smokePrekHooks
       smokeSandbox
       smokeServiceImage
+      wrixLauncher
       ;
   };
 in
