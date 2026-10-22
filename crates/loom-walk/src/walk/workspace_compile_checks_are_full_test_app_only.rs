@@ -227,14 +227,28 @@ fn derivation_block(body: &str, attr: &str, builder: &str) -> Option<(usize, Str
     let builder_needle = format!("craneLib.{builder}");
     let mut start_line = None;
     let mut block = String::new();
+    let mut head = String::new();
+    let mut builder_found = false;
 
     for (idx, raw) in body.lines().enumerate() {
         let code = code_before_comment(raw).trim_start();
         if start_line.is_none() {
-            if code.starts_with(&assignment_prefix) && code.contains(&builder_needle) {
-                start_line = Some(idx + 1);
-            } else {
+            let Some(value) = code.strip_prefix(&assignment_prefix) else {
                 continue;
+            };
+            start_line = Some(idx + 1);
+            head.push_str(value);
+        } else if !builder_found {
+            head.push_str(code);
+        }
+        if !builder_found {
+            let value = head.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
+            if !value.is_empty() {
+                let tail = value.strip_prefix(&builder_needle)?;
+                if !tail.starts_with(|c: char| c.is_whitespace() || c == '(') {
+                    return None;
+                }
+                builder_found = true;
             }
         }
         block.push_str(raw);
@@ -244,7 +258,11 @@ fn derivation_block(body: &str, attr: &str, builder: &str) -> Option<(usize, Str
         }
     }
 
-    start_line.map(|line| (line, block))
+    if builder_found {
+        start_line.map(|line| (line, block))
+    } else {
+        None
+    }
 }
 
 fn first_assignment_line(body: &str, attr: &str) -> Option<usize> {

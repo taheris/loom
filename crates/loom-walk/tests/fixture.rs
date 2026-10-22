@@ -1212,6 +1212,8 @@ fn loom_does_not_invoke_podman_fail_direct_command_new() {
 const STRUCTURE_CRATE_NAMES: &[&str] = &[
     "loom",
     "loom-driver",
+    "loom-issues",
+    "loom-shared",
     "loom-events",
     "loom-llm",
     "loom-skill",
@@ -1229,6 +1231,8 @@ const STRUCTURE_CRATE_NAMES: &[&str] = &[
 
 const STRUCTURE_LIB_NAMES: &[&str] = &[
     "loom-driver",
+    "loom-issues",
+    "loom-shared",
     "loom-events",
     "loom-llm",
     "loom-skill",
@@ -1289,6 +1293,21 @@ fn crate_structure_includes_loom_tune_pass_all_target_crates_present() {
         None,
     );
     assert_pass(&out);
+}
+
+#[test]
+fn crate_structure_rejects_missing_tracking_and_seeding_entries() {
+    for name in ["loom-issues", "loom-shared"] {
+        let ws = make_workspace();
+        seed_full_crate_set(&ws);
+        std::fs::remove_file(ws.path().join(format!("crates/{name}/src/lib.rs"))).unwrap();
+        let out = invoke(
+            &["crate_structure_includes_loom_tune"],
+            Some(ws.path()),
+            None,
+        );
+        assert_fail(&out, "src/lib.rs");
+    }
 }
 
 #[test]
@@ -4577,6 +4596,37 @@ fn workspace_compile_checks_are_full_test_app_only_pass() {
         None,
     );
     assert_pass(&out);
+}
+
+#[test]
+fn workspace_compile_checks_accept_formatter_wrapped_builder_but_not_wrong_heads() {
+    for (head, passes) in [
+        ("nextest =\n    (craneLib.cargoNextest (", true),
+        ("nextest =\n    (pkgs.runCommand (", false),
+        ("nextest =\n    (craneLib.cargoNextestOther (", false),
+    ] {
+        let ws = make_workspace();
+        seed_workspace_compile_checks_fixture(ws.path());
+        let path = ws.path().join("nix/workspace.nix");
+        let source = std::fs::read_to_string(&path).unwrap();
+        let source = source
+            .replace("nextest = craneLib.cargoNextest (", head)
+            .replace(
+                "  );\nin\n",
+                "  )).overrideAttrs (old: { meta = old.meta; });\nin\n",
+            );
+        std::fs::write(path, source).unwrap();
+        let out = invoke(
+            &["workspace_compile_checks_are_full_test_app_only"],
+            Some(ws.path()),
+            None,
+        );
+        if passes {
+            assert_pass(&out);
+        } else {
+            assert_fail(&out, "nextest must be built with craneLib.cargoNextest");
+        }
+    }
 }
 
 fn workspace_compile_check_command(command: &str) -> Output {

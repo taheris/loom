@@ -25,6 +25,14 @@ const CRATES: &[CrateSpec] = &[
         entries: &["src/lib.rs"],
     },
     CrateSpec {
+        name: "loom-issues",
+        entries: &["src/lib.rs"],
+    },
+    CrateSpec {
+        name: "loom-shared",
+        entries: &["src/lib.rs"],
+    },
+    CrateSpec {
         name: "loom-events",
         entries: &["src/lib.rs"],
     },
