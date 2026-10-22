@@ -183,6 +183,7 @@ pub fn prepare(
         .join(context.name());
     let generation = tempfile::Builder::new()
         .prefix("generation-")
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
         .tempdir_in(&parent)?
         .keep();
     let generation_handle = Directory::open(&generation)?;
@@ -537,6 +538,8 @@ fn trusted_command_at(
     }
 }
 
+#[cfg(test)]
+mod private_tests;
 #[cfg(test)]
 mod projection;
 #[cfg(test)]

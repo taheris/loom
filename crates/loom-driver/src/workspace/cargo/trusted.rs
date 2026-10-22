@@ -170,6 +170,7 @@ fn prepare_inner(
     parent.require_private()?;
     let path = tempfile::Builder::new()
         .prefix("generation-")
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
         .tempdir_in(output.join("native").join(context.name()))?
         .keep();
     let namespace = Directory::open(&path)?;

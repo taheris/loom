@@ -114,6 +114,25 @@ unmanaged Cargo. Existing `loom-trusted-bootstrap.*` output remains untouched.
 Workers continue using their projected target/cache and initialize Cargo patches
 first.
 
+## Private-generation permission failures
+
+Worker and native generation boundaries are created with explicit `0700`
+permissions, rather than tempfile's default directory permissions. Child-process
+umask tests cover both `022` and `077`, independently of the private fixture
+runner. Existing directories are validated, never chmod-repaired by preparation.
+Mode refusal reports the opened directory's path, observed mode and required
+`0700`; the mode comes from the no-follow handle, not a second path lookup.
+
+A restrictive umask only affects new filesystem objects. It cannot repair an
+existing recorded namespace or target. Native reuse validates its recorded
+namespace and target; admission also validates recorded generations belonging to
+other contexts. Thus changing one generation or running a later command under
+`077` can still encounter another recorded unsafe generation. Refusal preserves
+its data and ownership records. An abandoned attempt that failed before record
+creation is different: it remains unrecorded, conservatively charged and never
+adopted or automatically repaired. A last observed path alone does not establish
+which lifecycle produced it or prove it is the sole failure.
+
 ## Holds and crash recovery
 
 Evidence/runtime/operator holds identify immutable owners. Durable protection
@@ -141,6 +160,16 @@ bash scripts/verify-native-cargo-lifetime
 LOOM_PROFILES_MANIFEST=/nix/store/...-profile-images.json \
   bash scripts/verify-wrix-cargo-projection
 ```
+
+Permission regressions also run through the real CLI and offline Cargo:
+
+```bash
+cargo test -p loom-driver --lib private_cargo_
+cargo test -p loom --test private_cargo_gate
+```
+
+These tests set umasks only in child shells, exercise creation/reuse/refusal,
+and use disposable state roots rather than an operator's pool.
 
 Portable Rust tests cover pressure, free-space/accounting failures, independent
 holds, cache replay/downgrade, issuer replacement, path substitutions and real
