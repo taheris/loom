@@ -525,18 +525,14 @@ for worker feedback.
   into collection authority. Real surviving build processes retain their
   namespaces until their exact owned process/cgroup generation is confirmed
   inactive; unknown platform observations retain with diagnostics. [system](bash
-  scripts/verify-native-cargo-lifetime) [system](bash
-  scripts/verify-wrix-cargo-projection)
+  scripts/verify-cargo-retention)
 
 - Quarantine and removal fence allocation and recheck trusted ownership,
   filesystem identity, holds and pins. Actual generated fixtures exercise
   adversarial paths/symlinks, interrupted collection, conservative recovery and
   protected source/evidence/runtime sentinels through Loop/Gate lifecycle entry
-  points, without collector flags authored by workers.
-  [test](cargo_retention_quarantine_rechecks_ownership_and_resumes_sigkill)
-  [test](cargo_retention_interrupted_unlink_preserves_independent_hold_authority)
-  [test](cargo_retention_unavailable_replaced_and_replayed_issuers_retain_output)
-  [test](worker_cargo_target_reuse_honors_policy_before_spawn)
+  points, without collector flags authored by workers. [system](bash
+  scripts/verify-cargo-retention)
 
 ### Concurrency & locking
 
