@@ -210,14 +210,15 @@ pub enum AssistantMessageDelta {
         delta: String,
     },
 
-    /// Mid-stream error from the agent. Pi populates `reason`
-    /// (`"aborted"` / `"error"`) and may include a `message` with
-    /// human-readable detail.
+    /// Provider error delta. Current Pi carries the assistant message in `error`;
+    /// older producers may supply human-readable `message` detail.
     Error {
         #[serde(default)]
         reason: Option<String>,
         #[serde(default)]
         message: Option<String>,
+        #[serde(default)]
+        error: Option<serde_json::Value>,
     },
 
     /// Forward-compatibility catch-all for delta types Loom does not
@@ -797,7 +798,9 @@ mod tests {
         let line = r#"{"type":"error","reason":"aborted","message":"user cancelled"}"#;
         let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
         match delta {
-            AssistantMessageDelta::Error { reason, message } => {
+            AssistantMessageDelta::Error {
+                reason, message, ..
+            } => {
                 assert_eq!(reason.as_deref(), Some("aborted"));
                 assert_eq!(message.as_deref(), Some("user cancelled"));
             }

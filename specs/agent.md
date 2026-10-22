@@ -516,25 +516,29 @@ nested `assistantMessageEvent` with its own delta types — the parser must
 dispatch on both levels. Pi may also emit final assistant text only in the
 complete `message_end` / `turn_end.message` payload without any `text_delta`;
 Loom must surface that text exactly once so terminal markers are not lost.
+Completed assistant messages with `stopReason: "error"` or `"aborted"` must also
+surface their `errorMessage` (or a nonblank fallback), without duplicate reports
+for the same message across lifecycle records. A later authoritative message may
+supply more specific detail than a streaming error delta.
 
-| Event                   | Key Fields                                                   | Maps To                                                                                                                         |
-| ----------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `message_start`         | `message`                                                    | resets per-message fallback text capture                                                                                        |
-| `message_update`        | `assistantMessageEvent`                                      | see delta mapping below                                                                                                         |
-| `message_end`           | `message`                                                    | fallback `AgentEvent::TextDelta` + `TextEnd` when assistant text was not streamed                                               |
-| `tool_execution_start`  | `toolCallId`, `toolName`, `args`                             | `AgentEvent::ToolCall`                                                                                                          |
-| `tool_execution_end`    | `toolCallId`, `toolName`, `result`, `isError`                | `AgentEvent::ToolResult`                                                                                                        |
-| `tool_execution_update` | `toolCallId`, `partialResult`                                | `AgentEvent::ToolProgress`                                                                                                      |
-| `turn_start`            | —                                                            | logged at `trace!`, skipped                                                                                                     |
-| `turn_end`              | `message`, `toolResults`                                     | fallback final text if needed, then `AgentEvent::TurnEnd`                                                                       |
-| `agent_start`           | —                                                            | logged at `trace!`, skipped                                                                                                     |
-| `agent_end`             | `messages`                                                   | Default: `AgentEvent::SessionComplete` (`exit_code: 0`, synthesized); inbox RPC bridge: `AgentEvent::AgentEnd` — see note below |
-| `compaction_start`      | `reason`                                                     | `AgentEvent::CompactionStart`                                                                                                   |
-| `compaction_end`        | `aborted`, `reason`, `result?`, `willRetry`, `errorMessage?` | `AgentEvent::CompactionEnd`                                                                                                     |
-| `queue_update`          | `steering`, `followUp`                                       | logged at `trace!`, skipped                                                                                                     |
-| `auto_retry_start`      | `attempt`, `maxAttempts`, `delayMs`, `errorMessage`          | logged at `debug!`, skipped                                                                                                     |
-| `auto_retry_end`        | `success`, `attempt`, `finalError`                           | logged at `debug!`, skipped                                                                                                     |
-| `extension_error`       | `extensionPath`, `event`, `error`                            | logged at `debug!`, skipped                                                                                                     |
+| Event                   | Key Fields                                                   | Maps To                                                                                                                                                             |
+| ----------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message_start`         | `message`                                                    | resets per-message fallback text capture                                                                                                                            |
+| `message_update`        | `assistantMessageEvent`                                      | see delta mapping below                                                                                                                                             |
+| `message_end`           | `message`                                                    | fallback `AgentEvent::TextDelta` + `TextEnd` when assistant text was not streamed                                                                                   |
+| `tool_execution_start`  | `toolCallId`, `toolName`, `args`                             | `AgentEvent::ToolCall`                                                                                                                                              |
+| `tool_execution_end`    | `toolCallId`, `toolName`, `result`, `isError`                | `AgentEvent::ToolResult`                                                                                                                                            |
+| `tool_execution_update` | `toolCallId`, `partialResult`                                | `AgentEvent::ToolProgress`                                                                                                                                          |
+| `turn_start`            | —                                                            | logged at `trace!`, skipped                                                                                                                                         |
+| `turn_end`              | `message`, `toolResults`                                     | fallback final text if needed, then `AgentEvent::TurnEnd`                                                                                                           |
+| `agent_start`           | —                                                            | logged at `trace!`, skipped                                                                                                                                         |
+| `agent_end`             | `messages`                                                   | Default: `AgentEvent::SessionComplete` (synthesized `exit_code: 0` on success, `1` on assistant failure); inbox RPC bridge: `AgentEvent::AgentEnd` — see note below |
+| `compaction_start`      | `reason`                                                     | `AgentEvent::CompactionStart`                                                                                                                                       |
+| `compaction_end`        | `aborted`, `reason`, `result?`, `willRetry`, `errorMessage?` | `AgentEvent::CompactionEnd`                                                                                                                                         |
+| `queue_update`          | `steering`, `followUp`                                       | logged at `trace!`, skipped                                                                                                                                         |
+| `auto_retry_start`      | `attempt`, `maxAttempts`, `delayMs`, `errorMessage`          | logged at `debug!`, skipped                                                                                                                                         |
+| `auto_retry_end`        | `success`, `attempt`, `finalError`                           | logged at `debug!`, skipped                                                                                                                                         |
+| `extension_error`       | `extensionPath`, `event`, `error`                            | logged at `debug!`, skipped                                                                                                                                         |
 
 **Compaction reasons:** Pi uses `"threshold"` (approaching limit) and
 `"overflow"` (already exceeded) — both map to `CompactionReason::ContextLimit`.
@@ -545,12 +549,19 @@ the only reasons emitted by pi as of v0.72.
 done" — the process keeps accepting commands. Loom keeps that prompt-cycle
 boundary distinct from session completion. Normal per-bead containers still
 handle exactly one prompt: the default Pi parser maps `agent_end` to
-`SessionComplete`, synthesizes exit code `0`, and the workflow tears down the
-container instead of sending another command. The non-TTY `loom inbox chat` Pi
-RPC bridge uses a bridge parser mode that maps `agent_end` to the non-terminal
-`AgentEnd` lifecycle marker; when the accumulated assistant text has no terminal
-inbox marker, the bridge may send the human reply as the next `prompt` on the
-same Pi process. A real `SessionComplete` remains terminal for the bridge.
+`SessionComplete`, synthesizes exit code `0` for a successful prompt or `1` when
+the final assistant outcome is an error/abort, and the workflow tears down the
+container instead of sending another command. A later completed successful
+assistant response may recover an earlier error during Pi's existing retry
+cycle; diagnostics are retained. A child-process exit of `0` alone does not
+erase an assistant failure. This uses existing failure recovery, not a new retry
+policy. The non-TTY `loom inbox chat` Pi RPC bridge uses a bridge parser mode
+that maps `agent_end` to the non-terminal `AgentEnd` lifecycle marker; when the
+accumulated assistant text has no terminal inbox marker, the bridge may send the
+human reply as the next `prompt` on the same Pi process. Error diagnostics
+remain visible in bridge mode without converting `AgentEnd` into a terminal
+event; each subsequent prompt has fresh outcome state. A real `SessionComplete`
+remains terminal for the bridge.
 
 **`message_update` delta mapping:**
 
@@ -565,7 +576,7 @@ top-level `tool_execution_*` and `turn_end` events.
 | `thinking_delta`                                                        | `AgentEvent::ThinkingDelta` (extract `delta`; legacy `text` accepted)                                    |
 | `thinking_end`                                                          | `AgentEvent::ThinkingEnd`                                                                                |
 | `toolcall_delta` with `toolCallId`                                      | `AgentEvent::ToolcallDelta`                                                                              |
-| `error`                                                                 | `AgentEvent::Error` (reasons: `"aborted"`, `"error"`)                                                    |
+| `error`                                                                 | `AgentEvent::Error` (nested assistant `error.errorMessage`, legacy `message`, then `reason` fallback)    |
 | `start`, `text_start`, `thinking_start`                                 | logged at `trace!`, skipped                                                                              |
 | `toolcall_start`, `toolcall_delta` without `toolCallId`, `toolcall_end` | logged at `trace!`, skipped; executable tool lifecycle is handled by top-level `tool_execution_*` events |
 | `done`                                                                  | logged at `trace!`, skipped (reasons: `"stop"`, `"length"`, `"toolUse"`)                                 |
@@ -1143,6 +1154,11 @@ letting the entrypoint run the wrong runtime.
 
 - Pi backend maps streamed pi message deltas to AgentEvent text variants
   [test](message_update_text_delta_yields_message_delta)
+
+- Pi preserves terminal assistant provider-error diagnostics even without error
+  deltas and marks failed per-bead prompts unsuccessful, while retaining the
+  nonterminal Inbox bridge prompt-cycle boundary.
+  [test](pi_provider_error_reaches_session_with_unsuccessful_completion)
 
 - Pi backend surfaces non-streamed final assistant text carried by `message_end`
   [test](message_end_without_streamed_text_yields_fallback_text)

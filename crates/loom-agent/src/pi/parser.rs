@@ -10,6 +10,9 @@ use loom_events::ParsedAgentEvent;
 use serde::Serialize;
 use tracing::{debug, trace, warn};
 
+#[cfg(test)]
+mod terminal_errors;
+
 use super::messages::{
     AbortCommand, AssistantMessageDelta, ExtensionUiResponse, PiEnvelope, PiEvent, PiResponse,
     PiUiRequest, PromptCommand, SteerCommand,
@@ -35,6 +38,8 @@ pub(crate) enum AgentEndMode {
 #[derive(Debug, Default)]
 struct MessageCapture {
     text_emitted: bool,
+    last_error: Option<String>,
+    prompt_failed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -116,6 +121,17 @@ impl PiParser {
     }
 
     fn reset_message_capture(&self) -> Result<(), ProtocolError> {
+        let mut capture = self
+            .message_capture
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?;
+        capture.text_emitted = false;
+        capture.last_error = None;
+        drop(capture);
+        Ok(())
+    }
+
+    fn finish_turn(&self) -> Result<(), ProtocolError> {
         let mut capture = self
             .message_capture
             .lock()
@@ -214,14 +230,68 @@ impl PiParser {
         Ok(policy.terminal_after_untrusted_retry)
     }
 
-    fn agent_end_events(&self) -> Vec<ParsedAgentEvent> {
-        match self.agent_end_mode {
+    fn error_events(&self, message: String) -> Result<Vec<ParsedAgentEvent>, ProtocolError> {
+        let mut capture = self
+            .message_capture
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?;
+        capture.prompt_failed = true;
+        if capture.last_error.as_ref() == Some(&message) {
+            return Ok(Vec::new());
+        }
+        capture.last_error = Some(message.clone());
+        drop(capture);
+        Ok(vec![ParsedAgentEvent::Error { message }])
+    }
+
+    fn final_message_events(
+        &self,
+        message: &serde_json::Value,
+    ) -> Result<Vec<ParsedAgentEvent>, ProtocolError> {
+        let mut events = self.fallback_text_events(message)?;
+        events.extend(self.final_message_error_events(message)?);
+        Ok(events)
+    }
+
+    fn final_message_error_events(
+        &self,
+        message: &serde_json::Value,
+    ) -> Result<Vec<ParsedAgentEvent>, ProtocolError> {
+        if let Some(error) = assistant_message_error(message) {
+            return self.error_events(error);
+        }
+        if message.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
+            && matches!(
+                message
+                    .get("stopReason")
+                    .and_then(serde_json::Value::as_str),
+                Some("stop" | "length" | "toolUse")
+            )
+        {
+            let mut capture = self
+                .message_capture
+                .lock()
+                .map_err(|_| ProtocolError::LockPoisoned)?;
+            capture.prompt_failed = false;
+        }
+        Ok(Vec::new())
+    }
+
+    fn agent_end_events(&self) -> Result<Vec<ParsedAgentEvent>, ProtocolError> {
+        let mut capture = self
+            .message_capture
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?;
+        let failed = capture.prompt_failed;
+        *capture = MessageCapture::default();
+        drop(capture);
+        Ok(match self.agent_end_mode {
             AgentEndMode::SessionComplete => vec![ParsedAgentEvent::SessionComplete {
-                exit_code: 0,
+                exit_code: i32::from(failed),
                 cost_usd: None,
             }],
             AgentEndMode::AgentEnd => vec![ParsedAgentEvent::AgentEnd],
-        }
+        })
     }
 }
 
@@ -262,6 +332,26 @@ fn assistant_message_text(message: &serde_json::Value) -> String {
         return String::new();
     }
     content_text(message.get("content"))
+}
+
+fn assistant_message_error(message: &serde_json::Value) -> Option<String> {
+    if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let reason = message.get("stopReason")?.as_str()?;
+    if !matches!(reason, "error" | "aborted") {
+        return None;
+    }
+    Some(
+        message
+            .get("errorMessage")
+            .and_then(serde_json::Value::as_str)
+            .filter(|detail| !detail.trim().is_empty())
+            .map_or_else(
+                || format!("Pi assistant terminated with stopReason={reason}"),
+                str::to_owned,
+            ),
+    )
 }
 
 fn content_text(content: Option<&serde_json::Value>) -> String {
@@ -312,7 +402,7 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
             empty()
         }
         PiEvent::MessageEnd { message } => ParsedLine {
-            events: parser.fallback_text_events(&message)?,
+            events: parser.final_message_events(&message)?,
             response: None,
         },
         PiEvent::MessageUpdate { delta } => match delta {
@@ -352,10 +442,17 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
                     empty()
                 }
             }
-            AssistantMessageDelta::Error { reason, message } => {
-                let message = message.or(reason).unwrap_or_default();
+            AssistantMessageDelta::Error {
+                reason,
+                message,
+                error,
+            } => {
+                let message = message
+                    .or_else(|| error.as_ref().and_then(assistant_message_error))
+                    .or(reason)
+                    .unwrap_or_default();
                 ParsedLine {
-                    events: vec![ParsedAgentEvent::Error { message }],
+                    events: parser.error_events(message)?,
                     response: None,
                 }
             }
@@ -405,18 +502,27 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
             }
         }
         PiEvent::TurnEnd { message } => {
-            let mut events = parser.fallback_text_events(&message)?;
+            let mut events = parser.final_message_events(&message)?;
             events.push(ParsedAgentEvent::TurnEnd);
-            parser.reset_message_capture()?;
+            parser.finish_turn()?;
             ParsedLine {
                 events,
                 response: None,
             }
         }
-        PiEvent::AgentEnd { .. } => ParsedLine {
-            events: parser.agent_end_events(),
-            response: None,
-        },
+        PiEvent::AgentEnd { messages } => {
+            let mut events = Vec::new();
+            if let Some(message) = messages.iter().rev().find(|message| {
+                message.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
+            }) {
+                events.extend(parser.final_message_error_events(message)?);
+            }
+            events.extend(parser.agent_end_events()?);
+            ParsedLine {
+                events,
+                response: None,
+            }
+        }
         PiEvent::CompactionStart { reason } => {
             let native_reason = NativeCompactionReason::from_wire(reason.as_deref());
             parser.observe_compaction_start(native_reason)?;

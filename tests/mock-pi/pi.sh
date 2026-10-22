@@ -12,6 +12,8 @@ set -euo pipefail
 #   echo-prompt               — probe ok, then echo the prompt payload
 #                               as a message_delta so the test can
 #                               assert the wire shape.
+#   terminal-provider-error   — probe ok; final assistant error without deltas,
+#                               while the mock process itself exits zero.
 #   steering                  — probe ok; on prompt emit a first turn +
 #                               turn_end; on the next stdin line (steer),
 #                               echo its payload back as a message_delta +
@@ -221,6 +223,16 @@ read_prompt() {
     fi
 }
 
+run_terminal_provider_error() {
+    handle_probe 0
+    local prompt_line message
+    read_prompt prompt_line
+    message='{"role":"assistant","content":[],"stopReason":"error","errorMessage":"fixture provider refusal"}'
+    emit "{\"type\":\"message_end\",\"message\":$message}"
+    emit "{\"type\":\"turn_end\",\"message\":$message}"
+    emit_agent_end
+}
+
 run_task_acceptance() {
     handle_probe 0
     local prompt_line
@@ -396,6 +408,9 @@ case "$MODE" in
         ;;
     echo-prompt)
         run_echo_prompt
+        ;;
+    terminal-provider-error)
+        run_terminal_provider_error
         ;;
     codemode-nested-tools)
         run_codemode_nested_tools

@@ -1113,6 +1113,36 @@ mod tests {
         assert!(saw_echo, "mock did not echo the prompt");
     }
 
+    #[tokio::test]
+    async fn pi_provider_error_reaches_session_with_unsuccessful_completion() {
+        let session = spawn_with_handshake(
+            mock_command("terminal-provider-error"),
+            None,
+            None,
+            TEST_HANDSHAKE_BUDGET,
+            Arc::new(SystemClock::new()),
+        )
+        .await
+        .expect("spawn");
+        let mut session = session
+            .prompt("probe provider failure")
+            .await
+            .expect("prompt");
+        let mut events = Vec::new();
+        while let Some(event) = session.next_event().await.expect("event") {
+            let complete = matches!(event, ParsedAgentEvent::SessionComplete { .. });
+            events.push(event);
+            if complete {
+                break;
+            }
+        }
+        assert!(matches!(events.as_slice(), [
+            ParsedAgentEvent::Error { message },
+            ParsedAgentEvent::TurnEnd,
+            ParsedAgentEvent::SessionComplete { exit_code: 1, .. },
+        ] if message == "fixture provider refusal"));
+    }
+
     // -- test_pi_supports_steering ----------------------------------------
 
     #[tokio::test]
