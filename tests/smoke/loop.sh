@@ -128,6 +128,7 @@ if [[ "${5:-}" == --interrupt-once ]]; then
     blocker=$(bd create --title 'Isolated prerequisite during verifier outage' --type task --silent)
     bd dep add "$BEAD_ID" "$blocker"
     dependency_log="$WORKSPACE/.loom/smoke-dependency-held-driver.log"
+    verification_attempts=$(wc -l < "$WORKSPACE/.loom/integration/.loom/diagnostics/verification-attempts.jsonl")
     if LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
         timeout --kill-after=10s 120s "$LOOM_BIN" --workspace "$WORKSPACE" --agent pi loop "$BEAD_ID" > "$dependency_log" 2>&1; then
         dependency_rc=0
@@ -139,7 +140,7 @@ if [[ "${5:-}" == --interrupt-once ]]; then
         log 'dependency-held recovery did not finish within its budget'
         exit 1
     fi
-    grep -F 'blocked 1' "$dependency_log"
+    [[ "$(wc -l < "$WORKSPACE/.loom/integration/.loom/diagnostics/verification-attempts.jsonl")" == "$verification_attempts" ]]
     if grep -Fq 'dispatching agent against per-bead workspace' "$dependency_log"; then
         log 'dependency hold redispatched completed source'
         exit 1
@@ -147,7 +148,9 @@ if [[ "${5:-}" == --interrupt-once ]]; then
     [[ "$(git -C "$WORKSPACE/.loom/beads/$BEAD_ID" rev-parse HEAD)" == "$source_head" ]]
     [[ "$(git -C "$WORKSPACE" ls-remote origin refs/heads/main | cut -f1)" != "$source_head" ]]
     bd show "$BEAD_ID" --json | jq -e --arg blocker "$blocker" \
-        'if type == "array" then .[0] else . end | .dependencies | any(.id == $blocker and .status == "open" and .dependency_type == "blocks")' >/dev/null
+        'if type == "array" then .[0] else . end |
+         .status == "blocked" and (.labels | index("loom:infra") != null) and
+         (.dependencies | any(.id == $blocker and .status == "open" and .dependency_type == "blocks"))' >/dev/null
     bd close "$blocker" --reason 'The isolated fixture completed its prerequisite automatically'
     rm "$verifier_git/smoke-verifier-unavailable"
     log 'native-prerequisite-hold-survived-verifier-restart-without-publication'
