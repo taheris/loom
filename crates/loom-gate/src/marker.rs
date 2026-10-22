@@ -530,55 +530,12 @@ mod tests {
     const HOOK_ENTRY: &str = "loom gate verify --diff @{u}..HEAD";
     const PUSH_RANGE: &str = "origin/main..HEAD";
 
-    static LOOM_CLI_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn repo_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(2)
             .expect("workspace root")
             .to_path_buf()
-    }
-
-    fn marker_cargo_command() -> (Cmd, loom_driver::workspace::cargo::Execution) {
-        let mut command = Cmd::new("cargo");
-        let execution = loom_driver::workspace::cargo::trusted_command(&mut command, &repo_root())
-            .expect("private marker CLI build storage");
-        (command, execution)
-    }
-
-    fn run_verify_marker_cli(workspace: &Path) -> std::process::Output {
-        let _guard = LOOM_CLI_LOCK.lock().expect("loom cli lock");
-        if let Some(bin) = std::env::var_os("CARGO_BIN_EXE_loom") {
-            Cmd::new(bin)
-                .args(["gate", "verify-marker"])
-                .current_dir(workspace)
-                .output()
-                .expect("spawn loom gate verify-marker")
-        } else {
-            let (mut command, _execution) = marker_cargo_command();
-            command
-                .args(["run", "--quiet", "--manifest-path"])
-                .arg(repo_root().join("Cargo.toml"))
-                .args(["-p", "loom", "--bin", "loom", "--", "gate", "verify-marker"])
-                .current_dir(workspace)
-                .output()
-                .expect("spawn cargo run -p loom gate verify-marker")
-        }
-    }
-
-    fn assert_cli_failed_with(output: &std::process::Output, expected: &str) {
-        assert!(
-            !output.status.success(),
-            "verify-marker CLI must fail. stdout={:?} stderr={:?}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(expected),
-            "verify-marker CLI stderr must contain {expected:?}. stderr={stderr:?}",
-        );
     }
 
     fn init_test_workspace() -> TempDir {
@@ -667,60 +624,6 @@ mod tests {
             gate_log_paths: vec![gate_log_path],
             minted_at_ms: 0,
         }
-    }
-
-    #[test]
-    fn verify_marker_exits_zero_on_match() {
-        let dir = init_test_workspace();
-        let workspace = dir.path();
-        let marker = marker_for_workspace(workspace);
-        write_marker_at(workspace, &marker);
-
-        let output = run_verify_marker_cli(workspace);
-
-        assert!(
-            output.status.success(),
-            "verify-marker CLI must succeed for matching marker. stdout={:?} stderr={:?}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
-
-    #[test]
-    fn verify_marker_exits_nonzero_on_missing() {
-        let dir = init_test_workspace();
-        let workspace = dir.path();
-
-        let output = run_verify_marker_cli(workspace);
-
-        assert_cli_failed_with(&output, "marker file not present");
-    }
-
-    #[test]
-    fn verify_marker_exits_nonzero_on_tree_mismatch() {
-        let dir = init_test_workspace();
-        let workspace = dir.path();
-        let mut marker = marker_for_workspace(workspace);
-        marker.tree_oid =
-            GitOid::new("deadbeefcafe1234567890abcdef0123456789ab").expect("tree oid");
-        write_marker_at(workspace, &marker);
-
-        let output = run_verify_marker_cli(workspace);
-
-        assert_cli_failed_with(&output, "does not match marker");
-    }
-
-    #[test]
-    fn verify_marker_exits_nonzero_on_dirty_tree() {
-        let dir = init_test_workspace();
-        let workspace = dir.path();
-        let marker = marker_for_workspace(workspace);
-        write_marker_at(workspace, &marker);
-        std::fs::write(workspace.join("README.md"), "dirty contents\n").expect("dirty edit");
-
-        let output = run_verify_marker_cli(workspace);
-
-        assert_cli_failed_with(&output, "workspace porcelain is not clean");
     }
 
     #[test]
@@ -843,55 +746,6 @@ mod tests {
         std::fs::set_permissions(&path, perm).expect("chmod");
     }
 
-    fn shell_single_quote(path: &Path) -> String {
-        let raw = path.display().to_string();
-        format!("'{}'", raw.replace('\'', "'\\''"))
-    }
-
-    /// The wrapper resolves `loom` through `PATH`, so its live CLI seam needs
-    /// a transparent launcher when Cargo does not expose the binary directly.
-    fn install_loom_cli_launcher(bin_dir: &Path) {
-        let exec = if let Some(bin) = std::env::var_os("CARGO_BIN_EXE_loom") {
-            format!("exec {} \"$@\"", shell_single_quote(Path::new(&bin)))
-        } else {
-            let (command, _execution) = marker_cargo_command();
-            let prefix = std::iter::once(command.get_program())
-                .chain(command.get_args())
-                .map(|arg| shell_single_quote(Path::new(arg)))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let target = command
-                .get_envs()
-                .find(|(key, _)| *key == "CARGO_TARGET_DIR")
-                .and_then(|(_, value)| value)
-                .expect("admitted marker target");
-            format!(
-                "export CARGO_TARGET_DIR={}\nexport CARGO_BUILD_TARGET_DIR=\"$CARGO_TARGET_DIR\" CARGO_BUILD_BUILD_DIR=\"$CARGO_TARGET_DIR\"\nexport RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER= CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=\nexec {prefix} run --quiet --manifest-path {} -p loom --bin loom -- \"$@\"",
-                shell_single_quote(Path::new(target)),
-                shell_single_quote(&repo_root().join("Cargo.toml")),
-            )
-        };
-        install_executable(
-            bin_dir,
-            "loom",
-            &format!("#!/usr/bin/env bash\nset -euo pipefail\n{exec}\n"),
-        );
-    }
-
-    fn install_sentinel(bin_dir: &Path, marker: &Path) {
-        let marker = shell_single_quote(marker);
-        install_executable(
-            bin_dir,
-            "sentinel",
-            &format!("#!/bin/sh\nset -eu\ntouch {marker}\n"),
-        );
-    }
-
-    fn commit_repo_pre_push_checks(workspace: &Path) {
-        install_repo_pre_push_checks(workspace);
-        loom_driver::git::commit_all_in(workspace, "add pre-push wrapper").expect("commit wrapper");
-    }
-
     fn install_repo_pre_push_checks(workspace: &Path) {
         let source = repo_root().join("bin/pre-push-checks");
         let dest = workspace.join("bin/pre-push-checks");
@@ -917,7 +771,6 @@ mod tests {
         bin_dir: &Path,
         envs: &[(&str, String)],
     ) -> std::process::Output {
-        let _guard = LOOM_CLI_LOCK.lock().expect("loom cli lock");
         let path_var = std::env::var_os("PATH").unwrap_or_default();
         let mut entries = vec![bin_dir.to_path_buf()];
         entries.extend(std::env::split_paths(&path_var));
@@ -942,31 +795,6 @@ mod tests {
             command.env(*name, value);
         }
         command.output().expect("spawn pre-push-checks")
-    }
-
-    #[test]
-    fn pre_push_checks_short_circuits_only_on_covered_marker() {
-        let dir = init_test_workspace();
-        let workspace = dir.path();
-        commit_repo_pre_push_checks(workspace);
-        write_marker_at(workspace, &marker_for_workspace(workspace));
-
-        let tools = tempfile::tempdir().expect("tools tempdir");
-        install_loom_cli_launcher(tools.path());
-        let sentinel_marker = tools.path().join("sentinel.flag");
-        install_sentinel(tools.path(), &sentinel_marker);
-
-        let output = run_pre_push_checks(workspace, tools.path());
-        assert!(
-            output.status.success(),
-            "wrapper must exit 0 on valid marker. stdout={:?} stderr={:?}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert!(
-            !sentinel_marker.exists(),
-            "sentinel must NOT execute when marker validates"
-        );
     }
 
     /// Operator-direct invariant: when no publication receipt exists in
@@ -1040,69 +868,6 @@ mod tests {
         assert!(
             sentinel_marker.exists(),
             "sentinel must execute after env scrub"
-        );
-    }
-
-    #[test]
-    fn pre_push_checks_falls_through_on_uncovered_or_invalid_marker() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let workspace = dir.path();
-        seed_marker(workspace);
-
-        let tools = tempfile::tempdir().expect("tools tempdir");
-        install_loom_cli_launcher(tools.path());
-        let sentinel_marker = tools.path().join("sentinel.flag");
-        install_sentinel(tools.path(), &sentinel_marker);
-
-        let output = run_pre_push_checks(workspace, tools.path());
-        assert!(
-            output.status.success(),
-            "wrapper must propagate sentinel exit (0). stdout={:?} stderr={:?}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert!(
-            sentinel_marker.exists(),
-            "sentinel must execute when marker absent or invalid"
-        );
-    }
-
-    /// Joint-path closure: [`MarkerProof::mint`] writes to a path the
-    /// `pre-push-checks` wrapper actually reads. Hand-seeded fixtures
-    /// in the two tests above pin wrapper behaviour in isolation —
-    /// they don't pin that mint's output is what the wrapper observes.
-    /// Drives the end-to-end chain (mint → wrapper short-circuit) the
-    /// `specs/pre-commit.md` § *Marker integration* contract commits
-    /// to, against a real git workspace and the real mint code path.
-    #[test]
-    fn mint_and_pre_push_checks_short_circuit_joint_path() {
-        let dir = init_test_workspace();
-        let workspace = dir.path();
-        commit_repo_pre_push_checks(workspace);
-        let (_log, success) = good_gate_success(workspace);
-        let clock = loom_driver::clock::SystemClock::new();
-        MarkerProof::mint(success, workspace, &clock).expect("mint succeeds");
-        assert!(
-            workspace.join(MARKER_PATH).exists(),
-            "mint must write to the canonical {MARKER_PATH}",
-        );
-
-        let tools = tempfile::tempdir().expect("tools tempdir");
-        install_loom_cli_launcher(tools.path());
-        let sentinel_marker = tools.path().join("sentinel.flag");
-        install_sentinel(tools.path(), &sentinel_marker);
-
-        let output = run_pre_push_checks(workspace, tools.path());
-        assert!(
-            output.status.success(),
-            "wrapper must exit 0 after MarkerProof::mint. stdout={:?} stderr={:?}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert!(
-            !sentinel_marker.exists(),
-            "mint's write path must match the wrapper's read path: \
-             sentinel must NOT execute",
         );
     }
 

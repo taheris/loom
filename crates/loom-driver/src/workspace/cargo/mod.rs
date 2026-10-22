@@ -394,6 +394,8 @@ fn context(workspace: &Path, profile: Option<&Path>) -> std::io::Result<Context>
 pub struct Execution {
     lease: Option<File>,
     native: Option<(PathBuf, PathBuf)>,
+    #[cfg(feature = "test-support")]
+    fixture: Option<tempfile::TempDir>,
 }
 
 impl Drop for Execution {
@@ -411,6 +413,19 @@ impl Drop for Execution {
     }
 }
 
+/// Deny Cargo output for driver-owned discovery that must not compile, without reserving storage.
+/// Wrappers that attempt compilation fail rather than writing ambient or generated targets.
+pub fn discovery_command(command: &mut Command) {
+    disable_compiler_cache(command);
+    for key in [
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_TARGET_DIR",
+        "CARGO_BUILD_BUILD_DIR",
+    ] {
+        command.env(key, "/dev/null/loom-cargo-discovery");
+    }
+}
+
 /// Configure isolation before standard I/O; retain the guard until reaping the child.
 ///
 /// # Errors
@@ -422,6 +437,8 @@ pub fn verifier_command(command: &mut Command, workspace: &Path) -> std::io::Res
         Ok(Execution {
             lease: None,
             native: None,
+            #[cfg(feature = "test-support")]
+            fixture: None,
         })
     }
 }
@@ -431,6 +448,28 @@ pub fn verifier_command(command: &mut Command, workspace: &Path) -> std::io::Res
 /// # Errors
 /// An unavailable or indirect trusted output root refuses execution, rather than using ambient output.
 pub fn trusted_command(command: &mut Command, workspace: &Path) -> std::io::Result<Execution> {
+    #[cfg(feature = "test-support")]
+    if std::env::var_os("LOOM_TEST_STORAGE").is_none() {
+        let fixture = tempfile::Builder::new()
+            .prefix("loom-command-fixture-")
+            .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .tempdir()?;
+        let state = fixture.path().join("state");
+        command.env("XDG_STATE_HOME", &state);
+        command.env("LOOM_TEST_STORAGE", "1");
+        let mut execution =
+            trusted_command_at(command, workspace, &state.join("loom/trusted-cargo"))?;
+        execution.fixture = Some(fixture);
+        return Ok(execution);
+    }
+    #[cfg(feature = "test-support")]
+    {
+        let state = std::env::var_os("XDG_STATE_HOME").ok_or_else(|| {
+            std::io::Error::other("explicit fixture storage requires XDG_STATE_HOME")
+        })?;
+        command.env("XDG_STATE_HOME", state);
+        command.env("LOOM_TEST_STORAGE", "1");
+    }
     trusted_command_at(command, workspace, &trusted_root()?)
 }
 
@@ -501,6 +540,33 @@ fn trusted_command_at(
             entry,
         } => (target, Some((lease, entry))),
     };
+    disable_compiler_cache(command);
+    for key in [
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_TARGET_DIR",
+        "CARGO_BUILD_BUILD_DIR",
+    ] {
+        command.env(key, &target);
+    }
+    if let Some((lease, entry)) = admission {
+        lifetime::wrap(command, &target, &entry)?;
+        Ok(Execution {
+            lease: Some(lease),
+            native: Some((output.to_path_buf(), target)),
+            #[cfg(feature = "test-support")]
+            fixture: None,
+        })
+    } else {
+        Ok(Execution {
+            lease: None,
+            native: None,
+            #[cfg(feature = "test-support")]
+            fixture: None,
+        })
+    }
+}
+
+fn disable_compiler_cache(command: &mut Command) {
     let keys: Vec<_> = std::env::vars_os()
         .map(|(key, _)| key)
         .chain(command.get_envs().map(|(key, _)| key.to_os_string()))
@@ -517,27 +583,10 @@ fn trusted_command_at(
     ] {
         command.env(key, "");
     }
-    for key in [
-        "CARGO_TARGET_DIR",
-        "CARGO_BUILD_TARGET_DIR",
-        "CARGO_BUILD_BUILD_DIR",
-    ] {
-        command.env(key, &target);
-    }
-    if let Some((lease, entry)) = admission {
-        lifetime::wrap(command, &target, &entry)?;
-        Ok(Execution {
-            lease: Some(lease),
-            native: Some((output.to_path_buf(), target)),
-        })
-    } else {
-        Ok(Execution {
-            lease: None,
-            native: None,
-        })
-    }
 }
 
+#[cfg(test)]
+mod discovery_tests;
 #[cfg(test)]
 mod private_tests;
 #[cfg(test)]

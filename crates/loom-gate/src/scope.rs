@@ -211,13 +211,11 @@ fn run_cargo_metadata(manifest_path: &Path) -> Result<Vec<u8>, ScopeError> {
         .args(["metadata", "--format-version=1"])
         .arg("--manifest-path")
         .arg(manifest_path);
-    let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    let output = loom_driver::workspace::cargo::verifier_command(&mut command, root)
-        .and_then(|_execution| command.output())
-        .map_err(|source| ScopeError::SpawnCargo {
-            manifest: manifest_path.to_path_buf(),
-            source,
-        })?;
+    loom_driver::workspace::cargo::discovery_command(&mut command);
+    let output = command.output().map_err(|source| ScopeError::SpawnCargo {
+        manifest: manifest_path.to_path_buf(),
+        source,
+    })?;
     if !output.status.success() {
         return Err(ScopeError::CargoMetadataFailed {
             manifest: manifest_path.to_path_buf(),
@@ -503,6 +501,32 @@ mod tests {
                 PathBuf::from("crate_a/src/other.rs"),
             ]
         );
+    }
+
+    /// Real Cargo metadata must retain its non-compiling execution contract.
+    #[test]
+    fn scope_metadata_uses_no_generated_cargo_target() {
+        let fixture = tempfile::tempdir().unwrap();
+        fs::create_dir(fixture.path().join("src")).unwrap();
+        fs::write(fixture.path().join("src/lib.rs"), "").unwrap();
+        let manifest = fixture.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname='scope-discovery'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        for _ in 0..2 {
+            let bytes = run_cargo_metadata(&manifest).unwrap();
+            let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                metadata["target_directory"],
+                "/dev/null/loom-cargo-discovery"
+            );
+            assert!(!fixture.path().join("target").exists());
+        }
+        fs::write(&manifest, "invalid manifest").unwrap();
+        assert!(run_cargo_metadata(&manifest).is_err());
+        assert!(!fixture.path().join("target").exists());
     }
 
     /// Synthetic two-crate fixture: `crate_a` depends on `crate_b`. Build

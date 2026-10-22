@@ -195,7 +195,7 @@ let
             builtins.replaceStrings
               [ "cargo nextest run" ]
               [
-                "bash ${../scripts/run-private-fixture-tests} cargo nextest run"
+                "bash ${../scripts/run-private-fixture-tests} --build-campaign cargo nextest run"
               ]
               old.checkPhase;
         }

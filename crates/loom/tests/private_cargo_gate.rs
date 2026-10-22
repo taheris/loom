@@ -18,6 +18,7 @@ fn gate(workspace: &Path, state: &Path, mask: &str) -> Output {
         .arg(workspace)
         .args(["gate", "verify", "--tree"])
         .env("XDG_STATE_HOME", state)
+        .env("LOOM_TEST_STORAGE", "1")
         .env_remove("LOOM_INSIDE")
         .output()
         .unwrap()

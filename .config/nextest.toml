@@ -1,3 +1,14 @@
+experimental = ["wrapper-scripts"]
+
+[scripts.wrapper.private-fixtures]
+command = ['bash', '-c', 'set -euo pipefail; exec bash "$NEXTEST_WORKSPACE_ROOT/scripts/run-private-fixture-tests" --test-process "$@"', 'bash']
+target-runner = "within-wrapper"
+
+[[profile.default.scripts]]
+filter = 'all()'
+list-wrapper = 'private-fixtures'
+run-wrapper = 'private-fixtures'
+
 [profile.default]
 # FIXME: Restore this native decision-inventory fixture after ordinary workflow
 # policy tests use the lightweight tracker. Keep native adapter coverage intact.

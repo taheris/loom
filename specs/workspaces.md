@@ -455,6 +455,24 @@ for worker feedback.
   overrides cannot select trusted build inputs.
   [test](trusted_cargo_execution_rejects_worker_cache_inputs)
 
+- Driver-owned metadata discovery makes no generated-storage reservation on
+  repeated success or failure.
+  [test](cargo_discovery_metadata_reserves_no_storage_on_repeated_success_and_failure)
+
+- Discovery denies native Cargo output even through wrappers that attempt
+  compilation, rather than exempting arbitrary command names.
+  [test](cargo_discovery_denies_compiling_wrappers_instead_of_exempting_command_names)
+
+- Unwrapped test commands cannot charge inherited operator state; their guards
+  retain disposable storage through reaping and clean it after spawn failure or
+  nonzero exit.
+  [test](unwrapped_fixture_commands_cannot_charge_inherited_operator_state)
+
+- The ordinary fixture runner isolates inherited state and Cargo/cache overrides
+  through child processes, preserving status and cleaning repeated success and
+  failure runs.
+  [test](private_fixture_runner_isolates_descendants_and_cleans_success_and_failure)
+
 - Actual native Cargo builds in independent worker and trusted sources produce
   distinct application results without overwriting a canonical executable.
   [test](trusted_and_worker_cargo_builds_cannot_overwrite_canonical_outputs)

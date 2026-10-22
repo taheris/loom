@@ -40,6 +40,7 @@ rustix = { workspace = true }
 anyhow = { workspace = true }
 itf = { workspace = true }
 quint-connect = { workspace = true }
+loom-driver = { workspace = true, features = ["test-support"] }
 loom-test-support = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

@@ -114,6 +114,111 @@ unmanaged Cargo. Existing `loom-trusted-bootstrap.*` output remains untouched.
 Workers continue using their projected target/cache and initialize Cargo patches
 first.
 
+## Discovery and disposable tests
+
+Driver-owned Cargo metadata and inventory queries deny native Cargo output at
+`/dev/null/loom-cargo-discovery`. They disable compiler wrappers/cache overrides
+without opening the native pool, reserving capacity or creating a generation. A
+discovery wrapper that attempts compilation fails; it does not gain permission
+to use ambient output. This is an explicit operation boundary, not a
+command-name exemption. Arbitrary input helpers and verifier commands can
+compile, including through wrappers, and still require an execution guard and
+native admission. In particular, `nix run` can execute an arbitrary application
+outside a build sandbox: its name alone does not establish native-output
+independence.
+
+The ordinary Nextest profile wraps listing and execution with
+`scripts/run-private-fixture-tests`. Each invocation gets private temporary and
+state roots. Runtime Cargo targets point at a private path that is created only
+if used. Explicit `--build-campaign` preserves the primary compilation's
+admitted Cargo target and warm artifacts; Nextest still isolates every test
+subprocess. It must not clear a target supplied by a compiling caller's
+execution guard. Empty compiler-wrapper values disable Cargo-configured wrappers
+(unsetting them would re-enable configuration). Compiler-cache directories and
+server sockets are private too. The runner propagates the child's exit status
+and removes its disposable fixture root on success or failure. Descendants
+inherit that state selection. Nix suite wrappers may still wrap the whole
+campaign as well.
+
+The `test-support` feature also gives unwrapped trusted-command calls a private
+fixture root owned by their execution guard, rather than falling back to the
+operator pool. Keep that guard until subprocess reaping, including errors.
+`LOOM_TEST_STORAGE=1` selects an explicitly owned fixture state root instead;
+the private runner exports it, and standalone lifecycle fixtures set it together
+with their disposable `XDG_STATE_HOME`. It is a test-only convention, not a
+production lifetime or collection authority. Production builds without that
+feature continue using the operator pool. For standalone Cargo tests, prefer
+`bash scripts/run-private-fixture-tests cargo test ...` to isolate all process
+state, not just managed Cargo commands.
+
+Marker CLI/hook tests live in `crates/loom/tests/marker_cli.rs`, where Cargo
+supplies the current prebuilt CLI. The former gate-library `cargo run` fallback
+is removed: it allocated native generations and could rebuild Loom in each
+fixture. Its generated shell launcher also dropped the execution guard before
+launch. The replacement still drives the real CLI, mint and hook paths, with
+repeated execution and assertions of zero generated storage; no runtime Loom
+build or stale sibling-binary lookup is used.
+
+### Focused pollution reproduction
+
+A disposable-pool run of the pre-change Gate test binary demonstrated that
+`binary_print_inputs_protocol_parses_json_inputs` and
+`run_check_spawns_subprocess_and_parses_verdict_from_stdout` each added one
+native generation per run. Ten runs each left 20 records/generations occupying
+380,928 allocated bytes. The fixture policy reserved only 1 MiB each; under the
+operator default, those same 20 reservations would charge at least 10 GiB. The
+synthetic scope fixture added no generation; temporary source names alone were
+not treated as attribution evidence.
+
+After isolation, ten direct runs of each input/dispatch fixture and each real
+scope/inventory metadata regression left zero files in the inherited disposable
+operator-state directory. The real host pool stayed at 504 records and 509
+generations. Advisory warm medians, including libtest process startup, were
+45.18 ms (input fixture), 45.34 ms (dispatch fixture), 65.59 ms (scope metadata)
+and 64.98 ms (inventory metadata). Each metadata regression performs two
+successful queries and one failure. The pre-change input/dispatch artifact's
+medians were 27.88/30.93 ms, without disposable allocation cleanup. These are
+focused local observations, not a Weld hook benchmark or timing gate. The
+ordinary eight-regression Nextest run passed in 0.554 seconds after compilation.
+
+## Legacy pressure recovery and steady state
+
+Free disk space does not override reservation admission. Five hundred protected
+512-MiB reservations charge 250 GiB even if materialized output occupies only a
+few GiB. The reservation is an estimate, not a per-build allocation or
+filesystem quota; `max_bytes` bounds aggregate retained usage/reservations, not
+the size of one build. Raising an exhausted budget is pressure relief, not
+retirement proof.
+
+For an existing pool:
+
+1. Preserve the policy backup, generation data, lifetime records and independent
+   holds. Stop fixture pollution before considering capacity changes.
+2. Inventory through read-only inspection. Do not infer retirement from age,
+   missing processes/sources, completed tests or Beads closure.
+3. Use native lifetime reconciliation only for generations with matching trusted
+   execution authority. Missing authority remains protected. Current native
+   cgroup reconciliation cannot retrospectively certify legacy version-2
+   dispatched output; no supported bulk retirement/adoption operation exists.
+4. Release a hold only through its owner's native lifecycle, never by editing
+   records. Neither removing source checkouts nor rebuilding the transient cache
+   grants generation disposal authority.
+5. Keep the current budget while protected charges exceed the intended budget.
+   Any later operator policy update must quiesce admission or hold
+   `retention.lock`, preserve unrelated fields and remain above protected
+   charges plus admitted headroom. Do not restore an older smaller policy
+   blindly.
+
+A reasonable initial steady-state target remains an aggregate 256-GiB pool,
+512-MiB default reservation, 16-GiB free-space floor and seven-day _eligibility_
+threshold, with actual build measurements driving larger estimates (for example,
+8 GiB for a measured Rust build). A 50-GiB per-build requirement is not implied.
+These estimates do not enforce a hard per-build ceiling. Supported trusted
+lifetimes and positive retirement, not a larger budget or an age threshold,
+allow retained generations to become collectible. Until legacy authority can be
+established by a supported lifecycle, their protected charge is irreducible;
+there is no safe promise that this pool can return to 256 GiB immediately.
+
 ## Private-generation permission failures
 
 Worker and native generation boundaries are created with explicit `0700`
@@ -154,7 +259,7 @@ safety-state reset.
 
 ```bash
 bash scripts/configure-cargo-patches.sh
-bash scripts/run-private-fixture-tests cargo nextest run -p loom-driver -p loom-workflow \
+bash scripts/run-private-fixture-tests --build-campaign cargo nextest run -p loom-driver -p loom-workflow \
   -E 'test(cargo_retention) | test(worker_cargo_target_reuse_honors_policy_before_spawn)'
 bash scripts/verify-native-cargo-lifetime
 LOOM_PROFILES_MANIFEST=/nix/store/...-profile-images.json \

@@ -17,10 +17,18 @@ check_runner() {
 
   (
     umask 000
-    XDG_STATE_HOME="$fixture/ambient-state" NIX_BUILD_TOP="$candidate" TMPDIR="$fallback" bash "$runner" bash -euc '
+    CARGO_TARGET_DIR="$fixture/ambient-target" CARGO_BUILD_TARGET_DIR="$fixture/ambient-target" CARGO_BUILD_BUILD_DIR="$fixture/ambient-target" \
+      RUSTC_WRAPPER=ambient-wrapper SCCACHE_DIR="$fixture/ambient-cache" \
+      XDG_STATE_HOME="$fixture/ambient-state" NIX_BUILD_TOP="$candidate" TMPDIR="$fallback" bash "$runner" bash -euc '
       [[ "$(umask)" == 0077 ]]
       [[ "$(stat --format=%a -- "$TMPDIR")" == 700 ]]
       [[ "$XDG_STATE_HOME" == "$TMPDIR/state" ]]
+      [[ "$CARGO_TARGET_DIR" == "$TMPDIR/cargo-target" ]]
+      [[ "$CARGO_BUILD_TARGET_DIR" == "$CARGO_TARGET_DIR" ]]
+      [[ "$CARGO_BUILD_BUILD_DIR" == "$CARGO_TARGET_DIR" ]]
+      [[ -z "$RUSTC_WRAPPER" && -z "$CARGO_BUILD_RUSTC_WRAPPER" ]]
+      [[ "$SCCACHE_DIR" == "$TMPDIR/sccache" ]]
+      [[ "$SCCACHE_SERVER_UDS" == "$TMPDIR/sccache.sock" ]]
       [[ "$(stat --format=%a -- "$XDG_STATE_HOME")" == 700 ]]
       touch "$XDG_STATE_HOME/fixture-lock"
       [[ "$(dirname -- "$TMPDIR")" == "$1" ]]
@@ -29,7 +37,7 @@ check_runner() {
       [[ "$(stat --format=%a -- "$TMPDIR/child")" == 700 ]]
     ' _ "$expected" 'literal argument with spaces'
   )
-  [[ ! -e "$fixture/ambient-state" ]]
+  [[ ! -e "$fixture/ambient-state" && ! -e "$fixture/ambient-target" && ! -e "$fixture/ambient-cache" ]]
 }
 
 check_runner "$fixture/safe" "$fixture/safe"
@@ -39,6 +47,16 @@ check_runner "$fixture/unsafe/child" "$fixture/safe" "$fixture/safe"
 status=0
 NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" bash -c 'exit 23' || status=$?
 [[ "$status" == 23 ]]
+contents=$(find "$fixture/safe" -mindepth 1 -print -quit)
+[[ -z "$contents" ]]
+
+CARGO_TARGET_DIR="$fixture/admitted-target" CARGO_BUILD_TARGET_DIR="$fixture/admitted-target" CARGO_BUILD_BUILD_DIR="$fixture/admitted-target" \
+  NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" --build-campaign bash -euc '
+    [[ "$CARGO_TARGET_DIR" == "$1" ]]
+    [[ "$CARGO_BUILD_TARGET_DIR" == "$1" && "$CARGO_BUILD_BUILD_DIR" == "$1" ]]
+    [[ "$XDG_STATE_HOME" == "$TMPDIR/state" ]]
+  ' _ "$fixture/admitted-target"
+[[ ! -e "$fixture/admitted-target" ]]
 contents=$(find "$fixture/safe" -mindepth 1 -print -quit)
 [[ -z "$contents" ]]
 

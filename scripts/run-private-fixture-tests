@@ -38,17 +38,40 @@ private_root() {
   return 1
 }
 
+fixture_process=true
+if [[ "${1:-}" == --build-campaign ]]; then
+  fixture_process=false
+  shift
+elif [[ "${1:-}" == --test-process ]]; then
+  shift
+fi
+
 if [[ "$#" == 0 ]]; then
-  printf 'Usage: run-private-fixture-tests <command> [args...]\n' >&2
+  printf 'Usage: run-private-fixture-tests [--build-campaign|--test-process] <command> [args...]\n' >&2
   exit 2
 fi
 
 umask 077
 TMPDIR=$(private_root)
 export TMPDIR
+# Runtime fixtures cannot inherit targets; primary compilation preserves its admitted target.
+if [[ "$fixture_process" == true ]]; then
+  export CARGO_TARGET_DIR="$TMPDIR/cargo-target"
+  export CARGO_BUILD_TARGET_DIR="$CARGO_TARGET_DIR"
+  export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
+fi
+# Empty values disable Cargo-configured wrappers; unsetting would re-enable them.
+export RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
+export RUSTC_WORKSPACE_WRAPPER= CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=
+for key in "${!SCCACHE_@}"; do
+  unset "$key"
+done
+export SCCACHE_DIR="$TMPDIR/sccache"
+export SCCACHE_SERVER_UDS="$TMPDIR/sccache.sock"
 # Reconciliation locks must be as private and disposable as fixture worktrees.
 # In unsandboxed Nix checks, the default HOME is the forbidden /homeless-shelter.
 export XDG_STATE_HOME="$TMPDIR/state"
+export LOOM_TEST_STORAGE=1
 mkdir -p -- "$XDG_STATE_HOME/loom/trusted-cargo"
 # Tiny fixture checkouts reserve one MiB each; real allocated growth is still charged.
 printf '{"reservation_bytes":1048576}\n' > "$XDG_STATE_HOME/loom/trusted-cargo/policy.json"

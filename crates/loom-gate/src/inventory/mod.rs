@@ -3,6 +3,8 @@
 pub mod nix;
 mod rust;
 pub mod snapshot;
+#[cfg(test)]
+mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -590,7 +592,7 @@ fn is_document(path: &ResourcePath) -> bool {
 fn command(root: &Path, program: Tool, args: &[&str]) -> Result<Vec<u8>, Error> {
     let mut command = Command::new(program.program());
     command.args(args).current_dir(root);
-    let _execution = loom_driver::workspace::cargo::verifier_command(&mut command, root)?;
+    loom_driver::workspace::cargo::discovery_command(&mut command);
     let output = command.output().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             Error::Capability { program }
