@@ -96,6 +96,8 @@ fn rel_inputs(name: &str, root: &Path) -> Result<Vec<String>, Error> {
 pub(super) const MEMBER_CRATES: &[&str] = &[
     "loom",
     "loom-driver",
+    "loom-issues",
+    "loom-shared",
     "loom-events",
     "loom-llm",
     "loom-skill",
