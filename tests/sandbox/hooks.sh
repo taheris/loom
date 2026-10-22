@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_root=$(realpath "${1:?usage: hooks.sh <source-root>}")
+source_root=$(realpath "${1:?usage: hooks.sh <source-root> <cargo-patches>}")
+patch_config=$(realpath "${2:?fixed Cargo patch configuration is required}")
 work=$(mktemp -d)
 log="$work/hooks.log"
 
@@ -64,7 +65,8 @@ test_commit_merge_conflict() {
 }
 
 test_commit_formatter() {
-    printf '{example=1;}\n' > flake.nix
+    sed 's/ = / =  /g' flake.nix > unformatted.nix
+    mv unformatted.nix flake.nix
     git add flake.nix
     expect_rejected_commit treefmt
     if git diff --quiet -- flake.nix; then
@@ -82,19 +84,30 @@ test_commit_shell_reexec() {
     git reset --hard HEAD > /dev/null
 }
 
-test_commit_integrity_gate() {
+# Manual Gate hooks are selected explicitly; repository automatic stages stay unchanged.
+expect_rejected_gate() {
+    local before
+    before=$(git rev-parse HEAD)
+    if prek run loom-gate-verify-files --hook-stage manual --all-files > "$log" 2>&1; then
+        fail 'explicit file verification accepted invalid sandbox input'
+    fi
+    grep -Fq -- '- hook id: loom-gate-verify-files' "$log"
+    [[ "$(git rev-parse HEAD)" == "$before" ]] || fail 'rejected verification changed HEAD'
+}
+
+test_manual_integrity_gate() {
     printf '\n- Missing rubric [judge](./missing-rubric.sh#judge_missing)\n' >> specs/sandbox.md
     git add specs/sandbox.md
-    expect_rejected_commit loom-gate-verify-files
+    expect_rejected_gate
     grep -Fq 'missing-rubric.sh' "$log"
     git reset --hard HEAD > /dev/null
 }
 
-test_commit_check_failure() {
+test_manual_check_failure() {
     printf 'bad\n' > payload.txt
     git add payload.txt
     : > .git/payload-checks
-    expect_rejected_commit loom-gate-verify-files
+    expect_rejected_gate
     assert_payload_checked bad
     grep -Fq 'sandbox payload rejected' "$log"
     git reset --hard HEAD > /dev/null
@@ -106,7 +119,8 @@ test_commit_accepts_repaired_input() {
     printf 'updated\n' > payload.txt
     git add payload.txt
     : > .git/payload-checks
-    git commit -m 'Accept repaired sandbox input' > "$log" 2>&1
+    prek run loom-gate-verify-files --hook-stage manual --all-files > "$log" 2>&1
+    git commit -m 'Accept repaired sandbox input' >> "$log" 2>&1
     [[ "$(git rev-parse HEAD)" != "$before" ]] || fail 'valid commit did not advance HEAD'
     assert_payload_checked updated
     [[ -z "$(git status --porcelain)" ]] || fail 'valid commit left a dirty fixture'
@@ -120,6 +134,8 @@ test_pre_push_runs_nix_and_gate() {
     [[ ! -e "$nix_check_output" ]] || fail 'fixture Nix check was already built'
     : > .git/payload-checks
     prek run --hook-stage pre-push --from-ref HEAD~1 --to-ref HEAD --verbose > "$log" 2>&1
+    prek run full-test-suite --hook-stage manual --verbose >> "$log" 2>&1
+    prek run loom-gate-verify-diff --hook-stage manual --from-ref HEAD~1 --to-ref HEAD --verbose >> "$log" 2>&1
     for hook_id in nix-flake-check full-test-suite loom-gate-verify-diff; do
         grep -Fq -- "- hook id: $hook_id" "$log"
     done
@@ -131,7 +147,7 @@ test_pre_push_runs_nix_and_gate() {
     printf 'bad\n' > payload.txt
     git add payload.txt
     : > .git/payload-checks
-    if prek run --hook-stage pre-push --from-ref HEAD~1 --to-ref HEAD --verbose > "$log" 2>&1; then
+    if prek run loom-gate-verify-diff --hook-stage manual --from-ref HEAD~1 --to-ref HEAD --verbose > "$log" 2>&1; then
         fail 'non-Nix pre-push gate accepted a failing verifier'
     fi
     grep -Fq -- '- hook id: loom-gate-verify-diff' "$log"
@@ -151,16 +167,20 @@ mkdir -p "$work/repo" "$work/home"
 export HOME="$work/home"
 cd "$work/repo"
 git init -q
-mkdir -p bin scripts specs checks
+mkdir -p bin scripts specs checks .cargo
 cp "$source_root/.pre-commit-config.yaml" .
 cp "$source_root/bin/pre-push-checks" bin/
-cp "$source_root/scripts/check-shell-reexec" scripts/
+cp "$source_root/scripts/check-shell-reexec" "$source_root/scripts/configure-cargo-patches.sh" \
+    "$source_root/scripts/cargo-patch-key.nix" scripts/
+cp "$source_root/Cargo.lock" .
+cp "$source_root/.cargo/config.toml" .cargo/
 cp "$source_root/tests/sandbox/verify-payload.sh" checks/
 chmod +x bin/pre-push-checks scripts/check-shell-reexec checks/verify-payload.sh
-printf '.loom/\n' > .gitignore
+printf '.loom/\n.cargo/nix-patches.toml\n' > .gitignore
 nix_system=$(nix eval --offline --impure --raw --expr builtins.currentSystem)
 nix_builder=$(realpath "$(command -v bash)")
 nix_chmod=$(command -v chmod)
+nix_cp=$(command -v cp)
 cat > flake.nix <<NIX
 {
   outputs = { self }:
@@ -175,6 +195,13 @@ cat > flake.nix <<NIX
         '' ];
       };
     in {
+      packages.$nix_system.cargo-patches = builtins.derivation {
+        name = "sandbox-hook-cargo-patches";
+        system = "$nix_system";
+        builder = "$nix_builder";
+        config = builtins.appendContext "$patch_config" { "$patch_config" = { path = true; }; };
+        args = [ "-euc" ''"$nix_cp" "\$config" "\$out"'' ];
+      };
       checks.$nix_system.fixture = fixture "check";
       apps.$nix_system.test-required = {
         type = "app";
@@ -197,14 +224,17 @@ git config commit.gpgsign false
 git config core.hooksPath "$WRIX_PREK_HOOKS"
 git add .
 git commit -m 'Seed sandbox hook fixture' > "$log" 2>&1
+prek run loom-gate-verify-files --hook-stage manual --all-files >> "$log" 2>&1
 assert_payload_checked good
+[[ -s .cargo/nix-patches.toml ]] || fail 'native Cargo hook did not initialize patches'
+cmp "$patch_config" .cargo/nix-patches.toml
 
 test_commit_trailing_whitespace
 test_commit_missing_final_newline
 test_commit_merge_conflict
 test_commit_formatter
 test_commit_shell_reexec
-test_commit_integrity_gate
-test_commit_check_failure
+test_manual_integrity_gate
+test_manual_check_failure
 test_commit_accepts_repaired_input
 test_pre_push_runs_nix_and_gate

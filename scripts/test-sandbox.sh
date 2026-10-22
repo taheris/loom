@@ -103,6 +103,7 @@ if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none \
     --entrypoint /bin/bash \
     --volume "$source_root:/sandbox-source:ro" \
     --env "WRIX_PREK_HOOKS=$WRIX_PREK_HOOKS" \
+    --env "LOOM_TEST_CARGO_PATCHES=${LOOM_TEST_CARGO_PATCHES:-}" \
     "$ref" -lc '
         set -euo pipefail
         printf "sandbox-checks-started\n"
@@ -111,7 +112,7 @@ if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none \
         rustc --version >/dev/null
         printf "sandbox-agent-health-ok\n"
         bash /sandbox-source/tests/sandbox/nix.sh
-        bash /sandbox-source/tests/sandbox/hooks-test.sh /sandbox-source
+        bash /sandbox-source/tests/sandbox/hooks-test.sh /sandbox-source "$LOOM_TEST_CARGO_PATCHES"
     ' 2>&1); then
     if [[ "$run_out" != *"sandbox-checks-started"* ]] && is_unsupported_container_runtime_error "$run_out"; then
         skip_unsupported_container_runtime "$run_out"

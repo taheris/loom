@@ -183,6 +183,7 @@ _:
         text = ''
           export LOOM_SANDBOX_IMAGE_ATTR=".#sandbox-image"
           export LOOM_TEST_SANDBOX_SOURCE=${loom.stagedSrc}
+          export LOOM_TEST_CARGO_PATCHES=${nativeCargo.preflightConfig}
           export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
           ${builtins.readFile ../../scripts/test-sandbox.sh}
         '';

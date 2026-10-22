@@ -759,6 +759,7 @@
             }"
             export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
             export LOOM_TEST_PODMAN_ARGS_LOG="$TMPDIR/podman-args"
+            export LOOM_TEST_CARGO_PATCHES=/nix/store/fixture-cargo-patches.toml
             export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
             export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
             export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
@@ -767,6 +768,7 @@
               printf 'expected test-sandbox podman run to disable networking and select the health-check entrypoint; observed:\n%s\n' "$(<"$LOOM_TEST_PODMAN_ARGS_LOG")" >&2
               exit 1
             fi
+            grep -Fq -- '<--env><LOOM_TEST_CARGO_PATCHES=/nix/store/fixture-cargo-patches.toml>' "$LOOM_TEST_PODMAN_ARGS_LOG"
             touch "$out"
           '';
 

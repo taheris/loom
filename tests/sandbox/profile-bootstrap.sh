@@ -132,22 +132,23 @@ export LOOM_PROFILES_MANIFEST="$fixture/legacy.json"
 run_until_missing_tracker legacy
 [[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 2 ]]
 
-registry=$(jq -r .registry .git/loom-workspace.json)
-mv "$registry/association.json" "$registry/association.json.saved"
+[[ ! -e .git/loom-workspace.json ]]
+mv .loom/integration/.git "$fixture/integration-git.saved"
 if "$loom_bin" loop lm-bootstrap-fixture > "$fixture/missing-authority.log" 2>&1; then
   printf 'missing fixture authority was reconstructed or bypassed\n' >&2
   exit 1
 fi
-[[ ! -e "$registry/association.json" ]]
+[[ ! -e .loom/integration/.git ]]
 [[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 2 ]]
-printf '{}\n' > "$registry/association.json"
+printf '{}\n' > .loom/integration/.git
 if "$loom_bin" loop lm-bootstrap-fixture > "$fixture/corrupt-authority.log" 2>&1; then
   printf 'corrupt fixture authority was reconstructed or bypassed\n' >&2
   exit 1
 fi
-[[ "$(cat "$registry/association.json")" == '{}' ]]
+[[ "$(cat .loom/integration/.git)" == '{}' ]]
 [[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 2 ]]
-mv "$registry/association.json.saved" "$registry/association.json"
+rm .loom/integration/.git
+mv "$fixture/integration-git.saved" .loom/integration/.git
 run_until_missing_tracker recovered
 [[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 3 ]]
 [[ "$(git rev-parse HEAD)" == "$expected_head" ]]
