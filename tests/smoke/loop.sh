@@ -177,11 +177,8 @@ if [[ -n "${source_head:-}" ]]; then
         log 'verification restart redispatched implementation'
         exit 1
     fi
-    events=("$WORKSPACE/.git/loom-verification-continuations/"*.json)
-    latest="${events[${#events[@]}-1]}"
-    if ! jq -e --arg bead "$BEAD_ID" '.bead == $bead and .phase == "resolved"' "$latest" >/dev/null; then
-        log 'restart did not finish its publication continuation'
-        cat "$latest" >&2
+    if ! grep -Fq 'gate=success' "$WORKSPACE/.loom/smoke-final-driver.log"; then
+        log 'restart did not finish gated publication'
         exit 1
     fi
     published_head=$(git -C "$WORKSPACE/.loom/integration" rev-parse HEAD)
