@@ -834,7 +834,9 @@ where
             scratch.path().to_path_buf(),
             vec![],
             vec![],
-            vec![],
+            crate::r#loop::dolt_socket_mount(&self.workspace)
+                .into_iter()
+                .collect(),
             self.launcher_env.clone(),
         );
         let skill_session = built_prompt
@@ -2782,6 +2784,52 @@ mod tests {
         );
         let written = prompt_seen.lock().unwrap().take().expect("prompt.txt seen");
         assert_eq!(written, cfg.initial_prompt);
+    }
+
+    #[tokio::test]
+    async fn integration_review_projects_only_the_controlling_tracker_endpoint() {
+        use std::os::unix::net::{UnixListener, UnixStream};
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join(".loom/integration");
+        seed_empty_spec(&workspace, "harness");
+        let socket = root.path().join(".wrix/dolt.sock");
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::create_dir_all(workspace.join(".wrix")).unwrap();
+        let _decoy = UnixListener::bind(workspace.join(".wrix/dolt.sock")).unwrap();
+        let state = empty_state(&workspace);
+        let manifest = stub_manifest(&workspace);
+        let mut controller = ProductionReviewController::new(
+            no_beads_bd(),
+            SpecLabel::new("harness").unwrap(),
+            PathBuf::from("/usr/bin/loom"),
+            workspace,
+            state,
+            manifest,
+            ProfileName::new("base").unwrap(),
+            move |config: SpawnConfig| {
+                assert_eq!(config.mounts.len(), 1);
+                let mount = &config.mounts[0];
+                assert_eq!(mount.host_path, socket);
+                assert_eq!(
+                    mount.container_path,
+                    PathBuf::from("/workspace/.wrix/dolt.sock")
+                );
+                assert!(!mount.read_only);
+                UnixStream::connect(&mount.host_path).unwrap();
+                std::future::ready(Ok((
+                    SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    },
+                    "LOOM_COMPLETE\n".to_owned(),
+                )))
+            },
+        );
+        controller.run_review().await.unwrap();
+        listener.set_nonblocking(true).unwrap();
+        listener.accept().unwrap();
     }
 
     /// Regression: `exec_run` (the review → run handoff for auto-iterate)

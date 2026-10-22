@@ -28,7 +28,8 @@ const DOLT_SOCKET_CONTAINER_PATH: &str = "/workspace/.wrix/dolt.sock";
 /// rejects Unix-socket `host_path` entries at launch — see
 /// `specs/harness.md` § Bead dispatch / Darwin compatibility.
 pub fn dolt_socket_mount(loom_workspace: &Path) -> Option<MountSpec> {
-    let host_path = loom_workspace.join(DOLT_SOCKET_REL_PATH);
+    let state_path = loom_driver::state::path(loom_workspace);
+    let host_path = state_path.parent()?.parent()?.join(DOLT_SOCKET_REL_PATH);
     if !host_path.exists() {
         return None;
     }
