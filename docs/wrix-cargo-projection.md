@@ -17,7 +17,11 @@ Alternatively select both `LOOM_CONFORMANCE_WRIX` and
 explicit overrides are absent. It creates fresh private XDG state/cache/data/
 configuration roots and uses Wrix's existing initialize/standalone-acknowledge
 commands there. It never acknowledges or mutates an operator's live admission or
-services. These roots and runtime evidence remain under `/tmp`.
+services. Control state remains under `/tmp`; retained runtime evidence uses
+`/tmp` by default. `LOOM_CONFORMANCE_TMPDIR` can select another existing
+trusted, executable fixture filesystem. This changes no admission floor,
+reservation, resource limit or lifetime assertion; it must outlive disposable
+Gate runners.
 
 The test selects the supplied production profile/image, disabling only unrelated
 Nix-cache service injection in a fixture ProfileConfig copy. Production

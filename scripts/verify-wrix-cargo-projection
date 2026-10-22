@@ -25,7 +25,7 @@ printf 'Wrix conformance control state: %s\n' "$control"
 "$LOOM_CONFORMANCE_WRIX" workspace initialize
 "$LOOM_CONFORMANCE_WRIX" workspace acknowledge-scope --version 1
 # Runtime evidence must survive an enclosing disposable native-fixture runner.
-export TMPDIR=/tmp
+export TMPDIR="${LOOM_CONFORMANCE_TMPDIR:-/tmp}"
 bash scripts/configure-cargo-patches.sh
 cargo nextest run -p loom-driver --run-ignored only --ignore-default-filter \
   -E 'test(wrix_cargo_storage_projection_matches_admitted_profile)'

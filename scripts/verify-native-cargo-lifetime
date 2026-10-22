@@ -6,7 +6,7 @@ if [[ -n "${LOOM_INSIDE:-}" || -n "${NIX_BUILD_TOP:-}" || $(uname -s) != Linux ]
   exit 1
 fi
 # Retained runtime evidence must outlive an enclosing disposable Gate runner.
-export TMPDIR=/tmp
+export TMPDIR="${LOOM_CONFORMANCE_TMPDIR:-/tmp}"
 bash scripts/configure-cargo-patches.sh
 cargo nextest run -p loom-driver --run-ignored only --ignore-default-filter \
   -E 'test(native_cargo_lifetime_seals_empty_generation_and_cancels_stale_entry) | test(native_cargo_retention_restart_reconciles_owned_process_generations)'
