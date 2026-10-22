@@ -342,6 +342,7 @@ pub(super) fn dispatch_worker(
     }
     let issuer = crate::wrix::resolve_launcher(manifest_launcher, None);
     let result = (|| {
+        let issuer = std::fs::canonicalize(&issuer)?;
         let issuer_identity = issuer_identity(&issuer, &record.source)?;
         let output = bounded(
             &issuer,
@@ -391,6 +392,10 @@ pub(super) fn dispatch_worker(
 
 fn issuer_identity(path: &Path, source: &Path) -> std::io::Result<Identity> {
     use std::os::unix::fs::MetadataExt;
+    Directory::open(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("Wrix issuer has no parent"))?,
+    )?;
     let metadata = std::fs::symlink_metadata(path)?;
     let operator = source
         .parent()
@@ -422,7 +427,11 @@ fn issuer_identity(path: &Path, source: &Path) -> std::io::Result<Identity> {
     Ok(Identity::from_stat(&rustix::fs::fstat(file)?))
 }
 
-fn bounded(program: &Path, args: &[&str], state_home: Option<&Path>) -> std::io::Result<Vec<u8>> {
+pub(super) fn bounded(
+    program: &Path,
+    args: &[&str],
+    state_home: Option<&Path>,
+) -> std::io::Result<Vec<u8>> {
     let mut command = tokio::process::Command::new(program);
     command
         .args(args)

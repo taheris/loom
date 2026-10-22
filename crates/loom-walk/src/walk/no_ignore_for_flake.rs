@@ -15,6 +15,20 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "crates/loom-driver/tests/lock_manager.rs",
         "crash_helper_take_lock_then_exit",
     ),
+    // Explicit system verifiers own these real runtime/delegation entry points;
+    // default-suite skips are never accepted as substrate proof.
+    (
+        "crates/loom-driver/src/workspace/cargo/projection.rs",
+        "wrix_cargo_storage_projection_matches_admitted_profile",
+    ),
+    (
+        "crates/loom-driver/src/workspace/cargo/lifetime/tests.rs",
+        "native_cargo_lifetime_seals_empty_generation_and_cancels_stale_entry",
+    ),
+    (
+        "crates/loom-driver/src/workspace/cargo/retention/process.rs",
+        "native_cargo_retention_restart_reconciles_owned_process_generations",
+    ),
     // This entry point requires the real bind mount installed by the system verifier.
     (
         "crates/loom-agent/tests/workspace_mount.rs",
