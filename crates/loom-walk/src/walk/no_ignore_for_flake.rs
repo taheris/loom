@@ -9,6 +9,12 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "TST-3 #[ignore] is limited to enumerated process entry points";
 const ALLOWLIST: &[(&str, &str)] = &[
+    // Harness-only child target: ordinary native runner tests launch it with
+    // --ignored --exact and assert output, inherited pipes, diagnostics and reaping.
+    (
+        "crates/loom-issues/tests/native/process.rs",
+        "native_process_probe",
+    ),
     // Replay acceptance tests re-execute this worker with isolated subprocess environment.
     ("crates/loom/tests/tune_cli.rs", "tune_replay_clock_worker"),
     (
@@ -114,6 +120,17 @@ mod tests {
             assert!(run_with_root(&WalkInput::default(), dir.path()).pass);
             fs::write(&path, "#[test]\n#[ignore]\nfn hidden_flake() {}\n")?;
             assert!(!run_with_root(&WalkInput::default(), dir.path()).pass);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_process_entrypoint_names_in_other_files() -> Result<()> {
+        for (_, function) in ALLOWLIST {
+            let dir = fixture(&format!("#[test]\n#[ignore]\nfn {function}() {{}}\n"))?;
+            let verdict = run_with_root(&WalkInput::default(), dir.path());
+            assert!(!verdict.pass);
+            assert!(verdict.evidence.contains(function));
         }
         Ok(())
     }
