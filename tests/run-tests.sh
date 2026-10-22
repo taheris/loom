@@ -170,6 +170,9 @@ git push -q -u origin main
 
 mkdir -p .beads/dolt
 chmod 700 .beads
+# Admission belongs only to this fixture's fresh HOME/XDG state, never the operator's.
+"$LOOM_WRIX_SERVICE_BIN" workspace initialize
+"$LOOM_WRIX_SERVICE_BIN" workspace acknowledge-scope --version 1
 "$LOOM_WRIX_SERVICE_BIN" service start >/dev/null
 DOLT_SERVICE_STARTED=1
 bash "${LOOM_TEST_WAIT_DOLT:?missing Dolt readiness helper}" "$LOOM_WRIX_SERVICE_BIN" >/dev/null
