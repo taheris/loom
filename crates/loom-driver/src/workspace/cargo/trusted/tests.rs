@@ -261,6 +261,7 @@ mod cases {
                 .unwrap();
             let parent = dispatched.parent().unwrap().parent().unwrap();
             let path = tempfile::Builder::new()
+                .permissions(fs::Permissions::from_mode(0o700))
                 .prefix("generation-")
                 .tempdir_in(parent)
                 .unwrap()
