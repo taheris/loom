@@ -1,6 +1,7 @@
 //! Private Cargo output selection. A namespace record is never evidence or disposal authority.
 
 mod lifetime;
+mod nix;
 mod record;
 pub mod retention;
 mod trusted;
@@ -426,21 +427,34 @@ pub fn discovery_command(command: &mut Command) {
     }
 }
 
+/// Construct a verifier command, pinning a PATH-selected Nix front end to its build-time identity.
+pub fn command(program: impl AsRef<std::ffi::OsStr>, workspace: &Path) -> Command {
+    nix::command(program.as_ref(), workspace)
+}
+
 /// Configure isolation before standard I/O; retain the guard until reaping the child.
 ///
 /// # Errors
 /// Reports unavailable trusted output storage before any verifier is executed.
 pub fn verifier_command(command: &mut Command, workspace: &Path) -> std::io::Result<Execution> {
     if std::env::var_os(crate::agent::LOOM_INSIDE_ENV).is_none() {
-        trusted_command(command, workspace)
-    } else {
-        Ok(Execution {
+        if !nix::owns_output(command) {
+            return trusted_command(command, workspace);
+        }
+        discovery_command(command);
+        return Ok(Execution {
             lease: None,
             native: None,
             #[cfg(feature = "test-support")]
-            fixture: None,
-        })
+            fixture: fixture_environment(command)?,
+        });
     }
+    Ok(Execution {
+        lease: None,
+        native: None,
+        #[cfg(feature = "test-support")]
+        fixture: None,
+    })
 }
 
 /// Isolate trusted subprocesses before standard I/O configuration; retain the guard until reaping.
@@ -449,28 +463,40 @@ pub fn verifier_command(command: &mut Command, workspace: &Path) -> std::io::Res
 /// An unavailable or indirect trusted output root refuses execution, rather than using ambient output.
 pub fn trusted_command(command: &mut Command, workspace: &Path) -> std::io::Result<Execution> {
     #[cfg(feature = "test-support")]
-    if std::env::var_os("LOOM_TEST_STORAGE").is_none() {
-        let fixture = tempfile::Builder::new()
-            .prefix("loom-command-fixture-")
-            .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
-            .tempdir()?;
-        let state = fixture.path().join("state");
-        command.env("XDG_STATE_HOME", &state);
-        command.env("LOOM_TEST_STORAGE", "1");
-        let mut execution =
-            trusted_command_at(command, workspace, &state.join("loom/trusted-cargo"))?;
+    if let Some(fixture) = fixture_environment(command)? {
+        let mut execution = trusted_command_at(
+            command,
+            workspace,
+            &fixture.path().join("state/loom/trusted-cargo"),
+        )?;
         execution.fixture = Some(fixture);
         return Ok(execution);
     }
-    #[cfg(feature = "test-support")]
-    {
-        let state = std::env::var_os("XDG_STATE_HOME").ok_or_else(|| {
-            std::io::Error::other("explicit fixture storage requires XDG_STATE_HOME")
-        })?;
-        command.env("XDG_STATE_HOME", state);
-        command.env("LOOM_TEST_STORAGE", "1");
-    }
     trusted_command_at(command, workspace, &trusted_root()?)
+}
+
+#[cfg(feature = "test-support")]
+fn fixture_environment(command: &mut Command) -> std::io::Result<Option<tempfile::TempDir>> {
+    let fixture = if std::env::var_os("LOOM_TEST_STORAGE").is_none() {
+        Some(
+            tempfile::Builder::new()
+                .prefix("loom-command-fixture-")
+                .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+                .tempdir()?,
+        )
+    } else {
+        None
+    };
+    let state = if let Some(fixture) = &fixture {
+        fixture.path().join("state").into_os_string()
+    } else {
+        std::env::var_os("XDG_STATE_HOME").ok_or_else(|| {
+            std::io::Error::other("explicit fixture storage requires XDG_STATE_HOME")
+        })?
+    };
+    command.env("XDG_STATE_HOME", state);
+    command.env("LOOM_TEST_STORAGE", "1");
+    Ok(fixture)
 }
 
 pub(super) fn trusted_root() -> std::io::Result<PathBuf> {

@@ -665,7 +665,7 @@ impl InputResolver {
     fn invoke_print_inputs(&self, tokens: &[String]) -> Option<Vec<PathBuf>> {
         let head = tokens.first()?;
         let tail = &tokens[1..];
-        let mut cmd = Command::new(head);
+        let mut cmd = loom_driver::workspace::cargo::command(head, &self.repo_root);
         cmd.arg("--print-inputs").args(tail);
         cmd.current_dir(&self.repo_root);
         let output = match loom_driver::workspace::cargo::verifier_command(
@@ -695,7 +695,7 @@ impl InputResolver {
         let mut tokens = shlex::split(command)?;
         tokens.push(test_target.to_string());
         let (head, tail) = tokens.split_first()?;
-        let mut cmd = Command::new(head);
+        let mut cmd = loom_driver::workspace::cargo::command(head, &self.repo_root);
         cmd.args(tail);
         cmd.current_dir(&self.repo_root);
         let output = match loom_driver::workspace::cargo::verifier_command(
@@ -1006,7 +1006,7 @@ fn command_query_command(repo_root: &Path, command: &str) -> Option<Command> {
     let mut tokens = shlex::split(command)?.into_iter();
     let head = tokens.next()?;
     let tail: Vec<String> = tokens.collect();
-    let mut cmd = Command::new(head);
+    let mut cmd = loom_driver::workspace::cargo::command(head, repo_root);
     cmd.args(&tail).current_dir(repo_root);
     Some(cmd)
 }
@@ -1217,6 +1217,97 @@ for target in "$@"; do
     first=0
 done
 printf '}}\n'"#;
+
+    /// Real Nix probes and dispatch must work even when no native reservation is admissible.
+    #[test]
+    fn nix_queries_and_dispatch_work_without_native_capacity() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        const CHILD: &str = "LOOM_NIX_GATE_CHILD";
+        let pin = Path::new(env!("LOOM_NATIVE_NIX_BIN"))
+            .canonicalize()
+            .unwrap();
+        if std::env::var_os(CHILD).is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let mut paths = vec![pin.parent().unwrap().to_path_buf()];
+            paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "inputs::tests::nix_queries_and_dispatch_work_without_native_capacity",
+                    "--nocapture",
+                ])
+                .env(CHILD, root.path())
+                .env("XDG_STATE_HOME", root.path().join("state"))
+                .env("LOOM_TEST_STORAGE", "1")
+                .env("PATH", std::env::join_paths(paths).unwrap())
+                .env_remove(loom_driver::agent::LOOM_INSIDE_ENV)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        let root = PathBuf::from(std::env::var_os(CHILD).unwrap());
+        let source = root.join("source");
+        fs::create_dir(&source).unwrap();
+        let pool = root.join("state/loom/trusted-cargo");
+        fs::create_dir_all(&pool).unwrap();
+        fs::set_permissions(&pool, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            pool.join("policy.json"),
+            "{\"max_bytes\":0,\"reservation_bytes\":536870912,\"min_free_bytes\":0}",
+        )
+        .unwrap();
+        fs::set_permissions(pool.join("policy.json"), fs::Permissions::from_mode(0o600)).unwrap();
+        let resolver = InputResolver::new(source.clone());
+        let helper = "nix eval --store dummy:// --extra-experimental-features nix-command --impure --json --expr";
+        for _ in 0..3 {
+            assert!(resolver.invoke_print_inputs(&["nix".into()]).is_none());
+            assert_eq!(
+                resolver.invoke_inputs_helper(helper, "{ inputs = [\"src/**\"]; }"),
+                Some(vec![PathBuf::from("src/**")])
+            );
+            let query = format!("{helper} '{{ inputs = [\"src/**\"]; }}'");
+            assert!(
+                matches!(query_inputs(command_query_command(&source, &query).unwrap(), &query), Ok(InputQueryDocument::Single(paths)) if paths == vec![PathBuf::from("src/**")])
+            );
+            assert!(
+                resolver
+                    .invoke_inputs_helper(helper, "throw \"failure control\"")
+                    .is_none()
+            );
+            for valid in [true, false] {
+                let expression = if valid {
+                    "{ pass = true; evidence = (builtins.getEnv \"CARGO_TARGET_DIR\") + \":\" + (builtins.getEnv \"LOOM_FILES\") + \":\" + (builtins.getEnv \"LOOM_SPEC\"); }"
+                } else {
+                    "throw \"dispatch failure control\""
+                };
+                let target = format!("{helper} '{expression}'");
+                let options = crate::dispatch::DispatchOptions {
+                    files: vec![PathBuf::from("src/lib.rs")],
+                    spec: Some("fixture".into()),
+                };
+                let results = crate::dispatch::run_check(
+                    &[ann(Tier::Check, &target, "specs/fixture.md")],
+                    &[],
+                    &options,
+                    &source,
+                    &crate::dispatch::TierCwds::default(),
+                );
+                let outcome = results.into_iter().next().unwrap().unwrap();
+                assert_eq!(outcome.verdict.pass, valid, "{outcome:?}");
+                if valid {
+                    assert_eq!(
+                        outcome.verdict.evidence,
+                        "/dev/null/loom-cargo-discovery:src/lib.rs:fixture"
+                    );
+                }
+            }
+            assert!(!pool.join("state.db").exists());
+            assert!(!pool.join("native").exists());
+        }
+    }
 
     #[test]
     fn query_diagnostics_redact_credentials_before_bounding_unicode_output() {

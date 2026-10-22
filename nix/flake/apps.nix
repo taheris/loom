@@ -80,6 +80,7 @@ _:
             LOOM_CARGO_PATCHES = loom.cargoConfig;
             LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
             LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+            LOOM_NATIVE_NIX_BIN = "${pkgs.nix}/bin/nix";
           };
         };
 
@@ -439,7 +440,8 @@ _:
                 ${fixtureRequiredTestApp}/bin/test-required \
                 ${fixtureTestApp}/bin/test \
                 ${loom.hookRunner}/bin/prek \
-                ${pkgs.beads}/bin/bd
+                ${pkgs.beads}/bin/bd \
+                ${pkgs.nix}/bin/nix
               touch "$out"
             '';
       }

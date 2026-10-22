@@ -34,6 +34,15 @@ checkout without going through `bin/loom` or the worker's Cargo wrapper.
 `native-cargo-bootstrap` exercises that real hook with absent and legacy
 configurations. Initialization failure fails the lane, not skips native tests.
 
+The same initialization and both test-app constructors pin
+`LOOM_NATIVE_NIX_BIN`. Direct verifiers can select Nix-owned output only for
+that immutable executable; arbitrary PATH entries and runtime environment values
+cannot replace it. Native bootstrap tests refresh legacy configurations missing
+the pin, and the test-app check covers absent/conflicting ambient pins. This
+output contract denies native Cargo targets; it does not admit verifier inputs
+or assert application hermeticity. See
+[storage admission](../../docs/cargo-retention.md).
+
 Remove the runner patch after an upstream release preserves these outcomes.
 
 ## Nextest capture handoff and Cargo home

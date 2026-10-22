@@ -123,9 +123,28 @@ discovery wrapper that attempts compilation fails; it does not gain permission
 to use ambient output. This is an explicit operation boundary, not a
 command-name exemption. Arbitrary input helpers and verifier commands can
 compile, including through wrappers, and still require an execution guard and
-native admission. In particular, `nix run` can execute an arbitrary application
-outside a build sandbox: its name alone does not establish native-output
-independence.
+native admission.
+
+Direct verifier invocations of the build-pinned Nix executable use an enforced
+Nix-owned output contract: `build`, `run`, `eval`, read-only inspection and
+flake checks cannot use native Cargo output. Nix owns store builds and their
+lifetimes; all three native Cargo output aliases point at the denied discovery
+path and compiler caching remains disabled. This does not assert that a Nix
+application is hermetic or grant input/evidence admission. A runtime native
+Cargo write fails rather than escaping to ambient worker or canonical output.
+Applications that need native compilation must use a managed native runner, for
+example an opaque `env nix run ...` or shell wrapper; `nix shell` and
+`nix develop` remain managed.
+
+The command constructor resolves the selected executable before spawning and
+pins it only when it matches the immutable Nix tool supplied by the build.
+Mutable/shadowed front ends, unsupported invocation shapes and absent pins keep
+normal native admission. Arguments, cwd, scope environment, cleared environments
+and standard I/O are not reconstructed for the Nix-owned path. Repeated queries,
+execution and failures create no target, policy or native allocation record.
+Native Cargo initialization and Nix packages supply `LOOM_NATIVE_NIX_BIN`; an
+ambient executable name or runtime pin environment value cannot select this
+contract.
 
 The ordinary Nextest profile wraps listing and execution with
 `scripts/run-private-fixture-tests`. Each invocation gets private temporary and
@@ -180,6 +199,16 @@ successful queries and one failure. The pre-change input/dispatch artifact's
 medians were 27.88/30.93 ms, without disposable allocation cleanup. These are
 focused local observations, not a Weld hook benchmark or timing gate. The
 ordinary eight-regression Nextest run passed in 0.554 seconds after compilation.
+
+The Nix-owned regression additionally runs real input probes and Gate dispatch
+against a disposable zero-byte native policy. Ten warm campaigns, each with 18
+Nix invocations (including failures), had a median of 322.95 ms and maximum of
+336.04 ms. No native database or generation was created; the host remained at
+504 records / 509 generations. A separate real `nix run` app fixture repeats
+success/failure without compiling anything; its private Nix store is collected
+through native `nix store gc`, not permission repair or deletion of host output.
+These are Loom execution-path measurements, not claims about total Weld hook
+latency.
 
 ## Legacy pressure recovery and steady state
 

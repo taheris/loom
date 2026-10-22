@@ -163,6 +163,13 @@ per-user driver state root (`loom/trusted-cargo`), outside source checkouts and
 worker projections. The source checkout's canonical executables are not ordinary
 worker output.
 
+A direct verifier invocation of the build-pinned Nix front end delegates builds
+to Nix and denies native Cargo output instead of reserving a generated target.
+This enforced output contract is not hermeticity, input admission or retirement
+authority. Native runtime compilation requires a managed native runner; opaque
+wrappers and Nix environment launchers retain normal target admission. Mutable
+or shadowed front ends cannot select Nix-owned output by executable name.
+
 Before a managed driver exists, the host source wrapper launches the current
 checkout's locked Nix package, not an unmanaged temporary Cargo target. Nix owns
 those immutable package outputs and build lifetimes; its store is outside the
@@ -454,6 +461,23 @@ for worker feedback.
   compiler caching. Worker cache directories, server endpoints and wrapper
   overrides cannot select trusted build inputs.
   [test](trusted_cargo_execution_rejects_worker_cache_inputs)
+
+- Direct pinned Nix verifiers execute repeated successful and failing apps
+  without creating native targets or reservation records; Nix retains ownership
+  of store lifetimes and native Cargo output is denied.
+  [test](nix_owned_verifiers_repeat_success_and_failure_without_native_reservations)
+
+- Nix-owned execution preserves cleared environments without rebuilding
+  commands.
+  [test](nix_owned_commands_preserve_cleared_environment_without_rebuilding_command)
+
+- Shadowing Nix wrappers, opaque native wrappers and Nix environment launchers
+  retain managed native targets rather than bypassing isolation.
+  [test](nix_shadowing_wrappers_and_native_environments_remain_managed)
+
+- Actual Gate input queries and dispatch use Nix-owned storage through repeated
+  success/failure with zero native capacity, retaining scope and failure
+  evidence. [test](nix_queries_and_dispatch_work_without_native_capacity)
 
 - Driver-owned metadata discovery makes no generated-storage reservation on
   repeated success or failure.

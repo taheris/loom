@@ -32,7 +32,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use displaydoc::Display;
 use loom_driver::config::LoomConfig;
@@ -948,7 +948,8 @@ fn spawn_command(
         .into_iter();
     let head = tokens.next().ok_or_else(|| invalid("empty command"))?;
     let tail: Vec<String> = tokens.collect();
-    let mut cmd = Command::new(head);
+    let mut cmd =
+        loom_driver::workspace::cargo::command(head, cwd.unwrap_or_else(|| Path::new(".")));
     cmd.args(&tail);
     cmd.env("LOOM_FILES", encode_files(&options.files));
     if let Some(spec) = &options.spec {

@@ -55,6 +55,7 @@ let
       name = "Cargo.lock";
     };
     nativeBuildInputs = [ pkgs.git ];
+    LOOM_NATIVE_NIX_BIN = "${pkgs.nix}/bin/nix";
     meta = {
       description = "Rust workflow orchestrator";
       mainProgram = "loom";
@@ -80,6 +81,7 @@ let
       [env]
       LOOM_PREK_BIN = { value = "${hookRunner}/bin/prek", force = true }
       LOOM_ISSUES_BD_BIN = { value = "${pkgs.beads}/bin/bd", force = true }
+      LOOM_NATIVE_NIX_BIN = { value = "${pkgs.nix}/bin/nix", force = true }
       ${optionalString pkgs.stdenv.hostPlatform.isLinux ''
         LOOM_NATIVE_FLOCK_BIN = { value = "${pkgs.util-linux}/bin/flock", force = true }
         LOOM_NATIVE_SHELL_BIN = { value = "${pkgs.runtimeShell}", force = true }
