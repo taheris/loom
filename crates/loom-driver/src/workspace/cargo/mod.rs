@@ -1,5 +1,6 @@
 //! Private Cargo output selection. A namespace record is never evidence or disposal authority.
 
+mod lifetime;
 mod record;
 pub mod retention;
 mod trusted;
@@ -46,6 +47,14 @@ pub struct Namespace {
     lease: File,
 }
 
+impl Drop for Namespace {
+    fn drop(&mut self) {
+        if let Err(error) = lifetime::finish_worker(self) {
+            tracing::debug!(?error, namespace = ?self.path, "worker lifetime remains unreconciled; output retained");
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 struct Context([u8; 32]);
 
@@ -79,7 +88,7 @@ impl Namespace {
             .ok_or(Error::Association {
                 reason: "Cargo dispatch has no ownership record",
             })?;
-        if record.version != 2
+        if record.version != 3
             || record.lifetime != Lifetime::Prepared
             || record.placement != Placement::Live
             || record.namespace_identity != self.identity
@@ -109,18 +118,7 @@ impl Namespace {
                 reason: "Cargo dispatch target identity changed",
             });
         }
-        if retention::projected(&directory)? {
-            return Err(Error::Association {
-                reason: "generated Cargo namespace already has a projection tombstone; retained",
-            });
-        }
-        directory
-            .create_file(
-                Path::new(retention::PROJECTION),
-                rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-            )?
-            .sync_all()?;
-        directory.sync()?;
+        lifetime::dispatch_worker(&directory, &record, spawn)?;
         record.lifetime = Lifetime::Dispatched;
         fence
             .database
@@ -198,7 +196,7 @@ pub fn prepare(
         lease,
     };
     let mut record = Record {
-        version: 2,
+        version: 3,
         bead: Some(bead),
         source: workspace.into(),
         source_identity,
@@ -248,6 +246,7 @@ pub fn prepare(
     record.target_identity = Some(Identity::from_stat(
         &Directory::open(&namespace.target())?.stat()?,
     ));
+    lifetime::initialize(&generation_handle, &record)?;
     database.put_record(RecordKind::CargoTarget, &key, &record)?;
     fence.admit(request.policy, retention::Bytes::default(), clock)?;
     Ok(namespace)
@@ -259,9 +258,9 @@ fn eligible_donor(
     donor: Record,
 ) -> Result<Option<loom_shared::artifact::Location>, Error> {
     if donor.target == recipient.target
-        || !matches!(donor.version, 1 | 2)
+        || !matches!(donor.version, 1..=3)
         || donor.placement != Placement::Live
-        || (donor.version == 2 && donor.target_identity.is_none())
+        || (donor.version >= 2 && donor.target_identity.is_none())
         || donor.profile != recipient.profile
         || donor.context != recipient.context
     {
@@ -389,22 +388,48 @@ fn context(workspace: &Path, profile: Option<&Path>) -> std::io::Result<Context>
     Ok(Context(hash.finalize().into()))
 }
 
-/// Select isolation for native verifiers; worker feedback retains its admitted worker projection.
+/// A pending or running command's allocation lease, not teardown authority.
+#[must_use = "retain the execution lease until the subprocess is reaped"]
+pub struct Execution {
+    lease: Option<File>,
+    native: Option<(PathBuf, PathBuf)>,
+}
+
+impl Drop for Execution {
+    fn drop(&mut self) {
+        drop(self.lease.take());
+        if let Some((root, target)) = &self.native
+            && let Err(error) = lifetime::finish_native(root, target)
+        {
+            tracing::debug!(
+                ?error,
+                ?target,
+                "native lifetime remains unreconciled; output retained"
+            );
+        }
+    }
+}
+
+/// Configure isolation before standard I/O; retain the guard until reaping the child.
 ///
 /// # Errors
 /// Reports unavailable trusted output storage before any verifier is executed.
-pub fn verifier_command(command: &mut Command, workspace: &Path) -> std::io::Result<()> {
+pub fn verifier_command(command: &mut Command, workspace: &Path) -> std::io::Result<Execution> {
     if std::env::var_os(crate::agent::LOOM_INSIDE_ENV).is_none() {
-        trusted_command(command, workspace)?;
+        trusted_command(command, workspace)
+    } else {
+        Ok(Execution {
+            lease: None,
+            native: None,
+        })
     }
-    Ok(())
 }
 
-/// Isolate trusted subprocesses from inherited worker targets, wrappers and compiler-cache servers.
+/// Isolate trusted subprocesses before standard I/O configuration; retain the guard until reaping.
 ///
 /// # Errors
 /// An unavailable or indirect trusted output root refuses execution, rather than using ambient output.
-pub fn trusted_command(command: &mut Command, workspace: &Path) -> std::io::Result<()> {
+pub fn trusted_command(command: &mut Command, workspace: &Path) -> std::io::Result<Execution> {
     trusted_command_at(command, workspace, &trusted_root()?)
 }
 
@@ -420,7 +445,7 @@ fn trusted_command_at(
     command: &mut Command,
     workspace: &Path,
     output: &Path,
-) -> std::io::Result<()> {
+) -> std::io::Result<Execution> {
     let workspace = std::fs::canonicalize(workspace)?;
     let workspace = workspace
         .ancestors()
@@ -456,8 +481,25 @@ fn trusted_command_at(
             "trusted Cargo output overlaps a source checkout",
         ));
     }
-    let target = trusted::prepare(output, &workspace, &crate::clock::SystemClock)
-        .map_err(std::io::Error::other)?;
+    let prepared = if command.get_envs().any(|(name, value)| {
+        name.as_encoded_bytes().starts_with(b"LD_") && value.is_some_and(|value| !value.is_empty())
+    }) {
+        trusted::Prepared::Unreconciled(
+            trusted::prepare(output, &workspace, &crate::clock::SystemClock)
+                .map_err(std::io::Error::other)?,
+        )
+    } else {
+        trusted::prepare_command(output, &workspace, &crate::clock::SystemClock)
+            .map_err(std::io::Error::other)?
+    };
+    let (target, admission) = match prepared {
+        trusted::Prepared::Unreconciled(target) => (target, None),
+        trusted::Prepared::Contained {
+            target,
+            lease,
+            entry,
+        } => (target, Some((lease, entry))),
+    };
     let keys: Vec<_> = std::env::vars_os()
         .map(|(key, _)| key)
         .chain(command.get_envs().map(|(key, _)| key.to_os_string()))
@@ -481,7 +523,18 @@ fn trusted_command_at(
     ] {
         command.env(key, &target);
     }
-    Ok(())
+    if let Some((lease, entry)) = admission {
+        lifetime::wrap(command, &target, &entry)?;
+        Ok(Execution {
+            lease: Some(lease),
+            native: Some((output.to_path_buf(), target)),
+        })
+    } else {
+        Ok(Execution {
+            lease: None,
+            native: None,
+        })
+    }
 }
 
 #[cfg(test)]

@@ -100,7 +100,20 @@ pub(super) struct Fence<'a> {
     scope: Scope<'a>,
     pub(super) root: Directory,
     pub(super) database: CacheDb,
-    _lock: File,
+    _lock: ControllerLock,
+}
+
+// Field drop order keeps this held through database teardown.
+struct ControllerLock(File);
+
+impl Drop for ControllerLock {
+    fn drop(&mut self) {
+        // A concurrent fork may briefly inherit the CLOEXEC descriptor. Release
+        // our completed controller transaction, not the child's incidental copy.
+        if let Err(error) = self.0.unlock() {
+            tracing::warn!(?error, "generated Cargo controller fence unlock failed");
+        }
+    }
 }
 
 impl<'a> Fence<'a> {
@@ -115,10 +128,19 @@ impl<'a> Fence<'a> {
             root,
             &state,
             &crate::state::path(association.operator()),
+            false,
         )
     }
 
     pub(super) fn trusted(path: &'a Path) -> Result<Self, Error> {
+        Self::trusted_lock(path, true)
+    }
+
+    pub(super) fn trusted_try(path: &'a Path) -> Result<Self, Error> {
+        Self::trusted_lock(path, false)
+    }
+
+    fn trusted_lock(path: &'a Path, wait: bool) -> Result<Self, Error> {
         let root = Directory::ensure(path)?;
         let state = Directory::open(path)?;
         let identity = Identity::from_stat(&root.stat()?);
@@ -127,6 +149,7 @@ impl<'a> Fence<'a> {
             root,
             &state,
             &path.join("state.db"),
+            wait,
         )
     }
 
@@ -135,12 +158,13 @@ impl<'a> Fence<'a> {
         root: Directory,
         state: &Directory,
         database_path: &Path,
+        wait: bool,
     ) -> Result<Self, Error> {
         root.require_private()?;
         let lock = root.append_private_file(Path::new("retention.lock"))?;
         match &scope {
-            Scope::Trusted { .. } => lock.lock()?,
-            Scope::Worker(_) => match lock.try_lock() {
+            Scope::Trusted { .. } if wait => lock.lock()?,
+            Scope::Trusted { .. } | Scope::Worker(_) => match lock.try_lock() {
                 Ok(()) => {}
                 Err(TryLockError::WouldBlock) => {
                     return Err(std::io::Error::new(
@@ -159,8 +183,8 @@ impl<'a> Fence<'a> {
         Ok(Self {
             scope,
             root,
-            _lock: lock,
             database,
+            _lock: ControllerLock(lock),
         })
     }
 
@@ -224,11 +248,12 @@ impl<'a> Fence<'a> {
             excluded.insert((identity.st_dev, identity.st_ino));
             let used = directory.allocated_bytes()?;
             allocated = allocated.add(Bytes::new(used))?;
-            let reservation = if record.version != 2 || record.lifetime == Lifetime::Unreconciled {
-                record.reservation.max(policy.unknown_reservation())
-            } else {
-                record.reservation
-            };
+            let reservation =
+                if !matches!(record.version, 2 | 3) || record.lifetime == Lifetime::Unreconciled {
+                    record.reservation.max(policy.unknown_reservation())
+                } else {
+                    record.reservation
+                };
             outstanding = outstanding.add(Bytes::new(reservation.get().saturating_sub(used)))?;
         }
         for directory in self.unrecorded(&excluded)? {
@@ -425,17 +450,25 @@ impl Fence<'_> {
                 reason: "Cargo hold target does not match its ownership record",
             });
         }
-        self.stored_directory(&key, &record)?
+        let (_, directory) = self
+            .stored_directory(&key, &record)?
             .ok_or(Error::Association {
                 reason: "removed Cargo namespace cannot receive a hold",
             })?;
-        match action {
-            HoldAction::Acquire => {
-                record.holds.insert(hold);
-            }
-            HoldAction::Release => {
-                record.holds.remove(&hold);
-            }
+        if record.version == 3 {
+            super::lifetime::holds(
+                &directory,
+                &mut record,
+                hold,
+                matches!(action, HoldAction::Acquire),
+            )?;
+        } else {
+            super::lifetime::legacy_holds(
+                &directory,
+                &mut record,
+                hold,
+                matches!(action, HoldAction::Acquire),
+            )?;
         }
         self.database
             .put_record(RecordKind::CargoTarget, &key, &record)?;

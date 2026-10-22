@@ -21,6 +21,8 @@ let
     hasInfix
     hasSuffix
     mapAttrsToList
+    optionalAttrs
+    optionalString
     ;
 
   fenixPkgs = fenix.packages.${pkgs.stdenv.hostPlatform.system};
@@ -57,6 +59,11 @@ let
       description = "Rust workflow orchestrator";
       mainProgram = "loom";
     };
+  }
+  // optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    LOOM_NATIVE_FLOCK_BIN = "${pkgs.util-linux}/bin/flock";
+    LOOM_NATIVE_SHELL_BIN = pkgs.runtimeShell;
+    LOOM_NATIVE_STAT_BIN = "${pkgs.coreutils}/bin/stat";
   };
 
   hookRunner = import ./prek.nix { inherit pkgs; };
@@ -73,6 +80,11 @@ let
       [env]
       LOOM_PREK_BIN = { value = "${hookRunner}/bin/prek", force = true }
       LOOM_ISSUES_BD_BIN = { value = "${pkgs.beads}/bin/bd", force = true }
+      ${optionalString pkgs.stdenv.hostPlatform.isLinux ''
+        LOOM_NATIVE_FLOCK_BIN = { value = "${pkgs.util-linux}/bin/flock", force = true }
+        LOOM_NATIVE_SHELL_BIN = { value = "${pkgs.runtimeShell}", force = true }
+        LOOM_NATIVE_STAT_BIN = { value = "${pkgs.coreutils}/bin/stat", force = true }
+      ''}
     '').overrideAttrs
       {
         passthru = {

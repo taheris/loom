@@ -2032,16 +2032,18 @@ async fn validate_templates(
     for (name, args) in commands {
         let mut command = Command::new("cargo");
         command.args(args).current_dir(repo);
-        if let Err(error) =
-            loom_driver::workspace::cargo::verifier_command(command.as_std_mut(), repo)
-        {
-            rows.push(ValidationRow {
-                check: name.to_owned(),
-                status: ValidationStatus::Failed,
-                detail: error.to_string(),
-            });
-            continue;
-        }
+        let _execution =
+            match loom_driver::workspace::cargo::verifier_command(command.as_std_mut(), repo) {
+                Ok(execution) => execution,
+                Err(error) => {
+                    rows.push(ValidationRow {
+                        check: name.to_owned(),
+                        status: ValidationStatus::Failed,
+                        detail: error.to_string(),
+                    });
+                    continue;
+                }
+            };
         if name == "representative-renders" {
             command.env("INSTA_UPDATE", "always");
         }

@@ -2,10 +2,10 @@
   "nodes": {
     "crane": {
       "locked": {
-        "lastModified": 1791754810,
-        "narHash": "sha256-cN0Mgk+sQtCJcGWs9H4M0CnLRAuC4I8aCwiBTcBJs6E=",
+        "lastModified": 1792350552,
+        "narHash": "sha256-292lvpvxTGKryKxh3/3tcIVi85CwYGdl4oOi113Sob8=",
         "ref": "master",
-        "rev": "bd63bf1d0a0f6dcacd7549c714a671ee63b0db6a",
+        "rev": "e675a36b7377bebe41d548388a2501cbb16d380d",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/ipetkov/crane.git"
@@ -26,10 +26,10 @@
         "rust-analyzer-src": "rust-analyzer-src"
       },
       "locked": {
-        "lastModified": 1792232679,
-        "narHash": "sha256-qH046WSPn7A97UyNSZdiPobVf3E9Q9zPKdW8nYHHx+Q=",
+        "lastModified": 1792413714,
+        "narHash": "sha256-B8cRSZ1+MLLIkavhdhOY+aPWxqALfTZFsTJqWxBFh1Q=",
         "ref": "main",
-        "rev": "8926ac637672b2d2e9afde568b1448853e5bcbaf",
+        "rev": "2e026d014f384f27929ff1e92a6c1c8d0af1ed2b",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/nix-community/fenix.git"
@@ -66,10 +66,10 @@
     "loom-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1792247434,
-        "narHash": "sha256-GaAX31nh6Vs0/tZgqU4ZpaSrX6KxIMma9xt7rh0gpjk=",
+        "lastModified": 1792421344,
+        "narHash": "sha256-qDhwhiUZIDZNJVJyO1DjQlcxXB6zVpZc7bqAKq/jAJE=",
         "ref": "main",
-        "rev": "f721d58a5628341f147ee4d5c7cf48252a2ca9ba",
+        "rev": "a351c1bf8b2bfc0d903a63b0b1c47cb698838b0e",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/loom.git"
@@ -117,11 +117,11 @@
     "rust-analyzer-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1792141191,
-        "narHash": "sha256-H161gJK9JlpkP3bGnsbTdzzRcP51oiFYrHbCdsQH4kc=",
+        "lastModified": 1792336958,
+        "narHash": "sha256-d1RSuaMORfpT6wVgzvdwuaCFeozUWZKN+1CjnDUBK5c=",
         "owner": "rust-lang",
         "repo": "rust-analyzer",
-        "rev": "70e0c46be740a471bcc95f2be290f4bbfdcffd87",
+        "rev": "5ec20d044dbf04895877a55921ddc0ae6e73e127",
         "type": "github"
       },
       "original": {
@@ -190,10 +190,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1792418287,
-        "narHash": "sha256-GEJrp442Up3qGH2YHTr2X5xac4qutqmmO0E5upo+IMQ=",
+        "lastModified": 1792628434,
+        "narHash": "sha256-vVta9/ym1lQNbHVdNMkUxoYxR3D9IDgGvPiZWxuZSN0=",
         "ref": "main",
-        "rev": "2ac6d00adaeb117b05c6e999d9ac8e048ec6ab26",
+        "rev": "5dc7f8d61681cc3428c4989fc1e534edb76eb55e",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrix.git"

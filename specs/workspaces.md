@@ -192,15 +192,21 @@ usage. `[loom.cargo_retention]` configures the generated worker pool budget,
 request reservation, free-space floor and age threshold. Per-profile reservation
 estimates change request size, not the shared budget or compiler-cache pool.
 [Storage admission](../docs/cargo-retention.md) records defaults and the current
-implementation boundary: abandoned never-dispatched preparations can be
-collected. A durable private projection tombstone, outside the worker mount,
-protects dispatched output even if transient database snapshots are reset or
-replayed; every dispatched generation remains unreconciled pending trusted
-runtime lifetime observations. Trusted-native commands share an operator-owned
-per-user budget under `loom/trusted-cargo`; worker configuration cannot enlarge
-it. Native admission reuses the same artifact records, fence, ownership checks,
-quarantine and hold model without adding evidence authority. Dispatched native
-output also remains unreconciled; lifecycle-based collection remains pending.
+implementation boundary. Private durable generation protection, outside worker
+mounts, survives transient cache reset/replay and retains unknown lifetimes and
+independent hold owners. Supported Linux workers use host-only Wrix tickets:
+immutable container binding precedes start; exact stopped-object removal and
+durable retirement precede collection. Supported trusted-native commands enter
+unique delegated cgroups before execution; matching boot/filesystem identities,
+empty population and successful exact group removal prove retirement. Stale
+entries cannot join a readmitted generation. Unsupported platforms, missing
+admission/delegation, legacy output and ambiguous observations retain
+protection. Trusted-native commands share an operator-owned per-user budget
+under `loom/trusted-cargo`; worker configuration cannot enlarge it. Native
+admission reuses artifact records, fences, accounting, quarantine and holds
+without adding evidence authority. No worker host bridge, new worker mount or
+privilege is introduced; existing runtime/resource/network/cache limits remain
+in force.
 
 A trusted lifecycle lease is necessary but insufficient after process loss.
 Restart reconciles owned process/cgroup generations before making output idle;
@@ -499,8 +505,9 @@ for worker feedback.
   context reservation without admitting duplicate generations.
   [test](trusted_cargo_retention_serializes_parallel_admission_without_double_reservation)
 
-- Native collection reclaims only owned never-dispatched preparations while
-  preserving dispatched generations under the same policy and fence.
+- Without trusted lifecycle authority, native collection reclaims only owned
+  never-dispatched preparations and preserves dispatched generations under the
+  same policy and fence.
   [test](trusted_cargo_retention_collects_only_owned_never_dispatched_preparations)
 
 - A real trusted-native Cargo descendant surviving launcher SIGKILL retains its
@@ -512,20 +519,24 @@ for worker feedback.
   size, age and free-space policy protects active, held, pinned and unknown
   generations, preserves every source/evidence/runtime root, diagnoses failed
   accounting and permits independently admissible smaller work.
-  [test?](wrix_cargo_retention_pressure_bounds_protect_independent_work)
+  [test](wrix_cargo_retention_pressure_bounds_protect_independent_work)
 
 - Process death and restart never convert a free lease or missing/reused PID
   into collection authority. Real surviving build processes retain their
   namespaces until their exact owned process/cgroup generation is confirmed
-  inactive; unknown platform observations retain with diagnostics.
-  [test?](wrix_cargo_retention_restart_reconciles_completed_process_generations)
+  inactive; unknown platform observations retain with diagnostics. [system](bash
+  scripts/verify-native-cargo-lifetime) [system](bash
+  scripts/verify-wrix-cargo-projection)
 
 - Quarantine and removal fence allocation and recheck trusted ownership,
   filesystem identity, holds and pins. Actual generated fixtures exercise
   adversarial paths/symlinks, interrupted collection, conservative recovery and
   protected source/evidence/runtime sentinels through Loop/Gate lifecycle entry
   points, without collector flags authored by workers.
-  [test?](cargo_retention_quarantine_rechecks_ownership)
+  [test](cargo_retention_quarantine_rechecks_ownership_and_resumes_sigkill)
+  [test](cargo_retention_interrupted_unlink_preserves_independent_hold_authority)
+  [test](cargo_retention_unavailable_replaced_and_replayed_issuers_retain_output)
+  [test](worker_cargo_target_reuse_honors_policy_before_spawn)
 
 ### Concurrency & locking
 

@@ -672,7 +672,7 @@ impl InputResolver {
             &mut cmd,
             &self.repo_root,
         )
-        .and_then(|()| cmd.output())
+        .and_then(|_execution| cmd.output())
         {
             Ok(output) => output,
             Err(source) => {
@@ -702,7 +702,7 @@ impl InputResolver {
             &mut cmd,
             &self.repo_root,
         )
-        .and_then(|()| cmd.output())
+        .and_then(|_execution| cmd.output())
         {
             Ok(output) => output,
             Err(source) => {
@@ -1022,7 +1022,7 @@ fn query_inputs(mut cmd: Command, command: &str) -> Result<InputQueryDocument, S
         .get_current_dir()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    loom_driver::workspace::cargo::verifier_command(&mut cmd, &root)
+    let _execution = loom_driver::workspace::cargo::verifier_command(&mut cmd, &root)
         .map_err(|error| format!("input-query output isolation unavailable: {error}"))?;
     let output = cmd.output().map_err(|source| {
         let err = InputsError::Spawn {

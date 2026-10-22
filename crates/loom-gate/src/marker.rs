@@ -540,28 +540,30 @@ mod tests {
             .to_path_buf()
     }
 
-    fn marker_cargo_command() -> Cmd {
+    fn marker_cargo_command() -> (Cmd, loom_driver::workspace::cargo::Execution) {
         let mut command = Cmd::new("cargo");
-        loom_driver::workspace::cargo::trusted_command(&mut command, &repo_root())
+        let execution = loom_driver::workspace::cargo::trusted_command(&mut command, &repo_root())
             .expect("private marker CLI build storage");
-        command
+        (command, execution)
     }
 
     fn run_verify_marker_cli(workspace: &Path) -> std::process::Output {
         let _guard = LOOM_CLI_LOCK.lock().expect("loom cli lock");
-        match std::env::var_os("CARGO_BIN_EXE_loom") {
-            Some(bin) => Cmd::new(bin)
+        if let Some(bin) = std::env::var_os("CARGO_BIN_EXE_loom") {
+            Cmd::new(bin)
                 .args(["gate", "verify-marker"])
                 .current_dir(workspace)
                 .output()
-                .expect("spawn loom gate verify-marker"),
-            None => marker_cargo_command()
+                .expect("spawn loom gate verify-marker")
+        } else {
+            let (mut command, _execution) = marker_cargo_command();
+            command
                 .args(["run", "--quiet", "--manifest-path"])
                 .arg(repo_root().join("Cargo.toml"))
                 .args(["-p", "loom", "--bin", "loom", "--", "gate", "verify-marker"])
                 .current_dir(workspace)
                 .output()
-                .expect("spawn cargo run -p loom gate verify-marker"),
+                .expect("spawn cargo run -p loom gate verify-marker")
         }
     }
 
@@ -852,14 +854,19 @@ mod tests {
         let exec = if let Some(bin) = std::env::var_os("CARGO_BIN_EXE_loom") {
             format!("exec {} \"$@\"", shell_single_quote(Path::new(&bin)))
         } else {
-            let command = marker_cargo_command();
+            let (command, _execution) = marker_cargo_command();
+            let prefix = std::iter::once(command.get_program())
+                .chain(command.get_args())
+                .map(|arg| shell_single_quote(Path::new(arg)))
+                .collect::<Vec<_>>()
+                .join(" ");
             let target = command
                 .get_envs()
                 .find(|(key, _)| *key == "CARGO_TARGET_DIR")
                 .and_then(|(_, value)| value)
                 .expect("admitted marker target");
             format!(
-                "export CARGO_TARGET_DIR={}\nexport CARGO_BUILD_TARGET_DIR=\"$CARGO_TARGET_DIR\" CARGO_BUILD_BUILD_DIR=\"$CARGO_TARGET_DIR\"\nexport RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER= CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=\nexec cargo run --quiet --manifest-path {} -p loom --bin loom -- \"$@\"",
+                "export CARGO_TARGET_DIR={}\nexport CARGO_BUILD_TARGET_DIR=\"$CARGO_TARGET_DIR\" CARGO_BUILD_BUILD_DIR=\"$CARGO_TARGET_DIR\"\nexport RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER= CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=\nexec {prefix} run --quiet --manifest-path {} -p loom --bin loom -- \"$@\"",
                 shell_single_quote(Path::new(target)),
                 shell_single_quote(&repo_root().join("Cargo.toml")),
             )

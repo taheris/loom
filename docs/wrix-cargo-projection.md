@@ -1,54 +1,50 @@
-# Actual Wrix Cargo projection conformance
+# Actual Wrix Cargo projection and lifetime conformance
 
 `wrix_cargo_storage_projection_matches_admitted_profile` is an explicitly
 selected Rust/Nextest substrate test, not a native mount-planning substitute. It
-requires Linux rootless Podman and a Rust Pi profile. It runs no LLM or provider
-request and delivers only a fresh empty fixture credential store.
+requires Linux rootless Podman and the ticket-capable Rust Pi profile. It runs
+no LLM/provider request and delivers a fresh empty fixture credential store.
 
 ```bash
 bash scripts/configure-cargo-patches.sh
 umask 077
-LOOM_CONFORMANCE_WRIX=/absolute/path/to/wrix \
-LOOM_CONFORMANCE_PROFILE=/nix/store/...-wrix-rust-pi-profile-config.json \
-bash scripts/verify-wrix-cargo-projection
+LOOM_PROFILES_MANIFEST=/nix/store/...-profile-images.json \
+  bash scripts/verify-wrix-cargo-projection
 ```
 
-The system binding invokes the ignored native test explicitly; a default-suite
-skip is never accepted as this runtime proof. The wrapper can resolve the
-selected Rust Pi launcher/profile from `LOOM_PROFILES_MANIFEST` when explicit
-fixture overrides are absent.
+Alternatively select both `LOOM_CONFORMANCE_WRIX` and
+`LOOM_CONFORMANCE_PROFILE`. The script resolves the manifest's Rust Pi pair when
+explicit overrides are absent. It creates fresh private XDG state/cache/data/
+configuration roots and uses Wrix's existing initialize/standalone-acknowledge
+commands there. It never acknowledges or mutates an operator's live admission or
+services. These roots and runtime evidence remain under `/tmp`.
 
-The test retains its temporary directory under the host's `/tmp` and prints its
-location, independently of an enclosing disposable native-fixture runner. It
-selects the supplied production profile/image, disabling only unrelated
-Nix-cache service injection in a fixture copy of ProfileConfig. It never updates
-or stops existing services. All generated worker targets come from production
-Cargo namespace preparation and dispatch; Loom's production Wrix wire serializer
-encodes the launch. An extension executes a fixed shell probe at Pi startup,
-after the production entrypoint's firewall and capability drop, without an
-agent/model conversation.
+The test selects the supplied production profile/image, disabling only unrelated
+Nix-cache service injection in a fixture ProfileConfig copy. Production
+namespace preparation, mount validation, wire serialization and host-only ticket
+handoff are exercised. A fixed Pi startup extension runs after the production
+entrypoint's firewall/capability drop, without an agent conversation. Declared
+provider credentials are removed before launch; Podman inspection requests only
+identity/mount fields, not raw environments.
 
-Two actual launches exercise inherited shared and private repository tool-cache
-policy. The shared launch receives Loom's configured worker cache mount and both
-compiler-wrapper settings. The private launch omits it. Guest compilation,
-sccache's effective backend/max-size report, a host/guest cache sentinel and
-actual Podman container mount inspection jointly establish routing, rather than
-inferring it from environment names. The test checks exact target source,
-destination, writable guest output and exclusion of integration, trusted-native
-and running-executable roots. It preserves dispatched targets after completion;
-no result is lifecycle disposal authority.
+Two launches exercise shared/private repository tool-cache policy. Shared policy
+uses the configured common worker cache and both compiler wrappers; private
+policy omits that mount. Guest Rust compilation, effective sccache backend/size,
+a host/guest cache sentinel and actual container mounts establish routing.
+Targets are writable and generation-private; integration, trusted-native,
+operator and executing-runtime roots are excluded. Cache hits and foreground
+completion are not evidence or disposal authority.
 
-## Linux result
+A third launch runs actual Cargo with a blocked build script. Killing the host
+launcher and releasing its namespace lease leaves the container/compiler alive.
+Pressure and a forged worker completion flag cannot delete its target; smaller
+independent work remains admissible. After releasing the build script, Cargo
+completion is only advisory: collection waits for the exact Wrix runtime
+teardown and durable retirement, then removes only generated output. Source and
+integration sentinels survive.
 
-Executed successfully on the Linux host with Podman 5.8.9, the pinned Wrix host
-launcher `0ndszzhsliqajrybivc4ld200dn1wi1y-wrix`, and Rust Pi profile
-`wi00q4j7x8dxdxsks7z6dj37xsi46rxs-wrix-rust-pi-profile-config.json`. The
-selected image is `localhost/wrix-rust-pi:de1a24f5`, digest
-`sha256:33dfac329eda022ba449eabf86c121bae7e50d45fc6d8ce176469082af5e2053`. Both
-launches passed. Retained runtime inspection, backend reports, launch configs
-and logs are under `/tmp/.tmpEQ2qZd` on that host.
-
-This establishes that selected Linux Rust profile's mount/backend substrate. It
-does not establish newer Wrix shared-compiler-service routing, Darwin/APFS
-physical sharing, process lifetime reconciliation, completed-output collection,
-or bounded runtime growth. Those are separate acceptance boundaries.
+The owning system binding invokes this ignored test explicitly. Default-suite
+skips never establish runtime proof. These are selected Linux profile results,
+not Darwin/APFS sharing, arbitrary delegated compiler-service lifetime proof, or
+a runtime disk quota. Native host cgroup conformance is separate:
+`bash scripts/verify-native-cargo-lifetime`.

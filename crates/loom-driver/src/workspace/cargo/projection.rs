@@ -119,6 +119,8 @@ while [[ ! -e /workspace/release ]]; do sleep 0.1; done
             "initial_prompt": "fixture", "agent_args": ["--extension", "/workspace/probe.ts", "--mode", "rpc"],
             "repin": {"orientation":"fixture", "pinned_context":"fixture", "partial_bodies":[]}
         })).unwrap();
+        spawn.profile_config = Some(profile.clone());
+        spawn.wrix_launcher = Some(launcher.clone());
         spawn.env.extend(admitted.container_sccache_env());
         spawn
             .env
@@ -161,6 +163,7 @@ while [[ ! -e /workspace/release ]]; do sleep 0.1; done
         }
         let mut child = Launch(
             command
+                .envs(spawn.launcher_env.iter().cloned())
                 .arg("--profile-config")
                 .arg(&profile)
                 .args(["spawn", "--spawn-config"])
@@ -273,4 +276,166 @@ while [[ ! -e /workspace/release ]]; do sleep 0.1; done
             "runtime completion must not authorize disposal"
         );
     }
+    surviving_cargo(&retained, &association, &worker, &profile, &launcher, &auth);
+}
+
+fn surviving_cargo(
+    retained: &Path,
+    association: &Association,
+    worker: &Path,
+    profile: &Path,
+    launcher: &Path,
+    auth: &Path,
+) {
+    fs::create_dir_all(worker.join("src")).unwrap();
+    fs::write(worker.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(worker.join("build.rs"), r#"fn main() {
+        std::fs::write("cargo-ready", "ready").unwrap();
+        while !std::path::Path::new("cargo-release").exists() { std::thread::sleep(std::time::Duration::from_millis(20)); }
+    }"#).unwrap();
+    fs::write(
+        worker.join("probe.sh"),
+        "set -euo pipefail\ncargo build --offline\nprintf completed > /workspace/cargo-finished\n",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(profile).unwrap()).unwrap();
+    assert_eq!(value["features"]["execution_tickets"], true);
+    let policy = retention::Policy::default();
+    let namespace = prepare(
+        association,
+        worker,
+        profile,
+        CargoTargetReuse::Off,
+        policy.default_request(),
+        &MockClock::new(),
+    )
+    .unwrap();
+    let target = namespace.target();
+    let mut spawn: SpawnConfig = serde_json::from_value(serde_json::json!({
+        "image_ref":value["image"]["ref"], "workspace":worker, "env":[], "initial_prompt":"fixture",
+        "agent_args":["--extension", "/workspace/probe.ts", "--mode", "rpc"],
+        "repin":{"orientation":"fixture", "pinned_context":"fixture", "partial_bodies":[]}
+    }))
+    .unwrap();
+    spawn.profile_config = Some(profile.into());
+    spawn.wrix_launcher = Some(launcher.into());
+    spawn.env.extend(
+        shared_cache_config(&LoomTopConfig::default(), worker)
+            .unwrap()
+            .container_sccache_env(),
+    );
+    namespace.configure(&mut spawn).unwrap();
+    assert!(
+        spawn
+            .launcher_env
+            .iter()
+            .any(|(key, _)| key == "WRIX_EXECUTION_TICKET")
+    );
+    association
+        .validate_worker(worker, &spawn.mounts, Some(profile))
+        .unwrap();
+    let spawn_path = retained.join("spawn-surviving-cargo.json");
+    fs::write(
+        &spawn_path,
+        serde_json::to_vec_pretty(&spawn.to_wrix_json().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let log = File::create(retained.join("surviving-cargo.log")).unwrap();
+    let mut command = Command::new(launcher);
+    for name in value["security"]["runtime_secrets"]
+        .as_object()
+        .unwrap()
+        .keys()
+    {
+        command.env_remove(name);
+    }
+    for name in [
+        "CONTAINER_HOST",
+        "CONTAINER_CONNECTION",
+        "DOCKER_HOST",
+        "WRIX_DEPLOY_KEY",
+        "WRIX_SIGNING_KEY",
+        "WRIX_UNSAFE_PODMAN_SOCKET",
+    ] {
+        command.env_remove(name);
+    }
+    let mut child = Launch(
+        command
+            .arg("--profile-config")
+            .arg(profile)
+            .args(["spawn", "--spawn-config"])
+            .arg(&spawn_path)
+            .arg("--stdio")
+            .envs(spawn.launcher_env.iter().cloned())
+            .env("WRIX_PI_AUTH_FILE", auth)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .unwrap(),
+        worker.join("cargo-release"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(600);
+    while !worker.join("cargo-ready").exists() {
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "Cargo launch failed; see {}",
+            retained.display()
+        );
+        assert!(Instant::now() < deadline, "Cargo readiness timed out");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    drop(namespace);
+    fs::write(worker.join(".worker-completed"), "forged completion").unwrap();
+    let pressure = retention::Policy {
+        max_bytes: retention::Bytes::default(),
+        max_age_secs: 0,
+        ..policy
+    };
+    let report = retention::sweep(association, &pressure, &MockClock::new()).unwrap();
+    assert!(
+        target.exists(),
+        "live container/compiler must survive launcher death and free leases"
+    );
+    assert!(report.charged.get() > 0);
+    let independent = retention::Policy {
+        max_bytes: retention::Bytes::new(
+            report.charged.get().checked_add(2 * 1024 * 1024).unwrap(),
+        ),
+        reservation_bytes: retention::Bytes::new(128 * 1024),
+        ..pressure.clone()
+    };
+    let smaller = prepare(
+        association,
+        worker,
+        profile,
+        CargoTargetReuse::Off,
+        independent.default_request(),
+        &MockClock::new(),
+    )
+    .unwrap();
+    assert_ne!(smaller.target(), target);
+    drop(smaller);
+    fs::write(worker.join("cargo-release"), "release").unwrap();
+    while !worker.join("cargo-finished").exists() {
+        assert!(Instant::now() < deadline, "surviving Cargo did not finish");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    while target.exists() {
+        retention::sweep(association, &pressure, &MockClock::new()).unwrap();
+        assert!(
+            Instant::now() < deadline,
+            "exact teardown reconciliation did not retire Cargo target"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(worker.join("Cargo.toml").exists());
+    assert!(association.integration().exists());
+    assert!(
+        !fs::read_to_string(spawn_path)
+            .unwrap()
+            .contains("WRIX_EXECUTION_TICKET")
+    );
 }

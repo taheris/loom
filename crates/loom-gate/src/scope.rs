@@ -213,7 +213,7 @@ fn run_cargo_metadata(manifest_path: &Path) -> Result<Vec<u8>, ScopeError> {
         .arg(manifest_path);
     let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let output = loom_driver::workspace::cargo::verifier_command(&mut command, root)
-        .and_then(|()| command.output())
+        .and_then(|_execution| command.output())
         .map_err(|source| ScopeError::SpawnCargo {
             manifest: manifest_path.to_path_buf(),
             source,

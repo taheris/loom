@@ -7,7 +7,7 @@ use super::{
 };
 
 impl Fence<'_> {
-    pub(super) fn collect(
+    pub(in crate::workspace::cargo) fn collect(
         &self,
         policy: &Policy,
         reservation: Bytes,
@@ -57,7 +57,7 @@ impl Fence<'_> {
         Ok(report)
     }
 
-    pub(super) fn stored_directory(
+    pub(in crate::workspace::cargo) fn stored_directory(
         &self,
         key: &str,
         record: &Record,
@@ -87,31 +87,57 @@ impl Fence<'_> {
     }
 
     fn remove(&self, key: &str, record: &mut Record) -> Result<Outcome, Error> {
-        if record.version != 2
-            || record.lifetime != Lifetime::Prepared
+        if !matches!(record.version, 2 | 3)
+            || (record.version == 2 && record.lifetime != Lifetime::Prepared)
+            || record.lifetime == Lifetime::Unreconciled
             || record.created.is_none()
             || !record.holds.is_empty()
         {
             tracing::warn!(namespace = %key, "Cargo generation has a hold or unreconciled execution lifetime; retained");
             return Ok(Outcome::Retained);
         }
+        let stored = self.stored_directory(key, record)?;
         match Directory::open(&record.source) {
             Ok(source) if Identity::from_stat(&source.stat()?) == record.source_identity => {}
             Ok(_) => {
                 tracing::warn!(namespace = %key, "Cargo source ownership changed; retaining generation");
                 return Ok(Outcome::Retained);
             }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && record.version == 3 => {
+                let safe = if let Some((_, directory)) = &stored {
+                    match super::super::lifetime::source_absent_safe(directory, record) {
+                        Ok(safe) => safe,
+                        Err(error) => {
+                            tracing::warn!(?error, namespace = %key, "missing-source protection is unavailable");
+                            false
+                        }
+                    }
+                } else {
+                    record.placement == Placement::Removing
+                };
+                if !safe {
+                    return Ok(Outcome::Retained);
+                }
+            }
             Err(error) => {
                 tracing::warn!(?error, namespace = %key, "Cargo source ownership is unavailable; retaining generation");
                 return Ok(Outcome::Retained);
             }
         }
-        let Some((mut path, directory)) = self.stored_directory(key, record)? else {
+        let Some((mut path, directory)) = stored else {
             self.recheck(key, record)?;
+            if record.version == 3 {
+                super::super::lifetime::removed(record, false)?;
+            }
             self.database.remove_record(RecordKind::CargoTarget, key)?;
+            if record.version == 3 {
+                super::super::lifetime::removed(record, true)?;
+            }
             return Ok(Outcome::Collected);
         };
-        if super::projected(&directory)? {
+        if record.version == 2
+            && (super::projected(&directory)? || super::super::lifetime::journal_exists(record)?)
+        {
             tracing::warn!(namespace = %key, "Cargo projection tombstone exists; retaining generation");
             return Ok(Outcome::Retained);
         }
@@ -125,6 +151,16 @@ impl Fence<'_> {
         };
         require_target(&directory, record)?;
         self.recheck(key, record)?;
+        if record.version == 3 {
+            match super::super::lifetime::retire(&directory, record) {
+                Ok(true) => super::super::lifetime::preserve(&directory, record)?,
+                Ok(false) => return Ok(Outcome::Retained),
+                Err(error) => {
+                    tracing::warn!(?error, namespace = %key, "Cargo lifetime observation unavailable or conflicting; retained");
+                    return Ok(Outcome::Retained);
+                }
+            }
+        }
         let parent = Directory::open(path.parent().ok_or(Error::Association {
             reason: "generated Cargo quarantine has no parent",
         })?)?;
@@ -163,7 +199,10 @@ impl Fence<'_> {
         #[cfg(test)]
         super::tests::cases::checkpoint(super::tests::cases::Checkpoint::Unlinked)?;
         self.database.remove_record(RecordKind::CargoTarget, key)?;
-        tracing::info!(namespace = %key, "collected abandoned, never-dispatched generated Cargo output");
+        if record.version == 3 {
+            super::super::lifetime::removed(record, true)?;
+        }
+        tracing::info!(namespace = %key, "collected owned generated Cargo output after fenced lifetime reconciliation");
         Ok(Outcome::Collected)
     }
 

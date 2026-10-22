@@ -41,7 +41,8 @@ mod cases {
         let association = Association::resolve(Path::new(&operator)).unwrap();
         let worker = association.operator().join(".loom/beads/lm-cargo");
         let profile = PathBuf::from(std::env::var_os("LOOM_RETENTION_TEST_PROFILE").unwrap());
-        let (target, _namespace) =
+        let managed = std::env::var_os("LOOM_RETENTION_TEST_MANAGED").is_some();
+        let (initial_target, _namespace) =
             if let Some(output) = std::env::var_os("LOOM_RETENTION_TEST_NATIVE") {
                 (
                     crate::workspace::cargo::trusted::prepare(
@@ -57,36 +58,89 @@ mod cases {
                 namespace.configure(&mut spawn(&worker)).unwrap();
                 (namespace.target(), Some(namespace))
             };
-        fs::write(signals.join("target"), target.to_str().unwrap()).unwrap();
-        let status = Command::new("sh")
+        let mut command = Command::new("sh");
+        command
             .args(["-c", "cargo build --offline; code=$?; printf '%s\\n' \"$code\" > \"$LOOM_RETENTION_TEST_SIGNALS/cargo-done\"; exit \"$code\""])
             .current_dir(&worker)
-            .env("CARGO_TARGET_DIR", &target)
-            .env("CARGO_BUILD_TARGET_DIR", &target)
-            .env("CARGO_BUILD_BUILD_DIR", &target)
+            .env("CARGO_TARGET_DIR", &initial_target)
+            .env("CARGO_BUILD_TARGET_DIR", &initial_target)
+            .env("CARGO_BUILD_BUILD_DIR", &initial_target)
             .env("CARGO_BUILD_JOBS", "1")
             .env("RUSTC_WRAPPER", "")
             .env("CARGO_BUILD_RUSTC_WRAPPER", "")
             .env("RUSTC_WORKSPACE_WRAPPER", "")
             .env("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER", "")
-            .env("SCCACHE_DISABLE", "1")
-            .status().unwrap();
-        assert!(status.success());
+            .env("SCCACHE_DISABLE", "1");
+        let _execution = if managed {
+            Some(
+                crate::workspace::cargo::trusted_command_at(
+                    &mut command,
+                    &worker,
+                    Path::new(&std::env::var_os("LOOM_RETENTION_TEST_NATIVE").unwrap()),
+                )
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        let target = command
+            .get_envs()
+            .find(|(name, _)| *name == "CARGO_TARGET_DIR")
+            .unwrap()
+            .1
+            .unwrap();
+        fs::write(signals.join("target"), target.to_str().unwrap()).unwrap();
+        assert!(command.status().unwrap().success());
     }
 
     #[tokio::test]
     async fn cargo_retention_restart_preserves_surviving_processes() {
-        surviving_processes(false).await;
+        surviving_processes(false, false).await;
     }
 
     #[tokio::test]
     async fn trusted_cargo_retention_restart_preserves_surviving_processes() {
-        surviving_processes(true).await;
+        surviving_processes(true, false).await;
     }
 
-    async fn surviving_processes(native: bool) {
+    #[tokio::test]
+    #[ignore = "requires actual Linux delegated cgroup2 and pinned native entry helpers"]
+    async fn native_cargo_retention_restart_reconciles_owned_process_generations() {
+        if std::env::var_os("LOOM_RETENTION_TEST_MANAGED_PARENT").is_none() {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", "workspace::cargo::retention::process::cases::native_cargo_retention_restart_reconciles_owned_process_generations", "--ignored", "--nocapture"])
+                .env("LOOM_RETENTION_TEST_MANAGED_PARENT", "1");
+            for (key, _) in
+                std::env::vars_os().filter(|(key, _)| key.as_encoded_bytes().starts_with(b"LD_"))
+            {
+                command.env_remove(key);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert!(
+            crate::workspace::cargo::lifetime::native_root()
+                .unwrap()
+                .is_some()
+        );
+        surviving_processes(true, true).await;
+    }
+
+    async fn surviving_processes(native: bool, managed: bool) {
         use rustix::process::{Pid, test_kill_process};
-        let (root, association, worker, profile) = fixture();
+        let (mut root, association, worker, profile) = fixture();
+        if managed {
+            root.disable_cleanup(true);
+            eprintln!(
+                "retained native lifecycle fixture: {}",
+                root.path().display()
+            );
+        }
         let native_output = root.path().join("trusted-cargo");
         if native {
             let fence = Fence::trusted(&native_output).unwrap();
@@ -127,6 +181,9 @@ fn main() {
         if native {
             command.env("LOOM_RETENTION_TEST_NATIVE", &native_output);
         }
+        if managed {
+            command.env("LOOM_RETENTION_TEST_MANAGED", "1");
+        }
         let mut launcher = command
             .args([
                 "--exact",
@@ -153,7 +210,14 @@ fn main() {
             .unwrap()
             .read_private_file(Path::new("lease"))
             .unwrap();
-        lease.try_lock().unwrap();
+        if managed {
+            assert!(matches!(
+                lease.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+        } else {
+            lease.try_lock().unwrap();
+        }
         drop(lease);
         let restarted = Association::resolve(association.operator()).unwrap();
         let pressure = Policy {
@@ -214,11 +278,25 @@ fn main() {
                 .trim(),
             "0"
         );
-        sweep_pool();
-        assert!(
-            target.join("live-build-output").exists(),
-            "completion without runtime reconciliation is still unknown"
-        );
-        assert!(target.join("debug/fixture").is_file());
+        if managed {
+            SystemClock::new()
+                .timeout(Duration::from_secs(120), async {
+                    while target.exists() {
+                        sweep_pool();
+                        SystemClock::new().sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap();
+            assert!(!target.exists());
+            assert!(worker.join("Cargo.toml").exists());
+        } else {
+            sweep_pool();
+            assert!(
+                target.join("live-build-output").exists(),
+                "completion without runtime reconciliation is still unknown"
+            );
+            assert!(target.join("debug/fixture").is_file());
+        }
     }
 }

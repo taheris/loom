@@ -1725,9 +1725,7 @@ fn run_project_hook_lane(workspace: &Path, args: &GateScope) -> anyhow::Result<i
         return Ok(78);
     };
     let mut command = std::process::Command::new(hook_runner);
-    if std::env::var_os(loom_driver::agent::LOOM_INSIDE_ENV).is_none() {
-        loom_driver::workspace::cargo::trusted_command(&mut command, workspace)?;
-    }
+    let _execution = loom_driver::workspace::cargo::verifier_command(&mut command, workspace)?;
     let status = match command
         .current_dir(workspace)
         .env_remove("PREK_QUIET")

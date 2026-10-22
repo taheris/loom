@@ -239,7 +239,8 @@ pub(super) mod cases {
             .env("SCCACHE_REDIS", "redis://untrusted")
             .env("RUSTC_WRAPPER", "/worker/wrapper")
             .env("CARGO_TARGET_DIR", namespace.target());
-        trusted_command_at(&mut command, association.operator(), &output_root).unwrap();
+        let _execution =
+            trusted_command_at(&mut command, association.operator(), &output_root).unwrap();
         let environment: std::collections::BTreeMap<_, _> = command.get_envs().collect();
         for key in ["SCCACHE_DIR", "SCCACHE_SERVER_UDS", "SCCACHE_REDIS"] {
             assert_eq!(environment.get(std::ffi::OsStr::new(key)), Some(&None));
@@ -355,7 +356,8 @@ pub(super) mod cases {
                 .env("CARGO_HOME", root.path().join("cargo-home"))
                 .env("CARGO_BUILD_JOBS", "1")
                 .env("CARGO_TARGET_DIR", namespace.target());
-            trusted_command_at(&mut command, source, &root.path().join("trusted-cargo"))?;
+            let _execution =
+                trusted_command_at(&mut command, source, &root.path().join("trusted-cargo"))?;
             if let Some(target) = owned {
                 for key in [
                     "CARGO_TARGET_DIR",

@@ -13,7 +13,8 @@ if [[ -n "$config" && -n "${2:-}" ]]; then
     fi
 fi
 if [[ -n "$config" ]]; then
-    if ! grep -q '^LOOM_PREK_BIN = ' "$config" || ! grep -q '^LOOM_ISSUES_BD_BIN = ' "$config"; then
+    if ! grep -q '^LOOM_PREK_BIN = ' "$config" || ! grep -q '^LOOM_ISSUES_BD_BIN = ' "$config" ||
+      { [[ "$(uname -s)" == Linux ]] && { ! grep -q '^LOOM_NATIVE_FLOCK_BIN = ' "$config" || ! grep -q '^LOOM_NATIVE_STAT_BIN = ' "$config"; }; }; then
         config=""
     fi
 fi
