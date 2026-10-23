@@ -83,7 +83,7 @@ repos:
 
       # FIXME: Restore pre-push after the required suite is stabilized.
       - id: full-test-suite
-        name: nix run .#test-required (full nextest and system coverage)
+        name: nix run .#test-required (full native coverage)
         entry: bin/pre-push-checks --hook-id full-test-suite --hook-entry 'skip-if-missing nix -- nix run .#test-required' -- skip-if-missing nix -- nix run .#test-required
         language: system
         stages: [manual]

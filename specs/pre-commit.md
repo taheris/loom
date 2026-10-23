@@ -154,10 +154,10 @@ host's warm cache.
 Bead-workspace placement and canonical hook-path creation/repair are owned by
 [Workspaces — Bead Dispatch](workspaces.md#bead-dispatch). This spec consumes
 that workspace guarantee: an agent's ordinary `git commit` traverses the same
-configured pre-commit policy as a host commit. The shared `test-sandbox`
-verifier consumes the
-[tests-owned packaged-agent health policy](tests.md#assembled-system-checks);
-the hook-chain checks do not drive an agent conversation. Workers do not push.
+configured pre-commit policy as a host commit. Focused tests execute Loom's
+actual project configuration through prek with isolated repositories and
+external command fixtures. Wrix owns installing and executing its hook shim
+inside an image; Loom does not retest that implementation. Workers do not push.
 Final in-session feedback follows the contract in
 [Loop — Loop completion self-check and self-review](loop.md#loop-completion-self-check-and-self-review).
 
@@ -371,7 +371,7 @@ neither bypassed nor replaced by the pending modifier.
 
 <!-- prettier-ignore -->
 - Nix workspace staging includes the repo-local marker-policy wrapper
-  [check](grep -q '"bin/pre-push-checks"' nix/workspace.nix)
+  [check](nix build .#verification-source-integrity)
 
 ### Documentation feedback and fail-fast
 
@@ -413,20 +413,18 @@ neither bypassed nor replaced by the pending modifier.
   [system?](nix run .#test-quint -- cost-evidence)
 
 <!-- prettier-ignore -->
-- `loom gate check` is exposed as a flake-check derivation distinct from the
-  targeted pre-push hooks [check](cargo run -p loom-walk -- loom_gate_check_derivation_exists)
+- The fast flake tier runs the registered Loom source walks directly, without
+  recursively invoking Gate or the targeted pre-push hooks [check](nix build .#verification-walks)
 
 ### Agent self-verify
 
-<!-- prettier-ignore -->
-- The production Rust sandbox image, canonical Wrix hook installation, real
-  project config, and prek chain jointly cause an ordinary agent-style commit to
-  run the configured pre-commit checks [system](nix run .#test-sandbox)
+- The actual project pre-commit configuration passes its complete staged file
+  set to Gate in one invocation.
+  [test](pre_commit_gate_receives_complete_file_set_in_one_invocation)
 
-<!-- prettier-ignore -->
-- The same sandbox executes Nix-dependent pre-push entries in its private store
-  alongside the non-Nix gate entry
-  [system](nix run .#test-sandbox)
+- The actual project pre-push chain stops after a failed verifier rather than
+  launching later commands.
+  [test](pre_push_stage_stops_after_failed_flake_check)
 
 ### Marker integration
 
@@ -471,12 +469,12 @@ consumption.
 - The `pre-push-checks` wrapper exits 0 without execing its argument command
   only when marker validation proves matching tree/config/range and hook
   coverage for the wrapped hook id/entry
-  [test](pre_push_checks_short_circuits_only_on_covered_marker)
+  [test](loom::marker_cli::pre_push_checks_short_circuits_only_on_covered_marker)
 
 - The `pre-push-checks` wrapper execs its argument command when marker
   validation fails because the marker is stale, dirty, config/range- mismatched,
   missing gate-log evidence, or does not cover the wrapped hook
-  [test](pre_push_checks_falls_through_on_uncovered_or_invalid_marker)
+  [test](loom::marker_cli::pre_push_checks_falls_through_on_uncovered_or_invalid_marker)
 
 - The `pre-push-checks` wrapper execs its argument command (does not fail the
   push) when the marker file is absent, so operator-manual pushes from a clone

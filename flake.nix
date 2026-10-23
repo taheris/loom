@@ -28,23 +28,37 @@
 
   outputs =
     inputs@{ flake-parts, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [
-        inputs.treefmt-nix.flakeModule
-        ./nix/flake/lib.nix
-        ./nix/flake/packages.nix
-        ./nix/flake/checks.nix
-        ./nix/flake/devshell.nix
-        ./nix/flake/formatter.nix
-        ./nix/flake/tests.nix
-        ./nix/flake/apps.nix
-        ./nix/flake/quint.nix
-      ];
+    let
+      # Preserve each native definition while binding the complete shared evaluator
+      # context once at the namespace composition boundary, never as runtime access.
+      nativeOutputs = builtins.mapAttrs (
+        _system: builtins.mapAttrs (_name: import ./nix/native-package.nix)
+      );
+      flake = flake-parts.lib.mkFlake { inherit inputs; } {
+        imports = [
+          inputs.treefmt-nix.flakeModule
+          ./nix/flake/lib.nix
+          ./nix/flake/packages.nix
+          ./nix/flake/checks.nix
+          ./nix/flake/devshell.nix
+          ./nix/flake/formatter.nix
+          ./nix/flake/tests.nix
+          ./nix/flake/apps.nix
+          ./nix/flake/quint.nix
+          ./nix/flake/system-verification.nix
+          ./nix/flake/cargo-retention.nix
+        ];
 
-      systems = [
-        "aarch64-darwin"
-        "aarch64-linux"
-        "x86_64-linux"
-      ];
+        systems = [
+          "aarch64-darwin"
+          "aarch64-linux"
+          "x86_64-linux"
+        ];
+      };
+    in
+    flake
+    // {
+      checks = nativeOutputs flake.checks;
+      packages = nativeOutputs flake.packages;
     };
 }

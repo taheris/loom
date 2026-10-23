@@ -573,9 +573,7 @@ mod tests {
         let f = Fixture::new().await;
         let interrupted = Arc::new(AtomicBool::new(false));
         let bd = BdClient::with_runner(LostAcknowledgement {
-            native: IsolatedBeads {
-                root: f.directory.path().to_path_buf(),
-            },
+            native: IsolatedBeads::attach(f.directory.path()),
             interrupted: interrupted.clone(),
         });
         let root_before = f.bd.show(&f.root).await.unwrap();

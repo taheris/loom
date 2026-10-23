@@ -28,30 +28,6 @@ case "$1" in
     bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "r#loop::worker::" --nocapture
     exec bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "mint::acceptance::dispatch_tests::" --nocapture
     ;;
-  workspace-safety-history)
-    : "${LOOM_WORKSPACE_SAFETY_BIN:?missing provisioned workspace acceptance runner}"
-    if ! command -v podman >/dev/null || ! podman info >/dev/null; then
-      printf 'test-quint: skipped workspace-safety-history; container runtime unavailable\n' >&2
-      exit 77
-    fi
-    output=$(mktemp)
-    trap 'rm -f "$output"' EXIT
-    status=0
-    timeout --kill-after=5s 300s "$LOOM_WORKSPACE_SAFETY_BIN" >"$output" 2>&1 || status=$?
-    if [[ "$status" -ne 0 ]]; then
-      cat "$output" >&2
-      printf 'test-quint: failed workspace isolation (exit %s)\n' "$status" >&2
-      exit "$status"
-    fi
-    receipt=$(tail -n 1 "$output")
-    if ! jq -e '.scenario == "workspace-safety-history" and .protected_surfaces == 5 and .denied_mutations == 20 and .feedback_runs == 2 and .assurance == "workspace isolation only; safety-fact admission remains Evidence-owned"' <<<"$receipt" >/dev/null; then
-      cat "$output" >&2
-      printf 'test-quint: missing or incomplete workspace isolation receipt\n' >&2
-      exit 1
-    fi
-    printf '%s\n' "$receipt"
-    exit 0
-    ;;
   provisioning-and-batching)
     campaigns=(routine bridge-replay)
     ;;

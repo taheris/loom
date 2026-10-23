@@ -146,11 +146,15 @@ using a database or subprocess does not itself make a test host-only.
   and exercise real state/graph operations with isolated deterministic state.
   [test](lightweight_tracking_fixtures_need_no_native_database)
 
-- Shared conformance runs against both lightweight and isolated pinned-Beads
-  backends, including targeted metadata preservation, graph/readiness rules,
-  stale writes, interrupted operations and uncertain outcomes. Backend-specific
-  differences remain explicit rather than silently strengthened by the fake.
-  [test](tracking_conformance_covers_lightweight_and_pinned_beads)
+- Shared conformance covers lightweight tracking metadata preservation,
+  graph/readiness rules, stale writes, interrupted operations and uncertain
+  outcomes. Backend-specific differences remain explicit rather than silently
+  strengthened by the fake.
+  [test](loom-issues::memory::tracking_conformance_covers_lightweight_and_pinned_beads)
+
+- The same conformance obligations run against isolated pinned Beads, without
+  treating lightweight results as evidence of native interoperability.
+  [test](loom-issues::native::native::tracking_conformance_covers_lightweight_and_pinned_beads)
 
 - Isolated Beads adapter and assembly tests exercise real argv/JSON, native
   graph guards, shared-state visibility and synchronization failures; they do

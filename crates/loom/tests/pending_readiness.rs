@@ -1,172 +1,191 @@
+//! Pending owners do not waive independent baselines, and readiness stays lane scoped.
+#![allow(
+    clippy::unwrap_used,
+    reason = "isolated native/hook fixture setup and assertions"
+)]
+
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use tempfile::TempDir;
+#[path = "common/reported.rs"]
+mod reported;
 
 struct Fixture {
-    root: TempDir,
-    tools: PathBuf,
+    check: reported::Fixture,
+    tools: tempfile::TempDir,
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "fixture setup failures must abort the test"
-)]
+fn copy(source: &Path, destination: &Path) {
+    std::fs::create_dir_all(destination).unwrap();
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        if entry.file_type().unwrap().is_dir() {
+            copy(&entry.path(), &destination.join(entry.file_name()));
+        } else {
+            std::fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+        }
+    }
+}
+
 impl Fixture {
     fn new() -> Self {
-        let root = tempfile::tempdir().expect("fixture root");
-        let tools = root.path().join("tools");
-        std::fs::create_dir(&tools).expect("tools directory");
-        std::fs::create_dir(root.path().join("specs")).expect("specs directory");
+        let check = reported::Fixture::new("check", "json-lines", &["check-probe"]);
+        check.policy("check", false);
+        check.record("check-probe", &format!("{}\n", json!({"target":"check-probe","pass":false,"evidence":"pending check not implemented"})), 1);
+        let system = reported::Fixture::new("system", "json-lines", &["system-probe"]);
+        system.record("system-probe", &format!("{}\n", json!({"target":"system-probe","pass":false,"evidence":"pending system not implemented"})), 1);
+        copy(system.path(), &check.path().join("system"));
+        std::fs::remove_file(check.path().join("system/loom.toml")).unwrap();
+        for relative in ["specs/fixture", "system/specs/fixture"] {
+            std::fs::remove_dir_all(check.path().join(relative)).unwrap();
+        }
         std::fs::write(
-            root.path().join("specs/readiness.md"),
-            "## Success Criteria\n\n\
-             - Existing check [check](true)\n\n\
-             <!-- prettier-ignore -->\n\
-             - Prospective check [check?](sh -c 'printf probed > check-probed; exit \"$PENDING_CHECK_EXIT\"')\n\n\
-             <!-- prettier-ignore -->\n\
-             - Prospective system [system?](nix run .#test-quint -- cache-model)\n",
+            check.path().join("docs/README.md"),
+            "- [Readiness](../specs/readiness.md)\n",
         )
-        .expect("write spec");
-        loom_test_support::write_executable_bash_script(
-            tools.join("nix"),
-            "set -euo pipefail\nif [[ \"$*\" == '--extra-experimental-features nix-command flakes build '* ]]; then\n  printf '%s/native-pins.toml\\n' \"$PWD\"\n  exit 0\nfi\nprintf '%s\\n' \"$*\" >> system-probed\nexit \"$PENDING_SYSTEM_EXIT\"\n",
+        .unwrap();
+        std::fs::write(
+            check.path().join("system/docs/README.md"),
+            "- [Readiness](../../specs/readiness.md)\n",
         )
-        .expect("recording Nix dependency");
-        Self { root, tools }
+        .unwrap();
+        let fixture = Self {
+            check,
+            tools: tempfile::tempdir().unwrap(),
+        };
+        std::fs::write(fixture.workspace().join("specs/readiness.md"), format!("## Success Criteria\n- Existing context [check](loom:project-context)\n- Prospective check [check?]({})\n- Prospective system [system?]({})\n", fixture.check.address("check-probe"), fixture.system_address())).unwrap();
+        fixture
     }
-
     fn workspace(&self) -> &Path {
-        self.root.path()
+        self.check.path()
     }
-
+    fn system_address(&self) -> String {
+        self.check
+            .address("system-probe")
+            .replacen(" .#", " ./system#", 1)
+    }
     fn command(&self, executable: &str) -> Command {
         let mut command = Command::new(executable);
-        let mut paths = vec![self.tools.clone()];
-        paths.extend(std::env::split_paths(
-            &std::env::var_os("PATH").expect("PATH"),
-        ));
+        let paths = std::iter::once(self.tools.path().to_path_buf())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap()))
+            .collect::<Vec<PathBuf>>();
         loom_test_support::scrub_git_local_env(&mut command);
         loom_test_support::configure_hermetic_git(&mut command);
         command
             .current_dir(self.workspace())
-            .env("PATH", std::env::join_paths(paths).expect("fixture PATH"))
-            .env("PREK_HOME", self.workspace().join("prek-cache"))
+            .env("PATH", std::env::join_paths(paths).unwrap())
+            .env("PREK_HOME", self.tools.path().join("prek-cache"))
             .env_remove("LOOM_INSIDE")
-            .env_remove("LOOM_PARENT_DIFF_GATE")
-            .env("PENDING_CHECK_EXIT", "1")
-            .env("PENDING_SYSTEM_EXIT", "1");
+            .env_remove("LOOM_PARENT_DIFF_GATE");
         command
     }
-
-    fn gate(&self, args: &[&str], system_exit: &str) -> Output {
-        self.command(env!("CARGO_BIN_EXE_loom"))
-            .arg("gate")
-            .args(args)
-            .env("PENDING_SYSTEM_EXIT", system_exit)
-            .output()
-            .expect("run real gate")
+    fn gate(&self, args: &[&str], system_pass: bool) -> Output {
+        let value = json!({"target":"system-probe","pass":system_pass,"evidence":"actual requested system predicate"});
+        std::fs::write(
+            self.workspace().join("system/records/system-probe.output"),
+            format!("{value}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            self.workspace().join("system/records/system-probe.status"),
+            if system_pass { "0" } else { "1" },
+        )
+        .unwrap();
+        if args == ["check", "--tree"] {
+            self.check
+                .run(Path::new(env!("CARGO_BIN_EXE_loom")), "check", false)
+        } else {
+            self.command(env!("CARGO_BIN_EXE_loom"))
+                .arg("gate")
+                .args(args)
+                .output()
+                .unwrap()
+        }
     }
-
-    fn git(&self, args: &[&str]) {
-        assert_success(&self.command("git").args(args).output().expect("git"));
-    }
-
     fn prepare_commit(&self) {
-        self.git(&["init", "-q", "-b", "main"]);
-        self.git(&["config", "user.name", "Readiness Test"]);
-        self.git(&["config", "user.email", "readiness@example.invalid"]);
-        self.git(&["config", "commit.gpgsign", "false"]);
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        std::fs::write(self.workspace().join("flake.nix"), "{ }\n")
-            .expect("formatter workspace anchor");
-        // Readiness behavior remains testable while the automatic Gate hook
-        // is temporarily manual-only in the repository's default policy.
-        let config = std::fs::read_to_string(source.join(".pre-commit-config.yaml"))
-            .expect("canonical hook configuration");
+        let configuration = format!(
+            "repos:\n  - repo: local\n    hooks:\n      - id: checked-readiness\n        name: Native check readiness\n        entry: {} gate check --tree\n        language: system\n        pass_filenames: false\n        always_run: true\n",
+            env!("CARGO_BIN_EXE_loom")
+        );
         std::fs::write(
             self.workspace().join(".pre-commit-config.yaml"),
-            config.replacen("stages: [manual]", "stages: [pre-commit]", 1),
+            configuration,
         )
-        .expect("explicitly enable Gate for readiness tests");
-        std::fs::create_dir(self.workspace().join("scripts")).expect("scripts directory");
-        std::fs::write(self.workspace().join("native-pins.toml"), "paths = []\n")
-            .expect("native bootstrap transport result");
-        std::fs::copy(
-            source.join("scripts/configure-cargo-patches.sh"),
-            self.workspace().join("scripts/configure-cargo-patches.sh"),
-        )
-        .expect("native Cargo initializer");
-        std::fs::copy(
-            source.join("scripts/check-shell-reexec"),
-            self.workspace().join("scripts/check-shell-reexec"),
-        )
-        .expect("shell check");
-        loom_test_support::write_executable_bash_script(
-            self.tools.join("loom"),
-            &format!(
-                "set -euo pipefail\nexec '{}' \"$@\"\n",
-                env!("CARGO_BIN_EXE_loom")
-            ),
-        )
-        .expect("real Loom entrypoint");
-        loom_test_support::write_executable_bash_script(
-            self.workspace().join(".git/hooks/pre-commit"),
-            "set -euo pipefail\nexec prek hook-impl --hook-type=pre-commit --hook-dir .git/hooks --script-version 4 -- \"$@\"\n",
-        )
-        .expect("Git to real prek bridge");
-        self.git(&["add", "specs/readiness.md"]);
+        .unwrap();
+        let prek = std::env::var("LOOM_PREK_BIN").unwrap();
+        loom_test_support::write_executable_bash_script(self.workspace().join(".git/hooks/pre-commit"), &format!("set -euo pipefail\nexec '{prek}' hook-impl --hook-type=pre-commit --hook-dir .git/hooks --script-version 4 -- \"$@\"\n")).unwrap();
+        for args in [
+            vec!["config", "user.name", "Readiness Test"],
+            vec!["config", "user.email", "readiness@fixture.invalid"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["add", "--all"],
+        ] {
+            assert!(self.command("git").args(args).status().unwrap().success());
+        }
     }
 }
 
-fn assert_success(output: &Output) {
-    assert!(
-        output.status.success(),
-        "{}\nstdout={}\nstderr={}",
-        output.status,
+fn feedback(output: &Output) -> String {
+    format!(
+        "{}{}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+fn system_was_run(fixture: &Fixture, output: &Output) -> bool {
+    feedback(output).contains(&format!("loom gate [{}]:", fixture.system_address()))
 }
 
 #[test]
 fn finite_verify_does_not_execute_system_readiness_outside_requested_lanes() {
     let fixture = Fixture::new();
-    assert_success(&fixture.gate(&["verify", "--files", "specs/readiness.md"], "1"));
-    assert!(fixture.workspace().join("check-probed").is_file());
-    assert!(!fixture.workspace().join("system-probed").exists());
+    let output = fixture.gate(&["verify", "--files", "records/check-probe.output"], false);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "required failing baseline cannot be waived by a pending owner: {}",
+        feedback(&output)
+    );
+    assert!(feedback(&output).contains("pending check not implemented"));
+    assert!(!system_was_run(&fixture, &output));
 }
 
 #[test]
 fn check_tree_does_not_execute_system_readiness() {
     let fixture = Fixture::new();
-    assert_success(&fixture.gate(&["check", "--tree"], "1"));
-    assert!(fixture.workspace().join("check-probed").is_file());
-    assert!(!fixture.workspace().join("system-probed").exists());
+    let output = fixture.gate(&["check", "--tree"], false);
+    assert_eq!(output.status.code(), Some(1), "{}", feedback(&output));
+    assert!(feedback(&output).contains("pending check not implemented"));
+    assert!(!system_was_run(&fixture, &output));
 }
 
 #[test]
 fn tree_verify_executes_requested_system_readiness() {
     let fixture = Fixture::new();
-    assert_success(&fixture.gate(&["verify", "--tree"], "1"));
+    let output = fixture.gate(&["verify", "--tree"], false);
     assert_eq!(
-        std::fs::read_to_string(fixture.workspace().join("system-probed")).expect("system probe"),
-        "run .#test-quint -- cache-model\n",
+        output.status.code(),
+        Some(1),
+        "pending does not waive failed native coverage"
     );
+    assert!(system_was_run(&fixture, &output), "{}", feedback(&output));
 }
 
 #[test]
 fn successful_requested_system_probe_still_flags_stale_pending_marker() {
     let fixture = Fixture::new();
-    let output = fixture.gate(&["verify", "--tree"], "0");
+    let output = fixture.gate(&["verify", "--tree"], true);
     assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("drop the ? marker"), "{stderr}");
     assert!(
-        stderr.contains("nix run .#test-quint -- cache-model"),
-        "{stderr}"
+        feedback(&output).contains("unneeded pending marker"),
+        "{}",
+        feedback(&output)
     );
-    assert!(fixture.workspace().join("system-probed").is_file());
+    assert!(system_was_run(&fixture, &output));
 }
 
 #[test]
@@ -175,31 +194,43 @@ fn ordinary_commit_runs_hooks_without_provisioning_pending_system_checks() {
     fixture.prepare_commit();
     let output = fixture
         .command("git")
-        .args(["commit", "-m", "Exercise worker feedback"])
+        .args(["commit", "-m", "Exercise checked worker feedback"])
         .output()
-        .expect("ordinary commit");
-    assert_success(&output);
-    assert!(fixture.workspace().join("check-probed").is_file());
-    assert!(!fixture.workspace().join("system-probed").exists());
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "required baseline failure must still block commit"
+    );
+    assert!(
+        feedback(&output).contains("pending check not implemented"),
+        "{}",
+        feedback(&output)
+    );
+    assert!(!system_was_run(&fixture, &output));
 }
 
 #[test]
 fn ordinary_commit_still_blocks_on_successful_pending_check() {
     let fixture = Fixture::new();
+    fixture.check.record(
+        "check-probe",
+        &format!(
+            "{}\n",
+            json!({"target":"check-probe","pass":true,"evidence":"check implemented"})
+        ),
+        0,
+    );
     fixture.prepare_commit();
     let output = fixture
         .command("git")
-        .args(["commit", "-m", "Must reject stale pending check"])
-        .env("PENDING_CHECK_EXIT", "0")
+        .args(["commit", "-m", "Reject stale pending check"])
         .output()
-        .expect("ordinary commit");
+        .unwrap();
     assert!(!output.status.success());
-    let diagnostics = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    assert!(
+        feedback(&output).contains("unneeded pending marker"),
+        "{}",
+        feedback(&output)
     );
-    assert!(diagnostics.contains("drop the ? marker"), "{diagnostics}");
-    assert!(fixture.workspace().join("check-probed").is_file());
-    assert!(!fixture.workspace().join("system-probed").exists());
+    assert!(!system_was_run(&fixture, &output));
 }

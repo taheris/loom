@@ -1,105 +1,123 @@
-//! Real CLI coverage for shared system execution, reporting and cache fan-out.
+//! Shared native System execution retains every owner without diagnostic authority.
 #![expect(
     clippy::unwrap_used,
-    reason = "isolated integration fixtures must be constructed before exercising the CLI"
+    reason = "isolated integration setup fails closed"
 )]
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::process::Output;
 
 use loom_gate::{StatusCache, Verdict};
+use serde_json::{Value, json};
 
-fn fixture(matched: bool) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    fs::create_dir(dir.path().join("specs")).unwrap();
-    let target = if matched {
-        "system:shared"
-    } else {
-        "bash verifier.sh"
-    };
+#[path = "common/reported.rs"]
+mod reported;
+
+fn fixture(configured: bool) -> reported::Fixture {
+    let fixture = reported::Fixture::new("system", "json-lines", &["shared"]);
+    fs::remove_dir_all(fixture.path().join("specs/fixture")).unwrap();
+    let mut links = String::new();
     for (label, count) in [("a", 2), ("b", 1), ("c", 1)] {
         let mut body = format!("# {label}\n\n## Success Criteria\n\n");
         for index in 0..count {
-            write!(
+            writeln!(
                 body,
-                "- Owner {label}-{index} is verified\n  [system]({target})\n"
+                "- Owner {label}-{index} is verified\n  [system]({})",
+                fixture.address("shared")
             )
             .unwrap();
         }
-        fs::write(dir.path().join("specs").join(format!("{label}.md")), body).unwrap();
+        fs::write(fixture.path().join(format!("specs/{label}.md")), body).unwrap();
+        writeln!(links, "- [{label}](../specs/{label}.md)").unwrap();
     }
-    if matched {
-        fs::write(dir.path().join("loom.toml"), "[runner.system.shared]\nmatch = '^system:shared$'\ncommand = 'bash verifier.sh'\ntarget = 'shared'\nparse = 'json-lines'\n").unwrap();
+    fs::write(fixture.path().join("docs/README.md"), links).unwrap();
+    fixture.policy("system", false);
+    if configured {
+        fs::write(fixture.path().join("loom.toml"), "[runner.system.untrusted]\nmatch='^nix report .*::shared$'\ncommand='touch should-not-run'\ninputs='touch should-not-query'\nparse='json-lines'\n").unwrap();
     }
-    fs::write(dir.path().join("verifier.sh"), r#"set -euo pipefail
-printf 'spawn\n' >> spawns
-if [[ "$MATCHED" == 1 ]]; then
-    prefix='"target":"shared",'
-else
-    prefix=''
-fi
-case "$RESULT_MODE" in
-    pass) printf '{%s"pass":true,"evidence":"executed"}\n' "$prefix" ;;
-    fail) printf '{%s"pass":false,"evidence":"assertion failed"}\n' "$prefix"; exit 1 ;;
-    skip) printf '{%s"pass":false,"skipped":true,"evidence":"prerequisite missing"}\n' "$prefix"; exit 77 ;;
-    invalid) printf '{%s"pass":"wrong type","evidence":"invalid"}\n' "$prefix" ;;
-esac
-"#).unwrap();
-    let mut git = Command::new("git");
-    loom_test_support::scrub_git_local_env(&mut git);
-    assert!(
-        git.current_dir(dir.path())
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    dir
+    fixture
 }
 
-fn run(workspace: &Path, matched: bool, mode: &str, scope: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_loom"))
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Pass,
+    Fail,
+    Skip,
+    Invalid,
+}
+
+fn run(fixture: &reported::Fixture, mode: Mode, scope: &[&str]) -> Output {
+    let (record, status) = match mode {
+        Mode::Pass => (json!({"target":"shared","pass":true,"evidence":"executed"}).to_string(), 0),
+        Mode::Fail => (json!({"target":"shared","pass":false,"evidence":"assertion failed"}).to_string(), 1),
+        Mode::Skip => (json!({"target":"shared","pass":false,"skipped":true,"evidence":"prerequisite missing"}).to_string(), 77),
+        Mode::Invalid => (json!({"target":"shared","pass":"wrong type","evidence":"invalid"}).to_string(), 0),
+    };
+    fixture.record("shared", &format!("{record}\n"), status);
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_loom"));
+    command
         .arg("--workspace")
-        .arg(workspace)
+        .arg(fixture.path())
         .args(["gate", "system"])
         .args(scope)
-        .env("MATCHED", if matched { "1" } else { "0" })
-        .env("RESULT_MODE", mode)
-        .output()
-        .unwrap()
+        .env_remove("LOOM_INSIDE");
+    let output = if scope == ["--tree"] {
+        fixture.run(
+            std::path::Path::new(env!("CARGO_BIN_EXE_loom")),
+            "system",
+            false,
+        )
+    } else {
+        command.output().unwrap()
+    };
+    assert!(!fixture.path().join("should-not-run").exists());
+    assert!(!fixture.path().join("should-not-query").exists());
+    output
+}
+
+fn witnesses(diagnostic: &str) -> BTreeSet<String> {
+    diagnostic
+        .lines()
+        .filter(|line| line.starts_with("loom gate ["))
+        .filter_map(|line| {
+            line.split_once("]: ")
+                .and_then(|(_, body)| serde_json::from_str::<Value>(body).ok())
+        })
+        .flat_map(|value| {
+            value["observations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|value| value["kind"] == "fresh-execution")
+        .map(|value| value["derivation"].as_str().unwrap().to_owned())
+        .collect()
 }
 
 #[test]
 fn system_cli_sharing_preserves_per_criterion_reports_failures_skips_and_cache_records() {
-    for matched in [false, true] {
+    for configured in [false, true] {
         for (mode, exit, verdict) in [
-            ("pass", 0, Verdict::Pass),
-            ("fail", 1, Verdict::Fail),
-            ("skip", 78, Verdict::Skipped),
+            (Mode::Pass, 0, Verdict::Pass),
+            (Mode::Fail, 1, Verdict::Fail),
+            (Mode::Skip, 78, Verdict::Skipped),
         ] {
-            let dir = fixture(matched);
-            let output = run(dir.path(), matched, mode, &["--tree"]);
+            let fixture = fixture(configured);
+            let output = run(&fixture, mode, &["--tree"]);
             let stderr = String::from_utf8(output.stderr).unwrap();
             assert_eq!(output.status.code(), Some(exit), "{stderr}");
             assert_eq!(
-                fs::read_to_string(dir.path().join("spawns"))
-                    .unwrap()
-                    .lines()
-                    .count(),
-                1
+                witnesses(&stderr).len(),
+                1,
+                "one current producer execution, not a cached verdict: {stderr}"
             );
-            let rows = StatusCache::open(&dir.path().join(".loom/state.db"))
+            let rows = StatusCache::open(&fixture.path().join(".loom/state.db"))
                 .unwrap()
                 .read_all()
                 .unwrap();
-            assert_eq!(
-                rows.len(),
-                4,
-                "all owners, including same-spec siblings, need evidence"
-            );
+            assert_eq!(rows.len(), 4, "same-spec siblings also require evidence");
             assert_eq!(
                 rows.iter()
                     .map(|row| (&row.spec_label, &row.criterion_anchor))
@@ -111,12 +129,15 @@ fn system_cli_sharing_preserves_per_criterion_reports_failures_skips_and_cache_r
                 rows.iter()
                     .all(|row| row.verdict == verdict && row.evidence == rows[0].evidence)
             );
-            let records =
-                fs::read_to_string(dir.path().join(".loom/logs/gate/verifier-results.jsonl"))
-                    .unwrap();
+            let records = fs::read_to_string(
+                fixture
+                    .path()
+                    .join(".loom/logs/gate/verifier-results.jsonl"),
+            )
+            .unwrap();
             let reports = records
                 .lines()
-                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
                 .collect::<Vec<_>>();
             assert_eq!(reports.len(), 4);
             assert!(
@@ -125,10 +146,10 @@ fn system_cli_sharing_preserves_per_criterion_reports_failures_skips_and_cache_r
                     .all(|record| record["outcome"] == verdict.as_wire()
                         && record["coverage_verified"] == (verdict == Verdict::Pass))
             );
-            if mode != "pass" {
+            if mode != Mode::Pass {
                 assert_eq!(
                     stderr
-                        .matches(if mode == "skip" {
+                        .matches(if mode == Mode::Skip {
                             "SKIP (coverage unverified"
                         } else {
                             "FAIL:"
@@ -138,84 +159,67 @@ fn system_cli_sharing_preserves_per_criterion_reports_failures_skips_and_cache_r
                     "{stderr}"
                 );
             }
-            assert!(!dir.path().join(".loom/marker.json").exists());
+            assert!(!fixture.path().join(".loom/marker.json").exists());
         }
     }
 }
 
 #[test]
 fn system_cli_failure_reports_diagnostics_after_build_preamble() {
-    let dir = fixture(false);
-    fs::write(
-        dir.path().join("verifier.sh"),
-        "set -euo pipefail\nfor i in {1..15}; do printf 'building derivation %s\\n' \"$i\" >&2; done\nprintf 'invalid spec label: smoke.md\\n' >&2\nexit 1\n",
-    )
-    .unwrap();
-
-    let output = run(dir.path(), false, "fail", &["--tree"]);
+    let fixture = fixture(false);
+    let script = fixture.path().join("producer.sh");
+    let original = fs::read_to_string(&script).unwrap();
+    fs::write(script, format!("for i in {{1..15}}; do printf 'building derivation %s\\n' \"$i\" >&2; done\nprintf 'invalid spec label: smoke.md\\n' >&2\n{original}")).unwrap();
+    let output = run(&fixture, Mode::Fail, &["--tree"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("building derivation 1\n"), "{stderr}");
     assert!(
-        stderr.contains("invalid spec label: smoke.md\n"),
+        stderr.contains("building derivation 1\\n") || stderr.contains("building derivation 1\n"),
         "{stderr}"
     );
+    assert!(stderr.contains("invalid spec label: smoke.md"), "{stderr}");
 }
 
 #[test]
 fn system_cli_shared_dispatch_errors_report_every_owner_without_passing_cache_entries() {
-    for matched in [false, true] {
-        let dir = fixture(matched);
-        let output = run(dir.path(), matched, "invalid", &["--tree"]);
-        assert_eq!(output.status.code(), Some(1));
+    for configured in [false, true] {
+        let fixture = fixture(configured);
+        let output = run(&fixture, Mode::Invalid, &["--tree"]);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert_eq!(stderr.matches("ERROR:").count(), 4, "{stderr}");
         assert_eq!(
-            String::from_utf8(output.stderr)
-                .unwrap()
-                .matches("dispatch error:")
-                .count(),
-            4
-        );
-        assert_eq!(
-            fs::read_to_string(dir.path().join("spawns"))
-                .unwrap()
-                .lines()
-                .count(),
-            1
-        );
-        assert_eq!(
-            StatusCache::open(&dir.path().join(".loom/state.db"))
+            StatusCache::open(&fixture.path().join(".loom/state.db"))
                 .unwrap()
                 .read_all()
-                .unwrap(),
-            [] as [loom_gate::CacheRow; 0]
+                .unwrap()
+                .len(),
+            0
         );
     }
 }
 
 #[test]
 fn system_cli_exact_shared_target_executes_again_on_a_later_gate_run() {
-    let dir = fixture(false);
-    for count in 1..=2 {
-        let output = run(dir.path(), false, "pass", &["--target", "bash verifier.sh"]);
+    let fixture = fixture(false);
+    let mut previous = None;
+    for _ in 0..2 {
+        let output = run(
+            &fixture,
+            Mode::Pass,
+            &["--target", &fixture.address("shared")],
+        );
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        let current = witnesses(&stderr);
+        assert_eq!(current.len(), 1, "{stderr}");
+        if let Some(previous) = previous {
+            assert_ne!(current, previous);
+        }
+        previous = Some(current);
         assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            fs::read_to_string(dir.path().join("spawns"))
-                .unwrap()
-                .lines()
-                .count(),
-            count
-        );
-        assert_eq!(
-            StatusCache::open(&dir.path().join(".loom/state.db"))
-                .unwrap()
-                .read_all()
-                .unwrap()
-                .len(),
-            4
+            !fixture.path().join(".loom/state.db").exists(),
+            "exact diagnostics cannot authorize criterion coverage"
         );
     }
 }

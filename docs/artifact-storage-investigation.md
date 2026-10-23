@@ -1,4 +1,10 @@
-# Generated Rust artifact storage investigation
+# Historical Rust artifact storage investigation
+
+The Cargo/sccache backend replay campaigns have been removed from Loom. Wrix and
+the compiler/cache projects own backend behavior; Loom tests its adapter,
+admission, lifetime and retention policy. The measurements below are historical,
+not current automated verdicts. See [Cargo retention](cargo-retention.md) for
+Loom's implemented boundary and current verification.
 
 This is measured engineering advice, not a new cleanup contract or deployed
 collector. [Workspaces](../specs/workspaces.md#cleanup-admission) still owns
@@ -66,17 +72,13 @@ trust domains.
 
 ## Bounded real multi-checkout experiment
 
-`tests/agent/artifact-storage.py` constructs two actual local Git clones and a
-small dependency-free Rust package. It uses the pinned Rust 1.99.1 compiler,
-offline Cargo, one compilation job, private source/cache/output directories and
-a 256 MiB generated-file bound. It never accepts a production cleanup path. The
-result is a JSON measurement report, not verification or disposal authority.
-
-`tests/agent/artifact-storage-gate.sh` runs that experiment through the actual
-`loom gate check --tree` dispatcher in a private fixture. The immutable script
-copy is mode 0444. `checks.<system>.artifact-storage-fixture` registers the same
-unattended path with pinned Loom, Cargo, Python, Git and sccache; no
-operator-run host test or new worker capability is required.
+The retired experiment constructed two actual local Git clones and a small
+dependency-free Rust package. It used Rust 1.99.1, offline Cargo, one
+compilation job, private source/cache/output directories and a 256 MiB
+generated-file bound. It accepted no production cleanup path. Its JSON
+measurement report was not verification or disposal authority. At measurement
+time it ran through the actual Gate dispatcher with an immutable script copy;
+that replay wiring is no longer part of Loom's checks or packages.
 
 Observed worker fixture results:
 
@@ -174,19 +176,17 @@ A concrete starting policy for the measured large Rust workload is:
    after identifying protected evidence and active uses; never silently discard
    recovery content or run broad pruning.
 
-The bounded fixture exercises the mechanics and failure cases behind this
+The bounded experiment exercised the mechanics and failure cases behind this
 recommendation. Production implementation still requires trusted lifecycle and
 mount integration; it cannot be obtained by copying a prototype boolean or
 running `rm -rf` over a glob of old checkouts.
 
-## Reproduction and implementation ownership
+## Retained evidence and implementation ownership
 
-From a provisioned source checkout, normal automation can run:
-
-```bash
-bash scripts/configure-cargo-patches.sh
-nix build --no-link .#checks.x86_64-linux.artifact-storage-fixture
-```
+Loom no longer ships the upstream backend experiment or an on-demand replay
+package. Private-fixture root, permissions and reservation-policy controls
+remain in `tests/fixtures/private-fixture-tests.sh`; native artifact admission
+and lifetime tests remain in the driver.
 
 Read-only accounting uses `df -B1`, GNU `du -sx --block-size=1` on the selected
 existing target/cache/store roots, `sccache --show-stats --stats-format=json`

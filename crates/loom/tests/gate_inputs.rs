@@ -1,473 +1,399 @@
-//! Native CLI coverage for runner-owned logical targets and shared input discovery.
+//! Native input ownership comes from independently staged constructors, never input-query JSON.
+#![allow(
+    clippy::unwrap_used,
+    reason = "isolated integration setup and result assertions"
+)]
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
+use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use loom_gate::Tier;
-
-const PROVIDER: &str = r#"#!/usr/bin/env bash
-set -euo pipefail
-mode=$(<"$INPUT_FIXTURE/mode.txt")
-if [[ "${1-}" == "--print-inputs" ]]; then
-    printf '%s\n' "$*" >> "$INPUT_FIXTURE/queries.txt"
-    shift
-    case "$mode" in
-        malformed) printf '{"inputs":null}\n'; exit 0 ;;
-        nonzero) exit 7 ;;
-        single) printf '{"inputs":["src/alpha.rs"]}\n'; exit 0 ;;
-        unknown) printf '{"inputs":{}}\n'; exit 0 ;;
-    esac
-    printf '{"inputs":{'
-    first=1
-    for target in "$@"; do
-        if [[ "$mode" == omitted && "$target" == beta ]]; then
-            continue
-        fi
-        if [[ "$first" != 1 ]]; then printf ','; fi
-        printf '"%s":["provider.sh","loom.toml","src/%s.rs"]' "$target" "$target"
-        first=0
-    done
-    printf '}}\n'
-else
-    printf '%s\n' "$*" >> "$INPUT_FIXTURE/batches.txt"
-    for target in "$@"; do
-        printf '%s\n' "$target" >> "$INPUT_FIXTURE/executions.txt"
-        if [[ "$mode" == failed-exit ]]; then exit 9; fi
-        pass=true
-        if [[ "$mode" == failed-verdict && "$target" == alpha ]]; then pass=false; fi
-        printf '{"target":"%s","pass":%s,"evidence":"fixture ran"}\n' "$target" "$pass"
-    done
-fi
-"#;
+#[path = "common/reported.rs"]
+mod reported;
 
 struct Fixture {
-    dir: tempfile::TempDir,
+    native: reported::Fixture,
+    tier: &'static str,
+}
+
+fn copy_tree(source: &Path, destination: &Path) {
+    std::fs::create_dir_all(destination).unwrap();
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &destination.join(entry.file_name()));
+        } else {
+            std::fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+        }
+    }
 }
 
 impl Fixture {
     fn new() -> Self {
-        Self::for_tier(Tier::Check)
+        Self::for_tier("check")
     }
-
-    fn for_tier(tier: Tier) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir(root.join("specs")).unwrap();
-        std::fs::create_dir(root.join("src")).unwrap();
-        for target in ["alpha", "beta", "unrelated"] {
-            std::fs::write(root.join(format!("src/{target}.rs")), "").unwrap();
-        }
-        std::fs::write(root.join("provider.sh"), PROVIDER).unwrap();
-        std::fs::write(root.join("mode.txt"), "batch").unwrap();
-        for name in ["queries.txt", "executions.txt", "batches.txt"] {
-            std::fs::write(root.join(name), "").unwrap();
-        }
-        std::fs::write(
-            root.join("loom.toml"),
-            format!(
-                r"[runner.{tier}.fixture]
-match = '^verify:(.+)$'
-command = 'bash provider.sh {{targets}}'
-target = '{{capture_1}}'
-join = ' '
-parse = 'json-lines'
-inputs = 'bash provider.sh {{print_inputs}} {{targets}}'
-",
+    fn for_tier(tier: &'static str) -> Self {
+        let native = reported::Fixture::new(tier, "json-lines", &["alpha"]);
+        native.policy(tier, false);
+        native.record(
+            "alpha",
+            &format!(
+                "{}\n",
+                json!({"target":"alpha","pass":true,"evidence":"alpha actual producer"})
             ),
+            0,
+        );
+        let beta = reported::Fixture::new(tier, "json-lines", &["beta"]);
+        beta.record(
+            "beta",
+            &format!(
+                "{}\n",
+                json!({"target":"beta","pass":true,"evidence":"beta actual producer"})
+            ),
+            0,
+        );
+        copy_tree(beta.path(), &native.path().join("beta"));
+        // Only the workspace's root configuration is actually read by Gate.
+        std::fs::remove_file(native.path().join("beta/loom.toml")).unwrap();
+        std::fs::remove_dir_all(native.path().join("specs/fixture")).unwrap();
+        std::fs::remove_dir_all(native.path().join("beta/specs/fixture")).unwrap();
+        std::fs::write(
+            native.path().join("beta/docs/README.md"),
+            "- [inputs](../../specs/inputs.md)\n",
         )
         .unwrap();
         std::fs::write(
-            root.join("specs/inputs.md"),
+            native.path().join("docs/README.md"),
+            "- [inputs](../specs/inputs.md)\n- [unrelated](unrelated.md)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            native.path().join("docs/unrelated.md"),
+            "# Unrelated documentation\n",
+        )
+        .unwrap();
+        let fixture = Self { native, tier };
+        std::fs::write(
+            fixture.root().join("specs/inputs.md"),
             format!(
-                "## Success Criteria\n\n- alpha [{tier}](verify:alpha)\n- beta [{tier}](verify:beta)\n",
+                "## Success Criteria\n- Alpha [{tier}]({})\n- Beta [{tier}]({})\n",
+                fixture.address("alpha"),
+                fixture.address("beta")
             ),
         )
         .unwrap();
-        Self { dir }
+        fixture.commit("native input fixture");
+        fixture
     }
-
     fn root(&self) -> &Path {
-        self.dir.path()
+        self.native.path()
     }
-
-    fn run(&self, scope: &[&str]) -> Output {
-        self.run_gate("check", scope)
+    fn address(&self, name: &str) -> String {
+        if name == "alpha" {
+            self.native.address(name)
+        } else {
+            self.native.address(name).replacen(" .#", " ./beta#", 1)
+        }
     }
-
-    fn run_gate(&self, gate: &str, scope: &[&str]) -> Output {
-        // A real CLI process is required to exercise scope filtering before runner dispatch.
-        let binary = std::env::var_os("LOOM_GATE_INPUTS_BIN")
-            .unwrap_or_else(|| env!("CARGO_BIN_EXE_loom").into());
-        let output = Command::new(binary)
-            .arg("--workspace")
-            .arg(self.root())
-            .args(["gate", gate])
-            .args(scope)
-            .env_remove("LOOM_INSIDE")
-            .env_remove("LOOM_PARENT_DIFF_GATE")
-            .env("INPUT_FIXTURE", self.root())
-            .output()
-            .expect("run gate CLI");
+    fn commit(&self, message: &str) {
+        for args in [vec!["add", "--all"], vec!["commit", "-qm", message]] {
+            let mut command = Command::new("git");
+            loom_test_support::scrub_git_local_env(&mut command);
+            assert!(
+                command
+                    .current_dir(self.root())
+                    .args([
+                        "-c",
+                        "user.name=Inputs fixture",
+                        "-c",
+                        "user.email=inputs@fixture.invalid",
+                        "-c",
+                        "commit.gpgsign=false",
+                        "-c",
+                        "core.hooksPath=/dev/null"
+                    ])
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+    }
+    fn run(&self, gate: &str, scope: &[&str]) -> Output {
+        let binary = Path::new(env!("CARGO_BIN_EXE_loom"));
+        let output = if scope == ["--tree"] && gate == self.tier {
+            self.native.run(binary, gate, false)
+        } else {
+            Command::new(binary)
+                .arg("--workspace")
+                .arg(self.root())
+                .args(["gate", gate])
+                .args(scope)
+                .env_remove("LOOM_INSIDE")
+                .env_remove("LOOM_PARENT_DIFF_GATE")
+                .output()
+                .unwrap()
+        };
         assert!(!self.root().join(".loom/marker.json").exists());
         output
     }
-
-    fn lines(&self, name: &str) -> Vec<String> {
-        std::fs::read_to_string(self.root().join(name))
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect()
+    fn config(&self, text: &str) {
+        std::fs::write(self.root().join("loom.toml"), text).unwrap();
     }
-
-    fn assert_exit(output: &Output, code: i32) {
-        assert_eq!(
-            output.status.code(),
-            Some(code),
-            "stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+    fn fail_alpha(&self) {
+        self.native.record(
+            "alpha",
+            &format!(
+                "{}\n",
+                json!({"target":"alpha","pass":false,"evidence":"alpha failed"})
+            ),
+            1,
         );
     }
+}
 
-    fn assert_success(output: &Output) {
-        Self::assert_exit(output, 0);
-    }
+fn diagnostic(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+fn assert_exit(output: &Output, code: i32) {
+    assert_eq!(output.status.code(), Some(code), "{}", diagnostic(output));
+}
+fn witnesses(output: &Output) -> BTreeSet<String> {
+    diagnostic(output)
+        .lines()
+        .filter(|line| line.starts_with("loom gate ["))
+        .filter_map(|line| {
+            line.split_once("]: ")
+                .and_then(|(_, value)| serde_json::from_str::<Value>(value).ok())
+        })
+        .flat_map(|value| {
+            value["observations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|value| value["kind"] == "fresh-execution")
+        .map(|value| value["derivation"].as_str().unwrap().to_owned())
+        .collect()
+}
+fn observed(output: &Output, target: &str) -> bool {
+    diagnostic(output).contains(&format!("loom gate [{target}]: "))
 }
 
 #[test]
 fn cli_selection_and_integrity_query_shared_provider_once() {
     for gate in ["check", "verify"] {
-        for (scope, executed, batch) in [
-            (vec!["--files", "src/alpha.rs"], vec!["alpha"], "alpha"),
-            (
-                vec!["--files", "specs/inputs.md"],
-                vec!["alpha", "beta"],
-                "alpha beta",
-            ),
-            (vec!["--tree"], vec!["alpha", "beta"], "alpha beta"),
-        ] {
-            let fixture = Fixture::new();
-            Fixture::assert_success(&fixture.run_gate(gate, &scope));
-            assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-            assert_eq!(fixture.lines("executions.txt"), executed);
-            assert_eq!(fixture.lines("batches.txt"), [batch]);
-        }
+        let fixture = Fixture::new();
+        let output = fixture.run(gate, &["--files", "records/alpha.output"]);
+        assert_exit(&output, 0);
+        assert_eq!(witnesses(&output).len(), 1);
+        assert!(observed(&output, &fixture.address("alpha")));
+        assert!(!observed(&output, &fixture.address("beta")));
+        let output = fixture.run(gate, &["--files", "specs/inputs.md"]);
+        assert_exit(&output, 0);
+        assert_eq!(
+            witnesses(&output).len(),
+            2,
+            "a contract edit selects both independent owners"
+        );
     }
 }
 
 #[test]
 fn cli_known_unaffected_targets_are_not_executed() {
+    let fixture = Fixture::new();
     for gate in ["check", "verify"] {
-        let fixture = Fixture::new();
-        Fixture::assert_success(&fixture.run_gate(gate, &["--files", "src/unrelated.rs"]));
-        assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-        assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
-        assert_eq!(fixture.lines("batches.txt"), [] as [String; 0]);
+        let output = fixture.run(gate, &["--files", "docs/unrelated.md"]);
+        assert_exit(&output, 0);
+        assert_eq!(witnesses(&output).len(), 0);
     }
 }
 
 #[test]
 fn cli_cached_protocol_errors_remain_loud_for_each_owner() {
-    for gate in ["check", "verify"] {
-        for mode in ["malformed", "nonzero"] {
-            let fixture = Fixture::new();
-            std::fs::write(fixture.root().join("mode.txt"), mode).unwrap();
-            std::fs::write(
-                fixture.root().join("specs/shared.md"),
-                "## Success Criteria\n\n- shared alpha [check](verify:alpha)\n",
-            )
-            .unwrap();
-            let output = fixture.run_gate(gate, &["--files", "src/unrelated.rs"]);
-            Fixture::assert_exit(&output, 1);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            for owner in [
-                "specs/inputs.md:3",
-                "specs/inputs.md:4",
-                "specs/shared.md:3",
-            ] {
-                assert!(stderr.contains(owner), "{stderr}");
-            }
-            assert!(
-                stderr.contains("verify:alpha") && stderr.contains("verify:beta"),
-                "{stderr}"
-            );
-            assert_eq!(stderr.matches("input-query errored").count(), 3, "{stderr}");
-            assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-            assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
-            assert_eq!(fixture.lines("batches.txt"), [] as [String; 0]);
-            assert!(stderr.contains("before verifier dispatch"), "{stderr}");
-        }
-    }
+    let fixture = Fixture::new();
+    let body = std::fs::read_to_string(fixture.root().join("specs/inputs.md")).unwrap();
+    std::fs::write(
+        fixture.root().join("specs/inputs.md"),
+        format!(
+            "{body}- Alpha sibling [check]({})\n",
+            fixture.address("alpha")
+        ),
+    )
+    .unwrap();
+    fixture.native.record("alpha", "{malformed\n", 0);
+    let output = fixture.run("check", &["--tree"]);
+    assert_exit(&output, 1);
+    assert_eq!(
+        diagnostic(&output)
+            .matches(&format!("ERROR: {}", fixture.address("alpha")))
+            .count(),
+        2
+    );
+    assert!(
+        !loom_gate::StatusCache::open(&fixture.root().join(".loom/state.db"))
+            .unwrap()
+            .read_all()
+            .unwrap()
+            .iter()
+            .any(|row| row.annotation_target == fixture.address("alpha")
+                && row.verdict == loom_gate::Verdict::Pass)
+    );
 }
 
 #[test]
 fn cli_omitted_inputs_stay_always_run_without_extra_queries() {
-    for gate in ["check", "verify"] {
-        let fixture = Fixture::new();
-        std::fs::write(fixture.root().join("mode.txt"), "omitted").unwrap();
-        Fixture::assert_success(&fixture.run_gate(gate, &["--files", "src/unrelated.rs"]));
-        assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-        assert_eq!(fixture.lines("executions.txt"), ["beta"]);
-        assert_eq!(fixture.lines("batches.txt"), ["beta"]);
-    }
+    // Omission in caller JSON cannot replace a constructor's complete closure.
+    let fixture = Fixture::new();
+    fixture.config("[runner.check.legacy]\nmatch='^verify:(.+)$'\ncommand='touch executed'\ninputs='printf omitted'\n");
+    std::fs::write(
+        fixture.root().join("specs/inputs.md"),
+        "## Success Criteria\n- Unknown [check](verify:beta)\n",
+    )
+    .unwrap();
+    let output = fixture.run("check", &["--tree"]);
+    assert_exit(&output, 1);
+    assert_eq!(witnesses(&output).len(), 0);
+    assert!(!fixture.root().join("executed").exists());
 }
 
 #[test]
 fn cli_unknown_inputs_keep_runner_owned_targets_in_explicit_files() {
-    for gate in ["check", "verify"] {
-        let fixture = Fixture::new();
-        std::fs::write(fixture.root().join("mode.txt"), "unknown").unwrap();
-        Fixture::assert_success(&fixture.run_gate(gate, &["--files", "src/unrelated.rs"]));
-        assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-        assert_eq!(fixture.lines("executions.txt"), ["alpha", "beta"]);
-        assert_eq!(fixture.lines("batches.txt"), ["alpha beta"]);
-    }
+    let fixture = Fixture::new();
+    fixture.config(
+        "[runner.check.untrusted]\nmatch='.*'\ncommand='touch executed'\ninputs='printf unknown'\n",
+    );
+    fixture.fail_alpha();
+    let output = fixture.run("check", &["--files", "records/alpha.output"]);
+    assert_exit(&output, 1);
+    assert!(observed(&output, &fixture.address("alpha")));
+    assert!(!observed(&output, &fixture.address("beta")));
+    assert!(!fixture.root().join("executed").exists());
 }
 
 #[test]
 fn cli_runner_owned_failures_block_explicit_files() {
-    for gate in ["check", "verify"] {
-        for mode in ["failed-verdict", "failed-exit"] {
-            let fixture = Fixture::new();
-            std::fs::write(fixture.root().join("mode.txt"), mode).unwrap();
-            let output = fixture.run_gate(gate, &["--files", "src/alpha.rs"]);
-            Fixture::assert_exit(&output, 1);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(stderr.contains("verify:alpha"), "{stderr}");
-            assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-            assert_eq!(fixture.lines("executions.txt"), ["alpha"]);
-            assert_eq!(fixture.lines("batches.txt"), ["alpha"]);
-        }
-    }
+    let fixture = Fixture::new();
+    fixture.fail_alpha();
+    let output = fixture.run("check", &["--files", "records/alpha.output"]);
+    assert_exit(&output, 1);
+    assert!(diagnostic(&output).contains("alpha failed"));
 }
 
 #[test]
 fn cli_flat_group_document_keeps_per_target_discovery_fallback() {
     let fixture = Fixture::new();
-    std::fs::write(fixture.root().join("mode.txt"), "single").unwrap();
-    Fixture::assert_success(&fixture.run(&["--files", "src/alpha.rs"]));
-    assert_eq!(
-        fixture.lines("queries.txt"),
-        [
-            "--print-inputs alpha beta",
-            "--print-inputs alpha",
-            "--print-inputs beta"
-        ],
-    );
-    assert_eq!(fixture.lines("executions.txt"), ["alpha", "beta"]);
-    assert_eq!(fixture.lines("batches.txt"), ["alpha beta"]);
+    let output = fixture.run("check", &["--files", "beta/records/beta.output"]);
+    assert_exit(&output, 0);
+    assert_eq!(witnesses(&output).len(), 1);
+    assert!(!observed(&output, &fixture.address("alpha")));
+    assert!(observed(&output, &fixture.address("beta")));
 }
 
 #[test]
 fn cli_duplicate_owners_do_not_duplicate_discovery_targets() {
     let fixture = Fixture::new();
+    let body = std::fs::read_to_string(fixture.root().join("specs/inputs.md")).unwrap();
     std::fs::write(
         fixture.root().join("specs/inputs.md"),
-        "## Success Criteria\n\n- first [check](verify:alpha)\n- second [check](verify:alpha)\n- third [check](verify:beta)\n",
+        format!(
+            "{body}- Shared alpha [check]({})\n",
+            fixture.address("alpha")
+        ),
     )
     .unwrap();
-    Fixture::assert_success(&fixture.run(&["--tree"]));
-    assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-    assert_eq!(fixture.lines("executions.txt"), ["alpha", "beta"]);
-    assert_eq!(fixture.lines("batches.txt"), ["alpha beta"]);
+    let output = fixture.run("check", &["--tree"]);
+    assert_exit(&output, 0);
+    assert_eq!(witnesses(&output).len(), 2);
+    let rows = loom_gate::StatusCache::open(&fixture.root().join(".loom/state.db"))
+        .unwrap()
+        .read_all()
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.annotation_target == fixture.address("alpha"))
+            .count(),
+        2
+    );
 }
 
 #[test]
 fn cli_queries_are_not_reused_by_later_gate_invocations() {
     let fixture = Fixture::new();
-    Fixture::assert_success(&fixture.run(&["--files", "src/alpha.rs"]));
-    std::fs::write(fixture.root().join("mode.txt"), "nonzero").unwrap();
-    Fixture::assert_exit(&fixture.run(&["--files", "src/alpha.rs"]), 1);
-    assert_eq!(
-        fixture.lines("queries.txt"),
-        ["--print-inputs alpha beta"; 2]
-    );
-    assert_eq!(fixture.lines("executions.txt"), ["alpha"]);
-    assert_eq!(fixture.lines("batches.txt"), ["alpha"]);
+    let first = fixture.run("check", &["--tree"]);
+    assert_exit(&first, 0);
+    let second = fixture.run("check", &["--tree"]);
+    assert_exit(&second, 0);
+    assert_eq!(witnesses(&first).len(), 2);
+    assert_eq!(witnesses(&second).len(), 2);
+    assert!(witnesses(&first).is_disjoint(&witnesses(&second)));
 }
 
 #[test]
 fn cli_verify_rejects_invalid_later_lane_queries_before_valid_sibling_execution() {
-    for mode in ["malformed", "nonzero"] {
-        let fixture = Fixture::new();
-        let config = std::fs::read_to_string(fixture.root().join("loom.toml")).unwrap();
-        std::fs::write(
-            fixture.root().join("loom.toml"),
-            format!("{config}\n[runner.system.fixture]\nmatch = '^system:(.+)$'\ncommand = 'bash system-provider.sh {{targets}}'\ntarget = '{{capture_1}}'\njoin = ' '\nparse = 'json-lines'\ninputs = 'bash system-provider.sh {{print_inputs}} {{targets}}'\n"),
-        ).unwrap();
-        std::fs::write(
-            fixture.root().join("specs/system.md"),
-            "## Success Criteria\n\n- later lane [system](system:broken)\n",
-        )
-        .unwrap();
-        std::fs::write(fixture.root().join("system-mode.txt"), mode).unwrap();
-        std::fs::write(
-            fixture.root().join("system-provider.sh"),
-            r#"#!/usr/bin/env bash
-set -euo pipefail
-if [[ "${1-}" == "--print-inputs" ]]; then
-    printf '%s\n' "$*" >> "$INPUT_FIXTURE/system-queries.txt"
-    mode=$(<"$INPUT_FIXTURE/system-mode.txt")
-    case "$mode" in
-        malformed) printf '{"inputs":null}\n'; exit 0 ;;
-        nonzero) exit 7 ;;
-    esac
-    printf '{"inputs":["src/unrelated.rs"]}\n'
-else
-    printf '%s\n' "$*" >> "$INPUT_FIXTURE/system-executions.txt"
-    printf '{"target":"broken","pass":true,"evidence":"fixture ran"}\n'
-fi
-"#,
-        )
-        .unwrap();
-        let output = fixture.run_gate("verify", &["--tree"]);
-        Fixture::assert_exit(&output, 1);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("specs/system.md:3") && stderr.contains("system:broken"),
-            "{stderr}"
-        );
-        assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-        assert_eq!(
-            fixture.lines("system-queries.txt"),
-            ["--print-inputs broken"]
-        );
-        assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
-        assert_eq!(fixture.lines("batches.txt"), [] as [String; 0]);
-        assert!(!fixture.root().join("system-executions.txt").exists());
-        std::fs::write(fixture.root().join("system-mode.txt"), "valid").unwrap();
-        Fixture::assert_success(&fixture.run_gate("verify", &["--tree"]));
-        assert_eq!(
-            fixture.lines("queries.txt"),
-            ["--print-inputs alpha beta"; 2]
-        );
-        assert_eq!(
-            fixture.lines("system-queries.txt"),
-            ["--print-inputs broken"; 2]
-        );
-        assert_eq!(fixture.lines("executions.txt"), ["alpha", "beta"]);
-        assert_eq!(fixture.lines("batches.txt"), ["alpha beta"]);
-        assert_eq!(fixture.lines("system-executions.txt"), ["broken"]);
-    }
+    let fixture = Fixture::new();
+    let sdk = fixture.root().join("beta/verification.nix");
+    let body = std::fs::read_to_string(&sdk).unwrap();
+    assert!(body.contains("version = 1;"));
+    std::fs::write(sdk, body.replace("version = 1;", "version = 99;")).unwrap();
+    let output = fixture.run("verify", &["--tree"]);
+    assert_exit(&output, 1);
+    assert_eq!(witnesses(&output).len(), 0);
 }
 
 #[test]
 fn cli_query_respects_tier_cwd_and_runner_override() {
-    for runner_override in [false, true] {
-        let fixture = Fixture::new();
-        std::fs::create_dir(fixture.root().join("tier-dir")).unwrap();
-        std::fs::create_dir(fixture.root().join("runner-dir")).unwrap();
-        let cwd = if runner_override {
-            "runner-dir"
-        } else {
-            "tier-dir"
-        };
-        std::fs::rename(
-            fixture.root().join("provider.sh"),
-            fixture.root().join(cwd).join("provider.sh"),
-        )
-        .unwrap();
-        let config = std::fs::read_to_string(fixture.root().join("loom.toml")).unwrap();
-        let override_config = if runner_override {
-            "cwd = 'runner-dir'\n"
-        } else {
-            ""
-        };
-        std::fs::write(
-            fixture.root().join("loom.toml"),
-            format!("[runner.check]\ncwd = 'tier-dir'\n{config}{override_config}"),
-        )
-        .unwrap();
-        Fixture::assert_success(&fixture.run(&["--files", "src/alpha.rs"]));
-        assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-        assert_eq!(fixture.lines("executions.txt"), ["alpha"]);
-        assert_eq!(fixture.lines("batches.txt"), ["alpha"]);
+    let fixture = Fixture::new();
+    fixture.config("[runner.check.override]\nmatch='.*'\ncommand='touch executed'\ninputs='touch queried'\ncwd='beta'\n");
+    let output = fixture.run("check", &["--files", "beta/records/beta.output"]);
+    assert_exit(&output, 0);
+    assert_eq!(witnesses(&output).len(), 1);
+    assert!(observed(&output, &fixture.address("beta")));
+    for directory in [fixture.root().to_path_buf(), fixture.root().join("beta")] {
+        assert!(!directory.join("executed").exists());
+        assert!(!directory.join("queried").exists());
     }
 }
 
 #[test]
 fn cli_system_files_keeps_runner_owned_targets() {
-    let fixture = Fixture::for_tier(Tier::System);
-    Fixture::assert_success(&fixture.run_gate("system", &["--files", "src/alpha.rs"]));
-    assert_eq!(
-        fixture.lines("queries.txt"),
-        ["--print-inputs alpha", "--print-inputs beta"]
-    );
-    assert_eq!(fixture.lines("executions.txt"), ["alpha"]);
-    assert_eq!(fixture.lines("batches.txt"), ["alpha"]);
+    let fixture = Fixture::for_tier("system");
+    let output = fixture.run("system", &["--files", "records/alpha.output"]);
+    assert_exit(&output, 0);
+    assert_eq!(witnesses(&output).len(), 1);
 }
 
 #[test]
 fn cli_runner_ownership_does_not_cross_tiers() {
-    for (runner_tier, annotation_tier) in [(Tier::Check, Tier::System), (Tier::System, Tier::Check)]
-    {
-        let fixture = Fixture::for_tier(runner_tier);
-        std::fs::write(
-            fixture.root().join("specs/inputs.md"),
-            format!("## Success Criteria\n\n- unclaimed [{annotation_tier}](verify:alpha)\n"),
-        )
-        .unwrap();
-        Fixture::assert_success(&fixture.run_gate(
-            &annotation_tier.to_string(),
-            &["--files", "specs/inputs.md"],
-        ));
-        let output = fixture.run(&["--tree"]);
-        Fixture::assert_exit(&output, 1);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("verify:alpha") && stderr.contains("does not resolve"),
-            "{stderr}"
-        );
-        assert_eq!(fixture.lines("queries.txt"), [] as [String; 0]);
-        assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
-        assert_eq!(fixture.lines("batches.txt"), [] as [String; 0]);
-    }
+    let fixture = Fixture::for_tier("system");
+    fixture.fail_alpha();
+    let output = fixture.run("check", &["--tree"]);
+    assert_exit(&output, 0);
+    assert_eq!(witnesses(&output).len(), 0);
+    let output = fixture.run("system", &["--tree"]);
+    assert_exit(&output, 1);
 }
 
 #[test]
 fn cli_explicit_files_still_reports_unclaimed_missing_paths() {
-    for gate in ["check", "verify"] {
-        let fixture = Fixture::new();
-        std::fs::write(
-            fixture.root().join("specs/inputs.md"),
-            "## Success Criteria\n\n- missing path [check](./missing-verifier.sh)\n",
-        )
-        .unwrap();
-        let output = fixture.run_gate(gate, &["--files", "specs/inputs.md"]);
-        Fixture::assert_exit(&output, 1);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("./missing-verifier.sh") && stderr.contains("does not resolve"),
-            "{stderr}"
-        );
-        assert_eq!(fixture.lines("queries.txt"), [] as [String; 0]);
-        assert_eq!(fixture.lines("executions.txt"), [] as [String; 0]);
-    }
+    let fixture = Fixture::new();
+    let output = fixture.run("check", &["--files", "absent/unowned.txt"]);
+    assert_exit(&output, 1);
+    assert_eq!(witnesses(&output).len(), 0);
 }
 
 #[test]
 fn cli_logical_target_diff_selection_keeps_affectedness() {
-    for gate in ["check", "verify"] {
-        let fixture = Fixture::new();
-        std::fs::write(
-            fixture.root().join(".gitignore"),
-            ".loom/\nqueries.txt\nexecutions.txt\nbatches.txt\n",
-        )
-        .unwrap();
-        loom_driver::git::init_test_repo_with_integration(fixture.root()).unwrap();
-        std::fs::write(
-            fixture.root().join(".pre-commit-config.yaml"),
-            "repos:\n  - repo: local\n    hooks:\n      - id: feedback\n        name: Fixture feedback\n        entry: true\n        language: system\n        stages: [pre-commit]\n        always_run: true\n        pass_filenames: false\n",
-        )
-        .unwrap();
-        loom_driver::git::commit_all_in(fixture.root(), "Seed logical target fixture").unwrap();
-        std::fs::write(fixture.root().join("src/alpha.rs"), "changed\n").unwrap();
-        Fixture::assert_success(&fixture.run_gate(gate, &["--diff", "HEAD"]));
-        assert_eq!(fixture.lines("queries.txt"), ["--print-inputs alpha beta"]);
-        assert_eq!(fixture.lines("executions.txt"), ["alpha"]);
-        assert_eq!(fixture.lines("batches.txt"), ["alpha"]);
-    }
+    let fixture = Fixture::new();
+    fixture.fail_alpha();
+    fixture.commit("change alpha data");
+    let output = fixture.run("check", &["--diff", "HEAD~1..HEAD"]);
+    assert_exit(&output, 1);
+    assert_eq!(witnesses(&output).len(), 1);
+    assert!(observed(&output, &fixture.address("alpha")));
+    assert!(!observed(&output, &fixture.address("beta")));
 }

@@ -616,6 +616,4 @@ mod discovery_tests;
 #[cfg(test)]
 mod private_tests;
 #[cfg(test)]
-mod projection;
-#[cfg(test)]
 mod tests;

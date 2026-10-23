@@ -1085,6 +1085,37 @@ fn no_panics_in_production_pass_skips_cfg_test_blocks() {
 }
 
 #[test]
+fn no_panics_in_production_uses_real_file_test_gate_not_strings_or_optional_cfg() {
+    for (body, passes) in [
+        (
+            "#![cfg(test)]\nfn body() { panic!(\"test only\"); }\n",
+            true,
+        ),
+        (
+            "const TEXT: &str = \"#![cfg(test)]\";\nfn body() { panic!(\"production\"); }\n",
+            false,
+        ),
+        (
+            "#![cfg(any(test, feature = \"production\"))]\nfn body() { panic!(\"production\"); }\n",
+            false,
+        ),
+    ] {
+        let ws = make_workspace();
+        let target = seed(ws.path(), "crates/loom-driver/src/lib.rs", body);
+        let output = invoke(
+            &["no_panics_in_production"],
+            Some(ws.path()),
+            Some(&target.to_string_lossy()),
+        );
+        if passes {
+            assert_pass(&output);
+        } else {
+            assert_fail(&output, "panic");
+        }
+    }
+}
+
+#[test]
 fn no_panics_in_production_fail_unwrap_in_production() {
     let ws = make_workspace();
     let body = "pub fn bad() -> u32 { std::env::var(\"X\").unwrap().len() as u32 }\n";
@@ -4549,7 +4580,6 @@ nix flake check --no-warn-dirty
 cargo clippy --workspace -- -D warnings
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
-loom gate system --tree
 "#,
     );
     seed(
@@ -4793,7 +4823,6 @@ export GIT_CONFIG_SYSTEM=/dev/null
 unset WRIX_SIGNING_KEY
 nix flake check --no-warn-dirty
 cargo clippy --workspace --all-targets -- -D warnings
-loom gate system --tree
 "#,
     );
     let out = invoke(
@@ -4816,7 +4845,6 @@ set -euo pipefail
 nix flake check --no-warn-dirty
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
-loom gate system --tree
 ",
     );
     let out = invoke(
@@ -4845,7 +4873,6 @@ fn workspace_compile_checks_are_full_test_app_only_fail_when_test_ci_app_remains
           nix flake check --no-warn-dirty
           cargo clippy --workspace --all-targets -- -D warnings
           cargo nextest run --workspace
-          loom gate system --tree
         '';
       };
     in
@@ -4908,40 +4935,40 @@ in
     assert_fail(&out, "clippy must inherit the shared cargoArtifacts cache");
 }
 
-// ---------------------------------------------------------------------------
-// loom_gate_check_derivation_exists (pre-commit.md § Fast tier)
-// ---------------------------------------------------------------------------
-
 #[test]
-fn loom_gate_check_derivation_exists_pass() {
+fn workspace_compile_checks_validate_captured_native_constructors() {
     let ws = make_workspace();
+    seed_workspace_compile_checks_fixture(ws.path());
     seed(
         ws.path(),
-        "nix/flake/checks.nix",
-        "_:\n{\n  perSystem = { pkgs, ... }: {\n    checks.loom-gate-check = pkgs.runCommand \"loom-gate-check\" {} ''loom gate check''; \n  };\n}\n",
+        "nix/flake/apps.nix",
+        include_str!("../../../nix/flake/apps.nix"),
     );
-    let out = invoke(
-        &["loom_gate_check_derivation_exists"],
+    let workspace = include_str!("../../../nix/workspace.nix");
+    seed(ws.path(), "nix/workspace.nix", workspace);
+    assert_pass(&invoke(
+        &["workspace_compile_checks_are_full_test_app_only"],
         Some(ws.path()),
         None,
-    );
-    assert_pass(&out);
-}
-
-#[test]
-fn loom_gate_check_derivation_exists_fail_when_absent() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "nix/flake/checks.nix",
-        "_:\n{\n  perSystem = _: {\n    checks = { };\n  };\n}\n",
-    );
-    let out = invoke(
-        &["loom_gate_check_derivation_exists"],
-        Some(ws.path()),
-        None,
-    );
-    assert_fail(&out, "no derivation runs `loom gate check`");
+    ));
+    for operation in ["lint", "test"] {
+        seed(
+            ws.path(),
+            "nix/workspace.nix",
+            &workspace.replace(
+                &format!("operation = \"{operation}\";"),
+                "operation = \"catalogue\";",
+            ),
+        );
+        assert_fail(
+            &invoke(
+                &["workspace_compile_checks_are_full_test_app_only"],
+                Some(ws.path()),
+                None,
+            ),
+            "must be built with",
+        );
+    }
 }
 
 fn seed_test_nix_surface(root: &Path) {
@@ -4958,19 +4985,23 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "nix/flake/tests.nix",
-        "packages.loom-tests = testsDeriv.rustChecks.loom-tests;\n",
+        "packages.loom-tests = (import ../native-package.nix) testsDeriv.rustChecks.loom-tests;\n",
     );
     seed(
         root,
         "nix/workspace.nix",
-        "extraSrcs = { \"flake.nix\" = \"${src}/flake.nix\"; \"nix\" = \"${src}/nix\"; };\n",
+        include_str!("../../../nix/workspace.nix"),
     );
     seed(
         root,
         "nix/flake/apps.nix",
-        "test = {\ntest-required = {\nsmoke = {\nfuzz-loom = {\nsmokePrekHooks = wrixLib.prekHooks;\ntext = builtins.readFile ../../scripts/full-test.sh;\ntext = builtins.readFile ../../scripts/required-test.sh;\n",
+        "test = app testApp \"test\";\ntest-required = app requiredTestApp \"test-required\";\nsmoke = app smokeApp \"smoke\";\nfuzz-loom = app fuzzApp \"fuzz-loom\";\nsmokePrekHooks = wrixLib.prekHooks;\nfullScript = source \"scripts/full-test.sh\";\nrequiredScript = source \"scripts/required-test.sh\";\ntext = builtins.readFile fullScript.path;\ntext = builtins.readFile requiredScript.path;\nevaluation = [ fullScript ];\nevaluation = [ requiredScript ];\n",
     );
-    seed(root, "nix/flake/checks.nix", "checks = { };\n");
+    seed(
+        root,
+        "nix/flake/checks.nix",
+        include_str!("../../../nix/flake/checks.nix"),
+    );
     seed(
         root,
         "nix/nextest-overlay.nix",
@@ -4984,12 +5015,12 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "tests/loom/default.nix",
-        "loom gate check --tree\nloom gate test --tree\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nexport LOOM_TEST_LOOP=${../smoke/loop.sh}\nexport LOOM_TEST_WAIT_DOLT=${../smoke/wait-dolt.sh}\nLOOM_WRIX_BIN\nLOOM_WRIX_SPAWN_BIN\nWRIX_PREK_HOOKS\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
+        "loom-walk -- --from-specs\ncargo nextest run --offline --locked --workspace --ignore-default-filter\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nexport LOOM_TEST_LOOP=${../smoke/loop.sh}\nexport LOOM_TEST_WAIT_DOLT=${../smoke/wait-dolt.sh}\nLOOM_WRIX_BIN\nLOOM_WRIX_SPAWN_BIN\nWRIX_PREK_HOOKS\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\nexit 69\n",
     );
     seed(
         root,
         "scripts/full-test.sh",
-        "nix flake check --no-warn-dirty\ncargo clippy --workspace -- -D warnings\ncargo clippy --workspace --all-targets -- -D warnings\ncargo nextest run --workspace\nloom gate system --tree\n",
+        "nix flake check --no-warn-dirty\ncargo clippy --workspace -- -D warnings\ncargo clippy --workspace --all-targets -- -D warnings\ncargo nextest run --workspace\n",
     );
     seed(
         root,
@@ -5000,6 +5031,11 @@ fn seed_test_nix_surface(root: &Path) {
         root,
         "tests/run-tests.sh",
         "LOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nunset WRIX_AGENT\nbash \"${LOOM_TEST_WAIT_DOLT:?missing Dolt readiness helper}\" \"$LOOM_WRIX_SERVICE_BIN\"\nWRIX_DEPLOY_KEY\nWRIX_SIGNING_KEY\nWRIX_PI_AUTH_FILE\n.pre-commit-config.yaml\n.loom/\nbin/pre-push-checks --hook-id smoke-noop\nbash \"$LOOM_TEST_LOOP\" \"$LOOM_BIN\" \"$WORKSPACE\" \"$BEAD_ID\" \"$START_TS\"\n",
+    );
+    seed(
+        root,
+        "tests/smoke/host-gate-test.sh",
+        include_str!("../../../tests/smoke/host-gate-test.sh"),
     );
     seed(
         root,
@@ -5022,6 +5058,49 @@ fn test_nix_surface_contract_pass() {
 }
 
 #[test]
+fn test_nix_surface_contract_fail_when_archive_destination_is_not_created() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    let checks =
+        include_str!("../../../nix/flake/checks.nix").replacen("mkdir -p \"$HOME/tests\"", "", 1);
+    seed(
+        ws.path(),
+        "nix/flake/checks.nix",
+        &(checks + "\nmkdir -p \"$HOME/tests\"\n"),
+    );
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "mkdir -p");
+}
+
+#[test]
+fn test_nix_surface_contract_fail_when_host_gate_relies_on_ambient_nix_features() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    seed(
+        ws.path(),
+        "tests/smoke/host-gate-test.sh",
+        "# extra-experimental-features = nix-command flakes\n",
+    );
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "extra-experimental-features");
+}
+
+#[test]
+fn test_nix_surface_contract_fail_when_archive_runner_lacks_its_own_ca_bundle() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    let export = "export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+    let checks = include_str!("../../../nix/flake/checks.nix").replacen(export, "", 1);
+    assert!(
+        checks.contains(export),
+        "another producer still supplies its own bundle"
+    );
+    seed(ws.path(), "nix/flake/checks.nix", &checks);
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "archive runner is missing `export SSL_CERT_FILE");
+}
+
+#[test]
 fn test_nix_surface_contract_fail_when_staged_source_omits_nix_support_tree() {
     let ws = make_workspace();
     seed_test_nix_surface(ws.path());
@@ -5031,7 +5110,7 @@ fn test_nix_surface_contract_fail_when_staged_source_omits_nix_support_tree() {
         "extraSrcs = { \"flake.nix\" = \"${src}/flake.nix\"; \"nix/flake\" = \"${src}/nix/flake\"; \"nix/workspace.nix\" = \"${src}/nix/workspace.nix\"; };\n",
     );
     let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
-    assert_fail(&out, "missing active test-surface wiring `\"nix\" =");
+    assert_fail(&out, "missing active test-surface wiring");
 }
 
 #[test]
@@ -5084,10 +5163,13 @@ fn test_nix_surface_contract_fail_when_test_tier_is_missing() {
     seed(
         ws.path(),
         "tests/loom/default.nix",
-        "loom gate check --tree\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_WRIX_SPAWN_BIN\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
+        "loom-walk -- --from-specs\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_WRIX_SPAWN_BIN\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
     );
     let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
-    assert_fail(&out, "loom gate test --tree");
+    assert_fail(
+        &out,
+        "cargo nextest run --offline --locked --workspace --ignore-default-filter",
+    );
 }
 
 #[test]

@@ -9,8 +9,11 @@ publish.workspace = true
 # Test-only helpers shared across loom proptest call sites. Consumers
 # depend on this crate exclusively via `[dev-dependencies]`; production
 # code never reaches the items it exposes.
+[features]
+acceptance = ["dep:loom-driver"]
+
 [dependencies]
-loom-driver = { workspace = true }
+loom-driver = { workspace = true, optional = true }
 loom-events = { workspace = true }
 loom-protocol = { workspace = true }
 proptest = { workspace = true }

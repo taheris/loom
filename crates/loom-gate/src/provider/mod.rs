@@ -4,6 +4,7 @@ mod artifact;
 pub mod effect;
 pub mod nix;
 pub mod plan;
+mod policy;
 pub mod tracked;
 mod wire;
 
@@ -19,6 +20,8 @@ use crate::inventory::snapshot::{ResourcePath, Snapshot};
 use crate::inventory::{Duty, Inventory, Name, Obligation, Role};
 use tracked::{Check, Context, Observed, Outcome};
 pub use wire::{Candidate, Capability, Digest, Discovery, Effect, Mapping};
+
+pub const PROJECT_CONTEXT_TARGET: &str = "loom:project-context";
 
 /// Offered responsibility must join an independently discovered obligation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -120,11 +123,25 @@ enum Execution {
         executable: PathBuf,
         artifact: Digest,
     },
+    NativePlatform(Arc<nix::applicability::Applicability>),
     Nix(Arc<nix::Graph>),
+    Report {
+        graph: Arc<nix::Graph>,
+        target: Name,
+    },
     Effect(Arc<effect::Engine>),
 }
 
 impl Definition {
+    /// Inspect the validated native producer or prepare its compiler-owned catalogue.
+    /// This accessor does not execute verification or grant publication authority.
+    pub fn nix_graph(&self) -> Option<&nix::Graph> {
+        match &self.execution {
+            Execution::Nix(graph) | Execution::Report { graph, .. } => Some(graph),
+            Execution::Tracked { .. } | Execution::Effect(_) | Execution::NativePlatform(_) => None,
+        }
+    }
+
     /// Bind an exact execution alias without replacing its checked implementation.
     ///
     /// # Errors
@@ -239,7 +256,7 @@ impl Definition {
                     inputs,
                 },
                 execution: wire::Rust {
-                    checker,
+                    checker: wire::RustChecker::Project(checker),
                     artifact: artifact.clone(),
                     entry,
                 },
@@ -270,10 +287,48 @@ impl Definition {
                     });
                 }
             }
-            Execution::Nix(graph) => graph.require_current()?,
+            Execution::Nix(graph) | Execution::Report { graph, .. } => graph.require_current()?,
             Execution::Effect(engine) => engine.require_current()?,
+            Execution::NativePlatform(operation) => operation.require_current()?,
         }
         Ok(())
+    }
+}
+
+/// One pure validation pass may share immutable graph checks across aliases.
+/// This is private, invocation-local, nonserializable, and contains no verdicts.
+#[derive(Default)]
+struct Current {
+    graphs: Vec<Digest>,
+}
+
+impl Current {
+    fn new<'a>(definitions: impl IntoIterator<Item = &'a Definition>) -> Result<Self, Error> {
+        let mut current = Self::default();
+        let mut graphs = Vec::new();
+        for definition in definitions {
+            if let Some(graph) = definition.nix_graph()
+                && !current.graphs.contains(graph.identity())
+            {
+                current.graphs.push(graph.identity().clone());
+                graphs.push(graph);
+            }
+        }
+        nix::Graph::require_current_many(&graphs)?;
+        Ok(current)
+    }
+
+    fn require(&mut self, definition: &Definition) -> Result<(), Error> {
+        if let Execution::Nix(graph) | Execution::Report { graph, .. } = &definition.execution {
+            if self.graphs.contains(graph.identity()) {
+                return Ok(());
+            }
+            definition.require_current()?;
+            self.graphs.push(graph.identity().clone());
+            Ok(())
+        } else {
+            definition.require_current()
+        }
     }
 }
 
@@ -501,6 +556,53 @@ impl Registry {
         Ok(units)
     }
 
+    /// Resolve every owning contract before exposing one unit per exact target.
+    ///
+    /// # Errors
+    /// Invalid owners reject the entire request; no partially resolved units escape.
+    pub fn resolve_owned(
+        &self,
+        snapshot: &Snapshot,
+        inventory: &Inventory,
+        contracts: &BTreeMap<Name, BTreeSet<ResourcePath>>,
+    ) -> Result<Vec<Unit>, Error> {
+        require_context(snapshot, inventory)?;
+        self.snapshot.require_current()?;
+        let mut units = BTreeMap::new();
+        for (target, owners) in contracts {
+            if owners.is_empty() {
+                return Err(Error::Owners {
+                    target: target.clone(),
+                });
+            }
+            let definition = self.definition(target)?;
+            for contract in owners {
+                let unit = self
+                    .resolve(
+                        snapshot,
+                        inventory,
+                        definition.description(),
+                        contract.clone(),
+                    )
+                    .map_err(|source| Error::Admission {
+                        target: target.clone(),
+                        contract: contract.clone(),
+                        source: Box::new(source),
+                    })?;
+                match units.entry(target.clone()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(unit);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        plan::merge_contract(entry.get_mut(), unit);
+                    }
+                }
+            }
+        }
+        snapshot.require_current()?;
+        Ok(units.into_values().collect())
+    }
+
     /// Resolve a parsed description against the actual definition and current inventory.
     ///
     /// # Errors
@@ -512,6 +614,23 @@ impl Registry {
         candidate: &Candidate,
         contract: ResourcePath,
     ) -> Result<Unit, Error> {
+        self.resolve_current(
+            snapshot,
+            inventory,
+            candidate,
+            contract,
+            &mut Current::default(),
+        )
+    }
+
+    fn resolve_current(
+        &self,
+        snapshot: &Snapshot,
+        inventory: &Inventory,
+        candidate: &Candidate,
+        contract: ResourcePath,
+        current: &mut Current,
+    ) -> Result<Unit, Error> {
         require_context(snapshot, inventory)?;
         let target = candidate.target();
         if self.snapshot.identity() != snapshot.identity()
@@ -522,7 +641,7 @@ impl Registry {
             });
         }
         let definition = self.definition(target)?;
-        definition.require_current()?;
+        current.require(definition)?;
         if candidate != definition.description() {
             return Err(Error::Inconsistent {
                 target: target.clone(),
@@ -635,6 +754,33 @@ pub struct Unit {
 }
 
 impl Unit {
+    /// Semantic baseline lane comes from its checked constructor, never caller execution flags.
+    pub fn baseline_tier(&self) -> crate::Tier {
+        if matches!(self.definition.execution, Execution::NativePlatform(_)) {
+            return crate::Tier::System;
+        }
+        if let Some(tier) = self.nix_graph().and_then(nix::Graph::report_tier) {
+            tier
+        } else if self
+            .responsibilities()
+            .iter()
+            .any(|responsibility| responsibility.duty() == Duty::Test)
+        {
+            crate::Tier::Test
+        } else {
+            crate::Tier::Check
+        }
+    }
+
+    pub const fn is_report_projection(&self) -> bool {
+        matches!(self.definition.execution, Execution::Report { .. })
+    }
+
+    /// Read-only comparison of resolved execution identity, not a grant to execute it.
+    pub fn shares_execution_with(&self, other: &Self) -> bool {
+        plan::selection::same_execution(self, other)
+    }
+
     pub const fn target(&self) -> &Name {
         self.definition.description().target()
     }
@@ -652,10 +798,7 @@ impl Unit {
     }
 
     pub fn nix_graph(&self) -> Option<&nix::Graph> {
-        match &self.definition.execution {
-            Execution::Nix(graph) => Some(graph),
-            Execution::Tracked { .. } | Execution::Effect(_) => None,
-        }
+        self.definition.nix_graph()
     }
 
     pub const fn annotations(&self) -> &[crate::annotation::Annotation] {
@@ -675,10 +818,23 @@ impl Unit {
                 context.finish(self.target().clone(), result)?
             }
             Execution::Nix(graph) => graph.run(self.target().clone())?,
+            Execution::Report { graph, target } => graph
+                .run(self.target().clone())?
+                .project(self.target().clone(), Some(target))?,
             Execution::Effect(engine) => engine.run(self.target().clone())?,
+            Execution::NativePlatform(operation) => operation.observe(self.target().clone())?,
         };
         self.require_current()?;
         Ok(observed)
+    }
+
+    fn project(&self, observed: &Observed) -> Result<Observed, Error> {
+        self.require_current()?;
+        let target = match &self.definition.execution {
+            Execution::Report { target, .. } => Some(target),
+            _ => None,
+        };
+        observed.project(self.target().clone(), target)
     }
 
     fn require_current(&self) -> Result<(), Error> {
@@ -774,6 +930,8 @@ pub enum Error {
         #[source]
         source: Box<Error>,
     },
+    /// provider `{target:?}` has no owning acceptance contract; resolve its current owners and retry `loom gate verify`
+    Owners { target: Name },
     /// query omitted requested provider `{target:?}`; generate the complete per-target response and retry `loom gate verify`
     MissingResponse { target: Name },
     /// query returned unrequested provider `{target:?}`; correct the producer's target mapping and retry `loom gate verify`

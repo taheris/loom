@@ -291,8 +291,6 @@ bash scripts/configure-cargo-patches.sh
 bash scripts/run-private-fixture-tests --build-campaign cargo nextest run -p loom-driver -p loom-workflow \
   -E 'test(cargo_retention) | test(worker_cargo_target_reuse_honors_policy_before_spawn)'
 bash scripts/verify-native-cargo-lifetime
-LOOM_PROFILES_MANIFEST=/nix/store/...-profile-images.json \
-  bash scripts/verify-wrix-cargo-projection
 ```
 
 Permission regressions also run through the real CLI and offline Cargo:
@@ -308,8 +306,11 @@ and use disposable state roots rather than an operator's pool.
 Portable Rust tests cover pressure, free-space/accounting failures, independent
 holds, cache replay/downgrade, issuer replacement, path substitutions and real
 collector SIGKILL at quarantine boundaries. Explicit Linux system tests require
-real delegated cgroups and actual Wrix/Podman: real Cargo/build-script
-descendants survive launcher SIGKILL, retain output through pressure/restart,
-and become collectible only after exact teardown. Default-suite skips are not
-runtime proof. The private fixture runner uses its own native pool with small
-fixture estimates; production limits and existing operator pools are unchanged.
+real delegated cgroups: real Cargo/build-script descendants survive launcher
+SIGKILL, retain output through pressure/restart, and become collectible only
+after exact teardown. Default-suite skips are not runtime proof. Wrix owns
+container mount, cache-backend and runtime-ticket conformance; Loom tests its
+requested mounts, configuration serialization and handling of
+ticket/reconciliation responses without launching Wrix containers. The private
+fixture runner uses its own native pool with small fixture estimates; production
+limits and existing operator pools are unchanged.

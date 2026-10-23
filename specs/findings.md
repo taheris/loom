@@ -198,11 +198,13 @@ legacy alias registry.
   deterministic error message and producing no bd writes
   [test](mint_refuses_when_loom_inside_env_is_set)
 
-- The walk emits `LOOM_FINDING: <json>` records on stdout, one JSON object per
-  finding, streamed as findings are identified (not batched at end-of-walk). The
-  JSON shape is
+- Protocol admits each `LOOM_FINDING: <json>` record with JSON shape
   `{"token": ..., "route": "blocking|deferred|clarify", "bonds": [...], "target": {"kind": ..., ...}, "evidence": ...}`
-  [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
+  [test](loom-protocol::gate::tests::mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
+
+- The walk emits one `LOOM_FINDING: <json>` object per finding on stdout,
+  streamed as findings are identified, not batched at end-of-walk.
+  [test](loom-workflow::mint::walk::tests::mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
 
 - Finding evidence preserves escaped multiline content through strict JSON
   decoding and contextual resolution; unescaped string newlines are rejected
@@ -237,15 +239,18 @@ legacy alias registry.
   `LOOM_COMPLETE` surfaces as
   `RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern { finding_count, findings })`,
   retaining the streamed findings for recovery
-  [test](findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
+  [test](loom-protocol::gate::tests::findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
+
+- Production review routes findings followed by `LOOM_COMPLETE` through
+  `FindingsWithoutConcern`, retaining their evidence for recovery.
+  [test](loom-workflow::review::phase_verdict::tests::findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
 
 <!-- prettier-ignore -->
 - The wire-format anti-drift verifier (a `[check]`-tier audit) scans every file
   under `crates/loom-templates/templates/` for the literal substrings
   `LOOM_CONCERN:` and `LOOM_FINDING:` and fails if they appear in any file other
   than `partial/findings_walk.md`. Bare-prose mentions without the colon (e.g.
-  _"the `LOOM_CONCERN` marker"_) are unaffected [check](cargo run -p loom-walk
-  -- template_wire_format_restatement)
+  _"the `LOOM_CONCERN` marker"_) are unaffected [check](cargo run -p loom-walk -- template_wire_format_restatement)
 
 - The anti-drift verifier accepts the canonical layout: with `LOOM_FINDING:` /
   `LOOM_CONCERN:` substrings present only in `partial/findings_walk.md`, the
@@ -301,10 +306,13 @@ legacy alias registry.
   mint processing
   [test](loom_toml_suppress_entries_filter_rubric_findings_by_id_or_hash)
 
-- Suppressions do not apply to deterministic or integrity findings; matching
-  `[[suppress]]` ids or hashes for those findings are reported as ineffective
-  and the findings still fail / mint normally
-  [test](suppressions_do_not_filter_deterministic_or_integrity_findings)
+- Suppression policy rejects deterministic or integrity finding matches;
+  matching `[[suppress]]` ids or hashes are reported as ineffective.
+  [test](loom-workflow::suppression::tests::suppressions_do_not_filter_deterministic_or_integrity_findings)
+
+- Mint processing retains deterministic or integrity findings despite matching
+  suppressions, so they still fail / mint normally.
+  [test](loom-workflow::mint::tests::suppressions_do_not_filter_deterministic_or_integrity_findings)
 
 - A well-formed `LOOM_CONCERN` walk whose every streamed finding is suppressed
   exits clean after emitting suppressed-status records; suppression does not
@@ -313,8 +321,7 @@ legacy alias registry.
 
 <!-- prettier-ignore -->
 - Inline code-comment suppressions are unsupported; the gate does not scan
-  source comments for suppression directives [check](cargo run -p loom-walk --
-  no_inline_suppression_comment_contract)
+  source comments for suppression directives [check](cargo run -p loom-walk -- no_inline_suppression_comment_contract)
 
 - `LOOM_FINDING_STATUS:` driver-emitted JSON lines carry each enriched finding's
   id, hash, bd label, token, target, and action without requiring the LLM to
@@ -373,9 +380,12 @@ legacy alias registry.
 - Trusted finding materialization requires Inbox's unique active brief before
   human-queue admission, checking evidence and the resulting notes/description.
   Missing, malformed or duplicate active blocks use the per-decision
-  `clarify-without-options` fallback. Inspection retains the finding and brief
-  diagnostics without Beads mutation or loss of finding context.
-  [test](finding_clarification_materialization_requires_unique_active_brief)
+  `clarify-without-options` fallback.
+  [test](loom-workflow::mint::tests::finding_clarification_materialization_requires_unique_active_brief)
+
+- Inspection retains finding and active-brief diagnostics without Beads
+  mutation or loss of finding context.
+  [test](loom::gate_inspection_output::finding_clarification_materialization_requires_unique_active_brief)
 
 - Tree-minted `loom:clarify` beads and their `loom:blocked` malformed-options
   fallbacks have `status=blocked` while awaiting `loom inbox`, so Beads visibly
@@ -546,8 +556,7 @@ legacy alias registry.
 - The `finding_no_duplicate_definitions` walker continues to enforce one
   canonical definition of `Finding`, `ConcernToken`, `FindingTarget`,
   `WalkOutput` and `BadWalk` across the workspace; their canonical domain home
-  is `loom-protocol::gate` [check](cargo run -p loom-walk
-  -- finding_no_duplicate_definitions)
+  is `loom-protocol::gate` [check](cargo run -p loom-walk -- finding_no_duplicate_definitions)
 
 ### Production walker wiring
 

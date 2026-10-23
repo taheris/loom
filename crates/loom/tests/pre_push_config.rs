@@ -23,6 +23,15 @@ impl Fixture {
         std::fs::create_dir_all(&tools).expect("create tools");
 
         let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        std::fs::create_dir_all(workspace.join("tests/verify"))
+            .expect("native preflight directory");
+        std::fs::copy(
+            source_root.join("tests/verify/native-resources.py"),
+            workspace.join("tests/verify/native-resources.py"),
+        )
+        .expect("copy actual native source preflight");
+        std::fs::write(workspace.join("flake.nix"), "{ outputs = { self }: {}; }\n")
+            .expect("empty native output fixture");
         // These tests exercise the retained Gate hook behavior explicitly,
         // independently of the temporary automatic-stage suspension.
         let config = std::fs::read_to_string(source_root.join(".pre-commit-config.yaml"))
@@ -134,6 +143,25 @@ impl Fixture {
     }
 }
 
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "The external Nix fixture contains literal Bash parameter expansions, not Rust formatting placeholders."
+)]
+fn write_nix_fixture(path: impl AsRef<Path>, body: &str) -> std::io::Result<()> {
+    // Only external Nix metadata is modeled; the real Python preflight runs.
+    let prefix = r#"
+case "${1:-} ${2:-}" in
+  'flake metadata')
+    if [[ "$3" == git+file://* ]]; then printf 'native-resource-preflight\ttiers=<unset>\n' >> "$PRE_PUSH_TEST_LOG"; fi
+    if [[ "${PRE_PUSH_INVALID_NATIVE_METADATA:-0}" == 1 ]]; then printf '{}\n'; else printf '{"path":"%s","url":"path:%s"}\n' "$PWD" "$PWD"; fi
+    exit 0 ;;
+  'config show') printf '{"system":{"value":"__SYSTEM__"}}\n'; exit 0 ;;
+  'eval --json') [[ "$*" == *'collect "packages" ++ collect "checks"'* ]] || exit 64; printf '[]\n'; exit 0 ;;
+esac
+"#.replace("__SYSTEM__", &loom_gate::runner::result::current_platform());
+    loom_test_support::write_executable_bash_script(path, &(prefix + body))
+}
+
 fn install_recording_command(tools: &Path, name: &str) {
     let body = format!(
         "set -euo pipefail\n\
@@ -149,8 +177,12 @@ fn install_recording_command(tools: &Path, name: &str) {
              fi\n\
          }} >> \"$PRE_PUSH_TEST_LOG\"\n",
     );
-    loom_test_support::write_executable_bash_script(tools.join(name), &body)
-        .expect("write recording command");
+    if name == "nix" {
+        write_nix_fixture(tools.join(name), &body).expect("write native metadata recorder");
+    } else {
+        loom_test_support::write_executable_bash_script(tools.join(name), &body)
+            .expect("write recording command");
+    }
 }
 
 #[test]
@@ -428,6 +460,33 @@ fn clippy_hooks_run_for_manifest_and_toolchain_changes() {
 }
 
 #[test]
+fn suites_reject_malformed_native_metadata_before_building_or_claiming_system_credit() {
+    for script in ["scripts/full-test.sh", "scripts/required-test.sh"] {
+        let fixture = Fixture::new();
+        install_recording_command(&fixture.tools, "nix");
+        let output = fixture
+            .recording_command("bash")
+            .arg(script)
+            .env("PRE_PUSH_INVALID_NATIVE_METADATA", "1")
+            .output()
+            .expect("run malformed native metadata control");
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("KeyError: 'path'"),
+            "{output:?}"
+        );
+        let log = std::fs::read_to_string(&fixture.log).expect("native preflight log");
+        assert!(log.contains("native-resource-preflight"));
+        assert!(
+            !log.contains("nix\tbuild")
+                && !log.contains("cargo\t")
+                && !log.contains("loom\tgate\tsystem"),
+            "{log}"
+        );
+    }
+}
+
+#[test]
 fn full_suite_checks_production_and_test_feature_configurations() {
     let fixture = Fixture::new();
     install_recording_command(&fixture.tools, "nix");
@@ -443,13 +502,14 @@ fn full_suite_checks_production_and_test_feature_configurations() {
         log.lines().collect::<Vec<_>>(),
         [
             "nix\tfmt\t--\t--fail-on-change\ttiers=<unset>",
+            "native-resource-preflight\ttiers=<unset>",
             "nix\tbuild\ttiers=<unset>",
             "nix\tflake\tcheck\t--no-warn-dirty\ttiers=<unset>",
             "cargo\tbuild\t--workspace\ttiers=<unset>",
             "cargo\tclippy\t--workspace\t--\t-D\twarnings\ttiers=<unset>",
             "cargo\tclippy\t--workspace\t--all-targets\t--\t-D\twarnings\ttiers=<unset>",
-            "cargo\tnextest\trun\t--workspace\ttiers=<unset>",
-            "loom\tgate\tsystem\t--tree\ttiers=<unset>",
+            "cargo\tnextest\trun\t--workspace\t--ignore-default-filter\ttiers=<unset>",
+            "nix\trun\t.#test-native-units\ttiers=<unset>",
         ],
     );
 }
@@ -466,12 +526,12 @@ if [[ "$1" == run ]]; then
     case "$2" in
         '.#test') exec bash scripts/full-test.sh ;;
         '.#test-required') exec bash scripts/required-test.sh ;;
+        '.#test-native-units') exit 0 ;;
         *) exit 2 ;;
     esac
 fi
 "#;
-    loom_test_support::write_executable_bash_script(fixture.tools.join("nix"), nix_body)
-        .expect("write Nix recorder");
+    write_nix_fixture(fixture.tools.join("nix"), nix_body).expect("write Nix recorder");
     for (path, expected_clippy) in [("src/lib.rs", 2), ("notes.txt", 0)] {
         let base = fixture.head();
         let head = fixture.commit(path, "changed\n", "Change pushed file");
@@ -493,7 +553,8 @@ fi
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.starts_with("cargo\tnextest\trun\t--workspace"))
+                .filter(|line| line
+                    .starts_with("cargo\tnextest\trun\t--workspace\t--ignore-default-filter"))
                 .count(),
             1
         );
@@ -502,12 +563,20 @@ fi
                 .iter()
                 .filter(|line| line.starts_with("loom\tgate\tsystem\t--tree"))
                 .count(),
-            1
+            0
         );
         assert!(lines.contains(&format!(
             "loom\tgate\tverify\t--diff\t{base}..{head}\ttiers=<unset>"
         )));
         assert!(lines.contains(&"nix\trun\t.#test-required\ttiers=<unset>".to_owned()));
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "nix\trun\t.#test-native-units\ttiers=<unset>")
+                .count(),
+            1,
+            "pre-push must retain the native isolation verifier exactly once",
+        );
     }
 }
 
@@ -515,7 +584,7 @@ fi
 #[test]
 fn pre_push_stage_stops_after_failed_flake_check() {
     let fixture = Fixture::new();
-    loom_test_support::write_executable_bash_script(
+    write_nix_fixture(
         fixture.tools.join("nix"),
         "set -euo pipefail\nprintf 'nix\\t%s\\n' \"$*\" >> \"$PRE_PUSH_TEST_LOG\"\nexit 1\n",
     )
@@ -540,7 +609,7 @@ fn pre_push_stage_stops_after_failed_flake_check() {
 }
 
 #[test]
-fn required_suite_keeps_full_nextest_and_system_coverage_without_lint_repetition() {
+fn required_suite_keeps_all_native_tests_without_repeating_lint_or_nix_work() {
     let fixture = Fixture::new();
     install_recording_command(&fixture.tools, "nix");
     let output = fixture
@@ -553,13 +622,40 @@ fn required_suite_keeps_full_nextest_and_system_coverage_without_lint_repetition
     assert_eq!(
         log.lines().collect::<Vec<_>>(),
         [
-            "nix\tfmt\t--\t--fail-on-change\ttiers=<unset>",
-            "nix\tbuild\ttiers=<unset>",
+            "native-resource-preflight\ttiers=<unset>",
             "cargo\tbuild\t--workspace\ttiers=<unset>",
-            "cargo\tnextest\trun\t--workspace\ttiers=<unset>",
-            "loom\tgate\tsystem\t--tree\ttiers=<unset>"
+            "cargo\tnextest\trun\t--workspace\t--ignore-default-filter\ttiers=<unset>",
+            "nix\trun\t.#test-native-units\ttiers=<unset>",
         ]
     );
+}
+
+#[test]
+fn suites_stop_without_system_credit_when_native_isolation_is_unavailable_or_failed() {
+    for script in ["scripts/full-test.sh", "scripts/required-test.sh"] {
+        for exit in [1, 78] {
+            let fixture = Fixture::new();
+            write_nix_fixture(
+                fixture.tools.join("nix"),
+                &format!(
+                    "set -euo pipefail\nprintf 'nix' >> \"$PRE_PUSH_TEST_LOG\"\nfor arg in \"$@\"; do printf '\\t%s' \"$arg\" >> \"$PRE_PUSH_TEST_LOG\"; done\nprintf '\\n' >> \"$PRE_PUSH_TEST_LOG\"\nif [[ \"$*\" == 'run .#test-native-units' ]]; then exit {exit}; fi\n"
+                ),
+            )
+            .expect("write native-unit failure control");
+            let output = fixture
+                .recording_command("bash")
+                .arg(script)
+                .output()
+                .expect("execute real suite with native-unit failure control");
+            assert_eq!(output.status.code(), Some(exit), "{script}: {output:?}");
+            let log = std::fs::read_to_string(&fixture.log).expect("invocation log");
+            assert!(log.contains("cargo\tnextest\trun\t--workspace\t--ignore-default-filter"));
+            assert!(
+                !log.contains("loom\tgate\tsystem"),
+                "{script} must not continue past unavailable or failed native isolation: {log}",
+            );
+        }
+    }
 }
 
 #[test]

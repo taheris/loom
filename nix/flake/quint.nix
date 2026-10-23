@@ -1,18 +1,50 @@
 _: {
   perSystem =
     {
+      config,
       pkgs,
+      system,
       loom,
-      profileManifest,
       ...
     }:
     let
+      nativePackage = import ../native-package.nix;
+      checked = import ../verification.nix;
+      checkResource =
+        origin:
+        checked.resource {
+          root = ../..;
+          inherit origin;
+        };
+      inherit (pkgs.lib.fileset) toSource unions;
+      modelSource = toSource {
+        root = ../..;
+        fileset = unions [
+          ../../specs/gate
+          ../../specs/gate.md
+          ../../specs/verify.md
+          ../../specs/evidence.md
+          ../../specs/simulation.md
+          ../../scripts/test-quint-model.sh
+          ../../scripts/test-quint.sh
+          ../../scripts/quint-output.sh
+          ../../tests/quint/model-harness.sh
+          ../../tests/quint/mutations.py
+          ./quint.nix
+          ../quint/tools.nix
+          ../quint/checker.rs
+          ../quint/witnesses.rs
+          ../cargo-home.nix
+          ../../flake.lock
+        ];
+      };
+      modelResource = checked.resource { root = modelSource; };
       tools = import ../quint/tools.nix { inherit pkgs; };
       harness = loom.craneLib.buildPackage {
         pname = "loom-quint-acceptance";
         version = "1";
         src = loom.stagedSrc;
-        inherit (loom) cargoArtifacts;
+        inherit (loom) cargoArtifacts cargoVendorDir;
         cargoExtraArgs = "--locked --package loom-gate --example quint";
         doCheck = false;
         installPhaseCommand = ''
@@ -24,7 +56,7 @@ _: {
         pname = "loom-todo-acceptance";
         version = "1";
         src = loom.stagedSrc;
-        inherit (loom) cargoArtifacts;
+        inherit (loom) cargoArtifacts cargoVendorDir;
         cargoExtraArgs = "--locked --package loom-workflow --test todo_production";
         doCheck = false;
         installPhaseCommand = ''
@@ -44,7 +76,7 @@ _: {
         pname = "loom-remediation-acceptance";
         version = "1";
         src = loom.stagedSrc;
-        inherit (loom) cargoArtifacts;
+        inherit (loom) cargoArtifacts cargoVendorDir;
         buildPhaseCargoCommand = "cargo test --release --locked --package loom-workflow --lib --no-run";
         doNotPostBuildInstallCargoBinaries = true;
         doCheck = false;
@@ -61,18 +93,6 @@ _: {
           )
         '';
       };
-      workspaceHarness = loom.craneLib.buildPackage {
-        pname = "loom-workspace-acceptance";
-        version = "1";
-        src = loom.stagedSrc;
-        inherit (loom) cargoArtifacts;
-        cargoExtraArgs = "--locked --package loom --example workspace-safety-history";
-        doCheck = false;
-        installPhaseCommand = ''
-          mkdir -p "$out/bin"
-          cp target/release/examples/workspace-safety-history "$out/bin/loom-workspace-safety"
-        '';
-      };
       app = pkgs.writeShellApplication {
         name = "test-quint";
         runtimeInputs = [
@@ -82,158 +102,282 @@ _: {
           pkgs.git
           pkgs.bash
           pkgs.beads
+          pkgs.dolt
           pkgs.gnused
           pkgs.gnugrep
-        ]
-        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.podman ];
+        ];
         text = ''
           export LOOM_TODO_ACCEPTANCE_BIN=${todoAcceptance}/bin/todo-acceptance-persistence
           export LOOM_REMEDIATION_ACCEPTANCE_BIN=${remediationAcceptance}/bin/remediation-acceptance
           export LOOM_TASK_ACCEPTANCE_BIN=${remediationAcceptance}/bin/remediation-acceptance
-          export LOOM_WORKSPACE_SAFETY_BIN=${workspaceHarness}/bin/loom-workspace-safety
-          export LOOM_PROFILES_MANIFEST=${profileManifest}
           export LOOM_QUINT_BIN=${harness}/bin/loom-quint
           export LOOM_QUINT_SOURCE=${loom.stagedSrc}
           export LOOM_QUINT_PACKAGE=${tools}
           ${builtins.readFile ../../scripts/test-quint.sh}
         '';
       };
+      verify = import ../system-verification.nix { inherit pkgs system loom; };
+      hermeticScenarios = [
+        "model"
+        "reference-equivalence"
+        "cache-model"
+        "witnesses"
+        "provisioning-and-batching"
+        "todo-acceptance-persistence"
+      ];
+      scenarioProgram =
+        scenario:
+        pkgs.writeShellApplication {
+          name = "quint-${scenario}";
+          runtimeInputs = [
+            tools
+            pkgs.coreutils
+            pkgs.jq
+            pkgs.git
+            pkgs.bash
+            pkgs.gnused
+            pkgs.gnugrep
+            pkgs.python3
+          ];
+          text = ''
+            export LOOM_QUINT_SOURCE=${loom.stagedSrc}
+            export LOOM_QUINT_PACKAGE=${tools}
+            ${
+              if scenario == "todo-acceptance-persistence" then
+                "export LOOM_TODO_ACCEPTANCE_BIN=${todoAcceptance}/bin/todo-acceptance-persistence"
+              else if scenario == "provisioning-and-batching" then
+                "export LOOM_QUINT_BIN=${harness}/bin/loom-quint"
+              else
+                ""
+            }
+            exec bash ${loom.stagedSrc}/scripts/test-quint.sh '${scenario}'
+          '';
+        };
     in
     {
       packages = {
         quint-tools = tools;
-        quint-acceptance = harness;
-        test-quint = app;
-        # FIXME: Restore the automatic check after bounding the mutation harness;
-        # its isolated rebuild took 129s. Keep every other flake check enabled.
-        # Run explicitly with `nix build .#quint-model` while it is deferred.
-        quint-model =
-          pkgs.runCommand "quint-model"
-            {
-              nativeBuildInputs = [
-                tools
-                pkgs.bash
-                pkgs.coreutils
-                pkgs.gnugrep
-                pkgs.jq
-                pkgs.python3
-              ];
-            }
-            ''
-              set -euo pipefail
-              export LOOM_QUINT_SOURCE=${loom.stagedSrc}
-              export LOOM_QUINT_PACKAGE=${tools}
-              bash ${../../tests/quint/model-harness.sh}
-              touch "$out"
-            '';
+        quint-acceptance = nativePackage harness;
+        test-quint = nativePackage app;
+        quint-model = checked.check {
+          resources = [ modelResource ];
+          evaluation = import ../native-context.nix;
+          build =
+            paths:
+            pkgs.runCommand "quint-model"
+              {
+                nativeBuildInputs = [
+                  tools
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.gnugrep
+                  pkgs.jq
+                  pkgs.python3
+                ];
+              }
+              ''
+                set -euo pipefail
+                export LOOM_QUINT_SOURCE=${builtins.head paths}
+                export LOOM_QUINT_PACKAGE=${tools}
+                bash "$LOOM_QUINT_SOURCE/tests/quint/model-harness.sh"
+                touch "$out"
+              '';
+        };
+      }
+      // builtins.listToAttrs (
+        map (scenario: {
+          name = "verification-quint-${scenario}";
+          value = verify {
+            name = "quint-${scenario}";
+            program = "${scenarioProgram scenario}/bin/quint-${scenario}";
+          };
+        }) hermeticScenarios
+      );
+      checks.quint-model = config.packages.quint-model;
+      checks.quint-source-closure = checked.check {
+        resources = [ modelResource ];
+        evaluation = import ../native-context.nix;
+        build =
+          paths:
+          pkgs.runCommand "quint-source-closure" { } ''
+            set -euo pipefail
+            [[ -f ${builtins.head paths}/specs/gate/model.qnt ]]
+            [[ -f ${builtins.head paths}/scripts/quint-output.sh ]]
+            [[ -f ${builtins.head paths}/tests/quint/mutations.py ]]
+            [[ -f ${builtins.head paths}/nix/quint/witnesses.rs ]]
+            [[ ! -e ${builtins.head paths}/crates ]]
+            [[ ! -e ${builtins.head paths}/tests/agent ]]
+            touch "$out"
+          '';
       };
       checks.todo-acceptance-persistence =
-        pkgs.runCommand "todo-acceptance-persistence"
-          {
-            nativeBuildInputs = [ pkgs.git ];
-          }
-          ''
-            set -euo pipefail
-            bash ${../../scripts/run-private-fixture-tests} ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
-            touch "$out"
-          '';
+        let
+          nativeSources = map checkResource [ "scripts/run-private-fixture-tests" ];
+        in
+        checked.check {
+          resources = nativeSources;
+          evaluation = (import ../native-context.nix) ++ loom.testResources;
+          build =
+            _:
+            pkgs.runCommand "todo-acceptance-persistence"
+              {
+                nativeBuildInputs = [ pkgs.git ];
+              }
+              ''
+                set -euo pipefail
+                bash ${(builtins.elemAt nativeSources 0).path} ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
+                touch "$out"
+              '';
+        };
+
       checks.remediation-acceptance =
-        pkgs.runCommand "remediation-acceptance"
-          {
-            nativeBuildInputs = [ pkgs.git ];
-          }
-          ''
-            set -euo pipefail
-            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance mint::tests::acceptance::
-            touch "$out"
-          '';
+        let
+          nativeSources = map checkResource [ "scripts/run-private-fixture-tests" ];
+        in
+        checked.check {
+          resources = nativeSources;
+          evaluation = (import ../native-context.nix) ++ loom.testResources;
+          build =
+            _:
+            pkgs.runCommand "remediation-acceptance"
+              {
+                nativeBuildInputs = [ pkgs.git ];
+              }
+              ''
+                set -euo pipefail
+                bash ${(builtins.elemAt nativeSources 0).path} ${remediationAcceptance}/bin/remediation-acceptance mint::tests::acceptance::
+                touch "$out"
+              '';
+        };
+
       checks.phase-context =
-        pkgs.runCommand "phase-context"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.git
-              pkgs.beads
-              pkgs.gnused
-              pkgs.jq
-            ];
-          }
-          ''
-            set -euo pipefail
-            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "phase_context_tests::"
-            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "todo::dossier::tests::"
-            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "mint::acceptance::dispatch_tests::"
-            touch "$out"
-          '';
-      checks.task-acceptance-dispatch =
-        pkgs.runCommand "task-acceptance-dispatch"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.git
-              pkgs.beads
-              pkgs.gnused
-              pkgs.jq
-            ];
-          }
-          ''
-            set -euo pipefail
-            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "r#loop::worker::"
-            bash ${../../scripts/run-private-fixture-tests} ${remediationAcceptance}/bin/remediation-acceptance "mint::acceptance::dispatch_tests::"
-            touch "$out"
-          '';
+        let
+          nativeSources = map checkResource [ "scripts/run-private-fixture-tests" ];
+        in
+        checked.check {
+          resources = nativeSources;
+          # The compiler preparations evaluate the staged, full test fixture.
+          evaluation = (import ../native-context.nix) ++ loom.testResources;
+          build =
+            _:
+            pkgs.runCommand "phase-context"
+              {
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.git
+                  pkgs.beads
+                  pkgs.dolt
+                  pkgs.gnused
+                  pkgs.jq
+                ];
+              }
+              ''
+                set -euo pipefail
+                bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "phase_context_tests::"
+                bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "todo::dossier::tests::"
+                bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "mint::acceptance::dispatch_tests::"
+                bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "r#loop::worker::"
+                touch "$out"
+              '';
+        };
+
+      checks.task-acceptance-dispatch = config.checks.phase-context;
+
       checks.private-fixture-tests =
-        pkgs.runCommand "private-fixture-tests"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.coreutils
-            ];
-          }
-          ''
-            set -euo pipefail
-            bash ${../../scripts/run-private-fixture-tests} bash ${../../tests/fixtures/private-fixture-tests.sh} ${../../scripts/run-private-fixture-tests}
-            touch "$out"
-          '';
+        let
+          nativeSources = map checkResource [
+            "scripts/run-private-fixture-tests"
+            "tests/fixtures/private-fixture-tests.sh"
+            "nix/private-fixture-tests.sh"
+          ];
+        in
+        checked.check {
+          resources = nativeSources;
+          evaluation = map checkResource [
+            "nix"
+            "flake.nix"
+            "flake.lock"
+            "rust-toolchain.toml"
+            "Cargo.toml"
+            "Cargo.lock"
+          ];
+          build =
+            _:
+            pkgs.runCommand "private-fixture-tests"
+              {
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.coreutils
+                ];
+              }
+              ''
+                set -euo pipefail
+                for runner in ${(builtins.elemAt nativeSources 0).path} ${(builtins.elemAt nativeSources 2).path}; do
+                  bash ${(builtins.elemAt nativeSources 0).path} bash ${(builtins.elemAt nativeSources 1).path} "$runner"
+                done
+                touch "$out"
+              '';
+        };
+
       checks.quint-harness =
-        pkgs.runCommand "quint-harness"
-          {
-            nativeBuildInputs = [
-              tools
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.gnugrep
-              pkgs.jq
-              pkgs.python3
-            ];
-          }
-          ''
-            set -euo pipefail
-            export LOOM_QUINT_BIN=${harness}/bin/loom-quint
-            export LOOM_QUINT_SOURCE=${loom.stagedSrc}
-            export LOOM_QUINT_PACKAGE=${tools}
-                bash ${../../tests/quint/harness.sh}
-            touch "$out"
-          '';
-      checks.quint-no-jvm = pkgs.runCommand "quint-no-jvm" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
-        if grep -Ei '/[^/]*-(openjdk|jdk|jre|apalache)(-|[0-9])' ${
-          pkgs.closureInfo {
-            rootPaths = [
-              tools
-              harness
-            ];
-          }
-        }/store-paths; then
-          echo "Quint checking tools retain a forbidden JVM dependency" >&2
-          exit 1
-        fi
-        touch "$out"
-      '';
-      apps.test-quint = {
-        type = "app";
-        program = "${app}/bin/test-quint";
+        let
+          nativeSources = map checkResource [ "tests/quint/harness.sh" ];
+        in
+        checked.check {
+          resources = nativeSources;
+          evaluation = (import ../native-context.nix) ++ loom.testResources;
+          build =
+            _:
+            pkgs.runCommand "quint-harness"
+              {
+                nativeBuildInputs = [
+                  tools
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.gnugrep
+                  pkgs.jq
+                  pkgs.python3
+                ];
+              }
+              ''
+                set -euo pipefail
+                export LOOM_QUINT_BIN=${harness}/bin/loom-quint
+                export LOOM_QUINT_SOURCE=${loom.stagedSrc}
+                export LOOM_QUINT_PACKAGE=${tools}
+                    bash ${(builtins.elemAt nativeSources 0).path}
+                touch "$out"
+              '';
+        };
+
+      checks.quint-no-jvm =
+        let
+          nativeSources = map checkResource [ ];
+        in
+        checked.check {
+          resources = nativeSources;
+          evaluation = (import ../native-context.nix) ++ loom.testResources;
+          build =
+            _:
+            pkgs.runCommand "quint-no-jvm" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
+              if grep -Ei '/[^/]*-(openjdk|jdk|jre|apalache)(-|[0-9])' ${
+                pkgs.closureInfo {
+                  rootPaths = [
+                    tools
+                    harness
+                  ];
+                }
+              }/store-paths; then
+                echo "Quint checking tools retain a forbidden JVM dependency" >&2
+                exit 1
+              fi
+              touch "$out"
+            '';
+        };
+
+      apps.test-quint = (import ../native-app.nix) pkgs {
+        package = app;
+        name = "test-quint";
         meta.description = "Run finite Quint acceptance scenarios.";
       };
     };

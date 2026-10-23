@@ -1,4 +1,10 @@
-# Rust compiler-cache context and trust controls
+# Historical compiler-cache context and trust controls
+
+The compiler/sccache replay campaign has been removed from Loom, not moved to a
+manual test. Backend conformance belongs upstream. These retained measurements
+are historical advice, not current automated coverage. Loom keeps focused
+configuration, namespace, result-admission and [retention](cargo-retention.md)
+verification.
 
 These are bounded measurements, not a new compiler-cache, mount or verification
 policy. No production cache, key hashing, environment or trusted artifact was
@@ -7,18 +13,18 @@ outputs nor proves that a current verifier ran successfully.
 
 ## Controlled measurements
 
-`tests/agent/rust-cache-context.py` uses actual local Git clones, pinned offline
-Rust/Cargo, one compilation job and a fresh private sccache server per case. All
-inherited `SCCACHE_*` settings are removed before assigning the private cache
-directory, bound and loopback endpoint, preventing an inherited remote backend
-or socket from selecting a production cache. Each server also receives a fresh
-private empty configuration file and must report the exact private local backend
-and cap before any compilation. A deliberately invalid inherited configuration,
-foreign cache path and unusable parent socket are ignored by the actual control;
-the unselected sentinel directory remains absent. Generated files are bounded to
-256 MiB; each private cache has a 128 KiB logical limit. Source, flag, feature
-and dependency changes must produce their distinct expected executable results,
-not merely a successful compiler exit or a metadata cache hit.
+The retired experiment used actual local Git clones, pinned offline Rust/Cargo,
+one compilation job and a fresh private sccache server per case. All inherited
+`SCCACHE_*` settings are removed before assigning the private cache directory,
+bound and loopback endpoint, preventing an inherited remote backend or socket
+from selecting a production cache. Each server also receives a fresh private
+empty configuration file and must report the exact private local backend and cap
+before any compilation. A deliberately invalid inherited configuration, foreign
+cache path and unusable parent socket are ignored by the actual control; the
+unselected sentinel directory remains absent. Generated files are bounded to 256
+MiB; each private cache has a 128 KiB logical limit. Source, flag, feature and
+dependency changes must produce their distinct expected executable results, not
+merely a successful compiler exit or a metadata cache hit.
 
 The measured Rust 1.99.1 / sccache 0.18.0 fixture produced:
 
@@ -105,26 +111,13 @@ build-directory lock does not prevent a later build from replacing a shared
 executable pathname; writable target isolation remains required even when
 compiler caching is useful.
 
-## Automatic replay and ownership
+## Ownership and retained evidence
 
-`checks.<system>.rust-cache-context-fixture` invokes the same fixed experiment
-through actual `loom gate check --tree` with a mode 0444 script copy. Source,
-flag, feature, macro, cache-substitution, retained-executable and recovery
-controls run unattended with existing source-profile capabilities. There is no
-manual host-test handoff, new host bridge or privilege expansion.
-
-Normal automation can replay the pinned check:
-
-```bash
-bash scripts/configure-cargo-patches.sh
-nix build --no-link .#checks.x86_64-linux.rust-cache-context-fixture
-```
-
-Failed fixtures retain their paths and diagnostics; successful private fixtures
-write `rust-cache-context-report.json` before removing their own generated
-files. The registered derivation retains that report as its output. The source
-is the replayable coherent-substitution witness, not an expiring transcript
-assertion or a mutable positive-result cache.
+Loom no longer ships this backend experiment or a replay package. The recorded
+coherent-substitution result explains why cache hits cannot establish source
+identity or trusted execution. Current Loom tests exercise its actual admitted
+namespace configuration, override replacement and result/lifetime boundaries,
+without asserting sccache hit rates, eviction or corruption recovery.
 
 Production profile/mount work remains owned by `lm-gzdt`; trusted artifact
 lifecycle and protected namespace collection remain owned by `lm-nasp`. Neither

@@ -6,7 +6,16 @@ set -euo pipefail
 root="$LOOM_QUINT_SOURCE"
 real_quint=$(command -v quint)
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+cleanup() {
+  local status="$?"
+  if [[ "$status" -eq 0 ]]; then
+    rm -rf "$tmp"
+  else
+    printf 'model harness failed; retained fixture: %s\n' "$tmp" >&2
+  fi
+}
+trap cleanup EXIT
+source "$root/scripts/quint-output.sh"
 
 must_fail() {
   local pattern="$1"
@@ -32,17 +41,28 @@ copy_inputs() {
   mkdir -p "$tmp/source/specs" "$tmp/source/scripts" "$tmp/source/tests/quint" "$tmp/source/nix/flake" "$tmp/source/nix/quint"
   cp -r "$root/specs/gate" "$tmp/source/specs/"
   cp "$root/specs/gate.md" "$root/specs/verify.md" "$root/specs/evidence.md" "$root/specs/simulation.md" "$tmp/source/specs/"
-  cp "$root/scripts/test-quint-model.sh" "$root/scripts/test-quint.sh" "$tmp/source/scripts/"
-  cp "$root/tests/quint/model-harness.sh" "$tmp/source/tests/quint/"
+  cp "$root/scripts/test-quint-model.sh" "$root/scripts/test-quint.sh" "$root/scripts/quint-output.sh" "$tmp/source/scripts/"
+  cp "$root/tests/quint/model-harness.sh" "$root/tests/quint/mutations.py" "$tmp/source/tests/quint/"
   cp "$root/nix/flake/quint.nix" "$tmp/source/nix/flake/"
-  cp "$root/nix/quint/tools.nix" "$root/nix/quint/checker.rs" "$tmp/source/nix/quint/"
+  cp "$root/nix/quint/tools.nix" "$root/nix/quint/checker.rs" "$root/nix/quint/witnesses.rs" "$tmp/source/nix/quint/"
   cp "$root/nix/cargo-home.nix" "$tmp/source/nix/"
   cp "$root/flake.lock" "$tmp/source/"
   chmod -R u+w "$tmp/source"
 }
 
 test_real_model_campaign() {
-  "$BASH" "$root/scripts/test-quint.sh" reference-equivalence >"$tmp/receipt.json"
+  # The spy captures real compiler input IR, never a verdict or altered tool output.
+  write_wrapper <<'SH'
+set -euo pipefail
+"$LOOM_REAL_QUINT" "$@"
+if [[ "$1" == typecheck ]]; then
+  [[ "$#" -eq 4 && "$3" == --out ]]
+  cp "$4" "$LOOM_QUINT_CAPTURE"
+fi
+SH
+  env PATH="$tmp/bin:$PATH" LOOM_REAL_QUINT="$real_quint" LOOM_QUINT_CAPTURE="$tmp/witness-ir.json" \
+    "$BASH" "$root/scripts/test-quint.sh" reference-equivalence >"$tmp/receipt.json"
+  rm "$tmp/bin/quint"
   # Exercise the stdout framing consumed by Gate, not just whole-document JSON.
   [[ "$(wc -l <"$tmp/receipt.json")" -eq 1 ]]
   jq -e '.scenario == "reference-equivalence" and .tests == 113 and
@@ -64,85 +84,54 @@ set -euo pipefail
 if [[ "$1" == --version ]]; then printf '0.33.0\n'; fi
 SH
   must_fail 'invalid or incomplete' env PATH="$tmp/bin:$PATH" "$BASH" "$script" witnesses
+  rm "$tmp/bin/quint"
 }
 
-test_witness_rejects_always_reject_model() {
-  python3 - "$tmp/source/specs/gate/model.qnt" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-p.write_text(p.read_text().replace('with("accepted", authority)', 'with("accepted", false)'))
-PY
-  must_fail 'no bounded success' env LOOM_QUINT_SOURCE="$tmp/source" "$BASH" "$root/scripts/test-quint-model.sh" witnesses
-  cp "$root/specs/gate/model.qnt" "$tmp/source/specs/gate/model.qnt"
+test_native_witness_runner_matches_cli() {
+  local runner status=0
+  runner=$(command -v loom-quint-witnesses)
+  "$runner" "$tmp/witness-ir.json" 42 32 >"$tmp/witness-native.json"
+  jq -e '(.passed | length) == 113 and (.passed | unique | length) == 113 and
+    .failed == [] and .ignored == [] and .errors == []' "$tmp/witness-native.json" >/dev/null
+  "$real_quint" test "$root/specs/gate/witness.qnt" --main witness --seed 42 --max-samples 32 \
+    --match '^(witnessPublicationTest|referenceAllStagesTest)$' --out "$tmp/witness-cli.json"
+  jq -e --slurpfile native "$tmp/witness-native.json" '
+    .failed == [] and .ignored == [] and .errors == [] and
+    (.passed | sort) == ["referenceAllStagesTest", "witnessPublicationTest"] and
+    all(.passed[]; . as $name | ($native[0].passed | index($name)) != null)
+  ' "$tmp/witness-cli.json" >/dev/null
+  jq '(.table[] | select(.name == "witnessPublicationTest") | .expr) |=
+    {kind:"bool", id:.id, value:false}' "$tmp/witness-ir.json" >"$tmp/witness-failure.json"
+  "$runner" "$tmp/witness-failure.json" 42 32 >"$tmp/witness-failed.json" 2>"$tmp/witness-failed.log" || status=$?
+  [[ "$status" -ne 0 ]]
+  jq -e '.failed == ["witnessPublicationTest"] and .ignored == [] and
+    (.passed | length) == 112 and [.errors[].code] == ["QNT511"]' "$tmp/witness-failed.json" >/dev/null
+  must_fail 'invalid witness sample budget' "$runner" "$tmp/witness-ir.json" 42 0
+  jq '(.modules[] | select(.name == "witness") | .declarations) = []' "$tmp/witness-ir.json" >"$tmp/no-witnesses.json"
+  must_fail 'empty or oversized witness suite' "$runner" "$tmp/no-witnesses.json" 42 32
+  jq '.table = {}' "$tmp/witness-ir.json" >"$tmp/no-lookups.json"
+  must_fail 'witness lookup definition not found' "$runner" "$tmp/no-lookups.json" 42 32
 }
 
-test_witness_rejects_stale_signer_trust() {
-  python3 - "$tmp/source/specs/gate/model.qnt" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-p.write_text(p.read_text().replace('not(f.imported) or s.trust.contains(f.signer),', 'true,', 1))
-PY
-  must_fail 'no bounded success' env LOOM_QUINT_SOURCE="$tmp/source" "$BASH" "$root/scripts/test-quint-model.sh" cache-model
-  cp "$root/specs/gate/model.qnt" "$tmp/source/specs/gate/model.qnt"
-}
-
-assert_model_mutation_fails() {
-  local before="$1" after="$2"
-  python3 - "$tmp/source/specs/gate/model.qnt" "$before" "$after" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-source = p.read_text()
-assert source.count(sys.argv[2]) == 1
-p.write_text(source.replace(sys.argv[2], sys.argv[3]))
-PY
-  must_fail 'no bounded success' env LOOM_QUINT_SOURCE="$tmp/source" "$BASH" "$root/scripts/test-quint-model.sh" witnesses
-  cp "$root/specs/gate/model.qnt" "$tmp/source/specs/gate/model.qnt"
-}
-
-test_witness_rejects_resource_construction_omission() {
-  assert_model_mutation_fails \
-    'resources: s.subjects.filter(x => unit(x) == unit(c)).union(Set(8 + unit(c)))' \
-    'resources: s.subjects.filter(x => unit(x) == unit(c))'
-}
-
-test_witness_rejects_wrong_subject_responsibility() {
-  assert_model_mutation_fails 'if (c < 2) 0 else if' 'if (c < 1) 0 else if'
-}
-
-test_witness_rejects_passing_readiness_as_coverage() {
-  assert_model_mutation_fails \
-    'required.forall(c => Set("pass", "pending").contains(coverage(c)))' \
-    'required.forall(c => Set("pass", "pending", "UnneededPendingMarker").contains(coverage(c)))'
-}
-
-test_witness_rejects_worker_canonical_write_permission() {
-  assert_model_mutation_fails \
-    'def trustedWriter = Set("operator", "integration").contains(s.checkout)' \
-    'def trustedWriter = true'
-}
-
-test_witness_rejects_nondurable_checkpoint_deletion() {
-  assert_model_mutation_fails \
-    's.with("stagedCheckpoint", events).with("checkpointStaged", true)' \
-    's.with("checkpoint", events).with("stagedCheckpoint", events).with("checkpointStaged", true)'
+test_model_mutations() {
+  python3 "$root/tests/quint/mutations.py" "$tmp/witness-ir.json" \
+    "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.0/quint_evaluator" "$tmp/failed-mutation-input.json"
 }
 
 test_short_trace_cannot_hide_before_full_trace() {
-  export LOOM_REAL_QUINT="$real_quint"
-  write_wrapper <<'SH'
-set -euo pipefail
-"$LOOM_REAL_QUINT" "$@"
-if [[ "$1" == run ]]; then
-  for arg in "$@"; do
-    if [[ "$arg" == trace.itf.json ]]; then
-      path=trace0.itf.json
-      jq '.states = .states[0:1]' "$path" >"$path.short"
-      mv "$path.short" "$path"
-    fi
-  done
-fi
-SH
-  must_fail 'invalid or incomplete' env PATH="$tmp/bin:$PATH" "$BASH" "$root/scripts/test-quint-model.sh" witnesses
+  mkdir "$tmp/traces"
+  printf '{"states":[{},{}]}\n' >"$tmp/traces/trace0.itf.json"
+  cp "$tmp/traces/trace0.itf.json" "$tmp/traces/trace1.itf.json"
+  require_quint_trace_batch "$tmp/traces" 2 2
+  jq '.states = .states[0:1]' "$tmp/traces/trace0.itf.json" >"$tmp/short.json"
+  mv "$tmp/short.json" "$tmp/traces/trace0.itf.json"
+  must_fail 'incomplete whole-gate trace' require_quint_trace_batch "$tmp/traces" 2 2
+}
+
+test_empty_trace_batch_is_not_completion() {
+  mkdir "$tmp/no-traces"
+  must_fail 'empty or incomplete whole-gate trace batch' require_quint_trace_batch "$tmp/no-traces" 2 2
+  must_fail 'empty or incomplete whole-gate trace batch' require_quint_trace_batch "$tmp/traces" 3 2
 }
 
 test_native_exhaustive_controls() {
@@ -193,16 +182,16 @@ test_native_exhaustive_controls() {
 }
 
 test_no_exhaustive_output_is_not_success() {
-  write_wrapper <<'SH'
-set -euo pipefail
-exec "$LOOM_REAL_QUINT" "$@"
-SH
-  {
-    printf '#!%s\n' "$BASH"
-    printf 'set -euo pipefail\nexit 0\n'
-  } >"$tmp/bin/loom-quint-checker"
-  chmod +x "$tmp/bin/loom-quint-checker"
-  must_fail 'missing completed exhaustive result' env PATH="$tmp/bin:$PATH" "$BASH" "$root/scripts/test-quint-model.sh" model
+  local plan="$root/specs/gate/campaign.json"
+  require_quint_exhaustive_result "$tmp/exhaustive.json" "$plan"
+  printf '' >"$tmp/empty-result.json"
+  must_fail 'missing completed exhaustive result' require_quint_exhaustive_result "$tmp/empty-result.json" "$plan"
+  jq '.depth += 1' "$tmp/exhaustive.json" >"$tmp/wrong-depth.json"
+  must_fail 'missing completed exhaustive result' require_quint_exhaustive_result "$tmp/wrong-depth.json" "$plan"
+  jq '.states = 0' "$tmp/exhaustive.json" >"$tmp/no-states.json"
+  must_fail 'missing completed exhaustive result' require_quint_exhaustive_result "$tmp/no-states.json" "$plan"
+  cat "$tmp/exhaustive.json" "$tmp/exhaustive.json" >"$tmp/two-results.json"
+  must_fail 'missing completed exhaustive result' require_quint_exhaustive_result "$tmp/two-results.json" "$plan"
 }
 
 test_timeout_is_not_completion() {
@@ -218,14 +207,10 @@ mkdir "$tmp/bin"
 copy_inputs
 test_real_model_campaign
 test_invalid_and_empty_campaigns
-test_witness_rejects_always_reject_model
-test_witness_rejects_stale_signer_trust
-test_witness_rejects_resource_construction_omission
-test_witness_rejects_wrong_subject_responsibility
-test_witness_rejects_passing_readiness_as_coverage
-test_witness_rejects_worker_canonical_write_permission
-test_witness_rejects_nondurable_checkpoint_deletion
+test_native_witness_runner_matches_cli
+test_model_mutations
 test_short_trace_cannot_hide_before_full_trace
+test_empty_trace_batch_is_not_completion
 test_native_exhaustive_controls
 test_no_exhaustive_output_is_not_success
 test_timeout_is_not_completion

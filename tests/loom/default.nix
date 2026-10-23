@@ -2,13 +2,10 @@
 #
 # Builds the test entry points consumed by the flake:
 #
-#   loomTests — deterministic `loom gate` tiers driven by
-#               `craneLib.mkCargoDerivation`. It runs explicit
-#               `loom gate check --tree` and `loom gate test --tree`
-#               commands inside the Nix build sandbox. The `[system]`
-#               tier is excluded because its verifiers shell out to
-#               `nix run` / `podman`, neither of which is available
-#               inside the Nix build sandbox.
+#   loomTests — registered source walks and the complete workspace Nextest suite.
+#               Native producers execute directly, without recursively admitting
+#               the project graph that contains this producer. System scenarios
+#               remain separately registered native definitions.
 #
 #   test-app-ignores-host-git-signing — regression check that executes
 #               the full-suite script against a host signing config.
@@ -18,9 +15,7 @@
 #
 #   loom-smoke — Linux-only `writeShellApplication` wrapping the
 #               container smoke harness (`tests/run-tests.sh`). On
-#               Darwin a stub script exits 0 with the documented
-#               "container smoke not available on Darwin" message so
-#               `nix run .#smoke` is a no-op rather than an error.
+#               Darwin the unavailable entry exits 69, never a passing smoke.
 #
 # Spec: specs/tests.md § Nix Integration / Cross-platform / CI integration.
 {
@@ -35,6 +30,13 @@
 }:
 
 let
+  checked = import ../../nix/verification.nix;
+  checkResource =
+    origin:
+    checked.resource {
+      root = ../..;
+      inherit origin;
+    };
   inherit (pkgs) lib;
   inherit (lib) makeBinPath optionalAttrs;
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
@@ -42,17 +44,21 @@ let
     craneLib
     stagedSrc
     cargoArtifacts
+    cargoVendorDir
     bin
     ;
 
   loomTests = craneLib.mkCargoDerivation {
     pname = "tests";
     version = "0.0.0";
+    doInstallCargoArtifacts = false;
     src = stagedSrc;
-    inherit cargoArtifacts;
+    inherit cargoArtifacts cargoVendorDir;
     doCheck = true;
     nativeBuildInputs = [
       pkgs.git
+      pkgs.beads
+      pkgs.dolt
       pkgs.cargo-nextest
       pkgs.cacert
       pkgs.flock
@@ -73,14 +79,10 @@ let
       export GIT_CONFIG_SYSTEM=/dev/null
       export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
     '';
-    # `--tree` is the explicit scope for each deterministic tier in a
-    # git-less build sandbox: the source artifact has no `.git`, so a
-    # `--diff`-based scope can't resolve and `loom gate` fails loudly
-    # rather than silently degrading. Running `check` and `test` separately
-    # excludes `[system]` without an environment override.
+    # Native producers must not recursively admit their own project output graph.
     checkPhaseCargoCommand = ''
-      bash ${../../scripts/run-private-fixture-tests} loom gate check --tree
-      bash ${../../scripts/run-private-fixture-tests} loom gate test --tree
+      bash ${../../scripts/run-private-fixture-tests} cargo run --offline --locked -p loom-walk --bin loom-walk -- --from-specs
+      bash ${../../scripts/run-private-fixture-tests} cargo nextest run --offline --locked --workspace --ignore-default-filter --test-threads 2
     '';
   };
 
@@ -127,40 +129,65 @@ let
     pathsToLink = [ "/bin" ];
   };
 
-  test-app-ignores-host-git-signing = pkgs.runCommand "test-app-ignores-host-git-signing" { } ''
-    set -euo pipefail
+  test-app-ignores-host-git-signing =
+    let
+      nativeSources = map checkResource [
+        "tests/fixtures/git/test-gitconfig"
+        "scripts/full-test.sh"
+      ];
+    in
+    checked.check {
+      resources = nativeSources;
+      evaluation = map checkResource [
+        "nix"
+        "flake.nix"
+        "flake.lock"
+        "rust-toolchain.toml"
+        "Cargo.toml"
+        "Cargo.lock"
+        "tests/default.nix"
+        "tests/loom/default.nix"
+        "scripts/full-test.sh"
+        "scripts/required-test.sh"
+      ];
+      build =
+        _:
+        pkgs.runCommand "test-app-ignores-host-git-signing" { } ''
+          set -euo pipefail
 
-    export HOME="$TMPDIR/home"
-    export TEST_REPO_ROOT="$TMPDIR/repo"
-    export TEST_APP_OBSERVED="$TMPDIR/observed"
-    mkdir -p "$HOME" "$TEST_REPO_ROOT/tests/fixtures/git"
-    cp ${../fixtures/git/test-gitconfig} "$TEST_REPO_ROOT/tests/fixtures/git/test-gitconfig"
-    cat > "$HOME/.gitconfig" <<'EOF'
-    [user]
-    signingkey = host-key-that-tests-must-not-use
-    [commit]
-    gpgsign = true
-    EOF
-    unset GIT_CONFIG_GLOBAL
-    unset GIT_CONFIG_SYSTEM
-    export WRIX_SIGNING_KEY="$TMPDIR/host-signing-key"
+          export HOME="$TMPDIR/home"
+          export TEST_REPO_ROOT="$TMPDIR/repo"
+          export TEST_APP_OBSERVED="$TMPDIR/observed"
+          mkdir -p "$HOME" "$TEST_REPO_ROOT/tests/fixtures/git"
+          cp ${(builtins.elemAt nativeSources 0).path} "$TEST_REPO_ROOT/tests/fixtures/git/test-gitconfig"
+          cat > "$HOME/.gitconfig" <<'EOF'
+          [user]
+          signingkey = host-key-that-tests-must-not-use
+          [commit]
+          gpgsign = true
+          EOF
+          unset GIT_CONFIG_GLOBAL
+          unset GIT_CONFIG_SYSTEM
+          export WRIX_SIGNING_KEY="$TMPDIR/host-signing-key"
 
-    set +e
-    PATH="${fakeFullTestPath}/bin:$PATH" bash ${../../scripts/full-test.sh}
-    rc=$?
-    set -e
-    if [[ "$rc" -ne 99 || ! -e "$TEST_APP_OBSERVED" ]]; then
-      printf 'full test script did not reach the isolated nix command (exit %s)\n' "$rc" >&2
-      exit 1
-    fi
-    touch "$out"
-  '';
+          set +e
+          PATH="${fakeFullTestPath}/bin:$PATH" bash ${(builtins.elemAt nativeSources 1).path}
+          rc=$?
+          set -e
+          if [[ "$rc" -ne 99 || ! -e "$TEST_APP_OBSERVED" ]]; then
+            printf 'full test script did not reach the isolated nix command (exit %s)\n' "$rc" >&2
+            exit 1
+          fi
+          touch "$out"
+        '';
+    };
 
   smokeAcceptance = craneLib.mkCargoDerivation {
     pname = "loom-smoke-task-acceptance";
     version = "0.1.0";
+    doInstallCargoArtifacts = false;
     src = stagedSrc;
-    inherit cargoArtifacts;
+    inherit cargoArtifacts cargoVendorDir;
     buildPhaseCargoCommand = "cargo build --release -p loom-workflow --example smoke-task-acceptance";
     installPhaseCommand = ''
       install -Dm755 target/release/examples/smoke-task-acceptance "$out/bin/smoke-task-acceptance"
@@ -177,28 +204,53 @@ let
     wrixLauncher
   ];
 
-  smoke-git-policy = pkgs.runCommand "smoke-git-policy" { } ''
-    set -euo pipefail
-    env -i \
-      PATH="${
-        makeBinPath (
-          smokeGitInputs
-          ++ [
-            pkgs.coreutils
-            pkgs.jq
-          ]
-        )
-      }" \
-      TMPDIR="$TMPDIR" \
-      ${pkgs.bash}/bin/bash ${../smoke/git-policy-test.sh} \
-        ${wrixLauncher}/bin/wrix ${../smoke/seed-git-policy.sh}
-    touch "$out"
-  '';
+  smoke-git-policy =
+    let
+      nativeSources = map checkResource [
+        "tests/smoke/git-policy-test.sh"
+        "tests/smoke/seed-git-policy.sh"
+      ];
+    in
+    checked.check {
+      resources = nativeSources;
+      evaluation = map checkResource [
+        "nix"
+        "flake.nix"
+        "flake.lock"
+        "rust-toolchain.toml"
+        "Cargo.toml"
+        "Cargo.lock"
+        "tests/default.nix"
+        "tests/loom/default.nix"
+        "scripts/full-test.sh"
+        "scripts/required-test.sh"
+      ];
+      build =
+        _:
+        pkgs.runCommand "smoke-git-policy" { } ''
+          set -euo pipefail
+          env -i \
+            PATH="${
+              makeBinPath (
+                smokeGitInputs
+                ++ [
+                  pkgs.coreutils
+                  pkgs.jq
+                ]
+              )
+            }" \
+            TMPDIR="$TMPDIR" \
+            ${pkgs.bash}/bin/bash ${(builtins.elemAt nativeSources 0).path} \
+              ${wrixLauncher}/bin/wrix ${(builtins.elemAt nativeSources 1).path}
+          touch "$out"
+        '';
+    };
 
   smokeRuntimeInputs = [
     bin
     pkgs.beads
     pkgs.coreutils
+    pkgs.findutils
     pkgs.gnugrep
     pkgs.dolt
     pkgs.jq
@@ -209,17 +261,69 @@ let
   ]
   ++ smokeGitInputs;
 
-  smoke-host-gate = pkgs.runCommand "smoke-host-gate" { } ''
-    set -euo pipefail
-    env -i \
-      PATH="${makeBinPath smokeRuntimeInputs}" \
-      TMPDIR="$TMPDIR" \
-      NIX_BUILD_TOP="''${NIX_BUILD_TOP:-}" \
-      ${pkgs.bash}/bin/bash ${../../scripts/run-private-fixture-tests} \
-        ${pkgs.bash}/bin/bash ${../smoke/host-gate-temporary-root-test.sh} \
-        ${../smoke/host-gate-test.sh} ${wrixLauncher}/bin/wrix ${../../bin/pre-push-checks}
-    touch "$out"
-  '';
+  smoke-host-gate =
+    let
+      nativeSources = map checkResource [
+        "tests/smoke/host-gate-temporary-root-test.sh"
+        "scripts/run-private-fixture-tests"
+        "tests/smoke/host-gate-test.sh"
+        "bin/pre-push-checks"
+      ];
+      nativeFixture = import ../../nix/tests/native-smoke-fixture.nix { inherit pkgs; };
+      nativeInputClosure = pkgs.closureInfo {
+        rootPaths = [
+          pkgs.bash
+          pkgs.nix
+        ];
+      };
+    in
+    checked.check {
+      resources = nativeSources;
+      evaluation =
+        (import ../../nix/native-context.nix)
+        ++ loomPackage.testResources
+        ++ map checkResource [
+          "nix"
+          "flake.nix"
+          "flake.lock"
+          "rust-toolchain.toml"
+          "Cargo.toml"
+          "Cargo.lock"
+          "tests/default.nix"
+          "tests/loom/default.nix"
+          "scripts/full-test.sh"
+          "scripts/required-test.sh"
+          "tests/smoke/result-check.sh"
+          "tests/smoke/spec.md"
+        ];
+      build =
+        _:
+        pkgs.runCommand "smoke-host-gate" { } ''
+          set -euo pipefail
+          env -i \
+            PATH="${
+              makeBinPath (
+                [
+                  bin
+                  pkgs.coreutils
+                  pkgs.findutils
+                  pkgs.gnugrep
+                  pkgs.jq
+                  pkgs.nix
+                  pkgs.prek
+                ]
+                ++ smokeGitInputs
+              )
+            }" \
+            TMPDIR="$TMPDIR" \
+            NIX_BUILD_TOP="''${NIX_BUILD_TOP:-}" \
+            ${pkgs.bash}/bin/bash ${(builtins.elemAt nativeSources 1).path} \
+              ${pkgs.bash}/bin/bash ${(builtins.elemAt nativeSources 0).path} \
+                ${(builtins.elemAt nativeSources 2).path} ${wrixLauncher}/bin/wrix ${(builtins.elemAt nativeSources 3).path} \
+              ${nativeFixture} ${nativeInputClosure}/registration
+          touch "$out"
+        '';
+    };
 
   smokeApp = pkgs.writeShellApplication {
     name = "smoke";
@@ -230,6 +334,9 @@ let
       export LOOM_TEST_IMAGE_SOURCE_KIND=${smokeEntry.source_kind}
       export LOOM_TEST_PROFILE_CONFIG=${smokeEntry.profile_config}
       export LOOM_TEST_PRE_PUSH_CHECKS=${../../bin/pre-push-checks}
+      export LOOM_TEST_NATIVE_SMOKE_FIXTURE=${
+        import ../../nix/tests/native-smoke-fixture.nix { inherit pkgs; }
+      }
       export LOOM_TEST_VERIFIER_PROBE=${../smoke/verifier-probe.sh}
       export LOOM_TEST_GIT_POLICY=${../smoke/seed-git-policy.sh}
       export LOOM_TEST_SEED_BEADS=${../smoke/seed-beads.sh}
@@ -252,16 +359,21 @@ let
   darwinStub = pkgs.writeShellApplication {
     name = "smoke";
     text = ''
-      echo "container smoke not available on Darwin"
-      exit 0
+      echo "container smoke not available on Darwin" >&2
+      exit 69
     '';
   };
 in
 {
-  inherit loomTests test-app-ignores-host-git-signing smokeAcceptance;
+  inherit
+    loomTests
+    test-app-ignores-host-git-signing
+    smokeAcceptance
+    smoke-host-gate
+    ;
 }
 // optionalAttrs isLinux {
   loom-smoke = smokeApp;
-  inherit smoke-git-policy smoke-host-gate;
+  inherit smoke-git-policy;
 }
 // optionalAttrs (!isLinux) { loom-smoke = darwinStub; }

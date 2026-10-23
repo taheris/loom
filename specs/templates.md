@@ -772,7 +772,7 @@ bundled documents in front of the agent with zero configuration.
 
 <!-- prettier-ignore -->
 - All workflow templates compile under Askama with their typed context structs
-  [check](cargo build -p loom-templates)
+  [test](template_renders_are_byte_stable_across_runs)
 
 - Each template has a typed context struct with every variable in the template
   body bound as a field [test](template_renders_are_byte_stable_across_runs)
@@ -781,7 +781,7 @@ bundled documents in front of the agent with zero configuration.
   runtime errors [test](template_renders_are_byte_stable_across_runs)
 
 <!-- prettier-ignore -->
-- Partials are included via Askama's `{% include %}` mechanism [check](grep -q 'partial/context_pinning' crates/loom-templates/templates/loop.md)
+- Partials are included via Askama's `{% include %}` mechanism [check](cargo run -p loom-walk -- template_pinning_matrix)
 
 - Rendered output is stable across runs for identical inputs, verified by
   `insta` snapshots [test](template_renders_are_byte_stable_across_runs)
@@ -844,7 +844,7 @@ bundled documents in front of the agent with zero configuration.
   [test](quint_progressive_disclosure_separates_obligations_from_support)
 
 <!-- prettier-ignore -->
-- `style_rules.md` partial renders the `style_rules` variable [check](grep -q '{{ style_rules' crates/loom-templates/templates/partial/style_rules.md)
+- `style_rules.md` partial renders the `style_rules` variable [test](partial_style_rules_renders_style_rules_variable)
 
 <!-- prettier-ignore -->
 - `loop.md` and `review.md` include `style_rules.md`; no other phase template
@@ -905,12 +905,12 @@ bundled documents in front of the agent with zero configuration.
 <!-- prettier-ignore -->
 - The interview-modes partial documents `polish` / `do a polish` as a
   report-only review mode that proposes edits but does not apply them unless the
-  user explicitly asks [check](bash -c "grep -qi 'report-only' crates/loom-templates/templates/partial/interview_modes.md && grep -qi 'unless explicitly asked' crates/loom-templates/templates/partial/interview_modes.md")
+  user explicitly asks [test](plan_template_limits_interview_modes_and_close_consent_to_planning_output)
 
 <!-- prettier-ignore -->
 - The interview-modes partial documents `one by one` as one question per turn
   with a proposed default and an explicit wait for the user's answer before
-  proceeding [check](bash -c "grep -qi 'one question per' crates/loom-templates/templates/partial/interview_modes.md && grep -qi 'wait' crates/loom-templates/templates/partial/interview_modes.md")
+  proceeding [test](plan_template_limits_interview_modes_and_close_consent_to_planning_output)
 
 - The `chat_marker_final_turn_only.md` partial is included by every
   interactive-session template (`plan`, `inbox`) and documents that inbox may
@@ -929,7 +929,7 @@ bundled documents in front of the agent with zero configuration.
 
 <!-- prettier-ignore -->
 - The partial body names the picker prohibition explicitly so a grep for the
-  rule succeeds (no rule-by-implication) [check](grep -qi 'option-picker\|AskUserQuestion' crates/loom-templates/templates/partial/chat_interview.md)
+  rule succeeds (no rule-by-implication) [test](inbox_template_renders_chat_interview_discipline)
 
 - Rendered interactive prompts direct cross-session memory to the phase-authorized
   durable surface, not container-local `MEMORY.md`: Plan uses spec/index Markdown
@@ -1041,19 +1041,19 @@ bundled documents in front of the agent with zero configuration.
 <!-- prettier-ignore -->
 - The partial body names the **"added and modified" rule** explicitly — pending
   discipline applies to annotations the session adds AND to annotations whose
-  target the session changed in a way that breaks resolution [check](grep -qi 'added.*modified\|added and modified\|modified.*annotation' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+  target the session changed in a way that breaks resolution [test](plan_stage_rubric_preserves_readiness_admission_boundary)
 
 <!-- prettier-ignore -->
 - The partial body names the **structured walker input** rule — planning edits
   to matrix / surface / wire-format input use the walker's `?` (pending
   addition) and `~` (pending removal) cell syntax for pending elements, not the
   SC-level `?` modifier, per Verify — Pending support in structured walker input
-  [check](grep -qi 'structured.*input\|pending.*cell\|walker.*input' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+  [test](plan_stage_rubric_preserves_readiness_admission_boundary)
 
 <!-- prettier-ignore -->
 - The partial body names the **self-cleaning obligation** — the `?` must be
   dropped in the same diff that resolves the target, else
-  `UnneededPendingMarker` fires [check](grep -qi 'UnneededPendingMarker\|self-cleaning\|drop the.*marker' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+  `UnneededPendingMarker` fires [test](plan_stage_rubric_preserves_readiness_admission_boundary)
 
 ### Workspace recovery
 
@@ -1072,7 +1072,7 @@ bundled documents in front of the agent with zero configuration.
   `git stash show --stat` and `git stash show -p`, then intentionally
   apply/cherry-pick, leave, or drop it; conflict alignment is framed as
   agent-owned merge-conflict recovery with `LOOM_CLARIFY` as the human-decision
-  fallback [check](bash -c "grep -qi 'git stash show --stat' crates/loom-templates/templates/partial/workspace_recovery.md && grep -qi 'LOOM_CLARIFY' crates/loom-templates/templates/partial/workspace_recovery.md")
+  fallback [test](workspace_recovery_summary_prompt_is_non_authoritative)
 
 - When both `previous_failure` and `workspace_recovery` are present, `loop.md`
   renders `previous_failure` first and `workspace_recovery` second so the worker
@@ -1095,15 +1095,15 @@ bundled documents in front of the agent with zero configuration.
 <!-- prettier-ignore -->
 - `partial/todo_success.md` is the canonical presentation of Todo's success
   payload under Protocol's message contract and names the
-  `loom-protocol::todo::TodoSuccess` type [check](grep -q 'LOOM_TODO:' crates/loom-templates/templates/partial/todo_success.md)
+  `loom-protocol::todo::TodoSuccess` type [test](todo_template_rejects_generic_success_markers)
 
 <!-- prettier-ignore -->
 - `todo.md` includes `todo_success.md` via `{% include %}` rather than restating
-  the success marker contract inline [check](grep -q 'partial/todo_success.md' crates/loom-templates/templates/todo.md)
+  the success marker contract inline [check](cargo run -p loom-walk -- template_pinning_matrix)
 
 <!-- prettier-ignore -->
 - `partial/progress_markers.md` contains no `LOOM_TODO:` literal; todo success
-  belongs to `todo_success.md` [check](bash -c "! grep -nE 'LOOM_TODO:' crates/loom-templates/templates/partial/progress_markers.md")
+  belongs to `todo_success.md` [test](progress_partial_does_not_restate_todo_or_review_payloads)
 
 - Rendered `todo.md` prompts instruct the agent that `LOOM_COMPLETE` and
   `LOOM_NOOP` are wrong-phase success markers for todo
@@ -1119,19 +1119,19 @@ bundled documents in front of the agent with zero configuration.
 
 <!-- prettier-ignore -->
 - `review.md` includes `findings_walk.md` via `{% include %}` rather than
-  restating the wire format [check](grep -q 'partial/findings_walk.md' crates/loom-templates/templates/review.md)
+  restating the wire format [check](cargo run -p loom-walk -- template_pinning_matrix)
 
 <!-- prettier-ignore -->
 - `review.md` does not contain a `bd create` invocation (the reviewing agent
   reports findings without mutating Beads; trusted driver materialization is
-  separate) [check](bash -c "! grep -nE 'bd create|bd mol bond|bd update --add-label' crates/loom-templates/templates/review.md")
+  separate) [test](review_prompt_is_inspection_only_and_documents_loom_finding_wire_format)
 
 <!-- prettier-ignore -->
 - `partial/progress_markers.md` covers the progress markers (`LOOM_COMPLETE`,
   loop-only `LOOM_NOOP`) and contains no `LOOM_CONCERN:` or `LOOM_FINDING:`
   literal — those belong to `findings_walk.md` per the partial split documented
   in [Findings — Findings and Minting](findings.md#findings-and-minting-1)
-  [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/progress_markers.md")
+  [test](progress_partial_does_not_restate_todo_or_review_payloads)
 
 - For non-discovery work, rendered progress-marker guidance distinguishes
   review `LOOM_COMPLETE` (clean inspection, no diff expected) from loop
@@ -1146,12 +1146,12 @@ bundled documents in front of the agent with zero configuration.
 <!-- prettier-ignore -->
 - `partial/self_report_markers.md` covers direct loop/todo self-report markers
   (`LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`) and contains no `LOOM_CONCERN:`
-  or `LOOM_FINDING:` literal [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/self_report_markers.md")
+  or `LOOM_FINDING:` literal [test](direct_partial_renders_worker_scope_and_distinct_retry_decision_blocked_roles)
 
 <!-- prettier-ignore -->
 - `partial/review_self_report_markers.md` covers review-only cannot-complete
   guidance, forbids bd mutation, and contains no `LOOM_CONCERN:` or
-  `LOOM_FINDING:` literal [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/review_self_report_markers.md")
+  `LOOM_FINDING:` literal [test](review_partial_renders_inspection_only_discriminator_without_finding_payloads)
 
 - Rendered `review.md` prompts include review-specific self-report guidance that
   forbids bd mutation, omits direct bd-backed `LOOM_CLARIFY` persistence
@@ -1170,26 +1170,26 @@ bundled documents in front of the agent with zero configuration.
 - The partial body names `LOOM_RETRY` semantics distinctively (transient /
   environmental / agent-self-reset, consumes a `[loop] max_retries` slot,
   escalates to `loom:blocked` cause `retry-exhausted` on exhaustion) so a grep
-  for the rule succeeds [check](grep -qi 'LOOM_RETRY' crates/loom-templates/templates/partial/self_report_markers.md)
+  for the rule succeeds [test](direct_partial_renders_worker_scope_and_distinct_retry_decision_blocked_roles)
 
 <!-- prettier-ignore -->
 - The partial body distinguishes `LOOM_BLOCKED` from `LOOM_CLARIFY`: blocked =
   genuine dead end, no candidate resolutions, with a reason explaining why
   options cannot be enumerated; clarify = decision the agent can frame as a
   structured `## Options — …` block. The discriminator (can the agent enumerate
-  options?) is named explicitly [check](grep -qi 'candidate resolution\|enumerate options' crates/loom-templates/templates/partial/self_report_markers.md)
+  options?) is named explicitly [test](direct_partial_renders_worker_scope_and_distinct_retry_decision_blocked_roles)
 
 <!-- prettier-ignore -->
 - The direct partial body identifies the direct worker scope: `LOOM_CLARIFY`
   persistence applies to `loop` and `todo`, while review uses review-specific
   finding evidence; interactive sessions (`plan`, `inbox`) do not emit worker
-  self-report markers because the human resolves friction in-turn [check](grep -qi 'loop.*todo\|review-specific\|interactive.*session' crates/loom-templates/templates/partial/self_report_markers.md)
+  self-report markers because the human resolves friction in-turn [test](direct_partial_renders_worker_scope_and_distinct_retry_decision_blocked_roles)
 
 <!-- prettier-ignore -->
 - The review self-report partial names the review discriminator: retry for
   fresh-dispatch environmental failures, clarify-worthy decisions as
   `route="clarify"` findings, and dead ends with no options as `LOOM_BLOCKED`
-  [check](grep -qi 'route="clarify"\|Review is inspection-only\|LOOM_BLOCKED' crates/loom-templates/templates/partial/review_self_report_markers.md)
+  [test](review_partial_renders_inspection_only_discriminator_without_finding_payloads)
 
 ### Typed `PreviousFailure`
 
@@ -1271,7 +1271,7 @@ bundled documents in front of the agent with zero configuration.
 
 <!-- prettier-ignore -->
 - Reframe wording is generic (one form regardless of variant); per-variant
-  detail lives inside the previous-failure block itself [check](grep -q 'Re-read the previous failure block above' crates/loom-templates/templates/loop.md)
+  detail lives inside the previous-failure block itself [test](run_template_prepends_first_instruction_reframe_on_retry)
 
 ### Loop completion self-check and self-review
 
@@ -1336,7 +1336,7 @@ bundled documents in front of the agent with zero configuration.
 
 <!-- prettier-ignore -->
 - The partial body names the discipline distinctively (so a grep catches
-  accidental emptying) [check](grep -qi 'exact.*roster\|evidence-confirmed\|LOOM_TODO' crates/loom-templates/templates/partial/decomposition_discipline.md)
+  accidental emptying) [test](todo_template_renders_pre_decomposition_audit_clause)
 
 - Rendered `todo.md` prompts contain a clause committing the agent to confirm
   missing work by inspection before authoring any non-audit bead

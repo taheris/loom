@@ -4,6 +4,7 @@ _:
   perSystem =
     {
       pkgs,
+      config,
       sandbox,
       debugSandbox,
       imagePiCodingAgent,
@@ -15,6 +16,7 @@ _:
       ...
     }:
     let
+      nativePackage = import ../native-package.nix;
       launchApp =
         {
           name,
@@ -39,36 +41,49 @@ _:
     in
     {
       packages = {
-        inherit profileManifest;
-        profile-images = profileManifest;
+        profileManifest = nativePackage profileManifest;
+        profile-images = nativePackage profileManifest;
 
-        cargo-patches = loom.cargoConfig;
+        cargo-patches = nativePackage loom.cargoConfig;
         default = loom.bin;
         loom = loom.bin;
-        loom-wrix = loomBin;
-        pi-coding-agent = imagePiCodingAgent;
+        verification-build = loom.verificationBuild;
+        verification-walks = config.checks.loom-gate-check;
+        verification-source-integrity = config.checks.native-stage-integrity;
+        verification-llm-compat = config.checks.llm-compat-report;
+        verification-llm-compat-compile = config.checks.llm-compat-compile;
+        verification-llm-native-compile = config.checks.llm-native-compile;
+        verification-clippy = loom.clippy;
+        verification-clippy-all-targets = loom.clippyAllTargets;
+        verification-nextest = loom.nextest;
+        loom-wrix = nativePackage loomBin;
+        pi-coding-agent = nativePackage imagePiCodingAgent;
 
-        debug = launchApp {
+        debug = nativePackage (launchApp {
           name = "loom-debug";
           profileConfig = "${debugSandbox.image.profileConfig}";
-        };
-        sandbox = launchApp {
+        });
+        sandbox = nativePackage (launchApp {
           name = "loom-sandbox";
           profileConfig = "${sandbox.image.profileConfig}";
-        };
-        sandbox-image = sandbox.image;
+        });
+        sandbox-image = nativePackage sandbox.image;
 
-        wrixSrc = pkgs.runCommand "wrix-src" { } ''
-          cp -r ${wrixSrc} $out
-        '';
+        wrixSrc = nativePackage (
+          pkgs.runCommand "wrix-src" { } ''
+            cp -r ${wrixSrc} $out
+          ''
+        );
       };
 
-      checks.sandbox-launch-command = pkgs.runCommand "sandbox-launch-command" { } ''
-        set -euo pipefail
-        ${fixtureApp}/bin/sandbox-launch-fixture '/workspace with spaces' -- --version > actual
-        printf '%s\n' --profile-config '/selected profile.json' run '/workspace with spaces' -- --version > expected
-        cmp actual expected
-        touch "$out"
-      '';
+      checks.sandbox-launch-command = nativePackage (
+        pkgs.runCommand "sandbox-launch-command" { } ''
+          set -euo pipefail
+          ${fixtureApp}/bin/sandbox-launch-fixture '/workspace with spaces' -- --version > actual
+          printf '%s\n' --profile-config '/selected profile.json' run '/workspace with spaces' -- --version > expected
+          cmp actual expected
+          touch "$out"
+        ''
+      );
     };
 }

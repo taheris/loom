@@ -51,6 +51,13 @@ if [[ "$#" == 0 ]]; then
   exit 2
 fi
 
+# Shared compiler daemons must not capture a disposable fixture TMPDIR.
+for name in "${!SCCACHE_@}"; do
+  unset "$name"
+done
+export RUSTC_WRAPPER="" RUSTC_WORKSPACE_WRAPPER=""
+export CARGO_BUILD_RUSTC_WRAPPER="" CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""
+
 umask 077
 TMPDIR=$(private_root)
 export TMPDIR
@@ -61,8 +68,8 @@ if [[ "$fixture_process" == true ]]; then
   export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
 fi
 # Empty values disable Cargo-configured wrappers; unsetting would re-enable them.
-export RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
-export RUSTC_WORKSPACE_WRAPPER= CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=
+export RUSTC_WRAPPER="" CARGO_BUILD_RUSTC_WRAPPER=""
+export RUSTC_WORKSPACE_WRAPPER="" CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""
 for key in "${!SCCACHE_@}"; do
   unset "$key"
 done
@@ -75,5 +82,13 @@ export LOOM_TEST_STORAGE=1
 mkdir -p -- "$XDG_STATE_HOME/loom/trusted-cargo"
 # Tiny fixture checkouts reserve one MiB each; real allocated growth is still charged.
 printf '{"reservation_bytes":1048576}\n' > "$XDG_STATE_HOME/loom/trusted-cargo/policy.json"
-trap 'rm -rf -- "$TMPDIR"' EXIT
+cleanup() {
+  local rc=$?
+  if [[ "$rc" == 0 ]]; then
+    rm -rf -- "$TMPDIR"
+  else
+    printf 'Failed fixture root retained at %s\n' "$TMPDIR" >&2
+  fi
+}
+trap cleanup EXIT
 "$@"

@@ -69,6 +69,8 @@ pub enum Role {
     Generated,
     Document,
     Configuration,
+    RuntimeResource,
+    ProjectContext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -141,6 +143,7 @@ pub struct Inventory {
     subjects: BTreeMap<Name, Subject>,
     obligations: BTreeSet<Obligation>,
     compilation: BTreeMap<ResourcePath, rust::Compilation>,
+    native_graphs: BTreeMap<Name, std::sync::Arc<crate::provider::nix::Graph>>,
 }
 
 impl Inventory {
@@ -152,10 +155,12 @@ impl Inventory {
         let staged = snapshot.stage()?;
         let mut subjects = BTreeMap::new();
         let compilation = rust::discover(snapshot, staged.path(), &mut subjects)?;
-        nix::discover(snapshot, staged.path(), &mut subjects)?;
-        classify_remaining(snapshot, &mut subjects)?;
+        discover_context(snapshot, &mut subjects)?;
+        let native_graphs = nix::discover(snapshot, staged.path(), &mut subjects)?;
+        classify_remaining(snapshot, &mut subjects, &compilation)?;
         snapshot.require_current()?;
-        let inventory = Self::finish(snapshot.identity().clone(), subjects, compilation)?;
+        let mut inventory = Self::finish(snapshot.identity().clone(), subjects, compilation)?;
+        inventory.native_graphs = native_graphs;
         let mut declarations = Vec::new();
         for path in contracts(snapshot)? {
             declarations.extend(
@@ -192,7 +197,24 @@ impl Inventory {
             subjects,
             obligations,
             compilation,
+            native_graphs: BTreeMap::new(),
         })
+    }
+
+    /// Successful resource discovery retains every constructed output on its native system.
+    /// These are immutable recipe facts, never execution outcomes or admission grants.
+    pub(crate) const fn native_graphs(
+        &self,
+    ) -> &BTreeMap<Name, std::sync::Arc<crate::provider::nix::Graph>> {
+        &self.native_graphs
+    }
+
+    /// Captured native-system recipe facts; callers must still construct and admit a definition.
+    pub fn native_graph(
+        &self,
+        name: &Name,
+    ) -> Option<&std::sync::Arc<crate::provider::nix::Graph>> {
+        self.native_graphs.get(name)
     }
 
     pub const fn snapshot(&self) -> &Identity {
@@ -203,6 +225,12 @@ impl Inventory {
     }
     pub const fn obligations(&self) -> &BTreeSet<Obligation> {
         &self.obligations
+    }
+
+    pub(crate) fn is_production(&self, name: &Name) -> bool {
+        self.compilation
+            .values()
+            .any(|compilation| compilation.subjects.contains(name))
     }
 
     /// Resolve a reference to exactly one current subject; no alias or glob inference.
@@ -314,7 +342,11 @@ impl Inventory {
                 }
             }
         }
-        Self::finish(self.snapshot.clone(), subjects, self.compilation.clone())
+        prune_context_documents(&mut subjects)?;
+        let mut inventory =
+            Self::finish(self.snapshot.clone(), subjects, self.compilation.clone())?;
+        inventory.native_graphs.clone_from(&self.native_graphs);
+        Ok(inventory)
     }
 }
 
@@ -371,8 +403,9 @@ fn obligations_for(
             duties
         }
         Role::Document => vec![(Duty::Document, subject.name.clone())],
+        Role::ProjectContext => vec![(Duty::Check, subject.name.clone())],
         Role::TestFixture => consumer_tests(subject, subjects)?,
-        Role::Configuration => consumer_duties(subject, subjects)?,
+        Role::Configuration | Role::RuntimeResource => consumer_duties(subject, subjects)?,
         Role::Generated => {
             let Some(producer) = &subject.producer else {
                 return Err(Error::Responsibility {
@@ -422,6 +455,7 @@ fn consumer_duties(
             .get(name)
             .ok_or_else(|| Error::Unknown { name: name.clone() })?;
         match consumer.role {
+            Role::ProjectContext => duties.push((Duty::Check, name.clone())),
             Role::RustSource => {
                 duties.extend([(Duty::Build, name.clone()), (Duty::Lint, name.clone())]);
                 if consumer.testable {
@@ -499,19 +533,110 @@ fn single(path: &ResourcePath, role: Role, prefix: &str) -> Result<Subject, Erro
     })
 }
 
+pub(crate) const PROJECT_CONTEXT: &str = "project:context";
+
+fn data_documents(subjects: &BTreeMap<Name, Subject>) -> BTreeSet<ResourcePath> {
+    subjects
+        .values()
+        .filter(|subject| matches!(subject.role, Role::TestFixture | Role::Generated))
+        .flat_map(|subject| subject.members.iter())
+        .cloned()
+        .collect()
+}
+
+fn prune_context_documents(subjects: &mut BTreeMap<Name, Subject>) -> Result<(), Error> {
+    let data = data_documents(subjects);
+    let reader = Name::try_from(PROJECT_CONTEXT.to_owned())?;
+    if let Some(context) = subjects.get_mut(&reader) {
+        context.members.retain(|path| !data.contains(path));
+        if let Some(origin) = context.members.first() {
+            context.origin.clone_from(origin);
+        } else {
+            subjects.remove(&reader);
+        }
+    }
+    Ok(())
+}
+
+fn discover_context(
+    snapshot: &Snapshot,
+    subjects: &mut BTreeMap<Name, Subject>,
+) -> Result<(), Error> {
+    let data = data_documents(subjects);
+    let mut members: BTreeSet<_> = snapshot
+        .files()
+        .keys()
+        .filter(|path| {
+            !data.contains(*path)
+                && (is_document(path)
+                    || matches!(
+                        path.as_path().to_str(),
+                        Some(
+                            "loom.toml"
+                                | "wrix.toml"
+                                | ".pre-commit-config.yaml"
+                                | ".beads/config.yaml"
+                                | ".beads/metadata.json"
+                                | ".envrc"
+                        )
+                    )
+                    || path.as_path().file_name().is_some_and(|name| {
+                        name == ".gitignore" || name == ".pre-commit-config.yaml"
+                    }))
+        })
+        .cloned()
+        .collect();
+    for contract in contracts(snapshot)? {
+        let parsed =
+            crate::annotation::parse_content(contract.as_path(), snapshot.text(&contract)?)?;
+        for annotation in parsed
+            .annotations
+            .iter()
+            .filter(|annotation| annotation.tier == crate::Tier::Judge)
+        {
+            if let Some(path) = crate::integrity::resolve_spec_relative_script_path(
+                &annotation.target,
+                &annotation.source_spec,
+                snapshot.root(),
+            ) {
+                let relative = match path.strip_prefix(snapshot.root()) {
+                    Ok(relative) => relative.to_path_buf(),
+                    Err(_) => path,
+                };
+                let path = ResourcePath::try_from(relative)?;
+                if snapshot.files().contains_key(&path) {
+                    members.insert(path);
+                }
+            }
+        }
+    }
+    let Some(origin) = members.first().cloned() else {
+        return Ok(());
+    };
+    insert(
+        subjects,
+        Subject {
+            name: Name::try_from(PROJECT_CONTEXT.to_owned())?,
+            role: Role::ProjectContext,
+            members,
+            consumers: BTreeSet::new(),
+            producer: None,
+            testable: false,
+            origin,
+            nix: None,
+        },
+    )
+}
+
 fn classify_remaining(
     snapshot: &Snapshot,
     subjects: &mut BTreeMap<Name, Subject>,
+    compilation: &BTreeMap<ResourcePath, rust::Compilation>,
 ) -> Result<(), Error> {
     let accounted: BTreeSet<_> = subjects
         .values()
         .flat_map(|subject| subject.members.iter().cloned())
         .collect();
-    let consumers = subjects
-        .values()
-        .filter(|subject| matches!(subject.role, Role::RustSource | Role::NixSource))
-        .map(|subject| subject.name.clone())
-        .collect::<BTreeSet<_>>();
     let documents: BTreeSet<_> = subjects
         .values()
         .filter(|subject| subject.role == Role::Document)
@@ -523,7 +648,13 @@ fn classify_remaining(
             matches!(
                 subject.role,
                 Role::TestFixture | Role::Generated | Role::Document
-            )
+            ) || (subject.role == Role::RuntimeResource
+                && !subject.consumers.is_empty()
+                && subject.consumers.iter().all(|consumer| {
+                    subjects
+                        .get(consumer)
+                        .is_some_and(|reader| reader.nix.is_some())
+                }))
         })
         .flat_map(|subject| subject.members.iter().cloned())
         .collect();
@@ -555,7 +686,28 @@ fn classify_remaining(
         };
         let mut subject = single(path, role, "resource")?;
         if role == Role::Configuration {
-            subject.consumers.clone_from(&consumers);
+            subject.consumers.extend(
+                subjects
+                    .values()
+                    .filter(|reader| {
+                        (matches!(reader.role, Role::ProjectContext | Role::RustSource)
+                            && reader.members.contains(path))
+                            || (reader.role == Role::RustSource
+                                && compilation
+                                    .get(&reader.origin)
+                                    .is_some_and(|native| native.configuration.contains(path)))
+                            || reader.nix_target().is_some_and(|native| {
+                                native.flake().as_path().parent().is_some_and(|directory| {
+                                    path.as_path() == directory.join("flake.lock")
+                                })
+                            })
+                    })
+                    .map(|reader| reader.name.clone()),
+            );
+            if let Some(native) = subjects.get_mut(&subject.name) {
+                native.consumers.extend(subject.consumers);
+                continue;
+            }
         }
         insert(subjects, subject)?;
     }
@@ -590,8 +742,18 @@ fn is_document(path: &ResourcePath) -> bool {
 }
 
 fn command(root: &Path, program: Tool, args: &[&str]) -> Result<Vec<u8>, Error> {
+    let clock = loom_driver::clock::SystemClock::new();
+    let started = loom_driver::clock::Clock::now(&clock);
+    tracing::debug!(
+        ?program,
+        operation = args.first().copied(),
+        "inventory operation started"
+    );
     let mut command = Command::new(program.program());
     command.args(args).current_dir(root);
+    if matches!(program, Tool::Nix) {
+        command.args(["--extra-experimental-features", "nix-command flakes"]);
+    }
     loom_driver::workspace::cargo::discovery_command(&mut command);
     let output = command.output().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -600,6 +762,7 @@ fn command(root: &Path, program: Tool, args: &[&str]) -> Result<Vec<u8>, Error> 
             Error::Io(error)
         }
     })?;
+    tracing::debug!(?program, operation = args.first().copied(), elapsed = ?loom_driver::clock::Clock::now(&clock).saturating_duration_since(started), code = output.status.code(), stdout_bytes = output.stdout.len(), "inventory operation finished");
     if !output.status.success() {
         return Err(Error::Discovery {
             program,
@@ -633,6 +796,18 @@ pub enum Error {
     Io(#[from] std::io::Error),
     /// required discovery tool `{program}` is unavailable; provision the declared capability and rerun `loom gate verify`
     Capability { program: Tool },
+    /// invalid constructed project resource for `{target:?}`; repair its source/consumer definition and rerun `loom gate verify`
+    NativeResource {
+        target: Name,
+        #[source]
+        source: Box<crate::provider::nix::Error>,
+    },
+    /// invalid constructed project resources {targets:?}; repair their source/consumer definitions and rerun `loom gate verify`
+    NativeResources {
+        targets: Vec<Name>,
+        #[source]
+        source: Box<crate::provider::nix::Error>,
+    },
     /// malformed native project definition `{definition:?}`; repair it and rerun `loom gate verify`
     Definition {
         definition: ResourcePath,

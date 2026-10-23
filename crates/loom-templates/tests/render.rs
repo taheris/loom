@@ -696,6 +696,7 @@ fn todo_template_rejects_generic_success_markers() -> Result<()> {
     let out = todo_context(vec![], vec![]).render()?;
 
     assert!(out.contains("LOOM_TODO: <json>"));
+    assert!(out.contains("loom-protocol::todo::TodoSuccess"));
     assert!(out.contains("wrong-phase success markers"));
     assert!(out.contains("`LOOM_COMPLETE`") && out.contains("`LOOM_NOOP`"));
     assert!(out.contains("final assistant message"));
@@ -1038,6 +1039,7 @@ fn loop_context_renders_workspace_recovery_without_retry_attempt() -> Result<()>
         out.contains("apply the stash, cherry-pick relevant hunks, leave it unapplied"),
         "intentional recovery choices missing: {out}",
     );
+    assert!(!out.contains("If the conflict requires an unresolved human decision"));
     assert!(
         !out.contains("Retry attempt"),
         "workspace recovery must not imply a retry attempt: {out}",
@@ -1131,9 +1133,12 @@ fn workspace_recovery_summary_prompt_is_non_authoritative() -> Result<()> {
         "conflict file missing: {out}"
     );
     assert!(
-        out.contains("LOOM_CLARIFY"),
+        out.split_whitespace().collect::<Vec<_>>().join(" ").contains(
+            "If the conflict requires an unresolved human decision, persist a dedicated decision bead with an Options brief, report its nonterminal `LOOM_CLARIFY`"
+        ),
         "clarify fallback missing: {out}"
     );
+    assert!(out.contains(&format!("git stash show --stat {TEST_SHA_2}")));
     assert!(
         out.contains("final prose before the terminal marker"),
         "final-summary instruction missing: {out}",

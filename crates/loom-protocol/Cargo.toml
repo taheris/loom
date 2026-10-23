@@ -9,6 +9,12 @@ publish.workspace = true
 [package.metadata.loom]
 public_contract = true
 
+[[package.metadata.loom.verify.resource]]
+name = "cargo:loom-protocol:resource:ui"
+directory = "tests/ui"
+role = "test-fixture"
+consumers = ["cargo:loom-protocol:test:protocol_surface"]
+
 # PUBLIC CONTRACT LEAF — `loom-protocol` is single-purpose: cross-crate
 # wire protocols loom emits or consumes. The crate's MAJOR version is the
 # wire-format protocol version per `specs/gate.md` § *Canonical contract

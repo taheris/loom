@@ -13,6 +13,9 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+#[path = "common/checked.rs"]
+mod checked;
+
 const fn loom_bin() -> &'static str {
     env!("CARGO_BIN_EXE_loom")
 }
@@ -306,60 +309,111 @@ fn gate_status_scope_flags_remain_mutually_exclusive() {
     }
 }
 
-fn assert_target_executes_only_selected(subcommand: &str, target: &str) {
-    let dir = verifier_workspace();
+fn assert_target_executes_only_selected(subcommand: &str, tier: &str) {
+    let dir = checked::fixture();
     let workspace = dir.path();
-    for expected in [format!("{target}\n"), format!("{target}\n{target}\n")] {
-        let out = gate_command(workspace, subcommand, &["--target", target]);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+    checked::write(
+        workspace,
+        "specs/fixture/tests.md",
+        &format!(
+            "# Fixture\n\n## Success Criteria\n\n- Selected [{tier}]({0})\n- Sibling [{tier}](touch should-not-run)\n",
+            checked::TARGET
+        ),
+    );
+    for _ in 0..2 {
+        let out = gate_command(workspace, subcommand, &["--target", checked::TARGET]);
+        let diagnostic = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{diagnostic}");
         assert_eq!(
-            std::fs::read_to_string(workspace.join("invocations.log")).unwrap(),
-            expected
+            diagnostic.matches("\"verdict\":\"pass\"").count(),
+            1,
+            "{diagnostic}"
         );
+        assert!(!workspace.join("should-not-run").exists());
+        assert!(!workspace.join(".loom/state.db").exists());
     }
+    checked::write(
+        workspace,
+        "crates/loom-llm/Cargo.toml",
+        "[package]\nname='loom-llm'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nloom-driver={path='../loom-driver'}\n",
+    );
+    checked::native(workspace, "cargo", &["generate-lockfile", "--offline"]);
+    let changed = gate_command(workspace, subcommand, &["--target", checked::TARGET]);
+    let diagnostic = String::from_utf8_lossy(&changed.stderr);
+    assert!(!changed.status.success(), "{diagnostic}");
+    assert!(
+        diagnostic.contains("forbidden internal dep"),
+        "{diagnostic}"
+    );
+    assert_eq!(
+        diagnostic
+            .lines()
+            .filter(|line| line.starts_with(&format!("loom gate [{}]: ", checked::TARGET)))
+            .filter(|line| line.contains("\"verdict\":\"fail\""))
+            .count(),
+        1,
+        "{diagnostic}"
+    );
+    assert_eq!(
+        diagnostic
+            .matches(&format!("loom gate [{tier}] FAIL:"))
+            .count(),
+        1,
+        "{diagnostic}"
+    );
+    assert!(!workspace.join("should-not-run").exists());
 }
 
 /// Exact verify targets must dispatch freshly, not return help or cached evidence.
 #[test]
 fn gate_verify_target_executes_selected_verifier_on_every_request() {
-    assert_target_executes_only_selected("verify", "check-selected");
+    assert_target_executes_only_selected("verify", "check");
 }
 
 /// System target support must remain executable and exclude sibling scenarios.
 #[test]
 fn gate_system_target_executes_selected_verifier_on_every_request() {
-    assert_target_executes_only_selected("system", "system-selected");
+    assert_target_executes_only_selected("system", "system");
 }
 
 /// Shared system targets execute once per request, with no reuse across requests.
 #[test]
 fn gate_system_shared_target_executes_once_per_request() {
-    let dir = verifier_workspace();
+    let dir = checked::fixture();
     let workspace = dir.path();
-    std::fs::write(
-        workspace.join("specs/fixture.md"),
-        "## Success Criteria\n\n\
-         - first owner [system](system-selected)\n\
-         - second owner [system](system-selected)\n",
-    )
-    .unwrap();
-    for expected_count in [1, 2] {
-        let out = gate_command(workspace, "system", &["--target", "system-selected"]);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let invocations = std::fs::read_to_string(workspace.join("invocations.log")).unwrap();
+    checked::write(
+        workspace,
+        "specs/fixture/tests.md",
+        &format!(
+            "# Fixture\n\n## Success Criteria\n\n- First owner [system]({0})\n- Second owner [system]({0})\n",
+            checked::TARGET
+        ),
+    );
+    for (verdict, success) in [("pass", true), ("fail", false)] {
+        let out = gate_command(workspace, "system", &["--target", checked::TARGET]);
+        let diagnostic = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.success(), success, "{diagnostic}");
         assert_eq!(
-            invocations.lines().collect::<Vec<_>>(),
-            vec!["system-selected"; expected_count],
-            "shared targets must execute once on every fresh request"
+            diagnostic
+                .lines()
+                .filter(|line| line.starts_with(&format!("loom gate [{}]: ", checked::TARGET)))
+                .filter(|line| line.contains(&format!("\"verdict\":\"{verdict}\"")))
+                .count(),
+            1,
+            "{diagnostic}"
         );
+        assert_eq!(
+            diagnostic.matches("loom gate [system] FAIL:").count(),
+            if success { 0 } else { 2 },
+            "{diagnostic}"
+        );
+        assert!(!workspace.join(".loom/state.db").exists());
+        checked::write(
+            workspace,
+            "crates/loom-llm/Cargo.toml",
+            "[package]\nname='loom-llm'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nloom-driver={path='../loom-driver'}\n",
+        );
+        checked::native(workspace, "cargo", &["generate-lockfile", "--offline"]);
     }
 }
 

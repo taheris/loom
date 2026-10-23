@@ -9,6 +9,12 @@ publish.workspace = true
 [package.metadata.loom]
 public_contract = true
 
+[[package.metadata.loom.verify.resource]]
+name = "cargo:loom-skill:resource:ui"
+directory = "tests/ui"
+role = "test-fixture"
+consumers = ["cargo:loom-skill:lib:loom_skill"]
+
 [dependencies]
 blake3 = { workspace = true }
 displaydoc = { workspace = true }

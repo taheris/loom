@@ -104,6 +104,33 @@ fn clone_project(destination: &Path) {
         "project clone failed: {}",
         String::from_utf8_lossy(&output.stderr),
     );
+    let patch = git_command()
+        .args(["diff", "--binary", "HEAD"])
+        .current_dir(project_root())
+        .output()
+        .expect("snapshot current test inputs");
+    assert!(
+        patch.status.success(),
+        "{}",
+        String::from_utf8_lossy(&patch.stderr)
+    );
+    if !patch.stdout.is_empty() {
+        let file = tempfile::NamedTempFile::new().expect("fixture source patch");
+        std::fs::write(file.path(), patch.stdout).expect("write fixture source patch");
+        git(
+            destination,
+            &[
+                "apply",
+                "--index",
+                "--binary",
+                file.path().to_str().expect("fixture path"),
+            ],
+        );
+        git(
+            destination,
+            &["commit", "-q", "-m", "Snapshot current test inputs"],
+        );
+    }
 }
 
 fn git_command() -> Command {

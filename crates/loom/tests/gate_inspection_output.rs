@@ -14,7 +14,7 @@ const FINDING_AGENT_MODE: &str = "finding-concern";
 const COMPLETE_AGENT_MODE: &str = "complete-marker";
 
 fn install_bd_shim(dir: &Path) -> PathBuf {
-    let bin_dir = dir.join("bd-bin");
+    let bin_dir = dir.join(".loom/fixture/bd-bin");
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
     let bd_path = bin_dir.join("bd");
     let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
@@ -36,7 +36,7 @@ fn pinned_path(bin_dir: &Path) -> std::ffi::OsString {
 }
 
 fn write_profile_manifest(workspace: &Path) -> PathBuf {
-    let manifest_path = workspace.join("profile-images.json");
+    let manifest_path = workspace.join(".loom/fixture/profile-images.json");
     loom_test_support::profile_manifest::write(
         &manifest_path,
         r#"{
@@ -85,9 +85,20 @@ fn run_gate_command_with_finding_and_setup<F>(
 where
     F: FnOnce(&Path),
 {
+    let initialized = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    std::fs::write(workspace.join(".gitignore"), "/.loom/\n").unwrap();
     write_specs(workspace, labels);
     let bin_dir = install_bd_shim(workspace);
-    let state_dir = workspace.join("bd-state");
+    let state_dir = workspace.join(".loom/fixture/bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir bd-state");
     setup(&state_dir);
     let manifest = write_profile_manifest(workspace);
@@ -118,7 +129,7 @@ where
         .env("LOOM_PROFILES_MANIFEST", manifest)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("BD_STATE_DIR", &state_dir)
-        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env("XDG_STATE_HOME", workspace.join(".loom/fixture/user-state"))
         .env_remove("LOOM_INSIDE")
         .output()
         .expect("spawn loom");

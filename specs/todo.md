@@ -284,7 +284,7 @@ cursor advancement.
   metadata through the Rust tracking boundary without replacing unrelated metadata.
   Invalid assignments or binding-write failures prevent activation, cursor
   advancement, and note consumption; prose descriptions cannot substitute for
-  the structured proposals. [system](nix run .#test-quint -- todo-acceptance-persistence)
+  the structured proposals. [system](nix build .#verification-quint-todo-acceptance-persistence)
 
 ### Workflow commands
 

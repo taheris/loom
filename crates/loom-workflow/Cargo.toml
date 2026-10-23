@@ -20,6 +20,7 @@ loom-skill = { workspace = true }
 loom-shared = { workspace = true }
 loom-templates = { workspace = true }
 loom-tune = { workspace = true }
+loom-walk = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -34,7 +35,7 @@ walkdir = { workspace = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 loom-driver = { workspace = true, features = ["test-support"] }
-loom-test-support = { workspace = true }
+loom-test-support = { workspace = true, features = ["acceptance"] }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 

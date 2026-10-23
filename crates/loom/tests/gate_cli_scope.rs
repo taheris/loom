@@ -5,6 +5,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "common/cargo.rs"]
+mod cargo;
+#[path = "common/checked.rs"]
+mod checked;
+#[path = "common/native.rs"]
+mod native;
+
 const fn loom_bin() -> &'static str {
     env!("CARGO_BIN_EXE_loom")
 }
@@ -81,15 +88,19 @@ fn gate_target_exact_match_and_ambiguity_rules() {
         "verify --target must reject cross-tier ambiguity: {stderr}",
     );
 
-    std::fs::write(
-        workspace.join("specs/ambiguous.md"),
-        "## Success Criteria\n\n- one [check](true)\n- two [check](true)\n",
-    )
-    .unwrap();
+    let native = checked::fixture();
+    checked::write(
+        native.path(),
+        "specs/fixture/tests.md",
+        &format!(
+            "# Fixture\n\n## Success Criteria\n\n- one [check]({0})\n- two [check]({0})\n",
+            checked::TARGET
+        ),
+    );
     let duplicate = Command::new(loom_bin())
         .arg("--workspace")
-        .arg(workspace)
-        .args(["gate", "check", "--target", "true"])
+        .arg(native.path())
+        .args(["gate", "check", "--target", checked::TARGET])
         .output()
         .expect("spawn loom");
     assert!(
@@ -101,125 +112,89 @@ fn gate_target_exact_match_and_ambiguity_rules() {
 
 #[test]
 fn post_integration_verify_runs_project_precommit_and_affected_check_test() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::create_dir_all(workspace.join("bin")).unwrap();
-    let order_log = workspace.join("order.log");
-    std::fs::write(
-        workspace.join("specs/gate.md"),
-        "## Success Criteria\n\n- check after hooks [check](sh check.sh src/lib.rs)\n- test after check [test](affected_test)\n",
-    )
-    .unwrap();
-    std::fs::create_dir_all(workspace.join("src")).unwrap();
-    std::fs::write(
-        workspace.join("Cargo.toml"),
-        "[package]\nname = \"gate-lanes\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        workspace.join("src/lib.rs"),
-        "#[test]\nfn affected_test() {}\n",
-    )
-    .unwrap();
+    let fixture = cargo::fixture();
+    let workspace = fixture.path();
+    let tools = tempfile::tempdir().unwrap();
+    let order_log = tools.path().join("order.log");
     write_executable(
-        &workspace.join("check.sh"),
-        &loom_test_support::bash_script("set -euo pipefail\nprintf 'check\n' >> \"$ORDER_LOG\"\n"),
-    );
-    write_executable(
-        &workspace.join("test-runner.sh"),
-        &loom_test_support::bash_script(
-            "set -euo pipefail\nprintf 'test %s\n' \"$*\" >> \"$ORDER_LOG\"\n",
-        ),
-    );
-    std::fs::write(
-        workspace.join("loom.toml"),
-        format!(
-            "[runner.test]\ncommand = \"sh test-runner.sh {{paths}}\"\ncwd = {:?}\n",
-            workspace.display().to_string(),
-        ),
-    )
-    .expect("write runner config");
-    write_executable(
-        &workspace.join("bin/prek"),
+        &tools.path().join("prek"),
         &loom_test_support::bash_script("exit 1\n"),
     );
-    write_executable(
-        &workspace.join("project-hook.sh"),
-        &loom_test_support::bash_script(
-            "set -euo pipefail\nprintf 'prek hook %s\n' \"$*\" >> \"$ORDER_LOG\"\n",
-        ),
+    let entry = format!(
+        "bash -c 'printf \"hook %s\\n\" \"$*\" >> \"{}\"' --",
+        order_log.display()
     );
+    std::fs::write(workspace.join(".pre-commit-config.yaml"), format!(
+        "repos:\n  - repo: local\n    hooks:\n      - id: ordered-hook\n        name: Ordered actual hook\n        language: system\n        entry: {}\n",
+        serde_json::to_string(&entry).unwrap(),
+    )).unwrap();
+    init_git(workspace);
+    let source = workspace.join("src/lib.rs");
+    let body = std::fs::read_to_string(&source).unwrap();
     std::fs::write(
-        workspace.join(".pre-commit-config.yaml"),
-        "repos:\n  - repo: local\n    hooks:\n      - id: ordered-hook\n        name: Ordered hook\n        language: system\n        entry: bash project-hook.sh\n",
+        source,
+        format!("{body}\n// affected source, not a caller-created test identity\n"),
     )
     .unwrap();
-    init_git(workspace);
-    std::fs::write(
-        workspace.join("src/lib.rs"),
-        "pub fn affected() {}\n\n#[test]\nfn affected_test() {}\n",
-    )
-    .expect("modify affected source");
-    let stage_status = git_command()
+    let commit = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["add", "src/lib.rs"])
         .status()
-        .expect("stage affected source");
-    assert!(stage_status.success(), "stage affected source failed");
-    let commit_status = git_command()
-        .arg("-C")
-        .arg(workspace)
-        .args(["commit", "-q", "-m", "change affected source"])
-        .status()
-        .expect("commit affected source");
-    assert!(commit_status.success(), "commit affected source failed");
-
-    let out = Command::new(loom_bin())
+        .unwrap();
+    assert!(commit.success());
+    assert!(
+        git_command()
+            .arg("-C")
+            .arg(workspace)
+            .args(["commit", "-qm", "change actual compiled source"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = Command::new(loom_bin())
         .current_dir(workspace)
         .arg("--workspace")
         .arg(workspace)
         .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
-        .env("PATH", prepend_path(&workspace.join("bin")))
-        .env("ORDER_LOG", &order_log)
+        .env("PATH", prepend_path(tools.path()))
         .output()
-        .expect("spawn loom");
-    assert!(
-        out.status.success(),
-        "diff verify must pass: stderr={}",
-        String::from_utf8_lossy(&out.stderr),
-    );
-    let log = std::fs::read_to_string(order_log).expect("order log");
-    let mut lines = log.lines();
-    let first = lines.next().unwrap_or_default();
-    let second = lines.next().unwrap_or_default();
-    let third = lines.next().unwrap_or_default();
-    assert_eq!(
-        first, "prek hook src/lib.rs",
-        "real hook must run first against the exact diff: {log}"
-    );
-    assert_eq!(second, "check", "check lane must follow prek: {log}");
-    assert_eq!(
-        third, "test affected_test",
-        "affected test lane must follow check: {log}"
-    );
+        .unwrap();
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{diagnostic}");
+    let log = std::fs::read_to_string(order_log).unwrap();
+    assert!(log.lines().any(|line| line == "hook src/lib.rs"), "{log}");
+    let observations = diagnostic
+        .lines()
+        .filter(|line| line.starts_with("loom gate [") && line.contains("]: {"))
+        .collect::<Vec<_>>();
+    let test = observations
+        .iter()
+        .position(|line| line.starts_with("loom gate [native_case]: "))
+        .unwrap();
+    for operation in ["native-build", "native-lint", "native-lint-all"] {
+        let check = observations
+            .iter()
+            .position(|line| line.starts_with("loom gate [nix build ") && line.contains(operation))
+            .unwrap();
+        assert!(
+            check < test,
+            "actual Check effects must precede the actual Test: {diagnostic}"
+        );
+    }
 }
 
 #[test]
 fn nested_verify_files_under_parent_diff_gate_records_skip() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join("specs/gate.md"),
-        "## Success Criteria\n\n- check [check](false)\n",
-    )
-    .unwrap();
+    checked::native(workspace, "git", &["init", "-q"]);
+    checked::write(workspace, ".gitignore", "/.loom/\n");
+    checked::write(workspace, "README.md", "# Invalid document\0\n");
     let out = Command::new(loom_bin())
         .arg("--workspace")
         .arg(workspace)
-        .args(["gate", "verify", "--files", "specs/gate.md"])
+        .args(["gate", "verify", "--files", "README.md"])
         .env("LOOM_PARENT_DIFF_GATE", "1")
         .output()
         .expect("spawn loom");
@@ -228,18 +203,35 @@ fn nested_verify_files_under_parent_diff_gate_records_skip() {
         out.status.success() && stderr.contains("skipped under parent --diff gate"),
         "nested files gate must skip under parent diff gate: {stderr}",
     );
+    assert!(
+        !stderr.contains("\"verdict\":\"pass\""),
+        "a nested skip cannot establish pass evidence: {stderr}"
+    );
+    let unskipped = Command::new(loom_bin())
+        .arg("--workspace")
+        .arg(workspace)
+        .args(["gate", "verify", "--files", "README.md"])
+        .env_remove("LOOM_PARENT_DIFF_GATE")
+        .output()
+        .expect("spawn unskipped checked reader");
+    assert_eq!(
+        unskipped.status.code(),
+        Some(1),
+        "the real callback must reject the invalid document without the parent guard: {}",
+        String::from_utf8_lossy(&unskipped.stderr)
+    );
+    assert!(String::from_utf8_lossy(&unskipped.stderr).contains("\"verdict\":\"fail\""));
 }
 
 #[test]
 fn verify_tier_policy_is_scope_derived_without_env_override() {
-    let dir = tempfile::tempdir().unwrap();
+    let foreign = if std::env::consts::OS == "linux" {
+        "aarch64-darwin"
+    } else {
+        "x86_64-linux"
+    };
+    let dir = native::fixture(foreign);
     let workspace = dir.path();
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join("specs/gate.md"),
-        "## Success Criteria\n\n- system still runs [system](false)\n",
-    )
-    .unwrap();
     let out = Command::new(loom_bin())
         .arg("--workspace")
         .arg(workspace)
@@ -249,114 +241,63 @@ fn verify_tier_policy_is_scope_derived_without_env_override() {
         .expect("spawn loom");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !out.status.success() && stderr.contains("loom gate [system] FAIL: false"),
-        "tree scope must run [system] despite LOOM_VERIFY_TIERS: {stderr}",
+        out.status.code() == Some(78)
+            && stderr.contains("\"tier\":\"system\"")
+            && stderr.contains("\"verdict\":\"inapplicable\""),
+        "tree scope must retain the actual system owner despite LOOM_VERIFY_TIERS, without converting inapplicability into verification: {stderr}",
     );
 }
 
 #[test]
 fn gate_verify_retains_real_infrastructure_exits_and_semantic_failure_precedence() {
     for grouped in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path();
-        std::fs::create_dir(workspace.join("specs")).unwrap();
-        let target = if grouped { "probe" } else { "bash probe.sh" };
-        std::fs::write(
-            workspace.join("specs/probe.md"),
-            format!("## Success Criteria\n\n- Executor [check]({target})\n"),
-        )
-        .unwrap();
-        let config = if grouped {
-            "[runner.check.probe]\nmatch = '^probe$'\ncommand = 'bash probe.sh'\nparse = 'exit-code'\n"
-        } else {
-            ""
-        };
-        std::fs::write(workspace.join("loom.toml"), config).unwrap();
-        std::fs::write(workspace.join(".gitignore"), ".loom/\n").unwrap();
-        std::fs::write(workspace.join("probe.sh"), "exit 0\n").unwrap();
-        init_git(workspace);
         for code in [78, 124, 127, 130, 137, 143, 1, 0] {
-            std::fs::write(
-                workspace.join("probe.sh"),
-                format!("echo required-executor-observation >&2\nexit {code}\n"),
-            )
-            .unwrap();
-            let output = Command::new(loom_bin())
-                .arg("--workspace")
-                .arg(workspace)
-                .args(["gate", "verify", "--tree"])
-                .env_remove("LOOM_INSIDE")
-                .output()
-                .unwrap();
+            let body = format!("printf 'required-executor-observation\\n' >&2\nexit {code}\n");
+            let hooks = if grouped {
+                vec!["exit 0", body.as_str()]
+            } else {
+                vec![body.as_str()]
+            };
+            let (fixture, output) = real_hook_gate(&hooks, false);
             assert_eq!(
                 output.status.code(),
                 Some(code),
-                "grouped={grouped}: {}",
+                "grouped={grouped}: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert!(!workspace.join(".loom/marker.json").exists());
+            assert!(!fixture.path().join(".loom/marker.json").exists());
         }
-        if !grouped {
-            for code in [78, 124, 127, 137] {
-                for json in [
-                    r#"{"pass":"#,
-                    r#"{"pass":true,"evidence":"complete"}"#,
-                    r#"{"pass":false,"evidence":"actual assertion"}"#,
-                ] {
-                    std::fs::write(
-                        workspace.join("probe.sh"),
-                        format!("printf '%s\\n' '{json}'\nexit {code}\n"),
-                    )
-                    .unwrap();
-                    let output = Command::new(loom_bin())
-                        .arg("--workspace")
-                        .arg(workspace)
-                        .args(["gate", "verify", "--tree"])
-                        .env_remove("LOOM_INSIDE")
-                        .output()
-                        .unwrap();
-                    assert_eq!(
-                        output.status.code(),
-                        Some(if json.contains("\"pass\":false") {
-                            1
-                        } else {
-                            code
-                        }),
-                        "json={json}, code={code}: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
+        for code in [78, 124, 127, 137] {
+            for payload in [
+                r#"{"pass":"#,
+                r#"{"pass":true,"evidence":"complete"}"#,
+                r#"{"pass":false,"evidence":"actual assertion"}"#,
+            ] {
+                let body = format!("printf '%s\\n' '{payload}'\nexit {code}\n");
+                let hooks = if grouped {
+                    vec!["exit 0", body.as_str()]
+                } else {
+                    vec![body.as_str()]
+                };
+                let (_, output) = real_hook_gate(&hooks, false);
+                assert_eq!(
+                    output.status.code(),
+                    Some(code),
+                    "hook payload cannot override native process status: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
             }
+            let (_, output) = real_hook_gate(&[&format!("exit {code}")], true);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "actual independent policy failure must dominate infrastructure: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
-        std::fs::write(workspace.join("probe.sh"), "kill -TERM $$\n").unwrap();
-        let signaled = Command::new(loom_bin())
-            .arg("--workspace")
-            .arg(workspace)
-            .args(["gate", "verify", "--tree"])
-            .env_remove("LOOM_INSIDE")
-            .output()
-            .unwrap();
+        let (_, signaled) = real_hook_gate(&["kill -TERM $$"], false);
         assert_eq!(signaled.status.code(), Some(143));
-        std::fs::write(workspace.join("probe.sh"), "exit 78\n").unwrap();
-        std::fs::write(workspace.join("fail.sh"), "exit 1\n").unwrap();
-        std::fs::write(
-            workspace.join("specs/failure.md"),
-            "## Success Criteria\n\n- Semantic failure [check](bash fail.sh)\n",
-        )
-        .unwrap();
-        let output = Command::new(loom_bin())
-            .arg("--workspace")
-            .arg(workspace)
-            .args(["gate", "verify", "--tree"])
-            .env_remove("LOOM_INSIDE")
-            .output()
-            .unwrap();
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "semantic failure must dominate infrastructure: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 }
 
@@ -380,31 +321,32 @@ fn real_hook_gate_with_setup(
     std::fs::write(workspace.join("tracked.txt"), "initial\n").unwrap();
     std::fs::write(
         workspace.join("specs/hooks.md"),
-        "## Success Criteria\n\n- check after actual hooks [check](bash check.sh tracked.txt)\n",
+        "## Success Criteria\n\n- check after actual hooks [check](loom:project-context)\n",
     )
     .unwrap();
-    write_executable(
-        &workspace.join("check.sh"),
-        &loom_test_support::bash_script(if semantic_check {
-            "set -euo pipefail\nexit 1\n"
-        } else {
-            "set -euo pipefail\nexit 0\n"
-        }),
-    );
+    std::fs::create_dir(workspace.join(".loom")).unwrap();
     let mut config = String::from("fail_fast: false\nrepos:\n  - repo: local\n    hooks:\n");
     for (index, body) in hook_bodies.iter().enumerate() {
         write_executable(
-            &workspace.join(format!("hook-{index}.sh")),
+            &workspace.join(format!(".loom/hook-{index}.sh")),
             &loom_test_support::bash_script(&format!(
                 "set -euo pipefail\nmkdir -p .loom\nprintf 'executed\\n' > .loom/hook-{index}-ran\n{body}\n"
             )),
         );
-        writeln!(config, "      - id: actual-{index}\n        name: Actual {index}\n        entry: bash hook-{index}.sh\n        language: system\n        always_run: true\n        pass_filenames: false").unwrap();
+        writeln!(config, "      - id: actual-{index}\n        name: Actual {index}\n        entry: bash .loom/hook-{index}.sh\n        language: system\n        always_run: true\n        pass_filenames: false").unwrap();
     }
     std::fs::write(workspace.join(".pre-commit-config.yaml"), config).unwrap();
     prepare(workspace);
     init_git(workspace);
-    std::fs::write(workspace.join("tracked.txt"), "changed\n").unwrap();
+    std::fs::write(
+        workspace.join("tracked.txt"),
+        if semantic_check {
+            "changed\0\n"
+        } else {
+            "changed\n"
+        },
+    )
+    .unwrap();
     for (path, content) in changes {
         std::fs::write(workspace.join(path), content).unwrap();
     }
@@ -436,7 +378,12 @@ fn real_hook_gate_with_setup(
         .unwrap();
     for index in 0..hook_bodies.len() {
         assert_eq!(
-            std::fs::read_to_string(workspace.join(format!(".loom/hook-{index}-ran"))).unwrap(),
+            std::fs::read_to_string(workspace.join(format!(".loom/hook-{index}-ran")))
+                .unwrap_or_else(|error| panic!(
+                    "hook {index} did not run: {error}; stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )),
             "executed\n"
         );
     }
@@ -542,10 +489,12 @@ fn real_prek_nested_project_infrastructure_uses_native_status() {
         |workspace| {
             let child = workspace.join("child");
             std::fs::create_dir(&child).unwrap();
+            std::fs::create_dir(child.join(".loom")).unwrap();
+            std::fs::write(child.join(".gitignore"), "/.loom/\n").unwrap();
             std::fs::write(child.join("tracked.txt"), "initial\n").unwrap();
-            std::fs::write(child.join(".pre-commit-config.yaml"), "repos:\n  - repo: local\n    hooks:\n      - id: nested\n        name: Nested hook\n        language: system\n        entry: bash hook.sh\n        always_run: true\n        pass_filenames: false\n").unwrap();
+            std::fs::write(child.join(".pre-commit-config.yaml"), "repos:\n  - repo: local\n    hooks:\n      - id: nested\n        name: Nested hook\n        language: system\n        entry: bash .loom/hook.sh\n        always_run: true\n        pass_filenames: false\n").unwrap();
             write_executable(
-                &child.join("hook.sh"),
+                &child.join(".loom/hook.sh"),
                 &loom_test_support::bash_script(
                     "mkdir -p .loom\nprintf 'executed\\n' > .loom/nested-ran\nexit 78\n",
                 ),
@@ -597,11 +546,11 @@ fn real_prek_group_modification_dominates_earlier_infrastructure() {
 fn real_prek_semantic_filename_batches_cannot_form_infrastructure_exit() {
     let (fixture, output) = real_hook_gate_with_setup(
         &[
-            "printf '%s\\n' \"$1\" >> .loom/batches-ran\ncase \"$1\" in a) exit 64 ;; b) exit 13 ;; *) exit 0 ;; esac",
+            "printf '%s\\n' \"$1\" >> .loom/batches-ran\ncase \"$1\" in a.txt) exit 64 ;; b.txt) exit 13 ;; *) exit 0 ;; esac",
         ],
         false,
         |workspace| {
-            for name in ["a", "b"] {
+            for name in ["a.txt", "b.txt"] {
                 std::fs::write(workspace.join(name), "initial\n").unwrap();
             }
             let path = workspace.join(".pre-commit-config.yaml");
@@ -610,11 +559,13 @@ fn real_prek_semantic_filename_batches_cannot_form_infrastructure_exit() {
                 .replace("pass_filenames: false", "pass_filenames: 1");
             std::fs::write(path, config).unwrap();
         },
-        &[("a", "changed\n"), ("b", "changed\n")],
+        &[("a.txt", "changed\n"), ("b.txt", "changed\n")],
     );
     assert_eq!(output.status.code(), Some(1));
     let batches = std::fs::read_to_string(fixture.path().join(".loom/batches-ran")).unwrap();
-    assert!(batches.lines().any(|name| name == "a") && batches.lines().any(|name| name == "b"));
+    assert!(
+        batches.lines().any(|name| name == "a.txt") && batches.lines().any(|name| name == "b.txt")
+    );
     assert!(String::from_utf8_lossy(&output.stdout).contains("- exit code: 1"));
 }
 
@@ -663,7 +614,7 @@ fn real_prek_missing_executable_is_infrastructure_but_completed_exit_two_is_sema
         std::fs::write(
             &config_path,
             config.replace(
-                &format!("entry: bash hook-{missing}.sh"),
+                &format!("entry: bash .loom/hook-{missing}.sh"),
                 "entry: loom-test-unavailable-hook-executable",
             ),
         )
@@ -708,7 +659,13 @@ fn real_prek_missing_executable_is_infrastructure_but_completed_exit_two_is_sema
         );
     }
     let (_fixture, output) = real_hook_gate(&["exit 2"], false);
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -716,14 +673,14 @@ fn real_prek_native_invalid_source_is_semantic_after_partial_formatting() {
     let (fixture, _) = real_hook_gate(&["exit 0"], false);
     let workspace = fixture.path();
     std::fs::write(workspace.join(".pre-commit-config.yaml"),
-        "repos:\n  - repo: builtin\n    hooks:\n      - id: pretty-format-json\n        args: [--autofix, a.json, b.json]\n        pass_filenames: false\n        always_run: true\n").unwrap();
-    std::fs::write(workspace.join("a.json"), "{\"x\":1}\n").unwrap();
-    std::fs::write(workspace.join("b.json"), [0xff]).unwrap();
+        "repos:\n  - repo: builtin\n    hooks:\n      - id: pretty-format-json\n        args: [--autofix, .loom/a.json, .loom/b.json]\n        pass_filenames: false\n        always_run: true\n").unwrap();
+    std::fs::write(workspace.join(".loom/a.json"), "{\"x\":1}\n").unwrap();
+    std::fs::write(workspace.join(".loom/b.json"), [0xff]).unwrap();
     assert!(
         git_command()
             .arg("-C")
             .arg(workspace)
-            .args(["add", ".pre-commit-config.yaml", "a.json", "b.json"])
+            .args(["add", ".pre-commit-config.yaml"])
             .status()
             .unwrap()
             .success()
@@ -743,8 +700,11 @@ fn real_prek_native_invalid_source_is_semantic_after_partial_formatting() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        std::fs::read_to_string(workspace.join("a.json")).unwrap(),
+        std::fs::read_to_string(workspace.join(".loom/a.json")).unwrap(),
         "{\n  \"x\": 1\n}\n"
     );
-    assert_eq!(std::fs::read(workspace.join("b.json")).unwrap(), [0xff]);
+    assert_eq!(
+        std::fs::read(workspace.join(".loom/b.json")).unwrap(),
+        [0xff]
+    );
 }

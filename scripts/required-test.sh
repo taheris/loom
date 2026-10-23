@@ -12,8 +12,7 @@ if [[ -f "$repo_root/scripts/configure-cargo-patches.sh" ]]; then
     bash "$repo_root/scripts/configure-cargo-patches.sh" "${LOOM_CARGO_PATCHES:-}"
 fi
 
-nix fmt -- --fail-on-change
-nix build
+python3 tests/verify/native-resources.py "$repo_root"
 cargo build --workspace
 mkdir -p "$repo_root/.loom/logs"
 nextest_run_dir=$(mktemp -d "$repo_root/.loom/logs/required-suite.XXXXXXXX")
@@ -23,7 +22,7 @@ export NEXTEST_FAILURE_OUTPUT=immediate-final
 export NEXTEST_STATUS_LEVEL=fail
 export NEXTEST_FINAL_STATUS_LEVEL=fail
 export NEXTEST_SHOW_PROGRESS=none
-if cargo nextest run --workspace 2>&1 | tee "$nextest_log"; then
+if cargo nextest run --workspace --ignore-default-filter 2>&1 | tee "$nextest_log"; then
     :
 else
     nextest_status=("${PIPESTATUS[@]}")
@@ -34,4 +33,4 @@ else
     fi
     exit 78
 fi
-loom gate system --tree
+nix run .#test-native-units

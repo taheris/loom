@@ -29,12 +29,13 @@ boundaries are load-bearing. A crate uses either or both homes according to the
 surface it exposes; integration-test files are not required for leaf crates
 whose contract is fully exercised inline.
 
-The repository-level test infrastructure contains process fixtures, the Nix
-verifier derivation, and the container smoke harness. Behavioral and protocol
-tests use mock agents. The sole real-agent exception is an assembled-system
-health check that launches the selected packaged Pi agent with `--version`
-inside a network-disabled container without provider credentials; it sends no
-prompt, performs no protocol turn, and makes no LLM API request.
+The repository-level test infrastructure contains process fixtures, focused Nix
+packaging/script checks, and one optional Loom assembly smoke using a mock
+agent. Behavioral and protocol tests use mock agents. Wrix owns container
+entrypoints, private Nix stores, input transport, backend mounts/caches, and
+packaged-agent health. Loom tests its own configuration, launch payloads, result
+handling and failure/isolation decisions without launching Wrix to recheck its
+implementation.
 
 Internal per-crate file and module organization remains an implementation choice
 rather than part of this spec's contract.
@@ -561,13 +562,7 @@ is exposed as `nix run .#smoke` on Linux only.
 - `nix run .#smoke` follows the
   [agent-owned container launch boundary](agent.md#container-integration) to run
   a Pi-backed mock-agent bead against live bd, exiting 0 with the bead closed
-  [system](nix run .#smoke)
-
-<!-- prettier-ignore -->
-- `nix run .#test-sandbox` launches the selected packaged Pi agent only for an
-  offline `--version` health check: container networking is disabled, no
-  provider credentials are supplied, and no prompt, protocol turn, or LLM API
-  request occurs [system](nix run .#test-sandbox)
+  [system](nix build .#verification-system-smoke)
 
 ### Test-source portability
 
@@ -623,7 +618,7 @@ is exposed as `nix run .#smoke` on Linux only.
 ### Cross-platform
 
 <!-- prettier-ignore -->
-- The flake source declares shared `loom-tests` package wiring for its four
+- The flake source declares shared `loom-tests` package wiring for its
   configured Linux and Darwin system identifiers [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 <!-- prettier-ignore -->
@@ -631,25 +626,45 @@ is exposed as `nix run .#smoke` on Linux only.
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 <!-- prettier-ignore -->
-- The Darwin smoke branch is an explicit successful unavailable-platform stub
+- The Darwin smoke branch is wired to an explicit non-successful unavailable-platform entry
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 ### CI integration
+
+<!-- prettier-ignore -->
+- Suite apps select their declared immutable Rust/Cargo toolchain despite
+  conflicting inherited compiler settings, provide native compilation tools,
+  and reuse a checkout-local target isolated by toolchain rather than by run.
+  The campaign uses compact debug information and no incremental databases while
+  retaining debug assertions and compiler caching; cached objects are not results.
+  [check](nix build .#checks.x86_64-linux.test-app-hook-runner)
+
+<!-- prettier-ignore -->
+- Storage diagnostics read Nix database sizes and native GC liveness without
+  deleting outputs or walking every store file, distinguish logical from physical
+  sizes, and reject malformed or unavailable accounting rather than reporting zero.
+  [check](nix build .#checks.x86_64-linux.acceptance-storage-report)
+
+<!-- prettier-ignore -->
+- Terminal Cargo verifier outputs retain their reports rather than duplicate
+  whole-target archives; the actual reusable compiler catalogue remains available
+  to dependent execution.
+  [check](nix build .#checks.x86_64-linux.native-stage-integrity)
 
 <!-- prettier-ignore -->
 - The `loom-tests` package invokes both deterministic gate tiers and remains
   outside the flake `checks` set [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 <!-- prettier-ignore -->
-- `nix run .#test` composes the complete agent-runnable fast/Clippy/native/system
-  suite; the required pre-push app avoids lint repetition and does not bundle
+- `nix run .#test` composes fast Nix checks, both Clippy configurations and the
+  default native suite without a recursive whole-tree Gate rerun; the required pre-push app avoids lint repetition and does not bundle
   host-only checks into ordinary suites. Affected host obligations remain in
   the pushed-range Gate plan, with explicit broader campaigns available.
   [check?](cargo run -p loom-walk -- agent_suite_and_affected_host_surface_contract)
 
 <!-- prettier-ignore -->
 - `nix run .#smoke` carries a concrete mock-Pi image, immutable ProfileConfig,
-  canonical `wrix.prekHooks` directory, Linux implementation, and Darwin stub
+  canonical `wrix.prekHooks` directory, Linux implementation, and non-successful Darwin entry
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 <!-- prettier-ignore -->
@@ -770,17 +785,10 @@ is exposed as `nix run .#smoke` on Linux only.
    acknowledgment in the PR description ("snapshot updated because: ...") to
    surface accidental drift.
 
-10. **Packaged-agent health check** — assembled-system verification may execute
-    the selected real packaged agent only as a network-disabled `--version`
-    launch without provider credentials. It does not send a prompt, exercise a
-    protocol turn, or call an LLM API. All agent behavior and protocol coverage
-    remains mock-driven.
-
 ### Non-Functional
 
-1. **Deterministic** — no real LLM API calls and no ordinary real wall-clock
-   waits. The packaged-agent exception in Functional #10 is an offline,
-   non-conversational process-health check. Mock agents return canned responses.
+1. **Deterministic** — no real LLM API calls, real packaged-agent launches, or
+   ordinary real wall-clock waits. Mock agents return canned responses.
    Time-dependent components take an injectable `Clock` trait; tests of their
    timer logic use a `MockClock` with controllable advance. Exact audited
    process-lifecycle and elapsed-performance exceptions use bounded host time as
@@ -833,10 +841,10 @@ is exposed as `nix run .#smoke` on Linux only.
    source-level verifier checks that composition; platform-native builds remain
    the authority for whether a package builds on that host and are not inferred
    from a foreign-system source grep. The container smoke is Linux-only (podman
-   dependency); on Darwin the `smoke` app exits 0 with a clear "container smoke
-   not available on Darwin" message. Tests use `tempfile::tempdir` rather than
-   hardcoded `/tmp/...` paths so the source is compatible with Darwin's build
-   sandbox. Darwin smoke support is a follow-up.
+   dependency); on Darwin the `smoke` app exits 69 with a clear "container smoke
+   not available on Darwin" message, never a passing smoke. Tests use
+   `tempfile::tempdir` rather than hardcoded `/tmp/...` paths so the source is
+   compatible with Darwin's build sandbox. Darwin smoke support is a follow-up.
 8. **Subprocess-spawning tests are exceptional** — process startup, IPC, and
    cleanup costs depend on the workload and environment; measure them rather
    than assume a fixed cost per test. A test that spawns a subprocess includes a
@@ -858,9 +866,8 @@ is exposed as `nix run .#smoke` on Linux only.
    A pin change alone does not update canned inputs or detect upstream drift.
    These tests verify the exercised shapes and expectations; their relevance to
    the new upstream version depends on that explicit review and fixture update.
-   They do not establish live compatibility with the real agent binary. No live
-   wire tests run against real binaries; the Functional #10 exception proves
-   only that the selected package launches.
+   They do not establish live compatibility with the real agent binary. Wrix
+   owns packaged-agent launch health; Loom does not run real-binary wire tests.
 
 10. **No `#[ignore]` for skipped coverage** — `#[ignore]` cannot hide a flaky,
     optional, or otherwise omitted test; fix the root cause or delete the test.
@@ -887,13 +894,12 @@ is exposed as `nix run .#smoke` on Linux only.
   real Pi for a conversation, prompt, protocol turn, or LLM API request. Mock pi
   and mock claude scripts cover the protocol surface (parser tests use inline
   strings; mocks cover pipe-level paths; smoke runs mock pi inside the
-  container). The sole real-agent exception is the offline packaged-Pi
-  `--version` health check in Functional #10; it detects image/runtime packaging
-  drift but does not validate conversational or protocol behavior. Locked
-  versions make the intended upstream contract explicit; the protocol-bump
-  review and fixture maintenance in Non-Functional #9 keep exercised shapes
-  aligned with that contract. Passing unchanged canned fixtures is not automatic
-  upstream-drift detection or live protocol compatibility evidence.
+  container). Image/runtime packaging and real-agent health belong to Wrix.
+  Locked versions make the intended upstream contract explicit; the
+  protocol-bump review and fixture maintenance in Non-Functional #9 keep
+  exercised shapes aligned with that contract. Passing unchanged canned fixtures
+  is not automatic upstream-drift detection or live protocol compatibility
+  evidence.
 - **macOS container smoke** — the smoke requires `podman` (Linux). Darwin
   container testing is a follow-up.
 - **Mocking `bd`** — the container smoke uses live `bd` (see NFR #6).

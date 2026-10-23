@@ -547,12 +547,19 @@ fn ignored_build_artifacts_do_not_become_project_subjects() {
 fn snapshot_reads_captured_content_but_rejects_changed_native_discovery() {
     let dir = fixture("", "pub fn value() {}\n");
     let snapshot = Snapshot::discover(dir.path()).unwrap();
+    let cloned = snapshot.clone();
+    assert!(std::ptr::eq(snapshot.files(), cloned.files()));
     write(dir.path(), "src/lib.rs", "pub fn changed() {}\n");
     assert_eq!(
         snapshot.text(&path("src/lib.rs")).unwrap(),
         "pub fn value() {}\n"
     );
     assert!(Inventory::discover(&snapshot).is_err());
+    assert!(cloned.require_current().is_err());
+    assert_eq!(
+        cloned.text(&path("src/lib.rs")).unwrap(),
+        "pub fn value() {}\n"
+    );
 }
 
 #[test]

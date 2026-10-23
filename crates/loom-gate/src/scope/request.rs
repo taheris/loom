@@ -15,12 +15,13 @@ pub enum Request {
 }
 
 /// A finite set (including empty), whole tree, or exact target, resolved once.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Resolved {
     selection: Selection,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 enum Selection {
     Files {
         paths: Vec<PathBuf>,
@@ -30,7 +31,8 @@ enum Selection {
     Target(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 enum FileOrigin {
     Explicit,
     Diff(String),
@@ -71,6 +73,12 @@ impl Request {
 }
 
 impl Resolved {
+    pub(crate) const fn whole_tree() -> Self {
+        Self {
+            selection: Selection::Tree,
+        }
+    }
+
     /// Select annotations without interpreting an empty finite set as unscoped.
     pub fn select(
         &self,

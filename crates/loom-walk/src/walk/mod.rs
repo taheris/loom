@@ -33,7 +33,6 @@ mod inputs;
 mod loom_agent_deps;
 mod loom_does_not_invoke_podman;
 mod loom_events_is_leaf;
-mod loom_gate_check_derivation_exists;
 mod loom_llm_client_constructors_use_newtypes;
 mod loom_llm_client_types_per_schema_kind;
 mod loom_llm_deps;
@@ -297,12 +296,6 @@ pub static REGISTRY: &[Walk] = &[
         run: loom_events_is_leaf::run,
         inputs: loom_events_is_leaf::inputs,
         register: loom_events_is_leaf::register,
-    },
-    Walk {
-        name: "loom_gate_check_derivation_exists",
-        run: loom_gate_check_derivation_exists::run,
-        inputs: |root, _input| vec![root.join("nix/flake/checks.nix")],
-        register: loom_gate_check_derivation_exists::register,
     },
     Walk {
         name: "loom_llm_client_constructors_use_newtypes",
@@ -691,6 +684,15 @@ pub static REGISTRY: &[Walk] = &[
     },
 ];
 
+/// Check candidate template sources with the same rules as the standalone verifier.
+pub fn template_conformance(input: &WalkInput<'_>) -> [Verdict; 3] {
+    [
+        template_pinning_matrix::run(input),
+        template_wire_format_restatement::run(input),
+        templates_no_removed_surface::run(input),
+    ]
+}
+
 /// Look up a walk by name. Returns `None` for any name not in
 /// [`REGISTRY`]; callers render the available set themselves via
 /// [`names`].
@@ -722,6 +724,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn embedded_template_conformance_matches_registered_execution() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let input = WalkInput::for_root(&root);
+        let expected = [
+            "template_pinning_matrix",
+            "template_wire_format_restatement",
+            "templates_no_removed_surface",
+        ]
+        .map(|name| (lookup(name).unwrap().run)(&input));
+        assert!(expected.iter().all(|verdict| verdict.pass), "{expected:?}");
+        assert_eq!(template_conformance(&input), expected);
+    }
+
+    #[test]
     fn registry_lookup_finds_known_walks() {
         for name in [
             "agent_backend_trait_contract",
@@ -734,7 +750,6 @@ mod tests {
             "loom_agent_deps",
             "loom_does_not_invoke_podman",
             "loom_events_is_leaf",
-            "loom_gate_check_derivation_exists",
             "loom_llm_client_constructors_use_newtypes",
             "loom_llm_client_types_per_schema_kind",
             "loom_llm_deps",

@@ -41,25 +41,35 @@ const CONTRACTS: &[FileContract] = &[
     },
     FileContract {
         path: "nix/flake/tests.nix",
-        required: &["packages.loom-tests = testsDeriv.rustChecks.loom-tests;"],
+        required: &[
+            "packages.loom-tests = (import ../native-package.nix) testsDeriv.rustChecks.loom-tests;",
+        ],
     },
     FileContract {
         path: "nix/workspace.nix",
         required: &[
-            "\"flake.nix\" = \"${src}/flake.nix\";",
-            "\"nix\" = \"${src}/nix\";",
+            "extraResources =",
+            "checked.resource {",
+            "\"flake.nix\"",
+            "\"nix\"",
+            "extraSrcs = builtins.listToAttrs",
+            "cp -r ${path}",
         ],
     },
     FileContract {
         path: "nix/flake/apps.nix",
         required: &[
-            "test = {",
-            "test-required = {",
-            "smoke = {",
-            "fuzz-loom = {",
+            "test = app testApp \"test\"",
+            "test-required = app requiredTestApp \"test-required\"",
+            "smoke = app smokeApp \"smoke\"",
+            "fuzz-loom = app fuzzApp \"fuzz-loom\"",
             "smokePrekHooks = wrixLib.prekHooks;",
-            "text = builtins.readFile ../../scripts/full-test.sh;",
-            "text = builtins.readFile ../../scripts/required-test.sh;",
+            "fullScript = source \"scripts/full-test.sh\";",
+            "requiredScript = source \"scripts/required-test.sh\";",
+            "text = builtins.readFile fullScript.path;",
+            "text = builtins.readFile requiredScript.path;",
+            "evaluation = [ fullScript ];",
+            "evaluation = [ requiredScript ];",
         ],
     },
     FileContract {
@@ -69,8 +79,8 @@ const CONTRACTS: &[FileContract] = &[
     FileContract {
         path: "tests/loom/default.nix",
         required: &[
-            "loom gate check --tree",
-            "loom gate test --tree",
+            "loom-walk -- --from-specs",
+            "cargo nextest run --offline --locked --workspace --ignore-default-filter",
             "pkgs.prek",
             "LOOM_TEST_PROFILE_CONFIG",
             "LOOM_TEST_PRE_PUSH_CHECKS",
@@ -82,6 +92,7 @@ const CONTRACTS: &[FileContract] = &[
             "optionalAttrs isLinux",
             "optionalAttrs (!isLinux)",
             "container smoke not available on Darwin",
+            "exit 69",
         ],
     },
     FileContract {
@@ -91,7 +102,6 @@ const CONTRACTS: &[FileContract] = &[
             "cargo clippy --workspace -- -D warnings",
             "cargo clippy --workspace --all-targets -- -D warnings",
             "cargo nextest run --workspace",
-            "loom gate system --tree",
         ],
     },
     FileContract {
@@ -101,7 +111,6 @@ const CONTRACTS: &[FileContract] = &[
             "export GIT_CONFIG_SYSTEM=/dev/null",
             "unset WRIX_SIGNING_KEY",
             "cargo nextest run --workspace",
-            "loom gate system --tree",
         ],
     },
     FileContract {
@@ -119,6 +128,10 @@ const CONTRACTS: &[FileContract] = &[
             ".loom/",
             "bin/pre-push-checks --hook-id smoke-noop",
         ],
+    },
+    FileContract {
+        path: "tests/smoke/host-gate-test.sh",
+        required: &["extra-experimental-features = nix-command flakes"],
     },
     FileContract {
         path: "tests/smoke/loop.sh",
@@ -151,6 +164,21 @@ fn rule(input: &WalkInput) -> Verdict {
     let checks_path = "nix/flake/checks.nix";
     match read_to_string(input, &root.join(checks_path)) {
         Some(body) => {
+            let archive_runner = body
+                .split_once("llmCompatProgram =")
+                .and_then(|(_, tail)| tail.split_once("llm-compat-report ="))
+                .map(|(runner, _)| runner);
+            for required in [
+                "mkdir -p \"$HOME/tests\"",
+                "export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt",
+                "export NIX_SSL_CERT_FILE=\"$SSL_CERT_FILE\"",
+            ] {
+                if !archive_runner.is_some_and(|runner| active_line_contains(runner, required)) {
+                    violations.push(format!(
+                        "{checks_path}: archive runner is missing `{required}`"
+                    ));
+                }
+            }
             for forbidden in ["loom-tests", "fuzz-loom", "loomTests"] {
                 if active_line_contains(&body, forbidden) {
                     violations.push(format!(

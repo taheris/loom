@@ -56,6 +56,19 @@ fn rule(input: &WalkInput) -> Verdict {
         let Some(body) = read_to_string(input, &path) else {
             continue;
         };
+        match syn::parse_file(&body) {
+            Ok(file) => {
+                if file.attrs.iter().any(|attribute| {
+                    matches!(&attribute.meta, syn::Meta::List(list) if list.path.is_ident("cfg") && list.tokens.to_string() == "test")
+                }) {
+                    continue;
+                }
+            }
+            Err(error) => {
+                violations.push(format!("{rel_path}: invalid Rust while classifying production scope: {error}"));
+                continue;
+            }
+        }
         let mask = cfg_test_mask(&body);
         for (idx, raw) in body.lines().enumerate() {
             if mask[idx] {
@@ -91,6 +104,18 @@ fn rule(input: &WalkInput) -> Verdict {
 /// carry braces, so the scanner stays in the pending state until it
 /// reaches the opening brace.
 fn cfg_test_mask(source: &str) -> Vec<bool> {
+    let test_file = source.contains("#!")
+        && syn::parse_file(source).is_ok_and(|file| {
+            file.attrs.iter().any(|attribute| {
+                attribute.path().is_ident("cfg")
+                    && attribute
+                        .parse_args::<syn::Path>()
+                        .is_ok_and(|path| path.is_ident("test"))
+            })
+        });
+    if test_file {
+        return vec![true; source.lines().count()];
+    }
     let mut mask = Vec::new();
     let mut depth: i32 = 0;
     let mut pending = false;
@@ -155,3 +180,21 @@ pub fn run(input: &WalkInput) -> Verdict {
 }
 
 super::source::registration!("no_panics_in_production");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_actual_test_only_file_attributes_exempt_fixture_panics() {
+        let test = "#![cfg(test)]\nfn fixture() { Some(1).unwrap(); }\n";
+        assert!(cfg_test_mask(test).into_iter().all(|masked| masked));
+        for production in [
+            "const LOOKALIKE: &str = \"#![cfg(test)]\";\nfn production() { Some(1).unwrap(); }\n",
+            "#![cfg(any(test, unix))]\nfn production() { Some(1).unwrap(); }\n",
+            "// #![cfg(test)]\nfn production() { Some(1).unwrap(); }\n",
+        ] {
+            assert!(!cfg_test_mask(production).last().unwrap());
+        }
+    }
+}

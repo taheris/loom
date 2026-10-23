@@ -135,8 +135,10 @@ git branch -M main
 bash "${LOOM_TEST_GIT_POLICY:?missing smoke Git policy helper}"
 
 mkdir -p bin docs specs .loom
+cp -R "${LOOM_TEST_NATIVE_SMOKE_FIXTURE:?missing checked smoke definition}/." .
+chmod -R u+w docs specs
+chmod u+w flake.nix verification.nix result-check.sh loom-smoke-result.txt
 cp "$LOOM_TEST_PRE_PUSH_CHECKS" bin/pre-push-checks
-cp "${LOOM_TEST_VERIFIER_PROBE:?missing fixed verifier probe}" bin/verifier-probe.sh
 chmod +x bin/pre-push-checks
 install -m 0644 "${LOOM_TEST_SMOKE_SPEC:?missing indexed smoke acceptance}" specs/smoke.md
 cat >docs/README.md <<'DOCS'
@@ -163,7 +165,7 @@ cat >.gitignore <<'IGNORE'
 .wrix/
 *.gate.lock*
 IGNORE
-git add .gitignore .pre-commit-config.yaml wrix.toml bin/pre-push-checks bin/verifier-probe.sh docs/README.md specs/smoke.md
+git add .gitignore .pre-commit-config.yaml wrix.toml bin/pre-push-checks docs/README.md specs/smoke.md flake.nix verification.nix result-check.sh loom-smoke-result.txt
 git commit -q -m "Initialize smoke workspace"
 git remote add origin "$ORIGIN"
 git push -q -u origin main

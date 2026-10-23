@@ -138,7 +138,16 @@ fn fixture() -> TempDir {
             production,
         );
     }
-    write(root, "crates/loom-walk/src/lib.rs", "pub mod walk;\n");
+    write(
+        root,
+        "crates/loom-walk/src/selection.rs",
+        include_str!("../src/selection.rs"),
+    );
+    write(
+        root,
+        "crates/loom-walk/src/lib.rs",
+        "pub mod walk;\npub mod selection;\n",
+    );
     write(
         root,
         "docs/README.md",
@@ -415,7 +424,7 @@ fn every_dispatch_entry_has_an_actual_named_tracked_definition() {
         .iter()
         .map(|walk| name(walk.name))
         .collect();
-    assert_eq!(targets.len(), 65);
+    assert_eq!(targets.len(), 64);
     let definitions = checked_definitions(&snapshot, &inventory, &targets).unwrap();
     let registry = Registry::new(&snapshot, definitions).unwrap();
     let query = registry.query(&targets).unwrap();

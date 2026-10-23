@@ -10,18 +10,4 @@ list-wrapper = 'private-fixtures'
 run-wrapper = 'private-fixtures'
 
 [profile.default]
-# FIXME: Restore this native decision-inventory fixture after ordinary workflow
-# policy tests use the lightweight tracker. Keep native adapter coverage intact.
-# Full coverage remains available with --ignore-default-filter.
-# FIXME: Restore template tuning validation after its nested candidate builds
-# reuse dependencies; this single test took 186s in the measured suite.
-# FIXME: Restore integrity source-readmission after its native tracker fixture
-# is lightweight; this single test took 113s in the measured suite.
-# Keep these exact test exclusions out of explicitly required verification.
-default-filter = '''
-not (
-  (package(loom-workflow) & test(/::native_controller_counts_one_noop_source_and_five_distinct_decisions$/))
-  | (package(loom) & binary(tune_cli) & test(/^template_tune_candidate_validation$/))
-  | (package(loom-workflow) & test(/::integrity_extension_requires_explicit_reusable_source_readmission$/))
-)
-'''
+default-filter = 'all()'

@@ -757,7 +757,7 @@ and `--no-default-features` to catch feature-gating regressions.
 <!-- prettier-ignore -->
 - `OpenAiCompatClient` rejects binary parts with
   `LlmError::UnsupportedCapability` before network I/O while preserving
-  text-only Chat-Completions compatibility [check](cargo nextest run -p loom-llm --features openai-compat -E 'test(=client::openai_compat::tests::openai_compat_multimodal_returns_unsupported_without_network)')
+  text-only Chat-Completions compatibility [check](nix report .#verification-llm-compat::loom-llm::loom_llm$client::openai_compat::tests::openai_compat_multimodal_returns_unsupported_without_network)
 
 - Unsupported multimodal MIME/provider combinations return typed
   `LlmError::UnsupportedCapability` and never panic
@@ -801,31 +801,35 @@ and `--no-default-features` to catch feature-gating regressions.
   [test](incompatible_modelid_returns_typed_error_without_network)
 
 - `LlmClient::supports(&model)` returns `model.schema() == self.schema()` for
-  every variant pair [test](supports_matches_schema_equality)
+  every variant pair.
+  [test](loom-llm::client::tests::supports_matches_schema_equality)
+
+- Multi-provider client support uses the same schema-equality rule.
+  [test](loom-llm::client::multi_provider::tests::supports_matches_schema_equality)
 
 ### OpenAI-compatible adapter
 
 <!-- prettier-ignore -->
 - `OpenAiCompatClient::new(base_url, api_key)` builds a Client routed at
   `base_url`; calls send OpenAI Chat-Completions-shaped JSON over HTTP
-  [check](cargo nextest run -p loom-llm --features openai-compat -E 'test(=client::openai_compat::tests::openai_compat_client_sends_chat_completions_shape_to_configured_url)')
+  [check](nix report .#verification-llm-compat::loom-llm::loom_llm$client::openai_compat::tests::openai_compat_client_sends_chat_completions_shape_to_configured_url)
 
 <!-- prettier-ignore -->
 - `OpenAiCompatClient` accepts `ModelId::OpenAiCompat(_)` only; rejects every
-  other `ModelId` variant with `IncompatibleModel` [check](cargo nextest run -p loom-llm --features openai-compat -E 'test(=client::openai_compat::tests::openai_compat_client_rejects_non_compat_modelids)')
+  other `ModelId` variant with `IncompatibleModel` [check](nix report .#verification-llm-compat::loom-llm::loom_llm$client::openai_compat::tests::openai_compat_client_rejects_non_compat_modelids)
 
 <!-- prettier-ignore -->
-- Adapter compiles under `--features openai-compat` [check](cargo check -p loom-llm --features openai-compat)
+- Adapter compiles under `--features openai-compat` [check](nix build .#verification-llm-compat-compile)
 
 <!-- prettier-ignore -->
 - Default build (`--no-default-features`) compiles cleanly; the openai-compat
   adapter, `ModelId::OpenAiCompat`, and `SchemaKind::OpenAiCompat` are all gated
-  behind `#[cfg(feature = "openai-compat")]` [check](cargo check -p loom-llm --no-default-features)
+  behind `#[cfg(feature = "openai-compat")]` [check](nix build .#verification-llm-native-compile)
 
 <!-- prettier-ignore -->
 - Wiremock contract test exercises a 200 happy path, 401, 429 + Retry-After,
   500, and a malformed-JSON response against `OpenAiCompatClient`; each maps to
-  the expected `LlmError` variant and `retry_advice` [check](cargo nextest run -p loom-llm --features openai-compat -E 'test(=client::openai_compat::tests::openai_compat_wiremock_contract_covers_status_classes)')
+  the expected `LlmError` variant and `retry_advice` [check](nix report .#verification-llm-compat::loom-llm::loom_llm$client::openai_compat::tests::openai_compat_wiremock_contract_covers_status_classes)
 
 ### `LlmError`
 

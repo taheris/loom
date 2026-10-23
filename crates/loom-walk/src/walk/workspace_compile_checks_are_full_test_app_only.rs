@@ -7,7 +7,7 @@
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "workspace_compile_checks_are_full_test_app_only — nix flake checks omit workspace clippy/nextest; nix run .#test runs clippy, nextest, and system verifiers";
+const RULE: &str = "workspace_compile_checks_are_full_test_app_only — nix flake checks omit workspace clippy/nextest; nix run .#test runs clippy and nextest without recursive whole-tree Gate execution";
 
 const APPS_REL: &str = "nix/flake/apps.nix";
 const CHECKS_REL: &str = "nix/flake/checks.nix";
@@ -61,25 +61,24 @@ const REQUIRED_SCRIPT_SNIPPETS: &[RequiredAppSnippet] = &[
         label: "full nextest",
         needle: "cargo nextest run --workspace",
     },
-    RequiredAppSnippet {
-        label: "system verifiers",
-        needle: "loom gate system --tree",
-    },
 ];
 
 struct RequiredDerivation {
     attr: &'static str,
     builder: &'static str,
+    operation: &'static str,
 }
 
 const REQUIRED_DERIVATIONS: &[RequiredDerivation] = &[
     RequiredDerivation {
         attr: "clippy",
         builder: "cargoClippy",
+        operation: "lint",
     },
     RequiredDerivation {
         attr: "nextest",
         builder: "cargoNextest",
+        operation: "test",
     },
 ];
 
@@ -142,7 +141,11 @@ fn check_flake_checks_omit_compile_surfaces(body: &str, violations: &mut Vec<Str
 
 fn check_full_test_app(apps_body: &str, script_body: &str, violations: &mut Vec<String>) {
     for required in REQUIRED_APP_SNIPPETS {
-        if apps_body.contains(required.needle) {
+        let captured_script = required.label == "full test script"
+            && apps_body.contains("fullScript = source \"scripts/full-test.sh\";")
+            && apps_body.contains("text = builtins.readFile fullScript.path;")
+            && apps_body.contains("evaluation = [ fullScript ];");
+        if apps_body.contains(required.needle) || captured_script {
             continue;
         }
         violations.push(format!(
@@ -158,6 +161,11 @@ fn check_full_test_app(apps_body: &str, script_body: &str, violations: &mut Vec<
             "{FULL_TEST_SCRIPT_REL}: missing {} command `{}` in the `nix run .#test` full-suite app",
             required.label, required.needle,
         ));
+    }
+    for (idx, raw) in script_body.lines().enumerate() {
+        if code_before_comment(raw).trim() == "loom gate system --tree" {
+            violations.push(format!("{FULL_TEST_SCRIPT_REL}:{} duplicates ordinary verification with recursive whole-tree Gate execution", idx + 1));
+        }
     }
     for (idx, raw) in apps_body.lines().enumerate() {
         let code = code_before_comment(raw);
@@ -176,7 +184,21 @@ fn check_cargo_artifacts_source(body: &str, violations: &mut Vec<String>) {
             .trim()
             .contains("cargoArtifacts = craneLib.buildDepsOnly commonArgs;")
     });
-    if has_shared_artifacts {
+    let composed_source = derivation_block(body, "cargoArtifacts", "craneLib.buildDepsOnly")
+        .is_some_and(|(_, block)| {
+            [
+                "commonArgs",
+                "src = lib.cleanSourceWith {",
+                "filter = srcFilter;",
+            ]
+            .iter()
+            .all(|expected| {
+                block
+                    .lines()
+                    .any(|line| code_before_comment(line).trim() == *expected)
+            })
+        });
+    if has_shared_artifacts || composed_source {
         return;
     }
 
@@ -195,11 +217,20 @@ fn check_workspace_derivation(
     required: &RequiredDerivation,
     violations: &mut Vec<String>,
 ) {
-    let Some((line, block)) = derivation_block(body, required.attr, required.builder) else {
+    let legacy_builder = format!("craneLib.{}", required.builder);
+    let definition = derivation_block(body, required.attr, &legacy_builder).or_else(|| {
+        derivation_block(body, required.attr, "checked.cargo").filter(|(_, block)| {
+            block.lines().any(|line| {
+                code_before_comment(line).trim()
+                    == format!("operation = \"{}\";", required.operation)
+            })
+        })
+    });
+    let Some((line, block)) = definition else {
         match first_assignment_line(body, required.attr) {
             Some(line) => violations.push(format!(
-                "{WORKSPACE_REL}:{line} {} must be built with craneLib.{}",
-                required.attr, required.builder,
+                "{WORKSPACE_REL}:{line} {} must be built with craneLib.{} or checked.cargo operation {}",
+                required.attr, required.builder, required.operation,
             )),
             None => violations.push(format!(
                 "{WORKSPACE_REL}: {} derivation is missing",
@@ -224,8 +255,8 @@ fn check_workspace_derivation(
 
 fn derivation_block(body: &str, attr: &str, builder: &str) -> Option<(usize, String)> {
     let assignment_prefix = format!("{attr} =");
-    let builder_needle = format!("craneLib.{builder}");
     let mut start_line = None;
+    let mut indentation = 0;
     let mut block = String::new();
     let mut head = String::new();
     let mut builder_found = false;
@@ -237,6 +268,7 @@ fn derivation_block(body: &str, attr: &str, builder: &str) -> Option<(usize, Str
                 continue;
             };
             start_line = Some(idx + 1);
+            indentation = raw.len() - raw.trim_start().len();
             head.push_str(value);
         } else if !builder_found {
             head.push_str(code);
@@ -244,8 +276,8 @@ fn derivation_block(body: &str, attr: &str, builder: &str) -> Option<(usize, Str
         if !builder_found {
             let value = head.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
             if !value.is_empty() {
-                let tail = value.strip_prefix(&builder_needle)?;
-                if !tail.starts_with(|c: char| c.is_whitespace() || c == '(') {
+                let tail = value.strip_prefix(builder)?;
+                if !tail.starts_with(|c: char| c.is_whitespace() || matches!(c, '(' | '{')) {
                     return None;
                 }
                 builder_found = true;
@@ -253,7 +285,9 @@ fn derivation_block(body: &str, attr: &str, builder: &str) -> Option<(usize, Str
         }
         block.push_str(raw);
         block.push('\n');
-        if code.trim() == ");" {
+        if code.trim() == ");"
+            || (code.trim() == "};" && raw.len() - raw.trim_start().len() <= indentation)
+        {
             break;
         }
     }
@@ -325,3 +359,29 @@ pub fn run(input: &WalkInput) -> Verdict {
 }
 
 super::source::registration!("workspace_compile_checks_are_full_test_app_only");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_native_suite_rejects_recursive_whole_tree_gate() {
+        let apps = REQUIRED_APP_SNIPPETS
+            .iter()
+            .map(|snippet| snippet.needle)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut script = REQUIRED_SCRIPT_SNIPPETS
+            .iter()
+            .map(|snippet| snippet.needle)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut findings = Vec::new();
+        check_full_test_app(&apps, &script, &mut findings);
+        assert!(findings.is_empty(), "{findings:?}");
+        script.push_str("\nloom gate system --tree\n");
+        check_full_test_app(&apps, &script, &mut findings);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].contains("recursive whole-tree Gate"));
+    }
+}

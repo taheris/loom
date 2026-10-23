@@ -33,7 +33,8 @@ pub mod strategy;
 
 /// Verifier tier for one annotation. Closed set per RS-17; the wire
 /// strings line up with the `[tier]` text in spec files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Tier {
     /// Static analysis — `[check](command)` invokes a verifier subprocess.
     Check,
@@ -93,7 +94,7 @@ impl std::fmt::Display for Tier {
 /// (`[tier?](target)`); see `specs/gate.md` § Pending modifier. The
 /// parser is purely syntactic — it sets the bit and lets the integrity
 /// gate decide whether the marker is needed, stale, or absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Annotation {
     pub tier: Tier,
     pub target: String,

@@ -46,6 +46,7 @@ impl From<Digest> for String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Capability {
+    NixMetadata,
     NixSandbox,
     ContainerEngine,
     HostKernel,
@@ -54,6 +55,7 @@ pub enum Capability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Discovery {
+    NativeMetadata,
     CollectTracked,
     ConstructedGraph,
     SupportedEffect,
@@ -89,9 +91,26 @@ pub struct Contract {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rust {
-    pub(super) checker: ResourcePath,
+    pub(super) checker: RustChecker,
     pub(super) artifact: Digest,
     pub(super) entry: Name,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum RustChecker {
+    Project(ResourcePath),
+    Library {
+        library: LibraryChecker,
+        source: Digest,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LibraryChecker {
+    ProjectContext,
+    NativePlatform(Box<super::nix::applicability::Description>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +125,8 @@ pub struct Nix {
     pub(super) executor: super::nix::StorePath,
     pub(super) binary: ResourcePath,
     pub(super) artifact: Digest,
+    #[serde(default)]
+    pub(super) runtime: super::nix::Runtime,
 }
 
 /// Deserializing any closed variant still leaves a candidate that requires resolution.
@@ -169,6 +190,18 @@ impl Candidate {
 
     pub const fn discovery(&self) -> Discovery {
         match self {
+            Self::TrackedRust {
+                execution:
+                    Rust {
+                        checker:
+                            RustChecker::Library {
+                                library: LibraryChecker::NativePlatform(_),
+                                ..
+                            },
+                        ..
+                    },
+                ..
+            } => Discovery::NativeMetadata,
             Self::TrackedRust { .. } => Discovery::CollectTracked,
             Self::HermeticNix { .. } => Discovery::ConstructedGraph,
             Self::SupportedEffect { .. } => Discovery::SupportedEffect,
@@ -185,8 +218,25 @@ impl Candidate {
 
     pub fn capabilities(&self) -> BTreeSet<Capability> {
         match self {
+            Self::TrackedRust {
+                execution:
+                    Rust {
+                        checker:
+                            RustChecker::Library {
+                                library: LibraryChecker::NativePlatform(_),
+                                ..
+                            },
+                        ..
+                    },
+                ..
+            } => BTreeSet::from([Capability::NixMetadata]),
             Self::TrackedRust { .. } => BTreeSet::new(),
-            Self::HermeticNix { .. } => BTreeSet::from([Capability::NixSandbox]),
+            Self::HermeticNix { execution, .. } => match execution.runtime {
+                super::nix::Runtime::Nix => BTreeSet::from([Capability::NixSandbox]),
+                super::nix::Runtime::NativeCgroup => {
+                    BTreeSet::from([Capability::NixSandbox, Capability::HostKernel])
+                }
+            },
             Self::SupportedEffect { .. } => {
                 BTreeSet::from([Capability::ContainerEngine, Capability::HostKernel])
             }

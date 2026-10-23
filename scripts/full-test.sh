@@ -13,10 +13,11 @@ if [[ -f "$repo_root/scripts/configure-cargo-patches.sh" ]]; then
 fi
 
 nix fmt -- --fail-on-change
+python3 tests/verify/native-resources.py "$repo_root"
 nix build
 nix flake check --no-warn-dirty
 cargo build --workspace
 cargo clippy --workspace -- -D warnings
 cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace
-loom gate system --tree
+cargo nextest run --workspace --ignore-default-filter
+nix run .#test-native-units

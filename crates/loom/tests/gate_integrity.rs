@@ -27,22 +27,34 @@ fn write_spec_with_unresolvable_annotation(workspace: &Path, label: &str) {
     .expect("write spec");
 }
 
-/// Discover `true`'s directory on the ambient `PATH` so we can pin a
-/// minimal `PATH` for the loom child without assuming `/usr/bin:/bin`
-/// — those paths are empty on NixOS-style hosts where coreutils lives
-/// under `/nix/store/...`. The pinned `PATH` still excludes everything
-/// else, so `definitely-not-a-real-command-xyz-integrity-test` remains
-/// provably absent.
+/// Pin coreutils and Git for actual snapshot collection without assuming FHS paths.
 fn pinned_path() -> String {
     let path_var = std::env::var_os("PATH").expect("PATH must be set");
-    for dir in std::env::split_paths(&path_var) {
-        if dir.join("true").is_file() {
-            return dir.to_string_lossy().into_owned();
-        }
-    }
-    panic!(
-        "could not locate `true` on PATH={}",
-        Path::new(&path_var).display()
+    let directories: Vec<_> = std::env::split_paths(&path_var).collect();
+    let tools = ["true", "git"].map(|tool| {
+        directories
+            .iter()
+            .find(|dir| dir.join(tool).is_file())
+            .expect("provision native fixture tools")
+    });
+    std::env::join_paths(tools)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn initialize(workspace: &Path) {
+    std::fs::write(workspace.join(".gitignore"), "/.loom/\n").unwrap();
+    let output = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -213,11 +225,13 @@ fn gate_verify_files_fires_unneeded_pending_marker_for_plain_test_leaf_when_spec
 fn gate_verify_tree_ignores_loom_verify_tiers_env() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
+    initialize(workspace);
+    std::fs::write(workspace.join("bad.md"), "# Invalid\0text\n").unwrap();
     let specs_dir = workspace.join("specs");
     std::fs::create_dir_all(&specs_dir).unwrap();
     std::fs::write(
         specs_dir.join("env-ignored.md"),
-        "## Success Criteria\n\n- system still runs [system](false)\n",
+        "## Success Criteria\n\n- system still runs [system](loom:project-context)\n",
     )
     .unwrap();
 
@@ -237,9 +251,17 @@ fn gate_verify_tree_ignores_loom_verify_tiers_env() {
         !output.status.success(),
         "tree verify must run [system] from scope, ignoring LOOM_VERIFY_TIERS. stderr={stderr}",
     );
+    let reports =
+        std::fs::read_to_string(workspace.join(".loom/logs/gate/verifier-results.jsonl")).unwrap();
+    let reports: Vec<serde_json::Value> = reports
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     assert!(
-        stderr.contains("loom gate [system] FAIL: false"),
-        "stderr must show system tier ran despite env override: {stderr}",
+        reports.iter().any(|row| row["tier"] == "system"
+            && row["outcome"] == "fail"
+            && row["target"] == "loom:project-context"),
+        "system owner must receive its actual failure despite env override: {stderr}; {reports:?}"
     );
 }
 
@@ -247,13 +269,12 @@ fn gate_verify_tree_ignores_loom_verify_tiers_env() {
 fn gate_check_is_silent_when_every_annotation_resolves() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
+    initialize(workspace);
     let specs_dir = workspace.join("specs");
     std::fs::create_dir_all(&specs_dir).unwrap();
-    // Single annotation pointing at `true`, which always resolves on a
-    // coreutils PATH. No second criterion → no atomic-acceptance flag.
     std::fs::write(
         specs_dir.join("integrity-clean.md"),
-        "## Success Criteria\n\n- a criterion [check](true)\n",
+        "## Success Criteria\n\n- Project text parses [check](loom:project-context)\n",
     )
     .unwrap();
 

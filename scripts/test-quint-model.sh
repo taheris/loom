@@ -13,7 +13,7 @@ case "$1" in
   deeper) mode=deeper ;;
   *) printf 'test-quint: unknown model scenario %s\n' "$1" >&2; exit 64 ;;
 esac
-for tool in quint loom-quint-checker timeout jq sha256sum; do
+for tool in quint loom-quint-checker loom-quint-witnesses timeout jq sha256sum; do
   if ! command -v "$tool" >/dev/null; then
     printf 'test-quint: missing provisioned tool %s\n' "$tool" >&2
     exit 1
@@ -28,6 +28,7 @@ if [[ ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.0/quint_evaluato
   exit 1
 fi
 cd "$LOOM_QUINT_SOURCE"
+source scripts/quint-output.sh
 plan=specs/gate/campaign.json
 jq -e '
   def positive: type == "number" and . > 0 and floor == .;
@@ -41,8 +42,8 @@ jq -e '
 ' "$plan" >/dev/null
 identity=$(sha256sum specs/gate/model.qnt specs/gate/witness.qnt specs/gate/README.md "$plan" \
   specs/gate.md specs/verify.md specs/evidence.md specs/simulation.md \
-  scripts/test-quint-model.sh scripts/test-quint.sh tests/quint/model-harness.sh \
-  nix/flake/quint.nix nix/quint/tools.nix nix/quint/checker.rs nix/cargo-home.nix flake.lock | sha256sum)
+  scripts/test-quint-model.sh scripts/test-quint.sh scripts/quint-output.sh tests/quint/model-harness.sh tests/quint/mutations.py \
+  nix/flake/quint.nix nix/quint/tools.nix nix/quint/checker.rs nix/quint/witnesses.rs nix/cargo-home.nix flake.lock | sha256sum)
 identity="${identity%% *}"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -65,10 +66,12 @@ samples=$(jq -r --arg mode "$mode" '.[$mode].samples' "$plan")
 seconds=$(jq -r --arg mode "$mode" '.[$mode].seconds' "$plan")
 expected_tests=$(jq -r '.tests' "$plan")
 mapfile -t seeds < <(jq -r --arg mode "$mode" '.[$mode].seeds[]' "$plan")
+run_checked "$seconds" quint typecheck specs/gate/witness.qnt --out "$tmp/witness-ir.json"
+[[ -s "$tmp/witness-ir.json" ]]
 for seed in "${seeds[@]}"; do
   mkdir "$tmp/$seed"
-  run_checked "$seconds" quint test specs/gate/witness.qnt --main witness --seed "$seed" \
-    --max-samples "$samples" --out "$tmp/$seed/tests.json"
+  run_checked "$seconds" loom-quint-witnesses "$tmp/witness-ir.json" "$seed" "$samples"
+  cp "$tmp/output" "$tmp/$seed/tests.json"
   jq -e --argjson tests "$expected_tests" '
     (.errors | length) == 0 and (.failed | length) == 0 and (.ignored | length) == 0 and
     (.passed | length) == $tests and (.passed | unique | length) == $tests
@@ -81,13 +84,7 @@ for seed in "${seeds[@]}"; do
       --out run.json --out-itf trace.itf.json
   )
   jq -e '.status == "ok" and (.errors | length) == 0' "$tmp/$seed/run.json" >/dev/null
-  shopt -s nullglob
-  batch=("$tmp/$seed/"*.itf.json)
-  if [[ "${#batch[@]}" -ne "$traces" ]]; then
-    printf 'test-quint: empty or incomplete whole-gate trace batch; no bounded success\n' >&2
-    exit 1
-  fi
-  jq -se --argjson states "$((steps + 1))" 'all(.[]; (.states | length) == $states)' "${batch[@]}" >/dev/null
+  require_quint_trace_batch "$tmp/$seed" "$traces" "$((steps + 1))"
   printf 'whole-gate: seed=%s traces=%s states/trace=%s tests=%s complete\n' "$seed" "$traces" "$((steps + 1))" "$expected_tests" >&2
 done
 printf 'null\n' >"$tmp/exhaustive.json"
@@ -96,13 +93,7 @@ if [[ "$1" == model ]]; then
   run_checked "$exhaustive_seconds" quint compile specs/gate/model.qnt --main gate --flatten false
   cp "$tmp/output" "$tmp/compiled.json"
   run_checked "$exhaustive_seconds" loom-quint-checker "$tmp/compiled.json" "$plan"
-  if ! jq -se --slurpfile plan "$plan" '
-    length == 1 and (.[0] | .status == "complete" and .backend == "quint-rust-explicit-state-v1" and
-    .depth == $plan[0].exhaustive.steps and .roots > 0 and .states > 0 and .transitions > 0)
-  ' "$tmp/output" >/dev/null; then
-    printf 'test-quint: missing completed exhaustive result; no bounded success\n' >&2
-    exit 1
-  fi
+  require_quint_exhaustive_result "$tmp/output" "$plan"
   cp "$tmp/output" "$tmp/exhaustive.json"
 fi
 # Gate reads stdout as JSON lines; keep the diagnostic receipt on one line.

@@ -1,152 +1,43 @@
 { inputs, ... }:
-
 {
   perSystem =
     {
       pkgs,
-      imagePiCodingAgent,
-      imageTreefmtWrapper,
       loom,
-      nativeCargo,
-      sandbox,
-      profileManifest,
-      wrixSrc,
-      smokeSandbox,
       system,
-      wrixLinuxPkgs,
-      wrixLib,
       wrixLauncher,
       ...
     }:
     let
-      inherit (builtins)
-        all
-        attrValues
-        concatLists
-        filter
-        length
-        mapAttrs
-        ;
       inherit (loom)
         bin
         cargoArtifacts
         craneLib
         stagedSrc
         ;
-      inherit (inputs.nixpkgs.lib)
-        assertMsg
-        concatMapStringsSep
-        makeBinPath
-        optionalAttrs
-        systems
-        ;
-      hostPlatform = systems.elaborate system;
-      loomLib = import ../lib.nix;
+      checked = import ../verification.nix;
+      resource =
+        origin:
+        checked.resource {
+          root = ../..;
+          inherit origin;
+        };
+      evaluation = import ../native-context.nix;
+      check = resources: build: checked.check { inherit resources evaluation build; };
+      scriptCheck =
+        name: resources: nativeBuildInputs: script:
+        check resources (
+          paths:
+          pkgs.runCommand name { inherit nativeBuildInputs; } ''
+            set -euo pipefail
+            ${script paths}
+            touch "$out"
+          ''
+        );
       testsDeriv = import ../../tests/default.nix {
-        inherit pkgs smokeSandbox wrixLauncher;
+        inherit pkgs wrixLauncher;
         loomPackage = loom;
       };
-
-      checkSystemsMatchHost = all (check: check.system == system) (attrValues checks);
-      native-check-discovery = pkgs.writeText "native-check-discovery.json" (
-        builtins.toJSON (import ../../tests/verify/native-check-discovery.nix { lib = inputs.nixpkgs.lib; })
-      );
-
-      checks-match-host-system =
-        assert assertMsg checkSystemsMatchHost "checks.${system} contains a foreign-platform derivation";
-        pkgs.runCommand "checks-match-host-system" { } ''
-          set -euo pipefail
-          touch "$out"
-        '';
-
-      workspace-build-identity = import ../tests/workspace-identity.nix {
-        inherit pkgs loom;
-        inherit (inputs) crane fenix;
-        src = ../..;
-      };
-
-      workspace-source-includes-git-policy-scripts =
-        pkgs.runCommand "workspace-source-includes-git-policy-scripts" { }
-          ''
-            set -euo pipefail
-            for src in ${bin.src} ${stagedSrc}; do
-              for script in wrix.sh sign.sh; do
-                cmp "${../../crates/loom-test-support/src/git_policy}/$script" \
-                  "$src/crates/loom-test-support/src/git_policy/$script"
-              done
-            done
-            touch "$out"
-          '';
-
-      workspace-source-includes-nix-support =
-        pkgs.runCommand "workspace-source-includes-nix-support"
-          {
-            nativeBuildInputs = [ pkgs.diffutils ];
-          }
-          ''
-            set -euo pipefail
-            diff --recursive ${../../nix} "${stagedSrc}/nix"
-            cmp ${../../bin/loom} "${stagedSrc}/bin/loom"
-            touch "$out"
-          '';
-
-      nextest-cargo-home-isolation =
-        pkgs.runCommand "nextest-cargo-home-isolation"
-          {
-            nativeBuildInputs = [
-              pkgs.cargo
-              pkgs.rustc
-              pkgs.stdenv.cc
-            ];
-          }
-          ''
-            set -euo pipefail
-            bash ${../../tests/agent/nextest-home.sh} \
-              ${pkgs.writeText "nextest-pre-unpack.sh" pkgs.cargo-nextest.preUnpack}
-            bash ${../../tests/agent/nextest-home.sh} \
-              ${pkgs.writeText "prek-pre-unpack.sh" (import ../prek.nix { inherit pkgs; }).preUnpack}
-            touch "$out"
-          '';
-
-      rustFixtureInputs = [
-        bin
-        loom.toolchain
-        pkgs.coreutils
-        pkgs.git
-        pkgs.python3
-        pkgs.sccache
-        pkgs.stdenv.cc
-      ];
-
-      artifact-storage-gate-temporary-root =
-        pkgs.runCommand "artifact-storage-gate-temporary-root" { nativeBuildInputs = rustFixtureInputs; }
-          ''
-            bash ${../../scripts/run-private-fixture-tests} \
-              bash ${../../tests/agent/artifact-storage-gate-test.sh} \
-              ${bin}/bin/loom ${../../tests/agent/artifact-storage-gate.sh} ${../../scripts/run-private-fixture-tests}
-            touch "$out"
-          '';
-
-      artifact-storage-fixture =
-        pkgs.runCommand "artifact-storage-fixture" { nativeBuildInputs = rustFixtureInputs; }
-          ''
-            bash ${../../scripts/run-private-fixture-tests} \
-              bash ${../../tests/agent/artifact-storage-gate.sh} \
-              ${bin}/bin/loom ${../../tests/agent/artifact-storage.py} "$out"
-          '';
-
-      nextest-filtering-syntax = craneLib.mkCargoDerivation {
-        pname = "nextest-filtering-syntax";
-        version = "0.0.0";
-        src = stagedSrc;
-        inherit cargoArtifacts;
-        doCheck = true;
-        doInstallCargoArtifacts = false;
-        buildPhaseCargoCommand = "cargo test --locked -p loom-gate --test nextest_filtering --no-run";
-        checkPhaseCargoCommand = "cargo test --locked -p loom-gate --test nextest_filtering";
-        installPhaseCommand = "touch $out";
-      };
-
       checkedNativeCargo = import ../native-cargo.nix {
         inherit pkgs;
         config = loom.cargoConfig;
@@ -156,10 +47,10 @@
         (pkgs.writeText "bootstrap-cargo-patches.toml" ''
           paths = []
           [env]
-          LOOM_PREK_BIN = { value = "${import ../prek.nix { inherit pkgs; }}/bin/prek", force = true }
+          LOOM_PREK_BIN = { value = "${loom.hookRunner}/bin/prek", force = true }
           LOOM_ISSUES_BD_BIN = { value = "${pkgs.beads}/bin/bd", force = true }
           LOOM_NATIVE_NIX_BIN = { value = "${pkgs.nix}/bin/nix", force = true }
-          ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+          ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             LOOM_NATIVE_FLOCK_BIN = { value = "${pkgs.util-linux}/bin/flock", force = true }
             LOOM_NATIVE_SHELL_BIN = { value = "${pkgs.bash}/bin/bash", force = true }
             LOOM_NATIVE_STAT_BIN = { value = "${pkgs.coreutils}/bin/stat", force = true }
@@ -179,685 +70,6 @@
           printf '%s\n' "$@"
         '';
       };
-      native-cargo-bootstrap =
-        pkgs.runCommand "native-cargo-bootstrap"
-          {
-            nativeBuildInputs = [
-              pkgs.git
-              (pkgs.lib.getBin pkgs.nix)
-              pkgs.coreutils
-            ];
-          }
-          ''
-            set -euo pipefail
-            cp -r ${../..} source
-            chmod -R u+w source
-            cd source
-            git init -q
-            bash tests/agent/native-cargo.sh ${bootstrapCargo}/bin/cargo \
-              ${bootstrapConfig} ${bootstrapConfig.nextestVersion} ${bootstrapConfig.nextestChecksum} \
-              ${loom.hookRunner}/bin/prek
-            touch "$out"
-          '';
-
-      rust-cache-context-fixture =
-        pkgs.runCommand "rust-cache-context-fixture" { nativeBuildInputs = rustFixtureInputs; }
-          ''
-            bash ${../../scripts/run-private-fixture-tests} \
-              bash ${../../tests/agent/artifact-storage-gate.sh} \
-              ${bin}/bin/loom ${../../tests/agent/rust-cache-context.py} "$out" rust-cache-context-report.json
-          '';
-
-      native-cargo-patches = craneLib.mkCargoDerivation {
-        pname = "native-cargo-patches";
-        version = "0.0.0";
-        src = stagedSrc;
-        inherit cargoArtifacts;
-        cargoVendorDir = (inputs.crane.mkLib pkgs).vendorCargoDeps { src = stagedSrc; };
-        nativeBuildInputs = [ (pkgs.lib.getBin pkgs.nix) ];
-        doCheck = true;
-        doInstallCargoArtifacts = false;
-        preBuild = ''
-          cp Cargo.lock "$TMPDIR/original-Cargo.lock"
-          if cargo test --locked -p loom-gate --test nextest_filtering \
-            nextest_filter_grammar_errors_retain_upstream_diagnostics > "$TMPDIR/unpatched.log" 2>&1; then
-            echo "unpatched parser unexpectedly passed the strict regression" >&2
-            exit 1
-          fi
-          grep -F 'test nextest_filter_grammar_errors_retain_upstream_diagnostics ... FAILED' "$TMPDIR/unpatched.log"
-          ${checkedNativeCargo}/bin/cargo --version
-          test ! -e .cargo/nix-patches.toml
-          ${checkedNativeCargo}/bin/cargo test --locked -p loom-gate --test nextest_filtering \
-            nextest_filter_grammar_errors_retain_upstream_diagnostics
-          test -L .cargo/nix-patches.toml
-        '';
-        buildPhaseCargoCommand = "cargo test --locked -p loom-gate --test nextest_filtering --test strategy";
-        checkPhaseCargoCommand = ''cmp Cargo.lock "$TMPDIR/original-Cargo.lock"'';
-        installPhaseCommand = "touch $out";
-      };
-
-      loom-gate-check = craneLib.mkCargoDerivation {
-        pname = "loom-gate-check";
-        version = "0.0.0";
-        src = stagedSrc;
-        inherit cargoArtifacts;
-
-        doCheck = true;
-        # Terminal derivation — nothing downstream consumes our `target/`,
-        # so skip crane's default zstd-pack-target step on install.
-        doInstallCargoArtifacts = false;
-
-        nativeBuildInputs = [
-          pkgs.git
-          pkgs.cacert
-          pkgs.cargo-nextest
-          pkgs.jq
-          pkgs.python3
-          bin
-        ];
-        buildPhaseCargoCommand = "loom --version";
-
-        preCheck = ''
-          export HOME=$(mktemp -d)
-          export CARGO_BUILD_JOBS="$NIX_BUILD_CORES"
-          export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-          export LOOM_AGENT_WRIX_SOURCE=${wrixSrc}
-        '';
-        # `--tree` (every verifier, no file filter) is the explicit scope
-        # for a git-less build sandbox: the source artifact has no `.git`,
-        checkPhaseCargoCommand = "bash ${../../scripts/run-private-fixture-tests} loom gate check --tree";
-      };
-
-      wrixProfilePackages = filter (pkg: (pkg.meta.mainProgram or "") == "wrix") sandbox.profile.packages;
-      sandboxProfileEnv = wrixLinuxPkgs.buildEnv {
-        name = "loom-sandbox-profile-env-check";
-        paths = sandbox.profile.packages;
-        pathsToLink = [ "/bin" ];
-      };
-
-      sandbox-profile-env-has-wrix =
-        assert length wrixProfilePackages == 1;
-        wrixLinuxPkgs.runCommand "sandbox-profile-env-has-wrix" { } ''
-          set -euo pipefail
-          if [[ ! -x ${sandboxProfileEnv}/bin/wrix ]]; then
-            printf 'expected sandbox profile PATH to include real wrix at %s/bin/wrix\n' ${sandboxProfileEnv} >&2
-            exit 1
-          fi
-          ${sandboxProfileEnv}/bin/wrix beads --help | grep -q 'push'
-          touch "$out"
-        '';
-
-      sandbox-profile-env-has-loom = wrixLinuxPkgs.runCommand "sandbox-profile-env-has-loom" { } ''
-        set -euo pipefail
-        if [[ ! -x ${sandboxProfileEnv}/bin/loom ]]; then
-          printf 'expected worker sandbox profile PATH to include loom at %s/bin/loom\n' ${sandboxProfileEnv} >&2
-          exit 1
-        fi
-        ${sandboxProfileEnv}/bin/loom --version >/dev/null
-        touch "$out"
-      '';
-
-      sandbox-profile-env-evaluates-nix =
-        wrixLinuxPkgs.runCommand "sandbox-profile-env-evaluates-nix" { }
-          ''
-            set -euo pipefail
-            export HOME="$TMPDIR/home"
-            export NIX_CONF_DIR="$TMPDIR/nix-conf"
-            export NIX_CONFIG='experimental-features ='
-            export NIX_REMOTE="local?root=$TMPDIR/unavailable-store"
-            mkdir -p "$HOME" "$NIX_CONF_DIR"
-            touch "$TMPDIR/unavailable-store"
-            [[ "$(${sandboxProfileEnv}/bin/nix --extra-experimental-features nix-command eval --store dummy:// --offline --raw --expr '"worker-nix-ok"')" == worker-nix-ok ]]
-            touch "$out"
-          '';
-
-      rustSandboxes = [ sandbox ] ++ attrValues profileManifest.passthru.sandboxes.rust;
-      sandbox-rust-toolchain-matches-pin =
-        wrixLinuxPkgs.runCommand "sandbox-rust-toolchain-matches-pin" { }
-          ''
-            set -euo pipefail
-            ${concatMapStringsSep "\n" (rustSandbox: ''
-              (
-                export PATH="${rustSandbox.image.profileEnv}/bin:$PATH"
-                export RUSTC="${rustSandbox.profile.env.RUSTC}"
-                [[ "$(readlink -f "$(command -v cargo)")" == "${nativeCargo}/bin/cargo" ]]
-                for tool in rustc cargo rustdoc cargo-clippy clippy-driver rustfmt; do
-                  expected=$("${loom.toolchain}/bin/$tool" --version)
-                  actual=$("$tool" --version)
-                  if [[ "$actual" != "$expected" ]]; then
-                    printf '%s: expected %s, got %s\n' "$tool" "$expected" "$actual" >&2
-                    exit 1
-                  fi
-                done
-                [[ "$("$RUSTC" --version)" == "$(rustc --version)" ]]
-              )
-            '') rustSandboxes}
-            touch "$out"
-          '';
-
-      known-hosts-preserves-store = pkgs.runCommand "known-hosts-preserves-store" { } ''
-        set -euo pipefail
-        bash ${../../tests/sandbox/known-hosts-store.sh} ${wrixSrc}/lib/sandbox/install-known-hosts.sh
-        touch "$out"
-      '';
-
-      worker-native-preflight =
-        pkgs.runCommand "worker-native-preflight"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.gnugrep
-            ];
-          }
-          ''
-            set -euo pipefail
-            bash ${../../tests/sandbox/native-preflight-test.sh} ${../../scripts/worker-native-preflight.sh}
-            touch "$out"
-          '';
-
-      privateNixChecks = import "${wrixSrc}/tests/sandbox/private-nix.nix" {
-        inherit pkgs;
-        linuxPkgs = wrixLinuxPkgs;
-        wrix = wrixLib;
-        profileSandboxes = profileManifest.sandboxes;
-      };
-      worker-nix-state-permissions = privateNixChecks.private-nix-state-preservation;
-      worker-private-nix-api = privateNixChecks.private-nix-api;
-      native-factory-private-nix = import ../../tests/sandbox/native-factory-private-nix.nix {
-        inherit pkgs profileManifest;
-      };
-
-      transportHarnessProfile = pkgs.writeText "transport-harness-profile.json" (
-        builtins.toJSON {
-          schema = 1;
-          inherit system;
-          profile = {
-            name = "transport-harness";
-            env = { };
-            mounts = [ ];
-            writable_dirs = [ ];
-            network_allowlist = [ ];
-          };
-          image = {
-            ref = "wrix-transport:test";
-            source = "/nix/store/transport-harness-fixture";
-            source_kind = if pkgs.stdenv.hostPlatform.isDarwin then "docker-archive" else "nix-descriptor";
-            digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-          };
-          agent.kind = "direct";
-          resources = {
-            cpus = null;
-            memory_mb = 4096;
-            pids_limit = 4096;
-          };
-          security = {
-            deploy_key = null;
-            runtime_secrets = { };
-          };
-          network = {
-            default_mode = "limit";
-            ipv6 = "disabled";
-          };
-          services = {
-            nix_cache.enable = false;
-          };
-          features.mcp_runtime = false;
-        }
-      );
-      worker-transport-harness =
-        pkgs.runCommand "worker-transport-harness"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.findutils
-              pkgs.jq
-              pkgs.gnugrep
-            ];
-          }
-          ''
-            set -euo pipefail
-            bash ${../../tests/sandbox/worker-transport-test.sh} \
-              ${../../tests/sandbox/worker-transport.sh} \
-              ${wrixLauncher}/bin/wrix ${transportHarnessProfile}
-            touch "$out"
-          '';
-
-      agent-entrypoint-contract =
-        pkgs.runCommand "agent-entrypoint-contract"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.jq
-              pkgs.python3
-            ];
-          }
-          ''
-            set -euo pipefail
-            python3 ${../../tests/agent/entrypoint.py} ${wrixSrc}
-            touch "$out"
-          '';
-
-      image-runtime-binaries-launch = wrixLinuxPkgs.runCommand "image-runtime-binaries-launch" { } ''
-        set -euo pipefail
-        export HOME="$TMPDIR/home"
-        mkdir -p "$HOME"
-        ${imagePiCodingAgent}/bin/pi --version >/dev/null
-        ${imageTreefmtWrapper}/bin/treefmt --version >/dev/null
-        ${wrixLinuxPkgs.podman}/bin/podman --version >/dev/null
-        touch "$out"
-      '';
-
-      fakePodman = pkgs.writeShellScript "podman" ''
-        set -euo pipefail
-        printf 'Error: opening /dev/net/tun: no such file\n' >&2
-        exit 125
-      '';
-
-      fakeSandboxImage = pkgs.writeShellScript "fake-sandbox-image" ''
-        set -euo pipefail
-        printf 'fake image payload\n'
-        printf 'Adding base layer 1 from fake/layer.tar\n' >&2
-      '';
-
-      fakePodmanRunOciPermissionDenied = pkgs.writeShellScript "podman" ''
-        set -euo pipefail
-        cmd=""
-        for arg in "$@"; do
-          case "$arg" in
-            info | load | run)
-              cmd="$arg"
-              break
-              ;;
-          esac
-        done
-        case "$cmd" in
-          info)
-            exit 0
-            ;;
-          load)
-            cat >/dev/null
-            printf 'Loaded image: localhost/fake:latest\n'
-            ;;
-          run)
-            printf 'Error: crun: mount `proc` to `proc`: OCI permission denied\n' >&2
-            exit 126
-            ;;
-          *)
-            printf 'unexpected podman args: %s\n' "$*" >&2
-            exit 2
-            ;;
-        esac
-      '';
-
-      fakePodmanCreatesReadOnlyStorage = pkgs.writeShellScript "podman" ''
-        set -euo pipefail
-        if [[ -n "''${LOOM_TEST_PODMAN_ARGS_LOG:-}" ]]; then
-          for arg in "$@"; do
-            printf '<%s>' "$arg" >> "$LOOM_TEST_PODMAN_ARGS_LOG"
-          done
-          printf '\n' >> "$LOOM_TEST_PODMAN_ARGS_LOG"
-        fi
-        root=""
-        cmd=""
-        while [[ "$#" -gt 0 ]]; do
-          case "$1" in
-            --root)
-              root="$2"
-              shift 2
-              ;;
-            --runroot)
-              shift 2
-              ;;
-            info | load | run)
-              cmd="$1"
-              shift
-              break
-              ;;
-            *)
-              shift
-              ;;
-          esac
-        done
-        case "$cmd" in
-          info)
-            exit 0
-            ;;
-          load)
-            cat >/dev/null
-            printf 'Loaded image: localhost/fake:latest\n'
-            ;;
-          run)
-            if [[ -z "$root" ]]; then
-              printf 'expected --root argument\n' >&2
-              exit 2
-            fi
-            readonly_dir="$root/overlay/fake/diff/nix/store/fake-lib/lib"
-            mkdir -p "$readonly_dir"
-            touch "$readonly_dir/libfake.so"
-            chmod -R a-w "$root/overlay/fake/diff/nix/store/fake-lib"
-            printf 'sandbox-checks-started\n'
-            case "''${LOOM_TEST_SANDBOX_RESULT:-complete}" in
-              check-failure)
-                printf 'hook check failed: operation not permitted\n' >&2
-                exit 1
-                ;;
-              health-only)
-                printf 'sandbox-agent-health-ok\n'
-                ;;
-              nix-eval-only)
-                printf '%s\n' sandbox-agent-health-ok sandbox-nix-eval-ok
-                ;;
-              hooks-only)
-                printf '%s\n' sandbox-agent-health-ok sandbox-commit-hooks-ok sandbox-pre-push-hooks-ok sandbox-hook-self-tests-ok
-                ;;
-              nix-only)
-                printf '%s\n' sandbox-agent-health-ok sandbox-nix-eval-ok sandbox-nix-build-ok
-                ;;
-              complete)
-                printf '%s\n' sandbox-agent-health-ok sandbox-nix-eval-ok sandbox-nix-build-ok sandbox-commit-hooks-ok sandbox-pre-push-hooks-ok sandbox-hook-self-tests-ok
-                ;;
-              *)
-                printf 'unknown fake sandbox result\n' >&2
-                exit 2
-                ;;
-            esac
-            ;;
-          *)
-            printf 'unexpected podman args: %s\n' "$*" >&2
-            exit 2
-            ;;
-        esac
-      '';
-
-      test-app-ignores-host-git-signing = testsDeriv.test-app-ignores-host-git-signing;
-
-      issues-native-conformance = craneLib.mkCargoDerivation {
-        pname = "issues-native-conformance";
-        version = "0.0.0";
-        src = stagedSrc;
-        inherit cargoArtifacts;
-        nativeBuildInputs = [ pkgs.git ];
-        LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
-        GOMAXPROCS = "2";
-        doCheck = true;
-        doInstallCargoArtifacts = false;
-        buildPhaseCargoCommand = "cargo test --locked -p loom-issues --test native --no-run";
-        # Embedded Dolt fixtures must not compete for the builder's CPU and memory budget.
-        checkPhaseCargoCommand = "cargo test --locked -p loom-issues --test native -- --test-threads=1";
-        installPhaseCommand = "touch $out";
-      };
-
-      smoke-beads-fixture =
-        pkgs.runCommand "smoke-beads-fixture"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.beads
-              pkgs.coreutils
-              pkgs.findutils
-              pkgs.git
-              pkgs.jq
-            ];
-          }
-          ''
-            set -euo pipefail
-            bash ${../../tests/smoke/seed-beads-test.sh} \
-              ${../../tests/smoke/seed-beads.sh} \
-              ${../../tests/smoke/spec.md} \
-              ${testsDeriv.smokeAcceptance}/bin/smoke-task-acceptance
-            touch "$out"
-          '';
-
-      fakeSmokeNix = pkgs.writeShellScriptBin "nix" ''
-        set -euo pipefail
-        touch "$SMOKE_NIX_CALLED"
-        exit 1
-      '';
-
-      smoke-preflight-skips-runtime-build = pkgs.runCommand "smoke-preflight-skips-runtime-build" { } ''
-        set -euo pipefail
-        export PATH="${fakeSmokeNix}/bin:$PATH"
-        export SMOKE_NIX_CALLED="$TMPDIR/nix-called"
-        set +e
-        script_output=$(${pkgs.bash}/bin/bash ${../../scripts/run-smoke.sh} \
-          "$TMPDIR/missing-fuse" "$TMPDIR/missing-tun" .#smoke-runtime 2>&1)
-        rc=$?
-        set -e
-        if [[ "$rc" -ne 77 ]]; then
-          printf 'expected smoke preflight skip exit 77, got %s\n%s\n' "$rc" "$script_output" >&2
-          exit 1
-        fi
-        if [[ -e "$SMOKE_NIX_CALLED" ]]; then
-          printf 'smoke preflight realized the runtime before checking devices\n' >&2
-          exit 1
-        fi
-        case "$script_output" in
-          *"skip: container runtime devices"*)
-            ;;
-          *)
-            printf 'expected smoke preflight skip output, got:\n%s\n' "$script_output" >&2
-            exit 1
-            ;;
-        esac
-        touch "$out"
-      '';
-
-      test-sandbox-skips-unsupported-runtime =
-        pkgs.runCommand "test-sandbox-skips-unsupported-runtime" { }
-          ''
-            set -euo pipefail
-            fakebin=$(mktemp -d)
-            ln -s ${fakePodman} "$fakebin/podman"
-            export PATH="$fakebin:${
-              makeBinPath [
-                pkgs.coreutils
-                pkgs.gnugrep
-                pkgs.gnused
-                pkgs.bash
-              ]
-            }"
-            set +e
-            script_output=$(bash ${../../scripts/test-sandbox.sh} 2>&1)
-            rc=$?
-            set -e
-            if [[ "$rc" -ne 77 ]]; then
-              printf 'expected test-sandbox skip exit 77, got %s\n%s\n' "$rc" "$script_output" >&2
-              exit 1
-            fi
-            case "$script_output" in
-              *"test-sandbox: skipped"*)
-                ;;
-              *)
-                printf 'expected test-sandbox skip output, got:\n%s\n' "$script_output" >&2
-                exit 1
-                ;;
-            esac
-            touch "$out"
-          '';
-
-      test-sandbox-skips-oci-permission-denied =
-        pkgs.runCommand "test-sandbox-skips-oci-permission-denied" { }
-          ''
-            set -euo pipefail
-            fakebin=$(mktemp -d)
-            ln -s ${fakePodmanRunOciPermissionDenied} "$fakebin/podman"
-            export PATH="$fakebin:${
-              makeBinPath [
-                pkgs.coreutils
-                pkgs.gnugrep
-                pkgs.gnused
-                pkgs.bash
-              ]
-            }"
-            export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
-            export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-            export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
-            export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
-            set +e
-            script_output=$(bash ${../../scripts/test-sandbox.sh} 2>&1)
-            rc=$?
-            set -e
-            if [[ "$rc" -ne 77 ]]; then
-              printf 'expected test-sandbox skip exit 77, got %s\n%s\n' "$rc" "$script_output" >&2
-              exit 1
-            fi
-            case "$script_output" in
-              *"test-sandbox: skipped"*"OCI permission denied"*)
-                ;;
-              *)
-                printf 'expected OCI permission skip output, got:\n%s\n' "$script_output" >&2
-                exit 1
-                ;;
-            esac
-            touch "$out"
-          '';
-
-      test-sandbox-ignores-read-only-podman-storage-cleanup =
-        pkgs.runCommand "test-sandbox-ignores-read-only-podman-storage-cleanup" { }
-          ''
-            set -euo pipefail
-            fakebin=$(mktemp -d)
-            ln -s ${fakePodmanCreatesReadOnlyStorage} "$fakebin/podman"
-            export PATH="$fakebin:${
-              makeBinPath [
-                pkgs.coreutils
-                pkgs.gnugrep
-                pkgs.gnused
-                pkgs.bash
-              ]
-            }"
-            export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
-            export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-            export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
-            export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
-            set +e
-            script_output=$(bash ${../../scripts/test-sandbox.sh} 2>&1)
-            rc=$?
-            set -e
-            if [[ "$rc" -ne 0 ]]; then
-              printf 'expected test-sandbox success despite read-only podman storage cleanup, got %s\n%s\n' "$rc" "$script_output" >&2
-              exit 1
-            fi
-            touch "$out"
-          '';
-
-      test-sandbox-disables-container-network =
-        pkgs.runCommand "test-sandbox-disables-container-network" { }
-          ''
-            set -euo pipefail
-            fakebin=$(mktemp -d)
-            ln -s ${fakePodmanCreatesReadOnlyStorage} "$fakebin/podman"
-            export PATH="$fakebin:${
-              makeBinPath [
-                pkgs.coreutils
-                pkgs.gnugrep
-                pkgs.gnused
-                pkgs.bash
-              ]
-            }"
-            export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
-            export LOOM_TEST_PODMAN_ARGS_LOG="$TMPDIR/podman-args"
-            export LOOM_TEST_CARGO_PATCHES=/nix/store/fixture-cargo-patches.toml
-            export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-            export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
-            export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
-            bash ${../../scripts/test-sandbox.sh}
-            if [[ $(<"$LOOM_TEST_PODMAN_ARGS_LOG") != *'<run><--rm><--network=none><--entrypoint></bin/bash>'* ]]; then
-              printf 'expected test-sandbox podman run to disable networking and select the health-check entrypoint; observed:\n%s\n' "$(<"$LOOM_TEST_PODMAN_ARGS_LOG")" >&2
-              exit 1
-            fi
-            grep -Fq -- '<--env><LOOM_TEST_CARGO_PATCHES=/nix/store/fixture-cargo-patches.toml>' "$LOOM_TEST_PODMAN_ARGS_LOG"
-            touch "$out"
-          '';
-
-      test-sandbox-rejects-incomplete-checks =
-        pkgs.runCommand "test-sandbox-rejects-incomplete-checks" { }
-          ''
-            set -euo pipefail
-            fakebin=$(mktemp -d)
-            ln -s ${fakePodmanCreatesReadOnlyStorage} "$fakebin/podman"
-            export PATH="$fakebin:${
-              makeBinPath [
-                pkgs.bash
-                pkgs.coreutils
-                pkgs.gnugrep
-                pkgs.gnused
-              ]
-            }"
-            export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
-            export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
-            export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
-            export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-            for result in health-only nix-eval-only hooks-only nix-only check-failure; do
-              export LOOM_TEST_SANDBOX_RESULT="$result"
-              status=0
-              bash ${../../scripts/test-sandbox.sh} > "$TMPDIR/output" 2>&1 || status=$?
-              if [[ "$status" -ne 1 ]]; then
-                printf 'expected failed sandbox checks, not success or skip (%s):\n%s\n' "$status" "$(<"$TMPDIR/output")" >&2
-                exit 1
-              fi
-              case "$result" in
-                health-only | hooks-only)
-                  grep -Fq 'sandbox-nix-eval-ok canary missing' "$TMPDIR/output"
-                  ;;
-                nix-eval-only)
-                  grep -Fq 'sandbox-nix-build-ok canary missing' "$TMPDIR/output"
-                  ;;
-                nix-only)
-                  grep -Fq 'sandbox-commit-hooks-ok canary missing' "$TMPDIR/output"
-                  ;;
-                check-failure)
-                  grep -Fq 'sandbox verification failed' "$TMPDIR/output"
-                  ;;
-              esac
-            done
-            touch "$out"
-          '';
-
-      test-sandbox-needs-no-dolt-socket = pkgs.runCommand "test-sandbox-needs-no-dolt-socket" { } ''
-        set -euo pipefail
-        fakebin=$(mktemp -d)
-        ln -s ${fakePodmanCreatesReadOnlyStorage} "$fakebin/podman"
-        export PATH="$fakebin:${
-          makeBinPath [
-            pkgs.bash
-            pkgs.coreutils
-            pkgs.gnugrep
-            pkgs.gnused
-          ]
-        }"
-        export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
-        export LOOM_TEST_SANDBOX_SOURCE=${stagedSrc}
-        export WRIX_PREK_HOOKS=${wrixLib.prekHooks}
-        export LOOM_TEST_PODMAN_ARGS_LOG="$TMPDIR/podman-args"
-        export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
-        bash ${../../scripts/test-sandbox.sh}
-        observed=$(<"$LOOM_TEST_PODMAN_ARGS_LOG")
-        if [[ "$observed" == *'BEADS_DOLT_SERVER_SOCKET'* || "$observed" == *'.wrix/dolt.sock'* ]]; then
-          printf 'packaged-agent health check unexpectedly depends on Dolt:\n%s\n' "$observed" >&2
-          exit 1
-        fi
-        touch "$out"
-      '';
-
-      profileManifestEntries = concatLists (
-        attrValues (mapAttrs (_profile: attrValues) profileManifest.passthru.manifest)
-      );
-      profileManifestKeepsRuntimePathContext = all (
-        entry:
-        builtins.hasContext entry.source
-        && builtins.hasContext entry.launcher
-        && builtins.hasContext entry.profile_config
-      ) profileManifestEntries;
-      profile-manifest-keeps-runtime-path-context =
-        assert profileManifestKeepsRuntimePathContext;
-        pkgs.runCommand "profile-manifest-keeps-runtime-path-context" { } ''
-          touch "$out"
-        '';
-
       fakeLoomBin = pkgs.writeShellApplication {
         name = "loom";
         text = ''
@@ -870,130 +82,346 @@
           fi
         '';
       };
-      fakeUnprofiledWrix = pkgs.writeShellApplication {
-        name = "wrix";
-        text = ''
-          printf 'unprofiled wrix %s\n' "$*"
-        '';
-      };
+      fakeUnprofiledWrix = pkgs.writeShellScriptBin "wrix" ''printf 'unprofiled wrix %s\n' "$*"'';
       fakeProfiledWrix =
-        (pkgs.writeShellApplication {
-          name = "wrix";
-          text = ''
-            exec ${fakeUnprofiledWrix}/bin/wrix --profile-config /nix/store/fake-profile.json "$@"
-          '';
-        }).overrideAttrs
+        (pkgs.writeShellScriptBin "wrix" ''
+          exec ${fakeUnprofiledWrix}/bin/wrix --profile-config /nix/store/fake-profile.json "$@"
+        '').overrideAttrs
           (old: {
             passthru = (old.passthru or { }) // {
               launcher = fakeUnprofiledWrix;
             };
           });
       fakeProfileManifest = pkgs.writeText "profile-images.json" "{}";
-      fakeLoomWrix = loomLib.mkLoomBin {
+      fakeLoomWrix = (import ../lib.nix).mkLoomBin {
         inherit pkgs;
-        loomBuild = {
-          bin = fakeLoomBin;
-        };
+        loomBuild.bin = fakeLoomBin;
         wrixLauncher = fakeProfiledWrix;
         profileManifest = fakeProfileManifest;
       };
-      loom-wrapper-preserves-spaced-output-path =
-        pkgs.runCommand "loom-wrapper-preserves-spaced-output-path"
-          {
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+      fakeSmokeNix = pkgs.writeShellScriptBin "nix" ''
+        touch "$SMOKE_NIX_CALLED"
+        exit 1
+      '';
+      darwinSmokeText =
+        (import ../../tests/loom/default.nix {
+          pkgs = {
+            inherit (pkgs) lib;
+            stdenv.hostPlatform.isLinux = false;
+            writeShellApplication = { text, ... }: { inherit text; };
+          };
+          loomPackage = throw "unavailable smoke must not force a native build";
+        }).loom-smoke.text;
+      llmCompile =
+        flags:
+        check loom.testResources (
+          _:
+          craneLib.mkCargoDerivation {
+            pname = "loom-llm-feature-check";
+            version = "0.0.0";
+            src = stagedSrc;
+            inherit cargoArtifacts;
+            inherit (loom) cargoVendorDir;
+            doCheck = false;
+            doInstallCargoArtifacts = false;
+            buildPhaseCargoCommand = ''cargo check --offline --locked --profile "$CARGO_PROFILE" -p loom-llm ${flags}'';
+            installPhaseCommand = "touch $out";
           }
-          ''
-            set -euo pipefail
-            (
-              out="$TMPDIR/loom output"
-              ${fakeLoomWrix.buildCommand}
-              [[ "$("$out/bin/loom" --version)" == "loom 0.0.0" ]]
-            )
-            touch "$out"
-          '';
-
-      loom-wrix-does-not-default-launcher-override =
-        pkgs.runCommand "loom-wrix-does-not-default-launcher-override" { }
-          ''
-            set -euo pipefail
-            unset LOOM_WRIX_BIN LOOM_WRIX_SPAWN_BIN
-            export LOOM_PROVISIONED_PROFILES_MANIFEST=/stale/operator/environment.json
-            [[ "$(${fakeLoomWrix}/bin/loom --provisioned-inputs)" == ${fakeProfileManifest} ]]
-            expected=$(printf 'git=%s\nraw=\n' ${fakeProfiledWrix}/bin/wrix)
-            [[ "$(${fakeLoomWrix}/bin/loom --launch-inputs)" == "$expected" ]]
-            export LOOM_WRIX_SPAWN_BIN=${fakeUnprofiledWrix}/bin/wrix
-            expected=$(printf 'git=%s\nraw=%s\n' ${fakeProfiledWrix}/bin/wrix "$LOOM_WRIX_SPAWN_BIN")
-            [[ "$(${fakeLoomWrix}/bin/loom --launch-inputs)" == "$expected" ]]
-            touch "$out"
-          '';
-
-      wrix-requires-explicit-profile-config =
-        pkgs.runCommand "wrix-requires-explicit-profile-config" { }
-          ''
-            set -euo pipefail
-            launcher=${wrixLauncher}/bin/wrix
-            "$launcher" --profile-config /selected-profile.json run --help > "$TMPDIR/help"
-            ${pkgs.gnugrep}/bin/grep -q -- '--profile-config' "$TMPDIR/help"
-            if WRIX_DEFAULT_IMAGE_REF=ignored WRIX_DEFAULT_IMAGE_SOURCE=ignored \
-              "$launcher" run "$TMPDIR" true > "$TMPDIR/no-config" 2>&1; then
-              printf 'raw Wrix accepted a session without explicit profile config\n' >&2
-              exit 1
-            fi
-            ${pkgs.gnugrep}/bin/grep -q -- '--profile-config' "$TMPDIR/no-config"
-            touch "$out"
-          '';
-
+        );
+      llmCompatCases = map (name: "client::openai_compat::tests::${name}") [
+        "openai_compat_multimodal_returns_unsupported_without_network"
+        "openai_compat_client_sends_chat_completions_shape_to_configured_url"
+        "openai_compat_client_rejects_non_compat_modelids"
+        "openai_compat_wiremock_contract_covers_status_classes"
+      ];
+      llmCompatArchive = craneLib.mkCargoDerivation {
+        pname = "loom-llm-compat-archive";
+        version = "0.0.0";
+        src = stagedSrc;
+        inherit cargoArtifacts;
+        inherit (loom) cargoVendorDir;
+        nativeBuildInputs = [ pkgs.cargo-nextest ];
+        doCheck = false;
+        doInstallCargoArtifacts = false;
+        buildPhaseCargoCommand = ''cargo nextest archive --offline --locked --cargo-profile "$CARGO_PROFILE" -p loom-llm --features openai-compat --lib --archive-file "$TMPDIR/llm-compat.tar.zst"'';
+        installPhaseCommand = ''mkdir -p "$out"; cp "$TMPDIR/llm-compat.tar.zst" "$out/archive.tar.zst"'';
+      };
+      llmCompatProgram = pkgs.writeShellApplication {
+        name = "llm-compat-report";
+        runtimeInputs = [
+          pkgs.bash
+          pkgs.cargo-nextest
+          pkgs.coreutils
+        ];
+        text = ''
+          export HOME
+          HOME=$(mktemp -d)
+          mkdir -p "$HOME/tests"
+          export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+          export NIX_SSL_CERT_FILE="$SSL_CERT_FILE"
+          export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+          exec cargo-nextest nextest run --archive-file ${llmCompatArchive}/archive.tar.zst \
+            --extract-to "$HOME/tests" --workspace-remap ${stagedSrc} \
+            --ignore-default-filter --test-threads 2 --no-fail-fast \
+            -E '${builtins.concatStringsSep " | " (map (name: "test(=${name})") llmCompatCases)}' \
+            --message-format libtest-json-plus
+        '';
+      };
       checks = {
-        inherit
-          agent-entrypoint-contract
-          artifact-storage-fixture
-          artifact-storage-gate-temporary-root
-          loom-gate-check
-          nextest-filtering-syntax
-          native-check-discovery
-          rust-cache-context-fixture
-          nextest-cargo-home-isolation
-          native-cargo-patches
-          native-cargo-bootstrap
-          loom-wrapper-preserves-spaced-output-path
-          loom-wrix-does-not-default-launcher-override
-          wrix-requires-explicit-profile-config
-          profile-manifest-keeps-runtime-path-context
-          known-hosts-preserves-store
-          worker-native-preflight
-          worker-nix-state-permissions
-          worker-private-nix-api
-          worker-transport-harness
-          native-factory-private-nix
-          issues-native-conformance
-          smoke-beads-fixture
-          smoke-preflight-skips-runtime-build
-          test-app-ignores-host-git-signing
-          test-sandbox-disables-container-network
-          test-sandbox-ignores-read-only-podman-storage-cleanup
-          test-sandbox-needs-no-dolt-socket
-          test-sandbox-rejects-incomplete-checks
-          test-sandbox-skips-oci-permission-denied
-          test-sandbox-skips-unsupported-runtime
-          workspace-build-identity
-          workspace-source-includes-git-policy-scripts
-          workspace-source-includes-nix-support
-          ;
-      }
-      // optionalAttrs hostPlatform.isLinux {
-        inherit (testsDeriv) smoke-git-policy smoke-host-gate;
-        inherit
-          image-runtime-binaries-launch
-          sandbox-profile-env-has-loom
-          sandbox-profile-env-has-wrix
-          sandbox-profile-env-evaluates-nix
-          sandbox-rust-toolchain-matches-pin
-          ;
+        smoke-unavailable = scriptCheck "smoke-unavailable" [ ] [ pkgs.bash pkgs.gnugrep ] (_: ''
+          status=0
+          bash -euo pipefail ${pkgs.writeText "unavailable-smoke.sh" darwinSmokeText} >"$TMPDIR/smoke.out" 2>&1 || status=$?
+          [[ "$status" == 69 ]]
+          grep -Fq 'container smoke not available on Darwin' "$TMPDIR/smoke.out"
+        '');
+        native-check-discovery = check [ ] (
+          _:
+          pkgs.writeText "native-check-discovery.json" (
+            builtins.toJSON (import ../../tests/verify/native-check-discovery.nix { lib = inputs.nixpkgs.lib; })
+          )
+        );
+        workspace-build-identity = checked.check {
+          resources = [ ];
+          evaluation = evaluation ++ loom.testResources;
+          build =
+            _:
+            import ../tests/workspace-identity.nix {
+              inherit pkgs loom;
+              inherit (inputs) crane fenix;
+              src = ../..;
+            };
+        };
+        workspace-source-includes-git-policy-scripts =
+          scriptCheck "workspace-source-includes-git-policy-scripts"
+            ([ (resource "crates/loom-test-support/src/git_policy") ] ++ loom.testResources)
+            [ ]
+            (paths: ''
+              for src in ${bin.src} ${stagedSrc}; do
+                for script in wrix.sh sign.sh; do
+                  cmp "${builtins.head paths}/$script" "$src/crates/loom-test-support/src/git_policy/$script"
+                done
+              done
+            '');
+        workspace-source-includes-nix-support =
+          scriptCheck "workspace-source-includes-nix-support"
+            (
+              [
+                (resource "nix")
+                (resource "bin/loom")
+              ]
+              ++ loom.testResources
+            )
+            [ pkgs.diffutils ]
+            (paths: ''
+              diff --recursive ${builtins.elemAt paths 0} ${stagedSrc}/nix
+              cmp ${builtins.elemAt paths 1} ${stagedSrc}/bin/loom
+            '');
+        nextest-cargo-home-isolation =
+          scriptCheck "nextest-cargo-home-isolation"
+            [ (resource "tests/agent/nextest-home.sh") ]
+            [ pkgs.cargo pkgs.rustc pkgs.stdenv.cc ]
+            (paths: ''
+              bash ${builtins.head paths} ${pkgs.writeText "nextest-pre-unpack.sh" pkgs.cargo-nextest.preUnpack}
+              bash ${builtins.head paths} ${
+                pkgs.writeText "prek-pre-unpack.sh" (import ../prek.nix { inherit pkgs; }).preUnpack
+              }
+            '');
+        acceptance-storage-report =
+          scriptCheck "acceptance-storage-report"
+            (map resource [
+              "tests/agent/acceptance-storage-test.py"
+              "scripts/acceptance-storage.py"
+            ])
+            [ pkgs.python3 ]
+            (paths: ''
+              python3 ${builtins.elemAt paths 0} ${builtins.elemAt paths 1}
+            '');
+        native-stage-integrity = check (loom.testResources ++ [ (resource "bin/pre-push-checks") ]) (
+          _:
+          assert !loom.verificationBuild.doInstallCargoArtifacts;
+          assert !loom.clippy.doInstallCargoArtifacts;
+          assert !loom.clippyAllTargets.doInstallCargoArtifacts;
+          assert loom.clippy.cargoArtifacts == loom.cargoArtifacts;
+          assert loom.clippyAllTargets.cargoArtifacts == loom.cargoArtifacts;
+          assert loom.clippy.loom.cargo == "lint";
+          assert loom.clippyAllTargets.loom.cargo == "lint-all-targets";
+          assert !loom.nextest.loom.reporter.doInstallCargoArtifacts;
+          assert loom.nextest.loom.reporter.cargoArtifacts.doInstallCargoArtifacts;
+          pkgs.runCommand "native-staged-source-integrity" { } ''
+            test -x ${stagedSrc}/bin/pre-push-checks
+            cmp ${stagedSrc}/bin/pre-push-checks ${(resource "bin/pre-push-checks").path}
+            cmp ${stagedSrc}/crates/loom-agent/src/pi/parser/terminal_provider_error.jsonl \
+              ${(resource "crates/loom-agent/src/pi/parser/terminal_provider_error.jsonl").path}
+            ${pkgs.python3}/bin/python3 ${stagedSrc}/tests/verify/native-resources-test.py
+            touch "$out"
+          ''
+        );
+        llm-compat-compile = llmCompile "--features openai-compat";
+        llm-native-compile = llmCompile "--no-default-features";
+        llm-compat-report = checked.reported {
+          inherit system evaluation;
+          name = "loom-llm-compat-report";
+          bash = pkgs.bash;
+          coreutils = pkgs.coreutils;
+          resources = loom.testResources;
+          program = "${llmCompatProgram}/bin/llm-compat-report";
+          parser = "libtest-json";
+          targets = map (name: "loom-llm::loom_llm$" + name) llmCompatCases;
+        };
+        nextest-filtering-syntax = check loom.testResources (
+          _:
+          craneLib.mkCargoDerivation {
+            pname = "nextest-filtering-syntax";
+            version = "0.0.0";
+            src = stagedSrc;
+            inherit cargoArtifacts;
+            inherit (loom) cargoVendorDir;
+            doCheck = true;
+            doInstallCargoArtifacts = false;
+            buildPhaseCargoCommand = ''cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering --no-run'';
+            checkPhaseCargoCommand = ''cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering'';
+            installPhaseCommand = "touch $out";
+          }
+        );
+        native-cargo-bootstrap =
+          scriptCheck "native-cargo-bootstrap" loom.testResources
+            [ pkgs.git (pkgs.lib.getBin pkgs.nix) pkgs.coreutils ]
+            (_: ''
+              cp -r ${stagedSrc} source
+              chmod -R u+w source
+              cd source
+              git init -q
+              bash tests/agent/native-cargo.sh ${bootstrapCargo}/bin/cargo \
+                ${bootstrapConfig} ${bootstrapConfig.nextestVersion} ${bootstrapConfig.nextestChecksum} ${loom.hookRunner}/bin/prek
+            '');
+        native-cargo-patches = check loom.testResources (
+          _:
+          craneLib.mkCargoDerivation {
+            pname = "native-cargo-patches";
+            version = "0.0.0";
+            src = stagedSrc;
+            inherit cargoArtifacts;
+            cargoVendorDir = (inputs.crane.mkLib pkgs).vendorCargoDeps {
+              cargoLock = ../../Cargo.lock;
+              cargoToml = ../../Cargo.toml;
+            };
+            nativeBuildInputs = [ (pkgs.lib.getBin pkgs.nix) ];
+            doCheck = true;
+            doInstallCargoArtifacts = false;
+            preBuild = ''
+              cp Cargo.lock "$TMPDIR/original-Cargo.lock"
+              if cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering nextest_filter_grammar_errors_retain_upstream_diagnostics > "$TMPDIR/unpatched.log" 2>&1; then
+                echo "unpatched parser unexpectedly passed the strict regression" >&2
+                exit 1
+              fi
+              grep -F 'test nextest_filter_grammar_errors_retain_upstream_diagnostics ... FAILED' "$TMPDIR/unpatched.log"
+              ${checkedNativeCargo}/bin/cargo --version
+              test ! -e .cargo/nix-patches.toml
+              ${checkedNativeCargo}/bin/cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering nextest_filter_grammar_errors_retain_upstream_diagnostics
+              test -L .cargo/nix-patches.toml
+            '';
+            buildPhaseCargoCommand = ''cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering --test strategy'';
+            checkPhaseCargoCommand = ''cmp Cargo.lock "$TMPDIR/original-Cargo.lock"'';
+            installPhaseCommand = "touch $out";
+          }
+        );
+        loom-gate-check = check loom.testResources (
+          _:
+          craneLib.mkCargoDerivation {
+            pname = "loom-source-walks";
+            version = "0.0.0";
+            src = stagedSrc;
+            inherit cargoArtifacts;
+            inherit (loom) cargoVendorDir;
+            doCheck = true;
+            doInstallCargoArtifacts = false;
+            nativeBuildInputs = [
+              pkgs.git
+              pkgs.nix
+              pkgs.cacert
+              pkgs.cargo-nextest
+              pkgs.jq
+              pkgs.python3
+            ];
+            buildPhaseCargoCommand = "cargo build --offline --locked -p loom-walk --bin loom-walk --release";
+            postUnpack = ''
+              (
+                export HOME=$(mktemp -d)
+                export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+                cd "$sourceRoot"
+                test ! -e .git && test ! -e target && test ! -e .cargo-home
+                git init -q -b main
+                printf '/target/\n/.cargo-home/\n' >> .git/info/exclude
+                git add --all
+                GIT_AUTHOR_DATE="@1 +0000" GIT_COMMITTER_DATE="@1 +0000" \
+                  git -c user.name="Loom native source fixture" -c user.email="native-source-fixture@example.invalid" \
+                    -c commit.gpgsign=false commit -q -m "Seal staged verification source"
+              )
+            '';
+            preCheck = ''
+              export HOME=$(mktemp -d)
+              export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+              export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+            '';
+            checkPhaseCargoCommand = "bash ${../../scripts/run-private-fixture-tests} target/release/loom-walk --from-specs";
+          }
+        );
+        worker-native-preflight =
+          scriptCheck "worker-native-preflight"
+            (map resource [
+              "tests/sandbox/native-preflight-test.sh"
+              "scripts/worker-native-preflight.sh"
+            ])
+            [ pkgs.bash pkgs.coreutils pkgs.gnugrep ]
+            (paths: ''
+              bash ${builtins.elemAt paths 0} ${builtins.elemAt paths 1}
+            '');
+        test-app-ignores-host-git-signing = testsDeriv.test-app-ignores-host-git-signing;
+        smoke-preflight-skips-runtime-build =
+          scriptCheck "smoke-preflight-skips-runtime-build" [ (resource "scripts/run-smoke.sh") ] [ ]
+            (paths: ''
+              export PATH="${fakeSmokeNix}/bin:$PATH"
+              export SMOKE_NIX_CALLED="$TMPDIR/nix-called"
+              status=0
+              bash ${builtins.head paths} "$TMPDIR/missing-fuse" "$TMPDIR/missing-tun" .#smoke-runtime > "$TMPDIR/output" 2>&1 || status=$?
+              [[ "$status" == 77 ]]
+              [[ ! -e "$SMOKE_NIX_CALLED" ]]
+              grep -F 'skip: container runtime devices' "$TMPDIR/output"
+            '');
+        loom-wrapper-preserves-spaced-output-path =
+          scriptCheck "loom-wrapper-preserves-spaced-output-path" [ ] [ pkgs.makeWrapper ]
+            (_: ''
+              (
+                out="$TMPDIR/loom output"
+                ${fakeLoomWrix.buildCommand}
+                [[ "$("$out/bin/loom" --version)" == "loom 0.0.0" ]]
+              )
+            '');
+        loom-wrix-does-not-default-launcher-override =
+          scriptCheck "loom-wrix-does-not-default-launcher-override" [ ] [ ]
+            (_: ''
+              unset LOOM_WRIX_BIN LOOM_WRIX_SPAWN_BIN
+              export LOOM_PROVISIONED_PROFILES_MANIFEST=/stale/operator/environment.json
+              [[ "$(${fakeLoomWrix}/bin/loom --provisioned-inputs)" == ${fakeProfileManifest} ]]
+              expected=$(printf 'git=%s\nraw=\n' ${fakeProfiledWrix}/bin/wrix)
+              [[ "$(${fakeLoomWrix}/bin/loom --launch-inputs)" == "$expected" ]]
+              export LOOM_WRIX_SPAWN_BIN=${fakeUnprofiledWrix}/bin/wrix
+              expected=$(printf 'git=%s\nraw=%s\n' ${fakeProfiledWrix}/bin/wrix "$LOOM_WRIX_SPAWN_BIN")
+              [[ "$(${fakeLoomWrix}/bin/loom --launch-inputs)" == "$expected" ]]
+            '');
       };
     in
     {
       checks = checks // {
-        inherit checks-match-host-system;
+        smoke-host-gate = testsDeriv.smoke-host-gate;
+        checks-match-host-system = checked.check {
+          resources = [ ];
+          evaluation = evaluation ++ loom.testResources;
+          build =
+            _:
+            assert pkgs.lib.all (candidate: candidate.system == system) (builtins.attrValues checks);
+            pkgs.runCommand "checks-match-host-system" { } ''touch "$out"'';
+        };
       };
     };
 }

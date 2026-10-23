@@ -758,10 +758,6 @@ mod tests {
         std::fs::set_permissions(&dest, perm).expect("chmod wrapper");
     }
 
-    fn seed_marker(workspace: &Path) {
-        write_receipt_value(workspace, &serde_json::json!({}));
-    }
-
     fn run_pre_push_checks(workspace: &Path, bin_dir: &Path) -> std::process::Output {
         run_pre_push_checks_with_env(workspace, bin_dir, &[])
     }
@@ -973,7 +969,7 @@ mod tests {
     fn mint_transaction_replaces_previous_receipt() {
         let dir = init_test_workspace();
         let workspace = dir.path();
-        seed_marker(workspace);
+        write_receipt_value(workspace, &serde_json::json!({}));
         assert!(verify_marker(workspace).is_err());
         let (_log, success) = good_gate_success(workspace);
         let minted =

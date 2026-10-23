@@ -4,5 +4,5 @@ Container-smoke fixture spec.
 
 ## Success Criteria
 
-- Implemented result survives actual verifier restart. [check](bash
-  bin/verifier-probe.sh loom-smoke-result.txt)
+<!-- prettier-ignore -->
+- Implemented result survives actual verifier restart. [check](nix build .#checks.x86_64-linux.smoke-result)

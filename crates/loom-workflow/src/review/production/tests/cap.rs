@@ -3,42 +3,12 @@ mod admission;
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
-
     use loom_driver::bd::{CreateOpts, IssueType, ReadyOpts, Status};
     use loom_gate::Tier;
 
     use super::super::*;
 
-    #[derive(Clone)]
-    pub(super) struct IsolatedBeads {
-        pub(super) root: PathBuf,
-    }
-
-    impl CommandRunner for IsolatedBeads {
-        async fn run(&self, args: Vec<OsString>, timeout: Duration) -> Result<RunOutput, BdError> {
-            let mut command = Command::new("bd");
-            command
-                .args(["--sandbox", "--dolt-auto-commit", "off"])
-                .args(args)
-                .current_dir(&self.root)
-                .env("HOME", self.root.join("home"))
-                .env("GOMAXPROCS", "2");
-            for (name, _) in std::env::vars_os() {
-                if name.to_string_lossy().starts_with("BEADS_") {
-                    command.env_remove(name);
-                }
-            }
-            let output = loom_driver::process::output(&mut command, &SystemClock::new(), timeout)
-                .await
-                .expect("isolated Beads process completed");
-            Ok(RunOutput {
-                status: output.status.code().expect("Beads exit code"),
-                stdout: output.stdout,
-                stderr: output.stderr,
-            })
-        }
-    }
+    pub(super) use crate::test_support::{IsolatedBeads, client as isolated_client};
 
     pub(super) async fn children(bd: &BdClient<IsolatedBeads>, parent: &BeadId) -> Vec<Bead> {
         bd.list(ListOpts {
@@ -49,35 +19,6 @@ mod tests {
         })
         .await
         .expect("children")
-    }
-
-    pub(super) async fn isolated_client(root: &Path) -> BdClient<IsolatedBeads> {
-        std::fs::create_dir(root.join("home")).unwrap();
-        loom_driver::git::initialize_snapshot(root, &SystemClock::new())
-            .await
-            .unwrap();
-        let runner = IsolatedBeads {
-            root: root.to_path_buf(),
-        };
-        let init = runner
-            .run(
-                [
-                    "init",
-                    "--prefix",
-                    "cap",
-                    "--skip-agents",
-                    "--skip-hooks",
-                    "--non-interactive",
-                ]
-                .into_iter()
-                .map(OsString::from)
-                .collect(),
-                Duration::from_secs(60),
-            )
-            .await
-            .unwrap();
-        assert!(init.success(), "{}", String::from_utf8_lossy(&init.stderr));
-        BdClient::with_runner(runner)
     }
 
     #[tokio::test]

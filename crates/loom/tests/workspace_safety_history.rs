@@ -18,6 +18,43 @@ fn manifest(fixture: &Fixture) -> Result<ProfileImageManifest> {
 }
 
 #[tokio::test]
+async fn worker_safety_history_admission_rejects_each_canonical_projection() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    for target in [
+        loom_driver::state::path(fixture.association.operator()),
+        fixture.association.operator().join(".loom/state.db.lock"),
+        fixture.association.operator().join(".git/config"),
+        fixture.association.integration().join(".git/config"),
+        fixture.association.integration().join(".loom/state.db"),
+    ] {
+        assert!(
+            fixture
+                .association
+                .admit_mount(&loom_driver::agent::MountSpec {
+                    host_path: target.clone(),
+                    container_path: "/forbidden-authority".into(),
+                    read_only: false,
+                })
+                .is_err(),
+            "{}",
+            target.display()
+        );
+    }
+    let worker = fixture
+        .prepare(&manifest(&fixture)?, &LoomTopConfig::default())
+        .await?;
+    let wire = worker.spawn.to_wrix_json()?;
+    let decoded = loom_driver::agent::SpawnConfig::from_wrix_slice(&serde_json::to_vec(&wire)?)?;
+    fixture.association.validate_worker(
+        &fixture.worker_path,
+        &decoded.mounts,
+        worker.spawn.profile_config.as_deref(),
+    )?;
+    fixture.check_host_surfaces()?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn worker_preparation_denies_sccache_projections_of_canonical_authority() -> Result<()> {
     let fixture = Fixture::new().await?;
     let manifest = manifest(&fixture)?;
@@ -43,7 +80,12 @@ async fn deterministic_feedback_in_an_isolated_worker_does_not_write_shared_auth
         std::process::Command::new(env!("CARGO_BIN_EXE_loom"))
             .arg("--workspace")
             .arg(&fixture.worker_path)
-            .args(["gate", "verify", "--target", "test -f feedback-ok"])
+            .args([
+                "gate",
+                "verify",
+                "--target",
+                loom_gate::provider::PROJECT_CONTEXT_TARGET,
+            ])
             .env("LOOM_INSIDE", "1")
             .output()
     };
@@ -54,13 +96,13 @@ async fn deterministic_feedback_in_an_isolated_worker_does_not_write_shared_auth
         String::from_utf8_lossy(&output.stderr)
     );
     fixture.check_host_surfaces()?;
-    // Exercise the accepted feedback binding again, not a cached passing result.
-    // Neither failure nor recovery may write the canonical host authorities.
-    std::fs::remove_file(fixture.worker_path.join("feedback-ok"))?;
+    let document = fixture.worker_path.join("feedback.md");
+    let valid_document = std::fs::read(&document)?;
+    std::fs::write(&document, b"invalid\0document")?;
     let rejected = verify()?;
     assert!(!rejected.status.success(), "{rejected:?}");
     fixture.check_host_surfaces()?;
-    std::fs::write(fixture.worker_path.join("feedback-ok"), "available\n")?;
+    std::fs::write(&document, valid_document)?;
     let recovered = verify()?;
     assert!(recovered.status.success(), "{recovered:?}");
     fixture.check_host_surfaces()?;

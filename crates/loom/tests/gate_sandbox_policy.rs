@@ -1,4 +1,4 @@
-//! Real CLI and dispatch through Wrix's runner seam; only the producer is synthetic.
+//! Ordinary CLI coverage through immutable native producers; producer claims cannot grant policy.
 
 #![allow(
     clippy::unwrap_used,
@@ -13,54 +13,26 @@ use loom_gate::gate_outcome::{GateRunStatus, VerifiedScope, parse_gate_runs_from
 use loom_gate::runner::result::current_platform;
 use serde_json::{Value, json};
 
-fn fixture(policy: bool) -> tempfile::TempDir {
+#[path = "common/reported.rs"]
+mod reported;
+fn fixture(policy: bool) -> reported::Fixture {
+    let fixture = reported::Fixture::new("check", "json-lines", &["a", "b"]);
+    fixture.policy("check", policy);
+    fixture.record("a", "", 0);
+    fixture.record("b", "", 0);
+    assert_eq!(fixture.address("a"), address("a"));
+    fixture
+}
+fn address(target: &str) -> String {
+    format!("nix report .#checks.{}.probe::{target}", current_platform())
+}
+fn producer_fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("specs")).unwrap();
-    std::fs::write(
-        dir.path().join("specs/gate.md"),
-        "## Success Criteria\n\n- First [check](verify:a)\n- Second [check](verify:b)\n",
-    )
-    .unwrap();
     std::fs::write(
         dir.path().join("producer.sh"),
         include_str!("../../../tests/fixtures/verifier/sandbox-results.sh"),
     )
     .unwrap();
-    let policy = if policy {
-        "skip_policy = 'sandbox-capability'\nskip_capabilities = ['container-runtime', 'kvm']\n"
-    } else {
-        ""
-    };
-    std::fs::write(dir.path().join("loom.toml"), format!("[runner.check.wrix]\nmatch = '^verify:(.+)$'\ncommand = 'bash producer.sh {{targets}}'\ntarget = '{{capture_1}}'\njoin = ' '\nparse = 'json-lines'\ncwd = '.'\n{policy}")).unwrap();
-    std::fs::write(dir.path().join(".gitignore"), ".loom/\nreceived-targets\n").unwrap();
-    for args in [
-        ["init", "-q"].as_slice(),
-        &["add", "."],
-        &["commit", "-qm", "fixture"],
-    ] {
-        let mut command = Command::new("git");
-        loom_test_support::scrub_git_local_env(&mut command);
-        let output = command
-            .current_dir(dir.path())
-            .args([
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "core.hooksPath=/dev/null",
-            ])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
     dir
 }
 
@@ -88,19 +60,26 @@ fn capability(target: &str, name: &str) -> Value {
 }
 
 fn set_record(dir: &Path, target: &str, result: &Value, code: i32) {
+    std::fs::create_dir_all(dir.join("records")).unwrap();
+    std::fs::write(
+        dir.join(format!("records/{target}.output")),
+        format!("{result}\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(format!("records/{target}.status")),
+        code.to_string(),
+    )
+    .unwrap();
+}
+
+fn set_producer_record(dir: &Path, target: &str, result: &Value, code: i32) {
     std::fs::write(dir.join(format!("{target}.json")), format!("{result}\n")).unwrap();
     std::fs::write(dir.join(format!("{target}.exit")), code.to_string()).unwrap();
 }
 
-fn run(dir: &Path, tier: &str, worker: bool) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_loom"));
-    command.args(["--workspace", dir.to_str().unwrap(), "gate", tier, "--tree"]);
-    if worker {
-        command.env("LOOM_INSIDE", "1");
-    } else {
-        command.env_remove("LOOM_INSIDE");
-    }
-    command.output().unwrap()
+fn run(fixture: &reported::Fixture, tier: &str, worker: bool) -> Output {
+    fixture.run(Path::new(env!("CARGO_BIN_EXE_loom")), tier, worker)
 }
 
 fn rows(dir: &Path) -> std::collections::BTreeMap<String, loom_gate::cache::CacheRow> {
@@ -115,15 +94,15 @@ fn rows(dir: &Path) -> std::collections::BTreeMap<String, loom_gate::cache::Cach
 
 #[test]
 fn synthetic_wrix_producer_aggregates_failures_before_skips_before_passes() {
-    let dir = fixture(true);
+    let dir = producer_fixture();
     for (a, b, expected) in [(0, 0, 0), (0, 77, 77), (77, 0, 77), (1, 77, 1), (77, 1, 1)] {
-        set_record(
+        set_producer_record(
             dir.path(),
             "a",
             &json!({"target":"a","pass":a == 0,"evidence":"fixture"}),
             a,
         );
-        set_record(
+        set_producer_record(
             dir.path(),
             "b",
             &json!({"target":"b","pass":b == 0,"evidence":"fixture"}),
@@ -148,12 +127,12 @@ fn sandbox_passes_and_real_failures_remain_individual_outcomes() {
     let dir = fixture(true);
     set_record(dir.path(), "a", &record("a", "passed"), 0);
     set_record(dir.path(), "b", &record("b", "passed"), 0);
-    assert!(run(dir.path(), "check", true).status.success());
+    assert!(run(&dir, "check", true).status.success());
     set_record(dir.path(), "b", &record("b", "failed"), 1);
-    assert_eq!(run(dir.path(), "check", true).status.code(), Some(1));
+    assert_eq!(run(&dir, "check", true).status.code(), Some(1));
     let rows = rows(dir.path());
-    assert_eq!(rows["verify:a"].verdict, Verdict::Pass);
-    assert_eq!(rows["verify:b"].verdict, Verdict::Fail);
+    assert_eq!(rows[&address("a")].verdict, Verdict::Pass);
+    assert_eq!(rows[&address("b")].verdict, Verdict::Fail);
 }
 
 #[test]
@@ -166,26 +145,26 @@ fn worker_accepts_foreign_platform_and_declared_capability_skips_without_verifyi
         let dir = fixture(true);
         set_record(dir.path(), "a", &record("a", "passed"), 0);
         set_record(dir.path(), "b", &skip, 77);
-        let execution = run(dir.path(), "check", true);
+        let execution = run(&dir, "check", true);
         assert_eq!(
             execution.status.code(),
             Some(77),
             "{}",
             String::from_utf8_lossy(&execution.stderr)
         );
-        let accepted = run(dir.path(), "verify", true);
+        let accepted = run(&dir, "verify", true);
         assert!(
             accepted.status.success(),
             "{}",
             String::from_utf8_lossy(&accepted.stderr)
         );
         let stderr = String::from_utf8_lossy(&accepted.stderr);
-        assert!(stderr.contains("verify:b"));
+        assert!(stderr.contains(&address("b")));
         assert!(stderr.contains("coverage remains unverified"));
         let cached = rows(dir.path());
-        assert_eq!(cached["verify:a"].verdict, Verdict::Pass);
-        assert_eq!(cached["verify:b"].verdict, Verdict::Skipped);
-        let evidence: Value = serde_json::from_str(&cached["verify:b"].evidence).unwrap();
+        assert_eq!(cached[&address("a")].verdict, Verdict::Pass);
+        assert_eq!(cached[&address("b")].verdict, Verdict::Skipped);
+        let evidence: Value = serde_json::from_str(&cached[&address("b")].evidence).unwrap();
         assert_eq!(evidence["pass"], false);
         assert_eq!(evidence["execution"], skip["execution"]);
         assert_eq!(evidence["skip_reason"], skip["skip_reason"]);
@@ -195,7 +174,7 @@ fn worker_accepts_foreign_platform_and_declared_capability_skips_without_verifyi
         let reported = report
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .find(|line| line["target"] == "verify:b")
+            .find(|line| line["target"] == address("b"))
             .unwrap();
         assert_eq!(reported["coverage_verified"], false);
         let runs =
@@ -221,7 +200,7 @@ fn worker_accepts_foreign_platform_and_declared_capability_skips_without_verifyi
                 .success()
         );
         assert_eq!(
-            run(dir.path(), "verify", false).status.code(),
+            run(&dir, "verify", false).status.code(),
             Some(77),
             "host does not accept worker skip coverage"
         );
@@ -233,8 +212,8 @@ fn all_skipped_worker_batches_remain_unverified_coverage() {
     let dir = fixture(true);
     set_record(dir.path(), "a", &foreign("a"), 77);
     set_record(dir.path(), "b", &capability("b", "kvm"), 77);
-    assert_eq!(run(dir.path(), "check", true).status.code(), Some(77));
-    assert!(run(dir.path(), "verify", true).status.success());
+    assert_eq!(run(&dir, "check", true).status.code(), Some(77));
+    assert!(run(&dir, "verify", true).status.success());
     assert!(
         rows(dir.path())
             .values()
@@ -267,11 +246,11 @@ fn unexpected_skips_cannot_be_accepted_by_worker_policy() {
         set_record(dir.path(), "a", &record("a", "passed"), 0);
         set_record(dir.path(), "b", &skip, 77);
         assert_eq!(
-            run(dir.path(), "verify", true).status.code(),
+            run(&dir, "verify", true).status.code(),
             Some(code),
             "{skip}"
         );
-        assert_eq!(rows(dir.path())["verify:b"].verdict, Verdict::Skipped);
+        assert_eq!(rows(dir.path())[&address("b")].verdict, Verdict::Skipped);
     }
 }
 
@@ -281,11 +260,11 @@ fn failure_skip_batches_preserve_failures_even_when_producer_exits_77() {
         let dir = fixture(true);
         set_record(dir.path(), "a", &record("a", "failed"), 1);
         set_record(dir.path(), "b", &foreign("b"), 77);
-        std::fs::write(dir.path().join("producer-exit"), code.to_string()).unwrap();
-        assert_eq!(run(dir.path(), "verify", true).status.code(), Some(1));
+        std::fs::write(dir.path().join("records/producer-exit"), code.to_string()).unwrap();
+        assert_eq!(run(&dir, "verify", true).status.code(), Some(1));
         let rows = rows(dir.path());
-        assert_eq!(rows["verify:a"].verdict, Verdict::Fail);
-        assert_eq!(rows["verify:b"].verdict, Verdict::Skipped);
+        assert_eq!(rows[&address("a")].verdict, Verdict::Fail);
+        assert_eq!(rows[&address("b")].verdict, Verdict::Skipped);
     }
 }
 
@@ -303,8 +282,8 @@ fn invalid_json_batches_fail_closed_without_partial_pass_cache_entries() {
         let dir = fixture(true);
         set_record(dir.path(), "a", &record("a", "passed"), 0);
         set_record(dir.path(), "b", &record("b", "passed"), 0);
-        std::fs::write(dir.path().join("a.json"), malformed).unwrap();
-        let output = run(dir.path(), "check", true);
+        std::fs::write(dir.path().join("records/a.output"), malformed).unwrap();
+        let output = run(&dir, "check", true);
         assert_eq!(output.status.code(), Some(1), "{malformed}");
         assert!(rows(dir.path()).is_empty());
     }
@@ -315,8 +294,8 @@ fn missing_target_results_are_dispatch_errors() {
     let dir = fixture(true);
     set_record(dir.path(), "a", &record("a", "passed"), 0);
     set_record(dir.path(), "b", &record("b", "passed"), 0);
-    std::fs::write(dir.path().join("b.json"), "").unwrap();
-    let output = run(dir.path(), "check", true);
+    std::fs::write(dir.path().join("records/b.output"), "").unwrap();
+    let output = run(&dir, "check", true);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("did not report a verdict"));
 }
@@ -330,11 +309,11 @@ fn producer_failure_and_zero_exit_skips_never_create_verified_cache_evidence() {
         let dir = fixture(true);
         set_record(dir.path(), "a", &record("a", "passed"), 0);
         set_record(dir.path(), "b", &b, 0);
-        std::fs::write(dir.path().join("producer-exit"), code.to_string()).unwrap();
-        assert_eq!(run(dir.path(), "verify", true).status.code(), Some(1));
+        std::fs::write(dir.path().join("records/producer-exit"), code.to_string()).unwrap();
+        assert_eq!(run(&dir, "verify", true).status.code(), Some(1));
         let rows = rows(dir.path());
-        assert_eq!(rows["verify:a"].verdict, Verdict::Fail);
-        assert_eq!(rows["verify:b"].verdict, expected_b);
+        assert_eq!(rows[&address("a")].verdict, Verdict::Fail);
+        assert_eq!(rows[&address("b")].verdict, expected_b);
     }
 }
 
@@ -353,8 +332,8 @@ fn legacy_boolean_failures_never_become_capability_skips_from_evidence_text() {
         &json!({"target":"b","pass":false,"evidence":"skipped unavailable KVM"}),
         1,
     );
-    assert_eq!(run(dir.path(), "check", true).status.code(), Some(1));
+    assert_eq!(run(&dir, "check", true).status.code(), Some(1));
     let rows = rows(dir.path());
-    assert_eq!(rows["verify:a"].verdict, Verdict::Pass);
-    assert_eq!(rows["verify:b"].verdict, Verdict::Fail);
+    assert_eq!(rows[&address("a")].verdict, Verdict::Pass);
+    assert_eq!(rows[&address("b")].verdict, Verdict::Fail);
 }

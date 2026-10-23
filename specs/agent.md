@@ -1011,11 +1011,6 @@ letting the entrypoint run the wrong runtime.
   constitute execution evidence.
   [test](native_worker_preparation_probes_before_agent_and_routes_missing_capability)
 
-<!-- prettier-ignore -->
-- The fixed isolated Rust image actually initializes native patches and probes
-  its tools/private store before launching its agent entrypoint. Availability is
-  source feedback, never required-coverage admission. [system](nix run .#test-native-preflight)
-
 - Missing tools or unsafe executor state exits 78 before canonical agent output
   and routes to `verification-capability-unavailable`.
   [test](native_preflight_capability_exit_is_static_infrastructure)
@@ -1120,7 +1115,7 @@ letting the entrypoint run the wrong runtime.
 - Typestate `AgentSession<Idle>` / `AgentSession<Active>` exists as an internal
   host-side lifecycle mechanic for JSONL subprocess sessions. It does not leak
   through the `Session` interoperability trait; Direct's in-container
-  conversation loop carries no Pi / Claude handshake typestate. [check](grep -q 'pub struct Idle' crates/loom-driver/src/agent/session.rs)
+  conversation loop carries no Pi / Claude handshake typestate. [test](session_eof_deadline_uses_injected_mock_clock_when_process_has_no_status)
 
 <!-- prettier-ignore -->
 - `Session` trait surface does not reference `AgentSession`, `Idle`, or `Active`
@@ -1195,7 +1190,7 @@ letting the entrypoint run the wrong runtime.
 
 <!-- prettier-ignore -->
 - Claude backend uses `#[serde(tag = "type")]` for tagged enum deserialization
-  [check](grep -q 'serde(tag = "type")' crates/loom-agent/src/claude/messages.rs)
+  [test](missing_type_tag_returns_serde_error)
 
 - Claude backend maps claude event types to AgentEvent variants
   [test](result_success_yields_turn_end_then_session_complete)
@@ -1255,8 +1250,8 @@ letting the entrypoint run the wrong runtime.
   not re-exported from any other crate [check](cargo run -p loom-walk -- direct_tools_net_new)
 
 <!-- prettier-ignore -->
-- Direct tools execute against the container's bind-mounted workspace; absolute
-  paths under `/workspace/...` resolve inside the container [system](bash scripts/test-direct-workspace.sh)
+- Direct tools resolve requested workspace file paths without falling back to
+  the caller's directory [test](direct_tools_read_requested_workspace_file)
 
 - `DoomLoopObserver` and `DuplicateResultObserver` are composed into the
   Conversation's sink by default in `loom-direct-runner`
@@ -1505,34 +1500,6 @@ letting the entrypoint run the wrong runtime.
 - Container receives agent stdin/stdout via pipe
   [test](child_stdin_is_a_pipe_not_a_tty)
 
-<!-- prettier-ignore -->
-- Entrypoint starts pi in RPC mode when `WRIX_AGENT=pi` [check](bash tests/agent/entrypoint.sh test_pi_rpc)
-
-<!-- prettier-ignore -->
-- Entrypoint starts claude normally when `WRIX_AGENT=claude`, retaining
-  non-interactive bypass mode and enabling the stdio permission prompt tool
-  [check](bash tests/agent/entrypoint.sh test_claude_stdio)
-
-<!-- prettier-ignore -->
-- Entrypoint starts the Direct runner when `WRIX_AGENT=direct` [check](bash tests/agent/entrypoint.sh test_direct_stdio)
-
-<!-- prettier-ignore -->
-- Entrypoint preserves git SSH, beads, network filtering for all runtime
-  branches [check](bash tests/agent/entrypoint.sh test_shared_setup)
-
-### Agent runtime layer
-
-<!-- prettier-ignore -->
-- The smoke/default Loom sandbox image builds a concrete profile/runtime image
-  with the Pi agent runtime selected explicitly (`agent = "pi"`), matching
-  wrix's one-agent-per-image format. [system](nix build .#sandbox)
-
-<!-- prettier-ignore -->
-- The selected packaged Pi agent binary launches inside that built sandbox image
-  and responds to `--version` under the
-  [tests-owned packaged-agent health policy](tests.md#assembled-system-checks);
-  failures identify a missing or broken runtime package. [system](nix run .#test-sandbox)
-
 ### Unit tests
 
 - Pi successful response envelopes preserve correlation id, command, success,
@@ -1559,8 +1526,11 @@ letting the entrypoint run the wrong runtime.
 - Claude assistant blocks preserve text and tool-use fields
   [test](assistant_block_text_and_tool_use_field_mapping)
 
-- Claude user blocks preserve tool-result fields
-  [test](user_block_tool_result_field_mapping)
+- Claude user message blocks preserve tool-result fields
+  [test](loom-agent::claude::messages::tests::user_block_tool_result_field_mapping)
+
+- Claude parser events preserve user tool-result fields
+  [test](loom-agent::claude::parser::tests::user_block_tool_result_field_mapping)
 
 - Claude control requests preserve id, tool, and input
   [test](control_request_message_round_trips_all_fields)

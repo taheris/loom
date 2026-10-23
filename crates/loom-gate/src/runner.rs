@@ -18,6 +18,7 @@ use loom_driver::config::{self, LoomConfig, RunnerEntry};
 use regex::Regex;
 use thiserror::Error;
 
+pub mod policy;
 pub mod result;
 
 use crate::annotation::{Annotation, Tier};

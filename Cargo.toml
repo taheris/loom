@@ -45,6 +45,7 @@ filetime = "0.2"
 futures-core = "0.3"
 genai = "0.6.5"
 glob = "0.3"
+guppy = "=0.19.1"
 imara-diff = "0.2"
 gix = { version = "0.84", default-features = false, features = [
     "status",
@@ -56,6 +57,7 @@ gix = { version = "0.84", default-features = false, features = [
 insta = "1"
 itf = "0.4.0"
 nextest-filtering = "0.23.0"
+nextest-metadata = "=0.15.0"
 nix = { version = "0.31", default-features = false, features = ["signal", "term"] }
 owo-colors = { version = "4", features = ["supports-colors"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
@@ -72,7 +74,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 rusqlite = { version = "0.40", features = ["bundled"] }
 rustix = { version = "1", features = ["fs", "process"] }
 schemars = "1"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_jcs = "0.2"
 serde_json = { version = "1", features = ["raw_value"] }
 serde_yaml_ng = "0.10"

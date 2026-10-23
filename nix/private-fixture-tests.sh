@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+trusted_root() {
+  local path="$1"
+  local metadata owner mode
+
+  # Match Directory::open: the filesystem root anchors traversal; check its children.
+  while [[ "$path" != / ]]; do
+    if ! metadata=$(stat --format='%u %a' -- "$path"); then
+      return 1
+    fi
+    read -r owner mode <<<"$metadata"
+    if [[ "$owner" != "$EUID" && "$owner" != 0 ]] ||
+      (( (8#$mode & 0022) != 0 && (8#$mode & 01000) == 0 )); then
+      return 1
+    fi
+    path=$(dirname -- "$path")
+  done
+  return 0
+}
+
+private_root() {
+  local candidate root
+
+  for candidate in "${NIX_BUILD_TOP:-}" "${TMPDIR:-}" /tmp; do
+    if [[ -z "$candidate" || ! -d "$candidate" ]]; then
+      continue
+    fi
+    root=$(realpath -e -- "$candidate")
+    if trusted_root "$root"; then
+      mktemp -d "$root/loom-fixtures.XXXXXXXX"
+      return
+    fi
+    printf 'Rejecting unsafe temporary root: %s\n' "$root" >&2
+  done
+  printf 'No trusted temporary root is available for test fixtures\n' >&2
+  return 1
+}
+
+fixture_process=true
+if [[ "${1:-}" == --build-campaign ]]; then
+  fixture_process=false
+  shift
+elif [[ "${1:-}" == --test-process ]]; then
+  shift
+fi
+
+if [[ "$#" == 0 ]]; then
+  printf 'Usage: run-private-fixture-tests [--build-campaign|--test-process] <command> [args...]\n' >&2
+  exit 2
+fi
+
+# Shared compiler daemons must not capture a disposable fixture TMPDIR.
+for name in "${!SCCACHE_@}"; do
+  unset "$name"
+done
+export RUSTC_WRAPPER="" RUSTC_WORKSPACE_WRAPPER=""
+export CARGO_BUILD_RUSTC_WRAPPER="" CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""
+
+umask 077
+TMPDIR=$(private_root)
+export TMPDIR
+# Runtime fixtures cannot inherit targets; primary compilation preserves its admitted target.
+if [[ "$fixture_process" == true ]]; then
+  export CARGO_TARGET_DIR="$TMPDIR/cargo-target"
+  export CARGO_BUILD_TARGET_DIR="$CARGO_TARGET_DIR"
+  export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
+fi
+# Empty values disable Cargo-configured wrappers; unsetting would re-enable them.
+export RUSTC_WRAPPER="" CARGO_BUILD_RUSTC_WRAPPER=""
+export RUSTC_WORKSPACE_WRAPPER="" CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""
+for key in "${!SCCACHE_@}"; do
+  unset "$key"
+done
+export SCCACHE_DIR="$TMPDIR/sccache"
+export SCCACHE_SERVER_UDS="$TMPDIR/sccache.sock"
+# Reconciliation locks must be as private and disposable as fixture worktrees.
+# In unsandboxed Nix checks, the default HOME is the forbidden /homeless-shelter.
+export XDG_STATE_HOME="$TMPDIR/state"
+export LOOM_TEST_STORAGE=1
+mkdir -p -- "$XDG_STATE_HOME/loom/trusted-cargo"
+# Tiny fixture checkouts reserve one MiB each; real allocated growth is still charged.
+printf '{"reservation_bytes":1048576}\n' > "$XDG_STATE_HOME/loom/trusted-cargo/policy.json"
+cleanup() {
+  local rc=$?
+  if [[ "$rc" == 0 ]]; then
+    rm -rf -- "$TMPDIR"
+  else
+    printf 'Failed fixture root retained at %s\n' "$TMPDIR" >&2
+  fi
+}
+trap cleanup EXIT
+"$@"

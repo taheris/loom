@@ -49,6 +49,12 @@ enum DispatchError {
     MissingWalkName { available: String },
     /// unknown walk `{name}`; available walks: {available}
     UnknownWalk { name: String, available: String },
+    /// failed to resolve source-analysis bindings
+    Selection(#[from] loom_walk::selection::Error),
+    /// failed to read source-analysis annotations
+    Annotations(#[from] loom_gate::annotation::ParseError),
+    /// failed to identify the source-analysis workspace
+    Workspace(#[source] std::io::Error),
     /// failed to serialise verdict: {source}
     SerialiseVerdict {
         #[source]
@@ -86,7 +92,17 @@ fn main() -> ExitCode {
             }
         }
         Err(err) => {
-            let _ = writeln!(std::io::stderr().lock(), "loom-walk: {err:#}");
+            let mut stderr = std::io::stderr().lock();
+            if writeln!(stderr, "loom-walk: {err}").is_err() {
+                return ExitCode::from(2);
+            }
+            let mut cause = std::error::Error::source(&err);
+            while let Some(source) = cause {
+                if writeln!(stderr, "caused by: {source}").is_err() {
+                    break;
+                }
+                cause = source.source();
+            }
             ExitCode::from(2)
         }
     }
@@ -95,7 +111,20 @@ fn main() -> ExitCode {
 fn run() -> Result<bool, DispatchError> {
     let mut args = std::env::args();
     let _bin = args.next();
-    let (print_inputs, names) = split_print_inputs_flag(args.collect());
+    let (print_inputs, mut names) = split_print_inputs_flag(args.collect());
+    let from_specs = names == ["--from-specs"];
+    let root = if from_specs {
+        Some(std::env::current_dir().map_err(DispatchError::Workspace)?)
+    } else {
+        None
+    };
+    if let Some(root) = &root {
+        let annotations = loom_gate::annotation::parse(&root.join("specs"))?.annotations;
+        names = loom_walk::selection::names(&annotations)?
+            .into_iter()
+            .collect();
+    }
+    let names = expand_all(names);
     if names.is_empty() {
         return Err(DispatchError::MissingWalkName {
             available: walk::names_pretty(),
@@ -116,7 +145,9 @@ fn run() -> Result<bool, DispatchError> {
             .map_err(|source| DispatchError::WriteOutput { source })?;
         return Ok(true);
     }
-    let input = WalkInput::from_env();
+    let input = root
+        .as_deref()
+        .map_or_else(WalkInput::from_env, WalkInput::for_root);
     let mut all_pass = true;
     for name in &names {
         let walk = walk::lookup(name).ok_or_else(|| DispatchError::UnknownWalk {
@@ -137,6 +168,14 @@ fn run() -> Result<bool, DispatchError> {
     Ok(all_pass)
 }
 
+fn expand_all(names: Vec<String>) -> Vec<String> {
+    if names == ["--all"] {
+        walk::names().into_iter().map(str::to_owned).collect()
+    } else {
+        names
+    }
+}
+
 fn split_print_inputs_flag(raw: Vec<String>) -> (bool, Vec<String>) {
     let print_inputs = raw.iter().any(|arg| arg == PRINT_INPUTS_FLAG);
     let names = raw
@@ -144,4 +183,28 @@ fn split_print_inputs_flag(raw: Vec<String>) -> (bool, Vec<String>) {
         .filter(|arg| arg != PRINT_INPUTS_FLAG)
         .collect();
     (print_inputs, names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_walks_uses_the_execution_registry() {
+        assert_eq!(expand_all(vec!["--all".into()]), walk::names());
+    }
+
+    #[test]
+    fn explicit_selection_is_not_broadened() {
+        let names = vec!["loom_llm_deps".to_owned()];
+        assert_eq!(expand_all(names.clone()), names);
+    }
+
+    #[test]
+    fn all_walks_keeps_query_mode_separate() {
+        let (query, names) =
+            split_print_inputs_flag(vec!["--all".into(), PRINT_INPUTS_FLAG.into()]);
+        assert!(query);
+        assert_eq!(expand_all(names), walk::names());
+    }
 }

@@ -636,11 +636,35 @@ fn interpret_group_output(
     command: &str,
     output: &Output,
 ) -> Vec<Result<DispatchOutcome, DispatchError>> {
+    let targets: Vec<_> = group
+        .matched
+        .iter()
+        .map(|matched| matched.rendered_target.clone())
+        .collect();
+    interpret_captured_output(group.spec, command, output, &targets)
+        .into_iter()
+        .zip(&group.matched)
+        .map(|(result, matched)| {
+            result.map(|verdict| DispatchOutcome {
+                annotations: vec![matched.annotation.clone()],
+                verdict,
+            })
+        })
+        .collect()
+}
+
+/// Interpret a completed captured process without spawning or granting execution authority.
+/// Checked providers use the same result, contradiction and skip-policy rules as dispatch.
+pub fn interpret_captured_output(
+    spec: &RunnerSpec,
+    command: &str,
+    output: &Output,
+    targets: &[String],
+) -> Vec<Result<VerifierVerdict, DispatchError>> {
     if let Some(code) = infrastructure_exit_code(output)
-        && matches!(group.spec.parse, BuiltinParser::ExitCode)
+        && matches!(spec.parse, BuiltinParser::ExitCode)
     {
-        return group
-            .matched
+        return targets
             .iter()
             .map(|_| Err(infrastructure_error(command, output, code)))
             .collect();
@@ -648,69 +672,57 @@ fn interpret_group_output(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let skipped = output.status.code() == Some(SKIP_EXIT_CODE);
-    if matches!(group.spec.parse, BuiltinParser::ExitCode) {
+    if matches!(spec.parse, BuiltinParser::ExitCode) {
         let pass = output.status.success();
         let evidence = if pass || (skipped && stderr.trim().is_empty()) {
             stdout.trim().to_string()
         } else {
             stderr.trim().to_string()
         };
-        return group
-            .matched
+        return targets
             .iter()
-            .map(|matched| {
-                Ok(DispatchOutcome {
-                    annotations: vec![matched.annotation.clone()],
-                    verdict: VerifierVerdict::from_outcome(
-                        if skipped {
-                            Verdict::Skipped
-                        } else if pass {
-                            Verdict::Pass
-                        } else {
-                            Verdict::Fail
-                        },
-                        evidence.clone(),
-                    ),
-                })
+            .map(|_| {
+                Ok(VerifierVerdict::from_outcome(
+                    if skipped {
+                        Verdict::Skipped
+                    } else if pass {
+                        Verdict::Pass
+                    } else {
+                        Verdict::Fail
+                    },
+                    evidence.clone(),
+                ))
             })
             .collect();
     }
 
-    let parsed =
-        match parse_runner_output(group.spec.parse, &stdout, &stderr, output.status.success()) {
-            Ok(parsed) => parsed,
-            Err(source) => {
-                if let Some(code) = infrastructure_exit_code(output) {
-                    return group
-                        .matched
-                        .iter()
-                        .map(|_| Err(infrastructure_error(command, output, code)))
-                        .collect();
-                }
-                return group
-                    .matched
+    let parsed = match parse_runner_output(spec.parse, &stdout, &stderr, output.status.success()) {
+        Ok(parsed) => parsed,
+        Err(source) => {
+            if let Some(code) = infrastructure_exit_code(output) {
+                return targets
                     .iter()
-                    .map(|_| {
-                        Err(DispatchError::RunnerOutput {
-                            runner: group.spec.name.clone(),
-                            source: source.clone(),
-                        })
-                    })
+                    .map(|_| Err(infrastructure_error(command, output, code)))
                     .collect();
             }
-        };
-    let requested = group
-        .matched
-        .iter()
-        .map(|matched| matched.rendered_target.as_str())
-        .collect::<HashSet<_>>();
-    if group.spec.parse == BuiltinParser::JsonLines
+            return targets
+                .iter()
+                .map(|_| {
+                    Err(DispatchError::RunnerOutput {
+                        runner: spec.name.clone(),
+                        source: source.clone(),
+                    })
+                })
+                .collect();
+        }
+    };
+    let requested = targets.iter().map(String::as_str).collect::<HashSet<_>>();
+    if spec.parse == BuiltinParser::JsonLines
         && let Some(unexpected) = parsed
             .keys()
             .find(|target| !requested.contains(target.as_str()))
     {
-        return group
-            .matched
+        return targets
             .iter()
             .map(|_| {
                 Err(DispatchError::InvalidVerdict {
@@ -724,8 +736,7 @@ fn interpret_group_output(
         .values()
         .any(|verdict| verdict.outcome == Verdict::Fail);
     if !has_failure && let Some(code) = infrastructure_exit_code(output) {
-        return group
-            .matched
+        return targets
             .iter()
             .map(|_| Err(infrastructure_error(command, output, code)))
             .collect();
@@ -741,7 +752,7 @@ fn interpret_group_output(
     } else {
         output.status.success()
     };
-    let producer_error = if (group.spec.parse == BuiltinParser::JsonLines && !consistent)
+    let producer_error = if (spec.parse == BuiltinParser::JsonLines && !consistent)
         || (!output.status.success() && !skipped && !has_failure)
         || (skipped && !has_skip)
     {
@@ -751,29 +762,25 @@ fn interpret_group_output(
     } else {
         None
     };
-    group
-        .matched
+    targets
         .iter()
-        .map(|matched| match parsed.get(&matched.rendered_target) {
-            Some(verdict) => Ok(DispatchOutcome {
-                annotations: vec![matched.annotation.clone()],
-                verdict: VerifierVerdict {
-                    execution: verdict.execution.clone(),
-                    skip_reason: verdict.skip_reason.clone(),
-                    skip_permitted: verdict.outcome == Verdict::Skipped
-                        && crate::runner::result::permits_skip(
-                            group.spec.skip_policy,
-                            &group.spec.skip_capabilities,
-                            verdict.execution.as_ref(),
-                            verdict.skip_reason.as_ref(),
-                        ),
-                    producer_error: producer_error.clone(),
-                    ..VerifierVerdict::from_outcome(verdict.outcome, verdict.evidence.clone())
-                },
+        .map(|target| match parsed.get(target) {
+            Some(verdict) => Ok(VerifierVerdict {
+                execution: verdict.execution.clone(),
+                skip_reason: verdict.skip_reason.clone(),
+                skip_permitted: verdict.outcome == Verdict::Skipped
+                    && crate::runner::result::permits_skip(
+                        spec.skip_policy,
+                        &spec.skip_capabilities,
+                        verdict.execution.as_ref(),
+                        verdict.skip_reason.as_ref(),
+                    ),
+                producer_error: producer_error.clone(),
+                ..VerifierVerdict::from_outcome(verdict.outcome, verdict.evidence.clone())
             }),
             None => Err(DispatchError::MissingFromBatchOutput {
-                runner: group.spec.name.clone(),
-                target: matched.rendered_target.clone(),
+                runner: spec.name.clone(),
+                target: target.clone(),
             }),
         })
         .collect()

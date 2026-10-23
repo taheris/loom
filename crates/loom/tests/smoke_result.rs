@@ -4,7 +4,8 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use anyhow::Context;
-use loom_gate::InputResolver;
+#[path = "common/native_data.rs"]
+mod native_data;
 
 const CLOSED: &str = r#"[{"id":"smoke-test.1","title":"Smoke","status":"closed"}]"#;
 
@@ -154,70 +155,76 @@ fn smoke_status_fixture_matches_bd_response_contract() {
 }
 
 #[test]
-fn smoke_result_change_selects_the_shipped_verifier_without_selecting_unrelated_files() {
-    let fixture = tempfile::tempdir().unwrap();
-    std::fs::create_dir(fixture.path().join("bin")).unwrap();
-    std::fs::write(
-        fixture.path().join("bin/verifier-probe.sh"),
-        include_str!("../../../tests/smoke/verifier-probe.sh"),
-    )
-    .unwrap();
-    std::fs::write(
-        fixture.path().join("loom-smoke-result.txt"),
-        "implemented\n",
-    )
-    .unwrap();
+fn shipped_smoke_annotation_preserves_exact_native_address() {
     let parsed = loom_gate::annotation::parse_content(
         Path::new("specs/smoke.md"),
         include_str!("../../../tests/smoke/spec.md"),
     )
     .unwrap();
     assert_eq!(parsed.annotations.len(), 1);
-    let mut resolver = InputResolver::new(fixture.path().to_path_buf());
-    let selected = loom_gate::inputs::filter_by_files(
-        &parsed.annotations,
-        &["loom-smoke-result.txt".into()],
-        &mut resolver,
-    );
     assert_eq!(
-        selected.len(),
-        1,
-        "the actual worker result must reach the verifier"
+        parsed.annotations[0].target,
+        "nix build .#checks.x86_64-linux.smoke-result"
     );
-    let unrelated = loom_gate::inputs::filter_by_files(
-        &parsed.annotations,
-        &["unrelated.txt".into()],
-        &mut resolver,
-    );
-    assert!(
-        unrelated.is_empty(),
-        "do not replace the dependency with always-run coverage"
-    );
-    let git = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(fixture.path())
-        .output()
-        .unwrap();
-    assert!(git.status.success(), "{git:?}");
-    std::fs::create_dir(fixture.path().join("specs")).unwrap();
-    std::fs::write(
-        fixture.path().join("specs/smoke.md"),
+}
+
+#[test]
+fn smoke_result_change_selects_the_shipped_verifier_without_selecting_unrelated_files() {
+    let fixture = native_data::fixture("LOOM_NATIVE_SMOKE_FIXTURE", "native-smoke-fixture");
+    let workspace = fixture.path();
+    let parsed = loom_gate::annotation::parse_content(
+        Path::new("specs/smoke.md"),
         include_str!("../../../tests/smoke/spec.md"),
     )
     .unwrap();
-    std::fs::write(
-        fixture.path().join(".git/smoke-verifier-unavailable"),
-        "outage\n",
-    )
-    .unwrap();
-    let actual = Command::new(env!("CARGO_BIN_EXE_loom"))
-        .arg("--workspace")
-        .arg(fixture.path())
-        .args(["gate", "check", "--files", "loom-smoke-result.txt"])
-        .current_dir(fixture.path())
-        .output()
-        .unwrap();
-    assert_eq!(actual.status.code(), Some(78), "{actual:?}");
+    assert_eq!(parsed.annotations.len(), 1);
+    assert!(
+        parsed.annotations[0]
+            .target
+            .starts_with("nix build .#checks.")
+    );
+    std::fs::write(workspace.join("docs/unrelated.md"), "# Unrelated\n").unwrap();
+    let run = |path: &str| {
+        Command::new(env!("CARGO_BIN_EXE_loom"))
+            .arg("--workspace")
+            .arg(workspace)
+            .args(["gate", "check", "--files", path])
+            .output()
+            .unwrap()
+    };
+    let missing = run("loom-smoke-result.txt");
+    assert_eq!(missing.status.code(), Some(1), "{missing:?}");
+    std::fs::write(workspace.join("loom-smoke-result.txt"), "implemented\n").unwrap();
+    let actual = run("loom-smoke-result.txt");
+    assert!(
+        actual.status.success(),
+        "{}",
+        String::from_utf8_lossy(&actual.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&actual.stderr)
+            .lines()
+            .any(|line| line.starts_with("loom gate [nix build ")
+                && line.contains("\"verdict\":\"pass\""))
+    );
+    std::fs::write(workspace.join("loom-smoke-result.txt"), "not implemented\n").unwrap();
+    let unrelated = run("docs/unrelated.md");
+    assert!(
+        unrelated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unrelated.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&unrelated.stderr)
+            .lines()
+            .any(|line| line.starts_with("loom gate [nix build ") && line.contains("]: {"))
+    );
+    assert_eq!(run("loom-smoke-result.txt").status.code(), Some(1));
+    std::fs::write(workspace.join("loom-smoke-result.txt"), "implemented\n").unwrap();
+    assert!(
+        run("loom-smoke-result.txt").status.success(),
+        "correction must execute the actual predicate again"
+    );
 }
 
 #[test]

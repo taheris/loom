@@ -35,9 +35,9 @@ impl Fixture {
         fs::create_dir_all(worker_path.join("specs"))?;
         fs::write(
             worker_path.join("specs/isolation.md"),
-            "# Isolation\n\n## Success Criteria\n\n- Deterministic worker feedback. [check](test -f feedback-ok)\n",
+            "# Isolation\n\n## Success Criteria\n\n- Deterministic worker feedback. [check](loom:project-context)\n",
         )?;
-        fs::write(worker_path.join("feedback-ok"), "available\n")?;
+        fs::write(worker_path.join("feedback.md"), "# Available\n")?;
         fs::create_dir_all(worker_path.join("docs"))?;
         fs::write(
             worker_path.join("docs/README.md"),

@@ -14,6 +14,9 @@ pub type Check = dyn for<'a> Fn(&mut Context<'a>) -> Result<Outcome, Error> + Se
 #[serde(tag = "verdict", rename_all = "kebab-case")]
 pub enum Outcome {
     Pass,
+    Skipped {
+        detail: String,
+    },
     Fail {
         detail: String,
     },
@@ -54,20 +57,37 @@ pub enum Observation {
         subject: Name,
         paths: BTreeSet<ResourcePath>,
     },
+    NativePlatform {
+        system: Name,
+        supported: BTreeSet<Name>,
+    },
     ExecutionGraph {
         digest: Digest,
     },
     Output {
         path: super::nix::StorePath,
     },
+    FreshExecution {
+        derivation: super::nix::StorePath,
+    },
+    NativeExecution {
+        unit: Name,
+    },
+    NativeReport {
+        directory: std::path::PathBuf,
+    },
 }
 
 /// An observed result is not evidence admission or publication authorization.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Observed {
     target: Name,
     outcome: Outcome,
     observations: Vec<Observation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verdict: Option<Box<crate::dispatch::VerifierVerdict>>,
+    #[serde(skip)]
+    report: Option<std::sync::Arc<super::nix::report::Report>>,
 }
 
 impl Observed {
@@ -80,7 +100,88 @@ impl Observed {
             target,
             outcome,
             observations,
+            verdict: None,
+            report: None,
         }
+    }
+
+    pub(super) fn reported(
+        target: Name,
+        report: super::nix::report::Report,
+        observations: Vec<Observation>,
+    ) -> Self {
+        let verdict = report.aggregate().clone();
+        Self::from_report(target, verdict, std::sync::Arc::new(report), observations)
+    }
+
+    fn from_report(
+        target: Name,
+        verdict: crate::dispatch::VerifierVerdict,
+        report: std::sync::Arc<super::nix::report::Report>,
+        observations: Vec<Observation>,
+    ) -> Self {
+        let outcome = match verdict.outcome() {
+            crate::Verdict::Pass => Outcome::Pass,
+            crate::Verdict::Fail => Outcome::Fail {
+                detail: verdict.evidence.clone(),
+            },
+            crate::Verdict::Skipped => Outcome::Skipped {
+                detail: verdict.evidence.clone(),
+            },
+        };
+        Self {
+            target,
+            outcome,
+            observations,
+            verdict: Some(Box::new(verdict)),
+            report: Some(report),
+        }
+    }
+
+    pub(super) fn project(&self, target: Name, result: Option<&Name>) -> Result<Self, Error> {
+        if let Some(report) = &self.report {
+            let verdict = if let Some(result) = result {
+                report.result(result.as_str())?
+            } else {
+                report.aggregate()
+            }
+            .clone();
+            Ok(Self::from_report(
+                target,
+                verdict,
+                report.clone(),
+                self.observations.clone(),
+            ))
+        } else if result.is_some()
+            && !matches!(
+                self.outcome,
+                Outcome::Unavailable { .. } | Outcome::Inapplicable { .. }
+            )
+        {
+            Err(super::nix::Error::Report {
+                detail: "result projection has no supervised execution report".into(),
+            }
+            .into())
+        } else {
+            Ok(Self::execution(
+                target,
+                self.outcome.clone(),
+                self.observations.clone(),
+            ))
+        }
+    }
+
+    /// Complete captured report data, including unannotated members, not policy decisions.
+    pub fn report_members(&self) -> Option<&BTreeMap<String, crate::dispatch::VerifierVerdict>> {
+        self.report.as_ref().map(|report| report.members())
+    }
+
+    pub fn producer_failure_code(&self) -> Option<i32> {
+        self.report.as_ref().map(|report| report.failure_code())
+    }
+
+    pub fn verdict(&self) -> Option<&crate::dispatch::VerifierVerdict> {
+        self.verdict.as_deref()
     }
 
     pub const fn target(&self) -> &Name {
@@ -286,11 +387,7 @@ impl<'a> Context<'a> {
         match self.violation {
             Some(Violation::Outside(path)) => Err(Error::Outside { path }),
             Some(Violation::Subject(subject)) => Err(Error::AnalysisSubject { subject }),
-            None => Ok(Observed {
-                target,
-                outcome,
-                observations: self.observations,
-            }),
+            None => Ok(Observed::execution(target, outcome, self.observations)),
         }
     }
 }

@@ -53,13 +53,19 @@ fn workspace(extra: &str) -> tempfile::TempDir {
 }
 
 #[test]
-fn standard_yaml_and_json_configuration_have_required_native_consumers() {
+fn standard_project_configuration_has_real_context_consumers_not_compiler_claims() {
     let dir = fixture("", "pub fn value() {}\n");
     write(dir.path(), ".beads/config.yaml", "sync: true\n");
     write(dir.path(), ".beads/metadata.json", "{}\n");
     write(dir.path(), ".envrc", "use flake\n");
+    write(dir.path(), "wrix.toml", "[profiles]\n");
     let inventory = inventory(dir.path());
-    for resource in [".beads/config.yaml", ".beads/metadata.json", ".envrc"] {
+    for resource in [
+        ".beads/config.yaml",
+        ".beads/metadata.json",
+        ".envrc",
+        "wrix.toml",
+    ] {
         let target = name(&format!("resource:{resource}"));
         assert_eq!(
             inventory.subject(&target).unwrap().role(),
@@ -70,10 +76,67 @@ fn standard_yaml_and_json_configuration_have_required_native_consumers() {
                 .obligations()
                 .iter()
                 .any(|obligation| obligation.subject() == &target
-                    && obligation.responsible() == &name("cargo:fixture:lib:fixture")
-                    && obligation.duty() == Duty::Build)
+                    && obligation.responsible() == &name("project:context")
+                    && obligation.duty() == Duty::Check)
+        );
+        assert!(
+            inventory
+                .obligations()
+                .iter()
+                .filter(|obligation| obligation.subject() == &target)
+                .all(|obligation| !matches!(
+                    obligation.duty(),
+                    Duty::Build | Duty::Lint | Duty::Test
+                ))
         );
     }
+}
+
+#[test]
+fn native_fixture_configuration_keeps_its_consumer_instead_of_becoming_project_data() {
+    let dir = fixture("", "pub fn value() {}\n");
+    write(
+        dir.path(),
+        "Cargo.toml",
+        "[package]\nname='fixture'\nversion='0.1.0'\nedition='2024'\n[[package.metadata.loom.verify.resource]]\nname='cargo:fixture:resource:policy-fixture'\ndirectory='.beads'\nrole='test-fixture'\nconsumers=['cargo:fixture:lib:fixture']\n",
+    );
+    write(
+        dir.path(),
+        ".beads/config.yaml",
+        "not valid configuration: [\n",
+    );
+    lock(dir.path());
+    let inventory = inventory(dir.path());
+    assert_eq!(
+        inventory
+            .subject(&name("cargo:fixture:resource:policy-fixture"))
+            .unwrap()
+            .role(),
+        Role::TestFixture
+    );
+    assert!(
+        !inventory
+            .subject(&name("project:context"))
+            .unwrap()
+            .members()
+            .contains(&path(".beads/config.yaml"))
+    );
+    assert!(inventory.obligations().iter().any(|obligation| {
+        obligation.subject() == &name("cargo:fixture:resource:policy-fixture")
+            && obligation.duty() == Duty::Test
+            && obligation.responsible() == &name("cargo:fixture:lib:fixture")
+    }));
+}
+
+#[test]
+fn unknown_configuration_without_an_actual_reader_cannot_invent_cargo_ownership() {
+    let dir = fixture("", "pub fn value() {}\n");
+    write(dir.path(), "unowned-settings.yaml", "setting: true\n");
+    let snapshot = Snapshot::discover(dir.path()).unwrap();
+    assert!(matches!(
+        Inventory::discover(&snapshot),
+        Err(Error::Responsibility { .. })
+    ));
 }
 
 #[test]

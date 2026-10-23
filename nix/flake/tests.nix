@@ -1,6 +1,6 @@
 # nix/flake/tests.nix
 #
-# Lifts the `loom gate verify` derivation into `packages.<system>` so
+# Lifts the native source-analysis/workspace-test derivation into `packages.<system>` so
 # it can be built directly via `nix build .#loom-tests`. It is *not*
 # attached to `checks.<system>` — per specs/pre-commit.md the fast
 # tier (`nix flake check`) must not expose full workspace clippy/nextest;
@@ -29,6 +29,6 @@ _:
       };
     in
     {
-      packages.loom-tests = testsDeriv.rustChecks.loom-tests;
+      packages.loom-tests = (import ../native-package.nix) testsDeriv.rustChecks.loom-tests;
     };
 }

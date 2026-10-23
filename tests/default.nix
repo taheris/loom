@@ -2,7 +2,7 @@
 #
 # Aggregates the derivations produced by tests/loom/default.nix and
 # groups them under `rustChecks` for consumers that want the derivation.
-# `loom-tests` is the `loom gate verify` derivation; the container smoke
+# `loom-tests` runs native source analysis and the complete workspace tests; smoke
 # is exposed separately as a `nix run .#smoke` app, not a flake check.
 #
 # Spec: specs/tests.md § Nix Integration / CI integration.
@@ -39,8 +39,9 @@ in
     loomTests
     smokeAcceptance
     test-app-ignores-host-git-signing
+    smoke-host-gate
     ;
 }
 // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-  inherit (loomDeriv) smoke-git-policy smoke-host-gate;
+  inherit (loomDeriv) smoke-git-policy;
 }

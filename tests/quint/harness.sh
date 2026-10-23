@@ -106,35 +106,8 @@ SH
   must_fail 'zero traces' env PATH="$tmp/bin:$PATH" "$LOOM_QUINT_BIN" bridge-replay "$LOOM_QUINT_SOURCE"
 }
 
-test_workspace_runtime_and_receipt_boundary() {
-  local script="$LOOM_QUINT_SOURCE/scripts/test-quint.sh"
-  local status=0
-  write_script "$tmp/bin/podman" <<'SH'
-set -euo pipefail
-exit 1
-SH
-  write_script "$tmp/workspace-runner" <<'SH'
-set -euo pipefail
-exit 0
-SH
-  PATH="$tmp/bin:$PATH" LOOM_WORKSPACE_SAFETY_BIN="$tmp/workspace-runner" "$BASH" "$script" workspace-safety-history >"$tmp/workspace-output" 2>&1 || status=$?
-  [[ "$status" -eq 77 ]] || { cat "$tmp/workspace-output" >&2; exit 1; }
-  grep -Fq 'container runtime unavailable' "$tmp/workspace-output"
-  write_script "$tmp/bin/podman" <<'SH'
-set -euo pipefail
-exit 0
-SH
-  must_fail 'missing or incomplete workspace isolation receipt' env PATH="$tmp/bin:$PATH" LOOM_WORKSPACE_SAFETY_BIN="$tmp/workspace-runner" "$BASH" "$script" workspace-safety-history
-  write_script "$tmp/workspace-runner" <<'SH'
-set -euo pipefail
-exit 9
-SH
-  must_fail 'failed workspace isolation (exit 9)' env PATH="$tmp/bin:$PATH" LOOM_WORKSPACE_SAFETY_BIN="$tmp/workspace-runner" "$BASH" "$script" workspace-safety-history
-}
-
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/empty"
 test_provisioning_and_batching
 test_fail_closed
-test_workspace_runtime_and_receipt_boundary

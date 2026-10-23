@@ -29,7 +29,9 @@ loom-gate = { workspace = true }
 loom-protocol = { workspace = true }
 loom-render = { workspace = true }
 loom-tune = { workspace = true }
+loom-walk = { workspace = true }
 loom-workflow = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -39,7 +41,7 @@ tracing-subscriber = { workspace = true }
 insta = { workspace = true }
 loom-driver = { workspace = true, features = ["test-support"] }
 loom-templates = { workspace = true }
-loom-test-support = { workspace = true }
+loom-test-support = { workspace = true, features = ["acceptance"] }
 nix = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

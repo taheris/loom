@@ -140,6 +140,21 @@ hashes appear in the receipt. Nondeterministic test cases use the declared
 sample count; deterministic tests run once. They are not claimed as exhaustive
 searches.
 
+Named witnesses are typechecked once, then a batch driver calls the pinned Rust
+backend's own `TestCase::execute` API. Each case still gets a fresh interpreter,
+state and seed; the upstream sample and RNG-repetition rules are unchanged.
+`checks.quint-model` runs the real routine campaign once, then focused negative
+controls. Its source bundle contains the model, protocol specifications,
+campaign and checker implementation, not unrelated Rust crates or cache
+experiments. Its batch-driver controls compare deterministic and randomized
+cases with the upstream CLI and require a real failing assertion to remain a
+failure. Seven type-preserving mutations of the actual compiled model each
+require their unmodified named witness to pass and the mutated witness to fail
+with an expect assertion. Malformed input, missing work, timeout, trace
+truncation, exhaustive budgets and counterexample replay remain separate
+executable controls. No model transition implementation or saved positive
+verdict substitutes for execution.
+
 The Rust explicit-state checker consumes the actual Quint-compiled IR and checks
 all transitions for one step from `symbolicInit`: either cold initialization or
 a reachable sealed two-subject shared-unit state. The latter's exact

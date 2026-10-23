@@ -144,6 +144,54 @@ pub(super) mod cases {
     }
 
     #[test]
+    fn worker_cargo_projection_serializes_admitted_output() {
+        let (_root, association, worker, profile) = fixture();
+        let namespace = prepare(
+            &association,
+            &worker,
+            &profile,
+            CargoTargetReuse::Off,
+            retention::Policy::default().default_request(),
+            &crate::clock::MockClock::new(),
+        )
+        .unwrap();
+        let mut spawn: SpawnConfig = serde_json::from_value(serde_json::json!({
+            "image_ref": "fixture",
+            "workspace": worker,
+            "env": [["CARGO_TARGET_DIR", "/unadmitted-target"]],
+            "initial_prompt": "fixture",
+            "agent_args": [],
+            "repin": {"orientation": "fixture", "pinned_context": "fixture", "partial_bodies": []}
+        }))
+        .unwrap();
+        spawn.profile_config = Some(profile.clone());
+        namespace.configure(&mut spawn).unwrap();
+        let wire = spawn.to_wrix_json().unwrap();
+        assert_eq!(
+            wire["mounts"],
+            serde_json::json!([{
+                "host_path": namespace.target(),
+                "container_path": WORKER_TARGET,
+                "read_only": false
+            }])
+        );
+        let decoded = SpawnConfig::from_wrix_slice(&serde_json::to_vec(&wire).unwrap()).unwrap();
+        association
+            .validate_worker(&worker, &decoded.mounts, Some(&profile))
+            .unwrap();
+        for key in [
+            "CARGO_TARGET_DIR",
+            "CARGO_BUILD_TARGET_DIR",
+            "CARGO_BUILD_BUILD_DIR",
+        ] {
+            let values: Vec<_> = decoded.env.iter().filter(|(name, _)| name == key).collect();
+            assert_eq!(values.len(), 1);
+            assert_eq!(values[0].1, WORKER_TARGET);
+        }
+        assert!(!wire.to_string().contains("/unadmitted-target"));
+    }
+
+    #[test]
     fn cargo_storage_preserves_unknown_generations_and_refuses_symlinks() {
         use std::os::unix::fs::symlink;
         let (root, association, worker, profile) = fixture();
@@ -311,10 +359,11 @@ pub(super) mod cases {
 
         let root = tempfile::tempdir()?;
         let operator = root.path().join("operator");
-        let git = crate::git::init_test_repo(&operator)?;
+        crate::git::init_test_repo_with_integration(&operator)?;
         let integration = operator.join(".loom/integration");
-        crate::git::init_test_repo(&integration)?;
-        for source in [&operator, &integration] {
+        let worker = operator.join(".loom/beads/lm-worker");
+        crate::git::init_test_repo(&worker)?;
+        for source in [&operator, &integration, &worker] {
             fs::create_dir_all(source.join("src"))?;
             fs::write(
                 source.join("Cargo.toml"),
@@ -325,11 +374,6 @@ pub(super) mod cases {
                 "fn main(){println!(\"trusted\");}\n",
             )?;
         }
-        crate::git::commit_all_in(&integration, "Source")?;
-        let worker = git
-            .create_worktree(&"workspaces".parse()?, &"lm-worker".parse()?)
-            .await?
-            .path;
         fs::write(
             worker.join("src/main.rs"),
             "fn main(){println!(\"worker\");}\n",

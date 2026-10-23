@@ -768,6 +768,11 @@ pub fn filter_by_files(
     annotations
         .iter()
         .filter(|ann| {
+            if let Some(inputs) = resolver.admitted_inputs(ann) {
+                return files
+                    .iter()
+                    .any(|file| inputs.contains(&repo_relative_file(file, &repo_root)));
+            }
             let (inputs, declared_own) = resolver.resolve_with_provenance(ann);
             !declared_own || inputs_intersect_files(&inputs.paths, files, &repo_root)
         })

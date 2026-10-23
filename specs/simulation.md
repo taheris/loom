@@ -289,7 +289,7 @@ review; no keyword classifier or compiler can establish intent.
 - The whole-gate Quint model checks the owning gate, workflow, and hook
   contracts across every tier and stage, with explicit abstractions,
   assumptions, bounds, properties, and checker identity. Bounded success is
-  reported as bounded evidence, not an unrestricted proof. [system](nix run .#test-quint -- model)
+  reported as bounded evidence, not an unrestricted proof. [system](nix build .#verification-quint-model)
 
 <!-- prettier-ignore -->
 - The optimized gate preserves reference per-obligation outcomes for stable
@@ -297,7 +297,7 @@ review; no keyword classifier or compiler can establish intent.
   admissibility policy. Criteria with different stage applicability can share a
   unit without losing an eligible obligation. Selection, batching, concurrency,
   and reuse never authorize a state rejected by the reference under the same
-  modeled conditions. [system](nix run .#test-quint -- reference-equivalence)
+  modeled conditions. [system](nix build .#verification-quint-reference-equivalence)
 
 <!-- prettier-ignore -->
 - Generated repository/change fixtures exercise production inventory discovery,
@@ -315,40 +315,40 @@ review; no keyword classifier or compiler can establish intent.
   imports. It checks current signer trust for already-imported results,
   provenance/context mismatches, environment equivalence, and build-versus-result
   distinctions. Every required test executes or has admissible evidence of an
-  equivalent execution. [system](nix run .#test-quint -- cache-model)
+  equivalent execution. [system](nix build .#verification-quint-cache-model)
 
 <!-- prettier-ignore -->
 - **Outcome history and projection.** Modeled failures invalidate prior passes;
   contradictory outcomes retain their reuse restrictions. Status and
   decomposition cannot promote historical passes after disqualifying same-commit
   admission changes or hide retained blockers. Reuse-disabled identities are not
-  permanently failed criteria. [system](nix run .#test-quint -- cache-model)
+  permanently failed criteria. [system](nix build .#verification-quint-cache-model)
 
 <!-- prettier-ignore -->
 - **Freshness and attempt lifetime.** The model checks claim-specific freshness,
   explicit diagnostic reruns, same-attempt handoff, and mutation between
   validation and use. Failed/interrupted pushes end attempts; retries after
   process loss or unknown remote outcomes preserve eligible unit reuse without
-  reviving ended authorization. [system](nix run .#test-quint -- cache-model)
+  reviving ended authorization. [system](nix build .#verification-quint-cache-model)
 
 <!-- prettier-ignore -->
 - **Durable shared history.** Modeled persistence/consolidation, transcript
   expiry, index rebuilding, and interrupted recovery preserve required safety
   facts and replay witnesses. Operator/integration checkouts share admitted
   observations, including concurrent updates. Missing required history cannot
-  become empty-history success. [system](nix run .#test-quint -- cache-model)
+  become empty-history success. [system](nix build .#verification-quint-cache-model)
 
 <!-- prettier-ignore -->
 - **Cross-campaign counterexamples.** Confirmed violations block affected
   publication across routine/deeper campaign identities until current regression
   evidence resolves them. A cached routine pass cannot bypass that obligation.
-  [system](nix run .#test-quint -- cache-model)
+  [system](nix build .#verification-quint-cache-model)
 
 <!-- prettier-ignore -->
 - The model admits a valid path from discovery to publication and exercises
   forbidden attempts with expected rejection, including stale evidence,
   out-of-order completion, repeated actions, incomplete batches, skips, and
-  changes during a run. [system](nix run .#test-quint -- witnesses)
+  changes during a run. [system](nix build .#verification-quint-witnesses)
 
 <!-- prettier-ignore -->
 - Quint-generated traces drive actual shared gate logic and production
@@ -429,7 +429,7 @@ review; no keyword classifier or compiler can establish intent.
 - Missing tools, invalid models, empty trace batches, adapter failures,
   incomplete exploration, and timeouts fail visibly; none count as completed
   model verification or implementation conformance.
-  [test](quint_incomplete_verification_is_not_success)
+  [test](loom-gate::quint::campaign::tests::quint_incomplete_verification_is_not_success)
 
 - Semantic review checks correspondence between prose, model assumptions,
   properties, and implementation projections; an unchanged model's passing
@@ -460,7 +460,7 @@ review; no keyword classifier or compiler can establish intent.
 <!-- prettier-ignore -->
 - Model tools are pinned and provisioned ahead of routine runs;
   trace generation and verification-graph discovery are batched rather than
-  spawning or downloading tools per criterion or trace. [system](nix run .#test-quint -- provisioning-and-batching)
+  spawning or downloading tools per criterion or trace. [system](nix build .#verification-quint-provisioning-and-batching)
 
 <!-- prettier-ignore -->
 - Cost evidence from actual verification/hook entrypoints covers unrelated,
@@ -475,7 +475,7 @@ review; no keyword classifier or compiler can establish intent.
   declared bounded work may report bounded success; hitting a resource limit
   before that work completes reports incomplete verification. Slow execution
   does not silently reduce coverage or change applicability.
-  [test](quint_campaign_budget_exhaustion_is_explicit)
+  [test](loom-gate::quint::campaign::tests::quint_campaign_budget_exhaustion_is_explicit)
 
 <!-- prettier-ignore -->
 - The pilot integrates actual Loom and Wrix consumers with their production

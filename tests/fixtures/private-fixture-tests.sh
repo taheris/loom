@@ -18,18 +18,23 @@ check_runner() {
   (
     umask 000
     CARGO_TARGET_DIR="$fixture/ambient-target" CARGO_BUILD_TARGET_DIR="$fixture/ambient-target" CARGO_BUILD_BUILD_DIR="$fixture/ambient-target" \
-      RUSTC_WRAPPER=ambient-wrapper SCCACHE_DIR="$fixture/ambient-cache" \
+      SCCACHE_DIR="$fixture/ambient-cache" SCCACHE_SERVER_UDS="$fixture/ambient.sock" \
+      RUSTC_WRAPPER="$fixture/ambient-wrapper" RUSTC_WORKSPACE_WRAPPER="$fixture/ambient-wrapper" \
+      CARGO_BUILD_RUSTC_WRAPPER="$fixture/ambient-wrapper" CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER="$fixture/ambient-wrapper" \
       XDG_STATE_HOME="$fixture/ambient-state" NIX_BUILD_TOP="$candidate" TMPDIR="$fallback" bash "$runner" bash -euc '
       [[ "$(umask)" == 0077 ]]
+      [[ "$CARGO_TARGET_DIR" == "$TMPDIR/cargo-target" ]]
+      [[ "$CARGO_BUILD_TARGET_DIR" == "$CARGO_TARGET_DIR" && "$CARGO_BUILD_BUILD_DIR" == "$CARGO_TARGET_DIR" ]]
+      [[ "$SCCACHE_DIR" == "$TMPDIR/sccache" && "$SCCACHE_SERVER_UDS" == "$TMPDIR/sccache.sock" ]]
+      [[ "$RUSTC_WRAPPER" == "" && "$RUSTC_WORKSPACE_WRAPPER" == "" ]]
+      [[ "$CARGO_BUILD_RUSTC_WRAPPER" == "" && "$CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER" == "" ]]
       [[ "$(stat --format=%a -- "$TMPDIR")" == 700 ]]
       [[ "$XDG_STATE_HOME" == "$TMPDIR/state" ]]
-      [[ "$CARGO_TARGET_DIR" == "$TMPDIR/cargo-target" ]]
-      [[ "$CARGO_BUILD_TARGET_DIR" == "$CARGO_TARGET_DIR" ]]
-      [[ "$CARGO_BUILD_BUILD_DIR" == "$CARGO_TARGET_DIR" ]]
-      [[ -z "$RUSTC_WRAPPER" && -z "$CARGO_BUILD_RUSTC_WRAPPER" ]]
-      [[ "$SCCACHE_DIR" == "$TMPDIR/sccache" ]]
-      [[ "$SCCACHE_SERVER_UDS" == "$TMPDIR/sccache.sock" ]]
       [[ "$(stat --format=%a -- "$XDG_STATE_HOME")" == 700 ]]
+      policy="$XDG_STATE_HOME/loom/trusted-cargo/policy.json"
+      [[ "$(stat --format=%a -- "$policy")" == 600 ]]
+      [[ "$(stat --format=%h -- "$policy")" == 1 ]]
+      [[ "$(<"$policy")" == "{\"reservation_bytes\":1048576}" ]]
       touch "$XDG_STATE_HOME/fixture-lock"
       [[ "$(dirname -- "$TMPDIR")" == "$1" ]]
       [[ "$2" == "literal argument with spaces" ]]
@@ -37,16 +42,14 @@ check_runner() {
       [[ "$(stat --format=%a -- "$TMPDIR/child")" == 700 ]]
     ' _ "$expected" 'literal argument with spaces'
   )
-  [[ ! -e "$fixture/ambient-state" && ! -e "$fixture/ambient-target" && ! -e "$fixture/ambient-cache" ]]
+  [[ ! -e "$fixture/ambient-state" && ! -e "$fixture/ambient-target" && ! -e "$fixture/ambient-cache" && ! -e "$fixture/ambient.sock" ]]
 }
 
 check_runner "$fixture/safe" "$fixture/safe"
 check_runner "$fixture/alias" "$fixture/safe"
 check_runner "$fixture/unsafe/child" "$fixture/safe" "$fixture/safe"
 
-status=0
-NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" bash -c 'exit 23' || status=$?
-[[ "$status" == 23 ]]
+# Successful runs remove only their own private root.
 contents=$(find "$fixture/safe" -mindepth 1 -print -quit)
 [[ -z "$contents" ]]
 
@@ -59,6 +62,19 @@ CARGO_TARGET_DIR="$fixture/admitted-target" CARGO_BUILD_TARGET_DIR="$fixture/adm
 [[ ! -e "$fixture/admitted-target" ]]
 contents=$(find "$fixture/safe" -mindepth 1 -print -quit)
 [[ -z "$contents" ]]
+
+# Failed runs preserve their original status and diagnostic files.
+status=0
+NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" bash -c '
+  printf "%s\n" "$TMPDIR" > "$1"
+  printf "failure evidence\n" > "$TMPDIR/diagnostic"
+  exit 23
+' _ "$fixture/failed-root" || status=$?
+[[ "$status" == 23 ]]
+retained=$(<"$fixture/failed-root")
+[[ "$retained" == "$fixture/safe/loom-fixtures."* ]]
+[[ -d "$retained" && "$(stat --format=%a -- "$retained")" == 700 ]]
+[[ $(<"$retained/diagnostic") == 'failure evidence' ]]
 
 status=0
 bash "$runner" || status=$?
@@ -111,3 +127,5 @@ chmod u+x "$fixture/bin/stat"
   NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" touch "$fixture/child-ran" || status=$?
   [[ "$status" == 73 && ! -e "$fixture/child-ran" ]]
 )
+# Later successful or rejected invocations cannot erase an earlier failure.
+[[ -d "$retained" && $(<"$retained/diagnostic") == 'failure evidence' ]]

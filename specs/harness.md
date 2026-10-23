@@ -304,7 +304,7 @@ is required.
 ### Crate structure
 
 <!-- prettier-ignore -->
-- Workspace builds with `cargo build` from `loom/` root [check](cargo build --workspace)
+- Workspace builds with `cargo build` from `loom/` root [check](nix build .#verification-build)
 
 <!-- prettier-ignore -->
 - Workspace members match the crate layout, including the dedicated extractable
@@ -363,7 +363,7 @@ is required.
 - `wrix spawn` installs from `image_source` (a Nix store path) before invoking
   podman with `image_ref` as the ref; the selected ProfileConfig image digest
   lets wrix skip reloading bytes if the same content already exists in the local
-  image store [system](nix run .#smoke)
+  image store [system](nix build .#verification-system-smoke)
 
 - Per-bead profile/runtime selection: two beads with different profile labels or
   backend runtimes result in `wrix spawn` invocations with the matching
@@ -376,7 +376,7 @@ is required.
   is provisioned from authenticated published operator source. Malformed
   configuration and missing or corrupt existing authority remain blocking;
   provisioning does not authenticate required coverage.
-  [system](nix run .#test-profile-bootstrap)
+  [system](nix build .#verification-system-profile-bootstrap)
 
 - A bead with `profile:X` where `X` is not in the manifest fails with a typed
   `ProfileError::UnknownProfile` naming the missing profile
@@ -526,13 +526,30 @@ is required.
 - Loom binary builds via `nix build` [system](nix build .#loom)
 
 <!-- prettier-ignore -->
-- Loom binary is available in the hook-free CI devShell [system](nix develop .#ci -c loom --version)
+- Loom binary is available in the hook-free CI devShell [system](nix build .#verification-system-ci-shell)
 
 ### Unit tests
 
-- Newtype serde round-trip tests cover all ID types (`BeadId`, `SpecLabel`,
-  `MoleculeId`, `ProfileName`, `SessionId`, `ToolCallId`, `RequestId`)
-  [test](serde_round_trips_as_plain_string)
+- `BeadId` serde round-trips as a plain string.
+  [test](loom-events::identifier::bead::tests::serde_round_trips_as_plain_string)
+
+- `MoleculeId` serde round-trips as a plain string.
+  [test](loom-events::identifier::molecule::tests::serde_round_trips_as_plain_string)
+
+- `ProfileName` serde round-trips as a plain string.
+  [test](loom-events::identifier::profile::tests::serde_round_trips_as_plain_string)
+
+- `RequestId` serde round-trips as a plain string.
+  [test](loom-events::identifier::request::tests::serde_round_trips_as_plain_string)
+
+- `SessionId` serde round-trips as a plain string.
+  [test](loom-events::identifier::session::tests::serde_round_trips_as_plain_string)
+
+- `SpecLabel` serde round-trips as a plain string.
+  [test](loom-events::identifier::spec::tests::serde_round_trips_as_plain_string)
+
+- `ToolCallId` serde round-trips as a plain string.
+  [test](loom-events::identifier::tool_call::tests::serde_round_trips_as_plain_string)
 
 - Closed-set enum tests cover `AgentRuntime` parse/serde and reject unknown
   runtime strings before manifest lookup or Wrix spawn

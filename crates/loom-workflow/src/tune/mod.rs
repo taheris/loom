@@ -1976,11 +1976,45 @@ fn validate_skill_protocol_boundary(artifacts: &[TuneArtifact]) -> ValidationRow
     }
 }
 
+fn validate_template_conformance(repo: &Path, budget: &Budget<'_>) -> ValidationRow {
+    let result = (|| -> Result<_, TuneError> {
+        budget.remaining()?;
+        let input = loom_walk::walk::WalkInput::for_root(repo);
+        let verdicts = loom_walk::walk::template_conformance(&input);
+        budget.remaining()?;
+        Ok(verdicts)
+    })();
+    let (status, detail) = match result {
+        Ok(verdicts) if verdicts.iter().all(|verdict| verdict.pass) => (
+            ValidationStatus::Passed,
+            "candidate source walks passed".to_owned(),
+        ),
+        Ok(verdicts) => (
+            ValidationStatus::Failed,
+            verdicts
+                .into_iter()
+                .filter(|verdict| !verdict.pass)
+                .map(|verdict| verdict.evidence)
+                .collect::<Vec<_>>()
+                .join("; "),
+        ),
+        Err(error) => (ValidationStatus::Failed, preflight::error_detail(&error)),
+    };
+    ValidationRow {
+        check: "template-conformance".to_owned(),
+        status,
+        detail: detail.chars().take(500).collect(),
+    }
+}
+
 async fn validate_templates(
     repo: &Path,
     budget: &Budget<'_>,
     implementation: loom_tune::checker::Implementation,
 ) -> Vec<ValidationRow> {
+    if implementation == loom_tune::checker::Implementation::TemplateConformance {
+        return vec![validate_template_conformance(repo, budget)];
+    }
     let commands = [
         (
             "askama-compile",
@@ -1997,27 +2031,7 @@ async fn validate_templates(
                 "--quiet",
             ],
         ),
-        (
-            "template-conformance",
-            vec![
-                "run",
-                "-p",
-                "loom-walk",
-                "--quiet",
-                "--",
-                "template_pinning_matrix",
-                "template_wire_format_restatement",
-                "templates_no_removed_surface",
-            ],
-        ),
     ];
-    let commands = commands
-        .into_iter()
-        .filter(|(name, _)| {
-            (*name == "template-conformance")
-                == (implementation == loom_tune::checker::Implementation::TemplateConformance)
-        })
-        .collect::<Vec<_>>();
     if !repo.join("crates/loom-templates/Cargo.toml").exists() {
         return commands
             .iter()

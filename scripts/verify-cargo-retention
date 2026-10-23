@@ -5,4 +5,3 @@ bash scripts/configure-cargo-patches.sh
 bash scripts/run-private-fixture-tests --build-campaign cargo nextest run -p loom-driver -p loom-workflow -j 4 \
   -E 'test(cargo_retention) | test(worker_cargo_target_reuse_honors_policy_before_spawn)'
 bash scripts/verify-native-cargo-lifetime
-bash scripts/verify-wrix-cargo-projection

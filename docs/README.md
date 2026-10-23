@@ -28,10 +28,15 @@ Ownership boundaries do not require new crates or commands.
   shared per-user trusted-native reservations, conservative accounting and the
   current never-dispatched-only collection boundary.
 
+- [Acceptance storage and recovery](acceptance-storage.md) — pinned compiler
+  contexts, reusable test targets, database-only Nix accounting and scoped
+  cleanup.
+
 ## Engineering Investigations
 
-- [Actual Wrix Cargo projection](wrix-cargo-projection.md) — explicitly selected
-  Linux runtime mount/backend conformance and its platform/version boundary.
+- [Test ownership and execution](test-boundary-audit.md) — removed upstream
+  backend campaigns, retained Loom seams, execution composition and measured
+  verification checkpoints.
 
 - [Cargo target reuse validation](cargo-target-reuse.md) — Rust/Nextest safety
   coverage, replayable native Cargo measurements and the minimal APFS/Wrix
@@ -42,11 +47,15 @@ Ownership boundaries do not require new crates or commands.
   original-storage restoration for missing verification checkouts.
 
 - [Generated Rust artifact storage](artifact-storage-investigation.md) —
-  measured accounting, isolated Cargo/cache experiments and proposed bounded
-  retention; not a deployed cleanup policy or disposal authority.
-- [Rust compiler-cache context](rust-compiler-cache-context.md) — measured
-  target/environment inputs, replayable cache-substitution controls and trust
-  boundaries; not a production cache-key or mount-policy change.
+  historical accounting and retired Cargo/cache experiments; not current backend
+  coverage, a deployed cleanup policy or disposal authority.
+- [Rust compiler-cache context](rust-compiler-cache-context.md) — historical
+  target/environment and cache-substitution measurements, not a replay package
+  or a production cache-key/mount-policy change.
+
+- [Native verification](native-verification-investigation.md) — proc-mount
+  diagnosis, software-isolated cold/warm evidence, compiler catalogue
+  boundaries, and the limits of current coordinated acceptance.
 
 ## Specs
 

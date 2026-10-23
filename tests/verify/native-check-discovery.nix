@@ -6,7 +6,6 @@ let
     functionArgs
     mapAttrs
     ;
-  inherit (lib) subtractLists;
   module = import ../../nix/flake/checks.nix { inputs.nixpkgs.lib = lib; };
   names =
     mapAttrs
@@ -27,6 +26,5 @@ let
 in
 assert names.aarch64-linux == names.x86_64-linux;
 assert names.aarch64-darwin != [ ];
-assert subtractLists names.x86_64-linux names.aarch64-darwin == [ ];
-assert subtractLists names.aarch64-darwin names.x86_64-linux != [ ];
+assert names.aarch64-darwin == names.x86_64-linux;
 names

@@ -613,12 +613,13 @@ mutation permission.
 <!-- prettier-ignore -->
 - The fixed isolated smoke fixture kills its driver after worker output and
   restarts against the preserved checkout through the real implementation,
-  verification, review, hooks and publication pipeline. [system](nix run .#smoke)
+  verification, review, hooks and publication pipeline. [system](nix build .#verification-system-smoke)
 
 <!-- prettier-ignore -->
-- The signed host-Gate fixture executes a real failing required system test,
-  refuses its hooks without publication, and verifies recovery after correction.
-  [system](nix build --no-link .#checks.x86_64-linux.smoke-host-gate)
+- The signed host-Gate fixture rejects both a real failing hook and a real
+  failing required system test, publishes neither failed candidate, and
+  verifies recovery after correction.
+  [system](nix build .#checks.x86_64-linux.smoke-host-gate)
 
 - A native preflight capability gap is attributed to
   `verification-capability-unavailable`, consumes no semantic retry, and does
@@ -1473,7 +1474,7 @@ mutation permission.
 
 - The registered native conformance suite exercises production admission,
   scheduling, disposition and recovery using disposable real Beads databases.
-  [system](nix run .#test-decision-admission)
+  [system](nix build .#verification-system-decision-admission)
 
 - Three closed contextual references from two producers retain all IDs,
   historical briefs, recorded outcomes, producer and root through
@@ -1573,7 +1574,7 @@ mutation permission.
 
 <!-- prettier-ignore -->
 - `TreeNotClean` variant carries `dirty_paths: Vec<String>` capped at 30 entries
-  by the driver before construction [check](grep -q 'TreeNotClean' crates/loom-templates/src/previous_failure.rs)
+  by the driver before construction [test](tree_not_clean_renders_path_list_one_per_line)
 
 <!-- prettier-ignore -->
 - `PostIntegrateFail` variant carries `failures: Vec<VerifierFailure>` and
@@ -1581,12 +1582,12 @@ mutation permission.
   integration step's verify against the integrated tree fails after the bead's
   own verify passed at its bead workspace. Review concerns are not a possible
   cause — they route through `ReviewConcern` / `BadWalk` after verify succeeds.
-  [check](grep -q 'gate_log_path' crates/loom-templates/src/previous_failure.rs)
+  [test](post_integrate_fail_display_renders_blocks_and_reconciliation_hint)
 
 <!-- prettier-ignore -->
 - `IntegrationConflict` variant carries the conflict file list and new
   integration base SHA for the single agent retry after a driver-side rebase
-  conflict [check](grep -q 'IntegrationConflict' crates/loom-templates/src/previous_failure.rs)
+  conflict [test](integration_conflict_display_names_new_base_and_conflict_files)
 
 - `DriverNoticeCause` enum covers `SwallowedMarker`, `IncompleteSignaling`,
   `ZeroProgress`, `ObserverAbort`, `RetryExhausted`, `UnbondedOrigin`

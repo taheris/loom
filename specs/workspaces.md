@@ -134,11 +134,12 @@ Policy, failure, locking, recovery and actual multi-checkout Cargo behavior run
 inside Rust/Nextest without a host bridge. The native clone syscall is a narrow
 filesystem-capability boundary: deterministic fixtures cover supported,
 unsupported and failed operations without claiming physical CoW sharing. Only
-actual APFS/shared-mount behavior through the Darwin Wrix launch substrate
-requires that platform; ordinary policy tests are not deferred to it. Focused
-on-demand measurements report Cargo freshness, advisory build time and
-inode-aware allocated library bytes; ordinary acceptance has no speed quota and
-does not infer CoW physical sharing from file sizes or allocated block sums.
+actual APFS clone behavior requires that filesystem; ordinary policy tests are
+not deferred to it. Container mount and cache-backend conformance belong to
+Wrix, not Loom's test suite. Focused on-demand measurements report Cargo
+freshness, advisory build time and inode-aware allocated library bytes; ordinary
+acceptance has no speed quota and does not infer CoW physical sharing from file
+sizes or allocated block sums.
 
 ### Cargo execution storage
 
@@ -493,20 +494,19 @@ for worker feedback.
   [test](unwrapped_fixture_commands_cannot_charge_inherited_operator_state)
 
 - The ordinary fixture runner isolates inherited state and Cargo/cache overrides
-  through child processes, preserving status and cleaning repeated success and
-  failure runs.
-  [test](private_fixture_runner_isolates_descendants_and_cleans_success_and_failure)
+  through child processes, preserving status, cleaning repeated successful runs
+  and retaining private failure evidence without touching inherited storage.
+  [test](private_fixture_runner_isolates_descendants_and_retains_failure_evidence)
 
 - Actual native Cargo builds in independent worker and trusted sources produce
   distinct application results without overwriting a canonical executable.
   [test](trusted_and_worker_cargo_builds_cannot_overwrite_canonical_outputs)
 
-- Real Wrix profile projection exposes only the admitted generated target and
-  routes the configured compiler cache to its bounded backend. Private profiles
-  cannot reach forbidden shared pools, and no worker mount exposes trusted
-  output/runtime roots. This is runtime mount/backend substrate conformance, not
-  a repeat of portable Cargo correctness or policy scenarios. [system](bash
-  scripts/verify-wrix-cargo-projection)
+- Loom serializes the admitted generated Cargo target as a writable mount at the
+  worker target path, replaces inherited target overrides, and exposes no
+  trusted output/runtime root in that launch payload. Container realization and
+  cache-backend conformance are Wrix responsibilities, not Loom acceptance.
+  [test](worker_cargo_projection_serializes_admitted_output)
 
 ### Generated Cargo retention
 
@@ -563,18 +563,20 @@ for worker feedback.
   accounting and permits independently admissible smaller work.
   [test](wrix_cargo_retention_pressure_bounds_protect_independent_work)
 
+<!-- prettier-ignore -->
 - Process death and restart never convert a free lease or missing/reused PID
   into collection authority. Real surviving build processes retain their
   namespaces until their exact owned process/cgroup generation is confirmed
-  inactive; unknown platform observations retain with diagnostics. [system](bash
-  scripts/verify-cargo-retention)
+  inactive; unknown platform observations retain with diagnostics.
+  [system](nix report .#verification-cargo-retention::cargo-retention)
 
+<!-- prettier-ignore -->
 - Quarantine and removal fence allocation and recheck trusted ownership,
   filesystem identity, holds and pins. Actual generated fixtures exercise
   adversarial paths/symlinks, interrupted collection, conservative recovery and
   protected source/evidence/runtime sentinels through Loop/Gate lifecycle entry
-  points, without collector flags authored by workers. [system](bash
-  scripts/verify-cargo-retention)
+  points, without collector flags authored by workers.
+  [system](nix report .#verification-cargo-retention::cargo-retention)
 
 ### Concurrency & locking
 
@@ -625,13 +627,16 @@ for worker feedback.
 ### Safety-history isolation
 
 <!-- prettier-ignore -->
-- Production workspace resolution associates the operator and integration
-  checkouts with the shared host-owned safety history while the actual worker
-  launch keeps canonical records and replay artifacts non-writable. Worker
-  file edits, reports, or claimed workspace identities cannot mutate that
-  history; ordinary deterministic worker feedback still works without exposing
-  the integration checkout or transferring marker authority.
-  [system](nix run .#test-quint -- workspace-safety-history)
+- Production workspace resolution associates operator and integration state;
+  worker admission rejects writable projections of canonical state, locks and
+  Git configuration before launch, and the admitted spawn configuration survives
+  the Wrix wire roundtrip. Wrix owns physical mount and filesystem enforcement.
+  [test](worker_safety_history_admission_rejects_each_canonical_projection)
+
+<!-- prettier-ignore -->
+- Deterministic worker feedback exercises current pass/fail/recovery inputs
+  without writing shared host authority or transferring publication markers.
+  [test](deterministic_feedback_in_an_isolated_worker_does_not_write_shared_authority)
 
 ### External membership
 
@@ -875,10 +880,13 @@ for worker feedback.
   `.git/`, and `.wrix/`
   [test](bead_workspace_prepare_preserves_target_and_dotwrix)
 
-- If branch alignment conflicts after recovery stashing, the worker is
-  dispatched in the conflict state with stash/conflict context rather than
-  immediately routing to `loom:clarify` or `loom:blocked`
-  [test](workspace_recovery_rebase_conflict_dispatches_agent_with_context)
+- If branch alignment conflicts after recovery stashing, the Git client
+  preserves the conflict state with stash/conflict context for dispatch.
+  [test](loom-driver::git_client::workspace_recovery_rebase_conflict_dispatches_agent_with_context)
+
+- Production dispatches that conflict state to the worker rather than
+  immediately routing it to `loom:clarify` or `loom:blocked`.
+  [test](loom-workflow::r#loop::production::tests::workspace_recovery_rebase_conflict_dispatches_agent_with_context)
 
 - `LOOM_COMPLETE` is not rejected solely because a recovery stash still exists;
   stash relevance is judged by review/gate evidence rather than a hard driver
@@ -1036,25 +1044,22 @@ for worker feedback.
   the host-side hardlink shim previously used in `GitClient::create_worktree`
   [test](bead_container_dolt_socket_via_mounts)
 
-- When `[loom] sccache_dir` is configured, the directory is bind-mounted into
-  the loom workspace and every bead container at the configured container path
+- When `[loom] sccache_dir` is configured, Loom requests a writable directory
+  mount for the workspace and each bead at the configured container path
   [test](sccache_mount_present_when_configured)
 
 - When `[loom] sccache_dir` is unset, no sccache mount appears on the bead
   container spawn args [test](sccache_mount_omitted_when_unset)
 
-- Two independently cloned Rust beads receive the same configured writable
-  sccache source and effective cache path, with both Rust wrapper environment
-  settings aligned. Actual offline Cargo builds with separate targets reuse a
-  compatible external dependency through that pool; changing application
-  features rebuilds the library and preserves each clone's correct output.
-  This native test translates only the mount projection; it does not certify
-  deployed Wrix mounts or trusted-build isolation.
-  [test](sccache_shared_across_bead_clones)
+- Independent Rust bead requests serialize the same configured writable cache
+  source and container path, with both Rust wrapper environment settings aligned.
+  Wrix and the compiler/cache backend own mount realization, hit rates, cache-key
+  compatibility and eviction; Loom does not repeat those conformance campaigns.
+  [test](worker_sccache_configuration_serializes_one_shared_writable_cache)
 
-- Cache hits are observable across beads in a multi-bead loop when
-  `[loom] sccache_dir` is configured
-  [judge](../tests/judges/loom.sh#sccache_hits_visible_across_beads)
+- Worker-cache mount and environment configuration reaches sequential, parallel
+  and todo dispatch; trusted commands do not consume the worker pool
+  [judge](../tests/judges/loom.sh#worker_cache_wiring_reaches_all_dispatch_paths)
 
 <!-- prettier-ignore -->
 - `GitClient` is the only module that imports `gix` or invokes the `git` CLI;
@@ -1145,7 +1150,7 @@ for worker feedback.
   registered operator's clean, signature-verified published Git source through
   its fixed profile factory. Cold starts and legacy manifests recover without
   changing selection or granting coverage. Missing/corrupt authority is neither
-  reconstructed nor bypassed. [system](nix run .#test-profile-bootstrap)
+  reconstructed nor bypassed. [system](nix build .#verification-system-profile-bootstrap)
 
 - Provisioned profile inputs survive trusted driver subprocesses, including
   the review handoff. [test](provisioned_profile_inputs_survive_actual_driver_subprocess_environment)
@@ -1181,21 +1186,6 @@ for worker feedback.
 
 - Native preflight exit after agent output remains an interruption.
   [test](native_preflight_exit_after_agent_output_is_interruption)
-
-<!-- prettier-ignore -->
-- A real Rust worker image can evaluate Nix and build a disposable non-Git
-  derivation offline in its private single-user store, without a daemon socket
-  or host-execution bridge; Cargo and rustc also launch successfully.
-  [system](nix run .#test-sandbox)
-
-<!-- prettier-ignore -->
-- The isolated transport verifier provisions a pinned profile, checks private
-  Nix-state ancestry, and completes normal signed substitution plus two
-  independent cold imports of the pinned input with matching hashes and sizes.
-  Its fixed harness has no repository keys, runtime secrets, host Nix/engine
-  sockets or canonical Beads/safety authority; unavailable or timed-out input
-  transport fails within a bounded deadline and preserves the purity guard.
-  [system](nix run .#test-worker-transport)
 
 - Profile manifest entries missing launcher or immutable profile configuration
   fail ingestion with regeneration guidance.

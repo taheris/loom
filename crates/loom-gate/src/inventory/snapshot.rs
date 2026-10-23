@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use displaydoc::Display;
 use serde::{Deserialize, Serialize};
@@ -66,8 +67,8 @@ impl Serialize for Identity {
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     root: PathBuf,
-    files: BTreeMap<ResourcePath, Vec<u8>>,
-    executable: BTreeSet<ResourcePath>,
+    files: Arc<BTreeMap<ResourcePath, Vec<u8>>>,
+    executable: Arc<BTreeSet<ResourcePath>>,
     identity: Identity,
 }
 
@@ -113,8 +114,8 @@ impl Snapshot {
         }
         Ok(Self {
             root,
-            files,
-            executable,
+            files: Arc::new(files),
+            executable: Arc::new(executable),
             identity: Identity(hash.finalize()),
         })
     }
@@ -127,7 +128,7 @@ impl Snapshot {
         &self.identity
     }
 
-    pub const fn files(&self) -> &BTreeMap<ResourcePath, Vec<u8>> {
+    pub fn files(&self) -> &BTreeMap<ResourcePath, Vec<u8>> {
         &self.files
     }
 

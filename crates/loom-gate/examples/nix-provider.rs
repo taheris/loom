@@ -62,6 +62,7 @@ fn main() -> anyhow::Result<()> {
     writeln!(stdout)?;
     match observed.outcome() {
         Outcome::Pass => Ok(()),
+        Outcome::Skipped { detail } => anyhow::bail!("document-heading did not execute: {detail}"),
         Outcome::Fail { .. } => {
             anyhow::bail!("document-heading failed; correct the native check or document and retry")
         }

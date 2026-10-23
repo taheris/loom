@@ -101,7 +101,7 @@ mod cases {
     }
 
     #[test]
-    fn private_fixture_runner_isolates_descendants_and_cleans_success_and_failure() {
+    fn private_fixture_runner_isolates_descendants_and_retains_failure_evidence() {
         if std::env::var_os("NEXTEST_RUN_ID").is_some() {
             assert_eq!(std::env::var("LOOM_TEST_STORAGE").as_deref(), Ok("1"));
         }
@@ -146,6 +146,7 @@ mod cases {
             .env_remove("LOOM_TEST_STORAGE");
             let _execution = verifier_command(&mut command, source.path()).unwrap();
             assert!(command.status().unwrap().success());
+            fs::write(temporary.join("diagnostic"), b"fixture").unwrap();
             println!("fixture-state={}", std::env::var("XDG_STATE_HOME").unwrap());
             return;
         }
@@ -161,7 +162,7 @@ mod cases {
             .arg("--test-process")
             .args(["bash", "-c", "\"$@\"; result=$?; if (( result != 0 )); then exit \"$result\"; fi; exit \"$FIXTURE_EXIT\"", "bash"])
             .arg(std::env::current_exe().unwrap())
-            .args(["--exact", "workspace::cargo::discovery_tests::cases::private_fixture_runner_isolates_descendants_and_cleans_success_and_failure", "--nocapture"])
+            .args(["--exact", "workspace::cargo::discovery_tests::cases::private_fixture_runner_isolates_descendants_and_retains_failure_evidence", "--nocapture"])
             .env("LOOM_FIXTURE_STORAGE_CHILD", "1")
             .env("FIXTURE_EXIT", code.to_string())
             .env("XDG_STATE_HOME", &operator)
@@ -180,7 +181,13 @@ mod cases {
                 .lines()
                 .find_map(|line| line.strip_prefix("fixture-state="))
                 .unwrap();
-            assert!(!Path::new(state).parent().unwrap().exists());
+            let root = Path::new(state).parent().unwrap();
+            if code == 0 {
+                assert!(!root.exists());
+            } else {
+                assert!(root.is_dir(), "failure evidence was discarded");
+                assert_eq!(fs::read(root.join("diagnostic")).unwrap(), b"fixture");
+            }
             assert!(!fixture.path().join("ambient").exists());
             assert!(!fixture.path().join("cache").exists());
             assert_eq!(fs::read_dir(&operator).unwrap().count(), 1);

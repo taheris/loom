@@ -89,7 +89,6 @@ in
     let
       inherit (inputs) nixpkgs;
       nextestOverlay = import ../nextest-overlay.nix;
-
       linuxSystem = if system == "aarch64-darwin" then "aarch64-linux" else system;
 
       wrixPkgs = import nixpkgs {
@@ -109,7 +108,8 @@ in
         config.allowUnfree = true;
       };
 
-      imageRustToolchain = inputs.fenix.packages.${linuxSystem}.fromToolchainFile {
+      imageRustToolchain = import ../rust-toolchain.nix {
+        fenix = inputs.fenix.packages.${linuxSystem};
         file = rustToolchainFile;
         sha256 = rustToolchainSha256;
       };
@@ -117,16 +117,19 @@ in
         mkTreefmtConfig imageRustToolchain
       );
 
-      # Import upstream modules directly: no generated-source IFD boundary.
       wrixSrc = inputs.wrix;
-      wrixLib = import "${wrixSrc}/lib" {
+      wrixModules = import ../wrix-runtime-source.nix {
+        inherit pkgs;
+        src = wrixSrc;
+      };
+      wrixLib = wrixModules.library {
         inherit system;
         inherit (inputs) crane fenix;
         pkgs = wrixPkgs;
         linuxPkgs = wrixLinuxPkgs;
         treefmt = imageTreefmtWrapper;
       };
-      imagePiCodingAgent = import "${wrixSrc}/lib/sandbox/pi.nix" {
+      imagePiCodingAgent = wrixModules.pi {
         pkgs = wrixLinuxPkgs;
       };
       smokeMockPi = wrixLinuxPkgs.writeShellScriptBin "pi" ''
@@ -144,7 +147,8 @@ in
       rustToolchainFile = ../../rust-toolchain.toml;
       rustToolchainSha256 = "sha256-+xUr6Al1wZSqX8aEsq7DpuFOK4Ve/i+qTl+K5uWQ9GM=";
 
-      rustToolchain = inputs'.fenix.packages.fromToolchainFile {
+      rustToolchain = import ../rust-toolchain.nix {
+        fenix = inputs'.fenix.packages;
         file = rustToolchainFile;
         sha256 = rustToolchainSha256;
       };
@@ -244,6 +248,7 @@ in
           smokeSandbox
           wrixLib
           wrixLauncher
+          wrixModules
           wrixLinuxPkgs
           ;
         smokeServiceImage = wrixLib.serviceImage;

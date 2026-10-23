@@ -6,6 +6,8 @@
 //! `tune`. There is no `sync` — Askama compiled templates make per-project
 //! sync unnecessary (see `specs/harness.md`).
 
+mod checked_gate;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -26,12 +28,14 @@ use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::logging::{LogSink, sweep_retention_at};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::CacheDb;
+#[cfg(test)]
 use loom_gate::integrity::runner_owns_target;
 use loom_gate::scope::{Request as GateScopeRequest, Resolved as GateScope};
+use loom_gate::{self, CacheRow, StatusCache, Tier, Verdict, render_report};
+#[cfg(test)]
 use loom_gate::{
-    self, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
-    FsCommandResolver, InputResolver, RunnerSpec, StatusCache, TestScope, Tier, TierCwds, Verdict,
-    is_missing_binary_target, render_report,
+    CargoMetadataScope, DispatchOptions, DispatchPendingExecutor, FsCommandResolver, InputResolver,
+    RunnerSpec, TestScope, TierCwds, is_missing_binary_target,
 };
 use loom_protocol::output;
 use loom_workflow::inbox::{
@@ -932,7 +936,11 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             eprintln!("loom: {err:#}");
-            ExitCode::from(1)
+            ExitCode::from(
+                provider_report_code(&err)
+                    .and_then(|code| u8::try_from(code).ok())
+                    .unwrap_or_else(|| if provider_unavailable(&err) { 78 } else { 1 }),
+            )
         }
     }
 }
@@ -1390,6 +1398,7 @@ fn resolve_gate_scope(workspace: &Path, request: GateScopeRequest) -> anyhow::Re
     Ok(command_runtime()?.block_on(request.resolve(workspace))?)
 }
 
+#[cfg(test)]
 fn gate_dispatch_options(args: &GateScope) -> DispatchOptions {
     DispatchOptions {
         files: args.files().unwrap_or_default().to_vec(),
@@ -1400,6 +1409,7 @@ fn gate_dispatch_options(args: &GateScope) -> DispatchOptions {
 /// Construct the file-scope resolver without swallowing native discovery failures.
 /// A Nix-only consumer needs no Cargo scope; a present manifest requires successful
 /// native metadata discovery, not a spec-only or always-run fallback.
+#[cfg(test)]
 fn build_input_resolver(workspace: &Path, runners: &[RunnerSpec]) -> anyhow::Result<InputResolver> {
     let resolver = InputResolver::new(workspace.to_path_buf()).with_runners(runners.to_vec());
     let manifest = workspace.join("Cargo.toml");
@@ -1413,16 +1423,19 @@ fn build_input_resolver(workspace: &Path, runners: &[RunnerSpec]) -> anyhow::Res
 }
 
 /// Scope for annotations already retained by the CLI-level input resolver.
+#[cfg(test)]
 struct SelectedTestScope {
     files: Vec<PathBuf>,
 }
 
+#[cfg(test)]
 impl TestScope for SelectedTestScope {
     fn scope_for(&self, _annotation: &loom_gate::Annotation) -> Vec<PathBuf> {
         self.files.clone()
     }
 }
 
+#[cfg(test)]
 fn filter_annotations(
     annotations: &[loom_gate::Annotation],
     tier: Tier,
@@ -1443,6 +1456,7 @@ fn filter_annotations(
 /// Only legitimate cases of "the verifier cannot run in this
 /// environment" — never as a workaround for a verifier that should
 /// pass but doesn't. Every entry carries a comment naming the cause.
+#[cfg(test)]
 const CHECK_ANNOTATION_ALLOWLIST: &[(&str, &str)] = &[
     // The three entrypoint.sh greps shell out via
     // `nix build .#wrixSrc`, which cannot run inside the
@@ -1452,6 +1466,7 @@ const CHECK_ANNOTATION_ALLOWLIST: &[(&str, &str)] = &[
     ("specs/agent.md", "lib/sandbox/linux/entrypoint.sh"),
 ];
 
+#[cfg(test)]
 fn is_allowlisted_check_annotation(ann: &loom_gate::Annotation) -> bool {
     let spec_str = ann.source_spec.to_string_lossy();
     CHECK_ANNOTATION_ALLOWLIST
@@ -1560,29 +1575,26 @@ fn print_gate_status(report: &loom_gate::Report) {
     reason = "gate progress and verifier failures are CLI diagnostics"
 )]
 fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
+    let tiers = verify_tiers_for_args(workspace, args)?;
+    // Definition admission is whole-request and precedes even unrelated hook effects.
+    // A nested-hook hint suppresses duplicate execution, never definition validation.
+    let before_hooks = checked_gate::Admission::load(workspace, args)?;
     if nested_diff_gate_skip(args) {
-        eprintln!("loom gate verify --files: skipped under parent --diff gate");
+        eprintln!("loom gate verify --files: admitted; execution skipped under parent --diff gate");
         return Ok(());
     }
+    before_hooks.require_current()?;
     let mut combined = run_project_hook_lane(workspace, args)?;
-    let tiers = verify_tiers_for_args(workspace, args)?;
-    let mut input_resolver = preflight_gate_input_queries(workspace, args, &tiers)?;
-    for &tier in &tiers {
-        eprintln!("--- loom gate verify [{tier}] ---");
-        match dispatch_tier_with_input_resolver(workspace, args, tier, &tiers, &mut input_resolver)
-        {
-            Ok(0) => {}
-            Ok(code) => combined = combine_verifier_codes(combined, code),
-            Err(err) => {
-                eprintln!("loom gate verify [{tier}]: {err:#}");
-                combined = combine_verifier_codes(
-                    combined,
-                    err.downcast_ref::<loom_gate::dispatch::DispatchError>()
-                        .map_or(1, dispatch_error_code),
-                );
-            }
-        }
-    }
+    // Reuse only immutable admission facts, never execution results. A hook
+    // changing the candidate requires a fresh invocation, not silent re-admission.
+    before_hooks.require_current().context(
+        "tree-modified-by-hook: verification candidate changed; inspect the hook's edits and retry",
+    )?;
+    let admission = before_hooks;
+    combined = combine_verifier_codes(
+        combined,
+        dispatch_checked(workspace, args, &tiers, &admission)?,
+    );
     if combined == loom_gate::dispatch::SKIP_EXIT_CODE
         && std::env::var("LOOM_INSIDE").as_deref() == Ok("1")
     {
@@ -1610,13 +1622,43 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn provider_report_code(error: &anyhow::Error) -> Option<i32> {
+    error.chain().find_map(
+        |cause| match cause.downcast_ref::<loom_gate::provider::nix::Error>() {
+            Some(loom_gate::provider::nix::Error::ReportInfrastructure { code, .. }) => Some(*code),
+            _ => None,
+        },
+    )
+}
+
+fn provider_unavailable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<loom_gate::inventory::Error>(),
+            Some(loom_gate::inventory::Error::Capability { .. })
+        ) || match cause.downcast_ref::<loom_gate::provider::nix::Error>() {
+            Some(
+                loom_gate::provider::nix::Error::Capability
+                | loom_gate::provider::nix::Error::ColdInput { .. },
+            ) => true,
+            Some(loom_gate::provider::nix::Error::Preparation { observed }) => matches!(
+                observed.outcome(),
+                loom_gate::provider::tracked::Outcome::Unavailable { .. }
+                    | loom_gate::provider::tracked::Outcome::Inapplicable { .. }
+            ),
+            _ => false,
+        }
+    })
+}
+
 fn combine_verifier_codes(left: i32, right: i32) -> i32 {
     let infrastructure = |code| matches!(code, 77 | 78 | 124 | 127..=255);
-    if [left, right]
-        .into_iter()
-        .any(|code| code != 0 && !infrastructure(code))
-    {
+    if left == 1 || right == 1 {
         1
+    } else if left != 0 && !infrastructure(left) {
+        left
+    } else if right != 0 && !infrastructure(right) {
+        right
     } else if left != 0 && left != loom_gate::dispatch::SKIP_EXIT_CODE {
         left
     } else if right != 0 {
@@ -1626,6 +1668,7 @@ fn combine_verifier_codes(left: i32, right: i32) -> i32 {
     }
 }
 
+#[cfg(test)]
 const fn dispatch_error_code(error: &loom_gate::dispatch::DispatchError) -> i32 {
     match error {
         loom_gate::dispatch::DispatchError::Infrastructure { code, .. } => *code,
@@ -1686,10 +1729,7 @@ fn verify_tiers_for_args(workspace: &Path, args: &GateScope) -> anyhow::Result<V
         }
         return Ok(vec![first]);
     }
-    if args.is_tree() {
-        return Ok(vec![Tier::Check, Tier::Test, Tier::System]);
-    }
-    Ok(vec![Tier::Check, Tier::Test])
+    Ok(vec![Tier::Check, Tier::Test, Tier::System])
 }
 
 fn nested_diff_gate_skip(args: &GateScope) -> bool {
@@ -1777,8 +1817,289 @@ fn git_rev_parse(workspace: &Path, rev: &str) -> anyhow::Result<String> {
         .to_string())
 }
 
+fn checked_result_policy(
+    unit: &loom_gate::provider::Unit,
+    observed: &loom_gate::provider::tracked::Observed,
+    policies: &loom_gate::runner::policy::Policies,
+    tiers: &[Tier],
+    outcome: Verdict,
+    evidence: String,
+) -> loom_gate::dispatch::VerifierVerdict {
+    let mut verdict = observed
+        .verdict()
+        .cloned()
+        .unwrap_or_else(|| loom_gate::dispatch::VerifierVerdict::from_outcome(outcome, evidence));
+    if !verdict.skipped || verdict.producer_error.is_some() || tiers.is_empty() {
+        return verdict;
+    }
+    if unit.is_report_projection() || observed.report_members().is_none() {
+        verdict.skip_permitted = tiers
+            .iter()
+            .all(|tier| policies.permits(*tier, unit.target().as_str(), &verdict));
+    } else if let Some(reference) = unit.target().as_str().strip_prefix("nix build ")
+        && let Some(members) = observed.report_members()
+    {
+        let mut skipped = false;
+        let complete = members.iter().all(|(name, member)| {
+            if member.producer_error.is_some() {
+                return false;
+            }
+            if member.pass {
+                return true;
+            }
+            skipped |= member.skipped;
+            member.skipped
+                && tiers.iter().all(|tier| {
+                    policies.permits(*tier, &format!("nix report {reference}::{name}"), member)
+                })
+        });
+        verdict.skip_permitted = skipped && complete;
+    }
+    verdict
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "checked verifier results are CLI diagnostics"
+)]
+fn dispatch_checked(
+    workspace: &Path,
+    args: &GateScope,
+    tiers: &[Tier],
+    admission: &checked_gate::Admission,
+) -> anyhow::Result<i32> {
+    use loom_gate::provider::tracked::Outcome;
+
+    if tiers.contains(&Tier::Judge) {
+        anyhow::bail!(
+            "deterministic verification cannot execute a judge target; use `loom gate judge --target <target>` for diagnostic inspection"
+        );
+    }
+    let selected = admission.select(args, tiers)?;
+    let skip_policies = admission.skip_policies()?;
+    let whole_selection = match admission {
+        checked_gate::Admission::Whole(plan, _) => Some(plan.select_tiers(args, tiers)?),
+        checked_gate::Admission::Diagnostic { .. } => None,
+    };
+    let mut invocations = whole_selection
+        .as_ref()
+        .map(loom_gate::provider::plan::selection::Selection::invocations)
+        .transpose()?;
+    admission.require_current()?;
+    if let Some(explanation) = admission.explain(args, tiers)? {
+        eprintln!("loom gate plan: {explanation}");
+    }
+    if admission.is_diagnostic() {
+        eprintln!(
+            "loom gate: exact-target diagnostic only; no inventory-wide coverage or publication authorization"
+        );
+    }
+    let cache = if admission.is_diagnostic() {
+        None
+    } else {
+        Some(StatusCache::open(&loom_driver::state::path(workspace))?)
+    };
+    let now_ms = i64::try_from(
+        SystemClock::new()
+            .wall_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX);
+    let commit = current_commit(workspace).unwrap_or_default();
+    let mut combined = 0;
+    let mut executed = std::collections::BTreeSet::new();
+    for selected_unit in &selected {
+        let unit = selected_unit.unit;
+        if !executed.insert(unit.target().clone()) {
+            continue;
+        }
+        // Recheck unselected and later-lane siblings before every callback.
+        admission.require_current()?;
+        let execution = if let Some(invocations) = &mut invocations {
+            invocations
+                .next()
+                .context("admitted execution stream omitted a selected target")?
+                .map(|invocation| {
+                    let duration = invocation.duration();
+                    let shared = invocation.shared_with().cloned();
+                    (invocation.into_observed(), duration, shared)
+                })
+        } else {
+            let clock = SystemClock::new();
+            let started = clock.now();
+            unit.run().map(|observed| {
+                (
+                    observed,
+                    clock.now().saturating_duration_since(started),
+                    None,
+                )
+            })
+        };
+        let (observed, elapsed, shared) = match execution {
+            Ok(result) => result,
+            Err(error) => {
+                let error = anyhow::Error::from(error);
+                for owner in selected
+                    .iter()
+                    .filter(|selection| selection.unit.shares_execution_with(unit))
+                    .flat_map(|selection| &selection.owners)
+                    .filter(|owner| tiers.contains(&owner.tier))
+                {
+                    eprintln!(
+                        "loom gate [{}] ERROR: {} ({}:{}): {error:#}",
+                        owner.tier,
+                        owner.target,
+                        owner.source_spec.display(),
+                        owner.line
+                    );
+                }
+                if let Some(code) = provider_report_code(&error) {
+                    eprintln!(
+                        "loom gate [{}] producer infrastructure: {error:#}",
+                        unit.target().as_str()
+                    );
+                    return Ok(combine_verifier_codes(combined, code));
+                }
+                if provider_unavailable(&error) {
+                    eprintln!(
+                        "loom gate [{}] unavailable: {error:#}",
+                        unit.target().as_str()
+                    );
+                    return Ok(combine_verifier_codes(combined, 78));
+                }
+                return Err(error);
+            }
+        };
+        anyhow::ensure!(
+            observed.target() == unit.target(),
+            "admitted execution stream returned a different target"
+        );
+        if let Some(previous) = shared {
+            eprintln!(
+                "loom gate [{}] shares this run's execution with [{}]",
+                unit.target().as_str(),
+                previous.as_str()
+            );
+        }
+        let evidence = serde_json::to_string(&observed)?;
+        let verdict = match observed.outcome() {
+            Outcome::Pass => Verdict::Pass,
+            Outcome::Fail { .. } => Verdict::Fail,
+            Outcome::Skipped { .. }
+            | Outcome::Unavailable { .. }
+            | Outcome::Inapplicable { .. } => Verdict::Skipped,
+        };
+        let owners: Vec<_> = selected
+            .iter()
+            .filter(|shared| shared.unit.target() == unit.target())
+            .flat_map(|shared| &shared.owners)
+            .filter(|owner| tiers.contains(&owner.tier))
+            .collect();
+        let mut policy_tiers: Vec<_> = owners.iter().map(|owner| owner.tier).collect();
+        if selected_unit.baseline || policy_tiers.is_empty() {
+            policy_tiers.push(unit.baseline_tier());
+        }
+        let interpreted = checked_result_policy(
+            unit,
+            &observed,
+            &skip_policies,
+            &policy_tiers,
+            verdict,
+            evidence.clone(),
+        );
+        if let Some(error) = &interpreted.producer_error {
+            eprintln!(
+                "loom gate [{}] invalid producer report: {error}",
+                unit.target().as_str()
+            );
+            combined =
+                combine_verifier_codes(combined, observed.producer_failure_code().unwrap_or(1));
+        }
+        eprintln!("loom gate [{}]: {evidence}", unit.target().as_str());
+        eprintln!(
+            "loom gate [{}] duration: {elapsed:?}",
+            unit.target().as_str()
+        );
+        for owner in owners.iter().filter(|owner| !owner.pending) {
+            if interpreted.skipped {
+                eprintln!(
+                    "loom gate [{}] SKIP (coverage unverified, permitted={}): {} ({}:{})",
+                    owner.tier,
+                    interpreted.skip_permitted,
+                    owner.target,
+                    owner.source_spec.display(),
+                    owner.line
+                );
+            } else if !interpreted.accepted() {
+                eprintln!(
+                    "loom gate [{}] FAIL: {} ({}:{})",
+                    owner.tier,
+                    owner.target,
+                    owner.source_spec.display(),
+                    owner.line
+                );
+            }
+            if !interpreted.accepted() || interpreted.skipped {
+                for line in interpreted.evidence.lines().take(5) {
+                    eprintln!("  {line}");
+                }
+            }
+        }
+        let ordinary = owners.iter().any(|owner| !owner.pending)
+            || owners.is_empty()
+            || selected
+                .iter()
+                .any(|selection| selection.unit.target() == unit.target() && selection.baseline);
+        // Pending assertions use the same callback, but never produce ordinary pass evidence.
+        if interpreted.producer_error.is_some() {
+            // Malformed/contradictory execution is never an expected pending failure.
+        } else if verdict == Verdict::Pass {
+            for owner in owners.iter().filter(|owner| owner.pending) {
+                eprintln!(
+                    "loom gate [integrity]: {}:{}: unneeded pending marker on {}; remove `?` and retry",
+                    owner.source_spec.display(),
+                    owner.line,
+                    owner.target
+                );
+                combined = 1;
+            }
+        } else if ordinary || verdict == Verdict::Skipped {
+            // Preserve infrastructure recovery and semantic-failure precedence.
+            let code = match observed.outcome() {
+                Outcome::Unavailable { .. } | Outcome::Inapplicable { .. } => 78,
+                Outcome::Skipped { .. } => verifier_code(&interpreted),
+                Outcome::Fail { .. } => 1,
+                Outcome::Pass => 0,
+            };
+            combined = combine_verifier_codes(combined, code);
+        }
+        if let Some(cache) = &cache {
+            let outcome = loom_gate::DispatchOutcome {
+                annotations: owners
+                    .into_iter()
+                    .filter(|owner| !owner.pending)
+                    .cloned()
+                    .collect(),
+                verdict: interpreted,
+            };
+            persist_outcome(workspace, cache, &outcome, verdict, now_ms, &commit);
+        }
+    }
+    Ok(combined)
+}
+
 fn run_gate_single_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Result<()> {
-    let code = dispatch_tier(workspace, args, tier)?;
+    if let Some(target) = args.target()
+        && !target_matches(workspace, target)?.contains(&tier)
+    {
+        anyhow::bail!(
+            "no annotation target exactly matched `{target}` in {tier}; run `loom spec <label> --targets` to list exact targets"
+        );
+    }
+    let admission = checked_gate::Admission::load(workspace, args)?;
+    let code = dispatch_checked(workspace, args, &[tier], &admission)?;
     if code != 0 {
         std::process::exit(code);
     }
@@ -1788,6 +2109,7 @@ fn run_gate_single_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyho
 /// Tier-default cwds for all four tiers, read from `<workspace>/loom.toml`'s
 /// `[runner.<tier>] cwd` entries. Independent of the runner-spec list, so
 /// every runner-context resolver shares one copy.
+#[cfg(test)]
 fn all_tier_cwds(config: &LoomConfig) -> TierCwds {
     TierCwds {
         check: tier_cwd(config, "check"),
@@ -1806,6 +2128,7 @@ fn all_tier_cwds(config: &LoomConfig) -> TierCwds {
 /// per-annotation. `[test]` uses `run_configured_tests`; `[judge]` owns its
 /// review path. Neither consults this resolver. Targets matching no configured runner
 /// fall through to per-annotation spawn / the `tokens[0]`-on-PATH fallback.
+#[cfg(test)]
 fn resolve_runner_context(
     workspace: &Path,
     tier: Tier,
@@ -1829,6 +2152,7 @@ fn resolve_runner_context(
 /// plus `[check]`- and `[system]`-tier runners
 /// ([`loom_gate::runner::integrity_runner_specs`]), paired with every tier's
 /// default cwd.
+#[cfg(test)]
 fn resolve_integrity_runner_context(
     workspace: &Path,
 ) -> anyhow::Result<(Vec<RunnerSpec>, TierCwds)> {
@@ -1838,6 +2162,7 @@ fn resolve_integrity_runner_context(
     Ok((specs, tier_cwds))
 }
 
+#[cfg(test)]
 fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
     config
         .runner
@@ -1846,10 +2171,12 @@ fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+#[cfg(test)]
 fn dispatch_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyhow::Result<i32> {
     dispatch_tier_with_readiness_tiers(workspace, args, tier, &[tier])
 }
 
+#[cfg(test)]
 fn dispatch_tier_with_readiness_tiers(
     workspace: &Path,
     args: &GateScope,
@@ -1860,10 +2187,7 @@ fn dispatch_tier_with_readiness_tiers(
     dispatch_tier_with_input_resolver(workspace, args, tier, readiness_tiers, &mut input_resolver)
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "input admission failures retain each owning annotation in normal CLI stderr"
-)]
+#[cfg(test)]
 fn preflight_gate_input_queries(
     workspace: &Path,
     args: &GateScope,
@@ -1899,10 +2223,7 @@ fn preflight_gate_input_queries(
     Ok(resolver)
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "gate dispatch diagnostics are part of the CLI stderr contract"
-)]
+#[cfg(test)]
 fn dispatch_tier_with_input_resolver(
     workspace: &Path,
     args: &GateScope,
@@ -2025,6 +2346,7 @@ fn dispatch_tier_with_input_resolver(
 /// (no `::`-segmented crate prefix) whose `CargoMetadataScope` lookup
 /// collapses to the auto-included spec file. The pending half rejoins
 /// the kept set after the filter runs.
+#[cfg(test)]
 fn partition_pending_for_forward_resolution(
     annotations: Vec<loom_gate::Annotation>,
 ) -> (Vec<loom_gate::Annotation>, Vec<loom_gate::Annotation>) {
@@ -2047,6 +2369,7 @@ fn partition_pending_for_forward_resolution(
 /// and treats the integrity gate as itself a `[check]`-tier verifier, so
 /// the verify lane fails the same way the per-annotation `[check]`
 /// dispatch does.
+#[cfg(test)]
 fn run_integrity_gate(
     workspace: &Path,
     args: &GateScope,
@@ -2119,6 +2442,7 @@ fn run_integrity_gate(
     clippy::too_many_arguments,
     reason = "progress-driving dispatch surface threads cache + commit + runner context together"
 )]
+#[cfg(test)]
 fn run_check_with_progress(
     selected: &[loom_gate::Annotation],
     options: &loom_gate::DispatchOptions,
@@ -2208,6 +2532,7 @@ fn run_check_with_progress(
     clippy::too_many_arguments,
     reason = "progress-driving dispatch surface threads cache + commit + runner context together"
 )]
+#[cfg(test)]
 fn run_system_with_progress(
     selected: &[loom_gate::Annotation],
     options: &loom_gate::DispatchOptions,
@@ -2296,6 +2621,7 @@ fn run_system_with_progress(
     combined
 }
 
+#[cfg(test)]
 fn truncate_for_progress(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -2487,6 +2813,9 @@ fn run_gate_mint(
             })?
         }
         ResolvedMintScope::Tree => {
+            let mint_scope = resolve_gate_scope(workspace, GateScopeRequest::Tree)?;
+            let admission = checked_gate::Admission::load(workspace, &mint_scope)?;
+            admission.require_current()?;
             let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
             let manifest = Arc::new(ProfileImageManifest::from_env()?);
             let labels = resolve_tree_mint_labels(workspace, None)?;
@@ -2635,7 +2964,8 @@ fn run_gate_mint(
                                 "scope": "tree",
                             }),
                         )?;
-                        match walker.run_verifiers(&scope).await {
+                        // The walker owns rubric transport, not an unchecked second dispatcher.
+                        match admission.mint_failures(&mint_scope) {
                             Ok(failures) => {
                                 let failure_count = failures.len();
                                 let mut normalized_count = 0_usize;
@@ -4603,6 +4933,8 @@ fn run_review(
     opts: ReviewOpts,
     host_key: bool,
 ) -> anyhow::Result<()> {
+    // Review inspects source, not deterministic execution authority. Native
+    // admission and producer preparation belong to verify/mint, not this lane.
     let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_review_label(workspace, &opts.scope)?;
@@ -6041,7 +6373,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_tiers_for_args_scopes_files_to_check_and_test() {
+    fn verify_tiers_for_args_retains_required_system_for_files() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let args = test_scope(
             tmp.path(),
@@ -6049,7 +6381,7 @@ mod tests {
         );
         assert_eq!(
             verify_tiers_for_args(tmp.path(), &args).expect("tiers"),
-            vec![Tier::Check, Tier::Test],
+            vec![Tier::Check, Tier::Test, Tier::System],
         );
     }
 
@@ -6064,12 +6396,12 @@ mod tests {
     }
 
     #[test]
-    fn verify_tiers_for_args_scopes_diff_to_check_and_test() {
+    fn verify_tiers_for_args_retains_required_system_for_diff() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let args = changed_scope(tmp.path());
         assert_eq!(
             verify_tiers_for_args(tmp.path(), &args).expect("tiers"),
-            vec![Tier::Check, Tier::Test],
+            vec![Tier::Check, Tier::Test, Tier::System],
         );
     }
 
