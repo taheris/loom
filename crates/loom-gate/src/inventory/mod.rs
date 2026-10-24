@@ -351,6 +351,9 @@ impl Inventory {
 }
 
 pub(crate) fn contracts(snapshot: &Snapshot) -> Result<Vec<ResourcePath>, Error> {
+    if let Some(contracts) = snapshot.contracts.get() {
+        return Ok(contracts.clone());
+    }
     if !snapshot
         .files()
         .keys()
@@ -359,7 +362,7 @@ pub(crate) fn contracts(snapshot: &Snapshot) -> Result<Vec<ResourcePath>, Error>
         return Ok(Vec::new());
     }
     let staged = snapshot.stage()?;
-    loom_driver::spec::package::discover_workspace(staged.path())?
+    let contracts = loom_driver::spec::package::discover_workspace(staged.path())?
         .into_iter()
         .map(|package| {
             let relative = package
@@ -370,7 +373,8 @@ pub(crate) fn contracts(snapshot: &Snapshot) -> Result<Vec<ResourcePath>, Error>
                 })?;
             Ok(ResourcePath::try_from(relative.to_path_buf())?)
         })
-        .collect()
+        .collect::<Result<_, Error>>()?;
+    Ok(snapshot.contracts.get_or_init(|| contracts).clone())
 }
 
 fn obligations_for(

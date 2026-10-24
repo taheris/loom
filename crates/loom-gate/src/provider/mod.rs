@@ -300,6 +300,7 @@ impl Definition {
 #[derive(Default)]
 struct Current {
     graphs: Vec<Digest>,
+    platforms: Vec<Arc<nix::applicability::Applicability>>,
 }
 
 impl Current {
@@ -325,6 +326,16 @@ impl Current {
             }
             definition.require_current()?;
             self.graphs.push(graph.identity().clone());
+            Ok(())
+        } else if let Execution::NativePlatform(operation) = &definition.execution {
+            if !self
+                .platforms
+                .iter()
+                .any(|prior| prior.same_operation(operation))
+            {
+                operation.require_current()?;
+                self.platforms.push(operation.clone());
+            }
             Ok(())
         } else {
             definition.require_current()
@@ -568,6 +579,11 @@ impl Registry {
     ) -> Result<Vec<Unit>, Error> {
         require_context(snapshot, inventory)?;
         self.snapshot.require_current()?;
+        let mut current = Current::new(
+            contracts
+                .keys()
+                .filter_map(|target| self.definitions.get(target)),
+        )?;
         let mut units = BTreeMap::new();
         for (target, owners) in contracts {
             if owners.is_empty() {
@@ -578,11 +594,12 @@ impl Registry {
             let definition = self.definition(target)?;
             for contract in owners {
                 let unit = self
-                    .resolve(
+                    .resolve_current(
                         snapshot,
                         inventory,
                         definition.description(),
                         contract.clone(),
+                        &mut current,
                     )
                     .map_err(|source| Error::Admission {
                         target: target.clone(),
@@ -614,13 +631,16 @@ impl Registry {
         candidate: &Candidate,
         contract: ResourcePath,
     ) -> Result<Unit, Error> {
-        self.resolve_current(
+        require_context(snapshot, inventory)?;
+        let unit = self.resolve_current(
             snapshot,
             inventory,
             candidate,
             contract,
             &mut Current::default(),
-        )
+        )?;
+        snapshot.require_current()?;
+        Ok(unit)
     }
 
     fn resolve_current(
@@ -631,7 +651,9 @@ impl Registry {
         contract: ResourcePath,
         current: &mut Current,
     ) -> Result<Unit, Error> {
-        require_context(snapshot, inventory)?;
+        if snapshot.identity() != inventory.snapshot() {
+            return Err(Error::Inventory);
+        }
         let target = candidate.target();
         if self.snapshot.identity() != snapshot.identity()
             || candidate.snapshot() != snapshot.identity()

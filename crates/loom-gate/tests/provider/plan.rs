@@ -1052,6 +1052,59 @@ async fn equivalent_current_invocations_share_once_without_reusing_across_runs_o
     }
 }
 
+#[tokio::test]
+async fn compact_plan_reports_selection_and_sharing_without_repeating_definitions() {
+    let dir = fixture();
+    write(
+        dir.path(),
+        "specs/example/tests.md",
+        "## Success Criteria\n- Accounting [check](accounting)\n- First [test](first)\n- Second [test](second)\n",
+    );
+    let (snapshot, inventory) = context(&dir);
+    let first = definition(&snapshot, &inventory, "first", check);
+    let second = first.clone().named(name("second")).unwrap();
+    let registry = Registry::new(
+        &snapshot,
+        vec![offered(&inventory, &snapshot), first, second],
+    )
+    .unwrap();
+    let plan = registry.admit(&snapshot, &inventory).unwrap();
+    let scope = loom_gate::scope::Request::Files(vec!["README.md".into()])
+        .resolve(dir.path())
+        .await
+        .unwrap();
+    let selection = plan.select_tiers(&scope, &[loom_gate::Tier::Test]).unwrap();
+    let explanation = selection.explain().unwrap();
+    let detailed = serde_json::to_value(&explanation).unwrap();
+    let compact = serde_json::to_value(explanation.summary()).unwrap();
+    assert_eq!(compact["units"], 3);
+    assert_eq!(compact["selected_units"], 2);
+    assert_eq!(compact["shared_units"], 1);
+    let executions = compact["executions"].as_array().unwrap();
+    assert_eq!(executions.len(), 1);
+    assert_eq!(executions[0]["target"], "first");
+    assert_eq!(executions[0]["owners"], 2);
+    assert_eq!(executions[0]["aliases"], 1);
+    assert_eq!(executions[0]["lanes"][0]["tier"], "test");
+    assert_eq!(executions[0]["lanes"][0]["owners"], 2);
+    assert_eq!(executions[0]["lanes"][0]["baselines"], 0);
+    assert_eq!(executions[0]["reasons"][0]["reason"], "affected");
+    assert_eq!(
+        executions[0]["reasons"][0]["inputs"][0]["path"],
+        "README.md"
+    );
+    assert_eq!(compact["exclusions"][0]["units"], 1);
+    assert_eq!(compact["exclusions"][0]["reason"]["reason"], "other-lane");
+    assert!(compact.get("decisions").is_none());
+    assert!(detailed["decisions"][0].get("definition").is_some());
+    assert!(
+        serde_json::to_vec(&compact).unwrap().len() < serde_json::to_vec(&detailed).unwrap().len()
+    );
+    let invocations = selection.run().unwrap();
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(invocations[1].shared_with(), Some(&name("first")));
+}
+
 static CROSS_CONTRACT_DISPATCHES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 

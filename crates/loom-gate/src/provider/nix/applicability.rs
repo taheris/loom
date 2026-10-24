@@ -201,18 +201,19 @@ impl Definition {
 }
 
 impl Applicability {
-    pub(crate) fn require_current(&self) -> Result<(), Error> {
+    pub(crate) fn require_current(&self) -> Result<(), crate::provider::Error> {
         if locate_tool()? != self.tool
-            || Digest::of(&std::fs::read(&self.tool)?) != self.description.artifact
-            || Digest::of(&std::fs::read(&self.executable)?) != self.artifact
+            || Digest::of(&std::fs::read(&self.tool).map_err(Error::Io)?)
+                != self.description.artifact
+            || crate::provider::read_artifact(&self.executable)? != self.artifact
             || platforms(&self.tool)? != self.description.supported
         {
-            return Err(Error::GraphChanged);
+            return Err(Error::GraphChanged.into());
         }
         Ok(())
     }
 
-    pub(crate) fn observe(&self, target: Name) -> Result<Observed, Error> {
+    pub(crate) fn observe(&self, target: Name) -> Result<Observed, crate::provider::Error> {
         self.require_current()?;
         Ok(Observed::execution(
             target,

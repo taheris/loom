@@ -33,6 +33,127 @@ pub struct Explanation<'a> {
     decisions: Vec<Decision<'a>>,
 }
 
+/// Compact selection diagnostics omit repeated definitions, never obligations.
+#[derive(Serialize)]
+pub struct Summary<'a> {
+    stage: Stage,
+    scope: &'a Resolved,
+    units: usize,
+    selected_units: usize,
+    shared_units: usize,
+    executions: Vec<ExecutionSummary<'a>>,
+    exclusions: Vec<Exclusion<'a>>,
+}
+
+#[derive(Serialize)]
+struct ExecutionSummary<'a> {
+    target: &'a Name,
+    owners: usize,
+    aliases: usize,
+    lanes: Vec<Lane>,
+    reasons: Vec<&'a Reason>,
+}
+
+#[derive(Serialize)]
+struct Lane {
+    tier: Tier,
+    owners: usize,
+    baselines: usize,
+}
+
+impl ExecutionSummary<'_> {
+    fn include_lanes(&mut self, decision: &Decision<'_>) {
+        for tier in [Tier::Check, Tier::Test, Tier::System] {
+            let owners = decision
+                .owners
+                .iter()
+                .filter(|owner| owner.tier == tier)
+                .count();
+            let baselines = usize::from(decision.baseline == Some(tier));
+            if owners + baselines == 0 {
+                continue;
+            }
+            if let Some(lane) = self.lanes.iter_mut().find(|lane| lane.tier == tier) {
+                lane.owners += owners;
+                lane.baselines += baselines;
+            } else {
+                self.lanes.push(Lane {
+                    tier,
+                    owners,
+                    baselines,
+                });
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct Exclusion<'a> {
+    reason: &'a Reason,
+    units: usize,
+}
+
+impl Explanation<'_> {
+    pub fn summary(&self) -> Summary<'_> {
+        let mut executions: Vec<ExecutionSummary<'_>> = Vec::new();
+        let mut exclusions: Vec<Exclusion<'_>> = Vec::new();
+        let mut selected_units = 0;
+        let mut shared_units = 0;
+        for decision in &self.decisions {
+            match &decision.execution {
+                Execution::Excluded => {
+                    if let Some(exclusion) = exclusions
+                        .iter_mut()
+                        .find(|entry| entry.reason == decision.reason)
+                    {
+                        exclusion.units += 1;
+                    } else {
+                        exclusions.push(Exclusion {
+                            reason: decision.reason,
+                            units: 1,
+                        });
+                    }
+                }
+                Execution::FreshRequired => {
+                    selected_units += 1;
+                    let mut execution = ExecutionSummary {
+                        target: decision.definition.target(),
+                        owners: decision.owners.len(),
+                        aliases: 0,
+                        lanes: Vec::new(),
+                        reasons: vec![decision.reason],
+                    };
+                    execution.include_lanes(decision);
+                    executions.push(execution);
+                }
+                Execution::SharedInRun { target } => {
+                    selected_units += 1;
+                    shared_units += 1;
+                    if let Some(execution) =
+                        executions.iter_mut().find(|entry| entry.target == target)
+                    {
+                        execution.owners += decision.owners.len();
+                        execution.aliases += 1;
+                        execution.include_lanes(decision);
+                        if !execution.reasons.contains(&decision.reason) {
+                            execution.reasons.push(decision.reason);
+                        }
+                    }
+                }
+            }
+        }
+        Summary {
+            stage: self.stage,
+            scope: self.scope,
+            units: self.decisions.len(),
+            selected_units,
+            shared_units,
+            executions,
+            exclusions,
+        }
+    }
+}
+
 /// Counts describe actual calls in this run; shared aliases are not cache hits.
 #[derive(Serialize)]
 pub struct Completed<'a> {

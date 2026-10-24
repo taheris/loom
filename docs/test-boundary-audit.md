@@ -1,8 +1,9 @@
 # Test ownership and execution audit
 
-This records the implementation checkpoint for `lm-510x`, not delivery or final
-acceptance. Gate hook restoration and the preserved native-provider draft remain
-under that task. A passing source walk is not runtime/backend conformance.
+This records historical implementation checkpoints and the continuation of
+`lm-510x`, not final acceptance. The cleanup and native-provider implementation
+landed together; automatic hook restoration remains outstanding. A passing
+source walk is not runtime/backend conformance.
 
 ## Responsibility inventory
 
@@ -137,3 +138,54 @@ selected so removing one cannot turn the other's success into complete
 acceptance. This is not an inference from ordinary unit success or a host-script
 wrapper. Gate hook restoration and its separate latency obligations remain under
 the consolidated cleanup bead.
+
+## Automatic-hook continuation
+
+The rebased audit shares successful contract-membership discovery only between
+clones of the same immutable snapshot. A changed checkout still fails current
+context checks; a new snapshot rediscovers additions and malformed packages.
+Admission resolves each target/contract pair once while retaining every owning
+criterion. Platform checks share validation within one pure pass and use the
+existing kernel-protected running-image identity, not a mutable-file timestamp
+cache. The CLI no longer repeats the iterator's whole-plan check immediately
+before that iterator performs the same check; diagnostic dispatch retains its
+sibling checks. The ordinary-commit readiness fixture now uses Cargo's immutable
+compiled hook-runner capability rather than assuming that capability is also
+exported in the test process environment.
+
+Normal plan output reports actual execution groups, aliases, lane/owner counts,
+affected-input reasons and excluded-unit counts without repeating every complete
+input closure per alias. The full explanation API remains available; explicit
+`RUST_LOG=loom::gate::plan=debug` diagnostics include its complete definitions.
+Neither representation changes selection, freshness, dispatch or verdicts.
+
+Measurements below are diagnostics on a shared x86_64 Linux development host,
+with concurrent compilation, not isolated latency guarantees:
+
+| Work                                                | Result                                                                                                                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Initial debug files diagnostic                      | Interrupted after 317.568 seconds, no completed result                                                                                                        |
+| Intermediate debug files diagnostic                 | Interrupted after 329.437 seconds, no completed result                                                                                                        |
+| Actual prek files hook before compact reporting     | Interrupted after 505.928 seconds; Gate was blocked writing the multi-gigabyte plan line to prek, with about 3.4 GiB resident memory                          |
+| Separate cold Nix CLI build after compact reporting | Passed in 202.745 seconds; provisioning/compilation, not hook execution                                                                                       |
+| Actual prek files hook after compact reporting      | Failed after 490.116 seconds; 1,256 admitted units, 1,130 selected units, 1,028 shared aliases, 102 fresh execution groups; plan line reduced to 32,343 bytes |
+
+The last run reached real execution instead of blocking on plan output. It did
+not pass: Nix advertises `aarch64-linux` in `extra-platforms`, but an actual ARM
+builder fails to execute its present Bash binary. The registered interpreter is
+`/run/binfmt/aarch64-linux` with flag `P`, without `F`. Host Nix configuration
+includes that path, but the closed native runner deliberately clears both
+sandbox-path settings and remote builders. The interpreter therefore cannot be
+resolved inside this stricter sandbox; ordinary host Nix configuration alone
+does not establish its capability. The subsequent ARM Rust standard-library
+input is also cold under the offline verification boundary. These are not
+successful foreign-platform checks.
+
+No binfmt registration, kernel privilege, sandbox exception, platform exclusion,
+VM fallback or automatic hook stage was changed to conceal those failures. The
+remaining host capability/configuration repair, completed warm files/diff and
+actual commit/push measurements, and automatic-stage/fixture restoration still
+block closure. A full native diagnostic also caught the compact report omitting
+lane labels; those labels are restored rather than weakening the scope-policy
+assertion. Focused passes and interrupted/failed full runs do not establish
+complete acceptance.

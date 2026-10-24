@@ -116,7 +116,7 @@ impl Fixture {
             configuration,
         )
         .unwrap();
-        let prek = std::env::var("LOOM_PREK_BIN").unwrap();
+        let prek = env!("LOOM_PREK_BIN");
         loom_test_support::write_executable_bash_script(self.workspace().join(".git/hooks/pre-commit"), &format!("set -euo pipefail\nexec '{prek}' hook-impl --hook-type=pre-commit --hook-dir .git/hooks --script-version 4 -- \"$@\"\n")).unwrap();
         for args in [
             vec!["config", "user.name", "Readiness Test"],

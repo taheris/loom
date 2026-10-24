@@ -67,13 +67,16 @@ impl Registry {
                     );
                 }
             }
+            let mut resolved = BTreeSet::new();
             for annotation in declarations
                 .annotations
                 .into_iter()
                 .filter(|annotation| annotation.tier != Tier::Judge)
             {
                 let target = Name::try_from(annotation.target)?;
-                if annotation.pending && !self.definitions.contains_key(&target) {
+                if (annotation.pending && !self.definitions.contains_key(&target))
+                    || !resolved.insert(target.clone())
+                {
                     continue;
                 }
                 let definition = self

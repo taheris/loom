@@ -1915,8 +1915,9 @@ fn dispatch_checked(
         if !executed.insert(unit.target().clone()) {
             continue;
         }
-        // Recheck unselected and later-lane siblings before every callback.
-        admission.require_current()?;
+        if invocations.is_none() {
+            admission.require_current()?;
+        }
         let execution = if let Some(invocations) = &mut invocations {
             invocations
                 .next()

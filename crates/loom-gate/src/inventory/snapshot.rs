@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use displaydoc::Display;
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,7 @@ pub struct Snapshot {
     files: Arc<BTreeMap<ResourcePath, Vec<u8>>>,
     executable: Arc<BTreeSet<ResourcePath>>,
     identity: Identity,
+    pub(super) contracts: Arc<OnceLock<Vec<ResourcePath>>>,
 }
 
 impl Snapshot {
@@ -117,6 +118,7 @@ impl Snapshot {
             files: Arc::new(files),
             executable: Arc::new(executable),
             identity: Identity(hash.finalize()),
+            contracts: Arc::new(OnceLock::new()),
         })
     }
 
@@ -234,6 +236,46 @@ mod tests {
         );
         assert!(!partition.path().join("unrelated.txt").exists());
         assert!(matches!(snapshot.require_current(), Err(Error::Changed)));
+    }
+
+    #[test]
+    fn contract_membership_is_shared_only_within_one_immutable_snapshot() {
+        let directory = fixture();
+        std::fs::create_dir(directory.path().join("specs")).unwrap();
+        std::fs::write(directory.path().join("specs/first.md"), "# First\n").unwrap();
+        let snapshot = Snapshot::discover(directory.path()).unwrap();
+        let first = super::super::contracts(&snapshot).unwrap();
+        assert_eq!(first, [path("specs/first.md")]);
+        let cloned = snapshot.clone();
+        assert!(Arc::ptr_eq(&snapshot.contracts, &cloned.contracts));
+        assert_eq!(cloned.contracts.get(), Some(&first));
+
+        std::fs::write(directory.path().join("specs/second.md"), "# Second\n").unwrap();
+        assert_eq!(super::super::contracts(&cloned).unwrap(), first);
+        assert!(matches!(cloned.require_current(), Err(Error::Changed)));
+        let changed = Snapshot::discover(directory.path()).unwrap();
+        assert!(changed.contracts.get().is_none());
+        assert_eq!(
+            super::super::contracts(&changed)
+                .unwrap()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([path("specs/first.md"), path("specs/second.md")])
+        );
+        assert!(!Arc::ptr_eq(&snapshot.contracts, &changed.contracts));
+    }
+
+    #[test]
+    fn malformed_contract_membership_never_initializes_a_successful_discovery() {
+        let directory = fixture();
+        std::fs::create_dir_all(directory.path().join("specs/first")).unwrap();
+        std::fs::write(directory.path().join("specs/first/spec.md"), "# First\n").unwrap();
+        let snapshot = Snapshot::discover(directory.path()).unwrap();
+        assert!(super::super::contracts(&snapshot).is_err());
+        assert!(snapshot.contracts.get().is_none());
+        let cloned = snapshot.clone();
+        assert!(super::super::contracts(&cloned).is_err());
+        assert!(snapshot.contracts.get().is_none());
     }
 
     #[test]

@@ -181,14 +181,23 @@ impl Admission {
         match self {
             Self::Whole(plan, properties) => {
                 #[derive(serde::Serialize)]
-                struct Explained<'a> {
+                struct Explained<'a, T> {
                     #[serde(flatten)]
-                    plan: loom_gate::provider::plan::report::Explanation<'a>,
+                    plan: T,
                     native_properties: &'a [property::Report],
                 }
                 let selection = plan.select_tiers(scope, tiers)?;
+                let explanation = selection.explain()?;
+                tracing::debug!(
+                    target: "loom::gate::plan",
+                    detail = %serde_json::to_string(&Explained {
+                        plan: &explanation,
+                        native_properties: properties,
+                    })?,
+                    "complete admitted verification plan"
+                );
                 Ok(Some(serde_json::to_string(&Explained {
-                    plan: selection.explain()?,
+                    plan: explanation.summary(),
                     native_properties: properties,
                 })?))
             }
