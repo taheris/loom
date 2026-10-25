@@ -2273,6 +2273,68 @@ printf '{"inputs":["src/%s.rs"]}\n' "$1""#,
         );
     }
 
+    #[test]
+    fn prime_runner_inputs_isolates_multiple_groups_within_each_tier() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut runners = Vec::new();
+        let mut annotations = Vec::new();
+        for group in ["first", "second"] {
+            let group_dir = dir.path().join(group);
+            fs::create_dir(&group_dir).unwrap();
+            let body = FILTER_INPUTS.replace("src/", &format!("src/{group}/"));
+            let mut runner = counting_runner(&group_dir, &body, Tier::Check);
+            runner.tier = None;
+            // Distinct patterns select distinct groups with identical target names.
+            runner.match_regex = Some(regex::Regex::new(&format!(r"^{group} -- (\S+)$")).unwrap());
+            runners.push(runner);
+            for tier in [Tier::Check, Tier::System] {
+                for target in ["alpha", "beta"] {
+                    annotations.push(ann(tier, &format!("{group} -- {target}"), "specs/gate.md"));
+                }
+            }
+        }
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(runners);
+        resolver.prime_runner_inputs(&annotations);
+        resolver.prime_runner_inputs(&annotations);
+        for annotation in &annotations {
+            let (group, target) = annotation.target.split_once(" -- ").unwrap();
+            let declaration = resolver.resolve(annotation);
+            assert!(
+                declaration
+                    .paths
+                    .contains(&PathBuf::from(format!("src/{group}/{target}.rs")))
+            );
+            let other = if target == "alpha" { "beta" } else { "alpha" };
+            assert!(
+                !declaration
+                    .paths
+                    .contains(&PathBuf::from(format!("src/{group}/{other}.rs")))
+            );
+            let other_group = if group == "first" { "second" } else { "first" };
+            assert!(
+                !declaration
+                    .paths
+                    .contains(&PathBuf::from(format!("src/{other_group}/{target}.rs")))
+            );
+            assert_eq!(
+                resolver.probe_input_query(annotation),
+                InputQueryProbe::Honoured
+            );
+        }
+        assert_eq!(
+            crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
+            [] as [crate::integrity::IntegrityFinding; 0]
+        );
+        for group in ["first", "second"] {
+            let group_dir = dir.path().join(group);
+            assert_eq!(query_count(&group_dir), 2, "one query per group and tier");
+            assert_eq!(
+                fs::read_to_string(group_dir.join("queries.txt")).unwrap(),
+                "--print-inputs alpha beta\n--print-inputs alpha beta\n"
+            );
+        }
+    }
+
     /// `[system]` input-query is runner-owned exactly as `[check]` is: a
     /// matched `[runner.system.<name>]` routes the query through the
     /// runner's `inputs` template (flag after the target), never a
