@@ -573,23 +573,9 @@ impl InputResolver {
         }
     }
 
-    /// Resolve a runner-matched `[check]` / `[system]` target's inputs
-    /// through the matched runner's `inputs` query template. Returns
-    /// `Some` (terminal — the runner owns the annotation end to end, so no
-    /// argv-mangling or heuristic fallback) when a runner matches the
-    /// target, `None` when none does (the caller falls through to
-    /// literal-command semantics). A matched runner with no `inputs` query
-    /// yields [`InputDeclaration::Unknown`]: the conservative always-run
-    /// default, never a `tokens[0]` probe.
-    ///
-    /// This is the per-annotation path: it renders the query for one
-    /// annotation and serves the primed cache without re-querying. The
-    /// **group** spawn that satisfies the "discovery batches exactly where
-    /// execution batches" invariant (`specs/gate.md` § Verifier inputs →
-    /// Input-query protocol) — one query naming every sibling in a matched
-    /// `[check]` group — is issued up front by
-    /// [`Self::prime_runner_inputs`]; a sibling whose group was primed hits
-    /// the cache here and never spawns.
+    /// Resolve runner-owned Check and System inputs without literal-command
+    /// fallback. Primed group declarations and protocol verdicts are reused;
+    /// runners without input queries retain the conservative unknown default.
     fn runner_owned_inputs(&mut self, annotation: &Annotation) -> Option<InputDeclaration> {
         let cache_key = {
             let (groups, _) = group_by_runner(&self.runners, std::slice::from_ref(annotation));
@@ -609,56 +595,48 @@ impl InputResolver {
         )
     }
 
-    /// Prime the runner-owned input-query cache for `annotations` with
-    /// **one query spawn per matched `[check]` group**, honouring the
-    /// "discovery batches exactly where execution batches" invariant
-    /// (`specs/gate.md` § Verifier inputs → Input-query protocol). The group
-    /// query names every sibling target, so a runner whose `inputs` template
-    /// filters by `{targets}` answers for the whole group in a single spawn;
-    /// the per-target batch map primes the cache that [`Self::resolve`] then
-    /// hits without re-querying.
-    ///
-    /// `[system]` remains per-annotation. Pending targets, cached groups,
-    /// and runners without an `inputs` template are skipped. Failed queries
-    /// remain unknown for selection and retain each owner's protocol error.
-    /// A flat response to a multi-target query falls back to per-target
-    /// discovery because it cannot identify a target's declaration.
+    /// Discover inputs once per matched runner group within each tier.
+    /// Pending targets, admitted inputs, cached groups and runners without input
+    /// queries are skipped. Failures remain unknown and retain protocol errors.
+    /// Flat multi-target responses fall back to per-target discovery.
     pub fn prime_runner_inputs(&mut self, annotations: &[Annotation]) {
-        let check: Vec<Annotation> = annotations
-            .iter()
-            .filter(|a| a.tier == Tier::Check && !a.pending && self.admitted_inputs(a).is_none())
-            .cloned()
-            .collect();
-        if check.is_empty() {
-            return;
-        }
-        let plans: Vec<(RunnerSpec, String, Vec<String>)> = {
-            let (groups, _) = group_by_runner(&self.runners, &check);
-            groups
-                .into_iter()
-                .filter_map(|group| {
-                    if group.matched.iter().all(|matched| {
-                        self.input_query_probes.contains_key(&runner_cache_key(
-                            group.spec,
-                            Tier::Check,
-                            &matched.rendered_target,
-                        ))
-                    }) {
-                        return None;
-                    }
-                    let query = group.render_inputs_query()?;
-                    let mut targets = Vec::new();
-                    for matched in &group.matched {
-                        if !targets.contains(&matched.rendered_target) {
-                            targets.push(matched.rendered_target.clone());
+        for tier in [Tier::Check, Tier::System] {
+            let candidates: Vec<Annotation> = annotations
+                .iter()
+                .filter(|a| a.tier == tier && !a.pending && self.admitted_inputs(a).is_none())
+                .cloned()
+                .collect();
+            if candidates.is_empty() {
+                continue;
+            }
+            let plans: Vec<(RunnerSpec, String, Vec<String>)> = {
+                let (groups, _) = group_by_runner(&self.runners, &candidates);
+                groups
+                    .into_iter()
+                    .filter_map(|group| {
+                        if group.matched.iter().all(|matched| {
+                            self.input_query_probes.contains_key(&runner_cache_key(
+                                group.spec,
+                                tier,
+                                &matched.rendered_target,
+                            ))
+                        }) {
+                            return None;
                         }
-                    }
-                    Some((group.spec.clone(), query, targets))
-                })
-                .collect()
-        };
-        for (runner, query, targets) in plans {
-            self.query_runner_inputs(&runner, Tier::Check, &targets, &query);
+                        let query = group.render_inputs_query()?;
+                        let mut targets = Vec::new();
+                        for matched in &group.matched {
+                            if !targets.contains(&matched.rendered_target) {
+                                targets.push(matched.rendered_target.clone());
+                            }
+                        }
+                        Some((group.spec.clone(), query, targets))
+                    })
+                    .collect()
+            };
+            for (runner, query, targets) in plans {
+                self.query_runner_inputs(&runner, tier, &targets, &query);
+            }
         }
     }
 
@@ -1772,139 +1750,186 @@ printf '}}\n'"#;
 
     #[test]
     fn integrity_and_selection_share_one_runner_query_in_either_order() {
-        for integrity_first in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let runner = counting_runner(dir.path(), FILTER_INPUTS, Tier::Check);
-            let mut resolver =
-                InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
-            let annotations = vec![
-                ann(Tier::Check, "walk -- alpha", "specs/gate.md"),
-                ann(Tier::Check, "walk -- beta", "specs/gate.md"),
-            ];
-            if integrity_first {
+        for tier in [Tier::Check, Tier::System] {
+            for integrity_first in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let runner = counting_runner(dir.path(), FILTER_INPUTS, tier);
+                let mut resolver =
+                    InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+                let annotations = vec![
+                    ann(tier, "walk -- alpha", "specs/gate.md"),
+                    ann(tier, "walk -- beta", "specs/gate.md"),
+                ];
+                if integrity_first {
+                    assert_eq!(
+                        crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
+                        [] as [crate::integrity::IntegrityFinding; 0]
+                    );
+                }
+                let selected = filter_by_files(
+                    &annotations,
+                    &[PathBuf::from("src/alpha.rs")],
+                    &mut resolver,
+                );
+                assert_eq!(selected, vec![annotations[0].clone()]);
                 assert_eq!(
                     crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
                     [] as [crate::integrity::IntegrityFinding; 0]
                 );
+                assert_eq!(
+                    query_count(dir.path()),
+                    1,
+                    "one query owns selection and integrity"
+                );
             }
-            let selected = filter_by_files(
-                &annotations,
-                &[PathBuf::from("src/alpha.rs")],
-                &mut resolver,
+        }
+    }
+
+    #[test]
+    fn failed_integrity_batch_stays_loud_cached_and_always_run() {
+        for tier in [Tier::Check, Tier::System] {
+            for body in [r#"printf '{"inputs":null}\n'"#, "exit 7"] {
+                let dir = tempfile::tempdir().unwrap();
+                let runner = counting_runner(dir.path(), body, tier);
+                let mut resolver =
+                    InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+                let annotations = vec![
+                    ann(tier, "walk -- alpha", "specs/gate.md"),
+                    ann(tier, "walk -- beta", "specs/gate.md"),
+                ];
+                assert_eq!(
+                    filter_by_files(&annotations, &[PathBuf::from("unrelated")], &mut resolver),
+                    annotations,
+                    "failed declarations must not exclude owners",
+                );
+                for _ in 0..2 {
+                    let findings =
+                        crate::integrity::check_inputs_protocol(&annotations, &mut resolver);
+                    assert_eq!(findings.len(), 2, "both owners retain the protocol error");
+                    assert!(findings.iter().all(|finding| matches!(
+                        finding,
+                        crate::integrity::IntegrityFinding::InputsProtocolError { .. }
+                    )));
+                }
+                assert_eq!(
+                    query_count(dir.path()),
+                    1,
+                    "failed queries are not retried by the audit"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cached_protocol_errors_cannot_be_hidden_by_later_group_queries() {
+        for tier in [Tier::Check, Tier::System] {
+            for fail_first in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let marker = dir.path().join("fail");
+                let body = format!("[ ! -e '{}' ] || exit 7\n{FILTER_INPUTS}", marker.display());
+                let runner = counting_runner(dir.path(), &body, tier);
+                let mut resolver =
+                    InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+                let alpha = ann(tier, "walk -- alpha", "specs/gate.md");
+                let gamma = ann(tier, "walk -- gamma", "specs/gate.md");
+                if fail_first {
+                    fs::write(&marker, "").unwrap();
+                }
+                let first = crate::integrity::check_inputs_protocol(
+                    std::slice::from_ref(&alpha),
+                    &mut resolver,
+                );
+                assert_eq!(first.len(), usize::from(fail_first));
+                if fail_first {
+                    fs::remove_file(&marker).unwrap();
+                } else {
+                    fs::write(&marker, "").unwrap();
+                }
+                let annotations = vec![alpha.clone(), gamma];
+                let findings = crate::integrity::check_inputs_protocol(&annotations, &mut resolver);
+                assert_eq!(findings.len(), if fail_first { 1 } else { 2 });
+                assert_eq!(
+                    filter_by_files(&annotations, &[PathBuf::from("unrelated")], &mut resolver),
+                    if fail_first {
+                        vec![alpha]
+                    } else {
+                        annotations.clone()
+                    },
+                    "an error must clear stale declared paths and never be upgraded to a pass",
+                );
+                assert_eq!(query_count(dir.path()), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn omitted_batch_target_stays_unknown_without_requery() {
+        for tier in [Tier::Check, Tier::System] {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = counting_runner(
+                dir.path(),
+                r#"printf '{"inputs":{"alpha":["src/alpha.rs"]}}\n'"#,
+                tier,
             );
-            assert_eq!(selected, vec![annotations[0].clone()]);
+            let mut resolver =
+                InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+            let annotations = vec![
+                ann(tier, "walk -- alpha", "specs/gate.md"),
+                ann(tier, "walk -- beta", "specs/gate.md"),
+            ];
+            assert_eq!(
+                filter_by_files(
+                    &annotations,
+                    &[PathBuf::from("src/alpha.rs")],
+                    &mut resolver
+                ),
+                annotations,
+                "an omitted target is unknown, not a declared empty input set",
+            );
+            assert!(resolver.declares_no_inputs(&annotations[1]));
+            assert_eq!(
+                crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
+                [] as [crate::integrity::IntegrityFinding; 0]
+            );
+            assert_eq!(query_count(dir.path()), 1);
+        }
+    }
+
+    /// Real query processes verify that ambiguous batch output is not reused.
+    #[test]
+    fn flat_group_response_falls_back_to_cached_per_target_discovery() {
+        for tier in [Tier::Check, Tier::System] {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = counting_runner(
+                dir.path(),
+                r#"shift
+printf '{"inputs":["src/%s.rs"]}\n' "$1""#,
+                tier,
+            );
+            let mut resolver =
+                InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+            let annotations = vec![
+                ann(tier, "walk -- alpha", "specs/gate.md"),
+                ann(tier, "walk -- beta", "specs/gate.md"),
+            ];
+            assert_eq!(
+                filter_by_files(&annotations, &[PathBuf::from("src/beta.rs")], &mut resolver),
+                vec![annotations[1].clone()],
+            );
             assert_eq!(
                 crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
                 [] as [crate::integrity::IntegrityFinding; 0]
             );
             assert_eq!(
                 query_count(dir.path()),
-                1,
-                "one query owns selection and integrity"
+                3,
+                "one batch probe and two target queries"
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join("queries.txt")).unwrap(),
+                "--print-inputs alpha beta\n--print-inputs alpha\n--print-inputs beta\n"
             );
         }
-    }
-
-    #[test]
-    fn failed_integrity_batch_stays_loud_cached_and_always_run() {
-        for body in [r#"printf '{"inputs":null}\n'"#, "exit 7"] {
-            let dir = tempfile::tempdir().unwrap();
-            let runner = counting_runner(dir.path(), body, Tier::Check);
-            let mut resolver =
-                InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
-            let annotations = vec![
-                ann(Tier::Check, "walk -- alpha", "specs/gate.md"),
-                ann(Tier::Check, "walk -- beta", "specs/gate.md"),
-            ];
-            assert_eq!(
-                filter_by_files(&annotations, &[PathBuf::from("unrelated")], &mut resolver),
-                annotations,
-                "failed declarations must not exclude owners",
-            );
-            for _ in 0..2 {
-                let findings = crate::integrity::check_inputs_protocol(&annotations, &mut resolver);
-                assert_eq!(findings.len(), 2, "both owners retain the protocol error");
-                assert!(findings.iter().all(|finding| matches!(
-                    finding,
-                    crate::integrity::IntegrityFinding::InputsProtocolError { .. }
-                )));
-            }
-            assert_eq!(
-                query_count(dir.path()),
-                1,
-                "failed queries are not retried by the audit"
-            );
-        }
-    }
-
-    #[test]
-    fn cached_protocol_errors_cannot_be_hidden_by_later_group_queries() {
-        for fail_first in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let marker = dir.path().join("fail");
-            let body = format!("[ ! -e '{}' ] || exit 7\n{FILTER_INPUTS}", marker.display());
-            let runner = counting_runner(dir.path(), &body, Tier::Check);
-            let mut resolver =
-                InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
-            let alpha = ann(Tier::Check, "walk -- alpha", "specs/gate.md");
-            let gamma = ann(Tier::Check, "walk -- gamma", "specs/gate.md");
-            if fail_first {
-                fs::write(&marker, "").unwrap();
-            }
-            let first = crate::integrity::check_inputs_protocol(
-                std::slice::from_ref(&alpha),
-                &mut resolver,
-            );
-            assert_eq!(first.len(), usize::from(fail_first));
-            if fail_first {
-                fs::remove_file(&marker).unwrap();
-            } else {
-                fs::write(&marker, "").unwrap();
-            }
-            let annotations = vec![alpha.clone(), gamma];
-            let findings = crate::integrity::check_inputs_protocol(&annotations, &mut resolver);
-            assert_eq!(findings.len(), if fail_first { 1 } else { 2 });
-            assert_eq!(
-                filter_by_files(&annotations, &[PathBuf::from("unrelated")], &mut resolver),
-                if fail_first {
-                    vec![alpha]
-                } else {
-                    annotations.clone()
-                },
-                "an error must clear stale declared paths and never be upgraded to a pass",
-            );
-            assert_eq!(query_count(dir.path()), 2);
-        }
-    }
-
-    #[test]
-    fn omitted_batch_target_stays_unknown_without_requery() {
-        let dir = tempfile::tempdir().unwrap();
-        let runner = counting_runner(
-            dir.path(),
-            r#"printf '{"inputs":{"alpha":["src/alpha.rs"]}}\n'"#,
-            Tier::Check,
-        );
-        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
-        let annotations = vec![
-            ann(Tier::Check, "walk -- alpha", "specs/gate.md"),
-            ann(Tier::Check, "walk -- beta", "specs/gate.md"),
-        ];
-        assert_eq!(
-            filter_by_files(
-                &annotations,
-                &[PathBuf::from("src/alpha.rs")],
-                &mut resolver
-            ),
-            annotations,
-            "an omitted target is unknown, not a declared empty input set",
-        );
-        assert!(resolver.declares_no_inputs(&annotations[1]));
-        assert_eq!(
-            crate::integrity::check_inputs_protocol(&annotations, &mut resolver),
-            [] as [crate::integrity::IntegrityFinding; 0]
-        );
-        assert_eq!(query_count(dir.path()), 1);
     }
 
     #[test]
@@ -2034,24 +2059,27 @@ printf '}}\n'"#;
 
     #[test]
     fn integrity_batch_never_queries_pending_targets() {
-        let dir = tempfile::tempdir().unwrap();
-        let runner = counting_runner(
-            dir.path(),
-            r#"printf '{"inputs":["src/alpha.rs"]}\n'"#,
-            Tier::Check,
-        );
-        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
-        let alpha = ann(Tier::Check, "walk -- alpha", "specs/gate.md");
-        let mut beta = ann(Tier::Check, "walk -- beta", "specs/gate.md");
-        beta.pending = true;
-        assert_eq!(
-            crate::integrity::check_inputs_protocol(&[alpha, beta], &mut resolver),
-            [] as [crate::integrity::IntegrityFinding; 0]
-        );
-        assert_eq!(
-            fs::read_to_string(dir.path().join("queries.txt")).unwrap(),
-            "--print-inputs alpha\n"
-        );
+        for tier in [Tier::Check, Tier::System] {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = counting_runner(
+                dir.path(),
+                r#"printf '{"inputs":["src/alpha.rs"]}\n'"#,
+                tier,
+            );
+            let mut resolver =
+                InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+            let alpha = ann(tier, "walk -- alpha", "specs/gate.md");
+            let mut beta = ann(tier, "walk -- beta", "specs/gate.md");
+            beta.pending = true;
+            assert_eq!(
+                crate::integrity::check_inputs_protocol(&[alpha, beta], &mut resolver),
+                [] as [crate::integrity::IntegrityFinding; 0]
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join("queries.txt")).unwrap(),
+                "--print-inputs alpha\n"
+            );
+        }
     }
 
     /// The runner input-query seam (`render_inputs_query` →
@@ -2201,52 +2229,47 @@ printf '}}\n'"#;
         );
     }
 
-    /// `[system]` discovery stays per-annotation per the spec carve-out:
-    /// [`InputResolver::prime_runner_inputs`] must not batch a `[system]`
-    /// group even when a matching runner declares an `inputs` template. The
-    /// counting responder would fire once if the system group were primed;
-    /// it stays at zero because priming skips the `[system]` tier.
+    /// Real query processes are required to verify discovery spawn counts.
     #[test]
-    fn prime_runner_inputs_excludes_system_tier() {
+    fn prime_runner_inputs_batches_filtering_responders_separately_per_tier() {
         let dir = tempfile::tempdir().unwrap();
-        let counter = dir.path().join("queries.txt");
-        fs::write(&counter, "0").unwrap();
-        let counter_path = counter.display();
-        let responder = dir.path().join("sys-count-responder.sh");
-        fs::write(
-            &responder,
-            format!(
-                "#!/bin/sh\n\
-                 n=$(cat \"{counter_path}\"); echo $((n + 1)) > \"{counter_path}\"\n\
-                 printf '{{\"inputs\":[\"crates/loom-sys/src/probe.rs\"]}}\\n'\n",
-            ),
-        )
-        .unwrap();
+        let mut runner = counting_runner(dir.path(), FILTER_INPUTS, Tier::Check);
+        runner.tier = None;
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+        let annotations: Vec<_> = [Tier::Check, Tier::System]
+            .into_iter()
+            .flat_map(|tier| {
+                [
+                    ann(tier, "walk -- alpha", "specs/gate.md"),
+                    ann(tier, "walk -- beta", "specs/gate.md"),
+                ]
+            })
+            .collect();
 
-        let spec = RunnerSpec::compile(
-            "nix",
-            Some(r"^nix run \.#(\S+)$"),
-            "nix run .#{targets}",
-            "{capture_1}",
-            " ",
-            crate::runner::BuiltinParser::NixBuildStatus,
-            None,
-        )
-        .unwrap()
-        .with_inputs(Some(format!(
-            "sh {} {{targets}} {{print_inputs}}",
-            responder.display()
-        )));
+        resolver.prime_runner_inputs(&annotations);
+        resolver.prime_runner_inputs(&annotations);
 
-        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
-        let a = ann(Tier::System, "nix run .#test-loom", "specs/gate.md");
-
-        resolver.prime_runner_inputs(std::slice::from_ref(&a));
-
+        for annotation in &annotations {
+            let target = annotation.target.strip_prefix("walk -- ").unwrap();
+            assert!(
+                resolver
+                    .resolve(annotation)
+                    .paths
+                    .contains(&PathBuf::from(format!("src/{target}.rs")))
+            );
+            assert_eq!(
+                resolver.probe_input_query(annotation),
+                InputQueryProbe::Honoured
+            );
+        }
         assert_eq!(
-            fs::read_to_string(&counter).unwrap().trim(),
-            "0",
-            "[system] discovery stays per-annotation; the prime pass skips it",
+            query_count(dir.path()),
+            2,
+            "one query per tier, never a mixed-tier group"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("queries.txt")).unwrap(),
+            "--print-inputs alpha beta\n--print-inputs alpha beta\n"
         );
     }
 
@@ -2884,11 +2907,8 @@ printf '}}\n'"#;
         );
     }
 
-    /// `[system]` discovery is per-annotation (excluded from group priming),
-    /// yet a matched `[system]` runner's queried inputs still decide
-    /// `--files` inclusion: the per-annotation runner-owned query during
-    /// resolution feeds the scope filter, keeping the verifier whose queried
-    /// glob is staged and dropping the one whose glob is not.
+    /// System scope filtering retains the runner-owned target whose declared
+    /// inputs intersect the changed files.
     #[test]
     fn filter_by_files_keeps_runner_matched_system_verifier_whose_queried_input_is_staged() {
         let dir = tempfile::tempdir().unwrap();

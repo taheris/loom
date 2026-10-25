@@ -715,6 +715,14 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   with discovery batched for the matched group rather than queried per target.
   [test?](filter_by_files_uses_admitted_batched_provider_observations)
 
+- Check and System input discovery batch once per matched runner group within
+  each tier, including responders that report only requested targets
+  [test](prime_runner_inputs_batches_filtering_responders_separately_per_tier)
+
+- Flat multi-target input responses fall back to per-target discovery and reuse
+  those target declarations for subsequent integrity auditing
+  [test](flat_group_response_falls_back_to_cached_per_target_discovery)
+
 - The live check CLI shares each batched provider query between input selection
   and inputs-protocol integrity auditing
   [test](cli_selection_and_integrity_query_shared_provider_once)
@@ -1392,11 +1400,13 @@ back to parsing the annotation's argv for it:
   the walk, never `cargo`.
 - **Input-query.** The provider supplies inputs from its tracked/checked
   execution definition, directly or through the runner's `inputs` query. For
-  batched tiers (`[check]`, `[test]`, `[judge]`), one query returns the
-  per-target map for the matched group. `[system]` may query distinct scenarios
-  separately; repeated equivalent declarations reuse discovery within the
-  session. Execution sharing does not change input admission or spec-contract
-  inclusion.
+  runner-matched `[check]` and `[system]` annotations, one query returns the
+  per-target map for the matched group within each tier. Check and System
+  identities remain separate, and declarations reuse discovery within the
+  session. Flat multi-target responses fall back to per-target queries; omitted
+  map entries remain unknown without re-querying. Discovery batching does not
+  batch distinct System scenario executions or change input admission or
+  spec-contract inclusion.
 - **Execution.** For the batched tiers (`[check]`, `[test]`, `[judge]`), matched
   annotations batch into one subprocess per runner (the dispatcher's step 3
   above); per-annotation spawn is only the unmatched fallback. `[system]` shares
