@@ -429,7 +429,13 @@ pub fn discover_workspace(workspace: &Path) -> Result<Vec<Package>, Error> {
 /// Owner name for an annotation document, independent of package relocation.
 pub fn document_label(path: &Path) -> Option<&str> {
     match path.file_name()?.to_str()? {
-        "spec.md" | "tests.md" if path.parent()?.parent()?.file_name()?.to_str()? == "specs" => {
+        "spec.md" | "tests.md"
+            if path
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "specs") =>
+        {
             path.parent()?.file_name()?.to_str()
         }
         _ => path.file_stem()?.to_str(),
@@ -772,11 +778,59 @@ mod tests {
     }
 
     #[test]
+    fn flat_document_labels_do_not_require_a_grandparent() {
+        for (path, label) in [
+            ("specs/tests.md", "tests"),
+            ("specs/spec.md", "spec"),
+            ("tests.md", "tests"),
+            ("spec.md", "spec"),
+            ("/specs/tests.md", "tests"),
+            ("/workspace/specs/tests.md", "tests"),
+            ("/workspace/specs/spec.md", "spec"),
+        ] {
+            assert_eq!(document_label(Path::new(path)), Some(label), "{path}");
+        }
+    }
+
+    #[test]
+    fn document_labels_without_a_file_name_are_absent() {
+        for path in ["", "/", ".", ".."] {
+            assert_eq!(document_label(Path::new(path)), None, "{path}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_labels_require_unicode_only_for_the_owner() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let non_unicode = OsStr::from_bytes(b"\xff");
+        let prefix = Path::new(non_unicode);
+        assert_eq!(document_label(&prefix.join("tests.md")), Some("tests"));
+        assert_eq!(
+            document_label(&prefix.join("specs/alpha/tests.md")),
+            Some("alpha")
+        );
+        assert_eq!(
+            document_label(&prefix.join("alpha/tests.md")),
+            Some("tests")
+        );
+        assert_eq!(
+            document_label(&Path::new("specs").join(non_unicode).join("tests.md")),
+            None
+        );
+        assert_eq!(document_label(&Path::new("specs").join(non_unicode)), None);
+    }
+
+    #[test]
     fn document_owners_survive_relocation() {
         for path in [
             "specs/alpha.md",
             "specs/alpha/spec.md",
             "specs/alpha/tests.md",
+            "/workspace/specs/alpha/spec.md",
+            "/workspace/specs/alpha/tests.md",
         ] {
             assert_eq!(document_label(Path::new(path)), Some("alpha"));
         }

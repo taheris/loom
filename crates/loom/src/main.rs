@@ -5862,6 +5862,70 @@ mod tests {
     }
 
     #[test]
+    fn flat_relative_tests_feedback_preserves_criterion_identity_and_verdict_evidence() {
+        let workspace = tempfile::tempdir().unwrap();
+        let relative = Path::new("specs/tests.md");
+        let source = workspace.path().join(relative);
+        std::fs::create_dir(source.parent().unwrap()).unwrap();
+        let content = "## Success Criteria\n- Retain verifier evidence. [test](evidence_case)\n";
+        std::fs::write(&source, content).unwrap();
+        let parsed = loom_gate::annotation::parse_content(relative, content).unwrap();
+        let annotation = &parsed.annotations[0];
+        let id = criterion_id_for_annotation(&source, annotation).unwrap();
+        let absolute = loom_gate::annotation::parse_content(&source, content).unwrap();
+        assert_eq!(
+            id,
+            criterion_id_for_annotation(&source, &absolute.annotations[0]).unwrap()
+        );
+        let label = SpecLabel::new("tests").unwrap();
+        assert_eq!(
+            id,
+            loom_gate::annotation::criterion_id_for(&label, &parsed.criteria[0].text)
+        );
+
+        for verdict in [Verdict::Pass, Verdict::Fail, Verdict::Skipped] {
+            let cache_dir = tempfile::tempdir().unwrap();
+            let cache = StatusCache::open(&cache_dir.path().join("state.db")).unwrap();
+            let outcome = loom_gate::DispatchOutcome {
+                annotations: parsed.annotations.clone(),
+                verdict: loom_gate::VerifierVerdict::from_outcome(
+                    verdict,
+                    "actual verifier output".into(),
+                ),
+            };
+            persist_outcome(workspace.path(), &cache, &outcome, verdict, 123, "commit");
+            let rows = cache.read_all().unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].spec_label, "tests");
+            assert_eq!(rows[0].criterion_anchor, id);
+            assert_eq!(rows[0].verdict, verdict);
+            assert_eq!(rows[0].evidence, outcome.verdict.cache_evidence().unwrap());
+            assert_eq!(rows[0].annotation_target, "evidence_case");
+            assert_eq!(rows[0].last_run_ts_ms, 123);
+            assert_eq!(rows[0].last_run_commit, "commit");
+        }
+        let report = std::fs::read_to_string(
+            workspace
+                .path()
+                .join(".loom/logs/gate/verifier-results.jsonl"),
+        )
+        .unwrap();
+        let records = report
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 3);
+        for (record, verdict) in
+            records
+                .iter()
+                .zip([Verdict::Pass, Verdict::Fail, Verdict::Skipped])
+        {
+            assert_eq!(record["outcome"], verdict.as_wire());
+            assert_eq!(record["coverage_verified"], verdict == Verdict::Pass);
+        }
+    }
+
+    #[test]
     fn batched_outcome_persistence_retains_every_criterion_and_producer_failure() {
         use std::fmt::Write as _;
 
