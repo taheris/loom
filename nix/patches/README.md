@@ -1,5 +1,56 @@
 # Dependency patches
 
+## Restricted procfs for nested Nix sandboxes
+
+`nix-pid-only-procfs.patch` retains native Nix sandboxing in rootless workers
+whose outer container masks non-process `/proc` entries. Linux rejects a new
+full procfs mount there with `EPERM` ("Mount too revealing"), even though
+private user, mount, PID and network namespaces work. Both Nix's namespace probe
+and its actual builder retry that specific mount denial with `subset=pid` and
+`nosuid,nodev,noexec`. Other mount failures remain failures; kernels without
+PID-only procfs support cannot silently disable sandboxing. The restricted mount
+exposes process information for the sandbox's own PID namespace, not the masked
+global procfs entries or the parent's processes.
+
+Inside PID-only procfs, the user-namespace sysctl files are absent. Their
+absence is no longer mistaken for disabled user namespaces: Nix still rejects a
+visible zero sysctl and actually attempts `CLONE_NEWUSER` before declaring
+support.
+
+`../nix-overlay.nix` applies the Linux-only patch to the Nix executable used by
+Loom's compiled verifier pin, test fixtures and generated worker images. No host
+socket, capability grant, unmasked parent procfs, VM, extra sandbox path or
+unsandboxed execution is introduced. Programs requiring unavailable global
+procfs entries still fail; their results are not reclassified as passes.
+
+The overlay also handles rootless namespaces that deny `setgroups`: a denied
+attempt to drop supplementary groups is accepted only when `getgroups` proves
+there are already zero. Nonempty groups and query failures still block when
+group dropping is required; that policy remains enabled in the regression.
+
+The upstream store unit-test harness explicitly selects its private store's
+single-user build mode and drops supplementary groups before entering its own
+network-test user namespace, rather than assuming a host `nixbld` group or
+permission to drop groups afterward. Its complete test inventory remains
+enabled. The supplementary-group functional fixture checks the actual kernel
+list: with default and explicit required-drop policy, already-empty groups
+execute the build, while nonempty groups still require the original denial.
+These fixture settings do not alter the shipped Nix configuration.
+
+The `nix-pid-only-procfs` check creates an actual PID-only parent procfs, proves
+unpatched Nix rejects constrained sandbox setup (namespace support or required
+group dropping), then uses patched Nix for cold and forced warm builds with
+sandbox fallback disabled. It checks inaccessible undeclared parent files,
+private PID/network/UTS namespace identities, a fixed private hostname, and
+absent global procfs entries. Its `NIX_TEST_NONEMPTY_GROUPS=1` mode retains a
+supplementary group before entering the user namespace, for a fresh worker to
+prove the required-drop rejection independently of the empty-group success. The
+worker launcher must permit kernel-checked `sethostname` and `setdomainname`
+without granting parent-namespace `SYS_ADMIN`; existing launch filters cannot be
+repaired from inside a running worker.
+
+Remove this patch when upstream Nix supports this constrained procfs directly.
+
 ## Hook termination status
 
 `prek-hook-status.patch` retains native Unix hook signals as `128 + signal`

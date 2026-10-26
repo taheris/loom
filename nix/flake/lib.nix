@@ -89,12 +89,14 @@ in
     let
       inherit (inputs) nixpkgs;
       nextestOverlay = import ../nextest-overlay.nix;
+      nixOverlay = import ../nix-overlay.nix;
       linuxSystem = if system == "aarch64-darwin" then "aarch64-linux" else system;
 
       wrixPkgs = import nixpkgs {
         inherit system;
         overlays = [
           nextestOverlay
+          nixOverlay
           (_final: _prev: {
             beads = inputs.wrix.packages.${system}.beads;
           })
@@ -102,11 +104,13 @@ in
         config.allowUnfree = true;
       };
 
-      wrixLinuxPkgs = import nixpkgs {
-        system = linuxSystem;
-        overlays = [ nextestOverlay ];
-        config.allowUnfree = true;
-      };
+      wrixLinuxPkgs =
+        (import nixpkgs {
+          system = linuxSystem;
+          overlays = [ nextestOverlay ];
+          config.allowUnfree = true;
+        }).extend
+          nixOverlay;
 
       imageRustToolchain = import ../rust-toolchain.nix {
         fenix = inputs.fenix.packages.${linuxSystem};
@@ -228,7 +232,10 @@ in
       _module.args = {
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [ nextestOverlay ];
+          overlays = [
+            nextestOverlay
+            nixOverlay
+          ];
           config.allowUnfree = true;
         };
         inherit

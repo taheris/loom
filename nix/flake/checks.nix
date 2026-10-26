@@ -412,16 +412,56 @@
       };
     in
     {
-      checks = checks // {
-        smoke-host-gate = testsDeriv.smoke-host-gate;
-        checks-match-host-system = checked.check {
-          resources = [ ];
-          evaluation = evaluation ++ loom.testResources;
-          build =
-            _:
-            assert pkgs.lib.all (candidate: candidate.system == system) (builtins.attrValues checks);
-            pkgs.runCommand "checks-match-host-system" { } ''touch "$out"'';
+      checks =
+        checks
+        // (
+          if
+            builtins.elem system [
+              "aarch64-linux"
+              "x86_64-linux"
+            ]
+          then
+            {
+              nix-pid-only-procfs =
+                let
+                  unpatchedNix = pkgs.nixVersions.stable;
+                  registration = pkgs.closureInfo {
+                    rootPaths = [
+                      pkgs.bash
+                      pkgs.coreutils
+                      pkgs.nix
+                      unpatchedNix
+                    ];
+                  };
+                in
+                scriptCheck "nix-pid-only-procfs"
+                  [ (resource "tests/sandbox/nix-pid-only-procfs.sh") ]
+                  [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.util-linux pkgs.python3 ]
+                  (paths: ''
+                    if bash ${builtins.head paths} ${unpatchedNix}/bin/nix ${pkgs.bash} ${pkgs.coreutils} ${registration}/registration > "$TMPDIR/unpatched.log" 2>&1; then
+                      echo 'unpatched Nix unexpectedly accepted PID-only procfs' >&2
+                      exit 1
+                    fi
+                    grep -F \
+                      -e 'does not support the kernel namespaces that are required for sandboxing' \
+                      -e 'error: setgroups failed. Set the require-drop-supplementary-groups option to false to skip this step.' \
+                      "$TMPDIR/unpatched.log"
+                    bash ${builtins.head paths} ${pkgs.nix}/bin/nix ${pkgs.bash} ${pkgs.coreutils} ${registration}/registration
+                  '');
+            }
+          else
+            { }
+        )
+        // {
+          smoke-host-gate = testsDeriv.smoke-host-gate;
+          checks-match-host-system = checked.check {
+            resources = [ ];
+            evaluation = evaluation ++ loom.testResources;
+            build =
+              _:
+              assert pkgs.lib.all (candidate: candidate.system == system) (builtins.attrValues checks);
+              pkgs.runCommand "checks-match-host-system" { } ''touch "$out"'';
+          };
         };
-      };
     };
 }
