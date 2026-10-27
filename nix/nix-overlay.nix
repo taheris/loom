@@ -3,6 +3,9 @@ final: prev: {
     if final.stdenv.hostPlatform.isLinux then
       (prev.nix.appendPatches [ ./patches/nix-pid-only-procfs.patch ]).overrideScope (
         _finalScope: prevScope: {
+          nix-expr = prevScope.nix-expr.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [ ./patches/nix-gc-startup-warnings.patch ];
+          });
           nix-store = prevScope.nix-store.overrideAttrs (old: {
             postPatch = (old.postPatch or "") + ''
               substituteInPlace unix/build/linux-derivation-builder.cc \

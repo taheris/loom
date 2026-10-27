@@ -93,4 +93,10 @@ builtins.derivation {
 NIX
 "$nix_bin" build --offline --store "$store" --file "$work/check.nix" --no-link --print-out-paths
 "$nix_bin" build --offline --store "$store" --file "$work/check.nix" --no-link --rebuild
-printf 'PID-only procfs cold and warm sandbox builds passed\n'
+"$nix_bin" eval --offline --expr '1' > "$work/eval.stdout" 2> "$work/eval.stderr"
+[[ "$(< "$work/eval.stdout")" == 1 ]]
+if [[ -s "$work/eval.stderr" ]]; then
+  cat "$work/eval.stderr" >&2
+  exit 1
+fi
+printf 'PID-only procfs cold and warm sandbox builds and clean CLI evaluation passed\n'

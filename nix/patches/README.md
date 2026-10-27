@@ -37,17 +37,26 @@ list: with default and explicit required-drop policy, already-empty groups
 execute the build, while nonempty groups still require the original denial.
 These fixture settings do not alter the shipped Nix configuration.
 
+`nix-gc-startup-warnings.patch` installs Nix's existing Boehm warning-to-debug
+handler before collector initialization. With PID-only procfs, Boehm's optional
+CPU-count probe cannot open `/proc/stat`; initializing before registering that
+handler leaked the diagnostic into ordinary CLI stderr. The handler and its
+logging policy are unchanged, and no CLI test output is filtered or skipped.
+Remove this patch when upstream registers the handler before initialization.
+
 The `nix-pid-only-procfs` check creates an actual PID-only parent procfs, proves
 unpatched Nix rejects constrained sandbox setup (namespace support or required
 group dropping), then uses patched Nix for cold and forced warm builds with
 sandbox fallback disabled. It checks inaccessible undeclared parent files,
 private PID/network/UTS namespace identities, a fixed private hostname, and
-absent global procfs entries. Its `NIX_TEST_NONEMPTY_GROUPS=1` mode retains a
-supplementary group before entering the user namespace, for a fresh worker to
-prove the required-drop rejection independently of the empty-group success. The
-worker launcher must permit kernel-checked `sethostname` and `setdomainname`
-without granting parent-namespace `SYS_ADMIN`; existing launch filters cannot be
-repaired from inside a running worker.
+absent global procfs entries. It also runs a real CLI evaluation and requires
+correct stdout and completely empty stderr under the same restricted procfs. Its
+`NIX_TEST_NONEMPTY_GROUPS=1` mode retains a supplementary group before entering
+the user namespace, for a fresh worker to prove the required-drop rejection
+independently of the empty-group success. The worker launcher must permit
+kernel-checked `sethostname` and `setdomainname` without granting
+parent-namespace `SYS_ADMIN`; existing launch filters cannot be repaired from
+inside a running worker.
 
 Remove this patch when upstream Nix supports this constrained procfs directly.
 
