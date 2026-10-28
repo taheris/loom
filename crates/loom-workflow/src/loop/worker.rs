@@ -15,7 +15,7 @@ use loom_templates::run::{PreviousFailure, RecoveryStash, WorkspaceAlignment, Wo
 
 use super::context::{LoopContextInputs, render_loop_prompt};
 use super::profile::resolve_profile;
-use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
+use super::spawn::{build_spawn_config_from_manifest, sccache_mount};
 use super::{
     AgentOutcome, INVALID_SPAWN_CONFIG_CAUSE, LoopError, format_unknown_profile_error,
     format_unknown_runtime_for_profile_error,
@@ -247,7 +247,7 @@ pub async fn prepare_with_bd<R: CommandRunner>(
     )?;
     loom_driver::spec::context::write(&package_context, scratch.path())?;
     let worker_loom = loom_driver::workspace::cargo::shared_cache_config(loom, workspace)?;
-    let mut mounts: Vec<_> = dolt_socket_mount(loom_workspace).into_iter().collect();
+    let mut mounts = Vec::new();
     if let Some(cache) = &worker_loom.sccache_dir {
         association.admit_mount(&loom_driver::agent::MountSpec {
             host_path: cache.clone(),
@@ -745,6 +745,107 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
                 if cause == super::super::VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE && error.contains("78")),
                 "{result:?}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_preparation_leaves_tracking_transport_to_launcher() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let git = loom_driver::git::init_test_repo_with_integration(dir.path()).unwrap();
+        let id = loom_driver::identifier::BeadId::new("lm-tracking").unwrap();
+        let label = SpecLabel::new("workspaces").unwrap();
+        let workspace = git.create_worktree(&label, &id).await.unwrap().path;
+        let profile_config = dir.path().join("profile.json");
+        std::fs::write(&profile_config, r#"{"profile":{"mounts":[]}}"#).unwrap();
+        let images = dir.path().join("images.json");
+        let entries: serde_json::Map<_, _> = [
+            AgentRuntime::Pi,
+            AgentRuntime::Claude,
+            AgentRuntime::Direct,
+        ]
+        .into_iter()
+        .map(|runtime| {
+            (
+                runtime.to_string(),
+                serde_json::json!({
+                    "ref":"fixture", "source":"/fixture/image", "source_kind":"nix-descriptor",
+                    "launcher":"/fixture/wrix", "profile_config":profile_config
+                }),
+            )
+        })
+        .collect();
+        std::fs::write(
+            &images,
+            serde_json::to_vec(&serde_json::json!({"base":entries})).unwrap(),
+        )
+        .unwrap();
+        let manifest = ProfileImageManifest::from_path(&images).unwrap();
+        crate::test_support::acceptance::write_contract(
+            &workspace,
+            &label,
+            "Delegate worker tracking transport to the admitted launcher.",
+        );
+        let mut bead: Bead = serde_json::from_value(serde_json::json!({
+            "id":id.to_string(), "title":"tracking", "status":"open"
+        }))
+        .unwrap();
+        crate::test_support::acceptance::bind(&workspace, &label, &mut bead);
+        std::fs::create_dir_all(workspace.join(".beads")).unwrap();
+        std::fs::write(
+            workspace.join(".beads/metadata.json"),
+            r#"{"backend":"dolt"}"#,
+        )
+        .unwrap();
+        for legacy in [false, true] {
+            let mut listeners = Vec::new();
+            if legacy {
+                for root in [dir.path(), workspace.as_path()] {
+                    std::fs::create_dir_all(root.join(".wrix")).unwrap();
+                    listeners.push(UnixListener::bind(root.join(".wrix/dolt.sock")).unwrap());
+                }
+            }
+            for runtime in [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct] {
+                let prepared = prepare(Request {
+                    bead: &bead,
+                    workspace: &workspace,
+                    loom_workspace: dir.path(),
+                    manifest: &manifest,
+                    cli_profile: None,
+                    phase_default: &ProfileName::base(),
+                    runtime,
+                    label: &label,
+                    style_rules: "docs/style-rules.md",
+                    loom: &LoomTopConfig::default(),
+                    skills: &SkillsConfig::default(),
+                    launcher_env: vec![],
+                    previous_failure: None,
+                    bead_base: git.head_commit_sha().await.unwrap(),
+                    workspace_recovery: None,
+                    attempt: 1,
+                })
+                .await
+                .unwrap();
+                let Preparation::Ready(worker) = prepared else {
+                    panic!("worker rejected")
+                };
+                assert_eq!(worker.spawn.mounts, Vec::new());
+                assert!(
+                    worker
+                        .spawn
+                        .env
+                        .iter()
+                        .all(|(key, _)| !key.starts_with("BEADS_DOLT_"))
+                );
+            }
+            for listener in listeners {
+                listener.set_nonblocking(true).unwrap();
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+            }
         }
     }
 

@@ -29,7 +29,7 @@ use loom_events::{EnvelopeBuilder, InputKind, SessionScope, Source};
 use thiserror::Error;
 use tracing::{info, warn};
 
-use crate::r#loop::{dolt_socket_mount, sccache_mount};
+use crate::r#loop::sccache_mount;
 use crate::pi_tui;
 use crate::redaction::redact_agent_input;
 use crate::skill::{SkillError, SkillPlan};
@@ -335,7 +335,7 @@ fn build_pi_bridge_spawn_config(
     cfg: &LoomConfig,
     launcher_env: &[(String, String)],
 ) -> Result<SpawnConfig, ChatError> {
-    let mut mounts: Vec<_> = dolt_socket_mount(workspace).into_iter().collect();
+    let mut mounts = Vec::new();
     let cache = loom_driver::workspace::cargo::shared_cache_config(&cfg.loom, workspace)?;
     if let Some(spec) = sccache_mount(&cache)? {
         mounts.push(spec);
@@ -888,6 +888,61 @@ mod tests {
             metadata: std::collections::BTreeMap::default(),
             notes: None,
         }
+    }
+
+    #[test]
+    fn pi_bridge_leaves_tracking_transport_to_launcher() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".wrix")).unwrap();
+        let listener = UnixListener::bind(dir.path().join(".wrix/dolt.sock")).unwrap();
+        let image = ImageEntry {
+            r#ref: "fixture".into(),
+            source: PathBuf::from("/fixture/image"),
+            source_kind: loom_driver::agent::ImageSourceKind::NixDescriptor,
+            launcher: PathBuf::from("/fixture/wrix"),
+            profile_config: PathBuf::from("/fixture/profile.json"),
+            digest: None,
+            runtime: Some(AgentKind::Pi),
+            native_preflight: None,
+        };
+        let selection = AgentSelection {
+            profile: ProfileName::base(),
+            backend: loom_driver::config::BackendSettings::Pi,
+            provider: None,
+            model_id: None,
+            thinking_level: None,
+        };
+        let mut config = LoomConfig::default();
+        config.loom.sccache_dir = Some(dir.path().join("cache"));
+        let spawn = build_pi_bridge_spawn_config(
+            dir.path(),
+            &image,
+            &selection,
+            "prompt".into(),
+            dir.path().join("scratch"),
+            &config,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(spawn.mounts.len(), 1);
+        assert_eq!(spawn.mounts[0].host_path, dir.path().join("cache"));
+        assert_eq!(
+            spawn.mounts[0].container_path,
+            config.loom.sccache_container_path
+        );
+        assert!(
+            spawn
+                .env
+                .iter()
+                .all(|(key, _)| !key.starts_with("BEADS_DOLT_"))
+        );
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]

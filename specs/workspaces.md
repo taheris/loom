@@ -55,15 +55,21 @@ worker recovery attempt before clarification.
 
 A bead container mounts its clone at `/workspace`. Tracking access is selected
 by the configured [Issues adapter](issues.md#workflow-and-worker-use), not an
-unconditional Beads dependency. The production Beads adapter mounts its
-authoritative Dolt socket at `/workspace/.wrix/dolt.sock`; non-Beads test use
-requires no native socket/database. A configured shared sccache directory is an
-additional mount. Compatible beads share that worker cache, not one cache per
-bead; their Cargo targets remain separate. Cache keys retain source, toolchain
-and configuration distinctions: a shared pool does not promise hits for every
-unit or authorize consumption by trusted builds. Backend selection and
-acceptance admission cannot expand mounts, credentials or execution authority;
-proposed host/expanded-authority experiments require
+unconditional Beads dependency. With Beads, Wrix owns scoped endpoint,
+credential and transport delivery for the admitted service scope. Loom does not
+probe legacy `.wrix/dolt.sock` files or project a driver-selected Dolt socket.
+The external consumer must explicitly arrange shared workspace membership and
+Wrix admission when clones need the operator's authoritative tracking state;
+standalone scope acknowledgment does not share that state. Missing admission
+cannot be repaired by guessing identity from paths, copying databases or
+forwarding host credentials. Non-Beads test use requires no native
+socket/database. A configured shared sccache directory is an additional mount.
+Compatible beads share that worker cache, not one cache per bead; their Cargo
+targets remain separate. Cache keys retain source, toolchain and configuration
+distinctions: a shared pool does not promise hits for every unit or authorize
+consumption by trusted builds. Backend selection and acceptance admission cannot
+expand mounts, credentials or execution authority; proposed
+host/expanded-authority experiments require
 [Inbox approval](inbox.md#acceptance-repair-and-execution-authority).
 `SpawnConfig` owns these per-launch mounts;
 [Agent — SpawnConfig](agent.md#spawnconfig) owns their wire shape.
@@ -1039,10 +1045,18 @@ for worker feedback.
   false completion even if a Beads operation bypassed a mechanical guard.
   [test?](independent_source_closure_preserves_decisions_and_real_prerequisites)
 
-- With the Beads adapter, bead containers receive the host `wrix-beads` Dolt socket as a single-file
-  bind mount at `/workspace/.wrix/dolt.sock` via `SpawnConfig.mounts`, replacing
-  the host-side hardlink shim previously used in `GitClient::create_worktree`
-  [test](bead_container_dolt_socket_via_mounts)
+- Worker preparation delegates tracking transport to the launcher for every
+  backend, without projecting legacy operator/clone sockets or supplying Dolt
+  endpoint/credential environment overrides, whether legacy sockets exist or not.
+  [test](worker_preparation_leaves_tracking_transport_to_launcher)
+
+- Integration review does not project or connect to legacy tracker sockets;
+  its launcher owns tracking transport delivery.
+  [test](integration_review_leaves_tracking_transport_to_launcher)
+
+- Pi inbox bridge dispatch leaves tracking transport to the launcher while
+  preserving the separately configured compiler-cache mount.
+  [test](pi_bridge_leaves_tracking_transport_to_launcher)
 
 - When `[loom] sccache_dir` is configured, Loom requests a writable directory
   mount for the workspace and each bead at the configured container path
@@ -1206,12 +1220,12 @@ for worker feedback.
    silent default, no transport retry). `--profile` overrides bead labels.
 
 2. **Backend-selected task access** — workers use neutral operations through the
-   configured adapter. With Beads, the host's `wrix-beads` Dolt socket is
-   mounted at `/workspace/.wrix/dolt.sock` via `SpawnConfig.mounts`; worker and
-   driver operations see shared authoritative state with no per-task Dolt
-   push/pull. This is the Beads adapter's transport, not a required dependency
-   of other backends or their fixtures. The legacy `.beads/issues.jsonl` path is
-   not used.
+   configured adapter. With Beads, shared authoritative state requires explicit
+   external membership/admission and Wrix-owned scoped client delivery, not
+   Loom-owned socket mounts or per-task database copies. Worker and driver
+   operations then use the same state with no per-task Dolt push/pull. This is
+   not a required dependency of other backends or their fixtures. The legacy
+   `.beads/issues.jsonl` path is not used.
 
 #### Concurrency & locking (loom-driver)
 

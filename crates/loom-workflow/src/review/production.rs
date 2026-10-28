@@ -834,9 +834,7 @@ where
             scratch.path().to_path_buf(),
             vec![],
             vec![],
-            crate::r#loop::dolt_socket_mount(&self.workspace)
-                .into_iter()
-                .collect(),
+            vec![],
             self.launcher_env.clone(),
         );
         let skill_session = built_prompt
@@ -2787,8 +2785,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn integration_review_projects_only_the_controlling_tracker_endpoint() {
-        use std::os::unix::net::{UnixListener, UnixStream};
+    async fn integration_review_leaves_tracking_transport_to_launcher() {
+        use std::os::unix::net::UnixListener;
 
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join(".loom/integration");
@@ -2797,7 +2795,7 @@ mod tests {
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let listener = UnixListener::bind(&socket).unwrap();
         std::fs::create_dir_all(workspace.join(".wrix")).unwrap();
-        let _decoy = UnixListener::bind(workspace.join(".wrix/dolt.sock")).unwrap();
+        let decoy = UnixListener::bind(workspace.join(".wrix/dolt.sock")).unwrap();
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
         let mut controller = ProductionReviewController::new(
@@ -2809,15 +2807,13 @@ mod tests {
             manifest,
             ProfileName::new("base").unwrap(),
             move |config: SpawnConfig| {
-                assert_eq!(config.mounts.len(), 1);
-                let mount = &config.mounts[0];
-                assert_eq!(mount.host_path, socket);
-                assert_eq!(
-                    mount.container_path,
-                    PathBuf::from("/workspace/.wrix/dolt.sock")
+                assert_eq!(config.mounts, Vec::new());
+                assert!(
+                    config
+                        .env
+                        .iter()
+                        .all(|(key, _)| !key.starts_with("BEADS_DOLT_"))
                 );
-                assert!(!mount.read_only);
-                UnixStream::connect(&mount.host_path).unwrap();
                 std::future::ready(Ok((
                     SessionOutcome {
                         exit_code: 0,
@@ -2828,8 +2824,13 @@ mod tests {
             },
         );
         controller.run_review().await.unwrap();
-        listener.set_nonblocking(true).unwrap();
-        listener.accept().unwrap();
+        for socket in [listener, decoy] {
+            socket.set_nonblocking(true).unwrap();
+            assert_eq!(
+                socket.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
     }
 
     /// Regression: `exec_run` (the review → run handoff for auto-iterate)

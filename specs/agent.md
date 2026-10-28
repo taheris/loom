@@ -296,16 +296,12 @@ Required fields:
   inherited wholesale.
 - `mounts` — typed list of per-spawn bind mounts beyond `workspace`, additive to
   the resolved profile's `mounts`. Each entry carries `host_path`,
-  `container_path`, and `read_only`. With the configured Beads adapter, Loom
-  uses this to project the `wrix-beads` Dolt socket into the bead container at
-  `/workspace/.wrix/dolt.sock` (replacing the host-side hardlink shim) and the
-  shared sccache directory at the configured cache path; see
-  [Workspaces — Bead Dispatch](workspaces.md#bead-dispatch). Single-file mounts
-  (sockets) and directory mounts both pass through virtiofs on Linux. On Darwin
-  the wrix sandbox classifier accepts directories and regular files but rejects
-  Unix-socket `host_path` entries at launch — VirtioFS does not pass socket
-  operations across the VM boundary — so dolt-over-socket on Darwin needs a
-  TCP-routed alternative or a platform gate skipping the socket entry.
+  `container_path`, and `read_only`. Loom uses this for the configured compiler
+  cache and admitted generated Cargo storage, not tracking sockets; see
+  [Workspaces — Bead Dispatch](workspaces.md#bead-dispatch). Wrix owns managed
+  Beads endpoint selection, scoped credentials and platform-specific transport
+  delivery using the admitted workspace context. Loom does not copy host Dolt
+  environment variables or infer transport from a legacy workspace socket.
 - `initial_prompt` — prompt rendered from the phase template, including the
   compact skill index for the selected disclosure mode.
 - `agent_args` — extra argv to pass to the agent binary.
@@ -342,14 +338,13 @@ backend runtime (`pi`, `claude`, or `direct`) and writes the same value to
 `SpawnConfig.env` and `SpawnConfig.launcher_env`. The parent shell's
 `WRIX_AGENT` is never the source of truth for agent selection.
 
-| Variable                                            | When                                    | Purpose                                                                                                                                                          |
-| --------------------------------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WRIX_AGENT`                                        | always                                  | Agent selection in entrypoint; same backend-derived value as launcher env                                                                                        |
-| `CLAUDE_CODE_OAUTH_TOKEN`                           | claude backend                          | Claude authentication                                                                                                                                            |
-| `ANTHROPIC_API_KEY`                                 | pi or direct backend (Anthropic models) | LLM API key                                                                                                                                                      |
-| `TERM`                                              | always                                  | Terminal capability                                                                                                                                              |
-| `BEADS_DOLT_SERVER_SOCKET`, `BEADS_DOLT_AUTO_START` | Beads adapter                           | Beads dolt-socket path (set to the bind-mount); auto-start disabled (host owns the server)                                                                       |
-| `LOOM_INSIDE`                                       | always                                  | Set to `1`; trips the nested-loom guard if the agent invokes `loom` inside the container — see [Workspaces — Nested-Loom Guard](workspaces.md#nested-loom-guard) |
+| Variable                  | When                                    | Purpose                                                                                                                                                          |
+| ------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WRIX_AGENT`              | always                                  | Agent selection in entrypoint; same backend-derived value as launcher env                                                                                        |
+| `CLAUDE_CODE_OAUTH_TOKEN` | claude backend                          | Claude authentication                                                                                                                                            |
+| `ANTHROPIC_API_KEY`       | pi or direct backend (Anthropic models) | LLM API key                                                                                                                                                      |
+| `TERM`                    | always                                  | Terminal capability                                                                                                                                              |
+| `LOOM_INSIDE`             | always                                  | Set to `1`; trips the nested-loom guard if the agent invokes `loom` inside the container — see [Workspaces — Nested-Loom Guard](workspaces.md#nested-loom-guard) |
 
 Provider-specific API keys for the pi and direct backends (OpenAI, Google,
 DeepSeek, etc.) are added only when the configured model requires them. Variable
