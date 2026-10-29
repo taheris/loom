@@ -21,16 +21,22 @@ _: {
               inherit (loom) cargoArtifacts cargoVendorDir;
               LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
               LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
-              nativeBuildInputs = [ pkgs.cargo-nextest ];
+              nativeBuildInputs = [
+                pkgs.cargo-nextest
+                pkgs.bash
+                pkgs.gnutar
+                pkgs.zstd
+              ];
               doCheck = false;
               doInstallCargoArtifacts = false;
+              CARGO_PROFILE_RELEASE_STRIP = "symbols";
               buildPhaseCargoCommand = ''
                 cargo nextest archive --offline --locked --cargo-profile release \
                   -p loom-driver -p loom-workflow --lib --archive-file "$TMPDIR/retention.tar.zst"
               '';
               installPhaseCommand = ''
                 mkdir -p "$out"
-                cp "$TMPDIR/retention.tar.zst" "$out/archive.tar.zst"
+                bash ${../normalize-nextest-archive.sh} "$TMPDIR/retention.tar.zst" "$out/archive.tar.zst"
               '';
             }
             // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {

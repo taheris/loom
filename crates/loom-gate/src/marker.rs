@@ -672,6 +672,21 @@ mod tests {
     }
 
     #[test]
+    fn native_hook_coverage_cannot_authorize_an_all_platform_hook() {
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        write_marker_at(workspace, &marker_for_workspace(workspace));
+        let mut all_platforms = request();
+        all_platforms.hook_entry =
+            HOOK_ENTRY.replace("verify --diff", "verify --platform all --diff");
+        assert!(matches!(
+            verify_marker_for_hook(workspace, &all_platforms),
+            Err(MarkerError::CoverageMismatch { reason }) if reason == "hook id/entry"
+        ));
+        verify_marker_for_hook(workspace, &request()).expect("original coverage remains valid");
+    }
+
+    #[test]
     fn verify_marker_rejects_missing_review_evidence() {
         let dir = init_test_workspace();
         let workspace = dir.path();
@@ -811,7 +826,10 @@ mod tests {
         install_executable(
             &bin_dir,
             "sentinel",
-            &format!("#!/bin/sh\ntouch {}\nexit 0\n", sentinel_marker.display()),
+            &loom_test_support::bash_script(&format!(
+                "touch {}\nexit 0\n",
+                sentinel_marker.display()
+            )),
         );
 
         let output = run_pre_push_checks(workspace, &bin_dir);
@@ -838,13 +856,14 @@ mod tests {
             &bin_dir,
             "sentinel",
             &format!(
-                "#!/bin/sh\n\
+                "#!{shell}\n\
                  if [ \"${{GIT_DIR+x}}\" = x ]; then exit 42; fi\n\
                  if [ \"${{GIT_WORK_TREE+x}}\" = x ]; then exit 43; fi\n\
                  if [ \"${{GIT_CONFIG_COUNT+x}}\" = x ]; then exit 44; fi\n\
                  touch {}\n\
                  exit 0\n",
                 sentinel_marker.display(),
+                shell = loom_test_support::bash_path().display(),
             ),
         );
         let envs = [

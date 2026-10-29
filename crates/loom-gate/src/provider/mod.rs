@@ -111,6 +111,7 @@ impl<'a> TrackedSubjects<'a> {
 /// A registration binds the callable, source identity, responsibility and tracked scope together.
 #[derive(Clone)]
 pub struct Definition {
+    platform: crate::scope::Platform,
     candidate: Candidate,
     execution: Execution,
 }
@@ -246,6 +247,7 @@ impl Definition {
             &entry,
         ))?);
         Ok(Self {
+            platform: inventory.platform(),
             candidate: Candidate::TrackedRust {
                 contract: wire::Contract {
                     target,
@@ -663,6 +665,9 @@ impl Registry {
             });
         }
         let definition = self.definition(target)?;
+        if definition.platform != inventory.platform() {
+            return Err(Error::PlatformScope);
+        }
         current.require(definition)?;
         if candidate != definition.description() {
             return Err(Error::Inconsistent {
@@ -776,6 +781,15 @@ pub struct Unit {
 }
 
 impl Unit {
+    /// A foreign applicability observation is not an automatic native execution baseline.
+    /// Explicit owners still select this unit and receive a nonpassing inapplicable outcome.
+    pub fn outside_platform_scope(&self) -> Option<&Name> {
+        match &self.definition.execution {
+            Execution::NativePlatform(operation) => operation.outside_scope(),
+            _ => None,
+        }
+    }
+
     /// Semantic baseline lane comes from its checked constructor, never caller execution flags.
     pub fn baseline_tier(&self) -> crate::Tier {
         if matches!(self.definition.execution, Execution::NativePlatform(_)) {
@@ -852,6 +866,12 @@ impl Unit {
 
     fn project(&self, observed: &Observed) -> Result<Observed, Error> {
         self.require_current()?;
+        self.project_observed(observed)
+    }
+
+    // Pure projection of an already captured fact. The selection validates the
+    // complete context around a batch before exposing any of its projections.
+    fn project_observed(&self, observed: &Observed) -> Result<Observed, Error> {
         let target = match &self.definition.execution {
             Execution::Report { target, .. } => Some(target),
             _ => None,
@@ -939,6 +959,8 @@ pub enum Error {
         target: Name,
         contract: ResourcePath,
     },
+    /// platform policy differs from discovery; rediscover with the requested platform policy and retry `loom gate verify`
+    PlatformScope,
     /// inventory does not describe the captured snapshot; rediscover project definitions and retry `loom gate verify`
     Inventory,
     /// provider `{target:?}` belongs to a stale snapshot; regenerate its description and retry `loom gate verify`

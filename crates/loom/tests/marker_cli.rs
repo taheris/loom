@@ -161,20 +161,22 @@ fn wrapper_for(root: &Path, tools: &Path, request: [&str; 3]) -> anyhow::Result<
         tools,
         "loom",
         &format!(
-            "#!/usr/bin/env bash\nset -euo pipefail\nexec '{}' \"$@\"\n",
+            "#!{shell}\nset -euo pipefail\nexec '{}' \"$@\"\n",
             env!("CARGO_BIN_EXE_loom").replace('\'', "'\\''"),
+            shell = loom_test_support::bash_path().display(),
         ),
     )?;
     install(
         tools,
         "sentinel",
         &format!(
-            "#!/bin/sh\nset -eu\ntouch '{}'\n",
+            "#!{shell}\nset -eu\ntouch '{}'\n",
             tools
                 .join("sentinel.flag")
                 .display()
                 .to_string()
                 .replace('\'', "'\\''"),
+            shell = loom_test_support::bash_path().display(),
         ),
     )?;
     install_wrapper(root)?;

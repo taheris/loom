@@ -430,7 +430,7 @@ mod tests {
         let runner_path = tmp.path().join("bin/logical-runner");
         std::fs::write(
             &runner_path,
-            "#!/bin/sh\nfor target in \"$@\"; do printf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"ok\"}\\n' \"$target\"; done\n",
+            loom_test_support::bash_script("for target in \"$@\"; do printf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"ok\"}\\n' \"$target\"; done\n"),
         )
         .expect("write runner");
         std::fs::set_permissions(&runner_path, std::fs::Permissions::from_mode(0o755))

@@ -140,6 +140,7 @@ impl Subject {
 #[derive(Debug, Clone)]
 pub struct Inventory {
     snapshot: Identity,
+    platform: crate::scope::Platform,
     subjects: BTreeMap<Name, Subject>,
     obligations: BTreeSet<Obligation>,
     compilation: BTreeMap<ResourcePath, rust::Compilation>,
@@ -152,14 +153,26 @@ impl Inventory {
     /// # Errors
     /// Rejects failed discovery, orphan/unsupported subjects, and unresolved resource responsibilities.
     pub fn discover(snapshot: &Snapshot) -> Result<Self, Error> {
+        Self::discover_for(snapshot, crate::scope::Platform::Native)
+    }
+
+    /// Discover all subjects, preparing foreign execution graphs only for explicit all-platform work.
+    ///
+    /// # Errors
+    /// Rejects the same discovery and responsibility failures as native discovery.
+    pub fn discover_for(
+        snapshot: &Snapshot,
+        platform: crate::scope::Platform,
+    ) -> Result<Self, Error> {
         let staged = snapshot.stage()?;
         let mut subjects = BTreeMap::new();
         let compilation = rust::discover(snapshot, staged.path(), &mut subjects)?;
         discover_context(snapshot, &mut subjects)?;
-        let native_graphs = nix::discover(snapshot, staged.path(), &mut subjects)?;
+        let native_graphs = nix::discover(snapshot, staged.path(), &mut subjects, platform)?;
         classify_remaining(snapshot, &mut subjects, &compilation)?;
         snapshot.require_current()?;
         let mut inventory = Self::finish(snapshot.identity().clone(), subjects, compilation)?;
+        inventory.platform = platform;
         inventory.native_graphs = native_graphs;
         let mut declarations = Vec::new();
         for path in contracts(snapshot)? {
@@ -194,6 +207,7 @@ impl Inventory {
             .collect();
         Ok(Self {
             snapshot,
+            platform: crate::scope::Platform::Native,
             subjects,
             obligations,
             compilation,
@@ -201,7 +215,11 @@ impl Inventory {
         })
     }
 
-    /// Successful resource discovery retains every constructed output on its native system.
+    pub const fn platform(&self) -> crate::scope::Platform {
+        self.platform
+    }
+
+    /// Successful resource discovery retains every constructed output in its execution policy.
     /// These are immutable recipe facts, never execution outcomes or admission grants.
     pub(crate) const fn native_graphs(
         &self,
@@ -345,6 +363,7 @@ impl Inventory {
         prune_context_documents(&mut subjects)?;
         let mut inventory =
             Self::finish(self.snapshot.clone(), subjects, self.compilation.clone())?;
+        inventory.platform = self.platform;
         inventory.native_graphs.clone_from(&self.native_graphs);
         Ok(inventory)
     }

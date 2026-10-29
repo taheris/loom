@@ -16,6 +16,7 @@ use crate::provider::{Candidate, Definition, Digest, Execution, Origin, Responsi
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Description {
+    platform: crate::scope::Platform,
     system: Name,
     supported: BTreeSet<Name>,
     executor: StorePath,
@@ -60,11 +61,14 @@ impl Definition {
         })?;
         let tool = locate_tool()?;
         let supported = platforms(&tool)?;
-        if supported.contains(binding.system()) {
+        if inventory.platform() == crate::scope::Platform::All
+            && supported.contains(binding.system())
+        {
             return Ok(None);
         }
         let executor = StorePath::root(&tool)?;
         let description = Description {
+            platform: inventory.platform(),
             system: binding.system().clone(),
             supported,
             binary: ResourcePath::try_from(
@@ -180,6 +184,7 @@ impl Definition {
             &entry,
         ))?);
         Ok(Some(Self {
+            platform: inventory.platform(),
             candidate: Candidate::TrackedRust {
                 contract: wire::Contract {
                     target,
@@ -201,6 +206,12 @@ impl Definition {
 }
 
 impl Applicability {
+    /// Native requests retain foreign metadata, never foreign execution authority.
+    pub(crate) fn outside_scope(&self) -> Option<&Name> {
+        (self.description.platform == crate::scope::Platform::Native)
+            .then_some(&self.description.system)
+    }
+
     pub(crate) fn require_current(&self) -> Result<(), crate::provider::Error> {
         if locate_tool()? != self.tool
             || Digest::of(&std::fs::read(&self.tool).map_err(Error::Io)?)

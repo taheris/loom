@@ -66,6 +66,7 @@ impl Definition {
             &entry,
         ))?);
         Ok(vec![Self {
+            platform: inventory.platform(),
             candidate: Candidate::TrackedRust {
                 contract: wire::Contract {
                     target,

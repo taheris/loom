@@ -220,6 +220,90 @@ delegation/tooling is a non-pass, never publication credit. Each invocation has
 a fresh supervised report and retains its actual transcript; query JSON cannot
 select an executable, change the profile or grant capabilities.
 
+Container smoke declares `runtime = "native-container"` before execution. It
+uses the same trusted-driver boundary, with only `/dev/fuse`, `/dev/net/tun` and
+`/dev/kvm` additionally bound, read-only system discovery, and a fixed 15-minute
+budget. The driver supplies only its unit's owned parent for controller
+delegation. A fresh cgroup namespace and cgroupfs view confine the container
+engine's apparent root to that delegated leaf, never the host cgroup root.
+Private devices, PID/network/tmp namespaces, masked home, no-new-privileges and
+the writable cgroup boundary remain enforced. Host subordinate UID/GID mappings
+are hidden; container tooling uses the isolated caller's identity, not
+privileged host ID-map helpers. An immutable namespace launcher maps only that
+caller to root inside fresh user/mount/network/cgroup namespaces;
+no-new-privileges and the empty host capability bound remain in force. Its Nix
+store root is private tmpfs with only admitted SDK objects bound read-only; the
+host store remains unchanged. Only the private network namespace's
+`/proc/sys/net` is writable for container networking; host forwarding remains
+unchanged and global kernel tunables stay protected. Nested Nix keeps strict
+sandboxing, without fallback when nested kernel namespace creation is
+unavailable. Missing devices or a foreign execution system are nonpassing;
+neither Nix sandbox paths nor the software-only profile are widened as a
+fallback. The scenario runs its immutable realized smoke program, not an ambient
+`nix run` launcher. Private PTYs are created inside the single-caller namespace;
+no host PTY instance is projected. Its OCI hook retains all masks and options,
+restricts `/proc` to `subset=pid`, and assigns private devpts to mapped GID
+zero. The fixed native-container Nix variant uses the same restricted proc view
+for its real namespace probe and sandbox mounts. A hidden user-namespace sysctl
+is not capability evidence: the actual namespace syscall must succeed. Ordinary
+Nix packages remain unchanged; neither an unrestricted proc retry nor sandbox
+fallback is selected. Nix's supplementary-group drop requirement remains active;
+callers unable to satisfy it fail rather than receive acceptance credit. The
+inherent Linux user-service/device regression belongs to the explicit
+`native-container-tests` compiler mode run by `test-native-units`; it is not an
+ignored ordinary-suite test or a success-returning capability probe.
+
+On Linux the container constructor always uses a native-KVM appliance, not a
+retry after namespace failure. The protected host service and empty host
+capability bound remain unchanged. QEMU has no NIC, a read-only admitted-store
+share, one writable report share and a private retained disk. The guest requires
+its firewall before dispatch and retains the service isolation above. A static
+guest-only projector binds the already admitted read-only input view into a
+private writable store, rejecting unsupported object kinds; it never receives
+the unfiltered host store. Guest kernel authority clears supplementary groups
+before entering a one-ID caller namespace; a second real group-clear syscall and
+explicit UID/GID-map, `setgroups=allow`, empty-group and no-new-privileges
+assertions precede the scenario. Nested Nix still performs its mandatory group
+drop. No host privileged mapping helper is involved. The guest kernel retains
+enabled security settings from its full configuration, checks generated OID
+tables, and reports both configuration hashes. Read caching applies only to
+immutable read-only inputs; report writes remain coherent and disk writeback
+honors guest flushes. Whole-VM shutdown retires owned processes and mounts;
+diagnostics and the private disk are retained rather than recursively deleting
+mounted container trees. Successful working disks are losslessly archived as
+QCOW2 only after QEMU exits, with a successful full logical-image comparison
+before retiring that invocation's raw working file. Failed runs and all earlier
+retained images remain untouched.
+
+The smoke fixture explicitly selects its disposable membership policy in both
+Loom and Wrix before clone dispatch, retaining its existing Wrix registration.
+The policy rechecks physical Git storage, rejects indirect or replaced storage
+and unrelated clones, and does not claim a production Wrix integration bridge.
+Native Beads is initialized through a bounded real bootstrap server before
+managed migration, with the real Beads Git branch seeded before the first
+service import. Its disposable host SDK reuses Wrix's scoped wrapper but
+requests fresh broker credentials for admitted integration clones even without a
+local Dolt-data marker. Only the private bootstrap uses the explicit unwrapped
+Beads tool; subsequent clients never fall back to administrative SQL.
+
+The disposable Nix SDK runs the actual strict result build before its restart
+probe can delay result delivery. During the deliberate outage it adds a
+per-child seccomp restriction and runs real Nix: actual namespace denial leaves
+coverage unavailable, never passed. Removing the outage restores the unchanged
+strict build. The immutable result predicate reads no mutable Git control state,
+and ordinary Nix tools are not instrumented. These fixture controls do not
+supply review evidence or bypass publication hooks.
+
+Assembled scenarios that evaluate nested Nix declare a disposable local store
+seeded from the immutable test SDK and explicitly declared fixture inputs.
+Acquisition and remote builders stay disabled, signatures and strict sandboxing
+stay enabled, and unrelated ambient store objects are not registered. For native
+containers, the driver exports only the admitted source/input reference closure,
+including referenced derivation documents as data without realizing their
+outputs. Scenario stdout, stderr and exact exit status are retained separately;
+untyped reserved skip codes become failed protocol outcomes, not invented
+prerequisite reasons.
+
 For scoped API execution, resolve the existing `scope::Request` against the
 workspace, then call `plan.run_scoped(&scope)`. It uses the ordinary scope
 selector with `InputResolver::from_plan(&plan)`: inputs come from immutable

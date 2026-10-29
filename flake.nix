@@ -15,6 +15,15 @@
     crane.follows = "wrix/crane";
     fenix.follows = "wrix/fenix";
 
+    celler-src = {
+      url = "git+https://github.com/celler-cache/celler.git?rev=de7e34848770f3cd274a276e15d3c459fee86f99&submodules=1";
+      flake = false;
+    };
+    gorgon-src = {
+      url = "git+https://codeberg.org/blitz/gorgon.git?ref=nix-daemon-2&rev=f42f79a9d52787802ccaf23cf67329d32a78184c&submodules=1";
+      flake = false;
+    };
+
     flake-parts = {
       url = "git+https://github.com/hercules-ci/flake-parts.git?ref=main&shallow=1";
       inputs.nixpkgs-lib.follows = "nixpkgs";

@@ -6,6 +6,10 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Inherent Linux user-service/device acceptance, executed by test-native-units.
+native-container-tests = []
+
 # Owns annotation dispatch, the status cache, the integrity gate, and
 # runner-discovery logic for `loom gate <subcommand>`. `loom-workflow`
 # depends on this crate; further consumers should not be added without

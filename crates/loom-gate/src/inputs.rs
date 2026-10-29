@@ -1462,7 +1462,7 @@ printf '}}\n'"#;
         let helper = dir.path().join("walk-helper.sh");
         fs::write(
             &helper,
-            "#!/bin/sh\nif [ \"$1\" = \"--print-inputs\" ]; then\n  printf '{\"inputs\": [\"src/a.rs\", \"src/b.rs\"]}\\n'\n  exit 0\nfi\nexit 99\n",
+            loom_test_support::bash_script("if [ \"$1\" = \"--print-inputs\" ]; then\n  printf '{\"inputs\": [\"src/a.rs\", \"src/b.rs\"]}\\n'\n  exit 0\nfi\nexit 99\n"),
         )
         .unwrap();
         let mut perms = fs::metadata(&helper).unwrap().permissions();
@@ -1494,7 +1494,8 @@ printf '}}\n'"#;
         fs::write(
             &helper,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--ready\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"--print-inputs\" ]; then\n  n=$(cat \"{counter_path}\")\n  echo $((n + 1)) > \"{counter_path}\"\n  printf '{{\"inputs\": [\"x.rs\"]}}\\n'\n  exit 0\nfi\nexit 99\n",
+                "#!{shell}\nif [ \"$1\" = \"--ready\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"--print-inputs\" ]; then\n  n=$(cat \"{counter_path}\")\n  echo $((n + 1)) > \"{counter_path}\"\n  printf '{{\"inputs\": [\"x.rs\"]}}\\n'\n  exit 0\nfi\nexit 99\n",
+                shell = loom_test_support::bash_path().display(),
             ),
         )
         .unwrap();
@@ -1667,12 +1668,13 @@ printf '}}\n'"#;
         let responder = dir.path().join("responder.sh");
         fs::write(
             &responder,
-            "#!/bin/sh\n\
-             if [ \"$1\" = \"--print-inputs\" ]; then\n\
+            loom_test_support::bash_script(
+                "if [ \"$1\" = \"--print-inputs\" ]; then\n\
                printf '{\"inputs\": [\"crates/loom-walk/src/probed.rs\"]}\\n'\n\
                exit 0\n\
              fi\n\
              exit 1\n",
+            ),
         )
         .unwrap();
         fs::set_permissions(&responder, fs::Permissions::from_mode(0o755)).unwrap();
@@ -2645,7 +2647,7 @@ printf '{"inputs":["src/%s.rs"]}\n' "$1""#,
         let helper = dir.path().join("inputs-helper.sh");
         fs::write(
             &helper,
-            "#!/bin/sh\nprintf '{\"inputs\": [\"py/tests/test_x.py\"]}\\n'\n",
+            loom_test_support::bash_script("printf '{\"inputs\": [\"py/tests/test_x.py\"]}\\n'\n"),
         )
         .unwrap();
         #[cfg(unix)]

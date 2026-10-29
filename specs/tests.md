@@ -617,6 +617,16 @@ is exposed as `nix run .#smoke` on Linux only.
 
 ### Cross-platform
 
+Shared Rust tests and cheap all-system definition checks remain routine native
+coverage. Foreign runtime instantiations are explicit manual verification, not
+additional mandatory suites inferred from installed emulators. Native results do
+not certify ARM or Darwin execution. A manual ARM suite can be requested with
+`nix build .#packages.aarch64-linux.loom-tests`; unavailable execution remains
+nonpassing. No platform outputs or shared test functions are removed.
+
+- Foreign runtime coverage remains unverified under the default native policy
+  [test](native_default_excludes_ownerless_foreign_baselines_without_claiming_passes)
+
 <!-- prettier-ignore -->
 - The flake source declares shared `loom-tests` package wiring for its
   configured Linux and Darwin system identifiers [check](cargo run -p loom-walk -- test_nix_surface_contract)
@@ -652,8 +662,10 @@ is exposed as `nix run .#smoke` on Linux only.
   [check](nix build .#checks.x86_64-linux.native-stage-integrity)
 
 <!-- prettier-ignore -->
-- The `loom-tests` package invokes both deterministic gate tiers and remains
-  outside the flake `checks` set [check](cargo run -p loom-walk -- test_nix_surface_contract)
+- The `loom-tests` package aliases the complete canonical native Nextest producer
+  and remains outside the flake `checks` set; registered source analysis stays in
+  its dedicated fast check, not a second whole-suite producer.
+  [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 <!-- prettier-ignore -->
 - `nix run .#test` composes fast Nix checks, both Clippy configurations and the

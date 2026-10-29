@@ -1,3 +1,7 @@
+#[path = "plan/observations.rs"]
+mod observations;
+#[path = "plan/platform.rs"]
+mod platform;
 #[path = "plan/property.rs"]
 mod property;
 

@@ -141,7 +141,7 @@ fn fake_prek_hooks(repo: &Path) -> Result<PathBuf> {
     let hooks = repo.join("fake-prek-hooks");
     std::fs::create_dir_all(&hooks)?;
     for hook in ["pre-commit", "pre-push"] {
-        std::fs::write(hooks.join(hook), "#!/bin/sh\n")?;
+        std::fs::write(hooks.join(hook), loom_test_support::bash_script(""))?;
     }
     Ok(hooks)
 }
@@ -154,16 +154,17 @@ fn retrying_disconnect_prek_hooks(repo: &Path) -> Result<(PathBuf, PathBuf)> {
     let first_failure = repo.join("retry-prek-first-failure");
     std::fs::create_dir_all(&hooks)?;
     let pre_commit = hooks.join("pre-commit");
-    std::fs::write(&pre_commit, "#!/bin/sh\nexit 0\n")?;
+    std::fs::write(&pre_commit, loom_test_support::bash_script("exit 0\n"))?;
     std::fs::set_permissions(&pre_commit, std::fs::Permissions::from_mode(0o755))?;
     let pre_push = hooks.join("pre-push");
     std::fs::write(
         &pre_push,
         format!(
-            "#!/bin/sh\nprintf 'attempt\\n' >> {}\nif [ ! -f {} ]; then\n  : > {}\n  printf 'nix flake check.............................................................Passed\\n'\n  printf 'Connection to github.com closed by remote host.\\n' >&2\n  exit 141\nfi\nexit 0\n",
+            "#!{shell}\nprintf 'attempt\\n' >> {}\nif [ ! -f {} ]; then\n  : > {}\n  printf 'nix flake check.............................................................Passed\\n'\n  printf 'Connection to github.com closed by remote host.\\n' >&2\n  exit 141\nfi\nexit 0\n",
             shell_quote(&attempts),
             shell_quote(&first_failure),
             shell_quote(&first_failure),
+            shell = loom_test_support::bash_path().display(),
         ),
     )?;
     std::fs::set_permissions(&pre_push, std::fs::Permissions::from_mode(0o755))?;
@@ -177,14 +178,15 @@ fn failing_hook_prek_hooks(repo: &Path) -> Result<(PathBuf, PathBuf)> {
     let attempts = repo.join("failing-prek-attempts");
     std::fs::create_dir_all(&hooks)?;
     let pre_commit = hooks.join("pre-commit");
-    std::fs::write(&pre_commit, "#!/bin/sh\nexit 0\n")?;
+    std::fs::write(&pre_commit, loom_test_support::bash_script("exit 0\n"))?;
     std::fs::set_permissions(&pre_commit, std::fs::Permissions::from_mode(0o755))?;
     let pre_push = hooks.join("pre-push");
     std::fs::write(
         &pre_push,
         format!(
-            "#!/bin/sh\nprintf 'attempt\\n' >> {}\nprintf 'hook failed without transport disconnect\\n' >&2\nexit 141\n",
+            "#!{shell}\nprintf 'attempt\\n' >> {}\nprintf 'hook failed without transport disconnect\\n' >&2\nexit 141\n",
             shell_quote(&attempts),
+            shell = loom_test_support::bash_path().display(),
         ),
     )?;
     std::fs::set_permissions(&pre_push, std::fs::Permissions::from_mode(0o755))?;

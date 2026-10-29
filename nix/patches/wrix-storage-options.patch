@@ -1,0 +1,80 @@
+--- a/crates/wrix-sandbox/src/image.rs
++++ b/crates/wrix-sandbox/src/image.rs
+@@ -834,8 +834,3 @@
+-    if let Ok(output) = run_output(
+-        "podman",
+-        &[
+-            "info",
+-            "--format",
+-            "{{.Store.GraphDriverName}}@{{.Store.GraphRoot}}+{{.Store.RunRoot}}",
+-        ],
+-    ) && output.status.success()
++    if let Ok(output) = run_output("podman", &["info", "--format", "json"])
++        && output.status.success()
++        && let Some(spec) = linux_store_spec(&output.stdout)
+@@ -843,4 +838 @@
+-        let spec = trim_stdout(&output.stdout);
+-        if spec.contains('@') && spec.contains('+') {
+-            store_ref = format!("containers-storage:[{spec}]{image_ref}");
+-        }
++        store_ref = format!("containers-storage:[{spec}]{image_ref}");
+@@ -848,0 +841,59 @@
++}
++
++fn linux_store_spec(bytes: &[u8]) -> Option<String> {
++    let Ok(info) = serde_json::from_slice::<Value>(bytes) else {
++        return None;
++    };
++    let store = info.get("store")?;
++    let driver = store.get("graphDriverName")?.as_str()?;
++    let graph = store.get("graphRoot")?.as_str()?;
++    let run = store.get("runRoot")?.as_str()?;
++    let mut options = Vec::new();
++    if let Some(values) = store.get("graphOptions").and_then(Value::as_object) {
++        for (key, value) in values {
++            let value = match value {
++                Value::String(value) => value.clone(),
++                Value::Bool(value) => value.to_string(),
++                Value::Number(value) => value.to_string(),
++                Value::Object(value) => value.get("Executable")?.as_str()?.to_owned(),
++                _ => return None,
++            };
++            if key.contains([',', ':', ']', '\n']) || value.contains([',', ':', ']', '\n']) {
++                return None;
++            }
++            options.push(format!("{key}={value}"));
++        }
++    }
++    if [driver, graph, run]
++        .iter()
++        .any(|part| part.is_empty() || part.contains(['@', '+', ':', ']', '\n']))
++    {
++        return None;
++    }
++    let suffix = if options.is_empty() {
++        String::new()
++    } else {
++        format!(":{}", options.join(","))
++    };
++    Some(format!("{driver}@{graph}+{run}{suffix}"))
++}
++
++#[cfg(test)]
++mod storage_options_tests {
++    use super::linux_store_spec;
++
++    #[test]
++    fn explicit_store_keeps_actual_driver_options() {
++        let info = br#"{"store":{"graphDriverName":"overlay","graphRoot":"/tmp/graph","runRoot":"/tmp/run","graphOptions":{"overlay.ignore_chown_errors":"true","overlay.mount_program":{"Executable":"/nix/store/helper/bin/fuse-overlayfs","Version":"metadata"}}}}"#;
++        assert_eq!(
++            linux_store_spec(info).as_deref(),
++            Some(
++                "overlay@/tmp/graph+/tmp/run:overlay.ignore_chown_errors=true,overlay.mount_program=/nix/store/helper/bin/fuse-overlayfs"
++            )
++        );
++    }
++
++    #[test]
++    fn malformed_driver_options_do_not_invent_a_store_spec() {
++        assert!(linux_store_spec(br#"{"store":{"graphDriverName":"overlay","graphRoot":"/tmp/graph","runRoot":"/tmp/run","graphOptions":{"overlay.mount_program":{"Version":"unknown"}}}}"#).is_none());
++    }

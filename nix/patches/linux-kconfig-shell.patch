@@ -1,0 +1,66 @@
+--- a/scripts/kconfig/preprocess.c
++++ b/scripts/kconfig/preprocess.c
+@@ -5,0 +6,3 @@
++#include <errno.h>
++#include <sys/wait.h>
++#include <unistd.h>
+@@ -152 +155,2 @@
+-	int i;
++	int i, descriptors[2], status;
++	pid_t child, waited;
+@@ -156 +160,15 @@
+-	p = popen(cmd, "r");
++	if (pipe(descriptors) == -1 || (child = fork()) == -1) {
++		perror(cmd);
++		exit(1);
++	}
++	if (!child) {
++		close(descriptors[0]);
++		if (dup2(descriptors[1], STDOUT_FILENO) == -1)
++			_exit(127);
++		close(descriptors[1]);
++		execl("@bash@", "bash", "-c", cmd, (char *)NULL);
++		perror("@bash@");
++		_exit(127);
++	}
++	close(descriptors[1]);
++	p = fdopen(descriptors[0], "r");
+@@ -178 +196,8 @@
+-	if (pclose(p) == -1) {
++	if (fclose(p) == EOF) {
++		perror(cmd);
++		exit(1);
++	}
++	do {
++		waited = waitpid(child, &status, 0);
++	} while (waited == -1 && errno == EINTR);
++	if (waited == -1) {
+--- a/kernel/gen_kheaders.sh
++++ b/kernel/gen_kheaders.sh
+@@ -1 +1 @@
+-#!/bin/sh
++#!@bash@
+@@ -6 +6 @@
+-set -e
++set -euo pipefail
+@@ -48 +48 @@
+-    -I "${XZ}" -cf "${tarfile}" -C "${tmpdir}/" . > /dev/null
++    -cf - -C "${tmpdir}/" . | ${XZ} > "${tarfile}"
+--- a/scripts/kconfig/streamline_config.pl
++++ b/scripts/kconfig/streamline_config.pl
+@@ -139 +139,4 @@
+-my @makefiles = `find $ksource -name Makefile -or -name Kbuild 2>/dev/null`;
++open(my $makefiles_pipe, '-|', 'find', $ksource, '-name', 'Makefile', '-or', '-name', 'Kbuild')
++    or die "Cannot list source makefiles";
++my @makefiles = <$makefiles_pipe>;
++close($makefiles_pipe) or die "Cannot finish listing source makefiles";
+--- a/lib/build_OID_registry
++++ b/lib/build_OID_registry
+@@ -10,0 +11 @@
++use Math::BigInt;
+@@ -65 +66 @@
+-	my $c = `echo "ibase=10; obase=2; $components[$loop]" | bc`;
++	my $c = substr(Math::BigInt->new($components[$loop])->as_bin(), 2);
+@@ -110 +111 @@
+-	my $c = `echo "ibase=10; obase=2; $components[$loop]" | bc`;
++	my $c = substr(Math::BigInt->new($components[$loop])->as_bin(), 2);

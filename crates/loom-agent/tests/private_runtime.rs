@@ -9,8 +9,7 @@ mod tests {
     use loom_driver::scratch::ScratchSession;
     use loom_events::ParsedAgentEvent;
 
-    const LAUNCHER: &str = r#"#!/usr/bin/env bash
-set -euo pipefail
+    const LAUNCHER: &str = r#"set -euo pipefail
 [[ "$1" == '--profile-config' ]]
 [[ "$2" == 'test-profile' ]]
 [[ "$3" == 'spawn' ]]
@@ -43,7 +42,7 @@ esac
 
     fn install_launcher(workspace: &Path) -> PathBuf {
         let path = workspace.join("wrix");
-        fs::write(&path, LAUNCHER).unwrap();
+        fs::write(&path, loom_test_support::bash_script(LAUNCHER)).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         path
     }

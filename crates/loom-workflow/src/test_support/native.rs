@@ -1,7 +1,6 @@
 #![cfg(test)]
 
 use std::ffi::OsString;
-use std::io::Read as _;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as NativeCommand, Stdio};
@@ -12,9 +11,13 @@ use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::clock::{Clock, SystemClock};
 use tokio::process::Command;
 
+const DATABASE: &str = "mint";
+
 struct Server {
     child: Child,
     directory: tempfile::TempDir,
+    port: u16,
+    home: PathBuf,
 }
 
 impl Server {
@@ -24,7 +27,31 @@ impl Server {
             .tempdir()
             .unwrap();
         let data = directory.path().join("data");
-        std::fs::create_dir(&data).unwrap();
+        let database = data.join(DATABASE);
+        std::fs::create_dir_all(&database).unwrap();
+        let mut initialize = Command::new("dolt");
+        isolate(initialize.as_std_mut(), home);
+        initialize
+            .args([
+                "init",
+                "--name",
+                "Loom native fixture",
+                "--email",
+                "native@example.invalid",
+            ])
+            .current_dir(&database);
+        let initialized = loom_driver::process::output(
+            &mut initialize,
+            &SystemClock::new(),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("initialize fixture database once before serving it");
+        assert!(
+            initialized.status.success(),
+            "{}",
+            String::from_utf8_lossy(&initialized.stderr)
+        );
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let socket = directory.path().join("server.sock");
@@ -54,10 +81,12 @@ impl Server {
         let mut server = Self {
             child: command.spawn().expect("start fixture Dolt"),
             directory,
+            port,
+            home: home.to_path_buf(),
         };
         let clock = SystemClock::new();
-        let deadline = clock.now() + Duration::from_secs(15);
-        while let Err(error) = server.ready() {
+        let deadline = clock.now() + Duration::from_secs(60);
+        while let Err(error) = server.ready().await {
             assert!(
                 server.child.try_wait().unwrap().is_none() && clock.now() < deadline,
                 "fixture Dolt did not become ready ({error}): {}",
@@ -68,11 +97,34 @@ impl Server {
         server
     }
 
-    fn ready(&self) -> std::io::Result<()> {
-        // Socket creation precedes the server accepting and greeting clients.
-        let mut stream = std::os::unix::net::UnixStream::connect(self.socket())?;
-        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-        stream.read_exact(&mut [0])
+    async fn ready(&self) -> std::io::Result<()> {
+        // A greeting precedes usable SQL sessions; probe without retrying an uncertain mutation.
+        let mut command = Command::new("dolt");
+        isolate(command.as_std_mut(), &self.home);
+        command
+            .args(["--host", "127.0.0.1", "--port"])
+            .arg(self.port.to_string())
+            .args([
+                "--user",
+                "root",
+                "--password",
+                "",
+                "--no-tls",
+                "sql",
+                "--query",
+                "USE mint; SELECT 1",
+            ]);
+        let output =
+            loom_driver::process::output(&mut command, &SystemClock::new(), Duration::from_secs(2))
+                .await
+                .map_err(std::io::Error::other)?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ))
+        }
     }
 
     fn socket(&self) -> PathBuf {
@@ -138,7 +190,7 @@ impl IsolatedBeads {
 
 impl CommandRunner for IsolatedBeads {
     async fn run(&self, args: Vec<OsString>, timeout: Duration) -> Result<RunOutput, BdError> {
-        let binary = std::env::var_os("LOOM_ISSUES_BD_BIN").unwrap_or_else(|| "bd".into());
+        let binary = env!("LOOM_ISSUES_BD_BIN");
         let mut command = Command::new(binary);
         isolate(command.as_std_mut(), &self.root.join("home"));
         command
@@ -173,7 +225,7 @@ pub async fn client(root: &Path) -> BdClient<IsolatedBeads> {
     args.extend(
         [
             "--prefix",
-            "mint",
+            DATABASE,
             "--skip-agents",
             "--skip-hooks",
             "--non-interactive",
@@ -195,6 +247,16 @@ async fn native_tracker_server_lives_until_last_owner_and_is_reaped() {
     let server = Arc::new(Server::start(home.path()).await);
     let directory = server.directory.path().to_path_buf();
     let socket = server.socket();
+    assert!(
+        server
+            .directory
+            .path()
+            .join("data")
+            .join(DATABASE)
+            .join(".dolt")
+            .is_dir()
+    );
+    server.ready().await.unwrap();
     let clone = server.clone();
     drop(server);
     assert!(std::os::unix::net::UnixStream::connect(&socket).is_ok());

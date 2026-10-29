@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 1 ]] || exit 64
+[[ $# == 2 ]] || exit 64
+bash "$2" --hook-id smoke-noop --hook-entry true -- true
 IFS= read -r result < "$1"
 if [[ "$result" != implemented ]]; then
     printf 'smoke result is not implemented\n' >&2
