@@ -1,14 +1,14 @@
 # Native verification investigation
 
-Status: coordinated `lm-fb9j.12`, `lm-fb9j.14`, and `lm-fb9j.15` remain in
-progress. This report is historical investigation evidence, not a verification
-receipt or completion claim. The draft is rebased onto integration `e4c9c686`.
-At the user's request, VM definitions, exported VM packages and automatic VM
-routing have been removed. Suites execute Nextest directly, including tests
-excluded by its default scheduling filter. Native isolation runs directly and
-returns its actual failure/unavailable status; it cannot boot a fallback VM.
-Historical logs, failed fixtures and machine state are preserved. No source push
-or coordinated landing has occurred.
+Historical status: coordinated `lm-fb9j.12`, `lm-fb9j.14`, and `lm-fb9j.15`
+remain in progress. This report is historical investigation evidence, not a
+verification receipt or completion claim. The draft is rebased onto integration
+`e4c9c686`. At the user's request, VM definitions, exported VM packages and
+automatic VM routing have been removed. Suites execute Nextest directly,
+including tests excluded by its default scheduling filter. Native isolation runs
+directly and returns its actual failure/unavailable status; it cannot boot a
+fallback VM. Historical logs, failed fixtures and machine state are preserved.
+No source push or coordinated landing has occurred.
 
 ## Findings
 
@@ -251,3 +251,58 @@ CLI skip-policy integration, equivalent fixture migrations, runtime
 compatibility, and frozen whole-tree gates remain within their owning open
 beads. No unavailable result, timeout, skip, cached verdict, or manual-host-test
 promise establishes delivery.
+
+## Native publication acceptance — 2026-10-29
+
+This later `lm-lllw` / `lm-7ual` record does not relabel the historical failures
+above. Signed commit `f465c8aaf82c909b7ea2463aea5322489af3f6ae` contains the
+native publication repairs; its signature verifies and its tree exactly matches
+the verified staged tree.
+
+Frozen `final-kernel-v6` verification passed formatting, Nix build/flake check,
+Cargo build, separate production/all-target workspace Clippy, native-container
+Clippy, 3,736 native Nextest tests, 343 native-container library tests, the
+strict packaged suite, native-unit acceptance and offline all-system definition
+validation. Five existing skips remain uncredited. The four original build,
+CI-shell, profile-bootstrap and decision-admission obligations and actual smoke
+all passed. Earlier failed attempts remain retained, not summed into this pass.
+
+The native-container producer now has a fixed, NIC-less KVM primary boundary,
+not a retry/fallback VM. Actual supplementary-group removal, one-ID mappings,
+no-new-privileges, protected host services and strict nested Nix remain
+required. Smoke executes real namespace-denial outages and driver/verifier
+interruptions, retains pending coverage, then resumes through review, fixture
+publication and closure. Native-default platform selection retains foreign
+inventory and explicit foreign requirements; no ARM execution or activation was
+performed.
+
+Whole-candidate measured paths all passed:
+
+| Path                                                             |  Seconds |
+| ---------------------------------------------------------------- | -------: |
+| First files invocation, with compiler inputs already provisioned | 3275.012 |
+| Warm files invocation                                            | 3190.555 |
+| Diff against the pre-repair base                                 | 3185.526 |
+| Normal signed commit with configured automatic pre-commit hooks  | 3189.786 |
+
+These are heavy bulk-validation costs, not an acceptable-fast or interactive
+latency claim. Fresh behavioral execution and mandatory Nix rebuild comparison
+remain enabled. Standard compiler symbol stripping and canonical archive headers
+repair actual reproducibility failures; packaging preserves compiler payloads.
+
+A separate 49-alias native-only project used the same immutable CLI and actual
+Wrix hook installation. Files cold/warm took 10.683/10.542 seconds; diff
+cold/warm 19.549/19.295 seconds. Its unsigned fixture commits took 10.731/10.641
+seconds; automatic pre-push to its disposable file remote took 19.543/19.426
+seconds. Invalid input rejected the actual commit without advancing HEAD. This
+fixture has no Rust/full-suite duties and is not whole-Loom pre-push or signing
+evidence. The repository itself was not pushed; its complete producers were
+independently verified, and its configured pre-commit hooks ran during the
+signed commit.
+
+Evidence, relative to the bead checkout, is retained under
+`.loom/logs/lm-lllw/native-kernel-primary-20261027/` (`final-kernel-v6` and
+`landing-v6-20261029`) and `.loom/logs/lm-7ual/final-kernel-v6-hooks/`. Failed
+runs, recovery refs, the archived stash and GC roots remain intact. No hook
+bypass, sandbox fallback, protected-service recovery or broad cleanup was
+performed.
