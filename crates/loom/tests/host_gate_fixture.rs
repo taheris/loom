@@ -41,7 +41,7 @@ fn host_gate_setup_keeps_executed_harness_outside_inner_project_inventory() {
     let wrapper = root.path().join("pre-push-checks");
     std::fs::write(&wrapper, include_str!("../../../bin/pre-push-checks")).unwrap();
     let launcher = root.path().join("setup-only-wrix");
-    std::fs::write(&launcher, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+    std::fs::write(&launcher, loom_test_support::bash_script("exit 0\n")).unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
     let prefix = include_str!("../../../tests/smoke/host-gate-test.sh")
         .split_once("git add .gitignore")
@@ -102,7 +102,7 @@ fn host_gate_setup_keeps_executed_harness_outside_inner_project_inventory() {
     let tools = root.path().join("tools");
     std::fs::create_dir(&tools).unwrap();
     let loom = tools.join("loom");
-    std::fs::write(&loom, "#!/usr/bin/env bash\n[[ \"$*\" == 'gate check --tree' ]] || exit 2\nprintf dispatched > \"$DISPATCH_RECORD\"\nexit 79\n").unwrap();
+    std::fs::write(&loom, loom_test_support::bash_script("[[ \"$*\" == 'gate check --tree' ]] || exit 2\nprintf dispatched > \"$DISPATCH_RECORD\"\nexit 79\n")).unwrap();
     std::fs::set_permissions(&loom, std::fs::Permissions::from_mode(0o755)).unwrap();
     let dispatch_record = root.path().join("dispatch");
     let mut search = vec![tools];
@@ -147,6 +147,8 @@ fn host_gate_result_writers_agree_with_the_actual_native_predicate() {
         })
         .collect();
     assert_eq!(writers.len(), 3);
+    let hook = root.path().join("pre-push-checks");
+    std::fs::write(&hook, include_str!("../../../bin/pre-push-checks")).unwrap();
     for writer in writers {
         let status = Command::new("bash")
             .args(["-c", writer])
@@ -165,6 +167,7 @@ fn host_gate_result_writers_agree_with_the_actual_native_predicate() {
                 "result-check",
                 "loom-smoke-result.txt",
             ])
+            .arg(&hook)
             .env("out", &out)
             .current_dir(root.path())
             .output()
@@ -339,7 +342,7 @@ fn failed_host_gate_fixture_retains_readonly_store_and_original_exit_without_cle
     let tmp = root.path().join("tmp");
     std::fs::create_dir(&tmp).unwrap();
     let launcher = root.path().join("failing-wrix");
-    std::fs::write(&launcher, "#!/usr/bin/env bash\nset -euo pipefail\nstore=\"$HOME/.local/share/nix/root/nix/store/readonly-source\"\nmkdir -p \"$store\"\nprintf preserved > \"$store/input\"\nchmod 0444 \"$store/input\"\nchmod 0555 \"$store\"\nexit 73\n").unwrap();
+    std::fs::write(&launcher, loom_test_support::bash_script("set -euo pipefail\nstore=\"$HOME/.local/share/nix/root/nix/store/readonly-source\"\nmkdir -p \"$store\"\nprintf preserved > \"$store/input\"\nchmod 0444 \"$store/input\"\nchmod 0555 \"$store\"\nexit 73\n")).unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
     let output = Command::new("bash")
         .arg("-c")

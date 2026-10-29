@@ -249,7 +249,7 @@ run_happy_path() {
     handle_probe 0
     local prompt_line payload bead_id
     read_prompt prompt_line
-    if [[ "${LOOM_SMOKE_WORKER:-0}" == "1" && "$prompt_line" == *"Issue: "* ]]; then
+    if [[ "${LOOM_SMOKE_WORKER:-0}" == "1" && "$prompt_line" == *"Purpose: implementation"* && "$prompt_line" == *"Issue: "* ]]; then
         bead_id="$(sed -n 's/.*Issue: \([a-z0-9.-]*\)\\n.*/\1/p' <<<"$prompt_line")"
         if [[ -z "$bead_id" ]]; then
             echo "mock-pi: smoke prompt missing bead id" >&2
@@ -261,7 +261,7 @@ run_happy_path() {
             echo "mock-pi: smoke workspace did not enable commit signing" >&2
             exit 6
         fi
-        printf 'implemented by mock pi\n' > loom-smoke-result.txt
+        printf 'implemented\n' > loom-smoke-result.txt
         git add loom-smoke-result.txt
         git commit -q -m "Implement smoke bead"
         bd close "$bead_id" >/dev/null

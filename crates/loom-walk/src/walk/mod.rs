@@ -602,22 +602,7 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "test_nix_surface_contract",
         run: test_nix_surface_contract::run,
-        inputs: |root, _input| {
-            vec![
-                root.join("flake.nix"),
-                root.join("nix/flake/apps.nix"),
-                root.join("nix/flake/checks.nix"),
-                root.join("nix/flake/lib.nix"),
-                root.join("nix/flake/tests.nix"),
-                root.join("nix/nextest-overlay.nix"),
-                root.join("scripts/full-test.sh"),
-                root.join("scripts/required-test.sh"),
-                root.join("tests/default.nix"),
-                root.join("tests/loom/default.nix"),
-                root.join("tests/run-tests.sh"),
-                root.join("tests/smoke/loop.sh"),
-            ]
-        },
+        inputs: |root, _input| test_nix_surface_contract::inputs(root),
         register: test_nix_surface_contract::register,
     },
     Walk {

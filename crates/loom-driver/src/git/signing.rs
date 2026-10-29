@@ -694,7 +694,7 @@ mod tests {
         std::fs::write(&deploy, "deploy").unwrap();
         std::fs::write(&signing, "signing").unwrap();
         let wrix = tmp.path().join("wrix");
-        std::fs::write(&wrix, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(&wrix, loom_test_support::bash_script("exit 0\n")).unwrap();
         std::fs::set_permissions(&wrix, std::fs::Permissions::from_mode(0o755)).unwrap();
         let policy = RepoGitPolicy::for_test(wrix, "repo-key".into(), deploy, signing);
 

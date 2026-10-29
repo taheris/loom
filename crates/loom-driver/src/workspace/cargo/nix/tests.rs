@@ -41,10 +41,10 @@ mod cases {
     fn app(root: &Path) -> PathBuf {
         let source = root.join("app");
         std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("flake.nix"), format!(
-            "{{ outputs = _: let app = {{ type = \"app\"; program = \"{}\"; }}; in {{ apps = builtins.listToAttrs (map (name: {{ inherit name; value.probe = app; }}) [ \"x86_64-linux\" \"aarch64-linux\" \"x86_64-darwin\" \"aarch64-darwin\" ]); }}; }}",
-            pinned().display(),
-        )).unwrap();
+        std::fs::copy(pinned(), source.join("nix")).unwrap();
+        std::fs::write(source.join("flake.nix"),
+            "{ outputs = { self }: let app = { type = \"app\"; program = \"${self}/nix\"; }; in { apps = builtins.listToAttrs (map (name: { inherit name; value.probe = app; }) [ \"x86_64-linux\" \"aarch64-linux\" \"x86_64-darwin\" \"aarch64-darwin\" ]); }; }",
+        ).unwrap();
         source
     }
 
@@ -73,8 +73,8 @@ mod cases {
                         "nix-command flakes",
                         "--no-write-lock-file",
                         "--store",
+                        "local",
                     ])
-                    .arg(root.join("store"))
                     .arg(format!("path:{}#probe", source.display()))
                     .args([
                         "--", "eval", "--store", "dummy://", "--impure", "--raw", "--expr",
@@ -85,7 +85,10 @@ mod cases {
                         "throw \"failure control\""
                     })
                     .env("HOME", root.join("home"))
-                    .env("XDG_CACHE_HOME", root.join("cache"));
+                    .env("XDG_CACHE_HOME", root.join("cache"))
+                    .env("NIX_STORE_DIR", root.join("store"))
+                    .env("NIX_STATE_DIR", root.join("nix-state"))
+                    .env("NIX_LOG_DIR", root.join("nix-log"));
                     let execution = verifier_command(&mut cmd, &source).unwrap();
                     let state = state(&cmd);
                     let output = cmd.output().unwrap();
@@ -104,8 +107,11 @@ mod cases {
                         "--extra-experimental-features",
                         "nix-command",
                         "--store",
+                        "local",
                     ])
-                    .arg(root.join("store"))
+                    .env("NIX_STORE_DIR", root.join("store"))
+                    .env("NIX_STATE_DIR", root.join("nix-state"))
+                    .env("NIX_LOG_DIR", root.join("nix-log"))
                     .output()
                     .unwrap();
                 assert!(output.status.success(), "{output:?}");

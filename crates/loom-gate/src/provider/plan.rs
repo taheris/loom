@@ -22,6 +22,7 @@ use crate::inventory::{Inventory, Name};
 /// ```
 pub struct Plan {
     snapshot: Snapshot,
+    platform: crate::scope::Platform,
     units: Vec<Unit>,
     baselines: BTreeSet<Name>,
     pending: Vec<crate::Annotation>,
@@ -121,6 +122,7 @@ impl Registry {
         snapshot.require_current()?;
         Ok(Plan {
             snapshot: snapshot.clone(),
+            platform: inventory.platform(),
             units: units.into_values().collect(),
             baselines,
             pending,
@@ -187,6 +189,9 @@ impl Registry {
             .collect();
         let mut units = Vec::new();
         for definition in self.definitions.values() {
+            if definition.platform != inventory.platform() {
+                return Err(Error::PlatformScope);
+            }
             if matches!(definition.execution, super::Execution::Report { .. }) {
                 continue;
             }
@@ -282,7 +287,7 @@ impl Plan {
     /// # Errors
     /// Any invalidated definition rejects the plan before the first unit executes.
     pub fn run(&self) -> Result<Vec<Observed>, Error> {
-        self.run_scoped(&crate::scope::Resolved::whole_tree())
+        self.run_scoped(&crate::scope::Resolved::whole_tree().with_platform(self.platform))
     }
 
     /// Apply the ordinary resolved scope to admitted inputs before dispatching selected units.

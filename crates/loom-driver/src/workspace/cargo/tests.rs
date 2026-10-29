@@ -344,7 +344,7 @@ pub(super) mod cases {
         let stdout = String::from_utf8(output.stdout)?;
         let child = stdout
             .lines()
-            .find_map(|line| line.strip_prefix("context="))
+            .find_map(|line| line.split_once("context=").map(|(_, value)| value))
             .ok_or_else(|| anyhow::anyhow!("copied native driver did not report its context"))?;
         assert_ne!(parent, child);
         Ok(())

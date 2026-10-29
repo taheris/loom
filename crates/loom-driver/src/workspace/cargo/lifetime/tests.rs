@@ -51,7 +51,7 @@ mod cases {
         let issuer = root.join("wrix");
         let observation = root.join("observation");
         let counter = root.join("counter");
-        fs::write(&issuer, format!("#!/usr/bin/env bash\nset -euo pipefail\n[[ \"$1\" == execution ]]\ncase \"$2\" in\nreserve) count=0; if [[ -f '{}' ]]; then read -r count < '{}'; fi; count=$((count+1)); printf '%s\\n' \"$count\" > '{}'; printf '%064x\\n' \"$count\";;\nreconcile) [[ \"${{#4}}\" == 64 ]]; cat '{}';;\n*) exit 2;;\nesac\n", counter.display(), counter.display(), counter.display(), observation.display())).unwrap();
+        fs::write(&issuer, format!("#!{shell}\nset -euo pipefail\n[[ \"$1\" == execution ]]\ncase \"$2\" in\nreserve) count=0; if [[ -f '{}' ]]; then read -r count < '{}'; fi; count=$((count+1)); printf '%s\\n' \"$count\" > '{}'; printf '%064x\\n' \"$count\";;\nreconcile) [[ \"${{#4}}\" == 64 ]]; cat '{}';;\n*) exit 2;;\nesac\n", counter.display(), counter.display(), counter.display(), observation.display(), shell = loom_test_support::bash_path().display())).unwrap();
         fs::set_permissions(&issuer, fs::Permissions::from_mode(0o700)).unwrap();
         issuer
     }
@@ -183,7 +183,7 @@ mod cases {
             fs::rename(&issuer, issuer.with_extension("old")).unwrap();
             fs::write(
                 &issuer,
-                "#!/usr/bin/env bash\nset -euo pipefail\nprintf '\"retired\"'\n",
+                loom_test_support::bash_script("set -euo pipefail\nprintf '\"retired\"'\n"),
             )
             .unwrap();
             fs::set_permissions(&issuer, fs::Permissions::from_mode(0o700)).unwrap();

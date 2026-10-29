@@ -318,6 +318,17 @@ this acceptance document owns Gate composition and authorization.
 
 ### Scope handling
 
+- Native admission cannot be upgraded by changing the selector
+  [test](native_admission_cannot_be_upgraded_by_an_all_platform_selector)
+- All-platform definitions cannot be readmitted as native definitions
+  [test](all_platform_definitions_cannot_be_readmitted_as_native_definitions)
+- Gate defaults to native platform selection independently of backend capability
+  [test](native_default_excludes_ownerless_foreign_baselines_without_claiming_passes)
+- Unknown platform policies fail parsing rather than falling back to native
+  [test](invalid_platform_policy_is_not_a_native_fallback)
+- Native hook evidence cannot cover an all-platform hook
+  [test](native_hook_coverage_cannot_authorize_an_all_platform_hook)
+
 - Resolved selection distinguishes explicit files (including empty), whole tree,
   and exact targets without mutable combinations of scope flags
   [test](resolved_scope_distinguishes_empty_tree_target_and_file_provenance)
@@ -518,6 +529,16 @@ subcommand invoked without an explicit scope or exact `--target` prints that
 subcommand's help and runs no verifier, review, cache lookup, bd write, or
 marker check. This includes bare `loom gate verify`: users must choose what
 trust surface they are asking about.
+
+Execution platform policy is orthogonal to input scope: `--platform native` is
+the default for deterministic gate commands and ordinary hooks. It does not
+schedule foreign execution because an emulator or extra Nix platform is
+available. Foreign automatic baselines remain visible as unverified; explicit
+foreign requirements remain nonpassing when inapplicable. `--platform all` is an
+explicit manual request for cross-platform verification, not a promise that
+foreign execution is available. Installing QEMU never silently expands routine
+publication requirements. Exact hook-entry evidence cannot cover a different
+platform argument. See [Verify](verify.md#verification-planning).
 
 The scope flag defines the **input set** — the files the gate is being asked
 about. The admitted dependency contract determines affectedness, including

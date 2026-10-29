@@ -1,3 +1,6 @@
+#[path = "nix/aliases.rs"]
+mod aliases;
+
 use super::{context, contracts, fixture, name, path, write};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -1373,7 +1376,10 @@ fn valid_unsupported_platform_is_inapplicable_not_an_invalid_contract_or_pass() 
         "flake.nix",
         &source.replace("x86_64-linux", "unsupported-loom-platform"),
     );
-    let (snapshot, inventory) = context(&dir);
+    let snapshot = loom_gate::inventory::snapshot::Snapshot::discover(dir.path()).unwrap();
+    let inventory =
+        loom_gate::inventory::Inventory::discover_for(&snapshot, loom_gate::scope::Platform::All)
+            .unwrap();
     let definition = Definition::hermetic(
         &snapshot,
         &inventory,
@@ -1512,6 +1518,19 @@ fn undeclared_existence_reads_cannot_change_only_the_native_runtime() {
         .replace("heading = checked.check {", "heading = let actual = checked.check {")
         .replace("    };\n  };", "    }; in actual // { loom = actual.loom // { runtime = if builtins.pathExists ./hidden.md then \"nix\" else \"native-cgroup\"; }; };\n  };"));
     assert!(matches!(failure(&dir), NixError::Partition));
+}
+
+#[test]
+fn delegated_runtimes_require_an_explicit_system_report() {
+    for runtime in ["native-cgroup", "native-container"] {
+        let dir = fixture();
+        native_project(&dir, "", true, true);
+        let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
+        write(dir.path(), "flake.nix", &flake
+            .replace("heading = checked.check {", "heading = let actual = checked.check {")
+            .replace("    };\n  };", &format!("    }}; in actual // {{ loom = actual.loom // {{ runtime = \"{runtime}\"; }}; }};\n  }};")));
+        assert!(matches!(failure(&dir), NixError::Result), "{runtime}");
+    }
 }
 
 #[test]

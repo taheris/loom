@@ -1,5 +1,9 @@
 # Import immutable upstream modules without derivation-backed evaluator inputs.
-{ pkgs, src }:
+{
+  pkgs,
+  src,
+  cargoGitHashes ? { },
+}:
 let
   inherit (builtins) scopedImport toString;
   inherit (pkgs.lib) hasPrefix hasSuffix;
@@ -36,6 +40,26 @@ let
       ) fenix.packages;
     };
 
+  pinnedCrane =
+    crane:
+    crane
+    // {
+      mkLib =
+        packages:
+        (crane.mkLib packages).overrideScope (
+          _final: previous: {
+            vendorCargoDeps =
+              args:
+              previous.vendorCargoDeps (
+                args
+                // {
+                  outputHashes = cargoGitHashes // (args.outputHashes or { });
+                }
+              );
+          }
+        );
+    };
+
   load =
     path:
     let
@@ -46,7 +70,39 @@ let
     if !hasPrefix "${root}/" filename then
       import path
     else if filename == "${root}/lib/default.nix" then
-      { fenix, ... }@args: original (args // { fenix = pinnedFenix fenix; })
+      { fenix, crane, ... }@args:
+      original (
+        args
+        // {
+          fenix = pinnedFenix fenix;
+          crane = pinnedCrane crane;
+        }
+      )
+    else if filename == "${root}/lib/services/rust.nix" then
+      { rustProfile, ... }@args:
+      original (
+        args
+        // {
+          rustProfile = rustProfile // {
+            buildPackage =
+              buildArgs:
+              let
+                workspace = rustProfile.buildPackage buildArgs;
+                patched =
+                  derivation:
+                  derivation.overrideAttrs (old: {
+                    patches = (old.patches or [ ]) ++ [ ./patches/wrix-storage-options.patch ];
+                  });
+              in
+              workspace
+              // {
+                bin = patched workspace.bin;
+                clippy = patched workspace.clippy;
+                nextest = patched workspace.nextest;
+              };
+          };
+        }
+      )
     else if filename == "${root}/lib/services/celler.nix" then
       { pkgs, craneLib }:
       let

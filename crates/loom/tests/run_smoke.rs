@@ -51,10 +51,7 @@ exit 0
         log = argv_log.display(),
         active = active,
     );
-    std::fs::write(&bd, script).unwrap();
-    let mut perm = std::fs::metadata(&bd).unwrap().permissions();
-    perm.set_mode(0o755);
-    std::fs::set_permissions(&bd, perm).unwrap();
+    loom_test_support::write_executable_bash_script(&bd, &script).unwrap();
     bin_dir
 }
 
@@ -108,10 +105,7 @@ exit 0
         log = argv_log.display(),
         active = active,
     );
-    std::fs::write(&bd, script).unwrap();
-    let mut perm = std::fs::metadata(&bd).unwrap().permissions();
-    perm.set_mode(0o755);
-    std::fs::set_permissions(&bd, perm).unwrap();
+    loom_test_support::write_executable_bash_script(&bd, &script).unwrap();
     bin_dir
 }
 
@@ -161,7 +155,7 @@ exit 0
         active = active,
         ready = ready,
     );
-    std::fs::write(&bd, script).unwrap();
+    std::fs::write(&bd, loom_test_support::bash_script(&script)).unwrap();
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
     perm.set_mode(0o755);
     std::fs::set_permissions(&bd, perm).unwrap();
@@ -295,8 +289,9 @@ fn loom_loop_missing_repository_keys_fails_before_bead_selection() {
     std::fs::write(
         &bd,
         format!(
-            "#!/bin/sh\nprintf invoked > {}\nexit 99\n",
-            bd_marker.display()
+            "#!{shell}\nprintf invoked > {}\nexit 99\n",
+            bd_marker.display(),
+            shell = loom_test_support::bash_path().display()
         ),
     )
     .unwrap();
@@ -361,9 +356,8 @@ fn loom_loop_startup_initializes_repository_git_policy() {
     let wrix = workspace.join("wrix");
     std::fs::write(
         &wrix,
-        format!(
-            r#"#!/bin/sh
-set -eu
+        loom_test_support::bash_script(&format!(
+            r#"set -eu
 printf 'cwd=%s\nargs=%s\ndeploy=%s\nsigning=%s\n' "$PWD" "$*" "$WRIX_DEPLOY_KEY" "$WRIX_SIGNING_KEY" > {}
 git config --local gpg.format ssh
 git config --local gpg.ssh.program wrix-git-sign
@@ -377,7 +371,7 @@ printf '#!/bin/sh\n' > .git/wrix/git-ssh
 chmod +x .git/wrix/git-ssh
 "#,
             wrix_log.display(),
-        ),
+        )),
     )
     .unwrap();
     let mut permissions = std::fs::metadata(&wrix).unwrap().permissions();

@@ -5,6 +5,7 @@
     {
       pkgs,
       loom,
+      config,
       smokeProfileManifest,
       smokeSandbox,
       smokeServiceImage,
@@ -32,6 +33,11 @@
           ;
         loomPackage = loom;
         smokePrekHooks = wrixLib.prekHooks;
+        smokeBeads = import ../native-smoke-beads.nix {
+          inherit pkgs;
+          upstream = import (inputs.wrix + "/lib/beads/package.nix") { inherit pkgs; };
+        };
+        smokeNix = import ../native-smoke-nix.nix { inherit pkgs; };
       };
       smokeRuntime = testsDeriv.loom-smoke;
       smokeScript = source "scripts/run-smoke.sh";
@@ -108,13 +114,20 @@
       };
       testApp = mkTestApp testAppConfig;
       requiredTestApp = mkTestApp requiredTestAppConfig;
+      decisionAdmissionRun = pkgs.writeShellScript "decision-admission-cases" ''
+        set -euo pipefail
+        mkdir "$TMPDIR/decision-archive"
+        exec cargo-nextest nextest run \
+          --archive-file ${config.packages.cargo-retention-archive}/archive.tar.zst \
+          --extract-to "$TMPDIR/decision-archive" --workspace-remap "$PWD" \
+          --no-fail-fast --ignore-default-filter --test-threads 2 \
+          -E 'package(=loom-workflow) & (test(decision_wait) | test(native_controller_counts_one_noop_source_and_five_distinct_decisions) | test(integrity_extension_requires_explicit_reusable_source_readmission))'
+      '';
       decisionAdmissionApp = mkTestApp {
         name = "test-decision-admission";
         runtimeInputs = testRuntimeInputs ++ [ pkgs.beads ];
         text = ''
-          bash scripts/configure-cargo-patches.sh
-          cargo nextest run -p loom-workflow --no-fail-fast --ignore-default-filter \
-            -E 'test(decision_wait) | test(native_controller_counts_one_noop_source_and_five_distinct_decisions) | test(integrity_extension_requires_explicit_reusable_source_readmission)'
+          exec bash ${../private-fixture-tests.sh} --test-process ${decisionAdmissionRun}
         '';
       };
       nativeUnitDriver = loom.craneLib.mkCargoDerivation {
@@ -153,6 +166,11 @@
           pkgs.bash
           pkgs.python3
           loom.toolchain
+        ]
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+          pkgs.systemd
+          pkgs.util-linux
+          pkgs.iproute2
         ];
         text = ''
           [[ $# == 0 ]] || exit 64
@@ -164,6 +182,9 @@
           git -C "$fixture" init -q
           git -C "$fixture" add --all
           python3 "$fixture/tests/verify/native-resources.py" "$fixture"
+          ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            cargo test -p loom-gate --features native-container-tests --lib -- --test-threads=1
+          ''}
           if ${nativeUnitDriver}/bin/native-isolation > "$fixture/native-observed.jsonl"; then
             cat "$fixture/native-observed.jsonl"
             ${nativeUnitDriver}/bin/native-reported ${nativeUnitDriver}/bin/loom
@@ -205,6 +226,12 @@
       fixtureRequiredTestApp = mkTestApp (
         requiredTestAppConfig // { runtimeInputs = fixtureRuntimeInputs; }
       );
+      bootstrapWrix = wrixLib.rustPackage.package;
+      bootstrapHooks = pkgs.runCommand "bootstrap-prek-hooks" { nativeBuildInputs = [ pkgs.bash ]; } ''
+        cp -R ${wrixLib.prekHooks} "$out"
+        chmod -R u+w "$out"
+        patchShebangs "$out"
+      '';
       fixtureProfile = pkgs.writeText "bootstrap-fixture-profile.json" ''{"profile":{"mounts":[]}}'';
       fixtureImage = pkgs.writeText "bootstrap-fixture-image.json" "{}";
       fixtureManifest = pkgs.writeText "bootstrap-fixture-manifest.json" (
@@ -213,7 +240,7 @@
             ref = "bootstrap-fixture";
             source = "${fixtureImage}";
             source_kind = "nix-descriptor";
-            launcher = "${wrixLauncher}/bin/wrix";
+            launcher = "${bootstrapWrix}/bin/wrix";
             profile_config = "${fixtureProfile}";
             native_preflight = "rust";
           };
@@ -234,13 +261,18 @@
               pkgs.openssh
               pkgs.coreutils
               pkgs.beads
+              pkgs.gnugrep
+              pkgs.openssl
+              bootstrapWrix
+              wrixLauncher
             ];
-            runtimeEnv.WRIX_PREK_HOOKS = wrixLib.prekHooks;
-            runtimeEnv.LOOM_WRIX_BIN = "${wrixLauncher}/bin/wrix";
+            runtimeEnv.WRIX_PREK_HOOKS = bootstrapHooks;
+            runtimeEnv.WRIX_PREK_RUNNER = "${wrixLauncher}/bin/wrix-prek";
+            runtimeEnv.LOOM_WRIX_BIN = "${bootstrapWrix}/bin/wrix";
             text = ''
               [[ $# == 0 ]] || exit 64
               exec ${pkgs.bash}/bin/bash ${builtins.head paths} \
-                ${loom.bin}/bin/loom ${wrixLauncher}/bin/wrix ${fixtureManifest} \
+                ${loom.bin}/bin/loom ${bootstrapWrix}/bin/wrix ${fixtureManifest} \
                 ${pkgs.bash} ${pkgs.coreutils} ${pkgs.stdenv.hostPlatform.system}
             '';
           };
@@ -269,6 +301,13 @@
         };
     in
     {
+      _module.args.profileBootstrapRegistration = pkgs.closureInfo {
+        rootPaths = [
+          fixtureManifest
+          pkgs.bash
+          pkgs.coreutils
+        ];
+      };
       packages = {
         smoke-runtime = nativePackage smokeRuntime;
       }

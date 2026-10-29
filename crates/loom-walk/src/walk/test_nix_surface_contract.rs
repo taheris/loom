@@ -10,6 +10,18 @@ struct FileContract {
     required: &'static [&'static str],
 }
 
+const CHECKS_PATH: &str = "nix/flake/checks.nix";
+
+/// Execution and declared reads share one source of truth, including mock-agent scripts.
+pub(super) fn inputs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    CONTRACTS
+        .iter()
+        .map(|contract| contract.path)
+        .chain(std::iter::once(CHECKS_PATH))
+        .map(|path| root.join(path))
+        .collect()
+}
+
 const CONTRACTS: &[FileContract] = &[
     FileContract {
         path: "flake.nix",
@@ -22,11 +34,22 @@ const CONTRACTS: &[FileContract] = &[
     FileContract {
         path: "nix/flake/lib.nix",
         required: &[
-            "smokeSandbox = wrixLib.mkSandbox",
+            "smokeWrixLib = wrixModules.library",
+            "nix = import ../native-smoke-nix.nix",
+            "smokeSandbox = smokeWrixLib.mkSandbox",
             "agentPkg = smokeMockPi;",
             "smokeProfileManifest = wrixLib.mkProfileImages",
             "nextestOverlay = import ../nextest-overlay.nix;",
             "overlays = [ nextestOverlay ];",
+        ],
+    },
+    FileContract {
+        path: "nix/native-smoke-nix.nix",
+        required: &[
+            "nix = import ./native-container-nix.nix",
+            "${nix}/bin/nix \"$@\" > \"$document\"",
+            "exec ${restriction}/bin/deny-namespaces ${nix}/bin/nix \"$@\"",
+            "exec ${nix}/bin/nix \"$@\"",
         ],
     },
     FileContract {
@@ -41,13 +64,12 @@ const CONTRACTS: &[FileContract] = &[
     },
     FileContract {
         path: "nix/flake/tests.nix",
-        required: &[
-            "packages.loom-tests = (import ../native-package.nix) testsDeriv.rustChecks.loom-tests;",
-        ],
+        required: &["packages.loom-tests = testsDeriv.rustChecks.loom-tests;"],
     },
     FileContract {
         path: "nix/workspace.nix",
         required: &[
+            "nextest = checked.cargo {",
             "extraResources =",
             "checked.resource {",
             "\"flake.nix\"",
@@ -79,8 +101,7 @@ const CONTRACTS: &[FileContract] = &[
     FileContract {
         path: "tests/loom/default.nix",
         required: &[
-            "loom-walk -- --from-specs",
-            "cargo nextest run --offline --locked --workspace --ignore-default-filter",
+            "loomTests = loomPackage.nextest;",
             "pkgs.prek",
             "LOOM_TEST_PROFILE_CONFIG",
             "LOOM_TEST_PRE_PUSH_CHECKS",
@@ -161,7 +182,7 @@ fn rule(input: &WalkInput) -> Verdict {
         }
     }
 
-    let checks_path = "nix/flake/checks.nix";
+    let checks_path = CHECKS_PATH;
     match read_to_string(input, &root.join(checks_path)) {
         Some(body) => {
             let archive_runner = body
@@ -180,7 +201,7 @@ fn rule(input: &WalkInput) -> Verdict {
                 }
             }
             for forbidden in ["loom-tests", "fuzz-loom", "loomTests"] {
-                if active_line_contains(&body, forbidden) {
+                if active_wiring_contains(&body, forbidden) {
                     violations.push(format!(
                         "{checks_path}: `{forbidden}` belongs outside flake checks",
                     ));
@@ -191,6 +212,66 @@ fn rule(input: &WalkInput) -> Verdict {
     }
 
     verdict_from(RULE, violations)
+}
+
+// Assertions inspect package metadata; they do not wire a package into checks.
+// Actual check keys are also asserted by the Nix native-stage-integrity check.
+fn active_wiring_contains(body: &str, needle: &str) -> bool {
+    body.lines().map(str::trim_start).any(|line| {
+        if line.starts_with('#') {
+            return false;
+        }
+        let wiring = if line.starts_with("assert ") {
+            line.split_once(';').map_or(line, |(_, rest)| rest)
+        } else {
+            line
+        };
+        wiring.contains(needle)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::active_wiring_contains;
+
+    #[test]
+    fn registered_nix_surface_walk_declares_its_mock_agent_and_runner_reads() {
+        let root = std::path::Path::new("/source");
+        let walk = crate::walk::lookup("test_nix_surface_contract").unwrap();
+        let inputs = (walk.inputs)(root, &crate::walk::WalkInput::default());
+        for path in [
+            "tests/mock-pi/pi.sh",
+            "tests/smoke/host-gate-test.sh",
+            "nix/workspace.nix",
+            "nix/flake/checks.nix",
+            "nix/native-smoke-nix.nix",
+        ] {
+            assert!(
+                inputs.contains(&root.join(path)),
+                "missing declared read: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_assertions_are_not_suite_bindings_but_real_wiring_is_rejected() {
+        assert!(!active_wiring_contains(
+            "assert config.packages.loom-tests.drvPath == loom.nextest.drvPath;",
+            "loom-tests",
+        ));
+        for wiring in [
+            "loom-tests = suite;",
+            "renamed-suite = packages.loom-tests;",
+            "inherit (packages) loom-tests;",
+            "assert true; packages.loom-tests;",
+        ] {
+            assert!(active_wiring_contains(wiring, "loom-tests"));
+        }
+        assert!(!active_wiring_contains(
+            "# loom-tests is on demand",
+            "loom-tests"
+        ));
+    }
 }
 
 fn active_line_contains(body: &str, needle: &str) -> bool {

@@ -29,6 +29,6 @@ _:
       };
     in
     {
-      packages.loom-tests = (import ../native-package.nix) testsDeriv.rustChecks.loom-tests;
+      packages.loom-tests = testsDeriv.rustChecks.loom-tests;
     };
 }

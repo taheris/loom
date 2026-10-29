@@ -82,9 +82,47 @@ export LOOM_TEST_STORAGE=1
 mkdir -p -- "$XDG_STATE_HOME/loom/trusted-cargo"
 # Tiny fixture checkouts reserve one MiB each; real allocated growth is still charged.
 printf '{"reservation_bytes":1048576}\n' > "$XDG_STATE_HOME/loom/trusted-cargo/policy.json"
+# Seed only declared readonly inputs into the packaged suite's disposable local store.
+if [[ "$fixture_process" == false && -n "${LOOM_TEST_NIX_REGISTRATION:-}" ]]; then
+  export NIX_REMOTE=local NIX_STORE_DIR=/nix/store
+  export NIX_STATE_DIR="$TMPDIR/nix-state" NIX_LOG_DIR="$TMPDIR/nix-log"
+  export NIX_CONF_DIR="$TMPDIR/nix-conf"
+  mkdir -p "$NIX_STATE_DIR" "$NIX_LOG_DIR" "$NIX_CONF_DIR"
+  printf '%s\n' \
+    'experimental-features = nix-command flakes' \
+    'build-users-group =' \
+    'require-sigs = true' \
+    'sandbox = true' \
+    'sandbox-fallback = false' \
+    'allow-import-from-derivation = false' \
+    'substituters =' \
+    'builders =' > "$NIX_CONF_DIR/nix.conf"
+  nix-store --load-db < "$LOOM_TEST_NIX_REGISTRATION"
+  # Initialize only this Nix-owned disposable build source, never an operator checkout.
+  git init -q
+  git add --all
+  git -c user.name='Loom native suite' -c user.email='native@example.invalid' \
+    -c commit.gpgsign=false commit -q -m 'Capture native suite source'
+fi
+
+writable_directories() {
+  local root="$1" child
+  if [[ -L "$root" || ! -d "$root" || ! -O "$root" ]]; then
+    return 0
+  fi
+  chmod u+w -- "$root"
+  for child in "$root"/* "$root"/.[!.]* "$root"/..?*; do
+    if [[ -d "$child" && ! -L "$child" ]]; then
+      writable_directories "$child"
+    fi
+  done
+}
+
 cleanup() {
   local rc=$?
   if [[ "$rc" == 0 ]]; then
+    # Nix copies are readonly; restore only owned directories without following symlinks.
+    writable_directories "$TMPDIR"
     rm -rf -- "$TMPDIR"
   else
     printf 'Failed fixture root retained at %s\n' "$TMPDIR" >&2

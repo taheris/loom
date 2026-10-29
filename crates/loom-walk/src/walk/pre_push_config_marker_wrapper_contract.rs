@@ -147,12 +147,7 @@ fn validate_local_pre_commit_hook(
         path,
         hook,
         "local",
-        if id == "loom-gate-verify-files" {
-            // Temporary manual-only Gate policy; sanitation stays automatic.
-            "manual"
-        } else {
-            "pre-commit"
-        },
+        "pre-commit",
         Some("system"),
         violations,
     );
@@ -192,23 +187,10 @@ fn validate_pre_push(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
         let Some(hook) = required_hook(path, hooks, id, violations) else {
             continue;
         };
-        // FIXME: Restore pre-push for Gate and full-suite hooks after stabilization.
-        let stage = if matches!(id, "loom-gate-verify-diff" | "full-test-suite") {
-            "manual"
-        } else {
-            "pre-push"
-        };
-        validate_binding(path, hook, "local", stage, Some("system"), violations);
+        validate_binding(path, hook, "local", "pre-push", Some("system"), violations);
     }
 
-    // Manual-only hooks still retain their publication wrapper contract.
-    for hook in hooks.iter().filter(|hook| {
-        hook.is_pre_push()
-            || matches!(
-                hook.id.as_str(),
-                "loom-gate-verify-diff" | "full-test-suite"
-            )
-    }) {
+    for hook in hooks.iter().filter(|hook| hook.is_pre_push()) {
         let Some(entry) = hook.entry.as_deref() else {
             violations.push(format!(
                 "{path}:{} pre-push hook `{}` has no entry",
@@ -626,6 +608,33 @@ mod tests {
 
     fn valid_config() -> String {
         include_str!("../../../../.pre-commit-config.yaml").to_owned()
+    }
+
+    #[test]
+    fn rejects_manual_suspension_of_each_automatic_gate_obligation() {
+        let original = valid_config();
+        for id in [
+            "loom-gate-verify-files",
+            "loom-gate-verify-diff",
+            "full-test-suite",
+        ] {
+            let start = original.find(&format!("      - id: {id}\n")).unwrap();
+            let end = original[start + 1..]
+                .find("      - id:")
+                .map_or(original.len(), |offset| start + 1 + offset);
+            let block = &original[start..end];
+            let manual = block
+                .replace("stages: [pre-commit]", "stages: [manual]")
+                .replace("stages: [pre-push]", "stages: [manual]");
+            assert_ne!(manual, block);
+            let config = original.replacen(block, &manual, 1);
+            let got = violations(".pre-commit-config.yaml", &config);
+            assert!(
+                got.iter()
+                    .any(|message| message.contains(id) && message.contains("stage")),
+                "{id}: {got:?}"
+            );
+        }
     }
 
     #[test]

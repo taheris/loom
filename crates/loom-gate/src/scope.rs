@@ -29,7 +29,7 @@
 //! when the direct crate-key lookup finds no crate.
 
 pub mod request;
-pub use request::{Request, Resolved};
+pub use request::{Platform, Request, Resolved};
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;

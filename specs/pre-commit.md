@@ -55,6 +55,12 @@ The exact hook ids, argv, file selectors, and ordering live only in
 `.pre-commit-config.yaml`; the configuration walk verifies that they realize
 this policy as one coherent stage graph.
 
+Ordinary hooks use Gate's default native execution policy. Foreign automatic
+baselines stay visible as unverified, not passing; emulator availability does
+not add QEMU execution to commits or pushes. Explicit foreign requirements
+remain nonpassing when inapplicable. Manual cross-platform requests use
+`--platform all` through the same admission path.
+
 The existing hook entrypoints establish
 [Gate's automatic applicability context](gate.md#automatic-applicability-context):
 ordinary pre-commit uses feedback; pre-push, including marker-free operator
@@ -68,6 +74,11 @@ Native prek sanitation avoids the Python bootstrap path, which is not portable
 to bare NixOS. The shell-reexec check rejects a shell script that re-executes
 itself through its shebang resolution rather than naming the interpreter; this
 keeps script fixtures runnable in Nix sandboxes where `/usr/bin/env` is absent.
+
+Native-default hook policy is verified by
+[test](native_default_excludes_ownerless_foreign_baselines_without_claiming_passes)
+and
+[test](advertised_foreign_capability_does_not_prepare_foreign_graphs_in_native_mode).
 
 ### Fast-feedback cost
 

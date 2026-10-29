@@ -543,9 +543,12 @@ fn trusted_command_at(
         .and_then(Path::parent)
         .ok_or_else(|| std::io::Error::other("trusted workspace has no controlling root"))?;
     if output.starts_with(controlling) || controlling.starts_with(output) {
-        return Err(std::io::Error::other(
-            "trusted Cargo output overlaps a source checkout",
-        ));
+        return Err(std::io::Error::other(format!(
+            "trusted Cargo output `{}` overlaps source checkout `{}` (workspace `{}`)",
+            output.display(),
+            controlling.display(),
+            workspace.display(),
+        )));
     }
     let prepared = if command.get_envs().any(|(name, value)| {
         name.as_encoded_bytes().starts_with(b"LD_") && value.is_some_and(|value| !value.is_empty())

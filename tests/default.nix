@@ -14,6 +14,8 @@
   smokeSandbox ? null,
   smokeServiceImage ? null,
   wrixLauncher ? null,
+  smokeBeads ? pkgs.beads,
+  smokeNix ? pkgs.nix,
   ...
 }:
 
@@ -27,6 +29,8 @@ let
       smokeSandbox
       smokeServiceImage
       wrixLauncher
+      smokeBeads
+      smokeNix
       ;
   };
 in

@@ -134,6 +134,7 @@ impl Definition {
             &description,
         ))?);
         Ok(Self {
+            platform: inventory.platform(),
             candidate: Candidate::SupportedEffect {
                 contract: wire::Contract {
                     target,

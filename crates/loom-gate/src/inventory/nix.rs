@@ -101,6 +101,7 @@ pub(super) fn discover(
     snapshot: &Snapshot,
     root: &Path,
     subjects: &mut BTreeMap<Name, Subject>,
+    platform: crate::scope::Platform,
 ) -> Result<BTreeMap<Name, std::sync::Arc<crate::provider::nix::Graph>>, Error> {
     let nix_files: BTreeSet<_> = snapshot
         .files()
@@ -181,7 +182,10 @@ pub(super) fn discover(
                 definition: (*flake).clone(),
                 source,
             })?;
-            let mut platforms = configuration.extra.value;
+            let mut platforms = match platform {
+                crate::scope::Platform::Native => BTreeSet::new(),
+                crate::scope::Platform::All => configuration.extra.value,
+            };
             platforms.insert(configuration.system.value.clone());
             (configuration.system.value, platforms)
         };
@@ -253,9 +257,9 @@ pub(super) fn discover(
                     if usage == Usage::Verification {
                         checks.insert(name.clone());
                     }
-                    // Extra native backends require the same actual resource
+                    // Explicit all-platform work requires the same actual resource
                     // provenance, not repeated isolated one-output reconstruction.
-                    // Unsupported platforms retain separate applicability duties.
+                    // Native requests never prepare foreign recipes from capability alone.
                     if registered && platforms.contains(&system) {
                         constructed.push(name.clone());
                     }

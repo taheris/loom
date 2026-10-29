@@ -43,6 +43,8 @@ pub struct Summary<'a> {
     shared_units: usize,
     executions: Vec<ExecutionSummary<'a>>,
     exclusions: Vec<Exclusion<'a>>,
+    /// Complete target identities keep omitted runtime coverage visible in ordinary output.
+    unverified_foreign: Vec<&'a Name>,
 }
 
 #[derive(Serialize)]
@@ -99,9 +101,13 @@ impl Explanation<'_> {
         let mut exclusions: Vec<Exclusion<'_>> = Vec::new();
         let mut selected_units = 0;
         let mut shared_units = 0;
+        let mut unverified_foreign = Vec::new();
         for decision in &self.decisions {
             match &decision.execution {
                 Execution::Excluded => {
+                    if matches!(decision.reason, Reason::OutsidePlatformScope { .. }) {
+                        unverified_foreign.push(decision.definition.target());
+                    }
                     if let Some(exclusion) = exclusions
                         .iter_mut()
                         .find(|entry| entry.reason == decision.reason)
@@ -150,6 +156,7 @@ impl Explanation<'_> {
             shared_units,
             executions,
             exclusions,
+            unverified_foreign,
         }
     }
 }

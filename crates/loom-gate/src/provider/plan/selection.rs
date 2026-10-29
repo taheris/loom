@@ -1,5 +1,6 @@
 //! Selection is a read-only projection; execution always retains the complete admitted closure.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -27,12 +28,18 @@ pub enum Stage {
 pub enum Reason {
     WholeTree,
     ExactTarget,
-    Affected { inputs: Vec<Input> },
+    Affected {
+        inputs: Vec<Input>,
+    },
     Unaffected,
     OtherTarget,
     EmptyFiniteScope,
     OtherLane,
     DeferredUntilPublication,
+    /// Foreign runtime coverage is unverified, not a passing or skipped native obligation.
+    OutsidePlatformScope {
+        system: Name,
+    },
 }
 
 impl Reason {
@@ -148,6 +155,9 @@ impl Plan {
         stage: Stage,
     ) -> Result<Selection<'_>, Error> {
         self.require_current()?;
+        if scope.platform() != self.platform {
+            return Err(Error::PlatformScope);
+        }
         let stage = if scope.target().is_some() {
             Stage::Diagnostic
         } else {
@@ -173,10 +183,17 @@ impl Plan {
                     .cloned()
                     .collect();
                 let baseline = (self.baselines.contains(unit.target())
+                    && unit.outside_platform_scope().is_none()
                     && tiers.contains(&native_tier(unit)))
                 .then(|| native_tier(unit));
                 let reason = if owners.is_empty() && baseline.is_none() {
-                    if lane_owners.is_empty() {
+                    if let Some(system) = unit.outside_platform_scope()
+                        && lane_owners.is_empty()
+                    {
+                        Reason::OutsidePlatformScope {
+                            system: system.clone(),
+                        }
+                    } else if lane_owners.is_empty() {
                         Reason::OtherLane
                     } else {
                         Reason::DeferredUntilPublication
@@ -292,7 +309,7 @@ pub(crate) fn same_execution(left: &Unit, right: &Unit) -> bool {
         (
             Execution::Nix(left) | Execution::Report { graph: left, .. },
             Execution::Nix(right) | Execution::Report { graph: right, .. },
-        ) => left.identity() == right.identity(),
+        ) => left.shares_execution_with(right),
         (Execution::NativePlatform(left), Execution::NativePlatform(right)) => {
             left.same_operation(right)
         }
@@ -339,6 +356,26 @@ impl<'a> Selection<'a> {
     /// Revalidates the whole context before any invocation, not only selected siblings.
     pub fn run(&self) -> Result<Vec<Invocation>, Error> {
         self.invocations()?.collect()
+    }
+
+    /// Capture all equivalent projections together, retaining decision order.
+    ///
+    /// Whole-context checks surround each fresh execution and its pure projections,
+    /// not each later delivery of an already captured historical fact. Consumers
+    /// must revalidate the plan before reporting current-scope success. No context
+    /// check is skipped before a subsequent effect; dropping this stream is lazy.
+    /// Use `invocations` when a caller needs revalidation between alias deliveries.
+    ///
+    /// # Errors
+    /// Rejects stale context even when no execution is selected.
+    pub fn observations(&self) -> Result<Observations<'_, '_>, Error> {
+        self.plan.require_current()?;
+        Ok(Observations {
+            selection: self,
+            decisions: self.decisions.iter(),
+            captured: BTreeMap::new(),
+            failed: false,
+        })
     }
 
     /// Stream fresh, current-run-shared observations without losing earlier
@@ -412,3 +449,69 @@ impl Iterator for Invocations<'_, '_> {
 }
 
 impl std::iter::FusedIterator for Invocations<'_, '_> {}
+
+/// Invocation-local facts, never cached verdicts or current-context authority.
+///
+/// Alias projections are captured atomically around one actual execution; later
+/// deliveries do not launch callbacks or reinterpret them under a new context.
+/// The first error permanently stops execution, including after source repair.
+pub struct Observations<'selection, 'plan> {
+    selection: &'selection Selection<'plan>,
+    decisions: std::slice::Iter<'selection, Decision<'plan>>,
+    captured: BTreeMap<Name, Invocation>,
+    failed: bool,
+}
+
+impl Iterator for Observations<'_, '_> {
+    type Item = Result<Invocation, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        let decision = self.decisions.find(|decision| decision.reason.selected())?;
+        if let Some(captured) = self.captured.remove(decision.unit.target()) {
+            return Some(Ok(captured));
+        }
+        let result = (|| {
+            self.selection.plan.require_current()?;
+            let clock = loom_driver::clock::SystemClock::new();
+            let start = loom_driver::clock::Clock::now(&clock);
+            let observed = decision.unit.run()?;
+            let duration = loom_driver::clock::Clock::now(&clock).saturating_duration_since(start);
+            let mut captured = BTreeMap::new();
+            for alias in self.selection.decisions.iter().filter(|alias| {
+                alias.reason.selected()
+                    && alias.unit.target() != decision.unit.target()
+                    && same_execution(alias.unit, decision.unit)
+            }) {
+                captured.insert(
+                    alias.unit.target().clone(),
+                    Invocation {
+                        observed: alias.unit.project_observed(&observed)?,
+                        duration,
+                        owners: alias.owners.clone(),
+                        baseline: alias.baseline,
+                        shared_with: Some(decision.unit.target().clone()),
+                    },
+                );
+            }
+            // No projection escapes if the callback invalidated even an excluded sibling.
+            self.selection.plan.require_current()?;
+            self.captured.extend(captured);
+            Ok(Invocation {
+                observed,
+                duration,
+                owners: decision.owners.clone(),
+                baseline: decision.baseline,
+                shared_with: None,
+            })
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        Some(result)
+    }
+}
+
+impl std::iter::FusedIterator for Observations<'_, '_> {}

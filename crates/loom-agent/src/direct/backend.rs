@@ -416,8 +416,8 @@ mod tests {
         let config_log = root.path().join("spawn-config-copy.json");
         fs::write(
             &launcher,
-            r#"#!/usr/bin/env bash
-set -euo pipefail
+            loom_test_support::bash_script(
+                r#"set -euo pipefail
 printf '%s\n' "$@" > "$WRIX_TEST_ARGV_LOG"
 printf '%s\n' "$WRIX_AGENT" > "$WRIX_TEST_ENV_LOG"
 spawn_config=""
@@ -437,6 +437,7 @@ cp "$spawn_config" "$WRIX_TEST_CONFIG_LOG"
 IFS= read -r _prompt
 printf '%s\n' '{"type":"session_complete","exit_code":0}'
 "#,
+            ),
         )
         .expect("write fake wrix");
         let mut permissions = fs::metadata(&launcher)

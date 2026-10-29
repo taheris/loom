@@ -78,7 +78,7 @@ impl Admission {
             Snapshot::discover(workspace).context("capture current verification inputs")?;
         require_explicit_inputs(&snapshot, scope)?;
         captured_skip_policies(&snapshot)?;
-        let inventory = Inventory::discover(&snapshot)
+        let inventory = Inventory::discover_for(&snapshot, scope.platform())
             .context("discover independent native verification obligations")?;
         let annotations: Vec<_> = declarations
             .into_iter()
@@ -158,7 +158,7 @@ impl Admission {
         match self {
             Self::Whole(plan, _) => {
                 let selection = plan.select(scope)?;
-                for invocation in selection.invocations()? {
+                for invocation in selection.observations()? {
                     let invocation = invocation?;
                     failures.extend(mint_observation(
                         invocation.observed(),
@@ -174,6 +174,7 @@ impl Admission {
                 }
             }
         }
+        self.require_current()?;
         Ok(failures)
     }
 

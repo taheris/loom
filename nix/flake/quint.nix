@@ -75,6 +75,7 @@ _: {
       remediationAcceptance = loom.craneLib.buildPackage {
         pname = "loom-remediation-acceptance";
         version = "1";
+        LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
         src = loom.stagedSrc;
         inherit (loom) cargoArtifacts cargoVendorDir;
         buildPhaseCargoCommand = "cargo test --release --locked --package loom-workflow --lib --no-run";

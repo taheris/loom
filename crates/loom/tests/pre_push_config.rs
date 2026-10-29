@@ -32,14 +32,11 @@ impl Fixture {
         .expect("copy actual native source preflight");
         std::fs::write(workspace.join("flake.nix"), "{ outputs = { self }: {}; }\n")
             .expect("empty native output fixture");
-        // These tests exercise the retained Gate hook behavior explicitly,
-        // independently of the temporary automatic-stage suspension.
-        let config = std::fs::read_to_string(source_root.join(".pre-commit-config.yaml"))
-            .expect("read pre-commit config");
-        let config = config.replacen("stages: [manual]", "stages: [pre-commit]", 1);
-        let config = config.replace("stages: [manual]", "stages: [pre-push]");
-        std::fs::write(workspace.join(".pre-commit-config.yaml"), config)
-            .expect("write explicitly enabled Gate fixture");
+        std::fs::copy(
+            source_root.join(".pre-commit-config.yaml"),
+            workspace.join(".pre-commit-config.yaml"),
+        )
+        .expect("copy actual hook policy");
         std::fs::copy(
             source_root.join("bin/pre-push-checks"),
             workspace.join("bin/pre-push-checks"),
@@ -301,15 +298,8 @@ fn run_shell_reexec_check(source: &str) -> Output {
 }
 
 #[test]
-fn automatic_push_temporarily_omits_gate_verify_and_required_suite() {
+fn automatic_push_includes_gate_verify_and_required_suite() {
     let fixture = Fixture::new();
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    std::fs::copy(
-        source.join(".pre-commit-config.yaml"),
-        fixture.workspace.join(".pre-commit-config.yaml"),
-    )
-    .expect("use actual suspended hook policy");
-    git(&fixture.workspace, &["add", ".pre-commit-config.yaml"]);
     install_recording_command(&fixture.tools, "nix");
     let base = fixture.head();
     let head = fixture.commit("notes.txt", "changed\n", "Change pushed file");
@@ -320,12 +310,12 @@ fn automatic_push_temporarily_omits_gate_verify_and_required_suite() {
             .any(|line| line.starts_with("nix\tflake\tcheck"))
     );
     assert!(
-        !lines
+        lines
             .iter()
             .any(|line| line.starts_with("nix\trun\t.#test-required"))
     );
     assert!(
-        !lines
+        lines
             .iter()
             .any(|line| line.starts_with("loom\tgate\tverify"))
     );

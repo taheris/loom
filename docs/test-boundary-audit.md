@@ -2,8 +2,9 @@
 
 This records historical implementation checkpoints and the continuation of
 `lm-510x`, not final acceptance. The cleanup and native-provider implementation
-landed together; automatic hook restoration remains outstanding. A passing
-source walk is not runtime/backend conformance.
+landed together. The continuation restores automatic stage bindings; that is not
+an assertion of whole-request readiness on a host with an unavailable backend. A
+passing source walk is not runtime/backend conformance.
 
 ## Responsibility inventory
 
@@ -189,3 +190,54 @@ block closure. A full native diagnostic also caught the compact report omitting
 lane labels; those labels are restored rather than weakening the scope-policy
 assertion. Focused passes and interrupted/failed full runs do not establish
 complete acceptance.
+
+## Non-ARM hook continuation
+
+Automatic files, pushed-range and required-suite hooks are bound to their real
+stages again. The policy validator rejects manually suspending any of those
+obligations; integration fixtures copy the shipped configuration unchanged.
+Missing capability remains a non-success, not an accepted skip. ARM activation
+and ARM execution are outside this continuation's operator-authorized scope. No
+platform, sandbox boundary, native suite or independent acceptance was removed.
+
+The CLI captures equivalent alias projections in one invocation-local batch.
+Complete context checks surround each fresh execution and its pure projections,
+and the CLI rechecks context after reporting before returning success. Already
+captured facts are historical observations, not current-context authority. A
+later callback always requires fresh context; errors permanently stop the
+stream. The interleaving-safe iterator remains available for callers requiring
+validation between individual alias deliveries. Nothing reuses verdicts across
+requests.
+
+Native installable aliases retain distinct construction identities and ownership
+bindings. Sharing compares every graph field except that identity and its lookup
+address, including complete nodes, resources, source provenance, compiler facts,
+reports and native launcher capabilities. Equal command strings are
+insufficient. Current-platform compiler discovery reuses its captured native
+graphs even when other supported platforms are also present; inventory and
+execution coverage for those other platforms are unchanged.
+
+`loom-tests` now aliases the canonical complete Nextest producer instead of
+maintaining another full-suite derivation. The dedicated fast source check keeps
+registered source analysis. Nix assertions check the alias's derivation, fixed
+Cargo operation and compiler catalogue. Actual native alias tests retain
+separate owners, verify fresh execution on another request and reject sharing
+with a separate graph even when its command is identical.
+
+The packaged suite carries explicit runtime tools and immutable native fixtures.
+Its disposable local Nix database registers the declared compiler, source and
+query closure. Ordinary suite tooling uses the genuine Wrix Git/hook CLI without
+host-service bindings or their recipe catalogue; production managed launchers
+keep their service bindings. Offline compiler queries receive their actual Crane
+and NoCC SDK closures and pinned Rust manifest. Existing Cargo Git revisions
+also carry explicit Nar-hash pins rather than depending on an ambient evaluator
+fetcher cache. These are declared prerequisites, not upstream backend
+verification campaigns. Fixture scripts use actual interpreter paths. Dolt
+fixtures initialize their database before serving it and require a bounded
+read-only readiness query. UI forgery tests keep their trait-bound diagnostics
+local rather than depending on vendor paths. These repairs retain the complete
+suite and closed sandbox policy.
+
+Verification results and actual timings belong in the continuation's external
+closeout evidence and Beads record. The historical failed/interrupted timings
+above are not converted into passing cold/warm automatic-hook measurements.

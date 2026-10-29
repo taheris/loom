@@ -27,6 +27,7 @@ pub enum Runtime {
     #[default]
     Nix,
     NativeCgroup,
+    NativeContainer,
 }
 
 /// One immutable Nix store object, never an arbitrary host path or installable expression.
@@ -332,6 +333,15 @@ impl Definition {
             }
             .into());
         }
+        if matches!(offering, Offering::Explicit { .. })
+            && inventory.platform() == crate::scope::Platform::Native
+            && binding.usage() == crate::inventory::nix::Usage::Inapplicable
+        {
+            return Err(Error::PlatformScope {
+                subject: native.clone(),
+            }
+            .into());
+        }
         if matches!(offering, Offering::Baseline)
             && binding.usage() == crate::inventory::nix::Usage::Inapplicable
             && let Some(definition) =
@@ -452,6 +462,7 @@ impl Definition {
             &execution,
         ))?);
         Ok(Self {
+            platform: inventory.platform(),
             candidate: Candidate::HermeticNix {
                 contract: wire::Contract {
                     target,
@@ -959,7 +970,7 @@ impl Graph {
             operation.require_execution(nodes.get(executable).ok_or(Error::Root)?)?;
         }
         require_catalogue(&definition, &nodes)?;
-        if definition.runtime == Runtime::NativeCgroup
+        if definition.runtime != Runtime::Nix
             && (definition
                 .report
                 .as_ref()
@@ -1140,10 +1151,10 @@ impl Graph {
             system: native.system().clone(),
             attribute: native.attribute().clone(),
         };
-        let managed = if definition.runtime == Runtime::NativeCgroup {
-            managed::Executor::capture()?
-        } else {
+        let managed = if definition.runtime == Runtime::Nix {
             None
+        } else {
+            managed::Executor::capture(definition.runtime)?
         };
         let provenance: Vec<_> = sources
             .iter()
@@ -1211,6 +1222,57 @@ impl Graph {
 
     pub const fn identity(&self) -> &Digest {
         &self.identity
+    }
+
+    /// Compare actual execution and source facts, not the installable's lookup address.
+    /// Distinct aliases retain their own construction identities and claim bindings.
+    pub(crate) fn shares_execution_with(&self, other: &Self) -> bool {
+        if std::ptr::eq(self, other) {
+            return true;
+        }
+        // New graph fields require an explicit sharing decision, not command-string equality.
+        let Self {
+            tool,
+            artifact,
+            root,
+            source,
+            inputs,
+            origins,
+            explicit_file_origins,
+            evaluation_origins,
+            nodes,
+            provenance,
+            resources,
+            kind,
+            evaluation,
+            cargo,
+            catalogue,
+            report,
+            reporter,
+            runtime,
+            managed,
+            identity: _,
+            locator: _,
+        } = self;
+        root == &other.root
+            && tool == &other.tool
+            && artifact == &other.artifact
+            && source == &other.source
+            && inputs == &other.inputs
+            && origins == &other.origins
+            && explicit_file_origins == &other.explicit_file_origins
+            && evaluation_origins == &other.evaluation_origins
+            && nodes == &other.nodes
+            && provenance == &other.provenance
+            && resources == &other.resources
+            && kind == &other.kind
+            && evaluation == &other.evaluation
+            && cargo == &other.cargo
+            && catalogue == &other.catalogue
+            && report == &other.report
+            && reporter == &other.reporter
+            && runtime == &other.runtime
+            && managed == &other.managed
     }
 
     pub const fn derivation(&self) -> &StorePath {
@@ -1421,7 +1483,18 @@ impl Graph {
                 }],
             ));
         }
-        if self.runtime == Runtime::NativeCgroup {
+        if self.runtime != Runtime::Nix {
+            if root.system != platform.system.value {
+                return Ok(Observed::execution(
+                    target,
+                    Outcome::Inapplicable {
+                        system: root.system.clone(),
+                    },
+                    vec![Observation::ExecutionGraph {
+                        digest: self.identity.clone(),
+                    }],
+                ));
+            }
             return self.run_managed(target, contract.ok_or(Error::Result)?);
         }
         let fresh = if requested == &self.root && contract.is_some() {
@@ -1951,6 +2024,8 @@ pub enum Error {
     Outside { subject: Name },
     /// native Nix subject `{subject:?}` is not a discovered derivation; correct the project target and retry `loom gate verify`
     Native { subject: Name },
+    /// foreign provider `{subject:?}` requires explicit all-platform discovery; use --platform all for manual verification
+    PlatformScope { subject: Name },
     /// native app `{subject:?}` is a host program, not a hermetic execution; bind a checked derivation or its specifically supported effect and retry `loom gate verify`
     App { subject: Name },
     /// native source omits `{path:?}` required by subject `{subject:?}`; construct its actual resource and retry `loom gate verify`

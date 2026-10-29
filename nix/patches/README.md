@@ -126,7 +126,71 @@ Remove the overlay and native override once an upstream release passes these
 regressions without them. A patch-application failure after a dependency update
 requires review rather than silently falling back to the recovering parser.
 
+## Restricted native-container proc
+
+`nix-restricted-proc.patch` is used only by `../native-container-nix.nix`, not
+the ordinary Nix toolchain. Its namespace probe and actual sandbox both mount
+`subset=pid` with nosuid/nodev/noexec. A hidden user-namespace sysctl does not
+suppress the real clone probe. Unsupported kernels fail the actual mount; there
+is no unrestricted retry or sandbox fallback. The group-drop requirement is
+unchanged. The package retains its complete upstream tests, declaring their
+shell interpreters and gzip pipeline directly rather than relying on `/bin/sh`
+inside a closed builder. Existing upstream skips are not native smoke coverage.
+
+## Nextest compiler archive reproducibility
+
+`../normalize-nextest-archive.sh` canonicalizes packaging headers for the
+retention and compatibility compiler archives. Nextest records wall-clock mtimes
+on freshly linked binaries and its metadata JSON; otherwise identical rebuilds
+therefore differ. The compiler archive recipes also request Cargo's standard
+release symbol stripping: LLVM's unused anonymous symbol suffixes can vary even
+when every runtime section is identical. This does not omit tests or change
+runtime code. Packaging normalization then preserves the compiler's payload
+bytes, paths, links and executable modes. The reproducibility check varies input
+timestamps, compares normalized archives, verifies restored
+contents/modes/links, and rejects malformed input. Ordinary Gate rebuild
+validation remains enabled; no nondeterminism exemption or cached behavioral
+verdict is introduced.
+
+## Native appliance kernel
+
+`linux-kconfig-shell.patch` supplies immutable Bash to Kconfig shell execution
+and header archive generation. Source enumeration uses Perl's argument-vector
+pipe rather than an implicit `/bin/sh`. OID generation uses core Perl arbitrary-
+precision binary conversion instead of unchecked shell/`bc` pipelines. Without
+that repair a closed builder can silently generate incorrect OIDs and reject
+valid module-signature containers. `../tests/kernel-oid-registry.py`
+independently checks every encoded OID, offset, lookup hash and lookup ordering
+before the kernel is built. Module-signature verification remains enabled.
+
+`../native-container-kernel.nix` declares the finite appliance module inventory,
+retains the full kernel configuration, and rejects changes to enabled security
+settings when pruning unrelated drivers. It requires a healthy guest firewall,
+not a disabled firewall or a missing-module exemption. The native KVM kernel is
+the fixed launch boundary; there is no emulation or failed-sandbox fallback. Its
+static `../native-store-projection.c` constructor runs only in that guest,
+projects the already admitted read-only store, and fails closed on empty,
+writable or unsupported input views. It replaces duplicate per-object service
+setup without granting access to other host store objects. Successful private
+working disks receive a lossless QCOW2 archive and logical-image comparison;
+only that invocation's verified working representation is retired.
+
+The disposable smoke SDK adapters in `../native-smoke-nix.nix` and
+`../native-smoke-beads.nix` do not modify ordinary Nix or Beads packages. They
+retain real strict builds and upstream scoped credential/sync handling. Outage
+injection only adds namespace-denial restrictions to a real Nix child; it never
+manufactures a passing result.
+
 ## Upstream Wrix sources
+
+`wrix-storage-options.patch` preserves the actual Podman graph driver options
+when constructing Skopeo's explicit store reference, including executable-valued
+mount-program metadata. An explicit store otherwise discards the configured
+single-caller ownership mode. Malformed options do not invent a store reference;
+normal configured storage remains the existing default. The immutable runtime
+package, Clippy and Nextest producers receive the same source patch without
+import-from-derivation. The smoke declares single-caller storage before import;
+no subordinate mapping helper or runtime retry is enabled.
 
 Wrix `2ac6d00adaeb117b05c6e999d9ac8e048ec6ab26` incorporates the Git-helper Bash
 invocation, immutable-store known-hosts handling and private-Nix test

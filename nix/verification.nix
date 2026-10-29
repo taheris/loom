@@ -100,6 +100,7 @@ let
     assert builtins.elem runtime [
       "nix"
       "native-cgroup"
+      "native-container"
     ];
     assert runtime == "nix" || tier == "system";
     assert
@@ -187,6 +188,10 @@ let
         "LOOM_NATIVE_FLOCK_BIN"
         "LOOM_NATIVE_SHELL_BIN"
         "LOOM_NATIVE_STAT_BIN"
+        "LOOM_TEST_NIX_REGISTRATION"
+        "LOOM_TEST_NIX_INPUTS"
+        "LOOM_NATIVE_RUST_FIXTURE"
+        "LOOM_NATIVE_SMOKE_FIXTURE"
         "SSL_CERT_FILE"
         "GIT_CONFIG_GLOBAL"
       ];

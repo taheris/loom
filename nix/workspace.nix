@@ -11,6 +11,8 @@
   fenix,
   src,
   toolchain ? null,
+  nativeTestInputs ? [ ],
+  nativeTestSources ? [ ],
 }:
 
 let
@@ -206,6 +208,17 @@ let
           inherit cargoArtifacts;
           doCheck = false;
         }
+        // optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          # LLVM's private ThinLTO symbol suffixes can vary between identical
+          # builds. Remove only these compiler-internal symbol records, keeping
+          # loaded sections, dynamic exports and ordinary Rust symbols intact.
+          # Gate still rebuilds and compares the complete installed output.
+          postFixup = ''
+            for program in "$out"/bin/*; do
+              ${pkgs.binutils-unwrapped}/bin/strip --wildcard '--strip-symbol=*.llvm.*' "$program"
+            done
+          '';
+        }
       );
   };
 
@@ -216,6 +229,7 @@ let
     args = commonArgs // {
       LOOM_PREK_BIN = "${hookRunner}/bin/prek";
       src = stagedSrc;
+      LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
       inherit cargoArtifacts;
     };
   };
@@ -243,6 +257,72 @@ let
     };
   };
 
+  nativeSmokeFixture = import ./tests/native-smoke-fixture.nix { inherit pkgs; };
+  # Metadata-only query; the supplied compiler closure is rooted below.
+  queryCompiler = builtins.unsafeDiscardStringContext (toString resolvedToolchain);
+  queryPackage = (craneLib.overrideToolchain queryCompiler).buildPackage {
+    pname = "native-probe";
+    version = "0.1.0";
+    src = cleanedSrc;
+    cargoArtifacts = null;
+    cargoVendorDir = commonArgs.cargoVendorDir;
+  };
+  testInputs = [
+    pkgs.cacert
+    pkgs.cargo-nextest
+    pkgs.dolt
+    pkgs.beads
+    pkgs.flock
+    pkgs.jq
+    pkgs.openssh
+    pkgs.sccache
+    pkgs.nix
+    pkgs.python3
+    hookRunner
+    bin
+  ]
+  ++ nativeTestInputs;
+  testRegistration = pkgs.closureInfo {
+    rootPaths =
+      testInputs
+      ++ queryPackage.nativeBuildInputs
+      ++ queryPackage.buildInputs
+      ++ [ queryPackage.stdenv ]
+      ++ nativeTestSources
+      ++ map (resource: resource.path) extraResources
+      ++
+        map
+          (
+            name:
+            builtins.path {
+              path = pkgs.path + "/pkgs/stdenv/generic/${name}";
+              inherit name;
+            }
+          )
+          [
+            "builder.sh"
+            "default-builder.sh"
+            "setup.sh"
+            "source-stdenv.sh"
+          ]
+      ++ [
+        resolvedToolchain
+        pkgs.stdenv
+        pkgs.stdenvNoCC
+        stagedSrc
+        cleanedSrc
+        commonArgs.cargoLock
+        commonArgs.cargoToml
+        cargoConfig
+        commonArgs.cargoVendorDir
+        cargoArtifacts
+        nativeRustFixture
+        nativeSmokeFixture
+        ./report-supervisor.sh
+        ./private-fixture-tests.sh
+      ];
+  };
+
   nextest = checked.cargo {
     inherit craneLib evaluation;
     operation = "test";
@@ -252,18 +332,19 @@ let
       LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
       src = stagedSrc;
       inherit cargoArtifacts;
-      nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
-        pkgs.cacert
-        pkgs.cargo-nextest
-        pkgs.dolt
-        pkgs.flock
-        pkgs.jq
-        pkgs.openssh
-        pkgs.sccache
-      ];
+      nativeBuildInputs = commonArgs.nativeBuildInputs ++ testInputs;
+      LOOM_TEST_NIX_REGISTRATION = "${testRegistration}/registration";
+      LOOM_TEST_NIX_INPUTS = nativeTestSources;
+      LOOM_NATIVE_RUST_FIXTURE = nativeRustFixture;
+      LOOM_NATIVE_SMOKE_FIXTURE = nativeSmokeFixture;
       GIT_CONFIG_GLOBAL = "${stagedSrc}/tests/fixtures/git/test-gitconfig";
       SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
     };
+  };
+  nativeRustFixture = import ./tests/native-rust-fixture.nix {
+    inherit pkgs crane;
+    toolchain = resolvedToolchain;
+    nextest = pkgs.cargo-nextest;
   };
 in
 {
@@ -280,6 +361,7 @@ in
     stagedSrc
     workspaceSource
     testResources
+    testRegistration
     ;
   cargoVendorDir = commonArgs.cargoVendorDir;
   toolchain = resolvedToolchain;

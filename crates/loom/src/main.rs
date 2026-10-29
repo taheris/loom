@@ -187,6 +187,9 @@ struct GateVerifyMarkerArgs {
         .required(false),
 ))]
 struct GateScopeArgs {
+    /// Execution platforms: native (default) or all (explicit foreign verification).
+    #[arg(long, default_value = "native", value_name = "native|all")]
+    platform: loom_gate::scope::Platform,
     /// Scope to verifiers whose declared inputs intersect this file set.
     #[arg(long, value_name = "PATH", value_delimiter = ',', num_args = 1..)]
     files: Vec<PathBuf>,
@@ -223,6 +226,7 @@ struct GateStatusArgs {
 impl From<GateStatusArgs> for GateScopeArgs {
     fn from(args: GateStatusArgs) -> Self {
         Self {
+            platform: loom_gate::scope::Platform::Native,
             files: args.files,
             target: None,
             diff: args.diff,
@@ -1294,11 +1298,12 @@ fn run_gate(
         Some(GateSubcommand::Review(args)) => (GateOperation::Review(args.bead), args.scope),
         Some(GateSubcommand::Rubric(args)) => (GateOperation::Rubric, args),
     };
+    let platform = args.platform;
     let Some(request) = args.into_request()? else {
         return print_gate_subcommand_help(operation.name());
     };
     operation.validate(&request)?;
-    let scope = resolve_gate_scope(workspace, request)?;
+    let scope = resolve_gate_scope(workspace, request)?.with_platform(platform);
     if let GateOperation::Tier(tier) = operation {
         validate_target_for_tier(workspace, &scope, tier)?;
     }
@@ -1883,7 +1888,7 @@ fn dispatch_checked(
     };
     let mut invocations = whole_selection
         .as_ref()
-        .map(loom_gate::provider::plan::selection::Selection::invocations)
+        .map(loom_gate::provider::plan::selection::Selection::observations)
         .transpose()?;
     admission.require_current()?;
     if let Some(explanation) = admission.explain(args, tiers)? {
@@ -2088,6 +2093,8 @@ fn dispatch_checked(
             persist_outcome(workspace, cache, &outcome, verdict, now_ms, &commit);
         }
     }
+    // Historical alias facts cannot authorize success after reporting changes the context.
+    admission.require_current()?;
     Ok(combined)
 }
 

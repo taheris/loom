@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod cases {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
     use super::super::*;
 
     #[test]
@@ -147,6 +149,15 @@ mod cases {
             let _execution = verifier_command(&mut command, source.path()).unwrap();
             assert!(command.status().unwrap().success());
             fs::write(temporary.join("diagnostic"), b"fixture").unwrap();
+            let readonly = temporary.join("readonly");
+            fs::create_dir(&readonly).unwrap();
+            fs::write(readonly.join("input"), b"immutable input").unwrap();
+            fs::set_permissions(&readonly, fs::Permissions::from_mode(0o555)).unwrap();
+            symlink(
+                std::env::var_os("LOOM_FIXTURE_OUTSIDE").unwrap(),
+                temporary.join("outside"),
+            )
+            .unwrap();
             println!("fixture-state={}", std::env::var("XDG_STATE_HOME").unwrap());
             return;
         }
@@ -154,6 +165,10 @@ mod cases {
         let operator = fixture.path().join("operator-state");
         fs::create_dir(&operator).unwrap();
         fs::write(operator.join("sentinel"), b"protected").unwrap();
+        let outside = fixture.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("input"), b"protected").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o555)).unwrap();
         let runner =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/run-private-fixture-tests");
         for code in [0, 0, 23, 23] {
@@ -164,6 +179,7 @@ mod cases {
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", "workspace::cargo::discovery_tests::cases::private_fixture_runner_isolates_descendants_and_retains_failure_evidence", "--nocapture"])
             .env("LOOM_FIXTURE_STORAGE_CHILD", "1")
+            .env("LOOM_FIXTURE_OUTSIDE", &outside)
             .env("FIXTURE_EXIT", code.to_string())
             .env("XDG_STATE_HOME", &operator)
             .env("CARGO_TARGET_DIR", fixture.path().join("ambient"))
@@ -179,7 +195,7 @@ mod cases {
             let stdout = String::from_utf8(output.stdout).unwrap();
             let state = stdout
                 .lines()
-                .find_map(|line| line.strip_prefix("fixture-state="))
+                .find_map(|line| line.split_once("fixture-state=").map(|(_, value)| value))
                 .unwrap();
             let root = Path::new(state).parent().unwrap();
             if code == 0 {
@@ -192,6 +208,12 @@ mod cases {
             assert!(!fixture.path().join("cache").exists());
             assert_eq!(fs::read_dir(&operator).unwrap().count(), 1);
             assert_eq!(fs::read(operator.join("sentinel")).unwrap(), b"protected");
+            assert_eq!(
+                fs::metadata(&outside).unwrap().permissions().mode() & 0o222,
+                0
+            );
+            assert_eq!(fs::read(outside.join("input")).unwrap(), b"protected");
         }
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
     }
 }

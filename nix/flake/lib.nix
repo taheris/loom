@@ -117,10 +117,28 @@ in
         mkTreefmtConfig imageRustToolchain
       );
 
+      cargoGitSources = [
+        {
+          url = "https://github.com/celler-cache/celler.git";
+          source = "git+https://github.com/celler-cache/celler.git?rev=${inputs.celler-src.rev}#${inputs.celler-src.rev}";
+          input = inputs.celler-src;
+        }
+        {
+          url = "https://codeberg.org/blitz/gorgon.git";
+          source = "git+https://codeberg.org/blitz/gorgon.git?branch=nix-daemon-2#${inputs.gorgon-src.rev}";
+          input = inputs.gorgon-src;
+        }
+      ];
       wrixSrc = inputs.wrix;
       wrixModules = import ../wrix-runtime-source.nix {
         inherit pkgs;
         src = wrixSrc;
+        cargoGitHashes = builtins.listToAttrs (
+          map (dependency: {
+            name = dependency.source;
+            value = dependency.input.narHash;
+          }) cargoGitSources
+        );
       };
       wrixLib = wrixModules.library {
         inherit system;
@@ -171,6 +189,39 @@ in
         inherit (inputs) crane fenix;
         toolchain = rustToolchain;
         src = loomSrc;
+        nativeTestInputs = [
+          (import (wrixSrc + "/lib/services/rust.nix") {
+            pkgs = wrixPkgs;
+            rustProfile = wrixLib.profiles.rust;
+          }).wrix
+          wrixLib.skipIfMissing
+        ];
+        nativeTestSources =
+          let
+            sources =
+              flake:
+              [ flake.outPath ]
+              ++ pkgs.lib.concatMap sources (
+                builtins.attrValues (builtins.removeAttrs (flake.inputs or { }) [ "self" ])
+              );
+          in
+          pkgs.lib.unique (
+            [
+              rustToolchain.manifestPath
+              wrixLib.rustPackage.package.cargoVendorDir
+            ]
+            ++ map (
+              dependency:
+              wrixPkgs.fetchgit {
+                inherit (dependency) url;
+                inherit (dependency.input) rev;
+                hash = dependency.input.narHash;
+                fetchSubmodules = true;
+                fetchLFS = true;
+              }
+            ) cargoGitSources
+            ++ pkgs.lib.concatMap sources (builtins.attrValues (builtins.removeAttrs inputs [ "self" ]))
+          );
       };
 
       imageLoom = loomLib.mkLoom {
@@ -197,8 +248,17 @@ in
         ];
       };
 
-      smokeSandbox = wrixLib.mkSandbox {
-        profile = workerProfile wrixLib.profiles.base;
+      smokeWrixLib = wrixModules.library {
+        inherit system;
+        inherit (inputs) crane fenix;
+        pkgs = wrixPkgs;
+        linuxPkgs = wrixLinuxPkgs // {
+          nix = import ../native-smoke-nix.nix { pkgs = wrixLinuxPkgs; };
+        };
+        treefmt = imageTreefmtWrapper;
+      };
+      smokeSandbox = smokeWrixLib.mkSandbox {
+        profile = workerProfile smokeWrixLib.profiles.base;
         agent = "pi";
         agentPkg = smokeMockPi;
         packages = [ imageLoom.bin ];

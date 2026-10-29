@@ -2,7 +2,7 @@
 
 #[path = "../tests/quint/bridge.rs"]
 mod bridge;
-#[path = "../tests/quint/campaign.rs"]
+#[path = "../tests/quint/campaign_runtime.rs"]
 mod campaign;
 
 use std::io::Write;

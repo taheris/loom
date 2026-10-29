@@ -4980,12 +4980,17 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "nix/flake/lib.nix",
-        "smokeSandbox = wrixLib.mkSandbox { agentPkg = smokeMockPi; };\nsmokeProfileManifest = wrixLib.mkProfileImages { };\nnextestOverlay = import ../nextest-overlay.nix;\noverlays = [ nextestOverlay ];\n",
+        "smokeWrixLib = wrixModules.library { nix = import ../native-smoke-nix.nix; };\nsmokeSandbox = smokeWrixLib.mkSandbox { agentPkg = smokeMockPi; };\nsmokeProfileManifest = wrixLib.mkProfileImages { };\nnextestOverlay = import ../nextest-overlay.nix;\noverlays = [ nextestOverlay ];\n",
+    );
+    seed(
+        root,
+        "nix/native-smoke-nix.nix",
+        include_str!("../../../nix/native-smoke-nix.nix"),
     );
     seed(
         root,
         "nix/flake/tests.nix",
-        "packages.loom-tests = (import ../native-package.nix) testsDeriv.rustChecks.loom-tests;\n",
+        include_str!("../../../nix/flake/tests.nix"),
     );
     seed(
         root,
@@ -5015,7 +5020,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "tests/loom/default.nix",
-        "loom-walk -- --from-specs\ncargo nextest run --offline --locked --workspace --ignore-default-filter\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_TEST_PRE_PUSH_CHECKS\nexport LOOM_TEST_LOOP=${../smoke/loop.sh}\nexport LOOM_TEST_WAIT_DOLT=${../smoke/wait-dolt.sh}\nLOOM_WRIX_BIN\nLOOM_WRIX_SPAWN_BIN\nWRIX_PREK_HOOKS\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\nexit 69\n",
+        include_str!("../../../tests/loom/default.nix"),
     );
     seed(
         root,
@@ -5055,6 +5060,19 @@ fn test_nix_surface_contract_pass() {
     seed_test_nix_surface(ws.path());
     let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
     assert_pass(&out);
+}
+
+#[test]
+fn test_nix_surface_contract_fail_when_smoke_sdk_omits_the_real_strict_build() {
+    let ws = make_workspace();
+    seed_test_nix_surface(ws.path());
+    let path = ws.path().join("nix/native-smoke-nix.nix");
+    let body = std::fs::read_to_string(&path).unwrap();
+    let command = "${nix}/bin/nix \"$@\" > \"$document\"";
+    assert!(body.contains(command));
+    std::fs::write(path, body.replace(command, "# omitted real build")).unwrap();
+    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
+    assert_fail(&out, "missing active test-surface wiring");
 }
 
 #[test]
@@ -5160,16 +5178,13 @@ fn test_nix_surface_contract_fail_when_nextest_profile_replaces_cargo_profile() 
 fn test_nix_surface_contract_fail_when_test_tier_is_missing() {
     let ws = make_workspace();
     seed_test_nix_surface(ws.path());
-    seed(
-        ws.path(),
-        "tests/loom/default.nix",
-        "loom-walk -- --from-specs\npkgs.prek\nLOOM_TEST_PROFILE_CONFIG\nLOOM_WRIX_SPAWN_BIN\noptionalAttrs isLinux\noptionalAttrs (!isLinux)\necho container smoke not available on Darwin\n",
-    );
+    let path = ws.path().join("tests/loom/default.nix");
+    let body = std::fs::read_to_string(&path).unwrap();
+    let changed = body.replace("loomTests = loomPackage.nextest;", "loomTests = null;");
+    assert_ne!(changed, body);
+    seed(ws.path(), "tests/loom/default.nix", &changed);
     let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
-    assert_fail(
-        &out,
-        "cargo nextest run --offline --locked --workspace --ignore-default-filter",
-    );
+    assert_fail(&out, "loomTests = loomPackage.nextest;");
 }
 
 #[test]

@@ -55,6 +55,16 @@ registry. Unclassified subjects and missing required coverage block trusted
 success. This accounts for responsibilities; it does not establish semantic
 adequacy or require a separate test per file.
 
+Execution platform policy defaults to `native`, independently of Nix
+`extra-platforms`, emulators, or remote builder capabilities. Foreign automatic
+baselines remain inventoried and reported as unverified outside that policy;
+they are not required native executions or passing results. Explicit foreign
+requirements remain blocking when inapplicable. `--platform all` explicitly
+requests foreign verification without treating unavailable execution as success.
+Discovery prepares execution graphs only within this policy; admission still
+validates all declarations and independent responsibilities. Platform policy is
+retained in resolved plans; hook evidence remains bound to exact entry argv.
+
 A verification unit maps one admitted execution to the obligations it can
 discharge. Units may batch many criteria or tests; a derivation per annotation
 or native test is not required. [Verifier inputs](#verifier-inputs-1) owns the
@@ -530,6 +540,20 @@ Gate; selecting feedback work is not redefining full-publication obligations.
   description cannot construct an admitted unit; only current-context resolution
   produces the immutable form consumed by planning.
   [test?](quint_evidence_boundaries_reject_invalid_transitions)
+
+- Native verification retains foreign inventory as unverified without requiring
+  ownerless foreign execution
+  [test](native_default_excludes_ownerless_foreign_baselines_without_claiming_passes)
+- An upstream lockfile diff defaults to native verification
+  [test](upstream_lockfile_diff_uses_native_platform_by_default)
+- Advertised ARM capability does not prepare foreign graphs automatically
+  [test](advertised_foreign_capability_does_not_prepare_foreign_graphs_in_native_mode)
+- Explicit foreign requirements remain nonpassing in native scope
+  [test](explicit_foreign_owner_is_not_erased_by_native_default)
+- Explicit all-platform verification retains honest inapplicable outcomes
+  [test](all_platform_request_retains_nonpassing_foreign_applicability)
+- Excluding foreign baselines cannot mask native failures
+  [test](native_failure_is_not_masked_by_excluded_foreign_baselines)
 
 ### Integrity gate — four directions
 

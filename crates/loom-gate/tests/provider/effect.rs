@@ -15,9 +15,9 @@ fn client(dir: &tempfile::TempDir, response: &str) -> Client {
     write(
         dir.path(),
         "tools/podman",
-        &format!(
-            "#!/bin/sh\nset -eu\n[ \"$1\" = --remote ] && [ \"$2\" = --url ] && [ \"$4\" = info ] && [ \"$5\" = --format ] && [ \"$6\" = json ] || exit 91\n{response}\n"
-        ),
+        &loom_test_support::bash_script(&format!(
+            "set -eu\n[ \"$1\" = --remote ] && [ \"$2\" = --url ] && [ \"$4\" = info ] && [ \"$5\" = --format ] && [ \"$6\" = json ] || exit 91\n{response}\n"
+        )),
     );
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
     Client::capture(

@@ -2,10 +2,10 @@
 #
 # Builds the test entry points consumed by the flake:
 #
-#   loomTests — registered source walks and the complete workspace Nextest suite.
-#               Native producers execute directly, without recursively admitting
-#               the project graph that contains this producer. System scenarios
-#               remain separately registered native definitions.
+#   loomTests — the canonical complete workspace Nextest producer.
+#               Registered source walks remain in their dedicated fast check;
+#               aliases must not create another whole-suite execution. System
+#               scenarios remain separately registered native definitions.
 #
 #   test-app-ignores-host-git-signing — regression check that executes
 #               the full-suite script against a host signing config.
@@ -26,6 +26,8 @@
   smokeSandbox ? null,
   smokeServiceImage ? null,
   wrixLauncher ? null,
+  smokeBeads ? pkgs.beads,
+  smokeNix ? pkgs.nix,
   ...
 }:
 
@@ -48,43 +50,7 @@ let
     bin
     ;
 
-  loomTests = craneLib.mkCargoDerivation {
-    pname = "tests";
-    version = "0.0.0";
-    doInstallCargoArtifacts = false;
-    src = stagedSrc;
-    inherit cargoArtifacts cargoVendorDir;
-    doCheck = true;
-    nativeBuildInputs = [
-      pkgs.git
-      pkgs.beads
-      pkgs.dolt
-      pkgs.cargo-nextest
-      pkgs.cacert
-      pkgs.flock
-      pkgs.jq
-      pkgs.openssh
-      pkgs.prek
-      bin
-    ];
-    buildPhaseCargoCommand = ''
-      cargo --version
-      cargo nextest --version
-      loom --version
-    '';
-    # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
-    preCheck = ''
-      export HOME=$(mktemp -d)
-      export GIT_CONFIG_GLOBAL="$PWD/tests/fixtures/git/test-gitconfig"
-      export GIT_CONFIG_SYSTEM=/dev/null
-      export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-    '';
-    # Native producers must not recursively admit their own project output graph.
-    checkPhaseCargoCommand = ''
-      bash ${../../scripts/run-private-fixture-tests} cargo run --offline --locked -p loom-walk --bin loom-walk -- --from-specs
-      bash ${../../scripts/run-private-fixture-tests} cargo nextest run --offline --locked --workspace --ignore-default-filter --test-threads 2
-    '';
-  };
+  loomTests = loomPackage.nextest;
 
   fakeFullTestGit = pkgs.writeShellScriptBin "git" ''
     set -euo pipefail
@@ -246,15 +212,40 @@ let
         '';
     };
 
+  smokeProcHook = pkgs.writeShellScript "smoke-restricted-proc" ''
+    set -euo pipefail
+    exec ${pkgs.jq}/bin/jq -ec '
+      if ([.mounts[] | select(.type == "proc" and .destination == "/proc")] | length) != 1
+      then error("expected one OCI proc mount")
+      else .mounts |= map(
+        if .type == "proc" and .destination == "/proc"
+        then .options = ((.options // []) + ["subset=pid"] | unique)
+        elif .type == "devpts" and .destination == "/dev/pts"
+        then .options |= map(if startswith("gid=") then "gid=0" else . end)
+        else . end)
+      end'
+  '';
+  smokeProcHooks = pkgs.writeTextDir "restricted-proc.json" (
+    builtins.toJSON {
+      version = "1.0.0";
+      hook = {
+        path = toString smokeProcHook;
+        args = [ "smoke-restricted-proc" ];
+      };
+      when.always = true;
+      stages = [ "precreate" ];
+    }
+  );
+
   smokeRuntimeInputs = [
     bin
-    pkgs.beads
+    smokeBeads
     pkgs.coreutils
     pkgs.findutils
     pkgs.gnugrep
     pkgs.dolt
     pkgs.jq
-    pkgs.nix
+    smokeNix
     pkgs.podman
     pkgs.prek
     pkgs.skopeo
@@ -268,12 +259,18 @@ let
         "scripts/run-private-fixture-tests"
         "tests/smoke/host-gate-test.sh"
         "bin/pre-push-checks"
+        "tests/smoke/workspace-membership.sh"
+        "tests/smoke/workspace-membership-test.sh"
       ];
       nativeFixture = import ../../nix/tests/native-smoke-fixture.nix { inherit pkgs; };
       nativeInputClosure = pkgs.closureInfo {
         rootPaths = [
           pkgs.bash
           pkgs.nix
+          pkgs.git
+          pkgs.coreutils
+          nativeFixture
+          (builtins.elemAt nativeSources 3).path
         ];
       };
     in
@@ -300,6 +297,30 @@ let
         _:
         pkgs.runCommand "smoke-host-gate" { } ''
           set -euo pipefail
+          original='{"mounts":[{"type":"proc","destination":"/proc","options":["nosuid","nodev","noexec"]},{"type":"tmpfs","destination":"/tmp"},{"type":"devpts","destination":"/dev/pts","options":["nosuid","noexec","newinstance","ptmxmode=0666","mode=0620","gid=5"]}],"linux":{"maskedPaths":["/proc/kcore"],"readonlyPaths":["/proc/sys"]},"process":{"noNewPrivileges":true}}'
+          printf '%s\n' "$original" | ${smokeProcHook} > restricted.json
+          ${pkgs.jq}/bin/jq -e --argjson original "$original" '
+            .mounts[0].options == ["nodev","noexec","nosuid","subset=pid"] and
+            .mounts[1] == $original.mounts[1] and
+            .mounts[2].options == ["nosuid","noexec","newinstance","ptmxmode=0666","mode=0620","gid=0"] and
+            .linux == $original.linux and .process == $original.process
+          ' restricted.json
+          ${smokeProcHook} < restricted.json > repeated.json
+          cmp restricted.json repeated.json
+          env -i PATH="${
+            makeBinPath [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.git
+              pkgs.jq
+            ]
+          }" \
+            HOME="$TMPDIR" TMPDIR="$TMPDIR" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+            ${pkgs.bash}/bin/bash ${(builtins.elemAt nativeSources 5).path} ${(builtins.elemAt nativeSources 4).path}
+          if printf '{"mounts":[]}\n' | ${smokeProcHook}; then
+            echo 'restricted proc hook accepted missing OCI proc mount' >&2
+            exit 1
+          fi
           env -i \
             PATH="${
               makeBinPath (
@@ -329,15 +350,27 @@ let
     name = "smoke";
     runtimeInputs = smokeRuntimeInputs;
     text = ''
+      export LOOM_TEST_MEMBERSHIP_SCRIPT=${../smoke/workspace-membership.sh}
+      export LOOM_TEST_MEMBERSHIP_PATH=${
+        makeBinPath [
+          pkgs.bash
+          pkgs.coreutils
+          pkgs.git
+          pkgs.jq
+        ]
+      }
+      export LOOM_TEST_SHELL=${pkgs.bash}/bin/bash
+      export LOOM_TEST_PROC_HOOKS=${smokeProcHooks}
+      export LOOM_TEST_FUSE_OVERLAYFS=${pkgs.fuse-overlayfs}/bin/fuse-overlayfs
       export LOOM_TEST_IMAGE=${smokeSandbox.image.source or smokeSandbox.image}
       export LOOM_TEST_IMAGE_REF=${smokeEntry.ref}
       export LOOM_TEST_IMAGE_SOURCE_KIND=${smokeEntry.source_kind}
       export LOOM_TEST_PROFILE_CONFIG=${smokeEntry.profile_config}
+      export LOOM_TEST_BEADS_BOOTSTRAP=${pkgs.beads}/bin/bd
       export LOOM_TEST_PRE_PUSH_CHECKS=${../../bin/pre-push-checks}
       export LOOM_TEST_NATIVE_SMOKE_FIXTURE=${
         import ../../nix/tests/native-smoke-fixture.nix { inherit pkgs; }
       }
-      export LOOM_TEST_VERIFIER_PROBE=${../smoke/verifier-probe.sh}
       export LOOM_TEST_GIT_POLICY=${../smoke/seed-git-policy.sh}
       export LOOM_TEST_SEED_BEADS=${../smoke/seed-beads.sh}
       export LOOM_TEST_SMOKE_SPEC=${../smoke/spec.md}

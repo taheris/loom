@@ -2855,7 +2855,7 @@ mod tests {
 
         // Stand-in for the `loom` binary; /bin/true is absent on NixOS.
         let stub = dir.path().join("loom-stub.sh");
-        std::fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(&stub, loom_test_support::bash_script("exit 0\n")).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let mut ctrl = ProductionReviewController::new(

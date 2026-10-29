@@ -3000,7 +3000,8 @@ fn ensure_test_prek_hooks(path: &Path) -> Result<PathBuf, GitError> {
     std::fs::create_dir_all(&hooks)?;
     for hook in ["pre-commit", "pre-push"] {
         let script = hooks.join(hook);
-        std::fs::write(&script, "#!/bin/sh\nexit 0\n")?;
+        let shell = option_env!("LOOM_NATIVE_SHELL_BIN").unwrap_or("/bin/sh");
+        std::fs::write(&script, format!("#!{shell}\nexit 0\n"))?;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
     }
     Ok(hooks)

@@ -4344,7 +4344,7 @@ mod tests {
         // Stand-in for the `loom` binary: ignores all args and exits 0.
         // /bin/true does not exist on NixOS, so we ship a script.
         let stub = dir.path().join("loom-stub.sh");
-        std::fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(&stub, loom_test_support::bash_script("exit 0\n")).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let bd = BdClient::with_runner(molecule_lookup_script(
@@ -4406,7 +4406,8 @@ mod tests {
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
         let stub_body = format!(
-            "#!/bin/sh\nprintf '%s\\t%s\\t%s\\n' \"$PWD\" \"$LOOM_REVIEW_SPEC_LABEL\" \"$*\" >> {log}\nexit 0\n",
+            "#!{shell}\nprintf '%s\\t%s\\t%s\\n' \"$PWD\" \"$LOOM_REVIEW_SPEC_LABEL\" \"$*\" >> {log}\nexit 0\n",
+            shell = loom_test_support::bash_path().display(),
             log = argv_log.to_string_lossy(),
         );
         std::fs::write(&stub, stub_body).unwrap();
@@ -4534,7 +4535,9 @@ mod tests {
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
-            "#!/bin/sh\nprintf 'child stdout\\n'\nprintf 'child stderr\\n' >&2\nexit 17\n",
+            loom_test_support::bash_script(
+                "printf 'child stdout\\n'\nprintf 'child stderr\\n' >&2\nexit 17\n",
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();

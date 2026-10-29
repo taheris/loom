@@ -14,10 +14,36 @@ pub enum Request {
     Target(String),
 }
 
+/// Execution policy is independent of backend capabilities such as Nix extra-platforms.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Platform {
+    #[default]
+    Native,
+    All,
+}
+
+impl std::str::FromStr for Platform {
+    type Err = PlatformError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "native" => Ok(Self::Native),
+            "all" => Ok(Self::All),
+            _ => Err(PlatformError(value.to_owned())),
+        }
+    }
+}
+
+#[derive(Debug, Display, Error)]
+/// invalid platform policy `{0}`; use native (default) or all (explicit foreign verification)
+pub struct PlatformError(String);
+
 /// A finite set (including empty), whole tree, or exact target, resolved once.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Resolved {
     selection: Selection,
+    platform: Platform,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -68,7 +94,10 @@ impl Request {
                 }
             }
         };
-        Ok(Resolved { selection })
+        Ok(Resolved {
+            selection,
+            platform: Platform::Native,
+        })
     }
 }
 
@@ -76,7 +105,19 @@ impl Resolved {
     pub(crate) const fn whole_tree() -> Self {
         Self {
             selection: Selection::Tree,
+            platform: Platform::Native,
         }
+    }
+
+    /// Choose execution policy before discovery; this is not evidence or a capability grant.
+    #[must_use]
+    pub const fn with_platform(mut self, platform: Platform) -> Self {
+        self.platform = platform;
+        self
+    }
+
+    pub const fn platform(&self) -> Platform {
+        self.platform
     }
 
     /// Select annotations without interpreting an empty finite set as unscoped.

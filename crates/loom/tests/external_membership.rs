@@ -43,7 +43,7 @@ impl Workspace {
         fs::create_dir(&hooks)?;
         for name in ["pre-commit", "pre-push"] {
             let path = hooks.join(name);
-            fs::write(&path, "#!/bin/sh\nexit 0\n")?;
+            fs::write(&path, loom_test_support::bash_script("exit 0\n"))?;
             fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
         }
         Ok(Self {
@@ -249,7 +249,7 @@ fn external_membership_cli_rebuild_tracker_failure_cannot_erase_explicit_selecti
     let bd = ws.root.path().join("bd");
     fs::write(
         &bd,
-        "#!/bin/sh\nprintf 'fixture tracker unavailable\\n' >&2\nexit 29\n",
+        loom_test_support::bash_script("printf 'fixture tracker unavailable\\n' >&2\nexit 29\n"),
     )?;
     fs::set_permissions(&bd, fs::Permissions::from_mode(0o700))?;
     let output = ws.init_at(

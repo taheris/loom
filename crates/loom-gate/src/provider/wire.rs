@@ -236,6 +236,11 @@ impl Candidate {
                 super::nix::Runtime::NativeCgroup => {
                     BTreeSet::from([Capability::NixSandbox, Capability::HostKernel])
                 }
+                super::nix::Runtime::NativeContainer => BTreeSet::from([
+                    Capability::NixSandbox,
+                    Capability::HostKernel,
+                    Capability::ContainerEngine,
+                ]),
             },
             Self::SupportedEffect { .. } => {
                 BTreeSet::from([Capability::ContainerEngine, Capability::HostKernel])

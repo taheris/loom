@@ -274,9 +274,19 @@ impl Definition {
         let tool = super::locate_tool()?;
         let platform: super::Platforms =
             serde_json::from_slice(&super::query(&tool, &["config", "show", "--json"])?)?;
-        let captured = inventory.native_graphs();
+        let captured: Vec<_> = inventory
+            .native_graphs()
+            .iter()
+            .filter(|(subject, _)| {
+                inventory.subjects().get(*subject).is_some_and(|subject| {
+                    subject.nix_target().is_some_and(|native| {
+                        native.usage() == crate::inventory::nix::Usage::Verification
+                    })
+                })
+            })
+            .collect();
         if !captured.is_empty()
-            && captured.values().all(|graph| {
+            && captured.iter().all(|(_, graph)| {
                 graph.tool == tool
                     && graph
                         .nodes
@@ -285,14 +295,20 @@ impl Definition {
             })
         {
             let mut definitions = Vec::new();
-            let mut seen = std::collections::BTreeSet::new();
             for (subject, graph) in captured {
-                if graph.cargo == Some(CargoOperation::Test) {
-                    let definition =
-                        Self::hermetic_baseline(snapshot, inventory, subject.clone(), subject)?;
-                    if seen.insert(String::from(graph.identity.clone())) {
-                        definitions.push(definition);
-                    }
+                if graph.cargo == Some(CargoOperation::Test)
+                    && !definitions.iter().any(|definition: &Self| {
+                        definition
+                            .nix_graph()
+                            .is_some_and(|current| current.shares_execution_with(graph))
+                    })
+                {
+                    definitions.push(Self::hermetic_baseline(
+                        snapshot,
+                        inventory,
+                        subject.clone(),
+                        subject,
+                    )?);
                 }
             }
             snapshot.require_current()?;
@@ -307,7 +323,6 @@ impl Definition {
             }
         }
         let mut definitions = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
         for (flake, project) in flakes {
             let reference = format!("path:{}", super::StorePath::root(project)?.as_str());
             let metadata: super::Metadata = serde_json::from_slice(&super::query(
@@ -366,7 +381,11 @@ impl Definition {
                 if graph.cargo != Some(CargoOperation::Test) {
                     return Err(Error::CargoExecution.into());
                 }
-                if seen.insert(String::from(graph.identity.clone())) {
+                if !definitions.iter().any(|current: &Self| {
+                    current
+                        .nix_graph()
+                        .is_some_and(|current| current.shares_execution_with(graph))
+                }) {
                     definitions.push(definition);
                 }
             }

@@ -22,6 +22,9 @@ set -euo pipefail
 #   LOOM_TEST_IMAGE_SOURCE_KIND — wrix image source kind (default: nix-descriptor)
 #   LOOM_TEST_PROFILE_CONFIG — immutable wrix ProfileConfig for the mock image
 #   LOOM_TEST_PRE_PUSH_CHECKS — canonical repository pre-push wrapper
+#   LOOM_TEST_BEADS_BOOTSTRAP — immutable raw Beads for the private bootstrap only
+#   LOOM_SMOKE_REPORT_DIR    — native-kernel report role; retain diagnostics and
+#                              leave private mounts to whole-VM retirement
 #   LOOM_TEST_GIT_POLICY     — script granting smoke repository Git credentials
 #   LOOM_TEST_SEED_BEADS     — script seeding spec metadata and ready smoke work
 #   LOOM_TEST_LOOP           — script running the bead and checking its result
@@ -45,10 +48,29 @@ log() {
 
 cleanup() {
     local ec=$?
+    if [[ -n "${LOOM_SMOKE_REPORT_DIR:-}" && -d "${WORKSPACE:-}" ]]; then
+        if ! (
+            cd "$WORKSPACE" || exit 1
+            mkdir "$LOOM_SMOKE_REPORT_DIR" || exit 1
+            find .loom -type f \( -name '*.log' -o -name '*.jsonl' -o -path '*/.loom/logs/*' -o -path '*/.loom/diagnostics/*' \) \
+                -print0 > "$LOOM_SMOKE_REPORT_DIR/files.nul" || exit 1
+            while IFS= read -r -d '' file; do
+                mkdir -p "$LOOM_SMOKE_REPORT_DIR/$(dirname "$file")" || exit 1
+                cp -- "$file" "$LOOM_SMOKE_REPORT_DIR/$file" || exit 1
+            done < "$LOOM_SMOKE_REPORT_DIR/files.nul"
+        ); then
+            log 'could not retain complete smoke diagnostics'
+            if [[ "$ec" == 0 ]]; then ec=1; fi
+        fi
+    fi
     if [[ "${DOLT_SERVICE_STARTED:-0}" == "1" && -n "${WORKSPACE:-}" && -d "$WORKSPACE" ]]; then
         (cd "$WORKSPACE" && "$LOOM_WRIX_SERVICE_BIN" service stop >/dev/null 2>&1) || true # best-effort: cleanup must not mask the test result.
     fi
-    if [[ "$ec" -ne 0 && "${LOOM_SMOKE_KEEP:-1}" == "1" ]]; then
+    if [[ -n "${LOOM_SMOKE_REPORT_DIR:-}" ]]; then
+        # The fixed kernel supervisor retires the entire owned VM. Never recurse
+        # into still-mounted container trees; retain their private disk instead.
+        log "retained workspace in owned native-kernel scope: $SMOKE_ROOT"
+    elif [[ "$ec" -ne 0 && "${LOOM_SMOKE_KEEP:-1}" == "1" ]]; then
         log "preserved failed workspace: $SMOKE_ROOT"
     elif [[ -n "${SMOKE_ROOT:-}" && -d "$SMOKE_ROOT" ]]; then
         rm -rf "$SMOKE_ROOT"
@@ -112,6 +134,14 @@ export HOME="$SMOKE_ROOT/home"
 export XDG_STATE_HOME="$HOME/.local/state"
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_CACHE_HOME="$HOME/.cache"
+export XDG_RUNTIME_DIR="$SMOKE_ROOT/runtime"
+mkdir -m 700 "$XDG_RUNTIME_DIR"
+export CONTAINERS_CONF="$SMOKE_ROOT/containers.conf"
+printf '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\nhooks_dir = ["%s"]\n' \
+    "${LOOM_TEST_PROC_HOOKS:?missing immutable restricted proc hook}" > "$CONTAINERS_CONF"
+export CONTAINERS_STORAGE_CONF="$SMOKE_ROOT/storage.conf"
+printf '[storage]\ndriver = "overlay"\nrunroot = "%s/storage"\ngraphroot = "%s/containers"\n[storage.options.overlay]\nignore_chown_errors = "true"\nmount_program = "%s"\n' \
+    "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "${LOOM_TEST_FUSE_OVERLAYFS:?missing immutable overlay helper}" > "$CONTAINERS_STORAGE_CONF"
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 mkdir -m 700 "$HOME"
@@ -126,7 +156,7 @@ printf '{}\n' >"$WRIX_PI_AUTH_FILE"
 log "workspace: $WORKSPACE"
 
 scrub_git_local_env
-git init -q --bare "$ORIGIN"
+git init -q --bare --initial-branch=main "$ORIGIN"
 git init -q "$WORKSPACE"
 cd "$WORKSPACE"
 git config user.email smoke@example.com
@@ -136,8 +166,7 @@ bash "${LOOM_TEST_GIT_POLICY:?missing smoke Git policy helper}"
 
 mkdir -p bin docs specs .loom
 cp -R "${LOOM_TEST_NATIVE_SMOKE_FIXTURE:?missing checked smoke definition}/." .
-chmod -R u+w docs specs
-chmod u+w flake.nix verification.nix result-check.sh loom-smoke-result.txt
+chmod -R u+w "$WORKSPACE"
 cp "$LOOM_TEST_PRE_PUSH_CHECKS" bin/pre-push-checks
 chmod +x bin/pre-push-checks
 install -m 0644 "${LOOM_TEST_SMOKE_SPEC:?missing indexed smoke acceptance}" specs/smoke.md
@@ -170,53 +199,44 @@ git commit -q -m "Initialize smoke workspace"
 git remote add origin "$ORIGIN"
 git push -q -u origin main
 
-mkdir -p .beads/dolt
+mkdir -p .beads
 chmod 700 .beads
-# Admission belongs only to this fixture's fresh HOME/XDG state, never the operator's.
-"$LOOM_WRIX_SERVICE_BIN" workspace initialize
-"$LOOM_WRIX_SERVICE_BIN" workspace acknowledge-scope --version 1
-"$LOOM_WRIX_SERVICE_BIN" service start >/dev/null
-DOLT_SERVICE_STARTED=1
-bash "${LOOM_TEST_WAIT_DOLT:?missing Dolt readiness helper}" "$LOOM_WRIX_SERVICE_BIN" >/dev/null
-DOLT_SOCKET=$("$LOOM_WRIX_SERVICE_BIN" service dolt socket)
-unset BEADS_DOLT_SERVER_HOST BEADS_DOLT_SERVER_PORT
-export BEADS_DOLT_SERVER_SOCKET="$DOLT_SOCKET"
-export BEADS_DOLT_AUTO_START=0
-
-# Starting the Wrix service creates `.beads/dolt/.dolt` before project
-# metadata exists. Current bd correctly treats that shape as an ambiguous
-# pre-v1 server workspace and refuses to rewrite it. Initialize the database
-# through the external socket from a clean staging workspace, then install
-# bd's generated current-era metadata beside the Wrix-owned data root.
-BEADS_INIT_WORKSPACE="$SMOKE_ROOT/beads-init"
-mkdir -p "$BEADS_INIT_WORKSPACE"
 (
-    cd "$BEADS_INIT_WORKSPACE"
-    bd init --prefix=smoke \
-        --skip-hooks \
-        --skip-agents \
-        --non-interactive \
-        --server \
-        --external \
-        --server-socket "$DOLT_SOCKET" \
-        --database smoke \
-        >/dev/null
+    data="$SMOKE_ROOT/bootstrap-data"
+    socket="$SMOKE_ROOT/bootstrap.sock"
+    mkdir -p "$data"
+    dolt sql-server --data-dir "$data" --host 127.0.0.1 --port 13307 \
+        --socket "$socket" >"$SMOKE_ROOT/bootstrap.log" 2>&1 &
+    server_pid=$!
+    stop_bootstrap() {
+        kill "$server_pid"
+        wait "$server_pid" || [[ "$?" == 143 ]]
+    }
+    trap stop_bootstrap EXIT
+    deadline=$((SECONDS + 30))
+    while true; do
+        remaining=$((deadline - SECONDS))
+        if ((remaining <= 0)); then
+            log 'error: bootstrap Dolt did not become ready within 30 seconds'
+            exit 1
+        fi
+        if timeout "${remaining}s" dolt --host 127.0.0.1 --port 13307 --user root --password '' --no-tls \
+            sql -q 'SELECT 1' >"$SMOKE_ROOT/bootstrap-probe.log" 2>&1 && [[ -S "$socket" ]]; then
+            break
+        fi
+        kill -0 "$server_pid"
+        sleep 0.1
+    done
+    BEADS_DOLT_SERVER_SOCKET="$socket" BEADS_DOLT_AUTO_START=0 \
+        "${LOOM_TEST_BEADS_BOOTSTRAP:?missing private bootstrap Beads tool}" init --prefix=smoke --skip-hooks --skip-agents --non-interactive \
+            --server --server-socket "$socket" --database smoke >/dev/null
+    stop_bootstrap
+    trap - EXIT
+    rmdir .beads/dolt
+    mv "$data" .beads/dolt
 )
-cp "$BEADS_INIT_WORKSPACE/.beads/.gitignore" \
-    "$BEADS_INIT_WORKSPACE/.beads/.local_version" \
-    "$BEADS_INIT_WORKSPACE/.beads/README.md" \
-    "$BEADS_INIT_WORKSPACE/.beads/config.yaml" \
-    "$BEADS_INIT_WORKSPACE/.beads/metadata.json" \
-    .beads/
-printf '\n/config.local.yaml\n' >>.beads/.gitignore
-chmod 700 .beads
-bd config set export.auto false >/dev/null
-git add .beads/.gitignore .beads/README.md .beads/config.yaml .beads/metadata.json
-git commit -q -m "Configure smoke beads"
-git push -q origin main
-
-# Seed the Wrix-owned file remote in a real attached beads-branch worktree.
-# The first session-close push populates and commits the Dolt remote itself.
+printf '\nsync-branch: beads\n' >> .beads/config.yaml
+# Wrix's first service startup imports this real branch and its Git administration.
 BEADS_WORKTREE="$WORKSPACE/.git/beads-worktrees/beads"
 git worktree add --quiet --orphan -b beads "$BEADS_WORKTREE"
 mkdir -p "$BEADS_WORKTREE/.beads/dolt-remote"
@@ -224,6 +244,23 @@ touch "$BEADS_WORKTREE/.beads/.gitkeep"
 git -C "$BEADS_WORKTREE" add .beads/.gitkeep
 git -C "$BEADS_WORKTREE" commit -q -m "Initialize beads branch"
 git -C "$BEADS_WORKTREE" push -q -u origin beads
+
+# Admission belongs only to this fixture's fresh HOME/XDG state, never the operator's.
+"$LOOM_WRIX_SERVICE_BIN" workspace initialize
+"$LOOM_WRIX_SERVICE_BIN" workspace acknowledge-scope --version 1
+"$LOOM_WRIX_SERVICE_BIN" service start >/dev/null
+DOLT_SERVICE_STARTED=1
+bash "${LOOM_TEST_WAIT_DOLT:?missing Dolt readiness helper}" "$LOOM_WRIX_SERVICE_BIN" >/dev/null
+client_env=$("$LOOM_WRIX_SERVICE_BIN" service dolt client-env)
+eval "$client_env"
+unset client_env
+
+printf '\n/config.local.yaml\n' >>.beads/.gitignore
+chmod 700 .beads
+bd config set export.auto false >/dev/null
+git add .beads/.gitignore .beads/README.md .beads/config.yaml .beads/metadata.json
+git commit -q -m "Configure smoke beads"
+git push -q origin main
 
 BEAD_ID=$(bash "$LOOM_TEST_SEED_BEADS")
 
@@ -245,7 +282,26 @@ cat >"$WORKSPACE/profile-images.json" <<JSON
 }
 JSON
 
-"$LOOM_BIN" --workspace "$WORKSPACE" init --rebuild >/dev/null
+native_key=''
+while IFS= read -r line; do
+    if [[ "$line" == 'native_key: '* ]]; then native_key="${line#native_key: }"; fi
+done < <("$LOOM_WRIX_SERVICE_BIN" workspace inspect --checkout "$WORKSPACE")
+[[ "$native_key" =~ ^[a-f0-9]{64}$ ]]
+operator_git=$(stat -c '%d:%i' "$WORKSPACE/.git")
+membership="loom-smoke-${operator_git//:/-}"
+workspace_adapter="$SMOKE_ROOT/workspace-membership"
+{
+    printf '#!%s\nset -euo pipefail\n' "${LOOM_TEST_SHELL:?missing immutable shell}"
+    printf 'export PATH=%q\noperator=%q\noperator_git=%q\nmembership=%q\nnative_key=%q\nwrix=%q\n' \
+        "${LOOM_TEST_MEMBERSHIP_PATH:?missing membership tools}" "$WORKSPACE" "$operator_git" \
+        "$membership" "$native_key" "$LOOM_WRIX_SERVICE_BIN"
+    cat "${LOOM_TEST_MEMBERSHIP_SCRIPT:?missing membership policy}"
+} > "$workspace_adapter"
+chmod 700 "$workspace_adapter"
+"$LOOM_WRIX_SERVICE_BIN" workspace integration select --slot loom-smoke --executable "$workspace_adapter" >/dev/null
+"$LOOM_WRIX_SERVICE_BIN" workspace admit --integration loom-smoke --expect-membership "$membership" \
+    --checkout "$WORKSPACE" --retain "$native_key" >/dev/null
+"$LOOM_BIN" --workspace "$WORKSPACE" init --rebuild --workspace-associator "$workspace_adapter" >/dev/null
 log "seeded bead: $BEAD_ID"
 
 unset WRIX_AGENT
