@@ -3,8 +3,10 @@
   perSystem =
     {
       pkgs,
+      config,
       loom,
       system,
+      wrixLib,
       wrixLauncher,
       ...
     }:
@@ -168,6 +170,20 @@
         '';
       };
       checks = {
+        wrix-consumer-evaluation = checked.check {
+          resources = [ ];
+          evaluation = evaluation ++ loom.testResources;
+          build =
+            _:
+            pkgs.writeText "wrix-consumer-evaluation.json" (
+              builtins.unsafeDiscardStringContext (
+                builtins.toJSON {
+                  devShell = config.devShells.default.drvPath;
+                  serviceImage = wrixLib.serviceImage.drvPath;
+                }
+              )
+            );
+        };
         smoke-unavailable = scriptCheck "smoke-unavailable" [ ] [ pkgs.bash pkgs.gnugrep ] (_: ''
           status=0
           bash -euo pipefail ${pkgs.writeText "unavailable-smoke.sh" darwinSmokeText} >"$TMPDIR/smoke.out" 2>&1 || status=$?
