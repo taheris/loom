@@ -276,7 +276,7 @@ let
     pkgs.jq
     pkgs.openssh
     pkgs.sccache
-    pkgs.nix
+    (lib.getBin pkgs.nix)
     pkgs.python3
     hookRunner
     bin

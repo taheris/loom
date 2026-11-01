@@ -160,7 +160,7 @@ let
         build = ''cargo build --offline --locked --workspace --all-targets --profile "$CARGO_PROFILE"'';
         lint = ''cargo clippy --offline --locked --workspace --profile "$CARGO_PROFILE" -- --deny warnings'';
         lint-all-targets = ''cargo clippy --offline --locked --workspace --all-targets --profile "$CARGO_PROFILE" -- --deny warnings'';
-        test = ''bash "$LOOM_PRIVATE_FIXTURE_RUNNER" --build-campaign bash "$LOOM_REPORT_SUPERVISOR" cargo nextest run --offline --locked --workspace --all-targets --cargo-profile "$CARGO_PROFILE" --ignore-default-filter --test-threads 2 --no-fail-fast --message-format libtest-json-plus'';
+        test = ''bash "$LOOM_PRIVATE_FIXTURE_RUNNER" --build-campaign bash "$LOOM_REPORT_SUPERVISOR" cargo nextest run --offline --locked --workspace --all-targets --cargo-profile "$CARGO_PROFILE" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus'';
         catalogue = ''
           mkdir -p "$out"
           cargo metadata --offline --locked --format-version 1 > "$out/cargo.json"

@@ -18,6 +18,77 @@ fn fixture() -> tempfile::TempDir {
 }
 
 #[test]
+fn canonical_nextest_command_uses_scheduler_default_without_narrowing_test_scope() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = fixture();
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let cargo = bin.join("cargo");
+    let search = std::env::var_os("PATH").unwrap();
+    let bash = std::env::split_paths(&search)
+        .map(|directory| directory.join("bash"))
+        .find(|program| program.is_file())
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    std::fs::write(
+        &cargo,
+        format!("#!{}\nprintf '%s\\n' \"$@\"\n", bash.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nix");
+    let report = root.path().join("report");
+    let search =
+        std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&search))).unwrap();
+    let output = Command::new(bash)
+        .args(["-euc", CargoOperation::Test.command()])
+        .env("PATH", search)
+        .env("CARGO_PROFILE", "release")
+        .env(
+            "LOOM_PRIVATE_FIXTURE_RUNNER",
+            scripts.join("private-fixture-tests.sh"),
+        )
+        .env(
+            "LOOM_REPORT_SUPERVISOR",
+            scripts.join("report-supervisor.sh"),
+        )
+        .env("out", &report)
+        .env_remove("LOOM_NATIVE_REPORT")
+        .env_remove("LOOM_TEST_NIX_REGISTRATION")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let arguments = std::fs::read_to_string(report.join("loom-report/stdout")).unwrap();
+    assert_eq!(
+        arguments.lines().collect::<Vec<_>>(),
+        [
+            "nextest",
+            "run",
+            "--offline",
+            "--locked",
+            "--workspace",
+            "--all-targets",
+            "--cargo-profile",
+            "release",
+            "--ignore-default-filter",
+            "--no-fail-fast",
+            "--message-format",
+            "libtest-json-plus",
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(report.join("loom-report/status")).unwrap(),
+        "0\n"
+    );
+}
+
+#[test]
 fn native_adapter_declares_features_after_removing_ambient_config_without_relaxing_policy() {
     let root = fixture();
     let tool = locate_tool().unwrap();

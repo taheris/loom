@@ -107,7 +107,7 @@ in
 pkgs.runCommand "loom-native-rust-fixture"
   {
     nativeBuildInputs = [
-      pkgs.nix
+      (pkgs.lib.getBin pkgs.nix)
       pkgs.jq
     ];
   }

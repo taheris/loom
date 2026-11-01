@@ -122,10 +122,10 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1792812153,
-        "narHash": "sha256-T2+XBfNbf9pecLUWS4+RtuVNZ3W8K5taG5QdV71mWlk=",
+        "lastModified": 1793345420,
+        "narHash": "sha256-e/yiZ31gXRROBDcnOtT3YwDQ73NVG9Cepccbt86LIn8=",
         "ref": "nixpkgs-unstable",
-        "rev": "674a2028661e550a97400c1cc992b9cca9a668a1",
+        "rev": "885ba4d038f10c3d17d7a92e8c3cc185b99c9158",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/NixOS/nixpkgs.git"
@@ -231,10 +231,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1792891838,
-        "narHash": "sha256-GGqjTAMRmrgAmJa+ADyxAJSKzSWPji2e2sCpcRiGuUk=",
+        "lastModified": 1793479685,
+        "narHash": "sha256-JYxiiaSMDnIYe3hVpJPww3Y0dLfYfHLeq+rlxSikcHo=",
         "ref": "main",
-        "rev": "f272d516bee9e26cbb489aac38bbb8f1814061ac",
+        "rev": "952ef90ca118f4680ed1e66e3966e014d1991957",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrix.git"

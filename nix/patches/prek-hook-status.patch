@@ -16,8 +16,8 @@
 +        });
 +        Self::new(code, output.bytes)
      }
---- a/crates/prek/src/run.rs
-+++ b/crates/prek/src/run.rs
+--- a/crates/prek/src/concurrency.rs
++++ b/crates/prek/src/concurrency.rs
 @@ -246,2 +246,29 @@
 
 +pub(crate) fn unavailable_hook_output(error: anyhow::Error) -> anyhow::Result<(i32, Vec<u8>)> {
@@ -95,12 +95,12 @@
 @@ -1004,2 +1006,11 @@
          self.modified_files |= group.modification.is_some();
 +        if group.modification.is_some() {
-+            self.verification_exit = crate::run::combine_verification_exit(self.verification_exit, 1);
++            self.verification_exit = crate::concurrency::combine_verification_exit(self.verification_exit, 1);
 +        }
 +        for result in &group.results {
 +            if result.status.is_failure() {
 +                let code = if result.exit_status == 0 { 1 } else { result.exit_status };
-+                self.verification_exit = crate::run::combine_verification_exit(self.verification_exit, code);
++                self.verification_exit = crate::concurrency::combine_verification_exit(self.verification_exit, code);
 +            }
 +        }
 
@@ -115,7 +115,7 @@
 -        .with_context(|| format!("Failed to run hook `{installed_hook}`"))?
 +        .with_context(|| format!("Failed to run hook `{installed_hook}`"))
 +        .or_else(|error| {
-+            crate::run::unavailable_hook_output(error)
++            crate::concurrency::unavailable_hook_output(error)
 +                .map(|(code, output)| hooks::HookOutput::unchanged(code, output))
 +        })?
      };

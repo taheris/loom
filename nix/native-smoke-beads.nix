@@ -5,7 +5,7 @@
 upstream.overrideAttrs (
   old:
   let
-    guard = ''if [[ -n "$root" && -f "$root/.beads/dolt/WRIX-MANAGED" ]]; then'';
+    guard = ''if [[ -n "$root" && ( -f "$root/.beads/metadata.json" || -f "$root/.beads/dolt/WRIX-MANAGED" ) ]]; then'';
   in
   assert builtins.length (pkgs.lib.splitString guard old.text) == 2;
   {

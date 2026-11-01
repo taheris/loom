@@ -570,6 +570,37 @@ fn real_prek_semantic_filename_batches_cannot_form_infrastructure_exit() {
 }
 
 #[test]
+fn real_prek_filename_batches_preserve_signal_status() {
+    let (fixture, output) = real_hook_gate_with_setup(
+        &[
+            "printf '%s\\n' \"$1\" >> .loom/batches-ran\ncase \"$1\" in a.txt) kill -TERM $$ ;; *) exit 0 ;; esac",
+        ],
+        false,
+        |workspace| {
+            for name in ["a.txt", "b.txt"] {
+                std::fs::write(workspace.join(name), "initial\n").unwrap();
+            }
+            let path = workspace.join(".pre-commit-config.yaml");
+            let config = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("pass_filenames: false", "pass_filenames: 1");
+            std::fs::write(path, config).unwrap();
+        },
+        &[("a.txt", "changed\n"), ("b.txt", "changed\n")],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(143),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let batches = std::fs::read_to_string(fixture.path().join(".loom/batches-ran")).unwrap();
+    assert!(batches.lines().any(|name| name == "a.txt"));
+    assert!(batches.lines().any(|name| name == "b.txt"));
+}
+
+#[test]
 fn pinned_prek_runner_preserves_infrastructure_without_ambient_prek() {
     let (fixture, _) = real_hook_gate(&["exit 78"], false);
     let tools = tempfile::tempdir().unwrap();

@@ -98,6 +98,11 @@ impl Server {
     }
 
     async fn ready(&self) -> std::io::Result<()> {
+        drop(std::os::unix::net::UnixStream::connect(self.socket())?);
+        self.sql_ready().await
+    }
+
+    async fn sql_ready(&self) -> std::io::Result<()> {
         // A greeting precedes usable SQL sessions; probe without retrying an uncertain mutation.
         let mut command = Command::new("dolt");
         isolate(command.as_std_mut(), &self.home);
@@ -239,6 +244,20 @@ pub async fn client(root: &Path) -> BdClient<IsolatedBeads> {
     let init = runner.run(args, Duration::from_secs(60)).await.unwrap();
     assert!(init.success(), "{}", String::from_utf8_lossy(&init.stderr));
     BdClient::with_runner(runner)
+}
+
+#[tokio::test]
+async fn native_tracker_readiness_requires_the_beads_socket_even_with_healthy_tcp_sql() {
+    let home = tempfile::tempdir().unwrap();
+    let server = Server::start(home.path()).await;
+    let socket = server.socket();
+    let withheld = server.directory.path().join("withheld.sock");
+    std::fs::rename(&socket, &withheld).unwrap();
+    server.sql_ready().await.unwrap();
+    let error = server.ready().await.unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    std::fs::rename(&withheld, &socket).unwrap();
+    server.ready().await.unwrap();
 }
 
 #[tokio::test]

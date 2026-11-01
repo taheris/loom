@@ -1,0 +1,23 @@
+diff --git a/src/libutil/linux/linux-namespaces.cc b/src/libutil/linux/linux-namespaces.cc
+--- a/src/libutil/linux/linux-namespaces.cc
++++ b/src/libutil/linux/linux-namespaces.cc
+@@ -26 +26 @@ bool userNamespacesSupported()
+-        if (!pathExists(maxUserNamespaces) || trim(readFile(maxUserNamespaces)) == "0") {
++        if (pathExists(maxUserNamespaces) && trim(readFile(maxUserNamespaces)) == "0") {
+@@ -68 +68,5 @@ bool mountAndPidNamespacesSupported()
+-                    if (mount("none", "/proc", "proc", 0, 0) == -1)
++                    if (mount("none", "/proc", "proc", 0, 0) == -1
++                        && (errno != EPERM
++                            || mount(
++                                   "none", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, "subset=pid")
++                                   == -1))
+diff --git a/src/libstore/unix/build/linux-derivation-builder.cc b/src/libstore/unix/build/linux-derivation-builder.cc
+--- a/src/libstore/unix/build/linux-derivation-builder.cc
++++ b/src/libstore/unix/build/linux-derivation-builder.cc
+@@ -714 +714,5 @@ void LinuxDerivationBuilder::runChild()
+-        if (mount("none", (chrootRootDir / "proc").c_str(), "proc", 0, 0) == -1)
++        if (mount("none", (chrootRootDir / "proc").c_str(), "proc", 0, 0) == -1
++            && (errno != EPERM
++                || mount(
++                       "none", (chrootRootDir / "proc").c_str(), "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, "subset=pid")
++                       == -1))

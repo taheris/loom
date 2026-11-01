@@ -680,6 +680,12 @@ nonpassing. No platform outputs or shared test functions are removed.
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 <!-- prettier-ignore -->
+- The host-side disposable smoke tracker SDK clears inherited tracker identity
+  and requests fresh workspace-broker identity even in clones without local
+  Dolt metadata, while retaining the actual upstream CLI.
+  [check](nix build .#checks.x86_64-linux.native-smoke-beads)
+
+<!-- prettier-ignore -->
 - `nix run .#fuzz-loom` is on-demand and absent from flake checks [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 - Container smoke reports elapsed time and warns after the 30-second soft target

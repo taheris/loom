@@ -3,9 +3,10 @@
   perSystem =
     {
       pkgs,
-      loom,
       config,
+      loom,
       system,
+      wrixLib,
       wrixLauncher,
       ...
     }:
@@ -188,6 +189,20 @@
         system-verification-report = check [ ] (
           _: import ../tests/system-verification-report.nix { inherit pkgs system; }
         );
+        wrix-consumer-evaluation = checked.check {
+          resources = [ ];
+          evaluation = evaluation ++ loom.testResources;
+          build =
+            _:
+            pkgs.writeText "wrix-consumer-evaluation.json" (
+              builtins.unsafeDiscardStringContext (
+                builtins.toJSON {
+                  devShell = config.devShells.default.drvPath;
+                  serviceImage = wrixLib.serviceImage.drvPath;
+                }
+              )
+            );
+        };
         smoke-unavailable = scriptCheck "smoke-unavailable" [ ] [ pkgs.bash pkgs.gnugrep ] (_: ''
           status=0
           bash -euo pipefail ${pkgs.writeText "unavailable-smoke.sh" darwinSmokeText} >"$TMPDIR/smoke.out" 2>&1 || status=$?
@@ -256,6 +271,13 @@
             (paths: ''
               python3 ${builtins.elemAt paths 0} ${builtins.elemAt paths 1}
             '');
+        native-smoke-beads = check [ ] (
+          _:
+          import ../tests/native-smoke-beads.nix {
+            inherit pkgs;
+            upstream = import (inputs.wrix + "/lib/beads/package.nix") { inherit pkgs; };
+          }
+        );
         native-test-environment = check [ (resource "scripts/run-private-fixture-tests") ] (
           paths:
           import ../tests/native-test-environment.nix {
@@ -370,7 +392,7 @@
             doInstallCargoArtifacts = false;
             nativeBuildInputs = [
               pkgs.git
-              pkgs.nix
+              (pkgs.lib.getBin pkgs.nix)
               pkgs.cacert
               pkgs.cargo-nextest
               pkgs.jq
@@ -445,16 +467,56 @@
       };
     in
     {
-      checks = checks // {
-        smoke-host-gate = testsDeriv.smoke-host-gate;
-        checks-match-host-system = checked.check {
-          resources = [ ];
-          evaluation = evaluation ++ loom.testResources;
-          build =
-            _:
-            assert pkgs.lib.all (candidate: candidate.system == system) (builtins.attrValues checks);
-            pkgs.runCommand "checks-match-host-system" { } ''touch "$out"'';
+      checks =
+        checks
+        // (
+          if
+            builtins.elem system [
+              "aarch64-linux"
+              "x86_64-linux"
+            ]
+          then
+            {
+              nix-pid-only-procfs =
+                let
+                  unpatchedNix = pkgs.nixVersions.stable;
+                  registration = pkgs.closureInfo {
+                    rootPaths = [
+                      pkgs.bash
+                      pkgs.coreutils
+                      pkgs.nix
+                      unpatchedNix
+                    ];
+                  };
+                in
+                scriptCheck "nix-pid-only-procfs"
+                  [ (resource "tests/sandbox/nix-pid-only-procfs.sh") ]
+                  [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.util-linux pkgs.python3 ]
+                  (paths: ''
+                    if bash ${builtins.head paths} ${unpatchedNix}/bin/nix ${pkgs.bash} ${pkgs.coreutils} ${registration}/registration > "$TMPDIR/unpatched.log" 2>&1; then
+                      echo 'unpatched Nix unexpectedly accepted PID-only procfs' >&2
+                      exit 1
+                    fi
+                    grep -F \
+                      -e 'does not support the kernel namespaces that are required for sandboxing' \
+                      -e 'error: setgroups failed. Set the require-drop-supplementary-groups option to false to skip this step.' \
+                      "$TMPDIR/unpatched.log"
+                    bash ${builtins.head paths} ${pkgs.nix}/bin/nix ${pkgs.bash} ${pkgs.coreutils} ${registration}/registration
+                  '');
+            }
+          else
+            { }
+        )
+        // {
+          smoke-host-gate = testsDeriv.smoke-host-gate;
+          checks-match-host-system = checked.check {
+            resources = [ ];
+            evaluation = evaluation ++ loom.testResources;
+            build =
+              _:
+              assert pkgs.lib.all (candidate: candidate.system == system) (builtins.attrValues checks);
+              pkgs.runCommand "checks-match-host-system" { } ''touch "$out"'';
+          };
         };
-      };
     };
 }

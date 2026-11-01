@@ -17,6 +17,7 @@ use crate::inventory::{Duty, Inventory, Name};
 
 pub mod applicability;
 pub mod catalogue;
+mod current;
 mod frontier;
 mod managed;
 pub(crate) mod report;
@@ -102,7 +103,7 @@ impl CargoOperation {
                 "cargo clippy --offline --locked --workspace --all-targets --profile \"$CARGO_PROFILE\" -- --deny warnings"
             }
             Self::Test => {
-                "bash \"$LOOM_PRIVATE_FIXTURE_RUNNER\" --build-campaign bash \"$LOOM_REPORT_SUPERVISOR\" cargo nextest run --offline --locked --workspace --all-targets --cargo-profile \"$CARGO_PROFILE\" --ignore-default-filter --test-threads 2 --no-fail-fast --message-format libtest-json-plus"
+                "bash \"$LOOM_PRIVATE_FIXTURE_RUNNER\" --build-campaign bash \"$LOOM_REPORT_SUPERVISOR\" cargo nextest run --offline --locked --workspace --all-targets --cargo-profile \"$CARGO_PROFILE\" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus"
             }
             Self::Catalogue => concat!(
                 "mkdir -p \"$out\"\n",
@@ -836,27 +837,73 @@ impl Construction {
         sources: &[Source],
     ) -> Result<(Metadata, Native), Error> {
         let key = partition_key(native, definition, sources)?;
-        if !self.partitions.contains_key(&key) {
-            let targets = self.groups.get(&key).ok_or(Error::Partition)?.clone();
-            let directory = native.flake().as_path().parent().ok_or(Error::StorePath)?;
-            let staged = snapshot.stage_paths(inputs)?;
-            let metadata = read_metadata(
-                &self.tool,
-                &format!("path:{}", staged.path().join(directory).display()),
-            )?;
-            let definitions = evaluate_many(&self.tool, &metadata, &targets)?;
-            let definitions = targets
-                .iter()
-                .zip(definitions)
-                .map(|(target, definition)| Ok((target_key(target)?, definition)))
-                .collect::<Result<_, Error>>()?;
-            self.partitions.insert(
-                key.clone(),
-                Partition {
-                    metadata,
-                    definitions,
-                },
-            );
+        if self.partitions.is_empty() {
+            let mut pending = Vec::new();
+            for (group, targets) in &self.groups {
+                let target = targets.first().ok_or(Error::Partition)?;
+                let directory = target.flake().as_path().parent().ok_or(Error::StorePath)?;
+                let definition = self
+                    .definitions
+                    .get(&target_key(target)?)
+                    .ok_or(Error::Root)?;
+                let mut selected = BTreeSet::new();
+                if group == &key {
+                    selected.clone_from(inputs);
+                } else {
+                    let nodes = subgraph(&self.nodes, &definition.root)?;
+                    for source in execution_sources(definition, &nodes, &self.sources)
+                        .iter()
+                        .chain(&definition.evaluation)
+                    {
+                        capture_source(snapshot, directory, source, &mut selected)?;
+                    }
+                    selected.extend(
+                        snapshot
+                            .files()
+                            .keys()
+                            .filter(|path| {
+                                path.as_path().starts_with(directory)
+                                    && (path
+                                        .as_path()
+                                        .extension()
+                                        .is_some_and(|extension| extension == "nix")
+                                        || path
+                                            .as_path()
+                                            .file_name()
+                                            .is_some_and(|name| name == "flake.lock"))
+                            })
+                            .cloned(),
+                    );
+                }
+                let staged = snapshot.stage_paths(&selected)?;
+                let metadata = read_metadata(
+                    &self.tool,
+                    &format!("path:{}", staged.path().join(directory).display()),
+                )?;
+                pending.push((group.clone(), targets.clone(), metadata, staged));
+            }
+            // Bound evaluator memory while sharing pinned imports within each batch.
+            for batch in pending.chunks(4) {
+                let projects: Vec<_> = batch
+                    .iter()
+                    .map(|(_, targets, metadata, _)| (metadata, targets.as_slice()))
+                    .collect();
+                let evaluated = evaluate_projects(&self.tool, &projects)?;
+                for ((group, targets, metadata, _), definitions) in batch.iter().zip(evaluated) {
+                    let definitions = targets
+                        .iter()
+                        .zip(definitions)
+                        .map(|(target, definition)| Ok((target_key(target)?, definition)))
+                        .collect::<Result<_, Error>>()?;
+                    self.partitions.insert(
+                        group.clone(),
+                        Partition {
+                            metadata: metadata.clone(),
+                            definitions,
+                        },
+                    );
+                }
+            }
         }
         let partition = self.partitions.get(&key).ok_or(Error::Partition)?;
         Ok((
@@ -1335,14 +1382,8 @@ impl Graph {
                 .flat_map(|graph| graph.evaluation.iter().cloned())
                 .collect();
             let resources = read_resources(tool, &nodes, &evaluation)?;
+            current::require_nodes(&nodes, graphs.iter().map(|graph| &graph.nodes))?;
             for graph in graphs {
-                // All other fingerprint fields are immutable constructor facts.
-                // These are exactly the external fields read by require_current.
-                if subgraph(&nodes, &graph.root)? != graph.nodes {
-                    return Err(Error::GraphDrift {
-                        detail: "native dependency graph changed during batch validation".into(),
-                    });
-                }
                 if let Some(path) = graph
                     .resources
                     .keys()
@@ -1430,18 +1471,26 @@ impl Graph {
         Ok(())
     }
 
-    fn presence(&self, outputs: &BTreeMap<Name, StorePath>) -> Result<Presence, Error> {
+    fn present(&self, outputs: &BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error> {
         let mut arguments = vec!["path-info", "--json", "--json-format", "1", "--offline"];
-        arguments.extend(outputs.values().map(StorePath::as_str));
+        arguments.extend(outputs.iter().map(StorePath::as_str));
         let paths: BTreeMap<StorePath, Option<Validity>> =
             serde_json::from_slice(&query(&self.tool, &arguments)?)?;
-        if paths.len() != outputs.len() || outputs.values().any(|path| !paths.contains_key(path)) {
+        if paths.len() != outputs.len() || outputs.iter().any(|path| !paths.contains_key(path)) {
             return Err(Error::Result);
         }
-        Ok(if paths.values().any(Option::is_none) {
-            Presence::Cold
-        } else {
+        Ok(paths
+            .into_iter()
+            .filter_map(|(path, validity)| validity.map(|_| path))
+            .collect())
+    }
+
+    fn presence(&self, outputs: &BTreeMap<Name, StorePath>) -> Result<Presence, Error> {
+        let outputs = outputs.values().cloned().collect::<BTreeSet<_>>();
+        Ok(if self.present(&outputs)? == outputs {
             Presence::Present
+        } else {
+            Presence::Cold
         })
     }
 
@@ -1508,7 +1557,7 @@ impl Graph {
                 (requested, nodes)
             });
         let root = nodes.get(requested).ok_or(Error::Root)?;
-        frontier::require_pinned(nodes, requested, |outputs| self.presence(outputs))?;
+        frontier::require_pinned(nodes, requested, |outputs| self.present(outputs))?;
         let installable = format!("{}^*", requested.as_str());
         let mut arguments = vec![
             "build",
@@ -1610,16 +1659,27 @@ fn evaluate_many(
     metadata: &Metadata,
     targets: &[crate::inventory::nix::Target],
 ) -> Result<Vec<Native>, Error> {
-    let locked = serde_json::to_string(&metadata.url)?.replace("${", "\\${");
-    let selectors: Vec<_> = targets.iter().map(|native| serde_json::json!({
-        "namespace": native.kind().namespace(), "system": native.system().as_str(), "attribute": native.attribute().as_str(),
+    evaluate_projects(tool, &[(metadata, targets)])?
+        .pop()
+        .ok_or(Error::Result)
+}
+
+fn evaluate_projects(
+    tool: &Path,
+    projects: &[(&Metadata, &[crate::inventory::nix::Target])],
+) -> Result<Vec<Vec<Native>>, Error> {
+    let selectors: Vec<_> = projects.iter().map(|(metadata, targets)| serde_json::json!({
+        "url": metadata.url,
+        "targets": targets.iter().map(|native| serde_json::json!({
+            "namespace": native.kind().namespace(), "system": native.system().as_str(), "attribute": native.attribute().as_str(),
+        })).collect::<Vec<_>>()
     })).collect();
     let selectors =
         serde_json::to_string(&serde_json::to_string(&selectors)?)?.replace("${", "\\${");
     let expression = format!(
-        "let flake = builtins.getFlake {locked}; select = entry: let original = flake.${{entry.namespace}}.${{entry.system}}.${{entry.attribute}}; value = if entry.namespace == \"apps\" then (assert original.type == \"app\"; original.meta.loom.definition) else original; in if !builtins.isAttrs value || (value.type or null) != \"derivation\" then throw \"native check is not a derivation\" else {{ app = if entry.namespace == \"apps\" then original.program else null; root = value.drvPath; version = value.loom.version; sources = value.loom.sources; evaluation = value.loom.evaluation; cargo = value.loom.cargo or null; catalogue = value.loom.catalogue or null; report = value.loom.report or null; reporter = value.loom.reporter.drvPath or null; runtime = value.loom.runtime or \"nix\"; }}; in map select (builtins.fromJSON {selectors})"
+        "let select = flake: entry: let original = flake.${{entry.namespace}}.${{entry.system}}.${{entry.attribute}}; value = if entry.namespace == \"apps\" then (assert original.type == \"app\"; original.meta.loom.definition) else original; in if !builtins.isAttrs value || (value.type or null) != \"derivation\" then throw \"native check is not a derivation\" else {{ app = if entry.namespace == \"apps\" then original.program else null; root = value.drvPath; version = value.loom.version; sources = value.loom.sources; evaluation = value.loom.evaluation; cargo = value.loom.cargo or null; catalogue = value.loom.catalogue or null; report = value.loom.report or null; reporter = value.loom.reporter.drvPath or null; runtime = value.loom.runtime or \"nix\"; }}; project = partition: map (select (builtins.getFlake partition.url)) partition.targets; in map project (builtins.fromJSON {selectors})"
     );
-    let definitions: Vec<Native> = serde_json::from_slice(&query(
+    let definitions: Vec<Vec<Native>> = serde_json::from_slice(&query(
         tool,
         &[
             "eval",
@@ -1633,7 +1693,12 @@ fn evaluate_many(
             "false",
         ],
     )?)?;
-    if definitions.len() != targets.len() {
+    if definitions.len() != projects.len()
+        || definitions
+            .iter()
+            .zip(projects)
+            .any(|(definitions, (_, targets))| definitions.len() != targets.len())
+    {
         return Err(Error::Result);
     }
     Ok(definitions)

@@ -51,24 +51,8 @@ pub struct SpawnConfig {
     pub profile_config: Option<PathBuf>,
     pub workspace: PathBuf,
     pub env: Vec<(String, String)>,
-    /// Per-spawn bind mounts beyond [`SpawnConfig::workspace`]. Loom uses this
-    /// to project the `wrix-beads` dolt socket into every bead container at
-    /// `/workspace/.wrix/dolt.sock` (replacing the host-side hardlink shim
-    /// in [`crate::git::GitClient`]) and, when configured, the shared sccache
-    /// directory at the configured container path. Additive to the resolved
-    /// profile's `mounts`; see `specs/agent.md` § `SpawnConfig`.
-    ///
-    /// Single-file mounts (sockets) and directory mounts both pass through
-    /// virtiofs on Linux. On Darwin, the wrix sandbox classifier accepts
-    /// directories (staged + copied at launch) and regular files
-    /// (copy-from-parent-dir), but rejects Unix-socket `host_path` entries at
-    /// launch — Apple's `VirtioFS` does not pass socket operations across the
-    /// VM boundary. Callers that emit a socket mount on Darwin will see the
-    /// launcher exit non-zero with a clear error naming the offending
-    /// `host_path`; route the same resource over TCP for the Darwin path.
-    ///
-    /// Skipped during serialization when empty so existing wrapper fixtures
-    /// round-trip identically.
+    /// Admitted per-spawn mounts, additive to profile mounts and omitted from JSON when empty.
+    /// Tracking transport is launcher-owned, not a Loom-supplied socket mount.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<MountSpec>,
     pub initial_prompt: String,

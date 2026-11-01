@@ -103,35 +103,6 @@ let
           };
         }
       )
-    else if filename == "${root}/lib/services/celler.nix" then
-      { pkgs, craneLib }:
-      let
-        patch = "${root}/lib/services/celler-ensure-key.patch";
-        withPatch = args: args // { patches = (args.patches or [ ]) ++ [ patch ]; };
-      in
-      original {
-        pkgs = pkgs // {
-          fetchFromGitHub =
-            {
-              owner,
-              repo,
-              rev,
-              hash,
-              ...
-            }:
-            builtins.fetchTarball {
-              url = "https://github.com/${owner}/${repo}/archive/${rev}.tar.gz";
-              sha256 = hash;
-            };
-          applyPatches =
-            { src, patches, ... }:
-            assert map toString patches == [ patch ];
-            src;
-        };
-        craneLib = craneLib // {
-          buildPackage = args: craneLib.buildPackage (withPatch args);
-        };
-      }
     else
       original;
 in

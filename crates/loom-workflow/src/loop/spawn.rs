@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use loom_driver::agent::{AgentRuntime, MountSpec, SpawnConfig};
 use loom_driver::bd::Bead;
@@ -7,38 +7,6 @@ use loom_driver::identifier::ProfileName;
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 
 use super::profile::resolve_profile;
-
-/// Workspace-relative host path of the `wrix-beads` dolt socket. Held as a
-/// constant so the bead-container mount and any future host-side consumer of
-/// the same socket stay in lockstep.
-const DOLT_SOCKET_REL_PATH: &str = ".wrix/dolt.sock";
-
-/// Container-side path the dolt socket is projected to. Matches
-/// `BEADS_DOLT_SERVER_SOCKET` set in the bead container env.
-const DOLT_SOCKET_CONTAINER_PATH: &str = "/workspace/.wrix/dolt.sock";
-
-/// Build the [`MountSpec`] that projects the loom workspace's `wrix-beads`
-/// dolt socket into a bead container at `DOLT_SOCKET_CONTAINER_PATH`.
-///
-/// Returns `None` when the host socket is absent (e.g. test fixtures that do
-/// not stand up the wrix-beads server), so the resulting spawn config has
-/// no socket mount in that environment. Production callers running under a
-/// real loom workspace always observe `Some`. Linux passes the socket file
-/// through virtiofs directly; on Darwin the wrix sandbox classifier
-/// rejects Unix-socket `host_path` entries at launch — see
-/// `specs/harness.md` § Bead dispatch / Darwin compatibility.
-pub fn dolt_socket_mount(loom_workspace: &Path) -> Option<MountSpec> {
-    let state_path = loom_driver::state::path(loom_workspace);
-    let host_path = state_path.parent()?.parent()?.join(DOLT_SOCKET_REL_PATH);
-    if !host_path.exists() {
-        return None;
-    }
-    Some(MountSpec {
-        host_path,
-        container_path: PathBuf::from(DOLT_SOCKET_CONTAINER_PATH),
-        read_only: false,
-    })
-}
 
 /// Build the optional [`MountSpec`] that projects the shared sccache
 /// directory into a container at the configured container path.
@@ -432,69 +400,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("WRIX_AGENT".to_string(), "pi".to_string())],
         );
-    }
-
-    /// Spec gate (`specs/harness.md` § Bead dispatch —
-    /// `bead_container_dolt_socket_via_mounts`): the host
-    /// `wrix-beads` dolt socket is projected into bead containers via a
-    /// `SpawnConfig.mounts` entry at `/workspace/.wrix/dolt.sock`,
-    /// replacing the historical hardlink shim that lived in
-    /// `GitClient::create_worktree`. The `host_path` resolves against the
-    /// loom workspace's `.wrix/dolt.sock`; `read_only = false` because
-    /// dolt clients write through the socket.
-    #[test]
-    fn bead_container_dolt_socket_via_mounts() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let loom_workspace = dir.path().join("loom-workspace");
-        let socket_path = loom_workspace.join(DOLT_SOCKET_REL_PATH);
-        std::fs::create_dir_all(socket_path.parent().expect("socket parent"))
-            .expect("create wrix dir");
-        std::fs::write(&socket_path, b"").expect("touch socket");
-
-        let mount = dolt_socket_mount(&loom_workspace).expect("socket present → mount");
-        assert_eq!(mount.host_path, socket_path);
-        assert_eq!(
-            mount.container_path,
-            PathBuf::from("/workspace/.wrix/dolt.sock"),
-        );
-        assert!(
-            !mount.read_only,
-            "dolt clients write through the socket; mount must not be read-only",
-        );
-
-        let manifest = three_profile_manifest(dir.path());
-        let bead = bead_with_labels("lm-1", &["profile:rust"]);
-        let bead_workspace = loom_workspace.join(".loom/beads/lm-1");
-        let cfg = build_spawn_config_from_manifest(
-            &manifest,
-            &bead,
-            None,
-            &base(),
-            AgentRuntime::Pi,
-            bead_workspace,
-            "p".into(),
-            dir.path().join("scratch"),
-            vec![],
-            vec![],
-            vec![mount.clone()],
-            vec![],
-        )
-        .expect("dispatch");
-        assert_eq!(
-            cfg.mounts,
-            vec![mount],
-            "SpawnConfig.mounts must carry the dolt-socket projection verbatim",
-        );
-    }
-
-    /// When the loom workspace has no `wrix-beads` dolt socket on disk
-    /// (test fixtures, CI sandboxes), [`dolt_socket_mount`] returns `None`
-    /// rather than projecting a missing host path the wrix launcher
-    /// would reject at startup.
-    #[test]
-    fn dolt_socket_mount_returns_none_when_socket_absent() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert!(dolt_socket_mount(dir.path()).is_none());
     }
 
     /// Spec gate (`specs/harness.md` § Bead dispatch —

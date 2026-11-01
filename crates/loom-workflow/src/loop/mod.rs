@@ -82,7 +82,7 @@ pub use runner::{
     UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, VERIFICATION_CAPABILITY_UNAVAILABLE_CAUSE,
     WORKSPACE_RECOVERY_FAILED_CAUSE, run_loop, run_loop_with_infra_policy,
 };
-pub use spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
+pub use spawn::{build_spawn_config_from_manifest, sccache_mount};
 pub use tree_clean::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};
 pub use verify::{VerifyPass, verify_pass};
 pub use waiting::{ActiveBlockers, WaitPrerequisites, validate_waiting_outcome};

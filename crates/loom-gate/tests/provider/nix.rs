@@ -691,6 +691,86 @@ fn batched_native_construction_keeps_distinct_source_partitions() {
 }
 
 #[test]
+fn native_partition_batches_keep_every_isolated_source_set_across_the_batch_boundary() {
+    let dir = fixture();
+    native_project(&dir, "", true, true);
+    let system = loom_gate::runner::result::current_platform();
+    for index in 0..7 {
+        write(
+            dir.path(),
+            &format!("data-{index}/value"),
+            &format!("native partition {index}\n"),
+        );
+        add_sibling_native_check(
+            &dir,
+            &format!("[ (checked.resource {{ root = ./.; origin = \"data-{index}\"; }}) ]"),
+            "",
+        );
+        let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
+        write(
+            dir.path(),
+            "flake.nix",
+            &flake.replace(
+                &format!("checks.{system}.second"),
+                &format!("checks.{system}.partition_{index}"),
+            ),
+        );
+    }
+    let (snapshot, inventory) = context(&dir);
+    for index in 0..7 {
+        let subject = name(&format!("nix:check:flake.nix:{system}:partition_{index}"));
+        let definition =
+            Definition::hermetic_baseline(&snapshot, &inventory, subject.clone(), &subject)
+                .unwrap();
+        let origins = definition.nix_graph().unwrap().origins();
+        for sibling in 0..7 {
+            assert_eq!(
+                origins.contains(&path(&format!("data-{sibling}/value"))),
+                sibling == index
+            );
+        }
+    }
+}
+
+#[test]
+fn native_partition_batch_rejects_an_undeclared_read_in_the_last_partition() {
+    let dir = fixture();
+    native_project(&dir, "", true, true);
+    let system = loom_gate::runner::result::current_platform();
+    write(dir.path(), "undeclared.bin", "not an admitted resource\n");
+    for index in 0..7 {
+        write(
+            dir.path(),
+            &format!("data-{index}/value"),
+            &format!("native partition {index}\n"),
+        );
+        let attributes = if index == 6 {
+            "LOOM_UNDECLARED = builtins.pathExists ./undeclared.bin;"
+        } else {
+            ""
+        };
+        add_sibling_native_check(
+            &dir,
+            &format!("[ (checked.resource {{ root = ./.; origin = \"data-{index}\"; }}) ]"),
+            attributes,
+        );
+        let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
+        write(
+            dir.path(),
+            "flake.nix",
+            &flake.replace(
+                &format!("checks.{system}.second"),
+                &format!("checks.{system}.partition_{index}"),
+            ),
+        );
+    }
+    let snapshot = loom_gate::inventory::snapshot::Snapshot::discover(dir.path()).unwrap();
+    assert!(
+        matches!(loom_gate::inventory::Inventory::discover(&snapshot), Err(loom_gate::inventory::Error::NativeResources { source, .. }) if matches!(source.as_ref(), NixError::Binding { source, .. } if matches!(source.as_ref(), NixError::Partition)))
+    );
+}
+
+#[test]
 fn batched_native_construction_rejects_an_invalid_later_sibling_atomically() {
     let dir = fixture();
     native_project(&dir, "", true, true);

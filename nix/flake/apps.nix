@@ -120,7 +120,7 @@
         exec cargo-nextest nextest run \
           --archive-file ${config.packages.cargo-retention-archive}/archive.tar.zst \
           --extract-to "$TMPDIR/decision-archive" --workspace-remap "$PWD" \
-          --no-fail-fast --ignore-default-filter --test-threads 2 \
+          --no-fail-fast --ignore-default-filter \
           -E 'package(=loom-workflow) & (test(decision_wait) | test(native_controller_counts_one_noop_source_and_five_distinct_decisions) | test(integrity_extension_requires_explicit_reusable_source_readmission))'
       '';
       decisionAdmissionApp = mkTestApp {

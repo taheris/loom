@@ -305,7 +305,7 @@ impl super::Graph {
         }
         let reporter = self.reporter.as_ref().ok_or(super::Error::Result)?;
         let node = self.nodes.get(reporter).ok_or(super::Error::Root)?;
-        super::frontier::require_pinned(&self.nodes, reporter, |outputs| self.presence(outputs))?;
+        super::frontier::require_pinned(&self.nodes, reporter, |outputs| self.present(outputs))?;
         let installables: Vec<String> = node
             .dependencies
             .iter()

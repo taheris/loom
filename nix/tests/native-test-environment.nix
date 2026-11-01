@@ -2,7 +2,7 @@
 let
   tools = [
     pkgs.bash
-    pkgs.nix
+    (pkgs.lib.getBin pkgs.nix)
     pkgs.git
     pkgs.coreutils
   ];
