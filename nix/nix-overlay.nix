@@ -14,6 +14,16 @@ final: prev: {
             '';
           });
           nix-functional-tests = prevScope.nix-functional-tests.overrideAttrs (old: {
+            # Long build roots overflow remote-builder lock filenames. Roots under
+            # /nix also collide with shell.sh's explicit /nix sandbox bind mount.
+            preUnpack = (old.preUnpack or "") + ''
+              functionalTestRoot=$(mktemp -d /tmp/nix-ft.XXXXXXXX)
+              export TMPDIR="$functionalTestRoot"
+              cd "$functionalTestRoot"
+            '';
+            postInstall = (old.postInstall or "") + ''
+              rm -rf "$functionalTestRoot"
+            '';
             postPatch = (old.postPatch or "") + ''
               substituteInPlace supplementary-groups.sh \
                 --replace-fail '  cmd=(' '  expectGroupPolicy () {
