@@ -24,7 +24,7 @@ cleanup() {
 trap cleanup EXIT
 export HOME="$work/home" CARGO_HOME="$work/cargo-home"
 export SCCACHE_DIR="$work/cache" SCCACHE_SERVER_UDS="$work/cache.sock"
-export CC='sccache gcc' CXX='sccache g++'
+export CC='sccache cc' CXX='sccache c++'
 # Verify provisioned compiler wrappers without asserting cache/backend behavior.
 export RUSTC_WRAPPER="$cache" CARGO_INCREMENTAL=0
 mkdir -p "$HOME" "$CARGO_HOME" "$work/empty-bin"
@@ -59,12 +59,12 @@ fn main() {
     let target = PathBuf::from(env::var_os("CARGO_TARGET_DIR").unwrap());
     assert!(target.file_name().unwrap().to_str().unwrap().starts_with("acceptance-"));
     assert_eq!(fs::canonicalize(target.parent().unwrap().parent().unwrap()).unwrap(), fs::canonicalize(env::var_os("CARGO_MANIFEST_DIR").unwrap()).unwrap());
-    assert_eq!(env::var("CC").unwrap(), "sccache gcc");
-    assert_eq!(env::var("CXX").unwrap(), "sccache g++");
+    assert_eq!(env::var("CC").unwrap(), "sccache cc");
+    assert_eq!(env::var("CXX").unwrap(), "sccache c++");
     for (compiler, source, name) in [
-        ("gcc", "native.c", "c"),
-        ("gcc", "native.S", "assembly"),
-        ("g++", "native.cpp", "cpp"),
+        ("cc", "native.c", "c"),
+        ("cc", "native.S", "assembly"),
+        ("c++", "native.cpp", "cpp"),
     ] {
         let object = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join(format!("{name}.o"));
         let result = Command::new("sccache")
