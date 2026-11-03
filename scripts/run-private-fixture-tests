@@ -29,7 +29,8 @@ private_root() {
     fi
     root=$(realpath -e -- "$candidate")
     if trusted_root "$root"; then
-      mktemp -d "$root/loom-fixtures.XXXXXXXX"
+      # Nested legacy AF_UNIX sockets must fit Darwin's sockaddr_un in Nix builds.
+      mktemp -d "$root/lf.XXXXXXXX"
       return
     fi
     printf 'Rejecting unsafe temporary root: %s\n' "$root" >&2
